@@ -137,7 +137,7 @@ def _installed_cohort(policy, allowance):
     # unknown older process. Such lifetimes require their own retained evidence.
 
 
-def _plan_members(plan, consent):
+def _plan_members(plan, consent, allowance=None):
     rows=plan.get('measured_members')
     _require(type(rows) is list and len(rows)<=10000,'scene_retirement_members_unproven')
     selected=consent['members']
@@ -146,15 +146,33 @@ def _plan_members(plan, consent):
     _require(not any(a!=b and a.is_relative_to(b) for a in roots for b in roots),
              'scene_retirement_members_unproven')
     matched=set()
+    observed={row['path'] for row in rows if type(row) is dict and row.get('status')=='observed_scoped_metadata'}
     for row in rows:
+        if allowance is not None:
+            allowance.tick()
         _require(type(row) is dict and type(row.get('path')) is str,'scene_retirement_members_unproven')
         path=_canonical(row['path'])
         owners=[index for index,root in enumerate(roots) if path.is_relative_to(root)]
-        _require(len(owners)==1 and row.get('status')=='observed_scoped_metadata',
-                 'scene_retirement_members_unproven')
+        _require(len(owners)==1,'scene_retirement_members_unproven')
+        if row.get('status')=='coalesced_descendant_member':
+            attributed=_canonical(row.get('attributed_root'))
+            _require(str(attributed) in observed and path!=attributed and path.is_relative_to(attributed)
+                     and attributed.is_relative_to(roots[owners[0]]) and not row.get('keeps'),
+                     'scene_retirement_members_unproven')
+            continue
+        _require(row.get('status')=='observed_scoped_metadata','scene_retirement_members_unproven')
         # Shared scratch/release or an unselected external alias is not owned by
         # a consented parent. Positive keep reasons remain independent blockers.
-        _require(not row.get('keeps'),'scene_retirement_shared_or_unresolved_member')
+        keeps=row.get('keeps',[])
+        _require(type(keeps) is list and all(type(reason) is str for reason in keeps),
+                 'scene_retirement_shared_or_unresolved_member')
+        # The actual authenticated owner scope supplies the explicit retention
+        # decision; private preservation is still proved before any mutation.
+        # No metadata flag is cleared, and no other keep reason is waived.
+        retention={'sam_evidence_retention_policy_required'} if (
+            selected[owners[0]]['class'] in consent['private_archive_classes']
+            and row.get('storage_class')!='cache') else set()
+        _require(set(keeps)<=retention,'scene_retirement_shared_or_unresolved_member')
         matched.add(owners[0])
     _require(len(matched)==len(selected),'scene_retirement_members_unproven')
 
@@ -173,7 +191,7 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
              and 'historical_lineage' in fresh,'scene_retirement_not_finished')
     _require(fresh.get('selected_intent_provenance')==consent['intent_raw_ref'],
              'scene_retirement_owner_changed')
-    _plan_members(fresh,consent)
+    _plan_members(fresh,consent,allowance)
     _installed_cohort(policy,allowance)
     observation=fresh.get('reference_observation',{})
     _require(not observation.get('blockers') and observation.get('child_scopes')
