@@ -40,6 +40,7 @@ _PUBLIC_INVENTORY = Path("/opt/blueprint/control-plane-config-tools/operator-doo
 _REGISTERED_ROOTS = (Path("/mnt/blueprint-work/lanes"),
                      Path("/var/lib/blueprint/task-evaluation-inputs/lanes"))
 _QUANTUM = 1024 * 1024
+_LONG_WORK_SECONDS = 4 * 3600
 _PART = 8 * _QUANTUM
 _MAX_BYTES = 32 * 1024**3
 _INTENT_FIELDS = frozenset({"intent_id", "schema_version", "issuer_kind", "issuer_uid", "principal", "owner",
@@ -668,7 +669,7 @@ def _open_registered(cls, root, *, mode="read", installed_config_path=_DEFAULT_C
         result._writer, result._now, result._monotonic = writer, now, monotonic
         result._origin = result._last = origin
         _require(type(result._origin) in (int, float) and math.isfinite(result._origin), "needed_cache_clock_invalid")
-        result._deadline, result._failure = result._origin + 4*3600, None
+        result._deadline, result._failure = result._origin + _LONG_WORK_SECONDS, None
         result._lock, result._counts, result._windows = threading.RLock(), {}, {}
         result._checks, result._health, result._reservation = 0, None, None
         result._native_pending, result._native_unknown = 0, 0
@@ -1209,7 +1210,7 @@ def _create_cache(files, layout, intent, intent_ref, inventory, rows, reservatio
     operation, process = secrets.token_hex(16), _process_identity()
     origin = monotonic()
     _require(type(origin) in (int, float) and math.isfinite(origin), "needed_cache_clock_invalid")
-    deadline = origin + 4*3600
+    deadline = origin + _LONG_WORK_SECONDS
     claim = _record_event(files, store, intent, intent_ref, operation, "claim", None, moment,
         target_was_absent=True, lane_identity=dict(dev=os.fstat(lane).st_dev, ino=os.fstat(lane).st_ino, type="directory"),
         intent_deadline=intent["expires_at_epoch"], inventory_raw_sha256=intent["inventory_raw_sha256"],
