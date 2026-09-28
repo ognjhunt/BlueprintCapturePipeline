@@ -26,7 +26,9 @@ with its durable reference, so the gate deletes exactly the objects made
 durable. A later resume reuses a receipt only while every durable copy it
 relies on still answers a HEAD (``verifier``); a missing copy is promoted
 again from what is still there, or the run fails
-(``provider_output_durable_copy_missing``). A present object that matches no
+(``provider_output_durable_copy_missing``). Only that proof downgrades a
+durable receipt: any other failure, a HEAD that errs say, rewrites the prior
+record as it was, with the blocker. A present object that matches no
 recorded version is promoted.
 
 Steps for the archive a consumer reads (the primary): one index pass
@@ -38,9 +40,10 @@ with full readback (``publish_configured_scene_stream``), then
 is still promoted as evidence after one hash pass, and the receipt carries
 ``provider_output_index_refused:<code>``. The receipt is written as soon as the
 primary is durable and again after any other staged object, before the witness
-step, so a run killed later leaves a receipt a resume reuses. Transient
-transport and publication failures get three attempts with backoff; identity
-refusals get one.
+step, so a run killed later leaves a receipt a resume reuses. Such a
+checkpoint's witness section stays ``pending`` but carries the prior witness
+versions that still stand. Transient transport and publication failures get
+three attempts with backoff; identity refusals get one.
 
 Only a staging manifest with ``output_promotion_required`` is promoted
 (``provider_output_promotion_not_required`` otherwise): a download-mode
@@ -53,7 +56,8 @@ and the witness manifest equal, by canonical digest, to the output's
 ``paired_witness_manifest.v1.json``. Otherwise -- including when the output is
 absent or its index was refused -- the witness is promoted
 (``policy-canary-paired-witness``); if the output's promotion failed, it is
-deferred untouched.
+deferred untouched. A redundant witness stands only with the primary it was
+proven against.
 
 B2 must be configured explicitly (review I4): all five
 ``BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE`` variables. The artifact
