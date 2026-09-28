@@ -1,8 +1,8 @@
 """Send a verified, privately registered G1 review to the owner-only WebApp.
 
 The caller supplies the real owner and organization identifiers. A signed
-request is attempted only after all four episodes and all 12 registered media
-artifacts have been reverified against the sealed paid result.
+request follows independent verification of either the fixed four-policy
+campaign or the separately scoped selected episode and all registered media.
 """
 
 from __future__ import annotations
@@ -54,13 +54,24 @@ def _verified_review(
     run = strict_identifier(run_id, field="run_id", max_length=192)
     adapter = _read(adapter_result_path)
     bundle_receipt = _read(bundle_receipt_path)
-    bundle = load_verified_g1_provider_bundle(
-        bundle_receipt_path,
-        expected_implementation_commit=bundle_receipt["implementation_commit"],
-    )
-    review = project_g1_private_review(
-        verification=verify_g1_paid_output(adapter, bundle), bundle=bundle,
-    )
+    selected = bundle_receipt.get("schema_version") == "native_g1_team_provider_bundle.v1"
+    if selected:
+        from .native_g1_team_review_evidence import verify_retained_g1_team_review
+
+        evidence = verify_retained_g1_team_review(
+            adapter_result_path=adapter_result_path, bundle_receipt_path=bundle_receipt_path,
+        )
+        review = dict(evidence.review)
+        if review["run_id"] != run:
+            raise ValueError("g1_review_ingest_selected_run_changed")
+    else:
+        bundle = load_verified_g1_provider_bundle(
+            bundle_receipt_path,
+            expected_implementation_commit=bundle_receipt["implementation_commit"],
+        )
+        review = project_g1_private_review(
+            verification=verify_g1_paid_output(adapter, bundle), bundle=bundle,
+        )
     if _read(retained_review_path) != review:
         raise ValueError("g1_review_ingest_retained_review_changed")
     delivery = _read(delivery_receipt_path)
@@ -71,7 +82,7 @@ def _verified_review(
         or delivery.get("status") != "registered_private_development_review"
         or delivery.get("run_id") != run
         or delivery.get("review_digest") != review["review_digest"]
-        or delivery.get("artifact_count") != 12
+        or delivery.get("artifact_count") != (3 if selected else 12)
         or delivery.get("run_root") != str(expected_root)
         or delivery.get("public_redistribution_authorized") is not False
     ):
@@ -142,6 +153,10 @@ def ingest_g1_private_review(
         delivery_receipt_path=delivery_receipt_path,
         result_root=result_root, run_id=run,
     )
+    if review.get("schema_version") == "native_g1_team_private_review.v1" and (
+        review.get("owner_user_id") != owner or review.get("organization_id") != organization
+    ):
+        raise ValueError("g1_review_ingest_selected_owner_changed")
     response = _post_review(url=url, token=sync_token, payload={
         "schema_version": "native_g1_private_review_ingest.v1",
         "run_id": run,

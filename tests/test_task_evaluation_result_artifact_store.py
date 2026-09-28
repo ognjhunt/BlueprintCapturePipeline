@@ -369,6 +369,8 @@ def _gc_tick(f, tmp_path):
     ("stage", "error_type", "error_number"),
     [
         ("registry", "TaskEvaluationResultDeliveryError", None),
+        # The registry verified, but a registered file no longer has its recorded bytes.
+        ("plan", "TaskEvaluationResultDeliveryError", None),
         ("protection", "PermissionError", errno.EACCES),
         ("publish", "ControlPlaneDiskBudgetError", None),
         ("evict", "PermissionError", errno.EPERM),
@@ -392,8 +394,12 @@ def test_result_artifact_offload_failure_records_stage_and_errno(
             raise error
         return raising
 
+    payload = f.payload
     if stage == "registry":
         (f.registry_path.parent / "delivery.json").write_text("{}")
+    elif stage == "plan":
+        payload = b"x" * len(f.payload)
+        f.path.write_bytes(payload)
     elif stage == "protection":
         monkeypatch.setattr(process, refuse(PermissionError(errno.EACCES, "Permission denied", host_path)))
     elif stage == "publish":
@@ -409,7 +415,7 @@ def test_result_artifact_offload_failure_records_stage_and_errno(
         "status": "retained", "run_directory": f.root.name, "reason": error_type,
         "error_type": error_type, "errno": error_number, "stage": stage,
     }]
-    assert f.path.read_bytes() == f.payload and f.registry_path.exists()
+    assert f.path.read_bytes() == payload and f.registry_path.exists()
     assert host_path not in json.dumps(report)
 
 

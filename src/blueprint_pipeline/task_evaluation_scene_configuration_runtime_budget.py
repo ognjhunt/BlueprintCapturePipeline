@@ -58,7 +58,11 @@ MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.96
 MIN_CONTENT_AGENTS_SPEND_USD = 0.2
 MIN_EXTERNAL_SERVICE_SPEND_USD = 5.96
 MIN_ASTRA_AUTHORING_SPEND_USD = 5.0
-MAX_ASTRA_AUTHORING_SPEND_USD = 15.0
+# One shared pool for the whole CAD/Blender stage, however many task objects or
+# articulated parts it authors; parts draw from it as they need. Owner decision
+# 2026-09-28: a website task's first part cost ~$3 (about ten calls) and the
+# second was refused at the former stage cap before six more parts were tried.
+MAX_ASTRA_AUTHORING_SPEND_USD = 25.0
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,10 @@ PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH
 STAGE_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEADLINE_EPOCH"
 # Leave time inside the existing stage allowance for export, evidence and review.
 ARTIFIXER_TRAINING_CLOSEOUT_RESERVE_SECONDS = 600
+# Stage-3 authoring stops starting new model calls this long before the
+# producer's absolute stage deadline, so part records are sealed and the
+# assembly outcome is written instead of the whole stage being killed.
+ASTRA_AUTHORING_CLOSEOUT_RESERVE_SECONDS = 600
 
 
 def artifixer_training_timeout_seconds(environment: Mapping[str, str], *, now_epoch: float) -> float:
@@ -285,14 +293,17 @@ def parent_runtime_budget_blockers(
 
 __all__ = [
     "ARTIFIXER_TRAINING_CLOSEOUT_RESERVE_SECONDS",
+    "ASTRA_AUTHORING_CLOSEOUT_RESERVE_SECONDS",
     "BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS",
     "GPU_STAGE_TIMEOUT_SECONDS",
+    "MAX_ASTRA_AUTHORING_SPEND_USD",
     "MAX_ATTEMPT_SPEND_USD",
     "MAX_EXTERNAL_SERVICE_SPEND_USD",
     "MAX_HOURLY_RATE_USD",
     "MAX_PROVIDER_COMPUTE_SPEND_USD",
     "MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD",
     "MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD",
+    "MIN_ASTRA_AUTHORING_SPEND_USD",
     "MIN_CONTENT_AGENTS_SPEND_USD",
     "MIN_EXTERNAL_SERVICE_SPEND_USD",
     "OUTPUT_AND_CLOSURE_RESERVE_SECONDS",

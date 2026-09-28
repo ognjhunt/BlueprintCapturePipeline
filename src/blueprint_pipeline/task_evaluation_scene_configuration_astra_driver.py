@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -38,6 +39,9 @@ from .task_evaluation_scene_configuration_astra_phase_adoption import (
     materialize_automatic_phase_adoption, prepare_phase_adoption,
 )
 from .task_evaluation_scene_configuration_render_inputs import _materialized
+from .task_evaluation_scene_configuration_runtime_budget import (
+    ASTRA_AUTHORING_CLOSEOUT_RESERVE_SECONDS, MAX_ASTRA_AUTHORING_SPEND_USD, STAGE_DEADLINE_EPOCH_ENV,
+)
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION, _validate_dependencies, _validate_input,
 )
@@ -52,12 +56,14 @@ from .task_object_astra_authoring import (
     AssetAuthoringError,
     AuthoringRequest, budgeted_invoker, execute_asset_authoring, file_record, validate_request,
 )
+from .task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
 from .task_object_physical_property_review import EvidenceReference
 
 BACKEND = "astra_cad_blender_v1"
 ARTICULATED_AUTHORING_SCHEMA_VERSION = "articulated_replacement_authoring_configuration.v1"
 ARTICULATED_GRAPH_SCHEMA_VERSION = "task_evaluation_articulated_replacement_graph.v1"
 ARTICULATED_RECEIPT_SCHEMA_VERSION = "task_evaluation_articulated_replacement_authoring_result.v1"
+PART_SPEND_SCHEMA_VERSION = "articulated_part_spend.v1"
 # A website assembly is sized by the video estimate or, since 2026-09-27, by
 # verified published figures for its identified
 # product or its category's standard (website_object_spec_research.published_body_size).
@@ -71,6 +77,28 @@ _CAD_PACKAGE_FILES = ("text_to_cad_skills_source.zip", "multi_agent_cad_source.z
 
 class AstraStageError(RuntimeError):
     """The parent stage's evidence, runtime, or inference admission refused."""
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _authoring_deadline_epoch(values: Mapping[str, Any]) -> float | None:
+    """The last moment a new model call may start: the producer's deadline less closeout.
+
+    Direct callers without a producer deadline keep the producer's own hard
+    timeout as their only bound.
+    """
+    raw = values.get(STAGE_DEADLINE_EPOCH_ENV)
+    if raw is None:
+        return None
+    try:
+        deadline = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise AstraStageError("astra_stage_deadline_invalid") from exc
+    if not math.isfinite(deadline):
+        raise AstraStageError("astra_stage_deadline_invalid")
+    return deadline - ASTRA_AUTHORING_CLOSEOUT_RESERVE_SECONDS
 
 
 def _write(path: Path, value: Mapping[str, Any]) -> None:
@@ -584,6 +612,46 @@ def _reuse_prior_part_result(prior_roots: list[Path], part_id: str, request: Aut
     return None
 
 
+def _stage_pool(invoker) -> dict[str, Any]:
+    """Read the one shared stage pool: dollars, requests and time, where the invoker exposes them."""
+    base = getattr(invoker, "invoker", invoker)
+
+    def number(value):
+        return (float(value) if isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) else None)
+
+    maximum = number(getattr(getattr(base, "config", None), "max_inference_cost_usd", None))
+    reserved = number(getattr(base, "_reserved_cost_usd", None))
+    calls = getattr(invoker, "calls", None)
+    return {"maximum_cost_usd": maximum, "reserved_cost_usd": reserved,
+            "remaining_cost_usd": (round(maximum - reserved, 6)
+                                   if maximum is not None and reserved is not None else None),
+            "maximum_requests": getattr(invoker, "maximum_calls", None),
+            "requests_used": (calls + getattr(invoker, "prior_calls", 0) if isinstance(calls, int) else None),
+            "deadline_epoch": getattr(invoker, "deadline_epoch", None)}
+
+
+def _stage_pool_exhausted(pool: Mapping[str, Any]) -> str | None:
+    """Name what is fully used up; a part is still attempted while anything is left."""
+    if pool["deadline_epoch"] is not None and _now() >= pool["deadline_epoch"]:
+        return "stage_time_exhausted"
+    if (isinstance(pool["maximum_requests"], int) and isinstance(pool["requests_used"], int)
+            and pool["requests_used"] >= pool["maximum_requests"]):
+        return "stage_request_limit_exhausted"
+    if pool["remaining_cost_usd"] is not None and pool["remaining_cost_usd"] <= 1e-9:
+        return "stage_budget_exhausted"
+    return None
+
+
+def _part_usage(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
+    """What one part drew from the shared pool (reservations reconcile to actual after each call)."""
+    def delta(key):
+        return (round(after[key] - before[key], 6)
+                if isinstance(before[key], (int, float)) and isinstance(after[key], (int, float)) else None)
+    return {"spend_usd": delta("reserved_cost_usd"), "model_calls": delta("requests_used"),
+            "pool_remaining_after_usd": after["remaining_cost_usd"]}
+
+
 def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, prior_roots, invoker, sandbox, blender,
                               cad_root, verified_sources, authoring_instructions, configuration, authoring_executor,
                               mac_executor) -> dict[str, Any]:
@@ -594,41 +662,79 @@ def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, pr
     the first was built, and every part queued behind it was never authored
     or reviewed. Every planned part is now attempted; the assembly
     still fails closed when any part failed, so nothing partial is packaged.
+
+    All parts draw on one shared stage pool (dollars, requests and stage time);
+    one part may cost more than another. A part refused by that pool (for
+    example ``agents_sdk_inference_budget_ceiling_exceeded``) is a failed part,
+    not a stage abort. Once the pool is fully used up, each remaining part is
+    recorded as not attempted with the exhausted resource. Every part's draw on
+    the pool is recorded so a run shows where its money and time went.
     """
     parts: dict[str, Any] = {}
     reused: list[str] = []
     failures: dict[str, str] = {}
-    for part_id, part_request in part_requests.items():
-        part_root = authored_root / "parts" / part_id
-        prior = _reuse_prior_part_result(prior_roots, part_id, part_request)
-        if prior is not None:
-            part_root.mkdir(parents=True, exist_ok=True)
-            _write(part_root / "request.json", part_request.model_dump(mode="json"))
-            _write(part_root / "result.json", prior)
-            _write(part_root / "part_adoption.json", {"status": "completed_part_adopted_from_same_run",
-                "result_digest": prior["result_digest"], "new_provider_calls": 0})
-            parts[part_id] = prior
-            reused.append(part_id)
-            continue
-        arguments = dict(request_value=part_request.model_dump(mode="json"), output_root=part_root, invoker=invoker,
-                         blender_runner=sandbox, blender_executable=blender["executable"],
-                         authoring_instructions=authoring_instructions)
-        if authoring_executor is execute_asset_authoring and configuration.get("source_observation_kind") == "website_capture_frames":
-            from .task_object_agent_cad import execute_cad_program
-            from .task_object_agent_session import execute_agent_authoring
-            author = partial(execute_agent_authoring, budget_root=runtime / "inference" / "parts" / part_id,
-                cad_executor=partial(execute_cad_program, cad_root=cad_root / "text-to-cad",
-                    mac_root=cad_root / "Multi-Agent-CAD", sandbox=sandbox, verified_sources=verified_sources))
-        else:
-            author = partial(authoring_executor, mac_executor=mac_executor)
-        try:
-            parts[part_id] = author(**arguments)
-        except AssetAuthoringError as exc:
-            failures[part_id] = str(exc)[:500]
+    records: dict[str, dict[str, Any]] = {}
+    pool_at_start = _stage_pool(invoker)
+
+    def seal_spend() -> dict[str, Any]:
+        value = {"schema_version": PART_SPEND_SCHEMA_VERSION, "pool_sharing": "one_shared_stage_pool",
+                 "stage_pool_at_start": pool_at_start, "stage_pool_at_end": _stage_pool(invoker),
+                 "parts": records}
+        _write(authored_root / "part_spend.json", value)
+        return value
+
+    try:
+        for part_id, part_request in part_requests.items():
+            part_root = authored_root / "parts" / part_id
+            prior = _reuse_prior_part_result(prior_roots, part_id, part_request)
+            if prior is not None:
+                part_root.mkdir(parents=True, exist_ok=True)
+                _write(part_root / "request.json", part_request.model_dump(mode="json"))
+                _write(part_root / "result.json", prior)
+                _write(part_root / "part_adoption.json", {"status": "completed_part_adopted_from_same_run",
+                    "result_digest": prior["result_digest"], "new_provider_calls": 0})
+                parts[part_id] = prior
+                reused.append(part_id)
+                records[part_id] = {"status": "adopted_from_same_run", "spend_usd": 0.0, "model_calls": 0}
+                continue
+            before = _stage_pool(invoker)
+            exhausted = _stage_pool_exhausted(before)
+            if exhausted is not None:
+                failures[part_id] = "not_attempted:" + exhausted
+                records[part_id] = {"status": "not_attempted", "reason": exhausted, "spend_usd": 0.0,
+                                    "model_calls": 0, "pool_remaining_before_usd": before["remaining_cost_usd"]}
+                continue
+            arguments = dict(request_value=part_request.model_dump(mode="json"), output_root=part_root,
+                             invoker=invoker, blender_runner=sandbox, blender_executable=blender["executable"],
+                             authoring_instructions=authoring_instructions)
+            if (authoring_executor is execute_asset_authoring
+                    and configuration.get("source_observation_kind") == "website_capture_frames"):
+                from .task_object_agent_cad import execute_cad_program
+                from .task_object_agent_session import execute_agent_authoring
+                author = partial(execute_agent_authoring, budget_root=runtime / "inference" / "parts" / part_id,
+                    cad_executor=partial(execute_cad_program, cad_root=cad_root / "text-to-cad",
+                        mac_root=cad_root / "Multi-Agent-CAD", sandbox=sandbox, verified_sources=verified_sources))
+            else:
+                author = partial(authoring_executor, mac_executor=mac_executor)
+            started = _now()
+            record: dict[str, Any] = {"status": "attempted", "pool_remaining_before_usd": before["remaining_cost_usd"]}
+            records[part_id] = record
+            try:
+                parts[part_id] = author(**arguments)
+                record["status"] = "authored"
+            except (AssetAuthoringError, AgentsSDKInvocationBlocked, AstraStageError) as exc:
+                failures[part_id] = str(exc)[:500]
+                record.update(status="failed", reason=failures[part_id], exception_type=type(exc).__name__)
+            finally:
+                record.update(_part_usage(before, _stage_pool(invoker)),
+                              elapsed_seconds=round(_now() - started, 3))
+    finally:
+        spend = seal_spend()
     if failures:
         _write(authored_root / "part_failures.json", {
             "schema_version": "articulated_part_failures.v1", "failed_parts": dict(sorted(failures.items())),
-            "authored_parts": sorted(parts), "reused_part_ids": reused, "assembly_packaged": False})
+            "authored_parts": sorted(parts), "reused_part_ids": reused, "assembly_packaged": False,
+            "part_spend": spend["parts"], "stage_pool_at_end": spend["stage_pool_at_end"]})
         raise AssetAuthoringError("articulated_parts_failed:" + ";".join(
             f"{part_id}={reason}" for part_id, reason in sorted(failures.items())))
     authored = {"schema_version": ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
@@ -636,6 +742,7 @@ def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, pr
                 "plan": dict(plan), "parts": parts, "reused_part_ids": reused,
                 "part_models": {part_id: part["model"] for part_id, part in parts.items()},
                 "part_request_digests": {part_id: request.request_digest for part_id, request in part_requests.items()},
+                "part_spend": spend["parts"],
                 "claim_ceiling": "development_only", "native_import_qualified": False,
                 "scene_placement_qualified": False, "physical_equivalence_proven": False}
     authored["result_digest"] = canonical_digest(authored, digest_field="result_digest")
@@ -773,9 +880,12 @@ from .task_object_agent_model import AUTHORING_CONTEXT_CEILING  # noqa: E402
 
 
 class _StageInvoker:
-    def __init__(self, invoker, run_id: str, maximum_calls: int, prior_calls: int = 0):
+    def __init__(self, invoker, run_id: str, maximum_calls: int, prior_calls: int = 0,
+                 deadline_epoch: float | None = None):
         self.invoker, self.run_id, self.maximum_calls, self.calls = invoker, run_id, maximum_calls, 0
         self.prior_calls = prior_calls
+        # No new call starts after the stage's closeout point; the running part fails and is recorded.
+        self.deadline_epoch = deadline_epoch
 
     def invoke(self, spec, input_value):
         if (self.calls + self.prior_calls >= self.maximum_calls or spec.run_id != self.run_id or spec.model != "gpt-6-astra"
@@ -784,6 +894,8 @@ class _StageInvoker:
                 or spec.max_input_tokens is None or spec.max_input_tokens > AUTHORING_CONTEXT_CEILING
                 or spec.reasoning_effort not in {"medium", "high"}):
             raise AstraStageError("astra_stage_inference_boundary_refused")
+        if self.deadline_epoch is not None and _now() >= self.deadline_epoch:
+            raise AstraStageError("astra_stage_time_exhausted")
         self.calls += 1
         return self.invoker.invoke(spec, input_value)
 
@@ -1102,7 +1214,7 @@ def _execute_agents_api_stage(*, values, stage_input, rights, request, articulat
     key_path = Path(scope["api_key_file"]).expanduser()
     guard_file = Path(str(values.get("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE") or ""))
     try:
-        maximum_cost = min(15.0,
+        maximum_cost = min(MAX_ASTRA_AUTHORING_SPEND_USD,
             float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"]),
             float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"]))
         maximum_calls = min(32, int(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"]))
@@ -1388,16 +1500,19 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     try:
         stage_cap = float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"])
         total_cap = float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"])
-        maximum_cost = min(15.0, stage_cap, total_cap)
+        maximum_cost = min(MAX_ASTRA_AUTHORING_SPEND_USD, stage_cap, total_cap)
         maximum_calls = min(32, int(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"]))
     except (KeyError, ValueError, TypeError) as exc:
         raise AstraStageError("astra_parent_budget_invalid") from exc
+    # Articulated parts share the stage clock; a rigid object keeps the producer's own timeout.
+    deadline_epoch = _authoring_deadline_epoch(values) if articulated else None
     if any(not math.isfinite(v) or v <= 0 for v in (stage_cap, total_cap)) or maximum_calls <= 0:
         raise AstraStageError("astra_parent_budget_invalid")
     if adoption.get("retained_inference_cost_usd", 0) > maximum_cost:
         raise AstraStageError("astra_phase_adoption_budget_exhausted")
     base_invoker, audit = invoker_factory(root=runtime / "inference", run_id=request.run_id, maximum_cost_usd=maximum_cost)
-    invoker = _StageInvoker(base_invoker, request.run_id, maximum_calls, adoption["prior_call_count"])
+    invoker = _StageInvoker(base_invoker, request.run_id, maximum_calls, adoption["prior_call_count"],
+                            deadline_epoch=deadline_epoch)
     if adoption.get("adoption_digest"):
         _write(runtime / "phase_adoption.json", {key: item for key, item in adoption.items()
                                                if key not in {"authoring_kwargs", "cad_kwargs"}})

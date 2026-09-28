@@ -211,6 +211,10 @@ SUMMARY_SCHEMA_VERSION = "control_plane_storage_gc_summary.v1"
 SUMMARY_FILENAME = "summary.json"
 MAX_SUMMARY_BYTES = 256 * 1024
 TOP_RETAINED = 10
+#: Phases whose kept bytes break another phase's down: what the result residue
+#: offload keeps lies inside evidence offload's ``result_registry`` bytes. Each
+#: shows its own reasons, but never adds to the totals across phases.
+NESTED_PHASES = frozenset({"result_residue_offload"})
 #: Every phase a tick's report can carry, in the order a tick runs them.
 PHASES = (
     "stranded_queue_rows",
@@ -219,13 +223,17 @@ PHASES = (
     "planned_derived_directories",
     "content_store",
     "result_artifact_offload",
+    "result_residue_offload",
     "evidence_offload",
     "scratch_directories",
     "workspace_bundles",
     "replay_caches",
     "scene_workspaces", "lane_scratch",
 )
-OPT_INS = ("evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "extended_pin_proofs", "lane_scratch")
+OPT_INS = (
+    "evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "replay_cache_shared_scratch",
+    "extended_pin_proofs", "lane_scratch", "result_residue_offload",
+)
 _REMOVED_KEYS = ("removed_bytes", "offloaded_bytes", "retired_bytes")
 _MAX_REASONS = 50
 _MAX_FAILURES = 20
@@ -296,6 +304,9 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
     if "walk_seconds" in entry:
         seconds = entry["walk_seconds"]
         summary["walk_seconds"] = seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None
+    # Whether the phase's own owner opt-in let it apply, where the phase says.
+    if isinstance(entry.get("enabled"), bool):
+        summary["enabled"] = entry["enabled"]
     if entry.get("status") == "error":
         summary["error_type"] = _typed(entry.get("error"), "Exception", _TYPE_NAME)
     return summary
@@ -334,6 +345,34 @@ def _terminal_pin_counts(entry: Mapping[str, Any]) -> dict[str, Any]:
         "released_count": _integer(entry.get("released_count")),
         "enabled": enabled if isinstance(enabled, bool) else None,
     }
+
+
+def _shared_scratch_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """The replay cache phase's scratch that several lookaheads share: its switch, counters and
+    typed reasons, each kept reason with its bytes and group count, never a path."""
+
+    def flag(name: str) -> bool | None:
+        return entry[name] if isinstance(entry.get(name), bool) else None
+
+    kept, gates = entry.get("kept_by_reason"), entry.get("holders_by_gate")
+    reasons = None
+    if isinstance(kept, Mapping):
+        rows = _reason_rows({reason: {"count": row.get("groups"), "bytes": row.get("bytes")}
+                             for reason, row in kept.items() if isinstance(row, Mapping)})
+        reasons = {reason: {"groups": row["count"], "bytes": row["bytes"]} for reason, row in rows.items()}
+    summary = {
+        "enabled": flag("enabled"),
+        "status": _typed(entry.get("status"), "unrecognized_status"),
+        "live_readers_checked": flag("live_readers_checked"),
+        **{key: _integer(entry.get(key))
+           for key in ("candidate_groups", "candidate_bytes", "removed_groups", "removed_bytes")},
+        "kept_by_reason": reasons,
+        "holders_by_gate": {_typed(gate, "unrecognized_gate"): count for gate, count in gates.items()
+                            if _integer(count) is not None} if isinstance(gates, Mapping) else None,
+    }
+    if entry.get("status") == "error":
+        summary["error_type"] = _typed(entry.get("error"), "Exception", _TYPE_NAME)
+    return summary
 
 
 def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
@@ -407,7 +446,8 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     them), ``alerts``, ``phase_errors``, ``skipped_roots`` (configured roots that
     were absent: the only paths it names), per phase ``candidate_bytes``,
     ``removed_or_offloaded_bytes`` and ``retained_by_reason`` (for the pin phase
-    also ``candidate_count``, ``released_count`` and ``enabled``), ``top_retained``
+    also ``candidate_count``, ``released_count`` and ``enabled``; for the replay
+    cache phase its ``shared_scratch`` counters and reasons), ``top_retained``
     phase rows, and ``top_retained_reasons`` aggregated before phase rows are
     capped. Every reason is
     a typed string; anything else becomes ``unrecognized_reason``.
@@ -426,9 +466,11 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
             phases[key] = _phase_summary(entry)
             if key == "terminal_cache_pins":
                 phases[key].update(_terminal_pin_counts(entry))
+            if key == "replay_caches" and isinstance(entry.get("shared_scratch"), Mapping):
+                phases[key]["shared_scratch"] = _shared_scratch_summary(entry["shared_scratch"])
             by_reason = entry.get("retained_by_reason")
             raw_reasons = by_reason if isinstance(by_reason, Mapping) else entry.get("retained_counts")
-            if isinstance(raw_reasons, Mapping):
+            if isinstance(raw_reasons, Mapping) and key not in NESTED_PHASES:
                 for reason, row in _reason_rows(raw_reasons, max_rows=None).items():
                     if row["bytes"] and row["bytes"] > 0:
                         reason_totals[reason] = reason_totals.get(reason, 0) + row["bytes"]
@@ -436,6 +478,7 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         (
             {"phase": phase, "reason": reason, "count": row["count"], "bytes": row["bytes"]}
             for phase, entry in phases.items()
+            if phase not in NESTED_PHASES
             for reason, row in (entry["retained_by_reason"] or {}).items()
             if row["bytes"]
         ),

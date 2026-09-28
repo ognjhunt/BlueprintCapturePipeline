@@ -13,10 +13,11 @@ import inspect
 import math
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
-import torch
+if TYPE_CHECKING:
+    import torch
 
 from .gear_sonic_joint_order_contract import (
     PROTOCOL_V4_FULL_JOINT_ORDER,
@@ -113,6 +114,8 @@ class WxyzRootDataView:
 
     @staticmethod
     def _tensor(value: Any) -> torch.Tensor:
+        import torch
+
         # Isaac Lab 3.0 Beta2 exposes root fields as ProxyArray: its Warp
         # shape is (num_instances,), while .torch expands vec3/quat/state
         # components into the measured tensor columns SONIC consumes.
@@ -123,6 +126,8 @@ class WxyzRootDataView:
 
     @property
     def root_state_w(self) -> Any:
+        import torch
+
         native = self._tensor(self._native_data.root_state_w)
         if len(native.shape) == 2 and native.shape[1] >= 7:
             if not torch.isfinite(native).all():

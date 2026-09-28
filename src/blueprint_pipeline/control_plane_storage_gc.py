@@ -27,7 +27,10 @@ plans before it mutates, and a tick applies nothing unless it runs with
   implicit pin, so retiring directories first is what frees blobs.
 * **Evidence offload** (``evidence_cold`` class) migrates sealed run
   directories, and first their result artifacts, to the artifact store behind
-  a digest-bound pointer; it stays a dry run until the operator enables it.
+  a digest-bound pointer; it stays a dry run until the operator enables it. A
+  result run's residue follows once its bulk artifacts are remote
+  (``task_evaluation_result_residue_offload``), only planned until
+  ``BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=1`` as well.
 * **Scratch directories** (``scratch`` class) idle longer than their window
   are reaped by age alone: nothing references them.
 * **Workspace bundles**: the reproducible ``bundle/`` copy inside an idle,
@@ -40,6 +43,9 @@ plans before it mutates, and a tick applies nothing unless it runs with
 * **Replay caches** (``work`` class: activation lookaheads): the scratch inputs
   left in completed parent replays are removed by ``control_plane_replay_cache_gc``,
   which only plans until ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1``.
+  Scratch several lookaheads share also needs
+  ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1``; until then it is
+  only reported.
 
 Each phase runs isolated: an exception is recorded under its report key and the
 remaining phases still run. Evidence-hot roots, release worktrees, and runtime
@@ -76,6 +82,7 @@ from .control_plane_evidence_offload import (
 )
 from .control_plane_replay_cache_gc import (
     REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
+    replay_cache_shared_scratch_setting,
 )
 from .control_plane_storage_gc_reasons import (
     SUMMARY_FILENAME, WalkMeter, build_storage_gc_summary, count_retained, entry_bytes,
@@ -1239,6 +1246,9 @@ def run_storage_gc(
     evidence_roots: Sequence[str | Path] = (),
     settlement_roots: Sequence[str | Path] = (),
     offload_enabled: bool = False,
+    result_residue_offload_enabled: bool = False,
+    result_residue_offload_alert: str | None = None,
+    result_residue_max_runs_per_tick: int | None = None,
     apply: bool = False,
     ack: str = "",
     content_minimum_age_seconds: int = DEFAULT_MINIMUM_AGE_SECONDS,
@@ -1263,6 +1273,8 @@ def run_storage_gc(
     replay_parent_roots: Sequence[str | Path] = (),
     replay_cache_retention_enabled: bool = False,
     replay_cache_retention_alert: str | None = None,
+    replay_cache_shared_scratch_enabled: bool = False,
+    replay_cache_shared_scratch_alert: str | None = None,
     extended_pin_proofs_enabled: bool = False,
     extended_pin_proofs_alert: str | None = None,
     standing_authorization_dir: str | Path | None = None,
@@ -1297,17 +1309,21 @@ def run_storage_gc(
         "apply": apply,
         "opt_in": {
             "evidence_offload": bool(offload_enabled),
+            "result_residue_offload": bool(result_residue_offload_enabled),
             "scene_workspace_retirement": bool(scene_workspace_retirement_enabled),
             "replay_cache_retention": bool(replay_cache_retention_enabled),
+            "replay_cache_shared_scratch": bool(replay_cache_shared_scratch_enabled),
             "extended_pin_proofs": bool(extended_pin_proofs_enabled),
             "lane_scratch": lane_scratch_enabled if type(lane_scratch_enabled) is bool else False,
         },
         "skipped_roots": [],
     }
     alerts = [alert for alert in (scene_workspace_retirement_alert, replay_cache_retention_alert,
-                                  extended_pin_proofs_alert) if alert]
+                                  replay_cache_shared_scratch_alert, extended_pin_proofs_alert) if alert]
     if alerts:
         report["alerts"] = alerts
+    if result_residue_offload_alert:
+        report.setdefault("alerts", []).append(result_residue_offload_alert)
     queue_present, _absent_queue_roots = _existing(queue_roots)
     if queue_present:
         def stranded_phase() -> Any:
@@ -1406,6 +1422,12 @@ def run_storage_gc(
             from .task_evaluation_result_artifact_store import (
                 APPLY_ACK as RESULT_ARTIFACT_ACK, offload_failure, offload_result_artifacts,
             )
+            from .task_evaluation_result_residue_offload import ResidueTick
+            residue = ResidueTick(
+                applying=apply and offload_enabled and result_residue_offload_enabled,
+                enabled=result_residue_offload_enabled, max_runs=result_residue_max_runs_per_tick,
+                hot_window_seconds=hot_window_seconds, protection_checker=protection_reason, publisher=publisher,
+                now=clock, queue_roots=queue_roots)
             report["result_artifact_offload"] = []
             for evidence_root in evidence_present:
                 classifier(str(evidence_root), expected="evidence_cold", code="result_artifact_offload_root_class")
@@ -1424,6 +1446,8 @@ def run_storage_gc(
                         result = {"status": "retained", "run_directory": registry_path.parents[2].name,
                                   "reason": type(exc).__name__, **offload_failure(exc)}
                     report["result_artifact_offload"].append(result)
+                    residue.add(registry_path.parents[2], result)
+            report["result_residue_offload"] = residue.phase(alert=result_residue_offload_alert)
             offload = build_evidence_offload_manifest(
                 evidence_roots=evidence_present,
                 hot_window_seconds=hot_window_seconds,
@@ -1475,9 +1499,10 @@ def run_storage_gc(
     if replay_present:
         _isolated(report, "replay_caches", lambda: reclaim_replay_caches(
             parent_roots=replay_present, apply=apply, enabled=replay_cache_retention_enabled,
-            now=clock, classifier=classifier))
-        if replay_cache_retention_alert and isinstance(report.get("replay_caches"), dict):
-            report["replay_caches"]["alerts"] = [replay_cache_retention_alert]
+            now=clock, classifier=classifier, shared_scratch_enabled=replay_cache_shared_scratch_enabled))
+        replay_alerts = [alert for alert in (replay_cache_retention_alert, replay_cache_shared_scratch_alert) if alert]
+        if replay_alerts and isinstance(report.get("replay_caches"), dict):
+            report["replay_caches"]["alerts"] = replay_alerts
     scene_present, absent = _existing(scene_workspace_roots)
     report["skipped_roots"].extend(absent)
     if scene_present:
@@ -1694,6 +1719,9 @@ class _ReferenceReportParser(argparse.ArgumentParser):
 
 
 def _run_main(argv: list[str]) -> int:
+    from .task_evaluation_result_residue_offload import (
+        DEFAULT_MAX_RUNS_PER_TICK, RESIDUE_MAX_RUNS_ENV, result_residue_offload_setting,
+    )
     parser_type = _ReferenceReportParser if _reference_report_requested(argv) else argparse.ArgumentParser
     parser = parser_type(prog="control_plane_storage_gc run")
     parser.add_argument("--content-store-root", action="append", default=None)
@@ -1739,6 +1767,11 @@ def _run_main(argv: list[str]) -> int:
         default=_env_int(EVIDENCE_ABANDONED_AFTER_ENV, None),
     )
     parser.add_argument(
+        "--result-residue-max-runs-per-tick",
+        type=int,
+        default=_env_int(RESIDUE_MAX_RUNS_ENV, DEFAULT_MAX_RUNS_PER_TICK),
+    )
+    parser.add_argument(
         "--running-commit",
         default=str(os.getenv(RUNNING_COMMIT_ENV) or "").strip() or running_release_commit(),
     )
@@ -1749,11 +1782,15 @@ def _run_main(argv: list[str]) -> int:
     pins_root = args.pins_root
     if not pins_root:
         raise ControlPlaneStorageGCError("control_plane_storage_gc_pins_root_missing")
+    residue_enabled, residue_alert = result_residue_offload_setting()
+    if residue_alert:
+        print(f"storage_gc_alert:{residue_alert}", file=sys.stderr)
     retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
     replay_enabled, replay_alert = replay_cache_retention_setting()
+    shared_enabled, shared_alert = replay_cache_shared_scratch_setting()
     extended_enabled, extended_alert = extended_pin_proofs_setting()
     lane_roots, lane_enabled, lane_alert = _lane_settings(args)
-    for alert in (retirement_alert, replay_alert, extended_alert, lane_alert):
+    for alert in (retirement_alert, replay_alert, shared_alert, extended_alert, lane_alert):
         if alert:
             print(f"storage_gc_alert:{alert}", file=sys.stderr)
     report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
@@ -1769,6 +1806,9 @@ def _run_main(argv: list[str]) -> int:
         settlement_roots=args.settlement_root or _split_env(SETTLEMENT_ROOTS_ENV),
         offload_enabled=str(os.getenv(EVIDENCE_OFFLOAD_ENV) or "").strip().lower()
         in {"1", "true", "yes"},
+        result_residue_offload_enabled=residue_enabled,
+        result_residue_offload_alert=residue_alert,
+        result_residue_max_runs_per_tick=args.result_residue_max_runs_per_tick,
         apply=args.apply,
         ack=args.ack,
         hot_window_seconds=args.hot_window_seconds,
@@ -1793,6 +1833,8 @@ def _run_main(argv: list[str]) -> int:
         replay_parent_roots=args.replay_parent_root or _split_env(REPLAY_PARENT_ROOTS_ENV),
         replay_cache_retention_enabled=replay_enabled,
         replay_cache_retention_alert=replay_alert,
+        replay_cache_shared_scratch_enabled=shared_enabled,
+        replay_cache_shared_scratch_alert=shared_alert,
         extended_pin_proofs_enabled=extended_enabled,
         extended_pin_proofs_alert=extended_alert,
         lane_scratch_roots=lane_roots,

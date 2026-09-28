@@ -53,6 +53,7 @@ _SCOPES = {
     "retire-scene-workspace": "operate",
     "restore-scene-workspace": "operate",
     "lane-scratch": "operate",
+    "owner-census-decision": "operate",
 }
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
@@ -121,6 +122,15 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
+    if kind == "owner-census-decision":
+        allowed = {"kind", "consent_id", "expected_sha256", "expected_size_bytes"}
+        consent_id, digest, size = (body.get(k) for k in ("consent_id", "expected_sha256", "expected_size_bytes"))
+        if (set(body) != allowed or not isinstance(consent_id, str) or len(consent_id) != 32
+                or re.fullmatch(r"[0-9a-f]{32}", consent_id) is None
+                or not isinstance(digest, str) or len(digest) != 71 or _LEASE_DIGEST.fullmatch(digest) is None
+                or type(size) is not int or not 1 <= size <= 512 * 1024):
+            raise RequestRefused("owner_consent_options_invalid")
+        return {"kind": kind, "consent_id": consent_id, "expected_sha256": digest, "expected_size_bytes": size}
     if kind == "deploy":
         _only(body, ("kind", "commit", "wait_for_idle"))
         wait = body.get("wait_for_idle", True)

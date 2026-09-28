@@ -21,9 +21,9 @@
     },
     "astra_cad_blender_v1": {
       "authoring_minimum": 5.0,
-      "authoring_maximum": 15.0,
-      "external_maximum": 20.76,
-      "attempt_maximum": 26.76,
+      "authoring_maximum": 25.0,
+      "external_maximum": 30.76,
+      "attempt_maximum": 36.76,
       "default_stage_caps": {
         "artifixer_semantic_teacher": 4.8,
         "artifixer_visual_review": 0.96,

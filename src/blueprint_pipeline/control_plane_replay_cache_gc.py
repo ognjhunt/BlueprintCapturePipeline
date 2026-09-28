@@ -27,21 +27,32 @@ table: it estimates from names, link counts and sizes, though it still parses
 each replay's report. A tick that applies reads no scratch input's bytes
 either, since nothing that makes one scratch rests on a digest; it rechecks
 each by inode, links, size and mtime.
+
+Scratch several lookaheads share (``control_plane_replay_cache_shared_scratch``) is
+planned once per tick across every lookahead scanned, after each one's own pass, and
+reported under ``shared_scratch``. It is removed only when the tick applies with
+``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1`` beside the retention
+opt-in, and only then do its bytes join the phase's totals.
 """
 
 from __future__ import annotations
 
 import os
+import sys
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from . import completed_replay_cache_retention as retention
+from . import control_plane_replay_cache_shared_scratch as shared_scratch
 
 SCHEMA_VERSION = "control_plane_replay_cache_gc.v1"
 REPLAY_PARENT_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS"
 REPLAY_CACHE_RETENTION_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION"
 REPLAY_CACHE_RETENTION_INVALID = "replay_cache_retention_setting_invalid"
+REPLAY_CACHE_SHARED_SCRATCH_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH"
+REPLAY_CACHE_SHARED_SCRATCH_INVALID = "replay_cache_shared_scratch_setting_invalid"
 LOOKAHEAD_DIRECTORY = "lookahead"
 DEFAULT_MINIMUM_CLOSED_SECONDS = 60 * 60
 # A finished parent replay's whole scratch inputs, which subsume its store copies; the standalone
@@ -78,6 +89,16 @@ def replay_cache_retention_setting(environ: Mapping[str, str] = os.environ) -> t
     return _truthy_setting(environ, REPLAY_CACHE_RETENTION_ENV, REPLAY_CACHE_RETENTION_INVALID)
 
 
+def replay_cache_shared_scratch_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
+    """Whether scratch several lookaheads share may go too, and an alert when its setting is invalid.
+
+    Parsed like the retention opt-in, and it only ever widens it: without that one it removes
+    nothing, and that one never turns it on.
+    """
+
+    return _truthy_setting(environ, REPLAY_CACHE_SHARED_SCRATCH_ENV, REPLAY_CACHE_SHARED_SCRATCH_INVALID)
+
+
 def reclaim_replay_caches(
     *,
     parent_roots: Sequence[str | Path],
@@ -87,6 +108,7 @@ def reclaim_replay_caches(
     classifier: Callable[..., Any],
     minimum_closed_seconds: int = DEFAULT_MINIMUM_CLOSED_SECONDS,
     process_root: Path = Path("/proc"),
+    shared_scratch_enabled: bool = False,
 ) -> dict[str, Any]:
     """Estimate every activation's lookahead; plan and remove its copies only when applying and enabled.
 
@@ -96,6 +118,9 @@ def reclaim_replay_caches(
     verified ``candidate_bytes`` of its plans. A linked activation or lookahead is
     reported and never followed. One lookahead's error is recorded by exception type
     and never stops the others. Each row list is capped, with a count of the rows left out.
+    Then scratch the lookaheads share is planned across all of them, and removed only with
+    ``shared_scratch_enabled`` on a tick that applies. A failure of a pass that removes is one
+    more error; one of a pass that only reports stays in its own block.
     """
 
     roots = [Path(root).expanduser() for root in parent_roots]
@@ -113,6 +138,7 @@ def reclaim_replay_caches(
         "removed_bytes": 0,
     }
     rows: dict[str, list[dict[str, Any]]] = {"kept": [], "skipped": [], "errors": []}
+    lookaheads: list[Path] = []
     for root in roots:
         for activation in sorted(root.iterdir()):
             lookahead = activation / LOOKAHEAD_DIRECTORY
@@ -122,6 +148,7 @@ def reclaim_replay_caches(
             if not activation.is_dir() or not lookahead.is_dir():
                 continue
             report["replay_root_count"] += 1
+            lookaheads.append(lookahead)
             scope = {"replay_root": lookahead, "minimum_closed_seconds": minimum_closed_seconds,
                      "now": now(), **_RULES}
             try:
@@ -139,6 +166,27 @@ def reclaim_replay_caches(
                     rows["skipped"].extend(result["skipped"])
             except Exception as exc:  # noqa: BLE001 - one lookahead never costs the others
                 rows["errors"].append({"root": str(lookahead), "error": type(exc).__name__})
+    # After every lookahead's own pass, so the inodes one replay holds alone are gone first.
+    shared_applies = applying and bool(shared_scratch_enabled)
+    try:
+        shared = shared_scratch.reclaim_shared_scratch(
+            lookaheads, now=now(), minimum_closed_seconds=minimum_closed_seconds,
+            enabled=bool(enabled and shared_scratch_enabled), apply=shared_applies, check_readers=applying,
+            process_root=process_root)
+    except Exception as exc:  # noqa: BLE001 - the lookaheads' own passes stand
+        # The report records the type only; the traceback goes to the journal, as a failed phase's does.
+        traceback.print_exc(file=sys.stderr)
+        if shared_applies:
+            # Only a pass that would have removed makes the phase's totals incomplete; one that only
+            # reports keeps its failure in its own block, and the retention switch's numbers stand.
+            rows["errors"].append({"scope": "shared_scratch", "error": type(exc).__name__})
+        shared = {"enabled": bool(enabled and shared_scratch_enabled), "status": "error",
+                  "error": type(exc).__name__}
+    else:
+        if shared_applies:
+            report["candidate_bytes"] += shared["candidate_bytes"]
+            report["removed_bytes"] += shared["removed_bytes"]
+    report["shared_scratch"] = shared
     for key, values in rows.items():
         report[key] = values[:_MAX_ROWS]
         report[f"omitted_{key}_count"] = max(0, len(values) - _MAX_ROWS)
@@ -149,8 +197,11 @@ __all__ = [
     "DEFAULT_MINIMUM_CLOSED_SECONDS",
     "REPLAY_CACHE_RETENTION_ENV",
     "REPLAY_CACHE_RETENTION_INVALID",
+    "REPLAY_CACHE_SHARED_SCRATCH_ENV",
+    "REPLAY_CACHE_SHARED_SCRATCH_INVALID",
     "REPLAY_PARENT_ROOTS_ENV",
     "SCHEMA_VERSION",
     "reclaim_replay_caches",
     "replay_cache_retention_setting",
+    "replay_cache_shared_scratch_setting",
 ]

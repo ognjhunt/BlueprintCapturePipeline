@@ -32,9 +32,11 @@ class ReferenceCollectionBudget:
     """Single-use deadline/counters; closing or exhaustion cannot be reset."""
 
     def __init__(self, *, monotonic: Callable[[], float] = time.monotonic,
-                 time_budget_seconds: float = 5.0):
+                 time_budget_seconds: float = 5.0, values_limit: int | None = None):
         if (not callable(monotonic) or type(time_budget_seconds) not in (int, float)
                 or not 0 < time_budget_seconds <= 5 or not math.isfinite(time_budget_seconds)):
+            raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
+        if values_limit is not None and (type(values_limit) is not int or not 1 <= values_limit <= MAX_VALUES):
             raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
         self._monotonic, self._duration = monotonic, float(time_budget_seconds)
         self._deadline: float | None = None
@@ -43,7 +45,7 @@ class ReferenceCollectionBudget:
         self._failure: str | None = None
         self._limits = {"roots": MAX_ROOTS, "groups": MAX_GROUPS, "rows": MAX_ROWS,
                        "entries": MAX_ENTRIES, "raw_bytes": MAX_RAW_BYTES,
-                       "values": MAX_VALUES, "facts": MAX_FACTS, "output_bytes": MAX_OUTPUT_BYTES}
+                       "values": MAX_VALUES if values_limit is None else min(MAX_VALUES, values_limit), "facts": MAX_FACTS, "output_bytes": MAX_OUTPUT_BYTES}
         self._counts = dict.fromkeys(self.limits, 0)
         self.blockers: set[str] = set()
 

@@ -91,6 +91,8 @@ from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_ma
 from .provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
+    g1_provider_output_contract,
+    provider_command_execute_fallback_allowed,
     wam_registered_alternative_inputs_present,
 )
 from . import vast_runtime_environment_contract as vrec
@@ -182,7 +184,7 @@ from .vast_provider_output_recovery import (
     recover_provider_output_before_teardown,
 )
 from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress
-from .vast_args_payload_transport import args_mode_command, onstart_mode_script
+from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
 
@@ -380,6 +382,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }
@@ -394,6 +397,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -1344,7 +1348,10 @@ def _search_payload(
     min_compute_cap: int = 0,
     max_compute_cap: int = 0,
     required_provider_disk_gb: int = 0,
+    require_virtual_machine: bool = False,
 ) -> dict[str, Any]:
+    if type(require_virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
     payload: dict[str, Any] = {
         "limit": limit,
         "type": "on-demand",
@@ -1353,6 +1360,8 @@ def _search_payload(
         "rented": {"eq": False},
         "num_gpus": {"eq": 1},
     }
+    if require_virtual_machine:
+        payload["vms_enabled"] = {"eq": True}
     if max_hourly_rate is not None:
         payload["dph_total"] = {"lte": max_hourly_rate}
     # ``gpu_ram`` is MEGABYTES at this endpoint. A gigabyte value is not
@@ -1525,6 +1534,15 @@ def _offer_storage_hourly_rate(
     return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
 
 
+def _virtual_machine_capability(value: Any) -> bool | None:
+    """Preserve unknown capability; accept only explicit provider booleans/0/1."""
+    if type(value) is bool:
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def _offer_summary(
     offer: Mapping[str, Any],
     *,
@@ -1613,6 +1631,9 @@ def _offer_summary(
             )
         ),
         "num_gpus": offer.get("num_gpus"),
+        # VM capability is independent of GPU/driver support. Do not interpret
+        # provider strings or a missing field as explicit capability proof.
+        "vms_enabled": _virtual_machine_capability(offer.get("vms_enabled")),
         "reliability": offer.get("reliability"),
         "verified": offer.get("verified"),
         "rentable": offer.get("rentable"),
@@ -1665,6 +1686,7 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "known_model_vram_cap_mb": offer.get("known_model_vram_cap_mb"),
         "gpu_ram_normalization": offer.get("gpu_ram_normalization"),
         "num_gpus": offer.get("num_gpus"),
+        "vms_enabled": _virtual_machine_capability(offer.get("vms_enabled")),
         "reliability": offer.get("reliability"),
         "verified": offer.get("verified"),
         "rentable": offer.get("rentable"),
@@ -1941,7 +1963,10 @@ def _select_offer(
     max_live_minutes: int = 0,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    require_virtual_machine: bool = False,
 ) -> dict[str, Any] | None:
+    if type(require_virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
     allowed_countries = normalize_vast_country_allowlist(
@@ -1960,6 +1985,7 @@ def _select_offer(
         item
         for item in summaries
         if item["ask_contract_id"]
+        and (not require_virtual_machine or item["vms_enabled"] is True)
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
@@ -2735,6 +2761,12 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/blueprint_pipeline/native_g1_provider_runtime.py"
         readiness_name = "native_g1_provider_manifest.json"
+    elif provider_bundle_kind == "native_g1_team_policy":
+        from .native_g1_team_provider_bundle import REQUIRED_ENTRIES, validate_g1_team_provider_manifest
+        required_entries = set(REQUIRED_ENTRIES)
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/blueprint_pipeline/native_g1_team_provider_runtime.py"
+        readiness_name = "native_g1_team_provider_manifest.json"
     elif provider_bundle_kind == "paired_target_native_import":
         required_entries = paired_target_native_import_required_entries
         entrypoint_member = "provider_runtime/run_paired_target_native_import_probe.sh"
@@ -2857,6 +2889,7 @@ def _blueprint_bundle_preflight(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
@@ -3037,6 +3070,14 @@ def _blueprint_bundle_preflight(
                             readiness["local_bundle_ready_for_remote_staging"] = True
                         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                             blockers.append("native_g1_provider_manifest_invalid")
+                    if provider_bundle_kind == "native_g1_team_policy":
+                        readiness_member = "provider_runtime/native_g1_team_provider_manifest.json"
+                        readiness_source = "immutable_bundle_member"
+                        try:
+                            readiness = dict(validate_g1_team_provider_manifest(archive))
+                            readiness["local_bundle_ready_for_remote_staging"] = True
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            blockers.append("native_g1_team_provider_manifest_invalid")
                     if provider_bundle_kind == "task_evaluation_scene_configuration":
                         readiness_member = (
                             "provider_runtime/"
@@ -3487,6 +3528,7 @@ def _blueprint_bundle_preflight(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "task_evaluation_scene_configuration",
         }:
             # The native readiness manifest is a required, JSON-validated member
@@ -3894,6 +3936,7 @@ def _resolve_launch_mode(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
             "paired_target_native_import",
             "adp009d_ovrtx",
@@ -3962,6 +4005,7 @@ def _probe_env(
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -4197,7 +4241,22 @@ def _create_payload(
     private_startup_env: Mapping[str, str] | None = None,
     image_login: str | None = None,
     template_hash_id: str | None = None,
+    virtual_machine: bool = False,
+    selected_offer: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if type(virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
+    if virtual_machine and (
+        not isinstance(image, str)
+        or re.fullmatch(r"docker\.io/vastai/kvm@sha256:[0-9a-f]{64}", image) is None
+        or launch_mode != "ssh_direct"
+        or template_hash_id is not None
+        or not isinstance(selected_offer, Mapping)
+        or selected_offer.get("vms_enabled") is not True
+        or type(selected_offer.get("ask_contract_id")) is not int
+        or selected_offer["ask_contract_id"] <= 0
+    ):
+        raise ValueError("vast_virtual_machine_create_contract_invalid")
     payload: dict[str, Any] = {
         "label": label,
         "disk": disk_gb,
@@ -4206,6 +4265,10 @@ def _create_payload(
         "cancel_unavail": True,
         "env": dict(env or {}),
     }
+    if virtual_machine:
+        # This helper remains behind canonical admission. The public allocator
+        # has no VM option until its host/bootstrap/worker integration is ready.
+        payload["vm"] = True
     if image:
         payload["image"] = image
     if _string(template_hash_id):
@@ -4240,9 +4303,15 @@ def _create_payload(
             wrapped_script, force_compression=bool(private_startup_env)
         )
     else:
+        vm_header = "#!/usr/bin/env bash\n" if virtual_machine else ""
         payload["onstart"] = onstart_mode_script(
-            resolved_probe_script, force_compression=bool(private_startup_env)
+            resolved_probe_script, force_compression=(bool(private_startup_env) or
+                bool(vm_header) and len((vm_header + resolved_probe_script).encode()) > VAST_ARGS_STR_SAFE_MAX_BYTES)
         )
+        if vm_header:
+            payload["onstart"] = vm_header + payload["onstart"]
+            if len(payload["onstart"].encode()) > VAST_ARGS_STR_SAFE_MAX_BYTES:
+                raise ValueError("vast_vm_onstart_exceeds_safe_inline_command_size")
         if launch_mode == "jupyter_direct":
             payload["use_jupyter_lab"] = True
             payload["jupyter_dir"] = "/workspace"
@@ -4258,7 +4327,16 @@ def _probe_shell_script(
     enable_blueprint_bundle: bool = False,
     provider_bundle_kind: str = "isaac",
     expected_provider_bundle_sha256: str | None = None,
+    virtual_machine: bool = False,
 ) -> str:
+    if type(virtual_machine) is not bool:
+        raise ValueError("virtual_machine_flag_invalid")
+    if virtual_machine:
+        if (provider_bundle_kind != "native_g1_team_policy" or not enable_blueprint_bundle
+                or enable_isaac_smoke or expected_provider_bundle_sha256 is None):
+            raise ValueError("vm_transport_probe_contract_invalid")
+        from .native_g1_team_vm_transport import vm_probe_script
+        return vm_probe_script(expected_provider_bundle_sha256, heartbeat_url)
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if expected_provider_bundle_sha256 is not None and re.fullmatch(
@@ -4697,6 +4775,7 @@ def _probe_shell_script(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
         }:
             script += (
@@ -4782,28 +4861,18 @@ def _probe_shell_script(
                 + repr(
                     "native_task_arena_policy_canary_session_result.v1.json"
                     if provider_bundle_kind == "native_task_arena_policy_canary_session"
-                    else (
-                        "native_g1_provider_campaign_result.v1.json"
-                        if provider_bundle_kind == "native_g1_development_campaign"
-                        else None
-                    )
+                    else g1_provider_output_contract(provider_bundle_kind)[0]
                 )
                 + "\n"
                 "preserve_all_output = "
-                + repr(provider_bundle_kind == "native_g1_development_campaign")
+                + repr(g1_provider_output_contract(provider_bundle_kind)[1])
                 + "\n"
                 # The pinned checkpoint and SONIC receipts live directly under
                 # models/. Their downloaded weights are execution inputs, not
                 # review evidence, and exceed the bounded output PUT ceiling.
                 "g1_transient_runtime_prefixes = "
                 + repr(
-                    (
-                        "policy-runtime-build/policy-runtime/",
-                        "models/checkpoints/",
-                        "models/sonic/",
-                    )
-                    if provider_bundle_kind == "native_g1_development_campaign"
-                    else ()
+                    g1_provider_output_contract(provider_bundle_kind)[2]
                 )
                 + "\n"
                 "required_result_max_bytes = 512 * 1024 * 1024\n"
@@ -5671,6 +5740,7 @@ def _create_request_summary(
         "label": payload.get("label"),
         "disk_gb": payload.get("disk"),
         "runtype": payload.get("runtype"),
+        "virtual_machine": payload.get("vm") is True,
         "target_state": payload.get("target_state"),
         "cancel_unavail": payload.get("cancel_unavail"),
         "template_hash_present": bool(_string(payload.get("template_hash_id"))),
@@ -6721,6 +6791,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -7417,6 +7488,7 @@ def run_vast_provider_adapter(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "adp009d_ovrtx",
             "adp009d_aura_native",
         }
@@ -8983,14 +9055,9 @@ def run_vast_provider_adapter(
             _log_result_saw_container_missing(onstart_logs)
             or onstart_logs.get("break_reason") == "log_transport_unavailable"
         )
-        command_execute_fallback_allowed = bool(
-            provider_bundle_kind
-            in {
-                "native_task_arena",
-                "native_task_arena_policy_canary_session",
-                "native_g1_development_campaign",
-            }
-            or _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV)
+        command_execute_fallback_allowed = provider_command_execute_fallback_allowed(
+            provider_bundle_kind,
+            configured_override=_env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV),
         )
         if (
             not _log_text_has_success_marker(heartbeat_text, log_success_markers)
@@ -9458,7 +9525,7 @@ def run_vast_provider_adapter(
                         minimum_free_bytes=provider_output_minimum_free_bytes,
                         timeout_seconds=(
                             MAX_G1_RECOVERY_SECONDS
-                            if provider_bundle_kind == "native_g1_development_campaign"
+                            if provider_bundle_kind in {"native_g1_development_campaign", "native_g1_team_policy"}
                             else MAX_RECOVERY_SECONDS
                         ),
                     )
