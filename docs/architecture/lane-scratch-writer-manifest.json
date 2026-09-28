@@ -10,7 +10,7 @@
       "characterization_tests": [
         "tests/test_control_plane_lane_scratch.py"
       ],
-      "review_reference": "2026-09-28: Plan12d.6 independent SPEC and QUALITY design approvals, including bounded initial-descriptor exception, are saved in the handoff evidence; exact final implementation SPEC then QUALITY reviews and CI remain separate required merge gates",
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 c7426a1d4e319d216e9b115cdebf3a1fa12b97b80f1dc5ceb23300b6c86f9188; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
       "historical_exceptions": []
     },
     {
@@ -50,7 +50,7 @@
         "tests/test_g1_scratch_lifetime_admission.py",
         "tests/test_g1_lifetime_handshake.py"
       ],
-      "review_reference": "2026-09-28: Plan12d.6 independent SPEC and QUALITY design approvals, including bounded initial-descriptor exception, are saved in the handoff evidence; exact final implementation SPEC then QUALITY reviews and CI remain separate required merge gates",
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 c56fa092d586decd664a9ec9946923eb8d813c97cd5ade8d892edc9125a48243; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
       "historical_exceptions": [
         "Non-host/provider outputs retain existing admission; every existing output remains refused."
       ]
@@ -94,7 +94,7 @@
         "tests/test_leased_scratch_lifetime.py",
         "tests/test_lane_reference_collection.py"
       ],
-      "review_reference": "2026-09-28: Plan12d.6 independent SPEC and QUALITY design approvals, including bounded initial-descriptor exception, are saved in the handoff evidence; exact final implementation SPEC then QUALITY reviews and CI remain separate required merge gates",
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 bc1e569f1e2b5e8a072118b0d1f3e844d9b8b0fcaf26f90405a3f962090a7d02; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
       "historical_exceptions": [
         "Unknown initial descriptor identity aborts with explicitly unresolved cleanup; legacy, Arena, external policy-server, containers and unknown descendants do not claim participation."
       ]
@@ -109,7 +109,7 @@
         "tests/test_native_g1_development_worker.py",
         "tests/test_g1_scratch_lifetime_admission.py"
       ],
-      "review_reference": "2026-09-28: Plan12d.6 independent SPEC and QUALITY design approvals, including bounded initial-descriptor exception, are saved in the handoff evidence; exact final implementation SPEC then QUALITY reviews and CI remain separate required merge gates",
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 cfa52fecaf04232b34b39e44b9410521e632991c6bddd92a6670fe10fa6d5859; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
       "historical_exceptions": [
         "Legacy/non-lane output compatibility is unchanged; external policy-server and unknown grandchildren remain unproved."
       ]
@@ -123,7 +123,7 @@
       "characterization_tests": [
         "tests/test_g1_lifetime_handshake.py"
       ],
-      "review_reference": "2026-09-28: Plan12d.6 independent SPEC and QUALITY design approvals, including bounded initial-descriptor exception, are saved in the handoff evidence; exact final implementation SPEC then QUALITY reviews and CI remain separate required merge gates",
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 3e4f778aa890b3a6ae976da7d1647d95079e58d9c9394818effdddc8387be144; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
       "historical_exceptions": [
         "Arbitrary wrappers and containers cannot enroll through this adapter; direct worker participation does not authenticate external input readers."
       ]
