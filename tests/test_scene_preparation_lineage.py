@@ -341,3 +341,172 @@ def test_same_preparation_id_cannot_name_two_historical_requests():
     args["preparation_links"] += other["preparation_links"]
     args["preparation_envelopes"] += other["preparation_envelopes"]
     refuses(args, "scene_lineage_link_ambiguous")
+
+
+def test_aggregate_budget_refuses_before_any_json_or_validator(monkeypatch):
+    args = fixture()
+    total = sum(len(raw) for _, raw in [args["intent_record"], *args["preparation_links"],
+                                      *args["preparation_envelopes"]])
+    monkeypatch.setattr(lineage, "MAX_TOTAL_BYTES", total - 1)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("over-budget inputs must not be parsed or sealed")
+
+    monkeypatch.setattr(lineage.json, "loads", forbidden)
+    monkeypatch.setattr(lineage, "canonical_digest", forbidden)
+    monkeypatch.setattr(lineage, "cross_runtime_canonical_digest", forbidden)
+    refuses(args, "scene_lineage_bytes_limit")
+
+
+@pytest.mark.parametrize("raw", [b'{"x":NaN}', b'{"x":Infinity}', b'{"x":1e400}',
+                                 b'{"x":' + b'9' * 400 + b'}', b'{"x":"\\ud800"}',
+                                 b'\xff', b'{"x":{"duplicate":1,"duplicate":2}}'])
+def test_nonfinite_overflow_unicode_and_nested_duplicates_are_typed(raw):
+    args = fixture()
+    args["intent_record"] = (args["intent_record"][0], raw)
+    refuses(args, "scene_lineage_json_invalid")
+
+
+@pytest.mark.parametrize("role", ["intent_record", "preparation_links", "preparation_envelopes"])
+@pytest.mark.parametrize("raw", ["text", bytearray(b'{}'), None, b''])
+def test_all_record_roles_require_nonempty_raw_bytes(role, raw):
+    args = fixture()
+    if role == "intent_record":
+        args[role] = (args[role][0], raw)
+    else:
+        args[role][0] = (args[role][0][0], raw)
+    refuses(args, "scene_lineage_record_invalid")
+
+
+@pytest.mark.parametrize("field,value", [("roots", {}), ("roots", None),
+                                        ("intent_id", "bad/id"), ("intent_id", None),
+                                        ("preparation_links", None), ("preparation_links", iter(())),
+                                        ("configuration_attempt_records", {}), ("intent_record", {})])
+def test_malformed_parameters_are_fixed_typed_refusals(field, value):
+    args = fixture()
+    args[field] = value
+    refuses(args)
+
+
+def test_exact_resource_boundaries_are_inclusive(monkeypatch):
+    args = fixture()
+    pairs = [args["intent_record"], *args["preparation_links"], *args["preparation_envelopes"]]
+    expected = lineage.join_scene_preparation_lineage(**args)
+    monkeypatch.setattr(lineage, "MAX_RECORD_BYTES", max(len(raw) for _, raw in pairs))
+    monkeypatch.setattr(lineage, "MAX_TOTAL_BYTES", sum(len(raw) for _, raw in pairs))
+    monkeypatch.setattr(lineage, "MAX_RECORDS", len(pairs))
+    monkeypatch.setattr(lineage, "MAX_OUTPUT_BYTES", len(lineage._encoded(expected)))
+    monkeypatch.setattr(lineage, "MAX_PATH_BYTES", max(len(path.encode()) for path, _ in pairs))
+    monkeypatch.setattr(lineage, "MAX_PATH_COMPONENTS", max(len(path[1:].split('/')) for path, _ in pairs))
+    assert lineage.join_scene_preparation_lineage(**args) == expected
+
+
+@pytest.mark.parametrize("state", sorted(lineage._STATES))
+def test_all_seven_retained_queue_states_are_accepted(state):
+    args = fixture()
+    path, raw = args["preparation_envelopes"][0]
+    args["preparation_envelopes"][0] = (path.replace("/completed/", "/" + state + "/"), raw)
+    row = lineage.join_scene_preparation_lineage(**args)["preparations"][0]
+    assert next(p for p in row["source_provenance"] if p["role"] == "envelope")["queue_state"] == state
+
+
+def test_role_paths_duplicates_and_unmatched_attempts_are_not_dropped():
+    args = fixture()
+    args["preparation_links"] *= 2
+    refuses(args, "scene_lineage_record_duplicate")
+    args = fixture()
+    args["roots"]["preparation_queue_root"] = "/different/queue"
+    refuses(args, "scene_lineage_envelope_invalid")
+    args = fixture()
+    activation(args)
+    args["preparation_links"] = args["preparation_links"][:1]
+    refuses(args, "scene_lineage_attempt_unmatched")
+
+
+def test_valid_join_never_reads_files_or_calls_current_admission(monkeypatch):
+    import builtins
+    import os
+    from pathlib import Path
+    import subprocess
+    from blueprint_pipeline import task_evaluation_controls_autoprovision as controls
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+
+    args = fixture()
+    activation(args)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("pure retained-byte join crossed its I/O or current-authority boundary")
+
+    for name in ("read_bytes", "read_text", "write_bytes", "write_text", "stat", "lstat", "resolve",
+                 "glob", "rglob", "iterdir", "mkdir", "is_file", "is_symlink", "exists"):
+        monkeypatch.setattr(Path, name, forbidden)
+    monkeypatch.setattr(builtins, "open", forbidden)
+    monkeypatch.setattr(os, "open", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    for name in ("_read", "validate_request", "reserve_scene_attempt", "_root"):
+        monkeypatch.setattr(intake, name, forbidden)
+    for name in ("_json", "_sealed", "payload_digest", "_persisted_digest"):
+        monkeypatch.setattr(controls, name, forbidden)
+    report = lineage.join_scene_preparation_lineage(**args)
+    assert report["preparation_count"] == 1
+
+
+def test_exact_output_shapes_exclude_retirement_and_spend_claims():
+    args = fixture()
+    activation(args)
+    report = lineage.join_scene_preparation_lineage(**args)
+    assert set(report) == {"schema_version", "status", "scope", "intent_id", "intent_digest",
+                           "intent_provenance", "preparation_count", "preparations", "mutations",
+                           "execution_authorized", "complete_scene_inventory", "references_checked",
+                           "finished_state_checked", "payload_presence_checked", "requires_fresh_reference_check"}
+    row = report["preparations"][0]
+    assert set(row) == {"preparation_id", "request_digest", "expected_production_commit", "team_namespace",
+                        "scene_id", "task_id", "result_filename", "workspace_path", "source_provenance",
+                        "configuration_attempt"}
+    assert set(row["configuration_attempt"]) == {"attempt_id", "input_digest", "runtime_digest",
+                                                "source_commit", "provider", "attempt_digest"}
+    fields = {"role", "path", "sha256", "size_bytes", "seal_field", "seal_digest"}
+    assert set(report["intent_provenance"]) == fields
+    for source in row["source_provenance"]:
+        extra = {"link": {"variant"}, "envelope": {"queue_state"}, "attempt": set()}[source["role"]]
+        assert set(source) == fields | extra
+    args["preparation_links"].reverse()
+    assert lineage._encoded(lineage.join_scene_preparation_lineage(**args)) == lineage._encoded(report)
+
+
+@pytest.mark.parametrize("edit,code", [
+    (lambda request: request.update(schema_version="unknown"), "scene_lineage_request_invalid"),
+    (lambda request: request.update(run_mode="paid_execution"), "scene_lineage_request_invalid"),
+    (lambda request: request.update(execution_adapter=None), "scene_lineage_runtime_invalid"),
+    (lambda request: request["execution_adapter"].update(runtime_source_bundle={"digest": "bad"}),
+     "scene_lineage_runtime_invalid"),
+])
+def test_minimal_request_structure_refuses_after_all_digest_bindings_match(edit, code):
+    args = fixture()
+    change(args, "preparation_envelopes", lambda envelope: edit(envelope["request"]))
+    rebind(args)
+    refuses(args, code)
+
+
+def test_bound_attempt_at_a_foreign_path_is_not_selected_intent_lineage():
+    args = fixture()
+    activation(args)
+    _, raw = args["configuration_attempt_records"][0]
+    args["configuration_attempt_records"][0] = ("/foreign/attempt.json", raw)
+    bind_attempt(args)
+    refuses(args, "scene_lineage_attempt_identity_invalid")
+
+
+def test_base_with_well_formed_but_absent_attempt_proof_is_still_a_role_error():
+    args = fixture()
+    reference = {"path": BASE + "/attempts/absent.json", "sha256": DIGEST, "size_bytes": 1}
+    change(args, "preparation_links", lambda row: row.update(scene_configuration_attempt=reference), "link_digest")
+    refuses(args, "scene_lineage_link_role_invalid")
+
+
+@pytest.mark.parametrize("role", ["intent_root", "preparation_queue_root", "preparation_input_root"])
+@pytest.mark.parametrize("path", ["/retained/../root", "/retained//root", "/retained/<redacted>"])
+def test_all_roots_obey_lexical_no_traversal_no_redaction_policy(role, path):
+    args = fixture()
+    args["roots"][role] = path
+    refuses(args, "scene_lineage_path_invalid")

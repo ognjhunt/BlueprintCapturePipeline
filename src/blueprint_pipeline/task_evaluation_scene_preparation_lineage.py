@@ -106,6 +106,17 @@ def _record(pair: Any, role: str, seen: set[str]) -> tuple[dict[str, Any], dict[
                    "size_bytes": len(raw)}
 
 
+def _preflight(groups: tuple[Any, ...]) -> None:
+    total = 0
+    for group in groups:
+        for pair in group:
+            _require(isinstance(pair, (tuple, list)) and len(pair) == 2, "record_invalid")
+            raw = pair[1]
+            _require(type(raw) is bytes and 0 < len(raw) <= MAX_RECORD_BYTES, "record_invalid")
+            total += len(raw)
+            _require(total <= MAX_TOTAL_BYTES, "bytes_limit")
+
+
 def _seal(value: dict[str, Any], provenance: dict[str, Any], field: str,
           *, cross: bool = False) -> None:
     digest = cross_runtime_canonical_digest if cross else canonical_digest
@@ -230,13 +241,12 @@ def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
     roots = {key: _path(value) for key, value in roots.items()}
     _require(all(isinstance(group, (list, tuple)) for group in (links, envelopes, attempts))
              and 1 + len(links) + len(envelopes) + len(attempts) <= MAX_RECORDS, "records_limit")
+    _preflight(([intent_record], links, envelopes, attempts))
     seen: set[str] = set()
     intent, intent_provenance = _record(intent_record, "intent", seen)
     _intent(intent, intent_provenance, intent_id, roots["intent_root"])
     decoded = [[_record(pair, role, seen) for pair in group]
                for role, group in (("link", links), ("envelope", envelopes), ("attempt", attempts))]
-    total = intent_provenance["size_bytes"] + sum(p["size_bytes"] for group in decoded for _, p in group)
-    _require(total <= MAX_TOTAL_BYTES, "bytes_limit")
     remaining_attempts = {p["path"]: (value, p) for value, p in decoded[2]}
     grouped: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     directory = _child(roots["intent_root"], intent_id)
@@ -251,15 +261,15 @@ def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
             previous[1].append(provenance)
             chosen = link if provenance["variant"] == "activation" else previous[0]
             grouped[link["preparation_id"]] = (chosen, previous[1])
-    remaining = {p["path"]: (value, p) for value, p in decoded[1]}
+    remaining: dict[str, list[Any]] = {}
+    for value, provenance in decoded[1]:
+        remaining.setdefault(PurePosixPath(provenance["path"]).name, []).append((value, provenance))
     rows = []
     for preparation_id, (link, sources) in grouped.items():
-        matches = [(path, pair) for path, pair in remaining.items()
-                   if PurePosixPath(path).name == link["result_filename"]]
+        matches = remaining.pop(link["result_filename"], [])
         _require(len(matches) == 1, "envelope_ambiguous")
-        path, (envelope, provenance) = matches[0]
+        envelope, provenance = matches[0]
         request = _envelope(envelope, provenance, roots["preparation_queue_root"], link, intent)
-        del remaining[path]
         sources.append(provenance)
         attempt = _attempt(link, request, intent, directory, remaining_attempts, sources)
         rows.append({**{k: link[k] for k in ("preparation_id", "request_digest", "expected_production_commit",
