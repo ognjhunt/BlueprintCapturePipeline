@@ -8,10 +8,18 @@ Absent/disabled policy preserves the original module arguments and exit status.
 from __future__ import annotations
 
 import argparse
+import os
 import runpy
+import stat
 import sys
+from contextlib import ExitStack, contextmanager
+from pathlib import Path
 
-from .task_evaluation_scene_retirement_access import scene_access
+from .task_evaluation_scene_retirement_access import _opened, _require, scene_access
+
+
+_INSTALLED_POLICY = Path('/etc/blueprint/scene-retirement-policy.json')
+_POLICY_ENV = 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE'
 
 
 _WORKERS = frozenset('blueprint_pipeline.' + name for name in (
@@ -27,7 +35,35 @@ _WORKERS = frozenset('blueprint_pipeline.' + name for name in (
     'task_evaluation_policy_canary_dispatcher',
     'task_evaluation_terminal_resource_release',
     'operator_policy_canary_continuation',
+    'task_evaluation_configured_controls_progression_worker',
 ))
+
+
+@contextmanager
+def _installed_policy_binding():
+    """One installed public policy; an EnvironmentFile cannot redirect its fence."""
+    selected = os.environ.get(_POLICY_ENV)
+    fixed = str(_INSTALLED_POLICY)
+    _require(selected in (None, '', fixed), 'scene_retirement_policy_binding_unproven')
+    with ExitStack() as stack:
+        try:
+            _, info = stack.enter_context(_opened(fixed, protected=True))
+        except FileNotFoundError:
+            # Only a genuinely absent installation retains legacy startup. An
+            # explicitly configured missing policy remains a refusal.
+            _require(not selected, 'scene_retirement_policy_binding_unproven')
+            yield
+            return
+        _require(stat.S_IMODE(info.st_mode) == 0o644,
+                 'scene_retirement_policy_binding_unproven')
+        os.environ[_POLICY_ENV] = fixed
+        try:
+            yield
+        finally:
+            if selected is None:
+                os.environ.pop(_POLICY_ENV, None)
+            else:
+                os.environ[_POLICY_ENV] = selected
 
 
 def main(argv=None):
@@ -41,7 +77,7 @@ def main(argv=None):
     original_argv = sys.argv
     # Acquire before target import, not after it has opened local artifacts or
     # loaded an unfenced worker. Existing SH reader/publisher locks nest safely.
-    with scene_access():
+    with _installed_policy_binding(), scene_access():
         try:
             sys.argv = [selected.worker, *arguments]
             runpy.run_module(selected.worker, run_name='__main__', alter_sys=True)

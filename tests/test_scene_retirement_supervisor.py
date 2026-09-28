@@ -70,9 +70,14 @@ def test_worker_holds_shared_fence_through_body_and_preserves_argv(tmp_path, mon
         pass
 
 
-def test_disabled_policy_preserves_worker_system_exit_and_argv(monkeypatch):
+def test_disabled_policy_preserves_worker_system_exit_and_argv(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
     monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', raising=False)
     module = supervisor()
+    # Production is Linux/systemd. macOS /etc is a symlink and must not be
+    # silently followed by the protected acquisition boundary.
+    monkeypatch.setattr(module, '_INSTALLED_POLICY', tmp_path / 'absent-policy.json', raising=False)
     original = sys.argv
 
     def worker(name, **kwargs):
