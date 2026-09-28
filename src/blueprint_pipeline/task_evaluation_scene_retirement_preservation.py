@@ -199,16 +199,18 @@ def preserve_members(paths, *, transport, allowance, token):
         for chunk in _payload(roots[row['member_index']]/row['relative_path'],row,allowance):
             digest.update(chunk)
         row['sha256'] = 'sha256:'+digest.hexdigest()
-    digest, sent = hashlib.sha256(), [0]
+    digest, sent, complete = hashlib.sha256(), [0], [False]
     def upload():
         for chunk in _archive_chunks(roots,files,directories,allowance):
             allowance.charge('remote_bytes',len(chunk))
             digest.update(chunk)
             sent[0] += len(chunk)
             yield chunk
+        complete[0] = True
     allowance.tick()
     archive = transport.put_archive(token+'.tar',upload())
     allowance.tick()
+    _require(complete[0], 'scene_retirement_archive_incomplete')
     _require(type(archive) is dict and set(archive) == {'uri','sha256','size_bytes'})
     _require(type(archive['uri']) is str and len(archive['uri']) <= 4096
              and re.fullmatch(r'(?:s3|gs)://[a-z0-9][a-z0-9.-]*/[A-Za-z0-9._/-]+',archive['uri']))
