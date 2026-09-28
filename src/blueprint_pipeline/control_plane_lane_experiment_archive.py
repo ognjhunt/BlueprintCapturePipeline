@@ -234,14 +234,19 @@ def preserve(files, config, target, rows, manifest_raw, guard):
     client, bucket = _client(files, config)
     if type(files) is actions._ActionFiles:
         files.payload(target, files.parents[target], expected_payload_bytes=size)
+    passes = 0
     def write(sink):
+        nonlocal passes
+        passes += 1
+        _require(passes <= 2, "experiment_archive_source_reissued")
+        role = "archive_digest" if passes == 1 else "archive_upload"
         controller.check('source')
         sink.write(prefix)
         for row in sorted(rows, key=lambda row: row[0]):
             if row[1] != 'file':
                 continue
             controller.check('source')
-            _, _, fd, info = actions._member(files, target, row)
+            _, _, fd, info = actions._member(files, target, row, hash_role=role + "_hash")
             try:
                 files.location(fd)
                 os.lseek(fd, 0, os.SEEK_SET)
@@ -254,7 +259,7 @@ def preserve(files, config, target, rows, manifest_raw, guard):
                     fragments += 1
                     files.location(fd)
                     amount = min(QUANTUM - count % QUANTUM, info.st_size + 1 - count)
-                    payload = (files.payload_read(fd, amount, role='archive_stream')
+                    payload = (files.payload_read(fd, amount, role=role + '_stream')
                                if type(files) is actions._ActionFiles and files.payload_mode else os.read(fd, amount))
                     controller.check('source')
                     if not payload:

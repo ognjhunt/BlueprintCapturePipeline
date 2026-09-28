@@ -18,7 +18,7 @@ from .control_plane_reference_budget import ReferenceCollectionBudget
 
 _PHASES = {'manifest': (1, 100000), 'ready': (1, 10000), 'removal_batch': (256, 10000),
            'restore_admission': (1, 10000), 'restore_batch': (256, 10000), 'finalize': (1, 100000)}
-_ROLES = frozenset({'issue_hash', 'archive_prehash', 'archive_stream', 'remove_hash', 'restore_read', 'restore_write'})
+_ROLES = frozenset({'issue_hash', 'archive_prehash', 'archive_stream', 'archive_digest_hash', 'archive_upload_hash', 'archive_digest_stream', 'archive_upload_stream', 'remove_hash', 'restore_read', 'restore_write'})
 _QUANTUM, _AGGREGATE = 1024 * 1024, 20 * 1024 * 1024
 
 
@@ -206,6 +206,9 @@ class _ActionFiles(_BirthFiles):
         identity = self.proof(fd)
         key = (role, identity)
         position, window, fragments = self.windows.get(key, (0, 0, 0))
+        if os.lseek(fd, 0, os.SEEK_CUR) != position:
+            self.failure = 'experiment_work_payload_cursor_changed'
+            raise OwnerTargetVersionError(self.failure)
         current = position // _QUANTUM
         if current != window:
             window, fragments = current, 0
@@ -244,6 +247,13 @@ class _ActionFiles(_BirthFiles):
             _require(owners._metadata(os.fstat(record.fd)) == owners._metadata(record.info)
                      == owners._metadata(os.stat(record.name, dir_fd=record.parent, follow_symlinks=False)),
                      'experiment_work_record_changed')
+
+    def removed_directory(self, path, original):
+        cached = self.parents.get(path)
+        if cached is not None:
+            _require(self.proof(cached) == self.proof(original), 'experiment_work_descriptor_unproven')
+            self.close(cached)
+            _require(cached not in self.owned, 'experiment_work_cleanup_failed')
 
     def trim_payload(self, *, keep=()):
         self.check_long()
