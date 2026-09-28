@@ -14,7 +14,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_scene_retirement_intent_receipt import operation,raw_ref
 
 
-def pending_action(tmp_path,monkeypatch,*,after_generation=False):
+def fresh_action(tmp_path,monkeypatch):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
     policy,scope,_,_,_,_,transport=operation(tmp_path,monkeypatch,member_count=2,with_transport=True)
     policy['principals']=[dict(principal_id='operator',actions=['retire','restore'],owner_intent_ids=[scope['intent_id']],private_archive_classes=['host'])]
@@ -48,6 +48,12 @@ def pending_action(tmp_path,monkeypatch,*,after_generation=False):
     monkeypatch.setattr(engine,'_resume_current_references',lambda *args: None,raising=False)
     # No assertion of unknown process absence: this test only exercises replay.
     monkeypatch.setattr(engine,'_installed_cohort',lambda *args: None)
+    return engine,policy,scope,consent,transport
+
+
+def pending_action(tmp_path,monkeypatch,*,after_generation=False):
+    engine,policy,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    members=scope['members']
     original=engine.detach_and_remove
     def interrupted(*args,**kwargs):
         outcome=original(*args,**kwargs)
@@ -151,3 +157,45 @@ def test_public_recovery_cannot_borrow_a_changed_consent(tmp_path,monkeypatch):
     result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
     assert result['status']!='retired',result
     assert entered==[] and Path(scope['members'][1]['canonical_path']).exists()
+
+
+def test_crash_before_private_initial_cannot_start_another_archive_or_origin(tmp_path,monkeypatch):
+    engine,_,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    create=engine.SceneJournal.create
+    def interrupted(*args,**kwargs):
+        raise OSError('owned fault after archive before private initializer')
+    monkeypatch.setattr(engine.SceneJournal,'create',interrupted)
+    first=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    assert first['status']!='retired' and all(Path(row['canonical_path']).exists() for row in scope['members'])
+    old_objects=set(transport.objects)
+    monkeypatch.setattr(engine.SceneJournal,'create',create)
+    second=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    assert set(transport.objects)==old_objects,'unproven preparation retried under a new archive token'
+    assert second['reason']=='scene_retirement_preparation_resume_unproven'
+    assert all(Path(row['canonical_path']).exists() for row in scope['members'])
+
+
+def test_private_initial_without_public_projection_resumes_exact_token_and_origin(tmp_path,monkeypatch):
+    engine,_,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    publish=engine.publish_pending_receipt
+    monkeypatch.setattr(engine,'publish_pending_receipt',lambda *args:(_ for _ in ()).throw(OSError('owned pre-projection crash')))
+    first=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    assert first['status']=='incomplete'
+    old_objects=set(transport.objects)
+    old_token=Path(first['journal_initial_raw_ref']['path']).name.split('.')[0]
+    monkeypatch.setattr(engine,'publish_pending_receipt',publish)
+    second=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    assert second['status']=='retired',second
+    assert second['token']==old_token and set(transport.objects)==old_objects
+
+
+def test_unfinished_preparation_claim_cannot_renew_original_deadline(tmp_path,monkeypatch):
+    engine,_,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    create=engine.SceneJournal.create
+    monkeypatch.setattr(engine.SceneJournal,'create',lambda *args,**kwargs:(_ for _ in ()).throw(OSError('owned initial crash')))
+    engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    old_objects=set(transport.objects)
+    monkeypatch.setattr(engine.SceneJournal,'create',create)
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:230,monotonic=lambda:30)
+    assert result['reason']=='scene_retirement_deadline',result
+    assert set(transport.objects)==old_objects and all(Path(row['canonical_path']).exists() for row in scope['members'])
