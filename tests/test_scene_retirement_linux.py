@@ -361,3 +361,13 @@ if __name__ == '__main__':
     else:
         assert sys.argv[1:]==['--native-enabled-sdk']
         _enabled_sdk_native_phase()
+
+
+def test_native_fixture_git_access_is_scoped_to_exact_checkout(tmp_path):
+    source = tmp_path / "checked-feature"
+    source.mkdir()
+    command = _checkout_git(source, "cat-file", "blob", "a" * 40 + ":installer.py")
+    assert command == ["/usr/bin/git", "--no-replace-objects", "-c",
+        "safe.directory=" + str(source.resolve()), "-C", str(source.resolve()),
+        "cat-file", "blob", "a" * 40 + ":installer.py"]
+    assert "safe.directory=*" not in command
