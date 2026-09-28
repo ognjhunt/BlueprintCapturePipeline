@@ -7,15 +7,18 @@ exact byte range of its record and the digests of its bytes, so a later step
 can fetch only the members a consumer needs, with one range request each.
 
 The pass (``build_member_index``) reads the end records and the central
-directory by range under the pinned ETag or generation, then makes exactly one
-pinned GET of the whole object. During that single stream it hashes the
+directory by range under the pinned ETag or generation (an archive smaller
+than the 64 KiB end-record window is read whole for this), then makes exactly
+one pinned GET of the whole object. During that single stream it hashes the
 archive, re-parses every local header and checks it against the directory,
 inflates each member in bounded ``max_length`` steps while computing its
 SHA-256 and CRC-32, and requires the records to tile ``[0, directory)``
-exactly. It writes nothing to disk. It holds one transport block plus bounded
-inflate steps (under two blocks for blocks of 16 KiB and up), however large
-the archive. A 412 or a changed ETag between the directory read and the
-stream is a refusal, never a retry against the new object.
+exactly. It writes nothing to disk. Archive bytes are held one transport
+block at a time plus one inflate step, after an end-record read of at most
+64 KiB; with the default 8 MiB block that stays under two blocks however large
+the archive. The parsed directory and the index are held as metadata. A 412
+or a changed ETag between the directory read and the stream is a refusal,
+never a retry against the new object.
 
 ``provider_output_member_index.v1`` holds archive facts only: the archive's
 sha256, size, pinned etag/generation and ``durable_reference`` (null until a
