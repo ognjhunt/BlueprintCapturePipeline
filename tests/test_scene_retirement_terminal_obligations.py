@@ -86,6 +86,31 @@ def test_terminal_local_remote_and_canonical_facts_require_exact_archive_then_re
     assert fresh==before and not verified['references_clear'] and not verified['consumer_fence_checked']
 
 
+def test_engine_retains_exact_reference_keeps_then_requires_independent_native_reader_admission(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement as engine
+    fresh, _, allowance = fixture(tmp_path)
+    context = {'fixture_scope': 'reference_integration_only'}
+    fresh.update(schema_version='task_evaluation_scene_lifecycle_plan.v1', intent_id='intent-1',
+        planner_context=context, historical_lineage={}, finished_observation={'status':'completed'})
+    consent = {'intent_id':'intent-1', 'intent_raw_ref':{k:fresh['selected_intent_provenance'][k]
+        for k in ('path','sha256','size_bytes')}}
+    # This tests the reference-stage ordering, not owner/cohort admission or
+    # whole-action clearance. The native reader stage deliberately NEVER admits.
+    monkeypatch.setattr(engine, 'build_scene_lifecycle_plan', lambda **kwargs:fresh)
+    monkeypatch.setattr(engine, '_plan_members', lambda *args:None)
+    monkeypatch.setattr(engine, '_installed_cohort', lambda *args:None)
+    entered=[]
+    def deny(*args):
+        entered.append(True)
+        raise ValueError('scene_retirement_reader_closure_unproven')
+    monkeypatch.setattr(engine, '_current_readers', deny)
+    with pytest.raises(ValueError, match='scene_retirement_reader_closure_unproven'):
+        engine._current_plan({'reference_context':context},consent,fresh,allowance,lambda:200,lambda:0)
+    assert entered == [True]
+    assert fresh['reference_keeps']
+    assert fresh['reference_transfer']['archive_inventory_verified'] is False
+
+
 @pytest.mark.parametrize('change',['source','related','path','size','digest','canonical','unbound','unselected','blocker','archive'])
 def test_terminal_facts_cannot_borrow_foreign_missing_or_contradictory_proof(tmp_path,change):
     from blueprint_pipeline.task_evaluation_scene_retirement_reference_transfer import validate_current_reference_transfer
