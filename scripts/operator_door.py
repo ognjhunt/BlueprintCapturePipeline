@@ -36,7 +36,9 @@ import http.client
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
@@ -44,6 +46,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -223,13 +226,59 @@ def _checked_chunk(remote: str, offset: int, length: int, expected_size: int) ->
         raise DoorError(2, "checked_pull_response_invalid") from error
 
 
-def _pull_checked_file(remote: str, local: Path, *, expected_sha256: Any, expected_size: Any) -> dict[str, Any]:
-    expected_sha256, expected_size = _checked_pull_options(expected_sha256, expected_size)
-    temporary = None
+@contextmanager
+def _checked_parent(local: Path, *, create: bool = False):
+    if ".." in local.parts:
+        raise DoorError(2, "checked_pull_local_write_failed")
+    absolute = Path(os.path.abspath(local))
+    if not absolute.name:
+        raise DoorError(2, "checked_pull_local_write_failed")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    with ExitStack() as descriptors:
+        directory = os.open("/", flags)
+        descriptors.callback(os.close, directory)
+        for component in absolute.parts[1:-1]:
+            if create:
+                try:
+                    os.mkdir(component, dir_fd=directory)
+                except FileExistsError:
+                    pass
+            directory = os.open(component, flags, dir_fd=directory)
+            descriptors.callback(os.close, directory)
+        yield directory, absolute.name
+
+
+def _checked_inode(info) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _checked_current_parent(local: Path, identity: tuple[int, int]) -> None:
+    with _checked_parent(local) as (directory, _name):
+        if _checked_inode(os.fstat(directory)) != identity:
+            raise DoorError(2, "checked_pull_local_write_failed")
+
+
+def _checked_temporary(directory: int, name: str):
+    temporary = f".{name}.{secrets.token_hex(16)}.partial"
+    descriptor = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=directory)
+    return descriptor, temporary
+
+
+def _checked_cleanup(directory: int, temporary: str, identity: tuple[int, int]) -> None:
     try:
-        local.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, name = tempfile.mkstemp(prefix=f".{local.name}.", suffix=".partial", dir=local.parent)
-        temporary = Path(name)
+        current = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISREG(current.st_mode) and _checked_inode(current) == identity:
+        os.unlink(temporary, dir_fd=directory)
+
+
+def _write_checked_file(remote, local, directory, name, expected_sha256, expected_size):
+    descriptor, temporary = _checked_temporary(directory, name)
+    owned = _checked_inode(os.fstat(descriptor))
+    parent = _checked_inode(os.fstat(directory))
+    try:
         digest = hashlib.sha256()
         offset = 0
         requests = 0
@@ -252,18 +301,34 @@ def _pull_checked_file(remote: str, local: Path, *, expected_sha256: Any, expect
                 raise DoorError(2, "checked_pull_identity_mismatch")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, local)
+            completed = os.fstat(stream.fileno())
+        _checked_current_parent(local, parent)
+        source = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(source.st_mode) or _checked_inode(source) != owned
+                or (source.st_size, source.st_mtime_ns, source.st_ctime_ns)
+                != (completed.st_size, completed.st_mtime_ns, completed.st_ctime_ns)):
+            raise DoorError(2, "checked_pull_local_write_failed")
+        os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
         temporary = None
+        _checked_current_parent(local, parent)
+        published = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(published.st_mode) or _checked_inode(published) != owned
+                or published.st_size != expected_size or published.st_mtime_ns != completed.st_mtime_ns):
+            raise DoorError(2, "checked_pull_local_write_failed")
         return {"path": remote, "saved": str(local), "bytes": offset,
                 "verified_digest": expected_sha256, "verified_bytes": offset}
-    except OSError as error:
-        raise DoorError(2, "checked_pull_local_write_failed") from error
     finally:
         if temporary is not None:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError as error:
-                raise DoorError(2, "checked_pull_local_write_failed") from error
+            _checked_cleanup(directory, temporary, owned)
+
+
+def _pull_checked_file(remote: str, local: Path, *, expected_sha256: Any, expected_size: Any) -> dict[str, Any]:
+    expected_sha256, expected_size = _checked_pull_options(expected_sha256, expected_size)
+    try:
+        with _checked_parent(local, create=True) as (directory, name):
+            return _write_checked_file(remote, local, directory, name, expected_sha256, expected_size)
+    except OSError as error:
+        raise DoorError(2, "checked_pull_local_write_failed") from error
 
 
 def _safe_members(archive: tarfile.TarFile, destination: Path):

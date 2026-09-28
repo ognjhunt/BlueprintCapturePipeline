@@ -357,7 +357,12 @@ SHA-256 before atomic local publication. The policy bounds files at 16 MiB,
 requests at 4096 and each requested chunk at 1 MiB; a smaller server cap remains
 supported. Zero-byte files require one truthful empty EOF response. Unique
 operation-owned temporary files prevent truncating an existing destination;
-verification or I/O failures preserve it. The existing per-request timeout
+failures before publication preserve it. Checked local destinations require
+parents without symlinks or traversal. Retained directory/file identities bind
+temporary creation, publication and cleanup; observed substitutions refuse
+verified success and preserve foreign entries. These checks do not provide an
+atomic compare-and-rename against arbitrary concurrent writers, or rollback
+after another writer changes the path during publication. The existing per-request timeout
 remains; no new whole-transfer deadline is claimed. Ordinary file and directory
 pull behavior is unchanged.
 

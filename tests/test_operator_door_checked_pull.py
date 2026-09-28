@@ -158,7 +158,7 @@ def test_interruption_and_local_failure_preserve_old_destination(tmp_path, monke
     elif where == 'publish':
         monkeypatch.setattr(client.os, 'replace', failure)
     else:
-        monkeypatch.setattr(client.tempfile, 'mkstemp', failure)
+        monkeypatch.setattr(client, '_checked_temporary', failure)
     with pytest.raises(client.DoorError) as raised:
         _pull(tmp_path, b'ab')
     assert str(raised.value) == ('checked_pull_network_failed' if where in ('request','body') else 'checked_pull_local_write_failed')
@@ -241,9 +241,9 @@ def test_successful_publication_ends_temp_ownership_and_preserves_recreated_name
     former = []
     unlink_attempts = []
 
-    def publish(source, target):
-        real_replace(source, target)
-        source = Path(source)
+    def publish(source, target, **kwargs):
+        real_replace(source, target, **kwargs)
+        source = tmp_path / source
         former.append(source)
         source.write_bytes(b'new unrelated operation')
 
@@ -260,3 +260,87 @@ def test_successful_publication_ends_temp_ownership_and_preserves_recreated_name
     assert target.read_bytes() == b'ab' and report['verified_bytes'] == 2
     assert unlink_attempts == []
     assert former[0].read_bytes() == b'new unrelated operation'
+
+
+@pytest.mark.parametrize('timing', ['before_publish', 'transfer_failure', 'after_publish'])
+def test_changed_destination_parent_never_publishes_or_cleans_foreign_entries(tmp_path, monkeypatch, timing):
+    parent = tmp_path / 'destination'
+    parent.mkdir()
+    destination = parent / 'artifact.bin'
+    destination.write_bytes(b'old')
+    retained = tmp_path / 'retained-parent'
+    _requests(monkeypatch, b'ab')
+    foreign_temp = []
+
+    def substitute():
+        partials = list(parent.glob('*.partial')) + list(parent.glob('.*.partial'))
+        partials = list(set(partials))
+        parent.rename(retained)
+        parent.mkdir()
+        destination.write_bytes(b'unrelated destination')
+        for partial in partials:
+            replacement = parent / partial.name
+            replacement.write_bytes(b'unrelated temporary')
+            foreign_temp.append(replacement)
+
+    if timing == 'transfer_failure':
+        def request(*args, **kwargs):
+            substitute()
+            raise OSError('interrupted after replacement')
+        monkeypatch.setattr(client, '_request', request)
+    elif timing == 'before_publish':
+        original_fsync = client.os.fsync
+        def fsync(descriptor):
+            original_fsync(descriptor)
+            substitute()
+        monkeypatch.setattr(client.os, 'fsync', fsync)
+    else:
+        original_replace = client.os.replace
+        def replace(source, target, **kwargs):
+            original_replace(source, target, **kwargs)
+            substitute()
+        monkeypatch.setattr(client.os, 'replace', replace)
+    with pytest.raises(client.DoorError) as raised:
+        client._pull_checked_file('/census', destination, expected_sha256=_digest(b'ab'), expected_size=2)
+    assert raised.value.exit_code == (4 if timing == 'transfer_failure' else 2)
+    assert destination.read_bytes() == b'unrelated destination'
+    assert all(path.read_bytes() == b'unrelated temporary' for path in foreign_temp)
+    assert list(retained.iterdir()) == [retained / 'artifact.bin']
+    assert (retained / 'artifact.bin').read_bytes() == (b'ab' if timing == 'after_publish' else b'old')
+
+
+def test_substituted_temporary_entry_is_refused_and_preserved(tmp_path, monkeypatch):
+    _requests(monkeypatch, b'ab')
+    destination = tmp_path / 'artifact.bin'
+    destination.write_bytes(b'old')
+    foreign = []
+    original_fsync = client.os.fsync
+    def fsync(descriptor):
+        original_fsync(descriptor)
+        partial = next(tmp_path.glob('.*.partial'))
+        partial.rename(tmp_path / 'held-by-other-operation')
+        partial.write_bytes(b'unrelated temporary')
+        foreign.append(partial)
+    monkeypatch.setattr(client.os, 'fsync', fsync)
+    with pytest.raises(client.DoorError, match='^checked_pull_local_write_failed$'):
+        _pull(tmp_path, b'ab')
+    assert destination.read_bytes() == b'old'
+    assert foreign[0].read_bytes() == b'unrelated temporary'
+    assert (tmp_path / 'held-by-other-operation').read_bytes() == b'ab'
+
+
+def test_checked_destination_does_not_follow_linked_parent(tmp_path, monkeypatch):
+    real = tmp_path / 'real'
+    real.mkdir()
+    destination = real / 'artifact.bin'
+    destination.write_bytes(b'old')
+    linked = tmp_path / 'linked'
+    linked.symlink_to(real, target_is_directory=True)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('linked parent must refuse before transfer')
+    monkeypatch.setattr(client, '_request', forbidden)
+    with pytest.raises(client.DoorError, match='^checked_pull_local_write_failed$'):
+        client._pull_checked_file('/census', linked / 'artifact.bin',
+                                  expected_sha256=_digest(b'ab'), expected_size=2)
+    assert list(real.iterdir()) == [destination]
+    assert destination.read_bytes() == b'old'
