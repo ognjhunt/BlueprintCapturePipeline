@@ -1037,3 +1037,61 @@ downloads or copies those assets. At09:35UTC the original f9d6b7291 controller
 PID3035/QEMU10227 were confirmed live (10m28s guest elapsed), with no terminal
 receipt. Keep this authoritative process under its original deadline; tests do
 not convert its missing diagnostic into success or permission to replace it.
+
+## Observed CPU result and reviewed offline system package preparation
+
+The original f9 run became terminal under its unchanged watchdog. Fresh de4691
+retained-image replay actually succeeded: guest diagnostic received, exit0,
+child absent and original base unchanged. Receipt
+`/private/tmp/g1-vm-system-cpu-de4691-20260928b/g1_vm_system_cpu_preflight.v1.json`,
+digest `13dd4c648dd0d28f8d3d7bebb9228540728e85330d63c2b68162d337ccb5784a`.
+Actual guest receipt digest `438b2d183190fcf720f84bc2ff03d36243d04ced23b8876f1a68e0b2b8d5488d`.
+Ubuntu22.04.5/kernel5.15.0-1067-kvm has Docker24.0.7 with only runc runtimes,
+NVIDIA535.183.01 packages, no NVIDIA container toolkit and no bubblewrap.
+It has matching kernel headers, build-essential, GCC11/GCC12 and DKMS2.8.7.
+This proves guest prerequisites are missing; it is not CUDA or episode proof.
+
+ADP-050 Day28 / ADP-060 owner extension. Next complete system prerequisite
+preparation binds the observed guest and exact official amd64/all Debian package
+assets. Keep driver580.65.06 floor, complete graphics/compute/firmware/kernel
+closure, upgrade DKMS because the official580 package requires>=3.1.8, and pin
+all four NVIDIA container-toolkit packages together. Jammy security bubblewrap
+is a candidate: require actual17-flag help and namespace replay later; its
+version alone cannot qualify isolation. Preserve installed Docker/kernel/headers
+and their observed identity. No paid launch or dispatch enablement follows a
+package plan, seal, APT simulation, or CPU namespace proof.
+
+Test first: refuse changed outer/guest observation digests, wrong base/image,
+nonterminal/nonzero/changed-scope receipts, wrong kernel/build prerequisite
+identity, absent/foreign/symlink/changed package assets, ambiguous inventories,
+source commit drift and modified package manifests. Generate only a fixed
+offline APT simulation command (no-download/no remote sources/no recommends),
+with each concrete local package path passed as an argv item. No shell,
+online upgrade, autoremove, kernel swap, provider call, policy or rights grant.
+Reopen every package hash before preparation/replay. Keep package license
+review separate from bytes and APT closure; new exact components cannot acquire
+owner approval from a manifest. Collect immutable assets and embedded notices
+before the concrete review packet, then replay APT against the exact guest.
+
+Design review: the guest observation changed the next action from speculative
+VM allocation to offline system closure. Official NVIDIA Jammy metadata confirms
+the DKMS dependency gap; installed kernel headers/build tools avoid an unrelated
+kernel migration. The existing portable Python/bundle transport does not install
+system prerequisites. This preparation is accepted before implementation;
+actual installation, reboot/driver loading and canonical paid routing remain
+separate required proof. Current work free11.14GB/root16.10GB still do not admit
+the32GB collection gate. Preserve all data, original disk and failed overlays.
+
+Preparation checkpoint: missing module was observed red before implementation.
+16 package preparation cases plus14 retained-image CPU cases pass (30 total),
+with changed-file Ruff/diff clean. The pinned25-package candidate closure is
+389,073,866 compressed bytes: exact580.65.06 graphics/compute/kernel/firmware,
+DKMS1:3.2.1-1ubuntu2, all four toolkit1.19.0-1 packages, and Jammy security
+bubblewrap0.6.1-1ubuntu0.3. The preparation reopens both observation digests,
+base/kernel/build identity and every concrete package size/hash. APT simulation
+disables remote sources and uses a verified empty lists directory as well as
+no-download/no-recommends. Wrong source commit, modified approval flag or asset
+cannot produce the retained command. The preparation explicitly retains
+owner_review_required=true and runtime_installation_performed=false.
+These fixtures do not establish APT dependency closure, actual package install,
+sandbox features, driver loading, CUDA or any paired-policy episode.
