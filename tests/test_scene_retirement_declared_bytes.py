@@ -140,3 +140,28 @@ def test_restoration_reserves_both_remote_eof_probes_before_each_read():
             observed.append(dict(allowance.counts))
     reserve_phase(Journal(),{'archive':{'size_bytes':2},'files':[{'size_bytes':1}]},restoring=True)
     assert observed==[dict(local_bytes=2,archive_bytes=0,remote_bytes=6)]*2
+
+
+@pytest.mark.parametrize('field,value',[('sha256','sha256:'+'f'*64),('size_bytes',999)])
+def test_native_measured_rows_do_not_hide_declared_payload_contradictions(tmp_path,monkeypatch,field,value):
+    from blueprint_pipeline import task_evaluation_scene_retirement as engine
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    from tests.test_scene_retirement_member_mutation import setup_operation
+    _,member,preserved,journal=setup_operation(tmp_path,monkeypatch)
+    row=preserved['files'][0]
+    reference=dict(path=str(member/row['relative_path']),sha256=row['sha256'],size_bytes=row['size_bytes'])
+    reference[field]=value
+    sink=RetainedEmissionBudget(max_bytes=10000,max_rows=10,max_references=10)
+    fresh={'historical_lineage':{'raw_reference_obligations':sink.rows([reference])}}
+    with pytest.raises(ValueError,match='scene_retirement_declared_payload_changed'):
+        engine._verify_declared_bytes(fresh,preserved,object(),journal.allowance)
+
+
+def test_unknown_collection_subclass_cannot_hide_promised_bytes_or_run_callbacks():
+    from blueprint_pipeline.task_evaluation_scene_retirement_declared_bytes import _objects
+    allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
+    class Foreign(list):
+        def __iter__(self):
+            raise AssertionError('foreign callback must not run')
+    with pytest.raises(ValueError,match='scene_retirement_declared_reference_invalid'):
+        list(_objects({'raw_reference_obligations':Foreign([{'path':'/untrusted'}])},allowance))
