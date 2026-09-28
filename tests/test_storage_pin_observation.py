@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
+import fcntl
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -166,3 +169,281 @@ def test_bad_numeric_parameters_are_typed(root, field, value):
     kwargs = {"observed_at_epoch": 50, field: value}
     with pytest.raises(observer.StoragePinObservationError, match="^pin_parameters_invalid$"):
         observer.observe_storage_pins(str(root), **kwargs)
+
+
+@pytest.mark.parametrize("level", ["ancestor", "root", "kind", "row"])
+def test_symlinks_are_never_followed(root, level):
+    path = write(root, pin())
+    if level == "row":
+        other = root / "foreign.json"
+        path.rename(other)
+        path.symlink_to(other)
+    elif level == "kind":
+        other = root / "foreign-kind"
+        path.parent.rename(other)
+        (root / "preparation").symlink_to(other, target_is_directory=True)
+    elif level == "root":
+        other = root.with_name("foreign-root")
+        root.rename(other)
+        root.symlink_to(other, target_is_directory=True)
+    else:
+        linked = root.parent / "linked-ancestor"
+        linked.symlink_to(root.parent, target_is_directory=True)
+        root = linked / root.name
+    incomplete(observe(root))
+
+
+def test_nonblocking_guard_reports_busy_without_waiting(root):
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        incomplete(observe(root), "pin_inventory_busy")
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("fault", ["open", "fstat", "read", "scandir", "stat", "flock"])
+def test_syscall_faults_are_fixed_and_all_owned_fds_close(root, monkeypatch, fault):
+    write(root, pin())
+    opened = set()
+    real_open, real_close = observer.os.open, observer.os.close
+
+    def tracked_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.add(fd)
+        return fd
+
+    def tracked_close(fd):
+        opened.remove(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(observer.os, "open", tracked_open)
+    monkeypatch.setattr(observer.os, "close", tracked_close)
+    def fail(*args, **kwargs):
+        raise PermissionError("PRIVATE_TEST_MARKER")
+    if fault == "flock":
+        monkeypatch.setattr(observer.fcntl, "flock", fail)
+    elif fault == "open":
+        def fail_row(name, *args, **kwargs):
+            if name.endswith('.json'):
+                return fail()
+            return tracked_open(name, *args, **kwargs)
+        monkeypatch.setattr(observer.os, "open", fail_row)
+    else:
+        monkeypatch.setattr(observer.os, fault, fail)
+    result = observe(root)
+    incomplete(result)
+    assert not opened
+    assert "PRIVATE_TEST_MARKER" not in str(result)
+
+
+@pytest.mark.parametrize("race", ["truncate", "replace", "remove", "fifo", "kind", "root"])
+def test_deterministic_changes_at_read_edge_cannot_be_complete(root, monkeypatch, race):
+    path = write(root, pin())
+    real_read = observer.os.read
+    fired = False
+    def racing_read(fd, count):
+        nonlocal fired
+        raw = real_read(fd, count)
+        if not fired:
+            fired = True
+            if race == "truncate":
+                path.write_bytes(b'{}')
+            elif race == "replace":
+                path.unlink()
+                path.write_bytes(raw)
+            elif race == "remove":
+                path.unlink()
+            elif race == "fifo":
+                path.unlink()
+                os.mkfifo(path)
+            elif race == "kind":
+                path.parent.rename(root / "old-kind")
+                (root / "preparation").mkdir()
+            else:
+                root.rename(root.with_name("old-pins"))
+                root.mkdir()
+        return raw
+    monkeypatch.setattr(observer.os, "read", racing_read)
+    incomplete(observe(root))
+    assert fired
+
+
+def test_row_modified_after_read_is_detected_by_final_identity(root, monkeypatch):
+    path = write(root, pin())
+    real_validate = observer._Scan.validate
+    def changed_after_validation(scan, *args, **kwargs):
+        row = real_validate(scan, *args, **kwargs)
+        changed = pin(paths=["/payload/different"])
+        path.write_text(json.dumps(changed))
+        return row
+    monkeypatch.setattr(observer._Scan, "validate", changed_after_validation)
+    incomplete(observe(root), "pin_row_changed")
+
+
+def test_fifo_present_before_open_never_reads_or_blocks(root, monkeypatch):
+    directory = root / "preparation"
+    directory.mkdir()
+    os.mkfifo(directory / "owner-1.json")
+    def forbidden(*args, **kwargs):
+        pytest.fail("must prove regular before attempting a read")
+    monkeypatch.setattr(observer.os, "read", forbidden)
+    incomplete(observe(root), "pin_row_unavailable")
+
+
+def test_budget_rejects_declared_next_row_before_read_or_parse(root, monkeypatch):
+    first = write(root, pin(owner="a"))
+    write(root, pin(owner="b"))
+    monkeypatch.setattr(observer, "MAX_TOTAL_BYTES", first.stat().st_size)
+    parsed = []
+    real_json = observer._json
+    def tracked(raw):
+        parsed.append(raw)
+        return real_json(raw)
+    monkeypatch.setattr(observer, "_json", tracked)
+    incomplete(observe(root), "pin_bytes_limit")
+    assert len(parsed) == 1
+
+
+def test_entry_budget_stops_iteration_before_sort_or_full_collection(root, monkeypatch):
+    for name in ("a", "b", "c", "d"):
+        (root / name).mkdir()
+    monkeypatch.setattr(observer, "MAX_ENTRIES", 2)
+    counted = []
+    real_scandir = observer.os.scandir
+    class Entries:
+        def __init__(self, fd):
+            self.iterator = real_scandir(fd)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.iterator.close()
+        def __iter__(self):
+            for item in self.iterator:
+                counted.append(item.name)
+                yield item
+    monkeypatch.setattr(observer.os, "scandir", Entries)
+    incomplete(observe(root), "pin_entries_limit")
+    assert len(counted) == 3  # One bounded overflow sentinel, never the whole directory.
+
+
+@pytest.mark.parametrize("limit,value,code", [
+    ("MAX_ROW_BYTES", 2, "pin_row_bytes_limit"), ("MAX_TOTAL_BYTES", 2, "pin_bytes_limit"),
+    ("MAX_ROWS", 0, "pin_rows_limit"), ("MAX_VALUES", 0, "pin_values_limit"),
+    ("MAX_OUTPUT_BYTES", 8, "pin_output_limit"),
+])
+def test_tiny_injected_caps_are_incomplete(root, monkeypatch, limit, value, code):
+    write(root, pin())
+    monkeypatch.setattr(observer, limit, value)
+    incomplete(observe(root), code)
+
+
+def test_exact_row_total_entry_value_and_output_caps_are_inclusive(root, monkeypatch):
+    path = write(root, pin())
+    expected = observe(root)
+    monkeypatch.setattr(observer, "MAX_ROW_BYTES", path.stat().st_size)
+    monkeypatch.setattr(observer, "MAX_TOTAL_BYTES", path.stat().st_size)
+    monkeypatch.setattr(observer, "MAX_ROWS", 1)
+    monkeypatch.setattr(observer, "MAX_ENTRIES", 2)
+    monkeypatch.setattr(observer, "MAX_VALUES", 1)
+    monkeypatch.setattr(observer, "MAX_OUTPUT_BYTES", len(json.dumps(dataclasses.asdict(expected), ensure_ascii=False).encode()))
+    assert observe(root) == expected
+
+
+@pytest.mark.parametrize("clock", [lambda: float('nan'), lambda: True,
+                                   lambda: 10**400,
+                                   lambda: (_ for _ in ()).throw(RuntimeError("PRIVATE_TEST_MARKER"))])
+def test_bad_clock_is_fixed_unknown_not_a_traceback(root, clock):
+    incomplete(observe(root, monotonic=clock), "pin_clock_invalid")
+
+
+def test_deadline_and_post_open_deadline_close_owned_descriptors(root, monkeypatch):
+    write(root, pin())
+    opened = set()
+    real_open, real_close = observer.os.open, observer.os.close
+    def tracked_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.add(fd)
+        return fd
+    def tracked_close(fd):
+        opened.remove(fd)
+        real_close(fd)
+    monkeypatch.setattr(observer.os, "open", tracked_open)
+    monkeypatch.setattr(observer.os, "close", tracked_close)
+    values = iter([0.0, 6.0])
+    incomplete(observe(root, monotonic=lambda: next(values, 6.0)), "pin_deadline_exceeded")
+    assert not opened
+
+
+def test_backwards_clock_is_unknown_and_cannot_extend_deadline(root):
+    write(root, pin())
+    values = iter([1.0, 0.0])
+    incomplete(observe(root, monotonic=lambda: next(values, 0.0)), "pin_clock_invalid")
+
+
+def test_derived_row_provenance_path_obeys_the_same_lexical_cap(root, monkeypatch):
+    write(root, pin())
+    monkeypatch.setattr(observer, "MAX_PATH_BYTES", len(str(root).encode()))
+    incomplete(observe(root), "pin_row_invalid")
+
+
+def test_one_shot_definite_close_failure_retains_ownership_for_cleanup(root, monkeypatch):
+    write(root, pin())
+    opened = set()
+    real_open, real_close = observer.os.open, observer.os.close
+    failed = False
+    def tracked_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.add(fd)
+        return fd
+    def fault_close(fd):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError(errno.EACCES, "PRIVATE_TEST_MARKER")
+        opened.remove(fd)
+        real_close(fd)
+    monkeypatch.setattr(observer.os, "open", tracked_open)
+    monkeypatch.setattr(observer.os, "close", fault_close)
+    incomplete(observe(root), "pin_descriptor_close_failed")
+    assert not opened
+
+
+def test_close_error_after_descriptor_was_closed_never_recloses_foreign_inode(root, monkeypatch):
+    write(root, pin())
+    foreign = root.parent / "foreign"
+    foreign.write_bytes(b'foreign')
+    real_open, real_close = observer.os.open, observer.os.close
+    replacement = None
+    fired = False
+    def raced_close(fd):
+        nonlocal fired, replacement
+        if not fired:
+            fired = True
+            real_close(fd)
+            replacement = real_open(foreign, os.O_RDONLY)
+            assert replacement == fd
+            raise OSError(errno.EIO, "ambiguous completion")
+        assert fd != replacement, "must preserve foreign reused descriptor"
+        real_close(fd)
+    monkeypatch.setattr(observer.os, "close", raced_close)
+    try:
+        incomplete(observe(root), "pin_descriptor_close_failed")
+        assert os.read(replacement, 7) == b'foreign'
+    finally:
+        if replacement is not None:
+            real_close(replacement)
+
+
+@pytest.mark.parametrize("failure", [ValueError, TypeError, UnicodeError, OverflowError])
+def test_final_result_canonicalization_fault_is_fixed_incomplete(root, monkeypatch, failure):
+    write(root, pin())
+    real_asdict = observer.asdict
+    def faulty(value):
+        if isinstance(value, observer.StoragePinObservation):
+            raise failure("PRIVATE_TEST_MARKER")
+        return real_asdict(value)
+    monkeypatch.setattr(observer, "asdict", faulty)
+    result = observe(root)
+    incomplete(result, "pin_result_invalid")
+    assert "PRIVATE_TEST_MARKER" not in str(result)

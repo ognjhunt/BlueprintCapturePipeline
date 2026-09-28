@@ -6,6 +6,7 @@ consumer fence, authenticated release, eviction or execution authority follows.
 from __future__ import annotations
 
 import fcntl
+import errno
 import hashlib
 import json
 import math
@@ -146,6 +147,9 @@ class _Scan:
         self.deadline: float | None = None
         self.budget = budget
         self.fds: list[int] = []
+        self.fd_identities: dict[int, tuple[int, int, int]] = {}
+        self.failed_closes: set[int] = set()
+        self.last_clock: float | None = None
         self.rows: list[ObservedStoragePin] = []
         self.blockers: set[str] = set()
         self.root_identity: tuple[int, int] | None = None
@@ -159,6 +163,9 @@ class _Scan:
             if not _finite(current):
                 raise ValueError("clock")
             current = float(current)
+            if self.last_clock is not None and current < self.last_clock:
+                raise ValueError("clock")
+            self.last_clock = current
         except Exception:
             raise _Blocked("pin_clock_invalid") from None
         if self.deadline is None:
@@ -172,11 +179,34 @@ class _Scan:
             self.blockers.add("pin_blockers_truncated")
 
     def close(self, fd: int) -> None:
-        self.fds.remove(fd)
+        if fd in self.failed_closes:
+            # A close error may mean it closed. Never blindly close a reused FD.
+            try:
+                current = os.fstat(fd)
+                same = self.fd_identities.get(fd) == (current.st_dev, current.st_ino, stat.S_IFMT(current.st_mode))
+            except OSError as error:
+                if error.errno == errno.EBADF:
+                    self.forget(fd)
+                return
+            if not same:
+                self.block("pin_descriptor_changed")
+                self.forget(fd)
+                return
         try:
             os.close(fd)
-        except OSError:
+        except OSError as error:
             self.block("pin_descriptor_close_failed")
+            if error.errno == errno.EBADF:
+                self.forget(fd)
+            else:
+                self.failed_closes.add(fd)
+        else:
+            self.forget(fd)
+
+    def forget(self, fd: int) -> None:
+        self.fds.remove(fd)
+        self.fd_identities.pop(fd, None)
+        self.failed_closes.discard(fd)
 
     def call(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         self.tick()
@@ -188,6 +218,9 @@ class _Scan:
         self.tick()
         fd = os.open(name, flags, dir_fd=parent)
         self.fds.append(fd)  # Own it before the post-syscall deadline check.
+        self.tick()
+        value = self.call(os.fstat, fd)
+        self.fd_identities[fd] = (value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode))
         self.tick()
         return fd
 
@@ -270,9 +303,13 @@ class _Scan:
                      and _ID.fullmatch(dependency["owner_id"]) is not None)
             normalized_dependencies.add(PinIdentity(**dependency))
         status = "released" if released is not None else ("live" if expires > self.observed else "expired_unreleased")
+        try:
+            row_path = _path(self.root.rstrip("/") + "/" + kind + "/" + name)
+        except StoragePinObservationError:
+            raise _Blocked("pin_row_invalid") from None
         return ObservedStoragePin(kind, name[:-5], tuple(sorted(normalized_paths)), tuple(sorted(normalized_dependencies)),
                                   float(created), float(expires), None if released is None else float(released), status,
-                                  self.root.rstrip("/") + "/" + kind + "/" + name,
+                                  row_path,
                                   "sha256:" + hashlib.sha256(raw).hexdigest(), len(raw), identity)
 
     def observe(self) -> None:
@@ -384,4 +421,9 @@ def observe_storage_pins(pins_root: str, *, observed_at_epoch: float,
     finally:
         for fd in tuple(reversed(scan.fds)):
             scan.close(fd)
-    return scan.result()
+    try:
+        return scan.result()
+    except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
+        scan.block("pin_result_invalid")
+        return StoragePinObservation(False, scan.observed, root, scan.root_identity, (), (), (),
+                                     tuple(sorted(scan.blockers)))
