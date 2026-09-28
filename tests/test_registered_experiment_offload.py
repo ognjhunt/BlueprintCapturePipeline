@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'member_link_before_event', 'member_unlink_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', 'lease_truncate_crash', 'lease_write_crash', 'second_expiry', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'member_link_before_event', 'member_unlink_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', 'lease_truncate_crash', 'lease_write_crash', 'lease_truncate_foreign_image', 'lease_truncate_foreign_inode', 'lease_truncate_changed_payload', 'second_expiry', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -271,7 +271,7 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         assert stopped and _current_entry(value, intent_id)['state'] == 'restoring'
         transport_calls = list(cloud.calls)
         monkeypatch.setattr(restore.os, 'unlink', original_unlink)
-    if certificate_case in ('lease_truncate_crash', 'lease_write_crash'):
+    if certificate_case.startswith('lease_truncate') or certificate_case == 'lease_write_crash':
         import os
         actual_truncate, actual_write = restore.os.ftruncate, restore.os.write
         lease_inode = (target / '.lane-scratch.v1.json').stat().st_ino
@@ -290,8 +290,8 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
                 actual_write(fd, payload[:len(payload)//2])
                 raise OSError('killed_during_original_lease_write')
             return actual_write(fd, payload)
-        monkeypatch.setattr(restore.os, 'ftruncate' if certificate_case == 'lease_truncate_crash' else 'write',
-                            killed_truncate if certificate_case == 'lease_truncate_crash' else killed_write)
+        monkeypatch.setattr(restore.os, 'ftruncate' if certificate_case.startswith('lease_truncate') else 'write',
+                            killed_truncate if certificate_case.startswith('lease_truncate') else killed_write)
         with pytest.raises(ValueError, match='experiment_'):
             root.restore_registered_experiment(grant['action_id'], **arguments)
         assert stopped and _current_entry(value, intent_id)['state'] == 'restoring'
@@ -300,6 +300,24 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         transport_calls = list(cloud.calls)
         monkeypatch.setattr(restore.os, 'ftruncate', actual_truncate)
         monkeypatch.setattr(restore.os, 'write', actual_write)
+        if certificate_case in ('lease_truncate_foreign_image', 'lease_truncate_foreign_inode', 'lease_truncate_changed_payload'):
+            lease_path = target / '.lane-scratch.v1.json'
+            if certificate_case == 'lease_truncate_foreign_image':
+                lease_path.write_bytes(b'foreign transition')
+            elif certificate_case == 'lease_truncate_foreign_inode':
+                original = lease_path.stat().st_ino
+                lease_path.rename(value[0].parent / 'held-original-lease')
+                lease_path.write_bytes(before['.lane-scratch.v1.json'])
+                lease_path.chmod(0o600)
+                assert lease_path.stat().st_ino != original
+            else:
+                (target / 'native_g1_development_pair.v1.json').write_bytes(b'foreign payload')
+            retained = _payload_snapshot(target)
+            with pytest.raises(ValueError, match='experiment_'):
+                root.restore_registered_experiment(grant['action_id'], **arguments)
+            assert _payload_snapshot(target) == retained and cloud.calls == transport_calls and len(allocations) == 1
+            assert _current_entry(value, intent_id)['state'] == 'restoring'
+            return
     if certificate_case == 'activation_crash':
         from blueprint_pipeline import control_plane_lane_experiment_actions as actions
         actual_event = actions._event
