@@ -145,6 +145,13 @@ jobs:
           # runner. Keep the CUDA runtime out of the ordinary PR dependency set.
           uv pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
 
+      - name: Verify approved CPU model runner with real inference
+        run: |
+          uv sync --frozen --extra dev --extra policy_model_cpu
+          uv pip install -e BlueprintContracts
+          uv run --no-sync python -c 'import onnx, onnxruntime; assert onnx.__version__ == "1.23.0"; assert onnxruntime.__version__ == "1.30.0"'
+          uv run --no-sync python -m pytest tests/test_policy_model_onnx.py -q
+
       - name: Run impacted tests and always-on sentinels
         run: |
           uv run --no-sync python -m blueprint_pipeline.impacted_test_selection \
