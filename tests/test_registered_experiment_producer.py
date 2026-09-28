@@ -842,3 +842,36 @@ def test_terminal_cgroup_transition_never_accepts_changed_or_live_unit(change):
         terminal['MainPID'] = '43'
     with pytest.raises(ValueError, match='experiment_unit_'):
         contained._check_unit(terminal, command, intent, started=started)
+
+
+def test_collected_after_exact_successful_stop_preserves_raw_absent_snapshot():
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent, command, started = _successful_unit_transition()
+    stopping = started | {'ActiveState': 'active', 'SubState': 'exited', 'MainPID': '0', 'ControlGroup': ''}
+    finished = dict(line.split('=', 1) for line in _ABSENT_UNIT_SHOW.splitlines()) | {'ExecStart': ''}
+    kernel = {'tasks': 0, 'groups': 0, 'absent_after_started': True}
+    stop_command = [contained._SYSTEMCTL, 'stop', started['Id']]
+    contained._check_finished_unit(finished, command, intent, started=started, stopping=stopping,
+                                   kernel=kernel, stop_command=stop_command)
+    assert finished['InvocationID'] == '' and finished['LoadState'] == 'not-found'
+
+
+@pytest.mark.parametrize('change', ['no-kernel-closure', 'foreign-stop', 'foreign-invocation', 'active-after-stop'])
+def test_poststop_absence_never_clears_unproved_or_foreign_lifetime(change):
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent, command, started = _successful_unit_transition()
+    stopping = started | {'ActiveState': 'active', 'SubState': 'exited', 'MainPID': '0', 'ControlGroup': ''}
+    finished = dict(line.split('=', 1) for line in _ABSENT_UNIT_SHOW.splitlines()) | {'ExecStart': ''}
+    kernel = {'tasks': 0, 'groups': 0, 'absent_after_started': True}
+    stop_command = [contained._SYSTEMCTL, 'stop', started['Id']]
+    if change == 'no-kernel-closure':
+        kernel['tasks'] = 1
+    elif change == 'foreign-stop':
+        stop_command[-1] = 'foreign.service'
+    elif change == 'foreign-invocation':
+        stopping['InvocationID'] = 'c' * 32
+    else:
+        finished['ActiveState'] = 'active'
+    with pytest.raises(ValueError, match='experiment_unit_'):
+        contained._check_finished_unit(finished, command, intent, started=started, stopping=stopping,
+                                       kernel=kernel, stop_command=stop_command)
