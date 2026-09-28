@@ -222,6 +222,7 @@ def _expected_watchdog_blocker(authority: Mapping[str, Any]) -> str:
         "controls",
         "policy",
         "policy_diagnostic",
+        "controlled_policy",
     }:
         raise ValueError("native_task_arena_preallocation_authority_mode_invalid")
     return f"native_task_arena_{mode}_independent_watchdog_not_armed"
@@ -234,6 +235,7 @@ def _expected_job_dir(authority: Mapping[str, Any]) -> str:
         "controls": "arena-controls-job",
         "policy": "arena-policy-job",
         "policy_diagnostic": "arena-policy-diagnostic-job",
+        "controlled_policy": "arena-controlled-policy-job",
     }[str(authority.get("execution_mode") or "")]
 
 
