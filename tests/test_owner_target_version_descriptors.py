@@ -216,3 +216,27 @@ def test_safe_probe_does_not_create_missing_coordination_lock(enrolled):
         assert not lock.exists()
     finally:
         owner.finish()
+
+
+def test_raw_boolean_lease_time_cannot_match_numeric_expected(enrolled):
+    from blueprint_pipeline.control_plane_lane_owner_target_io import _read_target_lease
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    path, expected = enrolled
+    lease_path = path / scratch.LEASE_FILE
+    lease = json.loads(lease_path.read_bytes())
+    lease["created_at_epoch"] = True
+    lease["lease_digest"] = canonical_digest(lease, digest_field="lease_digest")
+    raw = (json.dumps(lease, sort_keys=True) + "\n").encode()
+    lease_path.write_bytes(raw)
+    expected.update(lease_file_identity=tuple_identity(lease_path, file=True),
+                    lease_raw_sha256="sha256:" + hashlib.sha256(raw).hexdigest(),
+                    lease_raw_size_bytes=len(raw), lease_digest=lease["lease_digest"])
+    expected["lease"].update(created_at_epoch=1, renewed_at_epoch=1)
+    owner = files(expected)
+    target = owner.open(path, os.O_RDONLY | os.O_DIRECTORY, target=True)
+    try:
+        with pytest.raises(ValueError, match="owner_target_lease_invalid"):
+            _read_target_lease(owner, target)
+    finally:
+        owner.finish_target()
+        owner.finish()
