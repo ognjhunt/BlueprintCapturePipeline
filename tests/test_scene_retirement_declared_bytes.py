@@ -120,8 +120,23 @@ def test_resume_reserves_publication_bytes_before_persisting_or_entering_readbac
             observed.append(('preflight',dict(allowance.counts)))
         def append(self,*args,**kwargs):
             observed.append(('append',dict(allowance.counts)))
-            assert kwargs['evidence']['action_allowance']['counts']['remote_bytes']==7
+            assert kwargs['evidence']['action_allowance']['counts']['remote_bytes']==10
     reserve_phase(Journal(),{'archive':{'size_bytes':2}},readback=True,
                   published_objects=[dict(size_bytes=2),dict(size_bytes=3)])
-    assert observed==[(kind,dict(local_bytes=0,archive_bytes=0,remote_bytes=7))
+    assert observed==[(kind,dict(local_bytes=0,archive_bytes=0,remote_bytes=10))
                       for kind in ('preflight','append')]
+
+
+def test_restoration_reserves_both_remote_eof_probes_before_each_read():
+    from blueprint_pipeline.task_evaluation_scene_retirement_recovery import reserve_phase
+    allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
+    observed=[]
+    class Journal:
+        def __init__(self):
+            self.allowance=allowance
+        def preflight(self,events):
+            observed.append(dict(allowance.counts))
+        def append(self,*args,**kwargs):
+            observed.append(dict(allowance.counts))
+    reserve_phase(Journal(),{'archive':{'size_bytes':2},'files':[{'size_bytes':1}]},restoring=True)
+    assert observed==[dict(local_bytes=2,archive_bytes=0,remote_bytes=6)]*2
