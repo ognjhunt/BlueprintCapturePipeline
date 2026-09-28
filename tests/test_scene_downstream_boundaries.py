@@ -430,3 +430,119 @@ def test_192_character_canary_folder_pointer_is_retained_without_promotion():
     result = api().join_retained_scene_downstream_inventory(**args)
     assert len([r for r in result['raw_versions'] if r['role'] == 'canary_offload_pointers']) == 1
     assert result['terminal_observations'][0]['archive_binding_verified'] is False
+
+
+@pytest.mark.parametrize('state_present', [False, True])
+def test_selected_failed_sync_refuses_without_projection_or_terminal_state(state_present):
+    args = terminal_fixture()
+    rows = args['downstream_records']
+    if not state_present:
+        rows['terminal_states'] = []
+    rows['canary_projections'] = []
+    for i, (path, raw) in enumerate(rows['canary_syncs']):
+        value = json.loads(raw)
+        value['status'] = 'failed'
+        rows['canary_syncs'][i] = pair(path, value)
+    for i in (0, 1):
+        edit(args, 'canary_dispatches', {'policy_canary_webapp_sync': ref(rows['canary_syncs'][0])}, 'receipt_digest', position=i)
+    if state_present:
+        edit(args, 'terminal_states', {'dispatch_receipt_digest': json.loads(rows['canary_dispatches'][0][1])['receipt_digest']}, 'state_digest')
+    refuses(args)
+
+
+@pytest.mark.parametrize('status', ['failed', 'skipped'])
+def test_unselected_failed_or_skipped_sync_history_is_preserved(status):
+    args = terminal_fixture()
+    rows = args['downstream_records']
+    rows['terminal_states'] = []
+    rows['canary_dispatches'] = []
+    for i, (path, raw) in enumerate(rows['canary_syncs']):
+        value = json.loads(raw)
+        value['status'] = status
+        rows['canary_syncs'][i] = pair(path, value)
+    result = api().join_retained_scene_downstream_inventory(**args)
+    assert len([r for r in result['raw_versions'] if r['role'] == 'canary_syncs']) == 2
+    assert not any(r['kind'] == 'canary_evidence_workspace' for r in result['lexical_members'])
+
+
+@pytest.mark.parametrize('uri', ['MISSING', None, 12, 'https://evidence/archive', 's3://evidence/file?secret=1', 's3://evidence/bad space'])
+def test_known_publication_uri_is_checked_without_pointer(uri):
+    args = terminal_fixture(pointer=True)
+    args['downstream_records']['canary_offload_pointers'] = []
+    def change(value):
+        if uri == 'MISSING':
+            value.pop('uri')
+        else:
+            value['uri'] = uri
+    edit(args, 'terminal_publications', change, 'publication_digest')
+    refuses(args)
+
+
+@pytest.mark.parametrize('role', ['canary_syncs', 'canary_projections'])
+@pytest.mark.parametrize('hashed', [False, True])
+def test_indexed_only_bad_edge_refuses_without_original_or_state(role, hashed):
+    args = terminal_fixture()
+    rows = args['downstream_records']
+    rows['terminal_states'] = []
+    original_path = rows[role][0][0]
+    path, raw = rows[role][1]
+    if hashed:
+        import hashlib
+        parent, name = path.rsplit('/', 1)
+        path = parent + '/runs/' + hashlib.sha256(b'run-2').hexdigest() + '/' + name
+    value = json.loads(raw)
+    if role == 'canary_syncs':
+        value['notification_delivery'] = {'status': 'wrong'}
+    else:
+        value['result_delivery_digest'] = 'sha256:' + 'f' * 64
+        value = seal(value, 'projection_digest', cross=True)
+    rows[role] = [pair(path, value)]
+    reference = {**ref(rows[role][0]), 'path': original_path}
+    key = 'policy_canary_webapp_sync' if role == 'canary_syncs' else 'policy_canary_result_projection'
+    for i in (0, 1):
+        edit(args, 'canary_dispatches', {key: reference}, 'receipt_digest', position=i)
+    refuses(args)
+
+
+def test_valid_indexed_only_edges_preserve_provenance_without_original_presence():
+    args = terminal_fixture()
+    rows = args['downstream_records']
+    rows['terminal_states'] = []
+    for role in ('canary_syncs', 'canary_projections'):
+        rows[role].pop(0)
+    result = api().join_retained_scene_downstream_inventory(**args)
+    assert all(r['status'] == 'kept_unresolved' for r in result['terminal_observations'])
+    assert not any(r['kind'] == 'canary_evidence_workspace' for r in result['lexical_members'])
+    edges = [r for r in result['structural_join_obligations'] if r['reason'] == 'indexed_bytes_match_original_presence_unverified']
+    assert {r['role'] for r in edges} == {'canary_syncs', 'canary_projections'}
+    assert all({p['role'] for p in r['source_provenance']} >= {'canary_dispatches', r['role']} for r in edges)
+
+
+def test_unrelated_same_basename_copy_does_not_supply_a_selected_edge():
+    args = terminal_fixture()
+    rows = args['downstream_records']
+    rows['terminal_states'] = []
+    original = rows['canary_syncs'][0][0]
+    value = json.loads(rows['canary_syncs'][1][1])
+    value['notification_delivery'] = {'status': 'wrong'}
+    path = args['roots']['terminal_result_root'] + '/foreign-intent/policy_canary_webapp_sync.json'
+    rows['canary_syncs'] = [pair(path, value)]
+    for i in (0, 1):
+        edit(args, 'canary_dispatches', {'policy_canary_webapp_sync': {**ref(rows['canary_syncs'][0]), 'path': original}}, 'receipt_digest', position=i)
+    result = api().join_retained_scene_downstream_inventory(**args)
+    assert not any(r['role'] == 'canary_syncs' and r['reason'] == 'indexed_bytes_match_original_presence_unverified'
+                   for r in result['structural_join_obligations'])
+    assert len([r for r in result['raw_versions'] if r['role'] == 'canary_syncs']) == 1
+
+
+def test_unknown_publication_schema_without_uri_is_retained_without_archive_proof():
+    args = terminal_fixture(pointer=True)
+    rows = args['downstream_records']
+    rows['canary_offload_pointers'] = []
+    def future(value):
+        value['schema_version'] = 'future_terminal_publication.v2'
+        value.pop('uri')
+    edit(args, 'terminal_publications', future, 'publication_digest')
+    result = api().join_retained_scene_downstream_inventory(**args)
+    assert len([r for r in result['raw_versions'] if r['role'] == 'terminal_publications']) == 1
+    assert result['terminal_observations'][0]['archive_binding_verified'] is False

@@ -127,33 +127,34 @@ def _validate(context):
                 elif role == 'terminal_publications':
                     c.seal(row, 'publication_digest')
                     c.require(c.matches(value.get('run_id'), c.LAUNCH_ID) and all(c.matches(value.get(k)) for k in ('digest', 'archive_digest', 'pointer_digest'))
+                              and isinstance(value.get('uri'), str) and value['uri'].startswith('s3://')
+                              and '?' not in value['uri'] and not any(char.isspace() for char in value['uri'])
                               and type(value.get('size_bytes')) is int and value['size_bytes'] > 0
                               and type(value.get('archive_member_count')) is int and value['archive_member_count'] >= 0
                               and value.get('provider_allocated') is False, 'publication_invalid')
     # Validate every available exact projection edge, even when its dispatch
     # version is not the one selected by a terminal state.
-    projection_raw = {(p['path'], p['sha256'], p['size_bytes']): v for v, p in context.decoded['canary_projections']}
-    sync_raw = {(p['path'], p['sha256'], p['size_bytes']): v for v, p in context.decoded['canary_syncs']}
+    edges = {role: {(p['path'], p['sha256'], p['size_bytes']): (v, p) for v, p in context.decoded[role]}
+             for role in ('canary_projections', 'canary_syncs')}
     for value, proof in context.decoded['canary_dispatches']:
         if dispatch_types.get(proof['sha256'], (None, None))[1] != 'executed':
             continue
-        ref = value.get('policy_canary_result_projection')
         projection = None
-        if isinstance(ref, dict):
-            v = projection_raw.get(tuple(ref.get(k) for k in ('path', 'sha256', 'size_bytes')))
-            if v is not None and v.get('schema_version') == SCHEMAS['canary_projections']:
+        matches = _available_edge(context, edges, 'canary_projections', value['policy_canary_result_projection'], row=(value, proof))
+        if matches:
+            v = matches[0][0]
+            if v.get('schema_version') == SCHEMAS['canary_projections']:
                 projection = v
                 c.require(v.get('run_id') == value['run_id'] and v.get('projection_digest') == value.get('policy_canary_projection_digest')
                           and v.get('result_delivery_digest') == value.get('result_delivery_digest') and v.get('result_status') == value.get('status'), 'projection_binding_invalid')
-        ref = value.get('policy_canary_webapp_sync')
-        sync = sync_raw.get(tuple(ref.get(k) for k in ('path', 'sha256', 'size_bytes')))
+        matches = _available_edge(context, edges, 'canary_syncs', value['policy_canary_webapp_sync'], row=(value, proof))
+        sync = matches[0][0] if matches else None
         if sync is not None and sync.get('schema_version') == SCHEMAS['canary_syncs']:
-            c.require(sync['run_id'] == value['run_id'] and sync['result_status'] == value['status']
+            c.require(sync['status'] == 'succeeded' and sync['run_id'] == value['run_id'] and sync['result_status'] == value['status']
                       and sync['policy_canary_projection_digest'] == value.get('policy_canary_projection_digest')
                       and sync.get('notification_delivery') == value.get('notification_delivery'), 'sync_binding_invalid')
             if projection:
-                c.require(sync['status'] == 'succeeded'
-                          and all(sync[k] == projection[k] for k in ('request_digest', 'configuration_digest')), 'sync_binding_invalid')
+                c.require(all(sync[k] == projection[k] for k in ('request_digest', 'configuration_digest')), 'sync_binding_invalid')
     paths['_raw_index'] = {role: {(p['path'], p['sha256'], p['size_bytes']): (v, p)
                                  for v, p in context.decoded[role]} for role in ('canary_projections', 'canary_syncs', 'provider_zero_receipts', 'allocator_results', 'canary_dispatches')}
     paths['_dispatch_index'] = {}
@@ -169,6 +170,22 @@ def _validate(context):
                 paths['_path_runs'][role].setdefault(proof['path'], set()).add(value['run_id'])
     paths['_archives'] = _archive_index(context, paths, pointers, dispatch_types)
     return paths, dispatch_types, pointers
+
+
+def _available_edge(context, indexes, role, ref, *, row):
+    """Exact bytes at the original path or either finite terminal-copy layout."""
+    value, proof = row
+    directory = c.child(context.roots['terminal_result_root'], context.intent_id)
+    copied = 'policy_canary_result_projection.json' if role == 'canary_projections' else 'policy_canary_webapp_sync.json'
+    names = {ref['path'], c.child(directory, copied),
+             c.child(directory, 'runs', hashlib.sha256(value['run_id'].encode()).hexdigest(), copied)}
+    matches = [indexes[role][key] for path in sorted(names)
+               if (key := (path, ref['sha256'], ref['size_bytes'])) in indexes[role]]
+    copies = [r[1] for r in matches if r[1]['path'] != ref['path']]
+    if copies:
+        context.missing(role, 'indexed_bytes_match_original_presence_unverified', [proof, *copies],
+                        ref['path'], {'sha256': ref['sha256'], 'size_bytes': ref['size_bytes']})
+    return matches
 
 
 def _raw_select(paths, role, ref, expected, copied):
