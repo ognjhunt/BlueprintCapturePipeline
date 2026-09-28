@@ -83,5 +83,24 @@ def test_available_materialized_revision_contradictions_refuse(change):
     args['downstream_records']['compilation_envelopes']=[pair(comp_path,comp)]
     args['bridge_records']['native_preparation_results']=[pair(final_path,seal(final,'result_digest'))]
     args=_rebase_complete_graph(args,'/retained',{old:comp['envelope_digest']})
-    with pytest.raises(ValueError,match='scene_compilation_owner_'):
-        api().join_retained_scene_compilation_native_owner_inventory(**args)
+    if change=='raw_size':
+        # Fixture rebasing correctly repairs known raw-size aliases. Inject the
+        # contradiction at the reviewed available-edge boundary after that,
+        # before any selector callback can reinterpret it as missing bytes.
+        from blueprint_pipeline.task_evaluation_scene_compilation_owner_preparations import _selected_revision
+        from types import SimpleNamespace
+        envelope=json.loads(args['downstream_records']['compilation_envelopes'][0][1])
+        request=envelope['request']
+        rows=copy.deepcopy(envelope['materialized_references'])
+        rows[0]['size_bytes']=request['scene']['configured_revision']['size_bytes']+1
+        def unavailable(*args,**kwargs):
+            pytest.fail('contradictory available size reached selector callback')
+        context=SimpleNamespace(selected=unavailable,missing=unavailable)
+        with pytest.raises(ValueError,match='revision_materialized_binding_invalid'):
+            _selected_revision(context,request,rows,{})
+    elif change=='local_path':
+        result=api().join_retained_scene_compilation_native_owner_inventory(**args)
+        assert any(row['reason']=='reference_bytes_unavailable' for row in result['raw_reference_obligations'])
+    else:
+        with pytest.raises(ValueError,match='scene_compilation_owner_'):
+            api().join_retained_scene_compilation_native_owner_inventory(**args)

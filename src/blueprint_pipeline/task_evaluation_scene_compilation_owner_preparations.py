@@ -176,13 +176,44 @@ def _result(context, row, *, work_budget=None):
     return True
 
 
-def _revision(context, revisions, request, compilation, final, proof, *, work_budget=None):
+def _selected_revision(context, request, references, proof, *, work_budget=None):
+    """Native requests declare remote bytes; receipts bind their local copy."""
     if work_budget is None:
         work_budget = getattr(context, "work_budget", None)
     if work_budget is not None:
         _work(work_budget)
     reference = request.get('scene', {}).get('configured_revision')
-    row = context.selected(reference, proof, {'configured_revisions'})
+    if isinstance(reference, dict) and 'uri' in reference:
+        c.require((_work_collect(work_budget, set, reference) if work_budget is not None else set(reference))
+            == {'uri', 'digest', 'size_bytes'} and isinstance(reference['uri'], str)
+            and reference['uri'].startswith(('s3://', 'gs://', 'https://'))
+            and len(reference['uri']) <= 4096
+            and not any(ch.isspace() for ch in (_work_items(reference['uri'], work_budget) if work_budget is not None else reference['uri']))
+            and c.matches(reference['digest'], **_work_kwargs(work_budget))
+            and type(reference['size_bytes']) is int and reference['size_bytes'] > 0,
+            'revision_reference_invalid', **_work_kwargs(work_budget))
+        selected = None
+        for item in (_work_items(references, work_budget) if work_budget is not None else references):
+            if item.get('contract_path') != 'scene.configured_revision':
+                continue
+            c.require(selected is None and all(item[k] == reference[k] for k in
+                (_work_items(('uri', 'digest', 'size_bytes'), work_budget) if work_budget is not None else ('uri', 'digest', 'size_bytes'))),
+                'revision_materialized_binding_invalid', **_work_kwargs(work_budget))
+            selected = item
+        if selected is None:
+            context.missing('configured_revisions', 'materialized_revision_selector_unavailable', [proof],
+                selector=dict(reference))
+            return None
+        reference = {'path': selected['materialized_path'], 'sha256': selected['digest'], 'size_bytes': selected['size_bytes']}
+    return context.selected(reference, proof, {'configured_revisions'})
+
+
+def _revision(context, revisions, request, compilation, final, proof, *, work_budget=None):
+    if work_budget is None:
+        work_budget = getattr(context, "work_budget", None)
+    if work_budget is not None:
+        _work(work_budget)
+    row = _selected_revision(context, request, final['references'], proof, **_work_kwargs(work_budget))
     if row is None:
         return False
     value = row[0]
@@ -208,7 +239,7 @@ def _available_parent(context, row, by_filename, *, work_budget=None):
         c.require(all(value[a] == request[b] for a, b in (_work_items((('preparation_id', 'preparation_id'), ('run_id', 'run_id'),
             ('team_namespace', 'team_namespace'), ('source_commit', 'expected_production_commit')), work_budget) if work_budget is not None else (('preparation_id', 'preparation_id'), ('run_id', 'run_id'),
             ('team_namespace', 'team_namespace'), ('source_commit', 'expected_production_commit')))), 'preparation_parent_invalid', **_work_kwargs(work_budget))
-        revision = context.selected(request.get('scene', {}).get('configured_revision'), proof, {'configured_revisions'})
+        revision = _selected_revision(context, request, value['references'], proof, **_work_kwargs(work_budget))
         if value['status'] == FINAL:
             c.require(value.get('run_mode') == request['run_mode'] and value.get('configured_scene_revision_digest')
                 == request['task'].get('configured_scene_revision_digest'), 'preparation_revision_invalid', **_work_kwargs(work_budget))
