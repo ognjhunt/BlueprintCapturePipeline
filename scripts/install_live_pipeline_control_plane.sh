@@ -115,6 +115,64 @@ if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     --shell /usr/sbin/nologin "${SERVICE_USER}"
 fi
 
+# Prepare immutable system-ABI runtime before changing source ownership or
+# exposing units. Existing installations execute only the retained root helper;
+# first install accepts only a genuinely root-protected initial checkout script.
+if [[ "${DRY_RUN}" == "true" ]]; then
+  run /usr/bin/python3 -I -S "${REPO_ROOT}/scripts/install_scene_retirement_runtime.py" \
+    --source "${REPO_ROOT}" --source-commit "<validated-Git-commit>" --locked-sdk
+else
+  /usr/bin/python3 -I -S - "${REPO_ROOT}" <<'PY_RUNTIME'
+import hashlib, json, os, pathlib, stat, subprocess, sys
+source = pathlib.Path(sys.argv[1])
+root = pathlib.Path('/usr/lib/blueprint/scene-retirement-runtime')
+helper = root / 'runtime_installer.py'
+held = []
+def identity(info):
+    return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid,info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+def read(path, cap):
+    for parent in (*reversed(path.parent.parents), path.parent):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise SystemExit('scene_retirement_runtime_unproven')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    held.append(fd)
+    first = os.fstat(fd)
+    if not stat.S_ISREG(first.st_mode) or first.st_uid != 0 or first.st_mode & 0o022 or first.st_nlink != 1 or first.st_size > cap:
+        raise SystemExit('scene_retirement_runtime_unproven')
+    raw = os.read(fd, cap+1)
+    if len(raw) != first.st_size or identity(os.fstat(fd)) != identity(first) or identity(path.lstat()) != identity(first):
+        raise SystemExit('scene_retirement_runtime_unproven')
+    return raw, fd
+if helper.exists() or helper.is_symlink():
+    raw, fd = read(helper, 1024*1024)
+    selected = {'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(), 'size_bytes':len(raw)}
+    match = False
+    for name in ('runtime-installer.json','runtime-installer-pending.json'):
+        path = root / name
+        if path.exists() or path.is_symlink():
+            body, _ = read(path,4096)
+            value = json.loads(body)
+            match |= (type(value) is dict and set(value) == {'schema','sha256','size_bytes'} and
+                      value['schema'] == 'scene-retirement-runtime-installer.v1' and
+                      {key:value[key] for key in selected} == selected)
+    if not match:
+        raise SystemExit('scene_retirement_runtime_unproven')
+else:
+    raw, fd = read(source/'scripts/install_scene_retirement_runtime.py',1024*1024)
+commit = subprocess.check_output(['/usr/bin/git','--no-replace-objects','-C',str(source),'-c','core.hooksPath=/dev/null',
+                                 '-c','core.fsmonitor=false','-c','safe.directory='+str(source),'rev-parse','HEAD'],
+                                 env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','GIT_CONFIG_NOSYSTEM':'1',
+                                      'GIT_CONFIG_GLOBAL':'/dev/null'},timeout=10).decode().strip()
+os.lseek(fd,0,os.SEEK_SET)
+subprocess.run(['/usr/bin/python3','-I','-S',f'/proc/self/fd/{fd}','--source',str(source),
+                '--source-commit',commit,'--locked-sdk'],pass_fds=(fd,),check=True,timeout=310,
+                env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','LC_ALL':'C'})
+for selected_fd in reversed(held):
+    os.close(selected_fd)
+PY_RUNTIME
+fi
+
 # The service account runs git against this checkout to pin the allocator's
 # source identity. A root-owned checkout makes git refuse with "detected
 # dubious ownership", the identity probe fails, and a paid launch is rejected

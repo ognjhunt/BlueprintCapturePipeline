@@ -357,11 +357,11 @@ def _installation_lock():
         os.close(fd)
 
 
-def prepare(source, dependencies):
+def prepare(source, dependencies, *, _deadline=None):
     """Copy exact protected inputs; no policy, consent, generation or flag writes."""
     try:
         source, dependencies = Path(source), Path(dependencies)
-        deadline = time.monotonic() + _MAX_SECONDS
+        deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
         rows, sources = {}, {}
         _tree(source / 'src/blueprint_pipeline', Path('src/blueprint_pipeline'), rows, sources, deadline)
         _tree(source / 'deploy/systemd', Path('deploy/systemd'), rows, sources, deadline)
@@ -532,14 +532,14 @@ def _generation(kind, rows, sources, deadline):
     return generation, digest
 
 
-def refresh(source, dependencies, *, expected_current):
+def refresh(source, dependencies, *, expected_current, _deadline=None):
     """Select one verified source/SDK cohort; old generations remain immutable."""
     try:
         _require(type(expected_current) is dict and set(expected_current) == {'sha256', 'size_bytes'}
                  and type(expected_current['sha256']) is str
                  and re.fullmatch(r'sha256:[0-9a-f]{64}', expected_current['sha256'])
                  and type(expected_current['size_bytes']) is int and 0 < expected_current['size_bytes'] <= 16 * 1024**2)
-        deadline = time.monotonic() + _MAX_SECONDS
+        deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
         source, dependencies = Path(source), Path(dependencies)
         rows, sources, sdk_rows, sdk_sources = _refresh_inputs(source, dependencies, deadline)
         boot_source = source / 'scripts/scene_retirement_continuous_bootstrap.py'
@@ -854,7 +854,7 @@ def _sdk_wheel(package, tools):
     return sorted(choices, key=lambda item: (item[0], item[1]['url']))[0][1]
 
 
-def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024):
+def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_checkout=False, ssh=None):
     executable = Path('/usr/bin/git')
     parent = _open(executable.parent, directory=True)
     try:
@@ -868,42 +868,120 @@ def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024):
             os.close(binary)
     finally:
         os.close(parent)
-    fd = _open(checkout, directory=True)
-    os.close(fd)
+    if raw_checkout:
+        # Raw Git objects are untrusted bytes until the authorized commit and
+        # every blob hash are independently verified. No checkout code runs.
+        _require(checkout.is_absolute() and '..' not in checkout.parts and checkout.is_dir()
+                 and not checkout.is_symlink())
+    else:
+        fd = _open(checkout, directory=True)
+        os.close(fd)
     _require(time.monotonic() <= deadline)
     # No repository hook, external filter, replace-object or mutable user
     # configuration can execute during the raw object read.
     command = [str(executable), '--no-replace-objects', '-C', str(checkout),
-               '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', *arguments]
+               '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+               '-c', 'safe.directory=' + str(checkout), *arguments]
+    environment = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/nonexistent',
+                   'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
+                   'GIT_TERMINAL_PROMPT': '0'}
+    if ssh is not None:
+        environment['GIT_SSH_COMMAND'] = ssh
     value = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                            timeout=max(.001, min(30, deadline - time.monotonic())), check=False,
-                           env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/nonexistent',
-                                'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
-                                'GIT_TERMINAL_PROMPT': '0'})
+                           env=environment)
     _require(value.returncode == 0 and len(value.stdout) <= cap and len(value.stderr) <= 4096
              and time.monotonic() <= deadline
              and _identity(executable.lstat()) == _identity(before))
     return value.stdout
 
 
+def _sdk_fetch_contracts(commit, deadline):
+    # The fixed OS ssh uses only existing protected root credentials. A
+    # service-owned credential helper, environment executable or key cannot
+    # enter the privileged dependency installation path.
+    key = Path('/root/.ssh/id_ed25519')
+    known_hosts = Path('/root/.ssh/known_hosts')
+    for path in (key, known_hosts):
+        fd = _open(path, directory=False, partial=True)
+        try:
+            info = os.fstat(fd)
+            _require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) in {0o600, 0o644})
+        finally:
+            os.close(fd)
+    _require(stat.S_IMODE(key.stat().st_mode) == 0o600)
+    ssh_binary = Path('/usr/bin/ssh')
+    parent = _open(ssh_binary.parent, directory=True)
+    try:
+        info = os.stat(ssh_binary.name, dir_fd=parent, follow_symlinks=False)
+        _require(stat.S_ISREG(info.st_mode) and info.st_uid == 0
+                 and stat.S_IMODE(info.st_mode) == 0o755)
+    finally:
+        os.close(parent)
+    root = _sdk_root() / 'git-objects' / commit
+    claim = root.parent / (commit + '.claim.json')
+    raw = _encoded({'schema': 'scene-retirement-contracts-source.v1', 'commit': commit,
+                    'repository': 'ognjhunt/BlueprintContracts'})
+    _mkdir(root.parent)
+    if root.exists() or root.is_symlink():
+        _require(claim.exists() and _record_bytes(claim, deadline)[0] == raw)
+    _record(claim, raw, deadline)
+    _mkdir(root)
+    ssh = '/usr/bin/ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -i /root/.ssh/id_ed25519'
+    if not (root / 'HEAD').exists():
+        _sdk_git_command(root, ['init', '--bare', '--quiet'], deadline)
+    _sdk_git_command(root, ['fetch', '--quiet', '--no-tags', '--depth=1',
+                           'git@github.com:ognjhunt/BlueprintContracts.git', commit], deadline, ssh=ssh)
+    return root
+
+
+def _authenticated_git_entries(checkout, commit, wanted, deadline, *, raw_checkout=False):
+    raw = _sdk_git_command(checkout, ['cat-file', 'commit', commit], deadline, cap=65536,
+                           raw_checkout=raw_checkout)
+    _require(hashlib.sha1(b'commit ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == commit)
+    trees = re.findall(rb'^tree ([0-9a-f]{40})$', raw, re.MULTILINE)
+    _require(len(trees) == 1)
+    pending, result, count, total = [('', trees[0].decode(), 0)], [], 0, 0
+    while pending:
+        prefix, digest, depth = pending.pop()
+        _require(depth <= 32 and time.monotonic() <= deadline)
+        body = _sdk_git_command(checkout, ['cat-file', 'tree', digest], deadline, cap=1024*1024,
+                                raw_checkout=raw_checkout)
+        total += len(body)
+        _require(total <= 20*1024*1024 and hashlib.sha1(b'tree ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
+        offset, names = 0, set()
+        while offset < len(body):
+            split = body.index(b' ', offset)
+            ending = body.index(b'\0', split + 1)
+            mode, name = body[offset:split].decode('ascii'), body[split+1:ending].decode('utf-8')
+            count += 1
+            _require(count <= _MAX_FILES and name not in names and name not in {'', '.', '..'}
+                     and '/' not in name and '\\' not in name and ending + 21 <= len(body))
+            names.add(name)
+            selected = body[ending+1:ending+21].hex()
+            offset = ending + 21
+            path = prefix + name
+            relevant = any(path == value or path.startswith(value + '/') or value.startswith(path + '/') for value in wanted)
+            if not relevant:
+                continue
+            if mode == '40000':
+                pending.append((path + '/', selected, depth + 1))
+            else:
+                _require(mode in {'100644', '100755'})
+                result.append((mode, selected, path))
+    return sorted(result, key=lambda item: item[2])
+
+
 def _sdk_git_rows(package, checkout, deadline):
     source = package.get('source', {})
     match = re.fullmatch(r'https://github\.com/ognjhunt/BlueprintContracts\.git\?rev=([0-9a-f]{40})#([0-9a-f]{40})', source.get('git', ''))
-    _require(package['name'] == 'blueprint-contracts' and match is not None and match[1] == match[2]
-             and checkout is not None)
-    checkout, commit = Path(checkout), match[1]
-    raw = _sdk_git_command(checkout, ['cat-file', 'commit', commit], deadline, cap=65536)
-    _require(hashlib.sha1(b'commit ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == commit)
-    output = _sdk_git_command(checkout, ['ls-tree', '-r', '-z', commit, '--',
-                              'src/blueprint_contracts', 'blueprint_contracts'], deadline, cap=4 * 1024**2)
-    items = output.rstrip(b'\0').split(b'\0')
-    _require(output.endswith(b'\0') and 0 < len(items) <= _MAX_FILES)
+    _require(package['name'] == 'blueprint-contracts' and match is not None and match[1] == match[2])
+    commit = match[1]
+    checkout = Path(checkout) if checkout is not None else _sdk_fetch_contracts(commit, deadline)
+    items = _authenticated_git_entries(checkout, commit, ('src/blueprint_contracts', 'blueprint_contracts'), deadline)
+    _require(items)
     rows = {}
-    for item in items:
-        header, name = item.split(b'\t', 1)
-        mode, kind, digest = header.decode('ascii').split(' ')
-        _require(mode in {'100644', '100755'} and kind == 'blob' and re.fullmatch('[0-9a-f]{40}', digest))
-        name = name.decode('utf-8')
+    for mode, digest, name in items:
         if name.startswith('src/'):
             name = name[4:]
         _require(name.startswith('blueprint_contracts/') and '..' not in Path(name).parts
@@ -921,9 +999,9 @@ def _sdk_git_rows(package, checkout, deadline):
     return rows
 
 
-def build_sdk(source, *, wheelhouse=None, contracts_checkout=None):
+def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=None):
     """Build the locked base production closure for this system ABI, no setup.py."""
-    deadline = time.monotonic() + _MAX_SECONDS
+    deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
     try:
         import tomllib
         source = Path(source)
@@ -968,16 +1046,115 @@ def build_sdk(source, *, wheelhouse=None, contracts_checkout=None):
     except (OSError, ValueError, KeyError, TypeError, ImportError, zipfile.BadZipFile) as exc:
         raise ValueError(_ERROR) from exc
 
+
+def _signed_release(source, commit, deadline):
+    """Copy only authenticated Git object bytes, never mutable checkout code."""
+    _require(type(commit) is str and re.fullmatch('[0-9a-f]{40}', commit))
+    source = Path(source)
+    items = _authenticated_git_entries(source, commit, ('src/blueprint_pipeline', 'scripts',
+              'deploy/systemd', 'uv.lock', 'pyproject.toml'), deadline, raw_checkout=True)
+    _require(items)
+    output = _encoded(items)
+    root = _sdk_root() / 'release-inputs' / commit
+    claim = root.parent / (commit + '.claim.json')
+    selected = _encoded({'schema': 'scene-retirement-signed-release.v1', 'commit': commit,
+                         'tree_sha256': hashlib.sha256(output).hexdigest()})
+    _mkdir(root.parent)
+    if root.exists() or root.is_symlink():
+        _require(claim.exists() and _record_bytes(claim, deadline)[0] == selected)
+    _record(claim, selected, deadline)
+    _mkdir(root)
+    total, paths = 0, set()
+    for mode, digest, name in items:
+        _require(name not in paths)
+        paths.add(name)
+        size = _sdk_git_command(source, ['cat-file', '-s', digest], deadline, cap=32, raw_checkout=True)
+        _require(size.strip().isdigit() and int(size) <= 1024 * 1024)
+        total += int(size)
+        _require(total <= _MAX_BYTES)
+        body = _sdk_git_command(source, ['cat-file', 'blob', digest], deadline, cap=int(size), raw_checkout=True)
+        _require(len(body) == int(size) and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
+        target = root / name
+        _mkdir(target.parent)
+        _record(target, body, deadline)
+        if mode == '100755':
+            # Root-authenticated scripts are copied as data; no SDK package or
+            # checkout hook is executed by preparation.
+            _require(_read(target, deadline)['sha256'] == hashlib.sha256(body).hexdigest())
+    _require({'uv.lock', 'src/blueprint_pipeline/__init__.py',
+              'scripts/scene_retirement_continuous_bootstrap.py'} <= paths)
+    return root
+
+
+def _publish_installer(source, deadline):
+    raw, _ = _record_bytes(source / 'scripts/install_scene_retirement_runtime.py', deadline, cap=1024*1024)
+    row = _selector(raw)
+    record = _BOOT_ROOT / 'runtime-installer.json'
+    pending = _BOOT_ROOT / 'runtime-installer-pending.json'
+    target = _BOOT_ROOT / 'runtime_installer.py'
+    value = _encoded({'schema': 'scene-retirement-runtime-installer.v1', **row})
+    previous_record, previous_target = None, None
+    if record.exists() or record.is_symlink():
+        old, previous_record = _record_bytes(record, deadline, cap=4096)
+        old_value = json.loads(old)
+        _require(type(old_value) is dict and set(old_value) == {'schema', 'sha256', 'size_bytes'}
+                 and old_value['schema'] == 'scene-retirement-runtime-installer.v1')
+        current, previous_target = _record_bytes(target, deadline, cap=1024*1024)
+        if _selector(current) != {key: old_value[key] for key in ('sha256', 'size_bytes')}:
+            _require(pending.exists() and _record_bytes(pending, deadline)[0] == value
+                     and _selector(current) == row)
+    else:
+        _require(not target.exists() and not target.is_symlink()
+                 or (pending.exists() and _record_bytes(pending, deadline)[0] == value
+                     and _selector(_record_bytes(target, deadline)[0]) == row))
+        if target.exists():
+            _, previous_target = _record_bytes(target, deadline)
+    old_pending = _record_bytes(pending, deadline)[1] if pending.exists() or pending.is_symlink() else None
+    _record(pending, value, deadline, previous=old_pending)
+    _record(target, raw, deadline, previous=previous_target)
+    _record(record, value, deadline, previous=previous_record)
+    _require(_record_bytes(target, deadline)[0] == raw and _record_bytes(record, deadline)[0] == value)
+
+
+def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None):
+    """Complete root snapshot and ABI SDK before callers expose service units."""
+    deadline = time.monotonic() + _MAX_SECONDS
+    protected_source = _signed_release(source, source_commit, deadline)
+    sdk = build_sdk(protected_source, wheelhouse=wheelhouse, contracts_checkout=contracts_checkout, _deadline=deadline)
+    _require(time.monotonic() <= deadline)
+    current = _BOOT_ROOT / 'CURRENT.json'
+    installed = _BOOT_ROOT / 'installation.json'
+    if current.exists() or current.is_symlink() or installed.exists() or installed.is_symlink():
+        selected = current if current.exists() or current.is_symlink() else installed
+        raw, _ = _record_bytes(selected, deadline)
+        result = refresh(protected_source, Path(sdk['dependencies_root']), expected_current=_selector(raw), _deadline=deadline)
+    else:
+        result = prepare(protected_source, Path(sdk['dependencies_root']), _deadline=deadline)
+    _require(time.monotonic() <= deadline)
+    _publish_installer(protected_source, deadline)
+    return result | {'source_commit': source_commit, 'sdk_packages': sdk['packages'],
+                     'system_python_abi': sdk['system_python_abi']}
+
 def main(argv=None):
     _require(os.getuid() == os.geteuid() == 0 and sys.flags.isolated and sys.flags.no_site)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', required=True, type=Path)
+    parser.add_argument('--source-commit')
+    parser.add_argument('--wheelhouse', type=Path)
+    parser.add_argument('--contracts-checkout', type=Path)
     sdk = parser.add_mutually_exclusive_group(required=True)
     sdk.add_argument('--dependencies', type=Path)
     sdk.add_argument('--venv', type=Path)
+    sdk.add_argument('--locked-sdk', action='store_true')
     arguments = parser.parse_args(argv)
-    dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
-    print(json.dumps(prepare(arguments.source, dependencies), sort_keys=True))
+    if arguments.locked_sdk:
+        _require(arguments.source_commit is not None)
+        result = prepare_deployment(arguments.source, source_commit=arguments.source_commit,
+            wheelhouse=arguments.wheelhouse, contracts_checkout=arguments.contracts_checkout)
+    else:
+        dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
+        result = prepare(arguments.source, dependencies)
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 

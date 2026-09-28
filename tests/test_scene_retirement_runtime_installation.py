@@ -31,6 +31,7 @@ def fixture(tmp_path, monkeypatch):
     (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# trusted package\n')
     (source / 'deploy/systemd/blueprint-pipeline-intake.service').write_bytes(b'[Service]\nUser=blueprint\n')
     (source / 'scripts/scene_retirement_continuous_bootstrap.py').write_bytes(b'# fixed bootstrap\n')
+    (source / 'scripts/install_scene_retirement_runtime.py').write_bytes(SCRIPT.read_bytes())
     deps = tmp_path.resolve() / 'dependencies'
     deps.mkdir()
     (deps / 'trusted_sdk.py').write_bytes(b'value = 1\n')

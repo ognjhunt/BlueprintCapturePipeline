@@ -3019,6 +3019,65 @@ def _report_break_glass_notes(
     alerts.append(f"break_glass_notes_reported:{len(notes)}")
 
 
+def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) -> dict[str, Any]:
+    """Execute retained root installer bytes before exposing the new units."""
+    root = Path("/usr/lib/blueprint/scene-retirement-runtime")
+    helper = root / "runtime_installer.py"
+    error = "deploy_scene_retirement_runtime_unproven"
+    held: list[int] = []
+    def identity(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    def read(path: Path, cap: int) -> tuple[bytes, int]:
+        for ancestor in (*reversed(path.parent.parents), path.parent):
+            info = ancestor.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                raise ControlPlaneDeployError(error)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        held.append(fd)
+        first = os.fstat(fd)
+        if (not stat.S_ISREG(first.st_mode) or first.st_uid != 0 or first.st_mode & 0o022
+                or first.st_nlink != 1 or first.st_size > cap):
+            raise ControlPlaneDeployError(error)
+        raw = os.read(fd, cap + 1)
+        if len(raw) != first.st_size or identity(os.fstat(fd)) != identity(first) or identity(path.lstat()) != identity(first):
+            raise ControlPlaneDeployError(error)
+        return raw, fd
+    try:
+        raw, fd = read(helper, 1024 * 1024)
+        selected = {"sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw)}
+        matched = False
+        for name in ("runtime-installer.json", "runtime-installer-pending.json"):
+            path = root / name
+            if path.exists() or path.is_symlink():
+                body, _ = read(path, 4096)
+                value = json.loads(body)
+                if (type(value) is dict and set(value) == {"schema", "sha256", "size_bytes"}
+                        and value["schema"] == "scene-retirement-runtime-installer.v1"
+                        and {key: value[key] for key in selected} == selected):
+                    matched = True
+        if not matched or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+            raise ControlPlaneDeployError(error)
+        os.lseek(fd, 0, os.SEEK_SET)
+        command = ["/usr/bin/python3", "-I", "-S", f"/proc/self/fd/{fd}",
+                   "--source", str(source_repo), "--source-commit", source_commit, "--locked-sdk"]
+        result = subprocess.run(command, pass_fds=(fd,), stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=310, check=False,
+                                env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C"})
+        if result.returncode != 0 or len(result.stdout) > 65536 or len(result.stderr) > 65536:
+            raise ControlPlaneDeployError(error)
+        value = json.loads(result.stdout)
+        if (type(value) is not dict or value.get("status") not in {"prepared", "refreshed"}
+                or value.get("source_commit") != source_commit
+                or value.get("authority_issued") is not False or value.get("cleanup_enabled") is not False):
+            raise ControlPlaneDeployError(error)
+        return value
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise ControlPlaneDeployError(error) from exc
+    finally:
+        for fd in reversed(held):
+            os.close(fd)
+
+
 def deploy_control_plane_commit(
     *,
     source_repo: str | Path,
@@ -3245,6 +3304,9 @@ def deploy_control_plane_commit(
             active_link=active,
             activate=False,
             allow_unmerged_remote_commit=canary,
+        )
+        scene_retirement_runtime = _prepare_scene_retirement_runtime(
+            source_repo=source, source_commit=source_commit
         )
         _mark_stage("release_staged")
         # Record what this deploy really stages (the release checkout it created
@@ -3487,6 +3549,7 @@ def deploy_control_plane_commit(
         "disk_reservation": disk_reservation_receipt,
         "disk_reservation_estimate": disk_reservation_estimate,
         "disk_reservation_runtime": disk_reservation_runtime,
+        "scene_retirement_runtime": scene_retirement_runtime,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}
             for name, path in sorted(surfaces.items())
