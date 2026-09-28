@@ -27,6 +27,8 @@ from .decision_evidence_contracts import canonical_digest
 
 _CURRENT_USE = contextvars.ContextVar("registered_experiment_current_use", default=None)
 
+PRODUCER_CONFIG_PATH = Path("/etc/blueprint-operator-door/door.json")
+
 AUTHORITY_ROOT = Path("/var/lib/blueprint-operator-door/experiment-authority")
 
 
@@ -64,7 +66,7 @@ class RegisteredExperimentUse(LeasedScratchUse):
     """Borrowed scopes retain the same target SH; they never close the parent."""
     @classmethod
     def admit(cls, target, *, expected_birth=None, expected_generation=None, now=time.time,
-              _producer_request_paths=None):
+              _producer_request_paths=None, _producer_config_path=None):
         _require(isinstance(target, Path) and registered_target(target, LANE_ROOTS) == target,
                  "experiment_consumer_authority_required")
         files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
@@ -140,6 +142,8 @@ class RegisteredExperimentUse(LeasedScratchUse):
             result.identity = dict(root=str(root), lane="g1", name=target.name, owner=lease["owner"],
                 run_ref=lease["run_ref"], lease_digest=lease["lease_digest"], consumer_lifetime_contract=scratch.CONSUMER_LIFETIME_PROTOCOL)
             result._producer_requests = []
+            result._public_root = AUTHORITY_ROOT
+            result._producer_config_path = PRODUCER_CONFIG_PATH if _producer_config_path is None else _producer_config_path
             if _producer_request_paths is not None:
                 _require(os.geteuid() == 0 and isinstance(_producer_request_paths, (list, tuple))
                          and len(_producer_request_paths) == 2 and birth["class_intent"] == "evidence"

@@ -223,6 +223,8 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         if action == "offload":
             _require(lease["class_intent"] == "evidence" and entry["completion"] is not None,
                      "experiment_completion_required")
+            from .control_plane_lane_experiment_completion import selected_completion
+            selected_completion(files, config, entry)
         policy_raw, policy_record = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
                                              protected=True, mode=0o600)
         policy = owners._policy(policy_raw, principal, files.budget)

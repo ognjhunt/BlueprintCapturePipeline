@@ -27,7 +27,7 @@ _LOCK = ".experiment-authority.lock"
 _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
-_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|head-prepared|authority-pending|action|manifest|reservation|retiring-head|retired-head))?\.json\Z")
+_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|head-prepared|authority-pending|action|manifest|reservation|retiring-head|retired-head))?\.json\Z")
 _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),

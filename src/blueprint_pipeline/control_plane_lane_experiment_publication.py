@@ -18,7 +18,7 @@ from .control_plane_lane_owner_target_io import _TargetFiles, _typed
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _require
 
 _NAMES = {
-    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|head-prepared|authority-pending|action|reservation|retiring-head|retired-head))?\.json",
+    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|producer-completion|completion-head|head-prepared|authority-pending|action|reservation|retiring-head|retired-head))?\.json",
     "manifest": r"[0-9a-f]{32}\.manifest\.json",
     "event": r"e-[0-9]{5}\.json",
     "birth": r"[0-9a-f]{32}\.birth\.json",

@@ -56,7 +56,7 @@ def test_actual_registered_pair_and_worker_preflight_output_holds_target_sh(inst
     from blueprint_pipeline import control_plane_scratch_lifetime as lifetime
     monkeypatch.setattr(lifetime, "LANE_ROOTS", consumer.LANE_ROOTS)
     use = consumer.RegisteredExperimentUse.admit(Path(born["path"]), expected_birth=born["birth"],
-        expected_generation=born["generation"], now=lambda: 1200, _producer_request_paths=paths)
+        expected_generation=born["generation"], now=lambda: 1200, _producer_request_paths=paths, _producer_config_path=installation[0])
     entered = []
     def preflight(request):
         entered.append(True)
@@ -97,6 +97,7 @@ def _registered_fixture(installation, tmp_path, monkeypatch):  # noqa: F811
                         ("lane_scratch_work_root", "lane_scratch_inputs_root")))
     monkeypatch.setattr(consumer, "AUTHORITY_ROOT", installation[2].parents[1] / "experiment-authority")
     monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
+    monkeypatch.setattr(consumer, "PRODUCER_CONFIG_PATH", installation[0])
     return consumer, Path(born["path"]), born, paths
 
 
@@ -160,3 +161,39 @@ def test_actual_prelaunch_pair_closure_publishes_authenticated_completion_for_of
     assert value['participant_profile'] == 'g1_local_prelaunch_block.v1'
     assert value['pair']['sha256'] == 'sha256:' + hashlib.sha256((target / (pair.SCHEMA + '.json')).read_bytes()).hexdigest()
     assert value['lifetime_closed'] is True and value['child_execution_started'] is False
+
+
+@pytest.mark.parametrize('tampered', [False, True])
+def test_real_completed_prelaunch_offload_intent_requires_exact_closure_record(
+        installation, tmp_path, monkeypatch, tampered):  # noqa: F811
+    from tests.test_registered_experiment_issuer import encoded
+    from blueprint_pipeline import native_g1_development_pair as pair
+    from blueprint_pipeline import native_g1_development_worker as worker
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    policy = json.loads(installation[3].read_bytes())
+    policy['principals'][0]['allowed_actions'].append('offload')
+    installation[3].write_bytes(encoded(policy))
+    config, settings, _, _ = installation
+    settings['experiment_retirement_enabled'] = True
+    config.write_bytes(encoded(settings))
+    consumer, target, born, paths = _registered_fixture(installation, tmp_path, monkeypatch)
+    monkeypatch.setattr(pair, 'LANE_SCRATCH_ROOTS', consumer.LANE_ROOTS)
+    from blueprint_pipeline import control_plane_scratch_lifetime as lifetime
+    monkeypatch.setattr(lifetime, 'LANE_ROOTS', consumer.LANE_ROOTS)
+    def preflight(_request):
+        raise ValueError('development_only_prelaunch_refusal')
+    monkeypatch.setattr(worker, '_preflight_inputs', preflight)
+    use = consumer.RegisteredExperimentUse.admit(target, now=lambda: 1200, _producer_request_paths=paths)
+    pair.run_g1_development_pair(request_paths=paths, output_dir=target, _registered_use=use)
+    intent_id = use.entry['intent_id']
+    if tampered:
+        record = installation[2] / (intent_id + '.producer-completion.json')
+        record.write_bytes(record.read_bytes() + b' ')
+        with pytest.raises(ValueError, match='experiment_completion_changed'):
+            root.issue_experiment_action_intent(intent_id, principal='operator', owner='owner', action='offload',
+                expires_at_epoch=3500, installed_config_path=config, now=lambda: 2900)
+    else:
+        action = root.issue_experiment_action_intent(intent_id, principal='operator', owner='owner', action='offload',
+            expires_at_epoch=3500, installed_config_path=config, now=lambda: 2900)
+        assert action['action_intent']['size_bytes'] > 0
+        assert json.loads((installation[2] / (action['action_id'] + '.action.json')).read_bytes())['completion'] is not None

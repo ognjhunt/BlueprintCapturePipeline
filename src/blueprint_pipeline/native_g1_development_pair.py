@@ -704,13 +704,18 @@ def run_g1_development_pair(
     if _registered_use is not None:
         _registered_use.authorize_g1_pair(request_paths)
     with ExitStack() as lifetime_stack:
-        return _run_g1_development_pair(
+        result = _run_g1_development_pair(
             request_paths=request_paths, output_dir=output_dir, mode=mode, source_receipt_path=source_receipt_path,
             source_packet_path=source_packet_path, policy_runtime_root=policy_runtime_root,
             worker_launcher=worker_launcher, local_runner=local_runner, scratch_owner=scratch_owner,
             scratch_run_ref=scratch_run_ref, scratch_ttl_seconds=scratch_ttl_seconds,
             provider_run_root=provider_run_root, cooperating_lifetime=cooperating_lifetime, lifetime_stack=lifetime_stack,
             _registered_use=_registered_use)
+
+    if _registered_use is not None:
+        from .control_plane_lane_experiment_completion import complete_native_pair
+        complete_native_pair(_registered_use, result)
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
