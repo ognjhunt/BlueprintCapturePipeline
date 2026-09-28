@@ -181,6 +181,13 @@ def test_public_deadline_state_cannot_reset_single_use_budget():
             setattr(shared, name, None)
 
 
+@pytest.mark.parametrize("duration", [10 ** 400, -(10 ** 400)], ids=["huge-positive", "huge-negative"])
+def test_duration_outside_bounded_range_has_only_fixed_api_refusal(duration):
+    with pytest.raises(budgets.ReferenceCollectionBudgetError) as caught:
+        budgets.ReferenceCollectionBudget(time_budget_seconds=duration)
+    assert caught.value.args == ("reference_budget_parameters_invalid",)
+
+
 @pytest.mark.parametrize("family", ["primary", "pins", "auxiliary"])
 @pytest.mark.parametrize("grows", [False, True])
 @pytest.mark.parametrize("chunk_bytes", [2, 4096])

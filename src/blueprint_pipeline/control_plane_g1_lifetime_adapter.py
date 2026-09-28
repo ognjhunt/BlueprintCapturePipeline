@@ -26,6 +26,8 @@ def _wire_size(value: Any, depth: int = 0) -> int:
             raise LaneScratchError("lane_scratch_handshake_invalid")
         size = 2
         for char in value:
+            if 0xD800 <= ord(char) <= 0xDFFF:
+                raise LaneScratchError("lane_scratch_handshake_invalid")
             size += 2 if char in ('"', "\\") else 6 if ord(char) < 32 else len(char.encode("utf-8"))
         return size
     if type(value) is int and value.bit_length() <= 64:
@@ -50,12 +52,17 @@ def write_message(fd: int, value: dict[str, Any]) -> None:
 
 def read_message(fd: int, *, timeout: float = HANDSHAKE_SECONDS,
                  _deadline: float | None = None) -> dict[str, Any]:
-    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= HANDSHAKE_SECONDS:
+    if type(timeout) not in (int, float) or not 0 < timeout <= HANDSHAKE_SECONDS or not math.isfinite(timeout):
         raise LaneScratchError("lane_scratch_handshake_invalid")
     started = time.monotonic()
-    if _deadline is not None and (type(_deadline) not in (int, float) or not math.isfinite(_deadline)
-                                  or _deadline > started + timeout):
-        raise LaneScratchError('lane_scratch_handshake_invalid')
+    if _deadline is not None:
+        try:
+            valid = (type(_deadline) in (int, float) and math.isfinite(_deadline)
+                     and _deadline <= started + timeout)
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise LaneScratchError('lane_scratch_handshake_invalid')
     deadline = started + timeout if _deadline is None else _deadline
     raw = bytearray()
     try:

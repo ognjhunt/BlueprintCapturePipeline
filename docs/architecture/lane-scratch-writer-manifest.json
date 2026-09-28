@@ -116,7 +116,7 @@
     },
     {
       "path": "src/blueprint_pipeline/control_plane_g1_lifetime_adapter.py",
-      "sha256": "71cabcbf83ecc8e24b3ab1445a7cc8ec847e65d60f3f89da86d786dcb93b8c05",
+      "sha256": "3e4f778aa890b3a6ae976da7d1647d95079e58d9c9394818effdddc8387be144",
       "responsibility": "payload_consumer",
       "output_class": "lane_scratch",
       "admission_method": "exact controlled direct-worker proof and bounded startup handshake; inherited close-only ownership",

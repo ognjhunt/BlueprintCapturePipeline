@@ -86,6 +86,27 @@ def test_channel_encoding_bound_precedes_encoder(monkeypatch):
         adapter.write_message(-1, {"oversized": "x" * 4097})
 
 
+@pytest.mark.parametrize("option", ["timeout", "_deadline"])
+@pytest.mark.parametrize("value", [10 ** 400, -(10 ** 400)], ids=["huge-positive", "huge-negative"])
+def test_channel_huge_numeric_options_refuse_before_io(monkeypatch, option, value):
+    monkeypatch.setattr(adapter.select, "select", lambda *args: pytest.fail("selected on invalid channel option"))
+    monkeypatch.setattr(os, "read", lambda *args: pytest.fail("read on invalid channel option"))
+    with pytest.raises(LaneScratchError) as caught:
+        adapter.read_message(-1, **{option: value})
+    assert caught.value.args == ("lane_scratch_handshake_invalid",)
+
+
+@pytest.mark.parametrize("text", ["\ud800", "\udfff"], ids=["high-surrogate", "low-surrogate"])
+@pytest.mark.parametrize("position", ["key", "value"])
+def test_channel_outbound_malformed_unicode_refuses_before_encode_or_write(monkeypatch, text, position):
+    monkeypatch.setattr(adapter.json, "dumps", lambda *args, **kwargs: pytest.fail("encoded malformed channel text"))
+    monkeypatch.setattr(os, "write", lambda *args: pytest.fail("wrote malformed channel text"))
+    value = {text: "valid"} if position == "key" else {"valid": text}
+    with pytest.raises(LaneScratchError) as caught:
+        adapter.write_message(-1, value)
+    assert caught.value.args == ("lane_scratch_handshake_invalid",)
+
+
 def test_unlocked_inherited_descriptor_establishes_separate_shared_authority(tmp_path):
     from blueprint_pipeline.control_plane_scratch_lifetime import LeasedScratchUse
     root, path = folder(tmp_path)

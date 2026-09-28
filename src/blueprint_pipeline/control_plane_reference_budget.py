@@ -33,7 +33,8 @@ class ReferenceCollectionBudget:
 
     def __init__(self, *, monotonic: Callable[[], float] = time.monotonic,
                  time_budget_seconds: float = 5.0):
-        if not callable(monotonic) or type(time_budget_seconds) not in (int, float) or not math.isfinite(time_budget_seconds) or not 0 < time_budget_seconds <= 5:
+        if (not callable(monotonic) or type(time_budget_seconds) not in (int, float)
+                or not 0 < time_budget_seconds <= 5 or not math.isfinite(time_budget_seconds)):
             raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
         self._monotonic, self._duration = monotonic, float(time_budget_seconds)
         self._deadline: float | None = None
