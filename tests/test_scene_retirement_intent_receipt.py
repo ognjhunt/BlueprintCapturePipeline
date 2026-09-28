@@ -16,7 +16,7 @@ def raw_ref(path):
             'size_bytes': len(raw)}
 
 
-def operation(tmp_path, monkeypatch):
+def operation(tmp_path, monkeypatch, *, member_count=1):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
     from blueprint_pipeline.task_evaluation_scene_retirement_mutation import inventory_digest
@@ -31,20 +31,28 @@ def operation(tmp_path, monkeypatch):
     issued = stage(intake)
     intent_path = intake / issued['intent_id'] / 'intent.json'
     _, policy, member = access_fixture(base, monkeypatch)
+    paths = [member]
+    for index in range(1, member_count):
+        sibling = member.parent / ('scene-' + str(index))
+        sibling.mkdir()
+        paths.append(sibling)
+        policy['roots'].append({'root': str(sibling), 'storage_class': 'evidence', 'device': sibling.stat().st_dev})
     policy['reference_context'] = {'roots': {'intent_root': str(intake)}}
     policy['policy_digest'] = canonical_digest(policy, digest_field='policy_digest')
     Path(os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE']).write_text(json.dumps(policy))
     payload = member / 'proof.bin'
-    payload.write_bytes(b'actual-preserved-proof')
+    for index, path in enumerate(paths):
+        (path / 'proof.bin').write_bytes(b'actual-preserved-proof' if index == 0 else b'second-member-proof')
     allowance = ActionAllowance(expires_at=999, now=lambda: 200, monotonic=lambda: 0)
-    preserved = preserve_members([member], transport=MemoryTransport([member]),
+    preserved = preserve_members(paths, transport=MemoryTransport(paths),
                                  allowance=allowance, token='1' * 32)
     plan = base / 'plan.json'
     plan.write_text('{"action":"KEEP"}')
     plan.chmod(0o600)
-    members = [{'canonical_path': str(member), 'class': 'host',
+    members = [{'canonical_path': str(path), 'class': 'host',
                 'owner_intent_id': issued['intent_id'], 'owner_raw_ref': raw_ref(intent_path),
-                'generation_id': '2' * 32, 'inventory_sha256': inventory_digest(preserved, 0)}]
+                'generation_id': str(index + 2) * 32, 'inventory_sha256': inventory_digest(preserved, index)}
+               for index, path in enumerate(paths)]
     consent = {'intent_id': issued['intent_id'], 'intent_raw_ref': raw_ref(intent_path),
                'plan_raw_ref': raw_ref(plan), 'members': members}
     store = Path(policy['journal_store'])
@@ -196,3 +204,101 @@ def test_expired_action_has_no_receipt_or_payload_mutation(tmp_path, monkeypatch
         publish_pending_receipt(policy, consent, journal, preserved, allowance)
     assert not list(Path(consent['intent_raw_ref']['path']).parent.glob('scene-retired.*'))
     assert payload.read_bytes() == b'actual-preserved-proof'
+
+
+def partial_operation(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    policy, consent, journal, preserved, allowance, _ = operation(tmp_path, monkeypatch, member_count=2)
+    pending = publish_pending_receipt(policy, consent, journal, preserved, allowance)
+    removed = detach_and_remove(preserved, member_index=0,
+                                generation_id=consent['members'][0]['generation_id'], journal=journal)
+    progress = {'status': 'incomplete', 'token': journal.token, 'intent_id': consent['intent_id'],
+                'members': [removed], 'last_event_raw_ref': journal.prior_ref}
+    return policy, consent, journal, preserved, allowance, pending, progress
+
+
+def test_partial_receipt_keeps_unremoved_member_and_replay_is_idempotent(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_progress_receipt
+    policy, consent, journal, _, allowance, pending, progress = partial_operation(tmp_path, monkeypatch)
+    current = publish_progress_receipt(policy, consent, pending, progress, allowance)
+    value = json.loads(Path(current['path']).read_bytes())
+    assert value['status'] == 'incomplete' and value['journal_sequence'] == journal.sequence
+    assert value['last_event_raw_ref'] == journal.prior_ref
+    assert value['members'][0]['outcome'] == 'removed'
+    assert value['members'][0]['removed_allocated_bytes'] == progress['members'][0]['removed_allocated_bytes']
+    assert value['members'][1]['action'] == 'pending' and 'removed_allocated_bytes' not in value['members'][1]
+    assert (Path(consent['members'][1]['canonical_path']) / 'proof.bin').read_bytes() == b'second-member-proof'
+    previous = value['prior_receipt_raw_ref']
+    assert previous['path'] != current['path'] and raw_ref(Path(previous['path'])) == previous
+    assert raw_ref(Path(value['pending_receipt_raw_ref']['path'])) == value['pending_receipt_raw_ref']
+    before = sorted(Path(current['path']).parent.glob('scene-retired.*'))
+    assert publish_progress_receipt(policy, consent, current, progress, allowance) == current
+    assert before == sorted(Path(current['path']).parent.glob('scene-retired.*'))
+
+
+def test_terminal_advances_partial_receipt_with_resolvable_history(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_progress_receipt, publish_terminal_receipt
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    policy, consent, journal, preserved, allowance, pending, progress = partial_operation(tmp_path, monkeypatch)
+    current = publish_progress_receipt(policy, consent, pending, progress, allowance)
+    original_progress = Path(current['path']).read_bytes()
+    second = detach_and_remove(preserved, member_index=1,
+                               generation_id=consent['members'][1]['generation_id'], journal=journal)
+    outcomes = progress['members'] + [second]
+    snapshot = journal.retired_snapshot({'schema_version': 'scene_retirement_journal.v1',
+        'intent_id': consent['intent_id'], 'members': consent['members'], 'outcomes': outcomes})
+    final = {'status': 'retired', 'intent_id': consent['intent_id'], 'token': journal.token,
+             'members': outcomes, 'retired_journal_raw_ref': snapshot}
+    terminal = publish_terminal_receipt(policy, consent, current, final, allowance)
+    value = json.loads(Path(terminal['path']).read_bytes())
+    assert all(row['outcome'] == 'removed' for row in value['members'])
+    assert value['journal_sequence'] == journal.sequence and value['last_event_raw_ref'] == journal.prior_ref
+    for key in ('pending_receipt_raw_ref', 'prior_receipt_raw_ref'):
+        assert raw_ref(Path(value[key]['path'])) == value[key]
+    assert Path(value['prior_receipt_raw_ref']['path']).read_bytes() == original_progress
+
+
+@pytest.mark.parametrize('drift', ['count', 'token', 'event', 'rollback', 'stale-current'])
+def test_progress_refuses_drift_without_losing_recorded_outcomes(tmp_path, monkeypatch, drift):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_progress_receipt
+    policy, consent, _, _, allowance, pending, progress = partial_operation(tmp_path, monkeypatch)
+    current = publish_progress_receipt(policy, consent, pending, progress, allowance)
+    before = Path(current['path']).read_bytes()
+    claimed = dict(progress, members=[dict(progress['members'][0])])
+    if drift == 'count':
+        claimed['members'][0]['removed_allocated_bytes'] += 1
+    elif drift == 'token':
+        claimed['token'] = '9' * 32
+    elif drift == 'event':
+        claimed['last_event_raw_ref'] = json.loads(before)['journal_initial_raw_ref']
+    elif drift == 'rollback':
+        claimed['members'] = []
+    with pytest.raises((ValueError, OSError)):
+        publish_progress_receipt(policy, consent, pending if drift == 'stale-current' else current, claimed, allowance)
+    assert Path(current['path']).read_bytes() == before
+
+
+def test_progress_recovers_after_immutable_history_before_projection_cas(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_intent_receipt as module
+    policy, consent, _, _, allowance, pending, progress = partial_operation(tmp_path, monkeypatch)
+    before = Path(pending['path']).read_bytes()
+    publish = module._publish
+
+    def interrupted(directory, name, raw, allowance, *, prior=None):
+        if name == module.NAME:
+            raise OSError('fixture crash before projection CAS')
+        return publish(directory, name, raw, allowance, prior=prior)
+
+    monkeypatch.setattr(module, '_publish', interrupted)
+    with pytest.raises(OSError):
+        module.publish_progress_receipt(policy, consent, pending, progress, allowance)
+    assert Path(pending['path']).read_bytes() == before
+    history = list(Path(pending['path']).parent.glob('scene-retired.*.incomplete.*.json'))
+    assert len(history) == 1
+    original = history[0].read_bytes()
+    monkeypatch.setattr(module, '_publish', publish)
+    current = module.publish_progress_receipt(policy, consent, pending, progress, allowance)
+    assert json.loads(Path(current['path']).read_bytes())['status'] == 'incomplete'
+    assert history[0].read_bytes() == original
+    assert len(list(Path(pending['path']).parent.glob('scene-retired.*.incomplete.*.json'))) == 1
