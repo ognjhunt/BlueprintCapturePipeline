@@ -334,6 +334,14 @@ _REFUSALS = {
         "provider_output_archive_member_size_mismatch"),
     "not_a_zip": (lambda: b"this is not a zip archive at all" * 3, {},
                   "provider_output_archive_end_record_invalid"),
+    # zipfile takes the last signature, a fake inside the comment, and sees no
+    # members; the index must not see different members than zipfile does.
+    "end_record_signature_in_comment": (
+        lambda: build_zip([Entry("a.bin", _TEXT, method=DEFLATED)],
+                          comment=b"note PK\x05\x06" + b"\0" * 18 + b" trailing"),
+        {}, "provider_output_archive_end_record_ambiguous"),
+    "bytes_after_end_record": (lambda: build_zip(_entries("a.bin")).to_bytes() + b"junk", {},
+                               "provider_output_archive_end_record_invalid"),
 }
 
 

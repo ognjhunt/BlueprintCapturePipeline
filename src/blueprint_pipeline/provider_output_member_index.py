@@ -369,6 +369,10 @@ def _end_records(source, size, maximum_members):
                 and end + _END.size + struct.unpack_from('<H', tail, end + 20)[0] == len(tail)):
             break
         search_to = end + 3
+    if tail.find(b'PK\x05\x06', end + 4) >= 0:
+        # The comment holds another end-record signature. Readers that take the
+        # last signature (Python's zipfile does) would see other members.
+        raise _refusal('provider_output_archive_end_record_ambiguous')
     (_, disk, directory_disk, disk_entries, entries, directory_size, directory_offset,
      _comment) = _END.unpack_from(tail, end)
     if disk != 0 or directory_disk != 0 or disk_entries != entries:
