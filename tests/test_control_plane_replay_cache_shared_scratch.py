@@ -627,3 +627,73 @@ def test_a_shared_scan_that_fails_costs_no_lookahead_its_own_pass(tmp_path, monk
     summary = reasons.build_storage_gc_summary(tick)["phases"]["replay_caches"]
     assert summary["candidate_bytes"] is None
     assert summary["shared_scratch"]["status"] == "error" and summary["shared_scratch"]["candidate_bytes"] is None
+
+
+def _after_plan(monkeypatch, change) -> None:
+    """``change()`` runs once the tick's shared plan is made, before its apply."""
+
+    from blueprint_pipeline import control_plane_replay_cache_shared_scratch as shared
+
+    real_plan = shared.plan_shared_scratch
+
+    def plan_then_change(*args, **kwargs):
+        plan = real_plan(*args, **kwargs)
+        change()
+        return plan
+
+    monkeypatch.setattr(shared, "plan_shared_scratch", plan_then_change)
+
+
+def _reader(process_table: Path, pid: str, target: Path) -> Path:
+    reader = process_table / pid
+    (reader / "fd").mkdir(parents=True)
+    (reader / "cmdline").write_bytes(b"python")
+    (reader / "environ").write_bytes(b"")
+    (reader / "fd" / "3").symlink_to(target)
+    return reader
+
+
+def test_a_reader_that_opens_a_holder_after_the_plan_keeps_the_group_whole(
+        tmp_path, monkeypatch, process_table) -> None:
+    """Apply sweeps the process table again before anything goes: a replay a process opened after
+    the plan is no longer eligible, and every group it holds keeps every name, in every replay,
+    though its first names sit in a replay nobody reads."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    second = names[-1].parents[3]
+    _after_plan(monkeypatch, lambda: _reader(process_table, "4242", second / "prepared-references"))
+
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:holder_ineligible": {"groups": 1, "bytes": size}}
+    assert (block["candidate_groups"], block["removed_groups"]) == (1, 0)
+    assert all(path.exists() for path in names)
+
+
+def test_a_directory_swapped_for_a_link_while_rechecking_removes_nothing(tmp_path, monkeypatch) -> None:
+    """A directory above a planned name swapped for a link to a directory holding a file of the same
+    name, after apply opened it and while it rechecks the name, is found by the held chain's check:
+    the group is kept as path_changed, nothing of it is unlinked, the file behind the link is not the
+    replay's and survives, and so does the planned file where it was moved."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    first = names[0].parents[3]
+    content = first / "prepared-references" / "content-addressed"
+    victim = tmp_path / "evidence" / "content-addressed"
+    (victim / "sha256").mkdir(parents=True)
+    (victim / "sha256" / names[0].name).write_bytes(b"evidence that is not the replay's")
+    real_leaf = retention._leaf
+
+    def leaf(directory, name):
+        if name == names[0].name and not content.is_symlink():
+            content.rename(content.with_name("content-addressed-moved"))
+            content.symlink_to(victim, target_is_directory=True)
+        return real_leaf(directory, name)
+
+    monkeypatch.setattr(retention, "_leaf", leaf)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:path_changed": {"groups": 1, "bytes": size}}
+    assert (victim / "sha256" / names[0].name).read_bytes() == b"evidence that is not the replay's"
+    assert (content.with_name("content-addressed-moved") / "sha256" / names[0].name).stat().st_nlink == len(names)
+    assert all(path.exists() for path in names[1:])
