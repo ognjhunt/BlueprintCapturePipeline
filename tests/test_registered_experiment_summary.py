@@ -63,3 +63,50 @@ def test_registered_action_summary_never_sizes_kept_unknown_or_corrupt_bytes():
         "unrecognized_reason": {"count": 1, "bytes": None},
     }
     assert "/PRIVATE" not in json.dumps(entry)
+
+
+def test_action_summary_does_not_credit_negative_or_unbounded_removed_bytes():
+    for value in (-1, 2**64):
+        phase = dict(
+            enabled=True,
+            outcomes=[
+                dict(
+                    decision="retired",
+                    reason="evidence_preserved",
+                    removed_logical_bytes=value,
+                    removed_allocated_bytes=value,
+                )
+            ],
+        )
+        entry = build_storage_gc_summary({"status": "applied", "registered_experiments": phase})[
+            "phases"
+        ]["registered_experiments"]
+        assert entry["removed_allocated_bytes"] is entry["removed_logical_bytes"] is None
+
+
+def test_measured_action_summary_does_not_invent_or_invalidate_future_reclaim_eta():
+    from blueprint_pipeline.control_plane_capacity_controller import _reclaim_outlook
+
+    raw = dict(
+        status="applied",
+        observed_at_epoch=50,
+        skipped_roots=[],
+        phase_errors=[],
+        content_store=dict(status="applied", candidate_bytes=20, removed_bytes=10),
+    )
+    before = _reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked")
+    raw["registered_experiments"] = dict(
+        enabled=True,
+        outcomes=[
+            dict(
+                decision="retired",
+                reason="disposable_expired",
+                removed_logical_bytes=7,
+                removed_allocated_bytes=4096,
+            )
+        ],
+    )
+    assert (
+        _reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked") == before
+    )
+    assert before[0]["reclaimable_bytes"] == 10
