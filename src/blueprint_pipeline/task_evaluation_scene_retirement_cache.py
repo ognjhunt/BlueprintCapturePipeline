@@ -43,30 +43,31 @@ def _directory(path):
     return path
 
 
-def _validate(value,request,*,now):
-    from .task_evaluation_scene_owner_authority import reopen_scene_intent
-    from .task_evaluation_launch_preparation_contract import launch_preparation_request_digest
+def _sidecar(value):
     _require(type(value) is dict and set(value)==_SIDE_FIELDS
              and value['schema_version']=='scene_preparation_storage_authority.v1'
              and value['authority_digest']==canonical_digest(value,digest_field='authority_digest'),_ERROR)
-    intent=selected_document(value['intent_raw_ref'],maximum=65536)
-    _require(reopen_scene_intent(value['intent_raw_ref'],now=now)==intent,_ERROR)
-    attempt=selected_document(value['attempt_raw_ref'],maximum=65536)
+
+
+def _attempt_identity(value,intent,attempt):
     parent=Path(value['intent_raw_ref']['path']).parent
     preparation_only=attempt.get('schema_version')=='task_evaluation_scene_preparation_attempt.v1'
     expected=parent/('preparation-attempts' if preparation_only else 'attempts')
-    _require(Path(value['attempt_raw_ref']['path']).parent==expected
+    _require(attempt.get('schema_version') in {'task_evaluation_scene_preparation_attempt.v1',
+                 'task_evaluation_scene_attempt.v1'}
+             and Path(value['attempt_raw_ref']['path']).parent==expected
              and Path(value['attempt_raw_ref']['path']).name==attempt.get('attempt_id','')+'.json'
              and attempt.get('intent_id')==intent['intent_id'] and attempt.get('intent_digest')==intent['intent_digest']
              and attempt.get('attempt_digest')==canonical_digest(attempt,digest_field='attempt_digest'),_ERROR)
     if preparation_only:
-        _require(attempt.get('maximum_spend_usd')==0 and attempt.get('provider_allocation_permitted') is False
+        _require(type(attempt.get('maximum_spend_usd')) is int and attempt['maximum_spend_usd']==0
+                 and attempt.get('provider_allocation_permitted') is False
                  and attempt.get('paid_authority_granted') is False,_ERROR)
-    else:
-        from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
-        validate_attempt_execution_budget(parent,intent,attempt)
-    factory=selected_document(value['factory_raw_ref'],maximum=65536)
-    supplied=selected_document(value['submission_request_raw_ref'],maximum=65536)
+    return parent,preparation_only
+
+
+def _factory_identity(value,request,intent,attempt,factory,supplied):
+    from .task_evaluation_launch_preparation_contract import launch_preparation_request_digest
     _require(supplied==request and factory.get('schema_version') in {
         'website_scene_attempt_factory.v1','task_evaluation_public_scene_attempt_factory.v1',
         'task_evaluation_completed_scene_attempt_factory.v1'}
@@ -81,7 +82,56 @@ def _validate(value,request,*,now):
     policy=access._policy()
     _require(policy is not None and any(Path(value['factory_raw_ref']['path']).is_relative_to(Path(r['root']))
              for r in policy['roots']),_ERROR)
+
+
+def _validate(value,request,*,now):
+    from .task_evaluation_scene_owner_authority import reopen_scene_intent
+    _sidecar(value)
+    intent=selected_document(value['intent_raw_ref'],maximum=65536)
+    _require(reopen_scene_intent(value['intent_raw_ref'],now=now)==intent,_ERROR)
+    attempt=selected_document(value['attempt_raw_ref'],maximum=65536)
+    parent,preparation_only=_attempt_identity(value,intent,attempt)
+    if not preparation_only:
+        from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
+        validate_attempt_execution_budget(parent,intent,attempt)
+    factory=selected_document(value['factory_raw_ref'],maximum=65536)
+    supplied=selected_document(value['submission_request_raw_ref'],maximum=65536)
+    _factory_identity(value,request,intent,attempt,factory,supplied)
     return intent,attempt
+
+
+def _storage_history(value,allowance):
+    """Authenticate original publication identity, without execution permission.
+
+    Fresh protected retirement consent, generation and current-reference checks
+    are separate. Expiry/revocation prevents producers from reopening authority;
+    it does not rewrite the original accepted actor or immutable request bytes.
+    """
+    from .task_evaluation_scene_intake import validate_request
+    _sidecar(value)
+    records=[]
+    for key in ('intent_raw_ref','attempt_raw_ref','factory_raw_ref','submission_request_raw_ref'):
+        reference=value[key]
+        _require(type(reference) is dict and type(reference.get('size_bytes')) is int
+                 and 0<reference['size_bytes']<=65536,_ERROR)
+        allowance.charge('local_bytes',reference['size_bytes'])
+        records.append(selected_document(reference,maximum=65536))
+        allowance.tick()
+    intent,attempt,factory,request=records
+    path=_canonical(value['intent_raw_ref']['path'])
+    root=os.getenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT','')
+    _require(root and path.name=='intent.json' and path.parent.parent==_canonical(root)
+             and intent.get('schema_version')=='task_evaluation_scene_intent.v1'
+             and path.parent.name==intent.get('intent_id')
+             and intent.get('intent_digest')==canonical_digest(intent,digest_field='intent_digest'),_ERROR)
+    trusted={item.strip() for item in os.getenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS',
+                                               'blueprint-webapp').split(',') if item.strip()}
+    _require(intent.get('authenticated_issuer') in trusted,_ERROR)
+    accepted=validate_request(intent['request'],now=intent['accepted_at_epoch'])
+    _require(accepted['consent']['accepted_by']==accepted['owner']['user_id'],_ERROR)
+    _attempt_identity(value,intent,attempt)
+    _factory_identity(value,request,intent,attempt,factory,request)
+    return request
 
 
 def publish_preparation_storage_authority(*,queue_root,request,intent_raw_ref,attempt_raw_ref,
@@ -393,14 +443,7 @@ def validate_cache_objects(policy,consent,allowance):
             and generation['source_publication_raw_ref']==row['source_raw_ref']
             and source.get('intent_raw_ref')==consent['intent_raw_ref'],_ERROR)
         _require(type(source) is dict and set(source)==_SIDE_FIELDS,_ERROR)
-        for reference in (source['intent_raw_ref'],source['attempt_raw_ref'],source['factory_raw_ref'],
-                          source['submission_request_raw_ref']):
-            allowance.tick()
-            _require(type(reference) is dict and type(reference.get('size_bytes')) is int
-                     and 0<reference['size_bytes']<=65536,_ERROR)
-            allowance.charge('local_bytes',reference['size_bytes'])
-        request=selected_document(source['submission_request_raw_ref'],maximum=65536)
-        _validate(source,request,now=allowance.now())
+        request=_storage_history(source,allowance)
         allowance.tick()
         refs=collect_preparation_references(request)
         _require(any(ref['digest']==row['digest'] and ref['size_bytes']==row['size_bytes'] for ref in refs),_ERROR)
