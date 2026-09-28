@@ -314,7 +314,11 @@ def test_cache_consent_is_bound_to_actual_generation_and_same_authenticated_owne
     from blueprint_pipeline.task_evaluation_scene_retirement_authority import load_authority
     path,consent=cache_action_consent(tmp_path,monkeypatch)
     result=load_authority(path,action='retire',now=lambda:101)
-    assert result['consent']['cache_objects']==consent['cache_objects']
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    selected=cache.validate_cache_objects(result['policy'],result['consent'],
+        ActionAllowance(expires_at=200,now=lambda:101,monotonic=lambda:0))
+    assert selected[0]['canonical_path']==consent['cache_objects'][0]['canonical_path']
 
 
 @pytest.mark.parametrize('field',['canonical_path','digest','generation_id','source_raw_ref'])
@@ -325,11 +329,15 @@ def test_cache_consent_cannot_select_free_or_foreign_cache_authority(tmp_path,mo
     if field=='source_raw_ref':
         row[field]=consent['intent_raw_ref']
     elif field=='canonical_path':
-        row[field]=str(tmp_path/'foreign-store'/'a'*64)
+        row[field]=str(tmp_path/'foreign-store'/('a'*64))
     elif field=='digest':
         row[field]='sha256:'+'a'*64
     else:
         row[field]='f'*32
     _sealed_file(path,consent,'consent_digest',mode=0o600)
     with pytest.raises(ValueError):
-        load_authority(path,action='retire',now=lambda:101)
+        authority=load_authority(path,action='retire',now=lambda:101)
+        from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+        from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+        cache.validate_cache_objects(authority['policy'],authority['consent'],
+            ActionAllowance(expires_at=200,now=lambda:101,monotonic=lambda:0))
