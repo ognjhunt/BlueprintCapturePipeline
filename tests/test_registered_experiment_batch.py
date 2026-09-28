@@ -9,11 +9,13 @@ from pathlib import Path
 from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
 from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
 from tests.test_registered_experiment_birth import birth
+from tests.test_registered_experiment_retirement_flow import retirement_installation  # noqa: F401
 
 
-def test_actual_sixteen_authentic_experiments_keep_independent_owner_generation(installation):
+def test_actual_sixteen_authentic_experiments_keep_independent_owner_generation(retirement_installation):
     from blueprint_pipeline import control_plane_lane_scratch as scratch
 
+    installation = retirement_installation
     grants, targets = [], []
     for index in range(16):
         grant = issue(installation, reference_value=f'finite-batch-{index:02d}')
