@@ -7,7 +7,6 @@ import secrets
 import stat
 from pathlib import Path
 
-from . import control_plane_lane_owner_consents as owners
 from .control_plane_lane_experiment_publication import _BirthFiles, _Record, _guard
 from .control_plane_lane_owner_target_versions import _require
 from .control_plane_reference_budget import ReferenceCollectionBudget
