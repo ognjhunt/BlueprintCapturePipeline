@@ -32,7 +32,7 @@ def stage_episode_compilation(
     queue_root: str | Path,
 ) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(request, preparation_result, configured_revision, configured_scene_bundle_reference)
+    refuse_registered_references(request, preparation_result, configured_revision, configured_scene_bundle_reference, queue_root)
     if (
         request.get("run_mode") not in {"episode_evaluation", "destination_qualification"}
         or request.get("construction", {}).get("mode")

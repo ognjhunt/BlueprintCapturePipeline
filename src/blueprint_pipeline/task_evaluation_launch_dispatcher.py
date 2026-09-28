@@ -1012,7 +1012,7 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
 
 def stage_launch_request(*, value: Mapping[str, Any], queue_root: str | Path) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(value)
+    refuse_registered_references(value, queue_root)
     request = dict(value)
     blockers = validate_launch_request(request)
     if blockers:

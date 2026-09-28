@@ -122,7 +122,7 @@ def stage_scene_construction(
 ) -> dict[str, Any]:
     """Atomically continue one website-started run into production construction."""
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(request, preparation_result, recipe, recipe_configuration_references, render_inputs_result)
+    refuse_registered_references(request, preparation_result, recipe, recipe_configuration_references, render_inputs_result, queue_root)
 
     preparation_id = str(request.get("preparation_id") or "")
     run_id = str(request.get("run_id") or "")
@@ -268,7 +268,7 @@ def stage_scene_configuration_revision(
     own pending -> terminal lifecycle and current runtime commit.
     """
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(source_envelope)
+    refuse_registered_references(source_envelope, queue_root)
 
     source_orchestration_id = str(source_envelope.get("orchestration_id") or "")
     source_run_id = str(source_envelope.get("run_id") or "")

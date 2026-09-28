@@ -104,7 +104,7 @@ def stage_launch_activation_request(
 ) -> dict[str, Any]:
     """Validate and immutably queue one profile/authority activation request."""
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(value)
+    refuse_registered_references(value, queue_root)
 
     request = validate_launch_activation_request(value)
     activation_id = str(request["activation_id"])

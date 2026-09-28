@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import math
 
+from .control_plane_lane_experiment_errors import OwnerTargetVersionError
+
 from . import control_plane_lane_scratch as scratch
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_scratch_lifetime import LANE_ROOTS
@@ -33,13 +35,6 @@ _NO_AUTHORITY = dict(execution_authorized=False, apply_supported=False,
                     budget_enforced=False, admission_checked=False, registration_applied=False,
                     mutations=0, candidate_bytes=None, estimated_reclaimable_bytes=None,
                     eta_contribution_bytes=None, eta_seconds=None)
-
-
-class OwnerTargetVersionError(ValueError):
-    """Fixed screened code, never input, paths, policy or OS exception text."""
-    def __init__(self, code):
-        self.code = code
-        super().__init__(code)
 
 
 def _require(condition, code):

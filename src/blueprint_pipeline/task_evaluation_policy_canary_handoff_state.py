@@ -54,14 +54,14 @@ def _atomic_write(path: Path, value: Mapping[str, Any], *, replace: bool) -> Non
 
 def write_immutable(path: Path, value: Mapping[str, Any]) -> Path:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(value)
+    refuse_registered_references(value, path)
     _atomic_write(path, value, replace=False)
     return path
 
 
 def seal_state(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(value)
+    refuse_registered_references(value, path)
     record = {"schema_version": "task_evaluation_policy_canary_handoff_progression.v1",
               **value, "provider_mutation_performed": False, "progression_digest": ""}
     record["progression_digest"] = canonical_digest(record, digest_field="progression_digest")
@@ -112,7 +112,7 @@ def _validate_ack(receipt: Mapping[str, Any], *, run_id: str) -> None:
 def submit_or_adopt(*, root: Path, endpoint: str, selection: Mapping[str, Any],
         source_commit: str, headers: Callable[[], Mapping[str, str]], poster: Callable) -> tuple[dict[str, Any], str]:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(selection)
+    refuse_registered_references(selection, root, endpoint)
     run_id = str(selection["run_id"])
     binding = {"schema_version": "policy_canary_handoff_web_request_binding.v1",
                "endpoint": endpoint, "run_id": run_id, "source_commit": source_commit,

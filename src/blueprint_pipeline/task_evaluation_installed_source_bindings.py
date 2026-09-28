@@ -93,6 +93,10 @@ class InstalledSource:
     installed_by_commit: str = ""
 
     def verify(self) -> None:
+        # The authenticated URI lookup may select a different local pathname.
+        # Observe that actual native argument before resident/hash/copy access.
+        from .control_plane_registered_reference_gate import refuse_registered_references
+        refuse_registered_references(self.path)
         path = _resident(self.path, (self.path.parent,))
         if _digest(path) != (self.digest, self.size_bytes):
             _fail("file_readback_mismatch")

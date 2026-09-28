@@ -174,7 +174,7 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
                        authenticated_client: str, trusted_clients: set[str],
                        now: float | None = None) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(value)
+    refuse_registered_references(value, queue_root)
     _require(bool(authenticated_client) and authenticated_client in trusted_clients,
              "issuer_not_authorized")
     moment = datetime.now(timezone.utc).timestamp() if now is None else now

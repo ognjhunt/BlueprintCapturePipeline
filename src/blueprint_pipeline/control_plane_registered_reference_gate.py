@@ -1,40 +1,114 @@
-"""Reserved experiments cannot enter unsupported persistent consumer families."""
+"""Finite unsupported-publisher refusal; this does not clear references."""
 from __future__ import annotations
 
+import os
+import posixpath
 import re
+import stat
+import sys
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
-from .control_plane_lane_owner_target_versions import OwnerTargetVersionError
+from .control_plane_lane_experiment_errors import OwnerTargetVersionError
+from .control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
 
-_RESERVED = re.compile(r"(?:^|[/\\])g1[/\\]registered-[0-9a-f]{32}(?:$|[/\\])")
+_RESERVED = re.compile(r'(?:^|/) (?:g1|arena)/registered-', re.X)
+_RAW_LIMIT = 65536
+
+
+def _reference(text, budget):
+    # A URI is interpreted by its declared scheme. Remote URI names cannot
+    # confer local authority; file URIs must have no remote authority/query.
+    parsed = urlsplit(text) if '://' in text else None
+    if parsed is not None:
+        path = unquote(parsed.path)
+        local = parsed.scheme == 'file'
+        if local and (parsed.netloc not in ('', 'localhost') or parsed.query or parsed.fragment):
+            raise OwnerTargetVersionError('experiment_publisher_input_limit')
+    else:
+        path, local = text, True
+    normalized = posixpath.normpath(path.replace('\\', '/'))
+    if _RESERVED.search(normalized):
+        raise OwnerTargetVersionError('experiment_external_publisher_unsupported')
+    # Only path-shaped local strings have a filesystem interpretation. Walk
+    # one finite pathname without following links; never resolve a payload.
+    if local and '/' in path:
+        selected = Path(path)
+        if not selected.is_absolute():
+            selected = Path.cwd() / selected
+        if len(selected.parts) > 64:
+            raise OwnerTargetVersionError('experiment_publisher_input_limit')
+        current = Path(selected.anchor)
+        for component in selected.parts[1:]:
+            budget.charge('values')
+            current = current / component
+            try:
+                info = os.stat(current, follow_symlinks=False)
+            except FileNotFoundError:
+                break
+            if stat.S_ISLNK(info.st_mode):
+                # macOS's immutable system /var alias is part of its named
+                # root layout, not a caller-selected target alias. Every other
+                # link still refuses before payload or publisher mutation.
+                system_var = (sys.platform == 'darwin' and current == Path('/var')
+                              and info.st_uid == 0 and os.readlink(current) == 'private/var')
+                if not system_var:
+                    raise OwnerTargetVersionError('experiment_external_publisher_unsupported')
 
 
 def refuse_registered_references(*values):
-    """Inspect decoded string leaves before the existing publisher touches disk.
+    """Observe actual inputs under ONE native 5s/10k/64KiB allowance.
 
-    Matching names are reserved independently of marker presence. This grants
-    no ownership and no inventory completeness; unsupported families refuse.
+    Recursion is depth-bounded and charged before descent; no pending array is
+    expanded before admission. This is an unsupported-family refusal, not a
+    complete reference scanner or permission to publish/deallocate a target.
+    Relative paths use the calling process's actual current directory. URI
+    paths use their scheme; no supplied base or regex creates ownership.
     """
-    pending = [(value, 0) for value in values]
-    visited, text_bytes = 0, 0
-    while pending:
-        value, depth = pending.pop()
-        visited += 1
-        if visited > 100000 or depth > 64:
-            raise OwnerTargetVersionError("experiment_publisher_input_limit")
+    budget = ReferenceCollectionBudget(values_limit=10000)
+    raw = 0
+
+    def visit(value, depth):
+        nonlocal raw
+        budget.charge('values')
+        if depth > 64:
+            raise OwnerTargetVersionError('experiment_publisher_input_limit')
         if isinstance(value, (str, Path)):
             text = str(value)
-            text_bytes += len(text.encode("utf-8"))
-            if text_bytes > 2 * 1024 * 1024:
-                raise OwnerTargetVersionError("experiment_publisher_input_limit")
-            if _RESERVED.search(text):
-                raise OwnerTargetVersionError("experiment_external_publisher_unsupported")
+            if len(text) > _RAW_LIMIT - raw:
+                raise OwnerTargetVersionError('experiment_publisher_input_limit')
+            for index, char in enumerate(text):
+                if index % 1024 == 0:
+                    budget.tick()
+                ordinal = ord(char)
+                if 0xD800 <= ordinal <= 0xDFFF:
+                    raise OwnerTargetVersionError('experiment_publisher_input_limit')
+                width = 1 if ordinal < 128 else 2 if ordinal < 2048 else 3 if ordinal < 65536 else 4
+                if width > _RAW_LIMIT - raw:
+                    raise OwnerTargetVersionError('experiment_publisher_input_limit')
+                budget.charge('raw_bytes', width)
+                raw += width
+            _reference(text, budget)
         elif isinstance(value, Mapping):
-            if len(value) > 100000 - visited:
-                raise OwnerTargetVersionError("experiment_publisher_input_limit")
-            pending.extend((item, depth + 1) for pair in value.items() for item in pair)
-        elif isinstance(value, (list, tuple)):
-            if len(value) > 100000 - visited:
-                raise OwnerTargetVersionError("experiment_publisher_input_limit")
-            pending.extend((item, depth + 1) for item in value)
+            budget.available('values', len(value) * 2)
+            for key, item in value.items():
+                visit(key, depth + 1)
+                visit(item, depth + 1)
+        elif isinstance(value, (tuple, list)):
+            budget.available('values', len(value))
+            for item in value:
+                visit(item, depth + 1)
+        elif value is not None and type(value) not in (bool, int, float):
+            raise OwnerTargetVersionError('experiment_publisher_input_limit')
+
+    try:
+        for value in values:
+            visit(value, 0)
+        budget.tick()
+    except (ReferenceCollectionBudgetError, OSError, ValueError) as exc:
+        if isinstance(exc, OwnerTargetVersionError):
+            raise
+        raise OwnerTargetVersionError('experiment_publisher_input_limit') from None
+    finally:
+        budget.close()
