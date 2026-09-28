@@ -77,6 +77,9 @@ def _walk(child: Path) -> tuple[os.stat_result, list[tuple[os.stat_result, Path]
         here = Path(directory)
         directories[:] = [name for name in directories if retention._directory_on(here / name, device)]
         if any(p.is_symlink() for p in (here, *here.parents) if p != child.parent):
+            # Swapped for a link after it was admitted: nothing listed through it counts, and the
+            # walk goes no deeper into what it points at.
+            directories[:] = []
             continue
         relative = here.relative_to(child)
         for name in names:

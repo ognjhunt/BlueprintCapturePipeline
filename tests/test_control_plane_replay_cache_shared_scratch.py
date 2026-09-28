@@ -979,3 +979,66 @@ def test_a_single_link_file_is_left_to_the_per_replay_rule(tmp_path, monkeypatch
     block = _tick(tmp_path, parent_root)["replay_caches"]["shared_scratch"]
 
     assert (block["candidate_groups"], block["kept_by_reason"], block["holders_by_gate"]) == (0, {}, {})
+
+
+def test_the_shared_walk_never_walks_a_directory_swapped_for_a_link(tmp_path, monkeypatch) -> None:
+    """A directory the walk admitted, swapped for a link to a tree outside the replay before the walk
+    lists it, is listed through the link once, and its names are never mapped; the walk then goes no
+    deeper into that tree."""
+
+    from blueprint_pipeline import control_plane_replay_cache_shared_scratch as shared
+
+    parent_root, names, _size = _two_lookaheads(tmp_path)
+    admitted = names[0].parents[3] / "prepared-references" / "prep-a"
+    outside = tmp_path / "evidence"
+    (outside / "deeper").mkdir(parents=True)
+    real_islink, real_scandir, listed = os.path.islink, os.scandir, []
+
+    def islink(path):
+        linked = real_islink(path)
+        if os.fspath(path) == str(admitted) and not real_islink(admitted):
+            # Admitted as a directory, then swapped before the walk lists it; the moved directory
+            # stays allocated, so nothing can be given its inode number.
+            admitted.rename(admitted.with_name("prep-a-moved"))
+            admitted.symlink_to(outside, target_is_directory=True)
+        return linked
+
+    def scandir(path="."):
+        listed.append(os.fspath(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os.path, "islink", islink)
+    monkeypatch.setattr(os, "scandir", scandir)
+    lookaheads = sorted(parent_root.glob("*/lookahead"))
+    plan = shared.plan_shared_scratch(lookaheads, now=NOW, minimum_closed_seconds=3600, check_readers=False)
+    monkeypatch.undo()
+
+    assert admitted.is_symlink() and str(admitted) in listed
+    assert not [path for path in listed if path.startswith(str(admitted) + os.sep)]
+    mapped = {str(name) for group in (*plan["candidates"], *(group for group, _reason in plan["kept"]))
+              for _index, name in group["names"]}
+    assert mapped and not [name for name in mapped if name.startswith("prepared-references/prep-a")]
+
+
+def test_a_lookahead_reached_through_a_link_is_never_walked(tmp_path) -> None:
+    """The shared plan walks no lookahead whose path is a link or passes through one, as the
+    per-replay rule refuses such a root: nothing there is planned, kept or counted."""
+
+    from blueprint_pipeline import control_plane_replay_cache_shared_scratch as shared
+
+    parent_root, names, _size = _two_lookaheads(tmp_path / "real")
+    (tmp_path / "linked").symlink_to(tmp_path / "real", target_is_directory=True)
+    lookaheads = sorted(parent_root.glob("*/lookahead"))
+    through = [tmp_path / "linked" / lookahead.relative_to(tmp_path / "real") for lookahead in lookaheads]
+    aliases = [tmp_path / f"alias-{index}" for index in range(len(lookaheads))]
+    for alias, lookahead in zip(aliases, lookaheads):
+        alias.symlink_to(lookahead, target_is_directory=True)
+
+    for roots in (through, aliases):
+        plan = shared.plan_shared_scratch(roots, now=NOW, minimum_closed_seconds=3600, check_readers=False)
+        assert (plan["holders"], plan["candidates"], plan["kept"]) == ([], [], [])
+    phase = _tick(tmp_path, tmp_path / "linked" / parent_root.name, **BOTH)["replay_caches"]
+    block = phase["shared_scratch"]
+    assert (block["candidate_groups"], block["kept_by_reason"], block["holders_by_gate"]) == (0, {}, {})
+    assert {row["error"] for row in phase["errors"]} == {"ValueError"}
+    assert all(path.exists() for path in names)
