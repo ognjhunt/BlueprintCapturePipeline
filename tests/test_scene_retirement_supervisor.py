@@ -376,3 +376,69 @@ def test_reader_closure_requires_actual_linux_kernel_not_caller_claims(tmp_path,
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
         module.require_current_reader_closure(policy, SimpleNamespace(tick=lambda: None))
+
+
+def continuous_unit_fixture(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
+    module = supervisor()
+    runtime = tmp_path / 'runtime'
+    package = runtime / 'src/blueprint_pipeline'
+    package.mkdir(parents=True)
+    monkeypatch.setattr(module, '__file__', str(package / 'task_evaluation_scene_retirement_supervisor.py'))
+    installed = tmp_path / 'installed'
+    installed.mkdir()
+    monkeypatch.setattr(module, '_SYSTEMD_DIR', installed)
+    name = 'blueprint-pipeline-intake.service'
+    source = Path(__file__).resolve().parents[1] / 'deploy/systemd' / name
+    reference = runtime / 'deploy/systemd' / name
+    reference.parent.mkdir(parents=True)
+    reference.write_bytes(source.read_bytes())
+    reference.chmod(0o644)
+    selected = installed / name
+    selected.write_bytes(source.read_bytes())
+    selected.chmod(0o644)
+    command = shlex.split(next(line.partition('=')[2] for line in source.read_text().splitlines()
+                               if line.startswith('ExecStart=')))
+    row = dict(Id=name, LoadState='loaded', FragmentPath=str(selected), DropInPaths='',
+        NeedDaemonReload='no', ControlPID='0', Job='', User='blueprint', Group='blueprint',
+        NoNewPrivileges='yes', AmbientCapabilities='', CapabilityBoundingSet='cap_setgid cap_setuid',
+        ExecStart='{ path=/usr/bin/python3 ; argv[]=' + ' '.join(command).removeprefix('!')
+        + ' ; ignore_errors=no ; start_time=n/a ; stop_time=n/a ; pid=118 ; code=(null) ; status=0 }')
+    native = module._NativeObservation(SimpleNamespace(tick=lambda: None))
+    return module, access, row, native, installed
+
+
+def test_continuous_current_unit_accepts_exact_managed_identity_dropin(tmp_path, monkeypatch):
+    module, _, row, native, installed = continuous_unit_fixture(tmp_path, monkeypatch)
+    parent = installed / 'blueprint-pipeline-intake.service.d'
+    parent.mkdir()
+    selected = parent / '90-blueprint-deploy-identity.conf'
+    environment = selected.with_suffix('.env')
+    selected.write_text('# Managed by scripts/deploy_control_plane_commit.py.\n'
+        '# Loaded after the base unit credential EnvironmentFile.\n[Service]\n'
+        f'EnvironmentFile={environment}\nTimeoutStartSec=300s\n')
+    environment.write_text('# Managed by scripts/deploy_control_plane_commit.py.\n'
+        '# Contains deployment identity only; no credentials.\n'
+        'BLUEPRINT_PIPELINE_REPO=/opt/blueprint/releases/' + 'a' * 40 + '\n'
+        'BLUEPRINT_SOURCE_COMMIT=' + 'a' * 40 + '\n'
+        'BLUEPRINT_PIPELINE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python\n'
+        'PYTHONPATH=/opt/blueprint/releases/' + 'a' * 40 + '/src\n'
+        'BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries\n')
+    selected.chmod(0o644)
+    environment.chmod(0o644)
+    row['DropInPaths'] = str(selected)
+    observed = module._exact_continuous_unit(row, 'blueprint_pipeline.live_pipeline_intake_service', native)
+    assert observed['drop_in']['path'] == str(selected)
+    assert observed['drop_in']['environment_path'] == str(environment)
+
+
+@pytest.mark.parametrize('suffix', [
+    ' ; path=/bin/false ; argv[]=/bin/false',
+    ' } { path=/bin/false ; argv[]=/bin/false ; ignore_errors=no',
+])
+def test_continuous_loaded_command_rejects_extra_native_objects(tmp_path, monkeypatch, suffix):
+    module, access, row, native, _ = continuous_unit_fixture(tmp_path, monkeypatch)
+    row['ExecStart'] = row['ExecStart'][:-2] + suffix + ' }'
+    with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
+        module._exact_continuous_unit(row, 'blueprint_pipeline.live_pipeline_intake_service', native)
