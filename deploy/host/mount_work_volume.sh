@@ -49,6 +49,7 @@ ROOTS=(
   pipeline-control-plane/profile-install-staging
   pipeline-control-plane/policy-canary-presubmission
   pipeline-control-plane/native-g1-team-campaign-work
+  pipeline-control-plane/native-g1-team-policy-work     # a team policy run reserves 32 GB; never on the root disk
   pipeline-control-plane/engineering
   pipeline-control-plane/render-probes
   pipeline-control-plane/diagnostic-checkouts

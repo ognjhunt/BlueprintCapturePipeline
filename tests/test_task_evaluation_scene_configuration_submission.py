@@ -401,8 +401,8 @@ def test_scene_and_task_objects_become_one_validated_production_submission(tmp_p
     # 219 (2026-09-15) lost a GPU rental to `agents_sdk_inference_budget_ceiling_exceeded`
     # at independent_visual_review, projecting $11.47 against $5.00 while actually
     # spending $1.744056. The hard cap is a reservation ceiling, not spend.
-    assert request["spend"]["hard_cap_usd"] == 26.76
-    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 15.0
+    assert request["spend"]["hard_cap_usd"] == 36.76
+    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 25.0
     assert request["expected_production_commit"] == SHA
     assert request["task"]["strategy"] == "pick_and_place"
     references = _staged_references(staging, request, namespace)

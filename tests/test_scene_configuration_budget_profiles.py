@@ -33,13 +33,16 @@ def test_shared_profile_quote_and_schema_contract_match():
     quote = spend_block("astra_cad_blender_v1")
     assert quote["hard_cap_usd"] == 16.76
     assert quote["external_service_caps"]["openai"]["maximum_cost_usd"] == 10.76
-    maxima = spend_block("astra_cad_blender_v1", authoring_max_cost_usd=15)
-    assert maxima["hard_cap_usd"] == 26.76
-    assert maxima["external_service_caps"]["openai"]["maximum_cost_usd"] == 20.76
+    maxima = spend_block("astra_cad_blender_v1", authoring_max_cost_usd=25)
+    assert maxima["hard_cap_usd"] == 36.76
+    assert maxima["external_service_caps"]["openai"]["maximum_cost_usd"] == 30.76
+    profile = scene_configuration_budget_profile("astra_cad_blender_v1")
+    assert (profile.content_agents_minimum, profile.content_agents_maximum) == (5.0, 25.0)
+    assert (profile.external_maximum, profile.attempt_maximum) == (30.76, 36.76)
     assert _required_external_stage_minima(diagnostic_only=False, diagnostic_bootstrap_mode=None,
         carried_stage_count=0, authoring_backend="astra_cad_blender_v1") == quote["external_service_caps"]["openai"]["stage_max_cost_usd"]
     with pytest.raises(ValueError, match="authoring_spend_invalid"):
-        spend_block("astra_cad_blender_v1", authoring_max_cost_usd=15.01)
+        spend_block("astra_cad_blender_v1", authoring_max_cost_usd=25.01)
 
 
 def test_content_only_astra_quote_preserves_the_separate_default() -> None:
@@ -51,11 +54,15 @@ def test_content_only_astra_quote_preserves_the_separate_default() -> None:
                                "artifixer_visual_review": 0.0, "content_agents": 7.0}}
     assert sol["hard_cap_usd"] == 13.0
     assert spend_block("astra_cad_blender_v1", authoring_max_cost_usd=15)["hard_cap_usd"] == 26.76
+    assert spend_block("astra_cad_blender_v1", authoring_max_cost_usd=25)["hard_cap_usd"] == 36.76
+    # A website stage without ArtiFixer: provider compute plus the whole shared authoring pool.
+    assert spend_block("astra_cad_blender_v1", authoring_max_cost_usd=25,
+                       requires_artifixer=False)["hard_cap_usd"] == 31.0
     assert spend_block("astra_cad_blender_v1", authoring_max_cost_usd=7,
                        requires_artifixer=False, authoring_provider="anthropic")["hard_cap_usd"] == 13.0
 
 
-@pytest.mark.parametrize("author_cap", [5, 10, 15])
+@pytest.mark.parametrize("author_cap", [5, 10, 15, 25])
 def test_explicit_astra_requests_are_admitted_without_rewriting_proposed_caps(author_cap):
     value = request()
     value["spend"] = spend_block("astra_cad_blender_v1", authoring_max_cost_usd=author_cap)
@@ -100,7 +107,8 @@ def test_quote_can_reserve_only_when_the_owner_cap_covers_it(tmp_path):
     assert result["attempt_digest"] == canonical_digest(result, digest_field="attempt_digest")
 
 
-@pytest.mark.parametrize("backend,author_cap", [("content_agents", 0.24), ("astra_cad_blender_v1", 5), ("astra_cad_blender_v1", 15)])
+@pytest.mark.parametrize("backend,author_cap", [("content_agents", 0.24), ("astra_cad_blender_v1", 5),
+                                               ("astra_cad_blender_v1", 15), ("astra_cad_blender_v1", 25)])
 def test_paid_authority_materialization_and_reopen_use_the_bound_backend(tmp_path, monkeypatch, backend, author_cap):
     from blueprint_pipeline import task_evaluation_scene_configuration_paid_authority as module
     from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import REQUIRED_PARENT_TTL_SECONDS
@@ -135,7 +143,7 @@ def test_paid_authority_materialization_and_reopen_use_the_bound_backend(tmp_pat
     assert result["maximum_paid_attempts"] == 1 and result["retry_cap"] == 0
     if backend == "astra_cad_blender_v1":
         for overrides in ({"hard_cap_usd": 12}, {"openai_max_cost_usd": 6},
-                {"openai_content_agents_max_cost_usd": 4.99}, {"openai_content_agents_max_cost_usd": 15.01}):
+                {"openai_content_agents_max_cost_usd": 4.99}, {"openai_content_agents_max_cost_usd": 25.01}):
             with pytest.raises(module.TaskEvaluationSceneConfigurationAuthorityError, match="configuration_invalid"):
                 module.materialize_scene_configuration_paid_authority(**{**args, **overrides, "output_path": tmp_path / "refused.json"})
         legacy_receipt = {**receipt, "replacement_authoring_backend": "content_agents"}
@@ -200,12 +208,12 @@ def test_scene_configuration_submission_requests_the_astra_authoring_ceiling():
     profile = scene_configuration_budget_profile("astra_cad_blender_v1")
     requested = _authoring_spend_request("astra_cad_blender_v1")
 
-    assert requested == profile.content_agents_maximum == 15.0
+    assert requested == profile.content_agents_maximum == 25.0
     # Comfortably above the projection that actually blocked the run.
     assert requested > 11.475
     quote = spend_block("astra_cad_blender_v1", authoring_max_cost_usd=requested)
-    assert quote["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 15.0
-    assert quote["hard_cap_usd"] == 26.76
+    assert quote["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 25.0
+    assert quote["hard_cap_usd"] == 36.76
 
     # Other backends keep their own quote; only astra asks for more.
     assert _authoring_spend_request("content_agents") is None

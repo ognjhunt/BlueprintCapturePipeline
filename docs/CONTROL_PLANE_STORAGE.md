@@ -249,7 +249,7 @@ configured root whose class is not the one they may touch.
 | Where | What |
 |---|---|
 | Root disk | The OS, the `/opt/blueprint` releases, and small durable state: `evidence_hot` (spend guard, deploy receipts, standing authorizations, the manifest), `ledger` (disk reservations, pins, locks) and the queues. |
-| Scratch volume, `/mnt/blueprint-work`, growable | Every `cache`, `evidence_cold` and `scratch` root. Also the handoff spool `pubsub-handoffs` (every scene's raw capture and workspace), native run work (`native-g1-team-campaign-work`), the whole `task-evaluation-inputs` tree, and `/workspace`. |
+| Scratch volume, `/mnt/blueprint-work`, growable | Every `cache`, `evidence_cold` and `scratch` root. Also the handoff spool `pubsub-handoffs` (every scene's raw capture and workspace), native run work (`native-g1-team-campaign-work` and `native-g1-team-policy-work`, where a team policy run reserves 32 GB), the whole `task-evaluation-inputs` tree, and `/workspace`. |
 
 Each moved root is bound back at its original path (`/mnt/blueprint-work/<rel>`
 at `/var/lib/blueprint/<rel>`, `/mnt/blueprint-work/workspace` at `/workspace`)
@@ -612,6 +612,82 @@ One tick runs nine phases in order:
    `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
    detailed contract is below.
 
+Between the workspace bundles and the scene workspaces the tick also runs the
+replay cache phase, described next.
+
+### Replay caches: activation lookaheads
+
+Every scene-configuration activation replays its parent preparation under
+`<activation>/lookahead/` (the unit's `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS`,
+class `work`); each `parent-*` directory there is one replay's temporary root.
+Until `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1` the phase only
+estimates. With it, a tick that applies takes, from each finished parent replay
+whose report says it ran in that root, with no paid execution and no provider
+mutation, closed for an hour and with no live reader, every regular file in its
+`prepared-references` whose links are all inside that tree and that is not newer
+than the report, then the directories left empty there. Reports and scratch
+queues stay.
+
+**Shared scratch.** Replays made before the content store moved to the work
+volume on 2026-09-20 hard-linked the store's own inodes, and the store's root
+copies were deleted, so each such inode lives only in names spread across many
+replays. The rule above needs one replay to hold every link, so it never takes
+them (2026-09-28: 85 lookaheads from before the move held 964 blob digests,
+9.07 GB). Once per tick,
+after every lookahead's own pass, the phase walks every replay's
+`prepared-references` (following no link, entering no other device) and groups
+the regular files by inode. A group whose names are all in one replay stays with
+the rule above. A group held by two or more replays goes when every replay
+holding it is eligible exactly as above, its names there are every link it has,
+it is on each holder's device, and it is not newer than any holder's report.
+Apply first rechecks every holder: still the directory the plan walked (not a
+link to it), its report unchanged in path, mtime and sha256, and no live reader
+in one sweep of the process table. A group any of whose holders fails keeps every
+name. Apply then goes one replay at a time: just before a replay's removals it
+rechecks that replay again, in a fresh sweep, as the rule above does before each
+replay's, and unlinks its names through descriptors held from it down, checking
+each name's device, inode, size, mtime and a link count equal to the names still
+to go. A group's bytes count once, when its last name goes. A failed recheck
+stops the group: the names already unlinked were scratch and stay unlinked, the
+bytes live on in the names left, and the next tick plans the rest, as shared
+scratch while two replays hold it and by the rule above once one does. The
+directories a replay's removals leave empty are pruned as above right after them,
+before the next replay. No scratch file's bytes are read;
+only the holders' small reports are hashed, and only on a tick that applies.
+
+This removal needs its own `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1`
+beside the retention opt-in, on a tick that applies; either switch alone removes
+nothing shared. The report's `replay_caches.shared_scratch` always says what it
+found: `enabled` (both switches), `status` (`applied` only when the tick removed),
+`live_readers_checked` (false on a tick that does not apply, which sweeps no
+process table, so its candidates are an upper bound), `candidate_groups` and
+`candidate_bytes` (each inode once), `removed_groups` and `removed_bytes`,
+`holders_by_gate` (every replay holding a shared name, as `eligible` or by the
+gate it failed: `no_finished_report`, `report_not_parent_replay`,
+`closed_too_recently`, `active_reference`) and `kept_by_reason`, with bytes and a
+group count for each reason. The first that holds names a kept group:
+
+- `cross_device`: a name shows another st_dev than the replay holding it;
+- `linked_outside_lookaheads`: the inode has more links than the names found in
+  every lookahead (the store's own name, a derived directory's reference);
+- `holder_ineligible`: a name is in a replay that failed a gate;
+- `more_names_than_links`: its names outnumber its links, so something was
+  counted twice (a bind mount of the same filesystem keeps its st_dev);
+- `newer_than_report`: the inode changed after a holder's report;
+- `recheck_failed:<why>`, at apply: `holder_ineligible`, `changed` (another file,
+  or its size or mtime), `vanished`, `extra_link`, `cross_device`,
+  `path_changed`, or the error's type (for example `permission_error`).
+
+`candidates`, `kept` and `prune_skipped` list at most 200 rows each, with
+`omitted_candidates_count`, `omitted_kept_count` and
+`omitted_prune_skipped_count`; every counter covers every group. Only shared
+scratch a tick removes joins the phase's `candidate_bytes` and `removed_bytes`,
+which the summary and the capacity controller read. A failure of the shared
+pass never undoes the lookaheads' own passes. It is recorded in the block
+(`status: error` with its type, `error_type` in the summary) and, only when the
+pass would have removed, as one more entry in the phase's `errors`: until then
+the retention switch's numbers are exactly what they are without the pass.
+
 ### Terminal cache pin proofs
 
 The original proofs release an activation pin when every run that exists under
@@ -811,7 +887,9 @@ way (0644 in the 0755 directory). It holds the tick's status and
 `skipped_roots`. Per phase it gives `candidate_bytes`,
 `removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
 phase counts without sizing, and the terminal pin phase also gives
-`candidate_count`, `released_count` and `enabled`. `retained_by_reason` is `{}`
+`candidate_count`, `released_count` and `enabled`. The replay cache phase also
+gives `shared_scratch`: the block above without its rows, and the opt-ins include
+`replay_cache_shared_scratch` (null for a report from before it). `retained_by_reason` is `{}`
 when a phase kept nothing and null when it does not say what it kept: an
 applied content-store, stranded-row, scratch or bundle receipt and a replay
 cache pass carry no retained counts. An artifact already evicted is not counted
