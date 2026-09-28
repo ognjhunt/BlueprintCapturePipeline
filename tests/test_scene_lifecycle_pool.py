@@ -270,3 +270,29 @@ def test_explicit_original_sam_hint_does_not_choose_a_conflicting_parent_mode():
     assert len(protected) == 2
     assert {row['sha256'] for row in protected} == {row['sha256'] for row in rows[1:]}
     assert all(row['status'] == 'kept_parent_mode_unproven' for row in protected)
+
+
+@pytest.mark.parametrize('copied', [False, True])
+def test_linked_current_sam_copy_keeps_exact_primary_seed_owner(copied):
+    from tests.test_scene_source_family_adoption import fixture as original_fixture
+    from tests.test_scene_inventory_history import pair, seal
+    args = original_fixture()
+    original = args['source_records']['sam_parent_envelopes'][0]
+    envelope = json.loads(original[1])
+    primary_root = args['roots']['preparation_queue_root']
+    primary = (primary_root+'/completed/'+Path(original[0]).name, original[1])
+    alternate_root = primary_root+'-sam-copy'
+    alternate_raw = original[1] if copied else original[1]+b' '
+    alternate = (alternate_root+'/completed/'+Path(original[0]).name, alternate_raw)
+    link = pair(args['roots']['intent_root']+'/'+args['intent_id']+'/preparations/'+envelope['request_digest'][7:]+'.json',
+                seal({'schema_version':'task_evaluation_scene_preparation_link.v1',
+                      'request_digest':envelope['request_digest']}, 'link_digest'))
+    context = {'roots':args['roots'], 'parent_routes':[
+        {'queue_root':primary_root, 'input_root':args['roots']['preparation_input_root']},
+        {'queue_root':alternate_root, 'input_root':args['roots']['preparation_input_root']}],
+        'retained_metadata_files':[{'role':'sam_parent_envelopes', 'path':alternate[0]}]}
+    rows = [decoded('intent', args['seed_records']['intent']), decoded('preparation_links',link),
+            decoded('parent_envelopes',primary), decoded('parent_envelopes',alternate)]
+    seed, _, source, _, _ = select(rows,context,args['intent_id'],ReferenceCollectionBudget(monotonic=lambda:0))
+    assert source['sam_parent_envelopes'] == ([alternate] if copied else [])
+    assert seed['preparation_envelopes'] == ([primary] if copied else [primary,alternate])
