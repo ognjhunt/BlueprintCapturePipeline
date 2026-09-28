@@ -179,3 +179,22 @@ def test_native_remote_reader_is_closed_immediately_on_engine_refusal(invalid):
                 'sha256':'sha256:'+'a'*64},allowance)
             reader.read(1)
     assert source.closed
+
+
+def test_explicit_native_stream_cleanup_fault_cannot_be_reported_as_success():
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance,read_archive_chunks
+    allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0)
+    class NativeSource:
+        def __iter__(self):
+            return self
+        def __next__(self):
+            return b'owned-byte'
+        def close(self):
+            raise OSError('private remote detail')
+    class Transport:
+        def read_archive_charged(self,uri,selected):
+            return NativeSource()
+    stream=read_archive_chunks(Transport(),'s3://private-fixture/retained.tar',allowance)
+    assert next(stream)==b'owned-byte'
+    with pytest.raises(ValueError,match='scene_retirement_remote_cleanup_unproven'):
+        stream.close()
