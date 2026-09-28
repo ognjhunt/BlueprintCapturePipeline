@@ -112,7 +112,12 @@ class SceneArchiveTransport:
 
     def _call(self, name, **kwargs):
         self._tick()
-        response = getattr(self.client,name)(**kwargs)
+        try:
+            response = getattr(self.client,name)(**kwargs)
+        except Exception:
+            raise access.SceneRetirementAccessError('scene_retirement_transport_failure') from None
+        _require(name=='complete_multipart_upload' or type(response) is dict,
+                 'scene_retirement_transport_response_unproven')
         # Retain ONLY the id this invocation created, even if the post-call clock
         # fails. Its bounded abort is cleanup and never action authorization.
         if name=='create_multipart_upload':
@@ -172,6 +177,13 @@ class SceneArchiveTransport:
             raise
 
     def read_archive(self, uri):
+        return self._read_archive(uri,charge=False)
+
+    def read_archive_charged(self, uri, allowance):
+        _require(allowance is self.allowance,'scene_retirement_transport_origin_unproven')
+        return self._read_archive(uri,charge=True)
+
+    def _read_archive(self, uri, *, charge):
         self._tick()
         prefix = 's3://'+self.bucket+'/'+_PREFIX
         _require(type(uri) is str and uri.startswith(prefix)
@@ -190,7 +202,14 @@ class SceneArchiveTransport:
                 count = min(_CHUNK,size-received)
                 _require(count <= self.allowance.limits['remote_bytes']-self.allowance.counts['remote_bytes'],
                          'scene_retirement_byte_limit')
-                chunk = body.read(count)
+                if charge:
+                    # Charge the requested physical read BEFORE the socket can
+                    # allocate. Short/faulted reads never refund this origin.
+                    self.allowance.charge('remote_bytes',count)
+                try:
+                    chunk = body.read(count)
+                except Exception:
+                    raise access.SceneRetirementAccessError('scene_retirement_transport_failure') from None
                 self._tick()
                 _require(type(chunk) is bytes and 0 < len(chunk) <= count,
                          'scene_retirement_transport_readback_unproven')

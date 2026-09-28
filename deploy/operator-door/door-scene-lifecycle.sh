@@ -29,7 +29,7 @@ set +e
 env PYTHONPATH=src "$DOOR_VENV_PYTHON" -m blueprint_pipeline.task_evaluation_scene_retirement_cli \
   "$DOOR_SCENE_ACTION" --intent-id "$DOOR_SCENE_INTENT_ID" --consent-id "$DOOR_SCENE_CONSENT_ID" \
   --expected-sha256 "$DOOR_SCENE_CONSENT_SHA256" --expected-size-bytes "$DOOR_SCENE_CONSENT_SIZE_BYTES" \
-  "${apply[@]}" >"$result"
+  ${apply[@]+"${apply[@]}"} >"$result"
 rc=$?
 set -e
 # The module publishes only secret-free counters/typed refusal, never consent.
