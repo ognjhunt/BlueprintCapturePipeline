@@ -5,6 +5,7 @@ no new records; an authority change refuses this admission instead of adopting i
 """
 from __future__ import annotations
 
+import contextvars
 import fcntl
 import grp
 import os
@@ -23,6 +24,8 @@ from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .control_plane_scratch_lifetime import LANE_ROOTS, LeasedScratchUse
 from .decision_evidence_contracts import canonical_digest
+
+_CURRENT_USE = contextvars.ContextVar("registered_experiment_current_use", default=None)
 
 AUTHORITY_ROOT = Path("/var/lib/blueprint-operator-door/experiment-authority")
 
@@ -133,6 +136,7 @@ class RegisteredExperimentUse(LeasedScratchUse):
             result.entry, result.birth, result._head_record, result._lease_record = entry, birth, head_record, lease_record
             result._birth_record, result._projection_expiry = birth_record, authority["expires_at_epoch"]
             result._started, result._checks = time.monotonic(), 0
+            result._context_tokens = []
             result.identity = dict(root=str(root), lane="g1", name=target.name, owner=lease["owner"],
                 run_ref=lease["run_ref"], lease_digest=lease["lease_digest"], consumer_lifetime_contract=scratch.CONSUMER_LIFETIME_PROTOCOL)
             result._producer_requests = []
@@ -182,6 +186,17 @@ class RegisteredExperimentUse(LeasedScratchUse):
                     files.finish()
                 finally:
                     files.budget.close()
+
+    def __enter__(self):
+        self.check()
+        _require(len(self._context_tokens) < 64, "experiment_consumer_resource_exhausted")
+        self._context_tokens.append(_CURRENT_USE.set(self))
+        return self
+
+    def __exit__(self, *_exc):
+        _require(bool(self._context_tokens), "experiment_consumer_scope_invalid")
+        _CURRENT_USE.reset(self._context_tokens.pop())
+        self.close()
 
     def authorize_g1_pair(self, paths):
         _require(isinstance(paths, (list, tuple)) and len(paths) == len(self._producer_requests) == 2,
@@ -257,3 +272,23 @@ class RegisteredExperimentUse(LeasedScratchUse):
 
     def _dup(self, original):
         raise OwnerTargetVersionError("experiment_consumer_operation_unsupported")
+
+
+@contextmanager
+def registered_reader(path):
+    """Finite real reader scope; ambient use is rechecked, never a grant."""
+    selected = Path(path)
+    target = registered_target(selected, LANE_ROOTS)
+    if target is None:
+        yield None
+        return
+    current = _CURRENT_USE.get()
+    if type(current) is RegisteredExperimentUse and current.path == target:
+        current.check()
+        try:
+            yield current
+        finally:
+            current.check()
+    else:
+        with RegisteredExperimentUse.admit(target) as use:
+            yield use
