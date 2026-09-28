@@ -4,9 +4,19 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture
+def tmp_path():
+    # Linux RUNNER_TEMP is intentionally shared/writable. Protected-input
+    # positives require genuinely non-writable ancestry, not an ancestry waiver.
+    # The directory and every tiny fixture are removed after each test.
+    with tempfile.TemporaryDirectory(prefix='.blueprint-scene-fixture-', dir=Path.home()) as name:
+        yield Path(name).resolve()
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/scene_retirement_continuous_bootstrap.py'

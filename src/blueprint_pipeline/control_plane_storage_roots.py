@@ -90,6 +90,13 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/mnt/blueprint-work/lanes/*", "lane_scratch", "blueprint", "owned lane scratch folders"),
     StorageRoot(f"{_INPUTS}/lanes", "container", "blueprint", "lane input scratch parent"),
     StorageRoot(f"{_INPUTS}/lanes/*", "lane_scratch", "blueprint", "owned lane input scratch folders"),
+    StorageRoot("/var/lib/blueprint/scene-retirement", "container", "root", "protected scene lifecycle metadata"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/coordinator", "ledger", "root", "reader and retirement coordination locks"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/generations", "ledger", "blueprint", "immutable scene incarnation and reader identity"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/journals", "evidence_hot", "root", "retirement and native process receipts; never reclaimed"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/journals.metadata", "evidence_hot", "root", "public lifecycle receipt metadata"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/consents", "evidence_hot", "root", "owner-bound immutable action authorization"),
+    StorageRoot("/mnt/blueprint-work/scene-retirement-runtime", "evidence_hot", "root", "protected installed executable snapshot; no GC authority"),
     StorageRoot("/var/lib/blueprint-staging", "staging", "blueprint", "isolated staging intake"),
     # --- evidence that live services read; never evicted or offloaded
     StorageRoot(f"{_CONTROL_PLANE}/agent-execution", "evidence_hot", "blueprint", "durable agent task and operation journals with inference budget evidence"),
