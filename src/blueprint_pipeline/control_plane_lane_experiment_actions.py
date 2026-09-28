@@ -531,13 +531,56 @@ def _pin_fence(files, config, root, target, issued):
     return dict(configuration=configuration, root=str(root), identity=dict(dev=initial.st_dev, ino=initial.st_ino, type="directory")), parent
 
 
+_ROW_EVENT_KINDS = frozenset({'member_removed', 'restore_directory', 'restore_member'})
+
+
+def _event_reservation(member_count):
+    _require(type(member_count) is int and 0 <= member_count <= 4096, 'experiment_manifest_limit')
+    return member_count * 4096 + 8 * 32768
+
+
+def _preflight_row_events(files, action, rows, *, restoring=False):
+    """Every selected row fits BEFORE any payload mutation, including escaping.
+
+    Fixed maxima dominate bounded identities/stat integers/selectors. Eight
+    extra bytes cover finite Python epoch float spelling versus the20-digit
+    integer sentinel. These transient bytes debit the SAME output allowance.
+    """
+    maximum = (1 << 64) - 1
+    reference = dict(sha256='sha256:' + 'f'*64, size_bytes=maximum)
+    identity = dict(dev=maximum, ino=maximum, type='directory')
+    for index, row in enumerate(rows):
+        if index % 16 == 0:
+            files.phase('event_admission_batch')
+        files.check_long()
+        if restoring:
+            kind = 'restore_directory' if row[1] == 'directory' else 'restore_member'
+            body = dict(restore_started=reference, path=row[0], identity=identity | {'type':row[1]})
+            if row[1] == 'directory':
+                body['stat_token'] = [maximum]*7
+            else:
+                body.update(index=4095, sha256='sha256:' + 'f'*64, size_bytes=maximum)
+        else:
+            kind = 'member_removed'
+            body = dict(preservation=reference, action=reference, manifest=reference, index=4095,
+                path=row[0], original_identity=identity | {'type':row[1]}, logical_bytes=maximum,
+                eligible_allocated_bytes=maximum, parent_after=dict(path=str(Path(row[0]).parent),
+                    identity=identity, stat_token=':'.join([str(maximum)]*7)))
+        value = dict(schema_version='control_plane_lane_experiment_event.v1', event_id='f'*32,
+            operation_id=action['action_id'], event_kind=kind, intent_id=action['intent_id'],
+            generation=action['generation'], sequence=12287, previous_event=reference,
+            issued_at_epoch=maximum, body=body)
+        raw = _encoded(value, 'event_digest', 4096 - 8)
+        files.budget.charge('output_bytes', len(raw))
+
+
 def _event(files, directory, action, kind, body, index, previous, issued):
     _require(0 <= index < 12288, "experiment_event_limit")
     value = dict(schema_version="control_plane_lane_experiment_event.v1", event_id=secrets.token_hex(16),
         operation_id=action["action_id"], event_kind=kind, intent_id=action["intent_id"],
         generation=action["generation"], sequence=index, previous_event=previous,
         issued_at_epoch=issued, body=body)
-    payload = _encoded(value, "event_digest", 4096 if kind == "member_removed" else 32768)
+    payload = _encoded(value, "event_digest", 4096 if kind in _ROW_EVENT_KINDS else 32768)
     return _publish(files, directory, f"e-{index:05d}.json", payload, kind="event")
 
 
@@ -642,7 +685,9 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         from . import control_plane_lane_experiment_recovery as recovery
         rows = sorted(manifest["members"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         files._store_path = config.experiment_record_store
-        reservation_size = len(rows) * 2 * 4096 + 8 * 32768
+        _preflight_row_events(files, action, rows)
+        files.phase("event_admission_done")
+        reservation_size = _event_reservation(len(rows))
         reserve_raw = _encoded(dict(schema_version="control_plane_lane_experiment_reservation.v1",
             operation_id=action_id, reserved_bytes=reservation_size), "reservation_digest", 4096)
         if entry["state"] == "active":

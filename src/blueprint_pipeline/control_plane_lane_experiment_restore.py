@@ -523,7 +523,9 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         _require(final == selection['retired'], 'experiment_restore_selection_invalid')
         # The exact old operation/store lock and pins EX remain held.
         occupied = issuance._capacity(files, store, adding_registration=False)
-        reserved = 2 * len(rows) * 4096 + 8 * 32768
+        actions._preflight_row_events(files, action, rows, restoring=True)
+        files.phase("event_admission_done")
+        reserved = actions._event_reservation(len(rows))
         _require(occupied + (reserved if entry['state'] == 'retired' else 0) + 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES, 'experiment_store_full')
         reservation_raw = actions._encoded(dict(schema_version='control_plane_lane_experiment_reservation.v1',
             operation_id=action_id, reserved_bytes=reserved), 'reservation_digest', 4096)
