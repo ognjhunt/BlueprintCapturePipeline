@@ -476,7 +476,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     descriptors = (args.lifetime_fd, args.lifetime_input_fd, args.lifetime_output_fd)
     if any(value is not None for value in descriptors):
-        from .control_plane_g1_lifetime_adapter import adopt_worker_proof, read_message, write_message
+        from .control_plane_g1_lifetime_adapter import adopt_worker_proof, read_message, write_message, HANDSHAKE_SECONDS
+        from time import monotonic
         from .control_plane_scratch_lifetime import LeasedScratchUse
         from .control_plane_lane_scratch import LaneScratchError
         from contextlib import ExitStack
@@ -491,11 +492,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sealed = _request(request)
             except (OSError, ValueError, TypeError, RecursionError):
                 raise LaneScratchError("lane_scratch_handshake_invalid") from None
-            proof = read_message(args.lifetime_input_fd)
+            deadline = monotonic() + HANDSHAKE_SECONDS
+            proof = read_message(args.lifetime_input_fd, _deadline=deadline)
             use = cleanup.enter_context(adopt_worker_proof(args.lifetime_fd, proof, output=args.output_dir,
                                                            request_digest=sealed["request_digest"], _owner=owner))
             write_message(args.lifetime_output_fd, {"status": "ready", "request_digest": sealed["request_digest"]})
-            if read_message(args.lifetime_input_fd) != {"status": "proceed"}:
+            if read_message(args.lifetime_input_fd, _deadline=deadline) != {"status": "proceed"}:
                 raise LaneScratchError("lane_scratch_handshake_invalid")
             result = run_g1_development_worker(request=request, output_dir=args.output_dir, scratch_lifetime=use)
     else:

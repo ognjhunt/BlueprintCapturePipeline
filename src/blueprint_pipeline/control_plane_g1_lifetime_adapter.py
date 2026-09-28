@@ -48,10 +48,15 @@ def write_message(fd: int, value: dict[str, Any]) -> None:
         raise LaneScratchError("lane_scratch_handshake_invalid") from None
 
 
-def read_message(fd: int, *, timeout: float = HANDSHAKE_SECONDS) -> dict[str, Any]:
+def read_message(fd: int, *, timeout: float = HANDSHAKE_SECONDS,
+                 _deadline: float | None = None) -> dict[str, Any]:
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= HANDSHAKE_SECONDS:
         raise LaneScratchError("lane_scratch_handshake_invalid")
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    if _deadline is not None and (type(_deadline) not in (int, float) or not math.isfinite(_deadline)
+                                  or _deadline > started + timeout):
+        raise LaneScratchError('lane_scratch_handshake_invalid')
+    deadline = started + timeout if _deadline is None else _deadline
     raw = bytearray()
     try:
         while b"\n" not in raw:

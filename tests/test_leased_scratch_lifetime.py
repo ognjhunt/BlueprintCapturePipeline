@@ -335,3 +335,47 @@ def test_unknown_initial_identity_preserves_original_handle_as_explicit_refusal(
         assert original_stat(fd) and use.unresolved_ownership
     finally:
         original_close(fd)
+@pytest.mark.parametrize('operation', ['open', 'root_lock', 'dup'])
+@pytest.mark.parametrize('state', ['closed', 'capacity'])
+def test_owned_acquisition_preflight_precedes_every_syscall(monkeypatch, operation, state):
+    handle = lifetime.LeasedScratchUse()
+    handle._root_fd = 7
+    if state == 'closed':
+        handle._closed = True
+    else:
+        handle._owned = {fd: (1, fd) for fd in range(768)}
+    monkeypatch.setattr(os, 'open', lambda *args, **kwargs: pytest.fail('opened without ownership capacity'))
+    monkeypatch.setattr(os, 'dup', lambda *args: pytest.fail('duplicated without ownership capacity'))
+    with pytest.raises(lifetime.LaneScratchError):
+        if operation == 'root_lock':
+            with handle._root_lock():
+                pytest.fail('entered guard')
+        elif operation == 'dup':
+            handle._dup(5)
+        else:
+            handle._open('/target', os.O_RDONLY)
+
+
+@pytest.mark.parametrize('stage', [2, 8, 18, 30])
+def test_probe_private_checkpoint_failure_closes_owned_handles_and_releases_authority(tmp_path, monkeypatch, stage):
+    root, target = folder(tmp_path)
+    acquired = []
+    real_open, real_fstat = os.open, os.fstat
+    def opened(*args, **options):
+        fd = real_open(*args, **options)
+        acquired.append(fd)
+        return fd
+    monkeypatch.setattr(os, 'open', opened)
+    calls = [0]
+    def checkpoint():
+        calls[0] += 1
+        if calls[0] >= stage:
+            raise RuntimeError('injected expired clock')
+    with pytest.raises(RuntimeError, match='expired clock'):
+        lifetime.LeasedScratchUse.probe(target, now=lambda: 110, _checkpoint=checkpoint)
+    assert acquired
+    for fd in set(acquired):
+        with pytest.raises(OSError):
+            real_fstat(fd)
+    with open_use(root):
+        pass

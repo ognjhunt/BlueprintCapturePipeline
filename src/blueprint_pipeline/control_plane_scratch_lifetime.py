@@ -49,9 +49,27 @@ class LeasedScratchUse:
         self._owned: dict[int, tuple[int, int] | None] = {}
         self._closed = False
         self.unresolved_ownership = False
+        self._checkpoint: Callable[[], None] | None = None
 
-    def _open(self, name: str | Path, flags: int, parent: int | None = None) -> int:
-        fd = os.open(name, flags, dir_fd=parent)
+    def _tick(self) -> None:
+        if self._checkpoint is not None:
+            self._checkpoint()
+
+    def _capacity(self) -> None:
+        if self._closed or len(self._owned) >= 768:
+            raise LaneScratchError("lane_scratch_lifetime_descriptor_invalid")
+
+    def _open(self, name: str | Path, flags: int, parent: int | None = None, *, mode: int = 0o777) -> int:
+        self._tick()
+        self._capacity()
+        fd = os.open(name, flags, mode, dir_fd=parent)
+        self._take(fd)
+        self._tick()
+        return fd
+
+    def _dup(self, original: int) -> int:
+        self._capacity()
+        fd = os.dup(original)
         self._take(fd)
         return fd
 
@@ -102,11 +120,12 @@ class LeasedScratchUse:
         lock = None
         try:
             flags = os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_RDWR | os.O_CREAT if create else os.O_RDONLY)
-            lock = os.open(".lane-scratch.lock", flags, 0o600, dir_fd=self._root_fd)
-            self._take(lock)
+            lock = self._open(".lane-scratch.lock", flags, self._root_fd, mode=0o600)
             if not stat.S_ISREG(os.fstat(lock).st_mode):
                 raise LaneScratchError("lane_scratch_root_lock_unsafe")
+            self._tick()
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._tick()
         except (OSError, LaneScratchError):
             if lock is not None:
                 self._close_one(lock)
@@ -183,15 +202,18 @@ class LeasedScratchUse:
         return cls._admit(root=root, lane=lane, name=name, expected=expected, exclusive=False, now=now)
 
     @classmethod
-    def probe(cls, path: str | Path, *, now: Callable[[], float] = time.time) -> LeasedScratchUse:
+    def probe(cls, path: str | Path, *, now: Callable[[], float] = time.time,
+              _checkpoint: Callable[[], None] | None = None) -> LeasedScratchUse:
         path = _path(path)
         return cls._admit(root=path.parent.parent, lane=path.parent.name, name=path.name,
-                          expected=None, exclusive=True, now=now)
+                          expected=None, exclusive=True, now=now, _checkpoint=_checkpoint)
 
     @classmethod
     def _admit(cls, *, root: str | Path, lane: str, name: str, expected: dict[str, str] | None,
-               exclusive: bool, now: Callable[[], float]) -> LeasedScratchUse:
+               exclusive: bool, now: Callable[[], float],
+               _checkpoint: Callable[[], None] | None = None) -> LeasedScratchUse:
         result = cls()
+        result._checkpoint = _checkpoint
         result.root, result.lane, result.name = _path(root), _id(lane, "lane"), _id(name, "name")
         result.now, result.exclusive = now, exclusive
         try:
@@ -204,7 +226,7 @@ class LeasedScratchUse:
                 except BlockingIOError:
                     raise LaneScratchError("lane_scratch_consumer_busy") from None
                 result._visible()
-                lease = _read_lease(result.fd)
+                lease = result._lease()
                 if lease.get("consumer_lifetime_contract") != PROTOCOL:
                     raise LaneScratchError("lane_scratch_consumer_participation_unproven")
                 if lease["lane"] != lane or lease["name"] != name:
@@ -230,6 +252,7 @@ class LeasedScratchUse:
 
     def _visible(self) -> None:
         current = LeasedScratchUse()
+        current._checkpoint = self._checkpoint
         try:
             root = current._absolute(self.root)
             lane = current._open(self.lane, _DIR_FLAGS, root)
@@ -240,12 +263,18 @@ class LeasedScratchUse:
         finally:
             current.close()
 
+    def _lease(self) -> dict[str, Any]:
+        self._tick()
+        lease = _read_lease(self.fd)
+        self._tick()
+        return lease
+
     def check(self) -> None:
         if self._closed:
             raise LaneScratchError("lane_scratch_lifetime_closed")
         try:
             self._visible()
-            lease = _read_lease(self.fd)
+            lease = self._lease()
             if any(lease.get(k) != v for k, v in self.identity.items() if k not in {"root", "inodes"}):
                 raise LaneScratchError("lane_scratch_lifetime_lease_changed")
         except OSError:
@@ -299,8 +328,7 @@ class LeasedScratchUse:
         try:
             result._root_fd = result._absolute(self.root)
             result._lane_fd = result._open(self.lane, _DIR_FLAGS, result._root_fd)
-            result.fd = os.dup(self.fd)
-            result._take(result.fd)
+            result.fd = result._dup(self.fd)
             result.check()
             if [_identity(fd) for fd in (result._root_fd, result._lane_fd, result.fd)] != self.identity["inodes"]:
                 raise LaneScratchError("lane_scratch_lifetime_identity_changed")

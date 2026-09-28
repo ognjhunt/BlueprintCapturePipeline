@@ -68,6 +68,18 @@ def test_channel_valid_bounded_message_round_trip():
         os.close(write)
 
 
+def test_two_startup_messages_share_one_deadline(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(adapter.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(adapter.select, 'select', lambda *args: ([7], [], []))
+    monkeypatch.setattr(os, 'read', lambda *args: b'{"status":"ready"}\n')
+    assert adapter.read_message(7, _deadline=105) == {'status': 'ready'}
+    clock[0] = 106
+    monkeypatch.setattr(os, 'read', lambda *args: pytest.fail('read after startup deadline'))
+    with pytest.raises(LaneScratchError, match='handshake_timeout'):
+        adapter.read_message(7, _deadline=105)
+
+
 def test_channel_encoding_bound_precedes_encoder(monkeypatch):
     monkeypatch.setattr(adapter.json, "dumps", lambda *args, **kwargs: pytest.fail("encoded oversized proof"))
     with pytest.raises(LaneScratchError, match="handshake"):

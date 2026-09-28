@@ -36,6 +36,7 @@ _ENV_PATHS = {
     'BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_ROOT': 'activation_input_root',
     'BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG': 'progression_config',
     'BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT': 'intent_root',
+    'BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT': 'intent_root',
     'BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT': 'source_binding_root',
     'BLUEPRINT_TASK_EVALUATION_OWNER_SOURCE_STORE_ROOT': 'owner_source_store_root',
     'PIPELINE_CAPTURE_INTAKE_STORE_ROOT': 'capture_store_root',
@@ -44,7 +45,10 @@ _ENV_PATHS = {
 _CONFIG_PATHS = ('intent_root', 'preparation_queue_root', 'child_queue_root', 'child_execution_root',
                  'launch_queue_root', 'launch_execution_root', 'public_source_binding_root', 'machinery_path',
                  'publication_lock_root', 'service_status_path', 'capture_store_root', 'source_store_root',
-                 'activation_queue_root', 'activation_root', 'sam31_profile_registry_root')
+                 'activation_queue_root', 'activation_root', 'sam31_profile_registry_root',
+                 'factory_output_root', 'completed_source_machinery_path', 'activation_intent_root',
+                 'terminal_result_root', 'release_binding_root', 'deployment_receipt_root',
+                 'public_source_catalog_path', 'website_source_binding_root', 'website_source_machinery_path')
 _MODULES = {'blueprint_pipeline.task_evaluation_scene_progression': 'progression',
             'blueprint_pipeline.task_evaluation_launch_preparation_worker': 'preparation',
             'blueprint_pipeline.task_evaluation_launch_activation_worker': 'activation',
@@ -108,6 +112,28 @@ class ConfigObservation:
 
 
 @dataclass(frozen=True)
+class ObservedRawRowIdentity:
+    root_path: str
+    role: str
+    row_path: str
+    raw_sha256: str
+    raw_size_bytes: int
+    row_identity: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class QueueProjection:
+    complete: bool
+    scope: str
+    roots: tuple[Any, ...]
+    rows: tuple[ObservedRawRowIdentity, ...]
+    blockers: tuple[str, ...]
+    general_reference_inventory_complete: bool = False
+    consumer_fence_checked: bool = False
+    mutations: int = 0
+
+
+@dataclass(frozen=True)
 class LaneReferenceCollection:
     target_probe: TargetProbe
     source_origin: str
@@ -129,6 +155,7 @@ class LaneReferenceCollection:
     general_process_inventory_complete: bool = False
     execution_authorized: bool = False
     apply_supported: bool = False
+    collector_owned_descriptor_handling: str = 'included_in_observed_channel_positives'
 
 
 def _path(value: Any) -> str:
@@ -214,7 +241,9 @@ class _Collector:
             self.budget.available('raw_bytes', before.st_size)
             raw = bytearray()
             while True:
-                chunk = self.scan.call(os.read, record, min(4096, cap + 1 - len(raw)))
+                self.budget.available('raw_bytes', 1)
+                remaining = self.budget.limits['raw_bytes'] - self.budget.counts['raw_bytes']
+                chunk = self.scan.call(os.read, record, min(4096, cap + 1 - len(raw), remaining))
                 if not chunk:
                     break
                 queues._require(len(raw) + len(chunk) <= cap, 'reference_record_bytes_limit')
@@ -267,9 +296,20 @@ class _Collector:
         # Dynamic provider/catalog/source bindings cannot be represented as empty.
         self.keep('configuration_additional_sources_unobserved')
 
+    def raw_digest(self, raw):
+        digest = hashlib.sha256()
+        for offset in range(0, len(raw), 4096):
+            self.budget.tick()
+            digest.update(raw[offset:offset + 4096])
+        self.budget.tick()
+        return 'sha256:' + digest.hexdigest()
+
     def start_time(self, raw, pid):
         prefix, close, suffix = raw.rpartition(b')')
         queues._require(bool(close) and prefix.startswith(str(pid).encode() + b' ('), 'reference_process_identity_invalid')
+        # Charge the bounded whitespace token upper bound before allocating it.
+        self.budget.charge('values', len(suffix))
+        self.budget.tick()
         fields = suffix.split()
         queues._require(len(fields) >= 20 and fields[19].isdigit() and len(fields[19]) <= 20,
                         'reference_process_identity_invalid')
@@ -278,10 +318,14 @@ class _Collector:
         return value
 
     def hint(self, pid, start, channel, raw):
-        if self.target.encode('utf-8') in raw:
-            self.add(self.processes, ProcessReference(pid, start, channel), fact=True)
+        needle = self.target.encode('utf-8')
+        for offset in range(0, len(raw), 4096):
+            self.budget.tick()
+            if needle in raw[max(0, offset - len(needle) + 1):offset + 4096]:
+                self.add(self.processes, ProcessReference(pid, start, channel), fact=True)
+                return
 
-    def link(self, parent, name, pid, start, channel):
+    def link(self, parent, name, pid, start, channel, *, emit=True):
         before = self.scan.call(os.stat, name, dir_fd=parent, follow_symlinks=False)
         queues._require(stat.S_ISLNK(before.st_mode), 'reference_process_link_unsafe')
         value = self.scan.call(os.readlink, name, dir_fd=parent)
@@ -290,8 +334,9 @@ class _Collector:
         queues._require(queues._identity(before) == queues._identity(after), 'reference_process_changed')
         deleted = value.endswith(' (deleted)')
         observed = value[:-10] if deleted else value
-        if _below(observed, self.target):
+        if emit and _below(observed, self.target):
             self.add(self.processes, ProcessReference(pid, start, channel, deleted), fact=True)
+        return queues._identity(before), self.raw_digest(value.encode('utf-8'))
 
     def tokens(self, raw):
         count = 1
@@ -375,21 +420,25 @@ class _Collector:
                 before = self.scan.call(os.fstat, pid_fd)
                 stat_raw, _ = self.binary(pid_fd, 'stat', cap=8192)
                 start = self.start_time(stat_raw, pid)
-                command, _ = self.binary(pid_fd, 'cmdline')
-                environment, _ = self.binary(pid_fd, 'environ')
+                command, command_identity = self.binary(pid_fd, 'cmdline')
+                environment, environment_identity = self.binary(pid_fd, 'environ')
+                channel_versions = ((command_identity, self.raw_digest(command)),
+                                    (environment_identity, self.raw_digest(environment)))
                 self.hint(pid, start, 'cmdline_hint', command)
                 self.hint(pid, start, 'environ_hint', environment)
-                self.link(pid_fd, 'cwd', pid, start, 'cwd_link')
+                cwd_version = self.link(pid_fd, 'cwd', pid, start, 'cwd_link')
                 fd_dir = self.scan.open('fd', queues._DIR_FLAGS, pid_fd)
                 fd_before = self.scan.call(os.fstat, fd_dir)
                 fd_names = self.scan.names(fd_dir, 0)
+                link_versions = {}
                 for descriptor in fd_names:
                     self.budget.tick()
                     queues._require(descriptor.isascii() and descriptor.isdigit() and len(descriptor) <= 10,
                                     'reference_process_fd_unknown')
-                    self.link(fd_dir, descriptor, pid, start, 'fd_link')
+                    link_versions[descriptor] = self.link(fd_dir, descriptor, pid, start, 'fd_link')
                 self.producer(pid, start, command, environment)
-                pid_snapshots.append((name, pid, start, pid_fd, before, fd_dir, fd_before, fd_names))
+                pid_snapshots.append((name, pid, start, pid_fd, before, fd_dir, fd_before, fd_names,
+                                      channel_versions, cwd_version, link_versions))
             except (OSError, UnicodeError, LaneReferenceCollectionError):
                 failures = True
                 self.keep('reference_process_unavailable')
@@ -416,17 +465,41 @@ class _Collector:
             queues._require(self.scan.names(root, 1) == names, 'reference_process_inventory_changed')
             queues._require([identity for _, identity in self.scan.walk(proc_root)]
                             == [identity for _, identity in chain], 'reference_process_inventory_changed')
-            for name, pid, start, pid_fd, before, fd_dir, fd_before, fd_names in pids:
+            for name, pid, start, pid_fd, before, fd_dir, fd_before, fd_names, channels, cwd_version, links in pids:
                 named = self.scan.call(os.stat, name, dir_fd=root, follow_symlinks=False)
                 queues._require(queues._identity(named) == queues._identity(before)
                                 and queues._identity(self.scan.call(os.fstat, pid_fd)) == queues._identity(before),
                                 'reference_process_changed')
                 raw, _ = self.binary(pid_fd, 'stat', cap=8192)
                 queues._require(self.start_time(raw, pid) == start, 'reference_process_changed')
+                for channel, expected in zip(('cmdline', 'environ'), channels, strict=True):
+                    raw, identity = self.binary(pid_fd, channel)
+                    queues._require((identity, self.raw_digest(raw)) == expected, 'reference_process_changed')
+                queues._require(self.link(pid_fd, 'cwd', pid, start, 'cwd_link', emit=False) == cwd_version,
+                                'reference_process_changed')
+                named_fd = self.scan.call(os.stat, 'fd', dir_fd=pid_fd, follow_symlinks=False)
+                queues._require(queues._identity(named_fd) == queues._identity(fd_before), 'reference_process_changed')
                 queues._require(self.scan.names(fd_dir, 1) == fd_names
                                 and queues._identity(self.scan.call(os.fstat, fd_dir)) == queues._identity(fd_before),
                                 'reference_process_changed')
+                for descriptor in fd_names:
+                    queues._require(self.link(fd_dir, descriptor, pid, start, 'fd_link', emit=False) == links[descriptor],
+                                    'reference_process_changed')
         self.budget.tick()
+
+    def project_queue(self, value):
+        if value is None:
+            return None
+        rows = []
+        for row in value.rows:
+            self.budget.tick()
+            role = row.state if hasattr(row, 'state') else row.layout_role
+            preview = dict(root_path=row.root_path, role=role, row_path=row.row_path,
+                           raw_sha256=row.raw_sha256, raw_size_bytes=row.raw_size_bytes, row_identity=row.row_identity)
+            self.budget.retain(preview)
+            rows.append(ObservedRawRowIdentity(**preview))
+        self.budget.measure(value.roots)
+        return QueueProjection(value.complete, value.scope, value.roots, tuple(rows), value.blockers)
 
     def close(self):
         try:
@@ -439,11 +512,11 @@ class _Collector:
             self.keep(code)
 
 
-def collect_lane_references(target_path: str, *, pins_root: str, preparation_roots: Sequence[str] = (),
+def _collect_lane_references(target_path: str, *, pins_root: str, preparation_roots: Sequence[str] = (),
                             activation_roots: Sequence[str] = (), sam_roots: Sequence[str] = (),
                             proc_root: str = '/proc', supplied_config_path: str | None = None,
                             observed_at_epoch: float, monotonic: Callable[[], float] = time.monotonic,
-                            _collector_effective: bool = False,
+                            _source_origin: str = 'supplied_only',
                             _selected_settings: Sequence[tuple[str, str]] = ()) -> LaneReferenceCollection:
     """Return historical selected evidence; no probe authority survives return."""
     target, pins_root, proc_root = _path(target_path), _path(pins_root), _path(proc_root)
@@ -470,11 +543,12 @@ def collect_lane_references(target_path: str, *, pins_root: str, preparation_roo
                            (*all_roots, pins_root, proc_root)])
     except queues.QueueObservationError:
         raise LaneReferenceCollectionError('lane_reference_parameters_invalid') from None
-    origin = 'collector_process_effective_only' if _collector_effective else 'supplied_only'
+    origin = _source_origin
     budget = ReferenceCollectionBudget(monotonic=monotonic)
     state = _Collector(target, float(observed_at_epoch), budget, origin)
     probe = TargetProbe('kept', target)
     handle = None
+    target_snapshot = None
     primary = auxiliary = pins = interpreted = None
     try:
         budget.tick()
@@ -484,16 +558,19 @@ def collect_lane_references(target_path: str, *, pins_root: str, preparation_roo
                 state.source(path, role, origin)
         for role, path in _selected_settings:
             state.source(path, role, origin)
-        if not preparation or not activation:
-            state.keep('selected_reference_family_unconfigured')
+            if role == 'progression_config':
+                state.configuration(path, 'collector_process_selected_config')
         budget.charge('raw_bytes', 8192)
         try:
             started = budget.last
-            handle = LeasedScratchUse.probe(target, now=lambda: observed_at_epoch)
+            handle = LeasedScratchUse.probe(target, now=lambda: observed_at_epoch, _checkpoint=budget.tick)
             budget.tick()
             parent = state.scan.walk(target)
             raw, identity = state.binary(parent[-1][0], LEASE_FILE, cap=8192)
+            target_snapshot = (identity, state.raw_digest(raw))
             lease = state.json_value(raw)
+            queues._require(all(lease.get(key) == value for key, value in handle.identity.items()
+                                if key not in {'root', 'inodes'}), 'reference_target_lease_changed')
             reference = 'run_ref' if 'run_ref' in lease else 'scene_ref'
             probe = TargetProbe('observed_exclusive_interval', target, 'sha256:' + hashlib.sha256(raw).hexdigest(),
                                 len(raw), lease['class_intent'], lease['cleanup'], lease['lease_digest'], lease['owner'],
@@ -529,6 +606,8 @@ def collect_lane_references(target_path: str, *, pins_root: str, preparation_roo
         preparation = tuple(sorted(set(preparation) | {row.path for row in state.sources if row.role == 'preparation_queue_root'}))
         activation = tuple(sorted(set(activation) | {row.path for row in state.sources if row.role == 'activation_queue_root'}))
         sam = tuple(sorted(set(sam) | {row.path for row in state.sources if row.role == 'child_queue_root'}))
+        if not preparation or not activation:
+            state.keep('selected_reference_family_unconfigured')
         if len(preparation + activation + sam) > 16:
             budget.fail('reference_roots_limit')
         contracts = [queues.QueueRootContract(path, states) for roots, states in
@@ -576,6 +655,8 @@ def collect_lane_references(target_path: str, *, pins_root: str, preparation_roo
             budget.charge('raw_bytes', 8192)
             handle.check()
             budget.tick()
+            raw, identity = state.binary(handle.fd, LEASE_FILE, cap=8192)
+            queues._require((identity, state.raw_digest(raw)) == target_snapshot, 'reference_target_lease_changed')
             budget.measure(probe)
             probe = TargetProbe(**{**asdict(probe), 'ended_monotonic': budget.last})
         if not state.producer_seen:
@@ -602,12 +683,19 @@ def collect_lane_references(target_path: str, *, pins_root: str, preparation_roo
                                            origin, (), (), (), tuple(sorted(state.reasons)), False)
         budget.tick()
         complete = bool(primary and primary.complete and pins and pins.complete
-                        and (not aux_contracts or auxiliary and auxiliary.complete) and state.process_complete)
+                        and (not aux_contracts or auxiliary and auxiliary.complete) and state.process_complete
+                        and (not interpreted or interpreted.complete_supplied_supported_projection)
+                        and not any(code in state.reasons for code in ('reference_config_unavailable',
+                            'reference_config_unsupported', 'reference_config_seal_invalid',
+                            'reference_config_shape_invalid', 'queue_row_invalid',
+                            'selected_reference_family_unconfigured')))
         if probe.status == 'observed_exclusive_interval' and probe.ended_monotonic is None:
             probe = TargetProbe('kept_changed', target)
             complete = False
+        primary_projection = state.project_queue(primary)
+        auxiliary_projection = state.project_queue(auxiliary)
         result = LaneReferenceCollection(probe, origin, tuple(state.sources), tuple(state.configs), tuple(state.processes),
-                                        tuple(sorted(state.reasons)), complete, primary, auxiliary, pins, interpreted,
+                                        tuple(sorted(state.reasons)), complete, primary_projection, auxiliary_projection, pins, interpreted,
                                         state.process_complete)
         budget.measure(result)
         budget.tick()
@@ -618,6 +706,16 @@ def collect_lane_references(target_path: str, *, pins_root: str, preparation_roo
                                        origin, (), (), (), tuple(sorted(state.reasons)), False)
     finally:
         budget.close()
+
+
+def collect_lane_references(target_path: str, *, pins_root: str, preparation_roots: Sequence[str] = (),
+                            activation_roots: Sequence[str] = (), sam_roots: Sequence[str] = (),
+                            proc_root: str = '/proc', supplied_config_path: str | None = None,
+                            observed_at_epoch: float, monotonic: Callable[[], float] = time.monotonic) -> LaneReferenceCollection:
+    """Explicit supplied selections remain supplied-only, without an origin gate."""
+    return _collect_lane_references(target_path, pins_root=pins_root, preparation_roots=preparation_roots,
+        activation_roots=activation_roots, sam_roots=sam_roots, proc_root=proc_root,
+        supplied_config_path=supplied_config_path, observed_at_epoch=observed_at_epoch, monotonic=monotonic)
 
 
 def collect_gc_lane_references(target_path: str, *, pins_root: str, queue_roots: Sequence[str],
@@ -638,5 +736,5 @@ def collect_gc_lane_references(target_path: str, *, pins_root: str, queue_roots:
     # More than16 selected metadata paths is a bounded refusal before copying.
     if len(values) > 16:
         raise LaneReferenceCollectionError('lane_reference_parameters_invalid')
-    return collect_lane_references(target_path, pins_root=pins_root, observed_at_epoch=observed_at_epoch,
-                                   _collector_effective=True, _selected_settings=tuple(values))
+    return _collect_lane_references(target_path, pins_root=pins_root, observed_at_epoch=observed_at_epoch,
+                                   _source_origin='collector_process_effective_only', _selected_settings=tuple(values))
