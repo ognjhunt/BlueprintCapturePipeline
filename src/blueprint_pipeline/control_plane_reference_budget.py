@@ -19,6 +19,7 @@ MAX_RECORD_BYTES = 4 * 1024 * 1024
 MAX_RAW_BYTES = MAX_OUTPUT_BYTES = 20 * 1024 * 1024
 MAX_VALUES, MAX_DEPTH, MAX_FACTS = 100_000, 64, 20_000
 MAX_BLOCKERS = 32
+_SCENE_LIFECYCLE_VALUES, _SCENE_LIFECYCLE_SECONDS = 1_000_000, 30.0
 
 
 class ReferenceCollectionBudgetError(ValueError):
@@ -38,14 +39,36 @@ class ReferenceCollectionBudget:
             raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
         if values_limit is not None and (type(values_limit) is not int or not 1 <= values_limit <= MAX_VALUES):
             raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
-        self._monotonic, self._duration = monotonic, float(time_budget_seconds)
+        self._initialize_validated(monotonic=monotonic, duration=float(time_budget_seconds),
+                                   values_limit=MAX_VALUES if values_limit is None else min(MAX_VALUES, values_limit))
+
+    @classmethod
+    def _for_scene_lifecycle_plan(cls, *, monotonic: Callable[[], float] = time.monotonic,
+                                  time_budget_seconds: float = _SCENE_LIFECYCLE_SECONDS):
+        """Initialize one exact fresh scene budget; never enlarge a used object."""
+        if (cls is not ReferenceCollectionBudget or not callable(monotonic)
+                or type(time_budget_seconds) not in (int, float)
+                or not 0 < time_budget_seconds <= _SCENE_LIFECYCLE_SECONDS
+                or not math.isfinite(time_budget_seconds)):
+            raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
+        budget = object.__new__(ReferenceCollectionBudget)
+        budget._initialize_validated(monotonic=monotonic, duration=float(time_budget_seconds),
+                                     values_limit=_SCENE_LIFECYCLE_VALUES)
+        return budget
+
+    def _initialize_validated(self, *, monotonic, duration, values_limit):
+        if hasattr(self, "_initialization_started"):
+            raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
+        # A later allocation/assignment failure must never permit retry/reset.
+        self._initialization_started = True
+        self._monotonic, self._duration = monotonic, duration
         self._deadline: float | None = None
         self._last: float | None = None
         self._closed = False
         self._failure: str | None = None
         self._limits = {"roots": MAX_ROOTS, "groups": MAX_GROUPS, "rows": MAX_ROWS,
                        "entries": MAX_ENTRIES, "raw_bytes": MAX_RAW_BYTES,
-                       "values": MAX_VALUES if values_limit is None else min(MAX_VALUES, values_limit), "facts": MAX_FACTS, "output_bytes": MAX_OUTPUT_BYTES}
+                       "values": values_limit, "facts": MAX_FACTS, "output_bytes": MAX_OUTPUT_BYTES}
         self._counts = dict.fromkeys(self.limits, 0)
         self.blockers: set[str] = set()
 

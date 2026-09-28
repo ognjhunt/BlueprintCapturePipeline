@@ -183,8 +183,12 @@ reference contracts contain `family` (`preparation` or `activation`) and
 `queue_root`. `progression_config` is a retained JSON path or null. Matching its
 sealed root declarations does not prove the running service configuration.
 
-One five-second resource budget covers context acquisition, lineage, pins and
-queue observers, measurement and output. Physical acquired bytes are reported
+One scene-specific resource budget is initialized once with a maximum thirty-
+second deadline and one million cumulative work values. It covers context
+acquisition, lineage, pins and queue observers, measurement and output. The
+existing independent observer defaults remain five seconds and 100,000 values;
+all other native ceilings and per-pass guards remain unchanged. A used, closed,
+failed or partly initialized budget cannot be reset or extended. Physical acquired bytes are reported
 separately from the reference interpreter's additional conservative supplied-input
 work charge. Both consume the same allowance. Metadata changes, missing or unknown
 history, linked metadata, unsafe output identities and exhausted budgets keep the

@@ -155,7 +155,9 @@ def test_terminal_scene_report_acquires_exact_members_once_with_unique_inode_byt
     assert final['source_provenance'][0]['json_pointer'] == '/advancement/sam31_preparation_result'
     assert len(source['original_phase_observations']) == 10
     assert source['original_owner_transfer_authorized'] is False
-    assert {kind for row in report['measured_members'] for kind in row['kinds']} >= {
+    # Coalesced descendant rows retain exact paths/provenance and attribute
+    # bytes to their measured ancestor; they do not repeat its kinds or bytes.
+    assert {row['family'] for row in report['family_obligations'] if row['member_count'] > 0} >= {
         'capture_pipeline', 'administrative_source_workspace', 'preparation_workspace',
         'configuration_progression_workspace', 'activation_workspace', 'prepared_objects',
         'compilation_workspace', 'sam_original_child', 'launch_canary_workspace'}

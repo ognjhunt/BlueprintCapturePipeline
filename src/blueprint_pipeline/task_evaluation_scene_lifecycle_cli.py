@@ -24,7 +24,7 @@ def main(argv=None, *, monotonic=time.monotonic):
     from .task_evaluation_scene_lifecycle_plan import _build_scene_lifecycle_plan, fallback
     budget, reader, anchor, result = None, None, None, None
     try:
-        budget = ReferenceCollectionBudget(monotonic=monotonic)
+        budget = ReferenceCollectionBudget._for_scene_lifecycle_plan(monotonic=monotonic)
         budget.tick()
         if argv is None:
             require(isinstance(sys.argv, list) and len(sys.argv) <= 17, 'cli_arguments_invalid')

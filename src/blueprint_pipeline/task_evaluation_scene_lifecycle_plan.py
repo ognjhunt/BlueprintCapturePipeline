@@ -117,9 +117,9 @@ def _families(sink):
                      for family in FAMILIES)
 
 
-def build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, monotonic=time.monotonic, time_budget_seconds=5.0):
+def build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, monotonic=time.monotonic, time_budget_seconds=30.0):
     try:
-        budget = ReferenceCollectionBudget(monotonic=monotonic, time_budget_seconds=time_budget_seconds)
+        budget = ReferenceCollectionBudget._for_scene_lifecycle_plan(monotonic=monotonic, time_budget_seconds=time_budget_seconds)
     except ValueError:
         return fallback('scene_lifecycle_budget_invalid')
     return _build_scene_lifecycle_plan(intent_id=intent_id, context=context, observed_at_epoch=observed_at_epoch, budget=budget)

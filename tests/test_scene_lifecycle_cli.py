@@ -43,12 +43,12 @@ def test_context_and_planner_construct_one_budget_and_recheck_context(tmp_path, 
     context, intent_id = context_fixture(tmp_path, completed=True)
     file = tmp_path / 'context.json'
     file.write_text(json.dumps(context))
-    original, created = cli.ReferenceCollectionBudget, []
+    original, created = cli.ReferenceCollectionBudget._for_scene_lifecycle_plan, []
     def constructor(**kwargs):
         value = original(**kwargs)
         created.append(value)
         return value
-    monkeypatch.setattr(cli, 'ReferenceCollectionBudget', constructor)
+    monkeypatch.setattr(cli.ReferenceCollectionBudget, '_for_scene_lifecycle_plan', staticmethod(constructor))
     assert cli.main(['--intent-id', intent_id, '--context-file', str(file.resolve()), '--now', '900000'],
                     monotonic=lambda: 0) == 0
     report = json.loads(capsys.readouterr().out)
@@ -93,12 +93,12 @@ def test_context_raw_allowance_refuses_before_read_not_after_encoding(tmp_path, 
     from blueprint_pipeline import task_evaluation_scene_lifecycle_acquisition as acquisition
     file = tmp_path/'context.json'
     file.write_text('{}')
-    original = cli.ReferenceCollectionBudget
+    original = cli.ReferenceCollectionBudget._for_scene_lifecycle_plan
     def budget(**kwargs):
         shared = original(**kwargs)
         shared.charge('raw_bytes', shared.limits['raw_bytes'])
         return shared
-    monkeypatch.setattr(cli, 'ReferenceCollectionBudget', budget)
+    monkeypatch.setattr(cli.ReferenceCollectionBudget, '_for_scene_lifecycle_plan', staticmethod(budget))
     monkeypatch.setattr(acquisition.os, 'read', lambda *a: pytest.fail('read past exhausted shared allowance'))
     assert cli.main(['--intent-id', 'intent-1', '--context-file', str(file.resolve()), '--now', '1'],
                     monotonic=lambda: 0) == 2
