@@ -571,3 +571,30 @@ def test_summary_reports_shared_scratch_and_its_opt_in(tmp_path, monkeypatch, ca
     assert f"Environment={SHARED_ENV}=" not in unit, "the shared switch stays an operator opt-in"
     assert f"# {SHARED_ENV}=1" in example and not any(row.startswith(f"{SHARED_ENV}=") for row in example.splitlines())
     assert example.index("# BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1") < example.index(f"# {SHARED_ENV}=1")
+
+
+def test_shared_scratch_reports_each_directory_its_prune_kept(tmp_path, monkeypatch) -> None:
+    """The prune after a shared removal is the per-replay rule's own: a directory it cannot remove
+    stays and is a typed skip, now listed in the shared block, at most 200 with the number left out."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    first = _replay(parent_root, "scene-841007-preparation", "parent-a-1")
+    second = _replay(parent_root, "scene-841012-preparation", "parent-b-1")
+    blob = _store_blob(tmp_path, b"one blob two activations linked" * 50)
+    names = [*_linked(blob, first, "prep-a/scene.usd"), *_linked(blob, second)]
+    _moved(blob)
+    real_rmdir = os.rmdir
+
+    def rmdir(path, *args, **kwargs):
+        if path == "sha256":
+            raise PermissionError(13, "Permission denied")
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rmdir", rmdir)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    stuck = [child / "prepared-references" / "content-addressed" / "sha256" for child in (first, second)]
+    assert block["prune_skipped"] == [{"path": str(path), "reason": "rmdir_failed:PermissionError"} for path in stuck]
+    assert (block["omitted_prune_skipped_count"], block["removed_groups"]) == (0, 1)
+    assert all(path.is_dir() for path in stuck) and not (first / "prepared-references" / "prep-a").exists()
+    assert not any(path.exists() for path in names)

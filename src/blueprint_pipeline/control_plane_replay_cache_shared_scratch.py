@@ -349,13 +349,14 @@ def reclaim_shared_scratch(
         "removed_groups": 0,
         "removed_bytes": 0,
     }
-    kept = list(plan["kept"])
+    kept, prune_skipped = list(plan["kept"]), []
     if apply:
         result = apply_shared_scratch(plan, process_root=process_root)
         block["removed_groups"] = len(result["removed"])
         block["removed_bytes"] = sum(group["size_bytes"] for group in result["removed"])
         # A candidate apply stopped is kept this tick, under recheck_failed:<why>.
         kept += result["kept"]
+        prune_skipped = result["prune_skipped"]
     by_reason: dict[str, dict[str, int]] = {}
     for group, reason in kept:
         counted = by_reason.setdefault(reason, {"groups": 0, "bytes": 0})
@@ -370,6 +371,7 @@ def reclaim_shared_scratch(
     block["holders_by_gate"] = dict(sorted(gates.items()))
     _capped(block, "candidates", [_row(group, plan["holders"]) for group in plan["candidates"]])
     _capped(block, "kept", [_row(group, plan["holders"], reason) for group, reason in kept])
+    _capped(block, "prune_skipped", prune_skipped)
     return block
 
 
