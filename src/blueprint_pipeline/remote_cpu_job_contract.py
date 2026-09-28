@@ -52,6 +52,13 @@ STAGES: Mapping[str, Mapping[str, Any]] = {
         # Resource exhaustion inside the worker is infrastructure, not the row.
         "retryable_blocker_prefixes": ("episode_compilation_failed:OSError:", "episode_compilation_failed:MemoryError"),
     },
+    # The allocator's preflight (plan 14 §8): one leased, granted, torn-down attempt on a stage's own
+    # job that only reports the worker environment.  Its queue row is the probe request.
+    "environment_probe": {
+        "abbreviation": "ep", "stage_contract": "environment_probe_remote.v1",
+        "queue": "remote-cpu-environment-probes", "success_status": "environment_recorded",
+        "retryable_blocker_prefixes": (),
+    },
 }
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")

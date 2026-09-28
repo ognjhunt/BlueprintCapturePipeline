@@ -1169,6 +1169,63 @@ def delete_remote_cpu_staging_versions(*, staging_prefix: str, client: Any, buck
             "listing_pages": pages}
 
 
+def _presigned_put(url: str, data: bytes) -> int:
+    import urllib.error
+
+    from .safe_outbound_http import presigned_transfer_policy, request
+
+    try:
+        return request(url, method="PUT", data=data, policy=presigned_transfer_policy(url), timeout_seconds=60).status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+def remote_cpu_object_store_sentinel(*, staging_prefix: str, attempt_id: str, client: Any, bucket: str,
+                                     put: Callable[[str, bytes], int] | None = None) -> dict[str, Any]:
+    """Prove on B2, inside one attempt's staging prefix, what remote-CPU teardown relies on.
+
+    A presigned PUT (checksums only when required), a ``CopyObject`` into CAS guarded by the
+    staging ETag, a plain delete that only hides the object, and version deletes that leave the
+    prefix's ``ListObjectVersions`` empty.  The staging versions are deleted even when a step fails.
+    """
+
+    _remote_cpu_key(staging_prefix, bucket=bucket, prefix=True)
+    uri = staging_prefix + "object-store-sentinel.json"
+    key = _remote_cpu_key(uri, bucket=bucket)
+    data = json.dumps({"schema_version": "remote_cpu_object_store_sentinel.v1", "attempt_id": attempt_id},
+                      sort_keys=True).encode("utf-8")
+    checks = dict.fromkeys(("presigned_put", "copy_object", "delete_hides", "version_delete"), False)
+    failures: list[str] = []
+    try:
+        url = presign_remote_cpu_put(staging_uri=uri, expires_in_seconds=300, client=client, bucket=bucket)
+        checks["presigned_put"] = 200 <= int((put or _presigned_put)(url, data)) < 300
+        etag = str(client.head_object(Bucket=bucket, Key=key).get("ETag") or "")
+        promoted = copy_remote_cpu_staging_to_cas(
+            staging_uri=uri, digest="sha256:" + hashlib.sha256(data).hexdigest(), size_bytes=len(data), etag=etag,
+            artifact_kind="remote-cpu-sentinel", filename="object-store-sentinel.json", client=client, bucket=bucket)
+        checks["copy_object"] = promoted["remote_identity_verified"] is True
+        client.delete_object(Bucket=bucket, Key=key)
+        try:
+            client.head_object(Bucket=bucket, Key=key)
+            hidden = False
+        except Exception as exc:  # noqa: BLE001 - provider exception shapes vary
+            hidden = _object_missing(exc)
+        listed = client.list_object_versions(Bucket=bucket, Prefix=key)
+        checks["delete_hides"] = hidden and bool(listed.get("Versions")) and bool(listed.get("DeleteMarkers"))
+    except TaskEvaluationConfiguredSceneObjectStoreError as exc:
+        failures.append(str(exc))
+    except Exception as exc:  # noqa: BLE001 - typed, never echoing a URL
+        failures.append(f"remote_cpu_object_store_sentinel_failed:{type(exc).__name__}")
+    try:
+        deletion = delete_remote_cpu_staging_versions(staging_prefix=staging_prefix, client=client, bucket=bucket)
+        checks["version_delete"] = deletion["versions_deleted"] >= 2 and deletion["versions_remaining"] == 0
+    except TaskEvaluationConfiguredSceneObjectStoreError as exc:
+        failures.append(str(exc))
+    failures.extend(f"remote_cpu_object_store_sentinel_failed:{name}" for name, passed in checks.items() if not passed)
+    return {"schema_version": "remote_cpu_object_store_sentinel.v1", "status": "blocked" if failures else "passed",
+            "checks": checks, "blockers": sorted(set(failures))}
+
+
 def main(argv: list[str] | None = None) -> int:
     """Materialize one verified configured-scene artifact from a JSON reference."""
 
@@ -1216,6 +1273,7 @@ __all__ = [
     "read_configured_scene_object",
     "read_remote_cpu_staging_object",
     "remote_cpu_object_store",
+    "remote_cpu_object_store_sentinel",
     "validate_configured_scene_object_store_configuration",
 ]
 

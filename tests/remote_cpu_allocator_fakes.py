@@ -76,6 +76,27 @@ def standing_authority(**changes: Any) -> dict[str, Any]:
     return seal(authority, "authorization_digest")
 
 
+def environment(**changes: Any) -> dict[str, Any]:
+    """A ``remote_cpu_environment.v1`` record, sealed by PR 1's ``environment_digest``."""
+
+    from blueprint_pipeline.remote_cpu_environment import environment_digest
+
+    record: dict[str, Any] = {
+        "schema_version": "remote_cpu_environment.v1", "python_version_info": [3, 12, 11, "final", 0],
+        "golden_deflate": {"corpus_digest": "sha256:" + "1" * 64, "zlib_level6_digest": "sha256:" + "2" * 64,
+                           "raw_deflate_level6_digest": "sha256:" + "3" * 64},
+        "golden_simd": {"input_digest": "sha256:" + "5" * 64, "output_digest": "sha256:" + "6" * 64},
+        "distributions": [{"name": "numpy", "version": "2.3.0"}], "cpu_class": "sha256:" + "c" * 64,
+        "informational": {"python_version": "3.12.11", "machine": "x86_64", "cpu_flags_source": "/proc/cpuinfo"},
+    }
+    record.update(changes)
+    record["environment_digest"] = environment_digest(record)
+    return record
+
+
+HOST_RECORD = environment()
+
+
 def queue_name(label: str = "prep-1") -> str:
     return f"{label}-{hashlib.sha256(label.encode()).hexdigest()}.json"
 
@@ -158,11 +179,16 @@ class RemoteCpuWorld:
         self.runtime = RemoteCpuRuntime(
             config_path=str(self.config_path), clock=self.clock, sleep=self.sleep,
             cloud_run=CloudRunJobsClient(credentials=FakeCredentials(), transport=self.rest),
-            transport_bucket=self.bucket, object_store=(self.store, B2_BUCKET, B2_REGION))
+            transport_bucket=self.bucket, object_store=(self.store, B2_BUCKET, B2_REGION),
+            stage_release_source=source_reference, host_environment=lambda: HOST_RECORD,
+            presigned_put=lambda url, data: self.store.request("PUT", url, body=data).status, poll_seconds=10.0)
         self.runs = 0
+        self.on_sleep: Any = None
 
     def sleep(self, seconds: float) -> None:
         self.clock.advance(seconds)
+        if self.on_sleep is not None:
+            self.on_sleep()
 
     def write_config(self, config: dict[str, Any], *, mode: int = 0o640) -> None:
         self.config = config
@@ -210,6 +236,82 @@ class RemoteCpuWorld:
         assert self.rest.mutations == [] and all(not rows for rows in self.jobs.executions.values())
         assert self.bucket._objects == {} and self.store.operations == [] and self.store.presigned == []
         assert self.consumed() == []
+
+
+def source_reference() -> dict[str, Any]:
+    """What PR 3's release-source staging returns: the commit and its content-addressed archive."""
+
+    digest = hashlib.sha256(b"release-source.tar").hexdigest()
+    return {"source_commit": "a" * 40, "digest": "sha256:" + digest, "size_bytes": 18,
+            "uri": f"{CAS}/remote-cpu-source/sha256/{digest}/source.tar"}
+
+
+class FakeWorker:
+    """What the host can observe of PR 3's worker: it reads its transport at the pinned generation,
+    PUTs heartbeats through its presigned URLs, and uploads the receipt last.
+
+    ``environment`` is the record the worker reports; ``receipt=False`` never uploads one.
+    """
+
+    def __init__(self, world: RemoteCpuWorld, *, environment: Mapping[str, Any], receipt: bool = True) -> None:
+        self.world, self.environment, self.receipt = world, dict(environment), receipt
+        self.heartbeats: dict[str, int] = {}
+        self.receipted: set[str] = set()
+        world.on_sleep = self.step
+
+    def step(self) -> None:
+        for rows in list(self.world.jobs.executions.values()):
+            for execution in rows:
+                view = self.world.jobs.get_execution(execution["name"])
+                if view["runningCount"] == 1:
+                    self._act(view)
+
+    def _env(self, view: Mapping[str, Any], name: str) -> str | None:
+        from tests.remote_cpu_fakes import env_value
+
+        return env_value(view, name)
+
+    def _act(self, view: Mapping[str, Any]) -> None:
+        name = view["name"].rsplit("/", 1)[1]
+        transport = json.loads(self.world.bucket.reader().get(
+            self._env(view, "BLUEPRINT_REMOTE_CPU_TRANSPORT_OBJECT").split("/", 3)[3],
+            generation=int(self._env(view, "BLUEPRINT_REMOTE_CPU_TRANSPORT_GENERATION"))))
+        descriptor = transport["descriptor"]
+        assert descriptor["descriptor_digest"] == self._env(view, "BLUEPRINT_REMOTE_CPU_DESCRIPTOR_SHA256")
+        sequence = self.heartbeats[name] = self.heartbeats.get(name, 0) + 1
+        heartbeat = {"schema_version": "remote_cpu_job_heartbeat.v1", "attempt_id": descriptor["attempt_id"],
+                     "execution_name": name, "sequence": sequence, "phase": "stage",
+                     "elapsed_seconds": 10.0 * sequence, "bytes_fetched": 100, "bytes_uploaded": 0}
+        self._put(transport["outputs"]["heartbeat.json"], heartbeat)
+        if not self.receipt or name in self.receipted:
+            return
+        self.receipted.add(name)
+        result = seal({"schema_version": "remote_cpu_environment_probe_result.v1", "status": "environment_recorded",
+                       "blockers": [], "source_commit": descriptor["code"]["source_commit"],
+                       "environment": self.environment, "result_digest": ""}, "result_digest")
+        index = json.dumps({"environment.json": {"blob": "sha256:" + "9" * 64}}).encode()
+        self._put(transport["outputs"]["index.json"], index)
+        self._put(transport["outputs"]["blobs.tar"], b"\0" * 1024)
+        receipt = seal({
+            "schema_version": "remote_cpu_job_receipt.v1", "job_id": descriptor["job_id"], "attempt": descriptor["attempt"],
+            "attempt_id": descriptor["attempt_id"], "stage": descriptor["stage"],
+            "descriptor_digest": descriptor["descriptor_digest"], "execution_name": name, "status": "succeeded",
+            "result": result,
+            "output": {"format": "remote_cpu_output.v1", "paths_total": 1, "bytes_total": 1024,
+                       "index": {"digest": "sha256:" + hashlib.sha256(index).hexdigest(), "size_bytes": len(index)},
+                       "archive": {"digest": "sha256:" + hashlib.sha256(b"\0" * 1024).hexdigest(), "size_bytes": 1024},
+                       "host_known": {"count": 0, "bytes": 0}},
+            "infrastructure_failures": [], "release_path_misses": [],
+            "environment": {"environment_digest": self.environment["environment_digest"],
+                            "cpu_class": self.environment["cpu_class"]},
+            "phases": {"bootstrap": 1.0, "fetch": 2.0, "stage": 3.0, "seal_upload": 1.0},
+            "bytes_fetched": 100, "bytes_uploaded": 2048, "private_url_recorded": False, "receipt_digest": "",
+        }, "receipt_digest")
+        self._put(transport["outputs"]["receipt.json"], receipt)
+
+    def _put(self, url: str, value: Any) -> None:
+        body = value if isinstance(value, bytes) else json.dumps(value).encode()
+        assert self.world.store.request("PUT", url, body=body).status == 200
 
 
 def _write_private(path: Path, value: Mapping[str, Any], mode: int) -> None:

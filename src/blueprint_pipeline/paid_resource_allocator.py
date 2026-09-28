@@ -353,6 +353,7 @@ from .adp_inpaint360_interiorgs_vast import (
     SOURCE_TREE as ADP_INPAINT360_SOURCE_TREE,
     run_inpaint360_interiorgs_vast,
 )
+from .remote_cpu_job_allocator import add_remote_cpu_job_arguments, run_remote_cpu_job
 from .teleport_paid_allocator import (
     add_teleport_provider_arguments,
     load_teleport_credentials,
@@ -1600,6 +1601,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     add_teleport_provider_arguments(commands, root=ROOT)
+    add_remote_cpu_job_arguments(commands)
     cpu = commands.add_parser("cpu-build")
     _add_cpu_arguments(cpu, require_provider=False)
     cpu.add_argument("--execution-plane", choices=("digitalocean", "local"), default="digitalocean")
@@ -2290,6 +2292,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "cpu-build-local":
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
+    elif args.command == "remote-cpu-job":
+        success = run_remote_cpu_job(args)["success"] is True
     elif args.command == "gpu-canary":
         if args.terminal_resource_release:
             output = Path(args.terminal_resource_release_output).expanduser().resolve()

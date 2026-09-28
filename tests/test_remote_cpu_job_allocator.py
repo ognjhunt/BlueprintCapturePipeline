@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import logging
@@ -33,17 +34,22 @@ from blueprint_pipeline.task_evaluation_configured_scene_object_store import (
 from tests.remote_cpu_allocator_fakes import (
     B2_BUCKET,
     CAS,
+    HOST_RECORD,
+    IMAGE,
     JOB,
     OBJECT_PREFIX,
     T0,
     TRANSPORT_BUCKET,
     WORST_CASE_USD,
+    CloudRunRest,
+    FakeWorker,
     RecordingArtifactStore,
     RemoteCpuWorld,
+    environment,
     remote_cpu_config,
     standing_authority,
 )
-from tests.remote_cpu_fakes import FakeClock, FakeGcsError
+from tests.remote_cpu_fakes import FakeClock, FakeGcsError, env_value
 
 
 def _consumption(world: RemoteCpuWorld, descriptor: dict) -> Path:
@@ -405,6 +411,11 @@ def test_transport_is_read_only_at_its_generation(tmp_path: Path, monkeypatch) -
                      ("exists", "transport/x.json", 1234), ("delete", "transport/x.json", 1234)]
 
 
+def texts_written(root: Path) -> dict[str, str]:
+    return {str(path.relative_to(root)): path.read_bytes().decode("utf-8", "replace")
+            for path in sorted(root.rglob("*")) if path.is_file()}
+
+
 def test_no_url_reaches_host_disk_or_logs(tmp_path: Path, monkeypatch, caplog, capsys) -> None:
     caplog.set_level(logging.DEBUG)
     world = RemoteCpuWorld(tmp_path, monkeypatch)
@@ -415,13 +426,17 @@ def test_no_url_reaches_host_disk_or_logs(tmp_path: Path, monkeypatch, caplog, c
     world.run("dispatch", descriptor=descriptor)
     _, _, transport = _transport(world, descriptor)
     assert "X-Amz-Signature=" in json.dumps(transport)  # the authority exists, but only in its GCS object
+    # Every other writer too: the probe's descriptor, teardown, environment and settlement, and cancel and sweep.
+    FakeWorker(world, environment=environment())
+    assert world.run("preflight")["status"] == "completed"
+    assert world.run("cancel", descriptor=descriptor)["status"] == "cancelled"
+    assert world.run("sweep")["status"] == "swept"
+    assert any(name.startswith("remote-cpu-jobs/teardowns/") for name in texts_written(tmp_path))
 
     captured = capsys.readouterr()
-    texts = {"log": caplog.text, "stdout": captured.out, "stderr": captured.err}
-    for path in sorted(tmp_path.rglob("*")):
-        if path.is_file():
-            texts[str(path.relative_to(tmp_path))] = path.read_bytes().decode("utf-8", "replace")
-    assert any(name.startswith("remote-cpu-jobs/leases/") for name in texts)
+    texts = {"log": caplog.text, "stdout": captured.out, "stderr": captured.err, **texts_written(tmp_path)}
+    assert {"remote-cpu-jobs/environment/episode_compilation.json"} <= set(texts)
+    assert any(name.startswith("spend-authority/remote-cpu-settled/") for name in texts)
     for name, text in texts.items():
         assert "X-Amz-" not in text and "backblazeb2" not in text and "https://" not in text, name
 
@@ -491,3 +506,287 @@ def test_object_store_writes_name_only_attempt_staging_and_promote_server_side(t
     assert (bucket, region) == (B2_BUCKET, "us-west-004")
     assert client.meta.config.request_checksum_calculation == "when_required"
     assert client.meta.config.response_checksum_validation == "when_required"
+
+
+ATTEMPT_ENV = "BLUEPRINT_REMOTE_CPU_ATTEMPT_ID"
+
+
+def _run_directly(world: RemoteCpuWorld, attempt: str, behaviour: str = "hang") -> dict:
+    """An execution Cloud Run holds that no dispatch of this host created (a foreign or orphaned run)."""
+
+    world.jobs.script(behaviour)
+    overrides = {"containerOverrides": [{"env": [{"name": ATTEMPT_ENV, "value": attempt}]}], "taskCount": 1,
+                 "timeout": "1800s"}
+    return world.jobs.run_job(JOB, etag=None, overrides=overrides)["metadata"]
+
+
+def _runs(world: RemoteCpuWorld, attempt_id: str) -> list:
+    """The :run requests (not validate_only) that named this attempt."""
+
+    return [request for request in world.rest.runs(validate_only=False) if attempt_id.encode() in request.body]
+
+
+def _attempt_executions(world: RemoteCpuWorld, attempt_id: str) -> list[dict]:
+    return [world.jobs.get_execution(row["name"]) for row in world.jobs.executions[JOB]
+            if env_value(world.jobs.get_execution(row["name"]), ATTEMPT_ENV) == attempt_id]
+
+
+def test_ambiguous_run_job_reconciles_across_all_pages_and_never_double_dispatches(tmp_path: Path,
+                                                                                  monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch, config=remote_cpu_config(max_live_executions=4))
+    world.record_environment()
+    rest = world.rest
+
+    class Crowded(CloudRunRest):
+        """The response to :run is lost, and five other runs start before the host lists."""
+
+        def __call__(self, method: str, url: str, *, body, headers):
+            try:
+                return rest(method, url, body=body, headers=headers)
+            except ConnectionResetError:
+                for index in range(5):
+                    _run_directly(world, f"other-{index}", "succeed")
+                raise
+
+    world.runtime.cloud_run._transport = Crowded(world.jobs)
+    world.jobs.script("lost_response")
+    descriptor = world.descriptor(label="prep-lost")
+    lists_before = world.jobs.list_calls
+    result = world.run("dispatch", descriptor=descriptor)
+    assert (result["status"], result["success"]) == ("dispatched", True)
+    [ours] = _attempt_executions(world, descriptor["attempt_id"])
+    # Newest first, two to a page: the lost run sits on the last of three pages.
+    assert result["reconciled"]["listing_pages"] == 3 and world.jobs.list_calls - lists_before == 3
+    assert result["worker_identity"].endswith("/executions/" + ours["name"].rsplit("/", 1)[1])
+    assert world.lease(descriptor)["state"] == "dispatched"
+    assert len(_runs(world, descriptor["attempt_id"])) == 1
+
+    # Neither a repeated dispatch nor a reconcile re-issues the run.
+    assert world.run("dispatch", descriptor=descriptor)["status"] == "already_dispatched"
+    assert world.run("reconcile", descriptor=descriptor)["status"] == "nothing_to_reconcile"
+    assert len(_runs(world, descriptor["attempt_id"])) == 1
+    assert len(_attempt_executions(world, descriptor["attempt_id"])) == 1
+
+    # A request lost before Cloud Run saw it: a complete listing finds nothing, so the attempt is
+    # abandoned - its transport deleted first - and never run again.
+    def dropped(method: str, url: str, *, body, headers):
+        if url.endswith(":run") and not json.loads(body).get("validateOnly"):
+            rest.requests.append(type(rest.requests[0])(method, url, dict(headers), body))
+            raise ConnectionResetError("reset before the request reached Cloud Run")
+        return rest(method, url, body=body, headers=headers)
+
+    world.runtime.cloud_run._transport = dropped
+    lost = world.descriptor(label="prep-dropped")
+    result = world.run("dispatch", descriptor=lost)
+    assert result["status"] == "teardown_pending" and result["success"] is False
+    assert {"remote_cpu_dispatch_lost", "remote_cpu_provider_zero_unproven"} <= set(result["blockers"])
+    lease = world.lease(lost)
+    assert (lease["state"], lease["worker_identity"], lease["compute_zero_proven"]) == ("dispatching", None, True)
+    transport = lease["transport_object"].split("/", 3)[3]
+    assert not world.bucket.exists(transport, generation=lease["transport_generation"])
+    assert leases.slots_in_use(world.root) == 2  # the abandoned attempt keeps its slot until provider zero
+
+    # An unreadable listing leaves the attempt unresolved rather than guessing.
+    world.clock.now = lease["write_urls_expire_at_epoch"]
+    world.runtime.cloud_run._transport = lambda method, url, *, body, headers: (503, b"{}")
+    unresolved = world.run("reconcile", descriptor=lost)
+    assert unresolved["status"] == "ambiguous_dispatch_unresolved"
+    assert "remote_cpu_ambiguous_dispatch_unresolved" in unresolved["blockers"]
+
+    world.runtime.cloud_run._transport = rest
+    abandoned = world.run("reconcile", descriptor=lost)
+    assert (abandoned["status"], abandoned["success"]) == ("abandoned_dispatch", True)
+    assert world.lease(lost)["provider_zero_proven"] is True and leases.slots_in_use(world.root) == 1
+    assert _attempt_executions(world, lost["attempt_id"]) == [] and len(_runs(world, lost["attempt_id"])) == 1
+    teardown = records.validate_teardown(json.loads(
+        (world.root / "teardowns" / f"{lost['attempt_id']}.json").read_text(encoding="utf-8")))
+    assert (teardown["worker_identity"], teardown["compute_zero"]["executions_for_attempt"]) == (None, 0)
+    settled = json.loads((world.spend / "remote-cpu-settled" / f"{_consumption(world, lost).name[11:]}")
+                         .read_text(encoding="utf-8"))
+    assert (settled["settled_usd"], settled["basis"]) == (0.0, "no_execution")
+
+
+def test_preflight_probe_is_a_granted_leased_and_torn_down_attempt(tmp_path: Path, monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    worker = environment(cpu_class="sha256:" + "e" * 64)
+    FakeWorker(world, environment=worker)
+    assert "remote_cpu_environment_unrecorded" in world.run("dispatch", descriptor=world.descriptor())["blockers"]
+    required: list[dict] = []
+    require = allocator.require_paid_resource_admission
+    monkeypatch.setattr(allocator, "require_paid_resource_admission",
+                        lambda admission, **kwargs: required.append(dict(admission)) or require(admission, **kwargs))
+
+    source = world.runtime.stage_release_source
+    world.runtime.stage_release_source = None
+    unstaged = world.run("preflight")
+    assert unstaged["blockers"] == ["remote_cpu_release_source_staging_unavailable"]
+    world.assert_untouched()
+    world.runtime.stage_release_source = source
+
+    result = world.run("preflight")
+    assert (result["status"], result["success"]) == ("completed", True), result["blockers"]
+    probe = result["probe"]
+    descriptor = json.loads((world.root / "descriptors" / f"{probe['attempt_id']}.json").read_text(encoding="utf-8"))
+    assert descriptor["stage"] == "environment_probe" and descriptor["execution"]["job"] == JOB.rsplit("/", 1)[1]
+    assert descriptor["code"]["environment_digest"] == HOST_RECORD["environment_digest"]
+
+    # Granted: one bound admission, validate_only before the only run.
+    [admission] = required
+    assert admission["allocation_binding"]["attempt_id"] == probe["attempt_id"] == result["admission"][
+        "allocation_binding"]["attempt_id"]
+    assert [request.json()["validateOnly"] for request in world.rest.runs()] == [True, False]
+    [execution] = world.jobs.executions[JOB]
+    assert world.consumed() == [_consumption(world, descriptor)]
+    assert result["sentinels"]["transport"]["status"] == "passed"
+    assert result["sentinels"]["object_store"]["status"] == "passed"
+    assert result["sentinels"]["validate_only"]["status"] == "passed"
+
+    # Leased and torn down: provider zero only once the recorded write URLs expired.
+    lease = json.loads((world.root / "leases" / f"{probe['job_id']}.json").read_text(encoding="utf-8"))
+    assert (lease["stage"], lease["state"], lease["dispatch_started"]) == ("environment_probe", "completed", True)
+    assert lease["worker_identity"].endswith("/executions/" + execution["name"].rsplit("/", 1)[1])
+    assert lease["heartbeat"]["sequence"] >= 1 and leases.slots_in_use(world.root) == 0
+    teardown = records.validate_teardown(json.loads(
+        (world.root / "teardowns" / f"{probe['attempt_id']}.json").read_text(encoding="utf-8")))
+    assert teardown["compute_zero_proven"] and teardown["provider_zero_proven"]
+    assert teardown["observed_at_epoch"] >= lease["write_urls_expire_at_epoch"]
+    assert result["teardown"]["teardown_digest"] == teardown["teardown_digest"] == lease["teardown_digest"]
+    settled = json.loads((world.spend / "remote-cpu-settled" / _consumption(world, descriptor).name[11:])
+                         .read_text(encoding="utf-8"))
+    assert settled["basis"] == "execution_runtime" and 0 < settled["settled_usd"] < WORST_CASE_USD
+    assert world.bucket._objects == {}
+    staging = descriptor["outputs"]["staging_prefix"].removeprefix(f"s3://{B2_BUCKET}/")
+    listing = world.store.list_object_versions(Bucket=B2_BUCKET, Prefix=staging)
+    assert listing["Versions"] == [] and listing["DeleteMarkers"] == []
+
+    # The worker environment is recorded with its parity against the host, and dispatch accepts it.
+    recorded = json.loads((world.root / "environment" / "episode_compilation.json").read_text(encoding="utf-8"))
+    assert (recorded["environment_digest"], recorded["image"], recorded["probe_attempt_id"]) == (
+        worker["environment_digest"], IMAGE, probe["attempt_id"])
+    assert recorded["parity"] == {"python_version_info": True, "golden_deflate": True, "golden_simd": True,
+                                  "distributions": True, "cpu_class": False}
+    dispatched = world.run("dispatch", descriptor=world.descriptor(environment_digest=worker["environment_digest"]))
+    assert dispatched["status"] == "dispatched"
+
+
+def test_cancel_and_sweep_are_termination_only(tmp_path: Path, monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    world.record_environment()
+    world.jobs.script("hang")
+    descriptor = world.descriptor()
+    assert world.run("dispatch", descriptor=descriptor)["status"] == "dispatched"
+    orphan = _run_directly(world, "rcj-ec-" + "f" * 24 + "-a1-" + "0" * 32)
+    before = (len(world.rest.runs()), len(world.store.presigned), len(world.store.operations), world.consumed())
+    admissions: list[dict] = []
+    monkeypatch.setattr(allocator, "build_paid_lane_admission", lambda **kwargs: admissions.append(kwargs))
+
+    dry = world.run("cancel", descriptor=descriptor, execute=False)
+    assert (dry["status"], len(dry["would_cancel"])) == ("dry_run_ready", 1)
+    assert all(not row.get("completionTime") for rows in world.jobs.executions.values()
+               for row in map(world.jobs.get_execution, [r["name"] for r in rows]))
+    cancelled = world.run("cancel", descriptor=descriptor)
+    assert cancelled["status"] == "cancelled" and len(cancelled["cancelled"]) == 1
+    [ours] = _attempt_executions(world, descriptor["attempt_id"])
+    assert ours["cancelledCount"] == 1
+    swept = world.run("sweep")
+    assert swept["status"] == "swept" and swept["cancelled"] == [orphan["name"].rsplit("/", 1)[1]]
+
+    assert admissions == []
+    assert (len(world.rest.runs()), len(world.store.presigned), len(world.store.operations), world.consumed()) == before
+    assert {request.url.rsplit(":", 1)[-1] for request in world.rest.mutations if "/executions/" in request.url} == {
+        "cancel"}
+    assert len(world.jobs.executions[JOB]) == 2
+
+    # Structurally: nothing cancel or sweep can reach admits, mints, consumes or runs.
+    tree = ast.parse(Path(allocator.__file__).read_text(encoding="utf-8"))
+    functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+
+    def reachable(name: str, seen: set[str]) -> set[str]:
+        calls = {getattr(call.func, "id", getattr(call.func, "attr", "")) for call in ast.walk(functions[name])
+                 if isinstance(call, ast.Call)}
+        for callee in calls & set(functions) - seen:
+            seen.add(callee)
+            calls |= reachable(callee, seen)
+        return calls
+
+    for entry in ("cancel_remote_cpu_attempt", "sweep_remote_cpu_stage"):
+        assert not reachable(entry, {entry}) & {"run_job", "mint_transport", "create", "admit_remote_cpu_job",
+                                                 "consume_remote_cpu_authority_once", "presign_remote_cpu_put"}
+
+
+def test_sweep_cancels_running_executions_without_a_live_lease(tmp_path: Path, monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch, config=remote_cpu_config(max_live_executions=4))
+    world.record_environment()
+    finished = _run_directly(world, "rcj-ec-" + "1" * 24 + "-a1-" + "1" * 32, "succeed")
+    world.jobs.script("hang")
+    stale = world.descriptor(label="prep-stale")
+    assert world.run("dispatch", descriptor=stale)["status"] == "dispatched"
+    world.clock.advance(700)  # no heartbeat: the stale attempt's lease expired at its start allowance
+    world.jobs.script("hang", "duplicate")
+    live = world.descriptor(label="prep-live")
+    duplicated = world.descriptor(label="prep-duplicated")
+    assert world.run("dispatch", descriptor=live)["status"] == "dispatched"
+    assert world.run("dispatch", descriptor=duplicated)["status"] == "dispatched"
+    foreign = _run_directly(world, "not-a-remote-cpu-attempt")
+    world.clock.advance(10)
+
+    def short(row: dict) -> str:
+        return row["name"].rsplit("/", 1)[1]
+
+    [stale_run] = _attempt_executions(world, stale["attempt_id"])
+    [live_run] = _attempt_executions(world, live["attempt_id"])
+    first, second = sorted(_attempt_executions(world, duplicated["attempt_id"]), key=lambda row: row["createTime"])
+    recorded = world.lease(duplicated)["worker_identity"].rsplit("/", 1)[1]
+    kept, extra = (first, second) if recorded == short(first) else (second, first)
+    assert {row["attempt_id"] for row in leases.live_leases(world.root, now=world.clock.now)} == {
+        live["attempt_id"], duplicated["attempt_id"]}
+
+    dry = world.run("sweep", execute=False)
+    assert sorted(dry["would_cancel"]) == sorted(map(short, (stale_run, extra, foreign)))
+    swept = world.run("sweep")
+    assert sorted(swept["cancelled"]) == sorted(map(short, (stale_run, extra, foreign)))
+    assert swept["listing_pages"] == 3 and swept["executions_listed"] == 6
+    views = {short(row): world.jobs.get_execution(row["name"]) for row in world.jobs.executions[JOB]}
+    assert {name for name, view in views.items() if view["cancelledCount"]} == set(map(short, (stale_run, extra, foreign)))
+    assert views[short(live_run)]["runningCount"] == 1 and views[short(kept)]["runningCount"] == 1
+    assert views[short(finished)]["succeededCount"] == 1 and len(world.rest.runs(validate_only=False)) == 3
+
+
+def test_remote_cpu_job_stdout_is_success_only(tmp_path: Path, monkeypatch, capsys) -> None:
+    from blueprint_pipeline import paid_resource_allocator
+
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    world.record_environment()
+    monkeypatch.setattr(allocator, "RemoteCpuRuntime", lambda: world.runtime)
+    descriptor = world.descriptor()
+    path = tmp_path / "descriptor.json"
+    path.write_text(json.dumps(descriptor), encoding="utf-8")
+
+    def main(*arguments: str) -> tuple[int, str, str]:
+        code = paid_resource_allocator.main(["remote-cpu-job", "--stage", "episode_compilation",
+                                             "--lease", str(world.root), "--out", str(tmp_path / "out.json"),
+                                             *arguments])
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    assert main("--action", "dispatch", "--descriptor", str(path), "--execute") == (0, '{"success": true}\n', "")
+    record = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert record["status"] == "dispatched" and record["success"] is True
+    assert main("--action", "dispatch", "--execute") == (2, '{"success": false}\n', "")
+    assert main("--action", "sweep", "--execute") == (0, '{"success": true}\n', "")
+    world.write_config(remote_cpu_config(region="europe-west1"))
+    assert main("--action", "cancel", "--descriptor", str(path), "--execute") == (2, '{"success": false}\n', "")
+    assert json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))["blockers"] == [
+        "remote_cpu_config_region_not_us"]
+
+
+def test_allocator_and_remote_cpu_modules_stay_within_their_line_budgets() -> None:
+    root = Path(allocator.__file__).resolve().parents[2]
+    policy = json.loads((root / "docs/source_governance_policy.json").read_text(encoding="utf-8"))
+    canonical = "src/blueprint_pipeline/paid_resource_allocator.py"
+    budgets = {canonical: policy["grandfathered_module_line_limits"][canonical],
+               "src/blueprint_pipeline/remote_cpu_job_allocator.py": 1000,
+               "src/blueprint_pipeline/cloud_run_jobs_client.py": 500}
+    assert budgets[canonical] == 7453
+    for relative, budget in budgets.items():
+        assert len((root / relative).read_text(encoding="utf-8").splitlines()) <= budget, relative

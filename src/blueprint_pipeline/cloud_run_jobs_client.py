@@ -310,6 +310,37 @@ class CloudRunJobsClient:
                           mutation=True)
 
 
+def delete_transport_object(bucket: Any, object_uri: str, generation: int) -> bool:
+    """Delete one transport object at its generation; ``True`` once it is absent there (a 404 counts)."""
+
+    name = object_uri.split("/", 3)[3]
+    try:
+        bucket.delete(name, generation=generation)
+    except Exception as exc:  # noqa: BLE001 - a 404 means it is already gone
+        if getattr(exc, "code", None) != 404:
+            raise
+    return not bucket.exists(name, generation=generation)
+
+
+def transport_bucket_sentinel(bucket: Any, name: str) -> dict[str, Any]:
+    """Prove the transport bucket creates only if absent, reads at a generation and deletes (plan 14 §4)."""
+
+    checks = dict.fromkeys(("create_if_absent", "pinned_read", "overwrite_refused", "deleted"), False)
+    try:
+        generation = bucket.create(name, b"{}", if_generation_match=0)
+        checks["create_if_absent"] = True
+        checks["pinned_read"] = bucket.get(name, generation=generation) == b"{}"
+        try:
+            bucket.create(name, b"{}", if_generation_match=0)
+        except Exception as exc:  # noqa: BLE001 - only a precondition failure passes
+            checks["overwrite_refused"] = getattr(exc, "code", None) == 412
+        bucket.delete(name, generation=generation)
+        checks["deleted"] = not bucket.exists(name, generation=generation)
+    except Exception:  # noqa: BLE001 - a failed step is a failed check
+        pass
+    return {"status": "passed" if all(checks.values()) else "blocked", "checks": checks}
+
+
 class GcsTransportBucket:
     """The transport bucket as the dispatcher sees it: create-if-absent, generation-pinned get and delete."""
 
