@@ -270,3 +270,104 @@ def test_real_contained_bootstrap_cannot_refresh_or_replace_selected_producer_in
     finally:
         if use is not None:
             use.close()
+
+
+@pytest.mark.parametrize('entrypoint', ['runtime', 'supervisor'])
+def test_registered_native_child_entrypoints_refuse_missing_use_before_payload(
+        tmp_path, monkeypatch, entrypoint):
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+    from blueprint_pipeline import native_g1_runtime_assembly as assembly
+    from blueprint_pipeline import native_g1_policy_server_supervisor as supervisor
+    root = tmp_path / 'lanes'
+    target = root / 'g1' / ('registered-' + 'a' * 32)
+    monkeypatch.setattr(consumer, 'LANE_ROOTS', (root,))
+    monkeypatch.setattr(supervisor, 'preflight_g1_shared_scene_run',
+        lambda **kw: pytest.fail('unadmitted child inputs read'))
+    with pytest.raises(ValueError, match='experiment_consumer_authority_required'):
+        if entrypoint == 'runtime':
+            assembly.run_g1_supervised_built_scene_episode(built=None, candidate_id='candidate',
+                preflight_inputs={}, python_executable=tmp_path/'python', port=8443, device='cuda:0',
+                max_steps=1, output_dir=target/'candidate/episode', to_tensor=lambda x: x,
+                make_action_tensor=lambda x: x)
+        else:
+            supervisor.start_g1_policy_server(preflight_inputs={}, python_executable=tmp_path/'python',
+                port=8443, device='cuda:0', log_path=target/'candidate/episode/server.log')
+    assert not target.exists()
+
+
+def test_actual_contained_ordinary_pair_does_not_attempt_root_completion_publication(
+        installation, tmp_path, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import native_g1_development_pair as pair
+    from blueprint_pipeline import native_g1_development_worker as worker
+    from blueprint_pipeline import control_plane_scratch_lifetime as lifetime
+    consumer, target, born, paths, selected = _contained_bootstrap(installation, tmp_path, monkeypatch)
+    monkeypatch.setattr(pair, 'LANE_SCRATCH_ROOTS', consumer.LANE_ROOTS)
+    monkeypatch.setattr(lifetime, 'LANE_ROOTS', consumer.LANE_ROOTS)
+    monkeypatch.setattr(os, 'geteuid', lambda: 1001)
+    def blocked(_request):
+        raise ValueError('free_fixture_preflight_refused')
+    monkeypatch.setattr(worker, '_preflight_inputs', blocked)
+    use = consumer.RegisteredExperimentUse.admit(target, expected_birth=born['birth'], now=lambda: 1200,
+        _producer_bootstrap_path=selected)
+    result = pair.run_g1_development_pair(request_paths=paths, output_dir=target, _registered_use=use)
+    assert result['status'] == 'blocked' and use._closed and not use.files.owned
+    assert not (installation[2]/(use.entry['intent_id']+'.producer-completion.json')).exists()
+
+
+def test_actual_worker_forwards_same_public_producer_use_into_runtime(
+        installation, tmp_path, monkeypatch):  # noqa: F811
+    from types import SimpleNamespace
+    from blueprint_pipeline import native_g1_development_worker as worker
+    from blueprint_pipeline import control_plane_scratch_lifetime as lifetime
+    consumer, target, born, paths, selected = _contained_bootstrap(installation, tmp_path, monkeypatch)
+    monkeypatch.setattr(lifetime, 'LANE_ROOTS', consumer.LANE_ROOTS)
+    request = json.loads(paths[0].read_bytes())
+    plan = json.loads((Path(request['bundle_root'])/'native_task_arena_scene_plan.v1.json').read_bytes())
+    monkeypatch.setattr(worker, '_verify_packet', lambda p: {'arena_scene_plan_digest': plan['plan_digest']})
+    monkeypatch.setattr(worker, 'preflight_g1_shared_scene_run', lambda **kw: {
+        'status': 'staged_inputs_verified', 'scene_plan_digest': plan['plan_digest'],
+        'candidate_id': request['candidate_id'], 'inventory_file_sha256': request['rights_review']['inventory_file_sha256'],
+        'robot_id': 'unitree_g1', 'policy_role': 'manipulation'})
+    closed = []
+    built = SimpleNamespace(plan=plan, env=SimpleNamespace(close=lambda: closed.append('environment')))
+    monkeypatch.setattr(worker, '_launch_scene', lambda **kw: (SimpleNamespace(close=lambda: closed.append('simulator')), {}))
+    monkeypatch.setattr(worker, '_build_scene', lambda **kw: (built, {}))
+    seen = []
+    with consumer.RegisteredExperimentUse.admit(target, expected_birth=born['birth'], now=lambda: 1200,
+            _producer_bootstrap_path=selected) as use:
+        def runtime(**kw):
+            assert kw['_registered_use'] is use
+            use.check()
+            seen.append(True)
+            raise ValueError('free_fixture_runtime_stop')
+        monkeypatch.setattr(worker, 'run_g1_supervised_built_scene_episode', runtime)
+        receipt = worker.run_g1_development_worker(request=request, output_dir=target/request['candidate_id'],
+            scratch_lifetime=use, _registered_use=use)
+        assert receipt['status'] == 'blocked' and receipt['phase_reached'] == 'episode'
+        assert receipt['blocker']['message'] == 'free_fixture_runtime_stop'
+        assert seen == [True] and closed == ['environment', 'simulator']
+
+
+def test_actual_runtime_forwards_same_public_use_into_native_supervisor(
+        installation, tmp_path, monkeypatch):  # noqa: F811
+    from types import SimpleNamespace
+    from blueprint_pipeline import native_g1_runtime_assembly as assembly
+    consumer, target, born, paths, selected = _contained_bootstrap(installation, tmp_path, monkeypatch)
+    request = json.loads(paths[0].read_bytes())
+    plan = json.loads((Path(request['bundle_root'])/'native_task_arena_scene_plan.v1.json').read_bytes())
+    seen = []
+    with consumer.RegisteredExperimentUse.admit(target, expected_birth=born['birth'], now=lambda: 1200,
+            _producer_bootstrap_path=selected) as use:
+        def server(**kw):
+            assert kw['_registered_use'] is use
+            use.check()
+            seen.append(True)
+            raise ValueError('free_fixture_native_child_stop')
+        monkeypatch.setattr(assembly, 'start_g1_policy_server', server)
+        with pytest.raises(ValueError, match='free_fixture_native_child_stop'):
+            assembly.run_g1_supervised_built_scene_episode(built=SimpleNamespace(plan=plan),
+                candidate_id=request['candidate_id'], preflight_inputs={'candidate_id':request['candidate_id']},
+                python_executable=Path(request['python_executable']), port=8443, device='cuda:0', max_steps=1,
+                output_dir=target/request['candidate_id']/'episode', to_tensor=lambda x:x,
+                make_action_tensor=lambda x:x, _registered_use=use)
+        assert seen == [True]
