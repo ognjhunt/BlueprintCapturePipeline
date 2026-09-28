@@ -128,3 +128,24 @@ def test_same_payload_role_cannot_rewind_and_refund_its_source_window(tmp_path):
     finally:
         files.finish()
         files.budget.close()
+
+
+@pytest.mark.slow
+def test_actual_action_issue_hashes_slow_payload_under_its_original_long_clock(retirement_installation, monkeypatch):  # noqa: F811
+    import os
+    import time
+    from tests.test_registered_experiment_retirement_flow import _born_scratch, _issue_action
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    grant, _, target = _born_scratch(retirement_installation)
+    inode = (target/'intermediate.bin').stat().st_ino
+    original = os.read
+    delayed = False
+    def slow(fd, amount):
+        nonlocal delayed
+        if os.fstat(fd).st_ino == inode and not delayed:
+            delayed = True
+            time.sleep(6)
+        return original(fd, amount)
+    monkeypatch.setattr(actions.os, 'read', slow)
+    selected = _issue_action(retirement_installation, grant)
+    assert delayed and selected['action_intent']['size_bytes'] > 0
