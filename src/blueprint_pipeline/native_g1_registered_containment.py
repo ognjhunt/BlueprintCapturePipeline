@@ -9,6 +9,8 @@ from pathlib import Path
 import json
 import os
 import select
+import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -26,6 +28,207 @@ SOURCE_MODULES = frozenset({
     "native_g1_runtime_assembly", "native_g1_policy_server_supervisor", "native_g1_shared_scene_episode",
     "control_plane_scratch_lifetime", "control_plane_g1_lifetime_adapter",
 })
+_NATIVE_PYTHON = Path("/opt/blueprint/task-evaluation-control-plane/.venv/bin/python")
+_SYSTEMCTL = "/usr/bin/systemctl"
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def _unit_arguments(intent_id, target, bootstrap):
+    _require(type(intent_id) is str and re.fullmatch(r"[0-9a-f]{32}", intent_id)
+             and isinstance(target, Path) and target.is_absolute() and target.name == "registered-" + intent_id
+             and isinstance(bootstrap, Path) and bootstrap.is_absolute()
+             and bootstrap.name == intent_id + ".producer-bootstrap.json", "experiment_unit_configuration_invalid")
+    properties = ["User=blueprint", "Group=blueprint", "UMask=0077", "NoNewPrivileges=yes",
+        "CapabilityBoundingSet=", "AmbientCapabilities=", "ProtectControlGroups=yes", "KillMode=control-group",
+        "Delegate=no", "TasksMax=64", "TimeoutStopSec=30", "RemainAfterExit=yes", "ProtectSystem=strict",
+        "ProtectHome=yes", "PrivateTmp=yes", "PrivateNetwork=yes", "RestrictNamespaces=yes",
+        "RestrictSUIDSGID=yes", "ReadWritePaths=" + str(target), "ReadOnlyPaths=/"]
+    return ["/usr/bin/systemd-run", "--no-block", "--quiet", "--unit=blueprint-experiment-" + intent_id,
+        *("--property=" + value for value in properties), "--", str(_NATIVE_PYTHON), "-m", __name__,
+        "--producer-bootstrap", str(bootstrap), "--target", str(target)]
+
+
+def _native_control(arguments):
+    value = subprocess.run(arguments, stdin=subprocess.DEVNULL, capture_output=True, timeout=5,
+                           check=False, env={"PATH":"/usr/bin:/bin", "LC_ALL":"C"})
+    _require(value.returncode == 0 and len(value.stdout) <= 65536 and len(value.stderr) <= 4096,
+             "experiment_unit_observation_failed")
+    return value.stdout.decode("utf-8", errors="strict")
+
+
+_UNIT_PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "InvocationID", "MainPID", "Result",
+    "ExecMainStatus", "ExecStart", "ControlGroup", "User", "Group", "UMask", "NoNewPrivileges",
+    "CapabilityBoundingSet", "AmbientCapabilities", "ProtectControlGroups", "KillMode", "Delegate",
+    "TasksMax", "TimeoutStopUSec", "RemainAfterExit", "ProtectSystem", "ProtectHome", "PrivateTmp",
+    "PrivateNetwork", "RestrictNamespaces", "RestrictSUIDSGID", "ReadWritePaths", "ReadOnlyPaths")
+
+
+def _show_unit(intent_id):
+    unit = "blueprint-experiment-" + intent_id + ".service"
+    raw = _native_control([_SYSTEMCTL, "show", unit, "--no-pager", "--property=" + ",".join(_UNIT_PROPERTIES)])
+    rows = raw.splitlines()
+    _require(len(rows) <= len(_UNIT_PROPERTIES) and all("=" in row for row in rows), "experiment_unit_observation_failed")
+    value = dict(row.split("=", 1) for row in rows)
+    _require(len(value) == len(rows) and set(value) == set(_UNIT_PROPERTIES), "experiment_unit_observation_failed")
+    return value
+
+
+def _check_unit(value, command, intent_id):
+    unit = "blueprint-experiment-" + intent_id + ".service"
+    _require(value["Id"] == unit and value["LoadState"] == "loaded"
+             and re.fullmatch(r"[0-9a-f]{32}", value["InvocationID"])
+             and value["ControlGroup"] == "/system.slice/" + unit, "experiment_unit_identity_changed")
+    expected = {"User":"blueprint", "Group":"blueprint", "UMask":"0077", "NoNewPrivileges":"yes",
+        "CapabilityBoundingSet":"", "AmbientCapabilities":"", "ProtectControlGroups":"yes",
+        "KillMode":"control-group", "Delegate":"no", "TasksMax":"64", "TimeoutStopUSec":"30s",
+        "RemainAfterExit":"yes", "ProtectSystem":"strict", "ProtectHome":"yes", "PrivateTmp":"yes",
+        "PrivateNetwork":"yes", "RestrictNamespaces":"yes", "RestrictSUIDSGID":"yes",
+        "ReadWritePaths":command[-1], "ReadOnlyPaths":"/"}
+    _require(all(value[key] == selected for key, selected in expected.items()), "experiment_unit_sandbox_changed")
+    start = value["ExecStart"]
+    match = re.fullmatch(r"\{ path=(.*?) ; argv\[\]=(.*?) ; ignore_errors=no ; .* \}", start)
+    argv = command[command.index("--") + 1:]
+    _require(match is not None and match[1] == argv[0] and shlex.split(match[2]) == argv,
+             "experiment_unit_command_changed")
+
+
+def _empty_group(selected):
+    """Observe only the owned root and its bounded cgroup-v2 descendants."""
+    _require(type(selected) is str and selected.startswith("/system.slice/blueprint-experiment-")
+             and selected.endswith(".service") and ".." not in selected, "experiment_cgroup_unproven")
+    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    try:
+        root, _ = files.parent(_CGROUP_ROOT / selected.lstrip("/") / "cgroup.events", protected=True)
+        root_info = os.fstat(root)
+        pending, groups, tasks, raw_bytes = [root], 0, 0, 0
+        identities = []
+        while pending:
+            parent = pending.pop()
+            files.location(parent)
+            groups += 1
+            _require(groups <= 32, "experiment_cgroup_resource_exhausted")
+            names = []
+            with os.scandir(parent) as entries:
+                for entry in entries:
+                    files.budget.charge("entries")
+                    info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                    _require(info.st_uid == 0 and not stat.S_IMODE(info.st_mode) & 0o022,
+                             "experiment_cgroup_permissions_changed")
+                    if stat.S_ISDIR(info.st_mode):
+                        _require(len(names) + groups <= 32, "experiment_cgroup_resource_exhausted")
+                        names.append(entry.name)
+            for name in ("cgroup.events", "cgroup.procs", "cgroup.threads"):
+                fd = files.open(name, os.O_RDONLY | os.O_NONBLOCK, parent=parent)
+                try:
+                    raw = files.read_bytes(fd, 65536)
+                    raw_bytes += len(raw)
+                    _require(raw_bytes <= 65536, "experiment_cgroup_resource_exhausted")
+                    if name == "cgroup.events":
+                        _require(b"populated 0\n" in raw, "experiment_cgroup_still_populated")
+                    else:
+                        tasks += len(raw.splitlines())
+                        _require(tasks == 0, "experiment_cgroup_still_populated")
+                finally:
+                    files.close(fd)
+            identities.append(_typed(os.fstat(parent)))
+            for name in sorted(names):
+                pending.append(files.open(name, os.O_RDONLY | os.O_DIRECTORY, parent=parent))
+        files.verify()
+        return dict(root_identity={"dev":root_info.st_dev, "ino":root_info.st_ino, "type":"directory"},
+                    groups=groups, tasks=tasks, observed_bytes=raw_bytes, group_identities=identities)
+    finally:
+        try:
+            files.finish()
+        finally:
+            files.budget.close()
+
+
+class _TerminatedUnitProof:
+    """Created only by the root observer of its exact native unit invocation."""
+    def __init__(self, *, started, finished, kernel, command, observed_at):
+        self.started, self.finished, self.kernel = started, finished, kernel
+        self.command, self.observed_at = command, observed_at
+
+
+def run_registered_experiment(intent_id, *, expected_intent, installed_config_path="/etc/blueprint-operator-door/door.json",
+                              now=time.time):
+    """Root authentic launch; actual kernel closure precedes completion publication."""
+    from . import control_plane_lane_experiment_actions as actions
+    from . import control_plane_lane_experiment_retirement as issuance
+    from . import control_plane_lane_owner_consents as owners
+    from .control_plane_lane_experiment_authority import _read
+    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    try:
+        _require(os.geteuid() == 0 and type(intent_id) is str and re.fullmatch(r"[0-9a-f]{32}", intent_id)
+                 and type(expected_intent) is dict and set(expected_intent) == {"sha256", "size_bytes"},
+                 "experiment_issuer_required")
+        issued = now()
+        config, gid = actions._context(files, installed_config_path, issued)
+        _require(config.experiment_creation_enabled is True, "experiment_creation_disabled")
+        public, current, entry = actions._selected(files, config, intent_id, issued, gid)
+        _require(entry["state"] == "active" and entry["completion"] is None and entry["operation_id"] is None
+                 and issued < entry["expires_at_epoch"], "experiment_producer_inactive")
+        target, _ = actions._target(files, config, entry)
+        lease, _ = actions._lease(files, target, entry)
+        birth = actions._birth(files, public, entry, gid)
+        _require(birth["participant_profile"] == "g1_local_contained_completed.v1"
+                 and lease["released_at_epoch"] is None and issued < lease["expires_at_epoch"],
+                 "experiment_producer_inactive")
+        raw, _ = files.read(Path(config.experiment_record_store)/(intent_id+".json"), cap=32768, protected=True, mode=0o600)
+        owners._identity(raw, expected_intent["sha256"], expected_intent["size_bytes"], files.budget)
+        intent = retained._document(raw, 32768, _work_budget=files.budget)
+        _require(intent["intent_digest"] == canonical_digest(intent, digest_field="intent_digest")
+                 and intent["generation"] == entry["generation"] and intent["policy"] == current[1]["policy"]
+                 and issued < intent["expires_at_epoch"], "experiment_producer_authority_changed")
+        bootstrap = Path(config.experiment_authority_root)/(intent_id+".producer-bootstrap.json")
+        raw, _ = _read(files, public, bootstrap.name, 32768, gid)
+        selected = retained._document(raw, 32768, _work_budget=files.budget)
+        _require(selected["intent"] == expected_intent and selected["bootstrap_digest"]
+                 == canonical_digest(selected, digest_field="bootstrap_digest")
+                 and selected["generation"] == entry["generation"] and selected["birth"] == entry["birth"]
+                 and issued < selected["expires_at_epoch"]
+                 and selected["installed_sources"] == producer_source_identities(), "experiment_producer_authority_changed")
+        policy_raw, _ = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES, protected=True, mode=0o600)
+        _require(issuance._selector(policy_raw, files.budget) == current[1]["policy"], "experiment_policy_changed")
+        files.verify()
+        command = _unit_arguments(intent_id, target, bootstrap)
+        expiry = min(entry["expires_at_epoch"], selected["expires_at_epoch"], current[1]["expires_at_epoch"])
+    finally:
+        try:
+            files.finish()
+        finally:
+            files.budget.close()
+    _require(sys.platform == "linux", "experiment_containment_required")
+    _require(_show_unit(intent_id)["LoadState"] == "not-found", "experiment_unit_name_consumed")
+    _native_control(command)
+    started, origin = None, time.monotonic()
+    while time.monotonic() - origin <= 4*3600 and now() < expiry:
+        value = _show_unit(intent_id)
+        _check_unit(value, command, intent_id)
+        if started is None and value["MainPID"] == "0":
+            _require(value["ActiveState"] == "activating", "experiment_unit_start_unproven")
+            time.sleep(0.1)
+            continue
+        if started is None:
+            _require(value["MainPID"].isdigit() and int(value["MainPID"]) > 1, "experiment_unit_start_unproven")
+            started = value
+        _require(value["InvocationID"] == started["InvocationID"], "experiment_unit_identity_changed")
+        if value["ActiveState"] == "active" and value["SubState"] == "exited":
+            _require(value["Result"] == "success" and value["ExecMainStatus"] == "0", "experiment_producer_failed")
+            kernel = _empty_group(value["ControlGroup"])
+            _native_control([_SYSTEMCTL, "stop", "blueprint-experiment-"+intent_id+".service"])
+            finished = _show_unit(intent_id)
+            _require(finished["ActiveState"] == "inactive" and finished["Result"] == "success"
+                     and finished["ExecMainStatus"] == "0" and finished["InvocationID"] == started["InvocationID"],
+                     "experiment_unit_closure_unproven")
+            proof = _TerminatedUnitProof(started=started, finished=finished, kernel=kernel, command=command, observed_at=now())
+            from .control_plane_lane_experiment_completion import publish_contained_completion
+            completion = publish_contained_completion(intent_id, expected_intent=expected_intent,
+                proof=proof, installed_config_path=installed_config_path, now=now)
+            return {"status":"completed", "completion":completion, "unit_invocation_id":started["InvocationID"]}
+        _require(value["ActiveState"] in ("activating", "active"), "experiment_producer_failed")
+        time.sleep(0.1)
+    raise ValueError("experiment_producer_deadline")
 
 
 def producer_source_identities():
@@ -197,6 +400,21 @@ def launch_policy_child(use, *, argv, log_path):
                 os.close(fd)
 
 
+def _producer_main(bootstrap, target):
+    from .control_plane_lane_experiment_consumer import RegisteredExperimentUse
+    from .native_g1_development_pair import run_g1_development_pair
+    use = RegisteredExperimentUse.admit(target, _producer_bootstrap_path=bootstrap)
+    try:
+        _unit_membership(use.entry["intent_id"])
+        result = run_g1_development_pair(request_paths=[path for path, *_ in use._producer_requests],
+                                       output_dir=target, mode="local", _registered_use=use)
+        _require(result["status"] == "completed_development_only", "experiment_producer_failed")
+        return result
+    finally:
+        if not use._closed:
+            use.close()
+
+
 def _policy_child(arguments):
     """Fixed bootstrap checks precede the selected pinned script's first read."""
     import runpy
@@ -258,5 +476,8 @@ def _policy_child(arguments):
 
 
 if __name__ == "__main__":
-    _require(len(sys.argv) >= 2 and sys.argv[1] == "--policy-child", "experiment_child_configuration_invalid")
-    _policy_child(sys.argv[2:])
+    if len(sys.argv) == 5 and sys.argv[1] == "--producer-bootstrap" and sys.argv[3] == "--target":
+        _producer_main(Path(sys.argv[2]), Path(sys.argv[4]))
+    else:
+        _require(len(sys.argv) >= 2 and sys.argv[1] == "--policy-child", "experiment_child_configuration_invalid")
+        _policy_child(sys.argv[2:])
