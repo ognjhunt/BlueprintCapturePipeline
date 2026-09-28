@@ -1,9 +1,56 @@
 """Resume only an exact protected action; no fresh origin or orphan adoption."""
 from pathlib import Path
 
+from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_retirement_access import _require
-from .task_evaluation_scene_retirement_authority import selected_document, load_document
-from .task_evaluation_scene_retirement_intent_receipt import _projection, _resume
+from .task_evaluation_scene_retirement_authority import selected_document, load_document, TOKEN
+from .task_evaluation_scene_retirement_intent_receipt import _projection, _resume, publish_pending_receipt
+from .task_evaluation_scene_retirement_journal import publish_record, SceneJournal
+
+
+def _attempt_path(policy,consent):
+    _require(type(consent.get('consent_id')) is str and TOKEN.fullmatch(consent['consent_id']),
+             'scene_retirement_resume_unproven')
+    return Path(policy['journal_store'])/('retirement-attempt.'+consent['consent_id']+'.json')
+
+
+def claim_retirement(policy,authority,token,allowance):
+    """Publish a fixed protected token/origin before any preservation transfer.
+
+    An interrupted preparation with no completed private initializer cannot
+    silently spend again. It stays protected pending original-token recovery.
+    """
+    consent=authority['consent']
+    _require(type(token) is str and TOKEN.fullmatch(token),'scene_retirement_resume_unproven')
+    value=dict(schema_version='scene_retirement_attempt.v1',token=token,
+        intent_id=consent['intent_id'],consent_id=consent['consent_id'],
+        intent_raw_ref=consent['intent_raw_ref'],plan_raw_ref=consent['plan_raw_ref'],
+        consent_raw_ref=authority['consent_raw_ref'],policy_sha256=consent['policy_sha256'],
+        cohort_sha256=consent['cohort_sha256'],members=consent['members'],
+        initial_path=str(Path(policy['journal_store'])/(token+'.initial.json')),
+        action_allowance=allowance.checkpoint())
+    value['claim_digest']=canonical_digest(value,digest_field='claim_digest')
+    path=_attempt_path(policy,consent)
+    return publish_record(path.parent,path.name,value,maximum=65536,allowance=allowance)
+
+
+def _claim(policy,authority):
+    consent=authority['consent']
+    try:
+        value,_=load_document(_attempt_path(policy,consent),maximum=65536,protected=True)
+    except FileNotFoundError:
+        return None
+    keys={'schema_version','token','intent_id','consent_id','intent_raw_ref','plan_raw_ref',
+          'consent_raw_ref','policy_sha256','cohort_sha256','members','initial_path','action_allowance','claim_digest'}
+    _require(set(value)==keys and value.get('schema_version')=='scene_retirement_attempt.v1'
+             and type(value.get('token')) is str and TOKEN.fullmatch(value['token'])
+             and value.get('claim_digest')==canonical_digest(value,digest_field='claim_digest')
+             and value.get('consent_raw_ref')==authority['consent_raw_ref']
+             and all(value.get(k)==consent[k] for k in ('intent_id','consent_id','intent_raw_ref',
+                 'plan_raw_ref','policy_sha256','cohort_sha256','members'))
+             and value['initial_path']==str(Path(policy['journal_store'])/(value['token']+'.initial.json')),
+             'scene_retirement_resume_unproven')
+    return value
 
 
 def select_retirement(policy, authority, allowance):
@@ -12,13 +59,27 @@ def select_retirement(policy, authority, allowance):
     if not isinstance(context, dict):
         return None
     path = Path(context['roots']['intent_root']) / consent['intent_id'] / 'scene-retired.v1.json'
+    claim=_claim(policy,authority)
+    missing_projection=False
     try:
         _, reference = load_document(path, maximum=65536)
     except FileNotFoundError:
-        return None
-    _, _, _, _, pending, _ = _projection(policy, consent, reference, allowance)
-    journal = _resume(policy, pending, allowance)
-    initial = selected_document(journal.initial_ref, maximum=16 * 1024 * 1024, protected=True)
+        if claim is None:
+            return None
+        try:
+            initial,initial_ref=load_document(claim['initial_path'],maximum=16*1024*1024,protected=True)
+        except FileNotFoundError:
+            # Unknown transfer work cannot be refunded by a fresh invocation.
+            # Recoverable private completion is handled below; this partial
+            # phase deliberately remains KEEP until original-token recovery.
+            allowance.bind_resume(claim['action_allowance'])
+            _require(False,'scene_retirement_preparation_resume_unproven')
+        journal=SceneJournal.resume(initial_ref,allowance=allowance)
+        missing_projection=True
+    else:
+        _, _, _, _, pending, _ = _projection(policy, consent, reference, allowance)
+        journal = _resume(policy, pending, allowance)
+        initial = selected_document(journal.initial_ref, maximum=16 * 1024 * 1024, protected=True)
     _require(initial.get('schema_version') == 'scene_retirement_journal.v1'
              and initial.get('status') == 'pending'
              and initial.get('intent_id') == consent['intent_id']
@@ -28,6 +89,19 @@ def select_retirement(policy, authority, allowance):
              and initial.get('policy_sha256') == consent['policy_sha256']
              and initial.get('cohort_sha256') == consent['cohort_sha256']
              and initial.get('members') == consent['members'], 'scene_retirement_resume_unproven')
+    if claim is not None:
+        checkpoint=initial.get('action_allowance')
+        _require(initial.get('token')==claim['token'] and type(checkpoint) is dict
+                 and type(claim['action_allowance']) is dict
+                 and all(checkpoint.get(k)==claim['action_allowance'].get(k) for k in
+                     ('start_monotonic','started_wall','expires_at','elapsed_seconds','limits')),
+                 'scene_retirement_resume_allowance_unproven')
+    bind_original_allowance(journal,initial,allowance)
+    if missing_projection:
+        # No mutation event can predate public pending publication. A deleted
+        # projection after removal cannot masquerade as an interrupted publish.
+        _require(journal.sequence==0,'scene_retirement_receipt_resume_unproven')
+        reference=publish_pending_receipt(policy,consent,journal,initial['preserved'],allowance)
     return journal, reference, initial
 
 

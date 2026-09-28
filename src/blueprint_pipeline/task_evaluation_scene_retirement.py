@@ -349,7 +349,6 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             resumed=recovery.select_retirement(policy,authority,allowance)
             if resumed is not None:
                 journal,pending,initial=resumed
-                recovery.bind_original_allowance(journal,initial,allowance)
                 _resume_current_references(policy,consent,retained,allowance,now,monotonic)
                 generations=recovery.resumed_generations(sys.modules[__name__],policy,consent,journal,initial)
                 published_objects=initial.get('declared_byte_verification',{}).get('published_objects',[])
@@ -376,6 +375,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                              'scene_retirement_generation_changed')
                 generations.append(generation)
             token=secrets.token_hex(32)[:32]
+            recovery.claim_retirement(policy,authority,token,allowance)
             preserved=preserve_members([member['canonical_path'] for member in consent['members']],
                 transport=transport,allowance=allowance,token=token)
             verified_bytes=_verify_declared_bytes(fresh,preserved,transport,allowance)
