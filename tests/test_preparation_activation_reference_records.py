@@ -31,7 +31,7 @@ def preparation_request(**changes):
             "expected_production_commit": C, "run_mode": "scene_configuration",
             "scene": {"mode": "reuse_configured_revision", "configured_revision": reference()},
             "construction": {"mode": "reuse_configured_scene"},
-            "task": {"binding_mode": "reuse_configuration_template",
+            "task": {"binding_mode": "reuse_configured_template",
                      "subject": {"mode": "configured_scene_object"}},
             "sensors": {"configuration": reference()},
             "runtime": {"health_protocol": reference(), "mounts": []},
@@ -44,7 +44,7 @@ def activation_request(**changes):
             "activation_id": "activate", "team_namespace": "team", "expected_production_commit": C,
             "lane": "task_evaluation_scene_configuration",
             "preparation": {"preparation_id": "prep", "request_digest": D, "result_digest": D},
-            "release_window": reference(), "lineage": {"mode": "initial_project",
+            "release_window": reference(), "lineage": {"kind": "initial_project",
                 "project_spend_reconciliation": reference(), "initial_provider_zero": reference()},
             "authorization": {"reference": "owner-reviewed"}, "requested_mutations": {}, **changes}
 
