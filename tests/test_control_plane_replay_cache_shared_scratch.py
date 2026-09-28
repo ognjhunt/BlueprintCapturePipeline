@@ -365,3 +365,54 @@ def test_shared_group_off_the_holders_device_or_over_counted_is_kept(tmp_path, m
                                        "more_names_than_links": {"groups": 1, "bytes": sizes[counted]}}
     assert block["candidate_groups"] == block["removed_groups"] == 0
     assert all(real_lstat(path) for path in names)
+
+
+def test_shared_scratch_recheck_refuses_a_swapped_or_extra_linked_name(tmp_path, monkeypatch) -> None:
+    """Apply rechecks every name through the held replay before it goes, against the planned inode,
+    size, mtime and a link count equal to the names still to go. A name swapped for another file, a
+    link made anywhere after the plan, or a name gone since, stops its group before anything of it
+    is unlinked, with a typed reason; the other groups still go."""
+
+    from blueprint_pipeline import control_plane_replay_cache_shared_scratch as shared
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    first = _replay(parent_root, "scene-841007-preparation", "parent-a-1")
+    second = _replay(parent_root, "scene-841012-preparation", "parent-b-1")
+    blobs = {name: _store_blob(tmp_path, f"a blob to be {name}".encode() * 20)
+             for name in ("swapped", "linked", "vanished", "removed")}
+    names = {name: [*_linked(blob, first, f"prep-a/{name}.usd"), *_linked(blob, second)]
+             for name, blob in blobs.items()}
+    sizes = {name: blob.stat().st_size for name, blob in blobs.items()}
+    _moved(*blobs.values())
+    real_plan = shared.plan_shared_scratch
+
+    def plan_then_change(*args, **kwargs):
+        plan = real_plan(*args, **kwargs)
+        swapped = names["swapped"][0]
+        swapped.unlink()
+        swapped.write_bytes(b"a blob to be swapped" * 20)
+        os.utime(swapped, (NOW - 9000, NOW - 9000))
+        os.link(names["linked"][0], tmp_path / "linked-after-the-plan")
+        names["vanished"][-1].unlink()
+        return plan
+
+    monkeypatch.setattr(shared, "plan_shared_scratch", plan_then_change)
+    phase = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
+
+    block = phase["shared_scratch"]
+    assert block["kept_by_reason"] == {
+        "recheck_failed:changed": {"groups": 1, "bytes": sizes["swapped"]},
+        "recheck_failed:extra_link": {"groups": 1, "bytes": sizes["linked"]},
+        "recheck_failed:vanished": {"groups": 1, "bytes": sizes["vanished"]},
+    }
+    assert sorted((row["reason"], row["path"]) for row in block["kept"]) == [
+        ("recheck_failed:changed", str(names["swapped"][0])),
+        ("recheck_failed:extra_link", str(names["linked"][0])),
+        ("recheck_failed:vanished", str(names["vanished"][0])),
+    ]
+    assert (block["candidate_groups"], block["removed_groups"]) == (4, 1)
+    assert phase["candidate_bytes"] == sum(sizes.values()) and phase["removed_bytes"] == sizes["removed"]
+    for name in ("swapped", "linked"):
+        assert all(path.exists() for path in names[name]), name
+    assert all(path.exists() for path in names["vanished"][:-1]) and (tmp_path / "linked-after-the-plan").exists()
+    assert not any(path.exists() for path in names["removed"])

@@ -354,6 +354,8 @@ def reclaim_shared_scratch(
         result = apply_shared_scratch(plan, process_root=process_root)
         block["removed_groups"] = len(result["removed"])
         block["removed_bytes"] = sum(group["size_bytes"] for group in result["removed"])
+        # A candidate apply stopped is kept this tick, under recheck_failed:<why>.
+        kept += result["kept"]
     by_reason: dict[str, dict[str, int]] = {}
     for group, reason in kept:
         counted = by_reason.setdefault(reason, {"groups": 0, "bytes": 0})
