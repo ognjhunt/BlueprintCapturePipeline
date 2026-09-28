@@ -232,11 +232,13 @@ class _AuxScan(primary._Scan):
                     self.tick()
                     try:
                         self.location(contract.root_path, relative + "/" + group)
-                        primary._require(re.fullmatch(grouping, group) is not None, "auxiliary_group_unknown")
                         child_relative = relative + "/" + group
+                        if re.fullmatch(grouping, group) is None:
+                            evidence[child_relative] = ObservedAuxiliaryDirectory(child_relative, None, "unknown_layout")
+                            raise primary._Blocked("auxiliary_group_unknown")
+                        groups.append(child_relative)
                         child = self.directory(contract, child_relative, fd, group, directories, evidence)
                         if child is not None:
-                            groups.append(child_relative)
                             self.rows_in(contract, child_relative, child[0], child[1], role, pattern)
                     except primary._Blocked as error:
                         if error.code.endswith("limit") or error.code in primary._RESOURCE_CODES:
