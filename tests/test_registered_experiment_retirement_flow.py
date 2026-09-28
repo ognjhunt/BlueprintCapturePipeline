@@ -121,7 +121,7 @@ def test_authentic_expired_scratch_reaches_existing_gc_and_durable_retired_recei
         retirement_installation, monkeypatch):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     from blueprint_pipeline import control_plane_lane_scratch as native
-    installation = retirement_installation
+    installation = retirement_installation  # noqa: F811
     grant, born, target = _born_scratch(installation)
     original_inode = target.stat().st_ino
     metadata = {name: (target / name).read_bytes()
@@ -163,7 +163,7 @@ def test_authentic_expired_scratch_reaches_existing_gc_and_durable_retired_recei
 @pytest.mark.parametrize('disabled', ['gc_opt_in', 'installed_retirement'])
 def test_existing_gc_never_applies_when_either_enablement_is_off(
         retirement_installation, monkeypatch, disabled):
-    installation = retirement_installation
+    installation = retirement_installation  # noqa: F811
     grant, _, target = _born_scratch(installation)
     _issue_action(installation, grant)
     if disabled == 'installed_retirement':
@@ -180,7 +180,7 @@ def test_existing_gc_never_applies_when_either_enablement_is_off(
 def test_unknown_and_legacy_expired_folders_are_kept_by_actual_enabled_gc(
         retirement_installation, monkeypatch):
     from blueprint_pipeline import control_plane_lane_scratch as native
-    installation = retirement_installation
+    installation = retirement_installation  # noqa: F811
     root = Path(installation[1]['lane_scratch_work_root'])
     unknown = root / 'g1' / 'unowned-old-output'
     unknown.mkdir()
@@ -199,7 +199,7 @@ def test_unknown_and_legacy_expired_folders_are_kept_by_actual_enabled_gc(
 
 def test_authentic_expired_experiment_without_owner_action_is_kept(
         retirement_installation, monkeypatch):
-    installation = retirement_installation
+    installation = retirement_installation  # noqa: F811
     grant, _, target = _born_scratch(installation)
     before = _payload_snapshot(target)
     _no_archive(monkeypatch)
@@ -212,7 +212,7 @@ def test_authentic_expired_experiment_without_owner_action_is_kept(
 def test_owner_review_has_no_payload_or_provider_mutation(
         retirement_installation, monkeypatch):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
-    installation = retirement_installation
+    installation = retirement_installation  # noqa: F811
     grant, _, target = _born_scratch(installation)
     action = _issue_action(installation, grant, action='owner_review')
     before = _payload_snapshot(target)
@@ -230,7 +230,7 @@ def test_owner_review_has_no_payload_or_provider_mutation(
 def test_actual_action_refuses_wrong_or_ambiguous_installed_reference_authority(
         retirement_installation, monkeypatch, fault):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
-    installation = retirement_installation
+    installation = retirement_installation  # noqa: F811
     grant, _, target = _born_scratch(installation)
     action = _issue_action(installation, grant)
     before = _payload_snapshot(target)
