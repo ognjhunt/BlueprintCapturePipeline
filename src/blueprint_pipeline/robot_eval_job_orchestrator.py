@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 from urllib.parse import urlparse
 
 from .agent_operator_runtime import (
@@ -7848,6 +7848,7 @@ def build_robot_eval_job(
     training_command: str | None = None,
     allow_policy_execution: bool = False,
     policy_execution_commands: Mapping[str, str] | None = None,
+    controlled_policy_executor: Callable[..., Mapping[str, Any]] | None = None,
     timeout_seconds: int = 120,
     budget_usd: float | None = None,
     arena_results_dir: str | Path | None = None,
@@ -8059,6 +8060,7 @@ def build_robot_eval_job(
         allow_policy_execution=allow_policy_execution and validation.get("status") != "blocked",
         allow_reference_replay=validation.get("status") != "blocked",
         policy_execution_commands=policy_execution_commands or {},
+        controlled_policy_executor=controlled_policy_executor,
         timeout_seconds=timeout_seconds,
         generated_at=generated_at,
     )
@@ -9874,6 +9876,7 @@ def run_robot_eval_job_request_inbox(
     training_command: str | None = None,
     allow_policy_execution: bool = False,
     policy_execution_commands: Mapping[str, str] | None = None,
+    controlled_policy_executor: Callable[..., Mapping[str, Any]] | None = None,
     timeout_seconds: int = 120,
     budget_usd: float | None = None,
     arena_results_dir: str | Path | None = None,
@@ -10064,6 +10067,7 @@ def run_robot_eval_job_request_inbox(
                 training_command=training_command,
                 allow_policy_execution=allow_policy_execution,
                 policy_execution_commands=policy_execution_commands or {},
+                controlled_policy_executor=controlled_policy_executor,
                 timeout_seconds=timeout_seconds,
                 budget_usd=budget_usd,
                 arena_results_dir=arena_results_dir,

@@ -42,6 +42,8 @@ def project_controlled_observation(
 ) -> dict[str, Any]:
     """Construct only approved observations, with no simulator or asset metadata."""
     normalized = validate_company_policy_container_contract_v2(contract)
+    if not isinstance(synthetic, bool):
+        raise ValueError("controlled_policy_synthetic_flag_invalid")
     if not re.fullmatch(r"[a-f0-9]{32,64}", request_id):
         raise ValueError("controlled_policy_opaque_request_id_required")
     if not isinstance(prompt, str) or len(prompt.encode("utf-8")) > 4096:

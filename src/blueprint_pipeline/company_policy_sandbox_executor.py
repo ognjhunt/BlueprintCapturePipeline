@@ -586,8 +586,14 @@ def execute_company_policy_sandbox_preobservation(
     socket_ready: Callable[[str, int], bool] = wait_for_unix_socket,
     apparmor_profiles_path: Path = Path("/sys/kernel/security/apparmor/profiles"),
     allowed_runtime_root: Path = Path("/run/blueprint"),
+    qualified_session: Callable[[Callable[[bytes, float], bytes]], Mapping[str, Any]] | None = None,
+    authorize_scene_access: Callable[[Mapping[str, Any], Mapping[str, Any]], bool] | None = None,
 ) -> dict[str, Any]:
-    """Execute and measure the sandbox through synthetic conformance only."""
+    """Qualify the sandbox, then optionally run an authorized controlled session.
+
+    The default remains synthetic conformance only. Both live callbacks are
+    trusted worker configuration, never data from the admitted request.
+    """
 
     normalized_contract = validate_company_policy_container_contract_v2(contract)
     expected_plan_digest = cross_runtime_canonical_digest(plan, digest_field="plan_digest")
@@ -633,6 +639,7 @@ def execute_company_policy_sandbox_preobservation(
     network_probes: dict[str, Any] = {}
     executor_receipt: dict[str, Any] | None = None
     terminal_blockers: list[str] = []
+    real_observation_sent = False
     try:
         docker_version = _runtime_preflight_and_smoke(runner, plan)
         visibility = normalized_contract["container"]["visibility"]
@@ -869,17 +876,54 @@ def execute_company_policy_sandbox_preobservation(
             "provider_mutation_authorized": False,
             "provider_mutation_performed": False,
         }
+        if qualified_session is not None:
+            if authorize_scene_access is None or authorize_scene_access(plan, qualification) is not True:
+                raise CompanyPolicySandboxExecutorError("company_policy_scene_access_not_authorized")
+            if qualification.get("status") != "qualified_before_first_observation":
+                raise CompanyPolicySandboxExecutorError("company_policy_scene_access_requires_qualification")
+
+            def controlled_transport(body: bytes, timeout: float) -> bytes:
+                nonlocal real_observation_sent
+                from .controlled_policy_observations import MAX_WIRE_BYTES, project_controlled_observation
+                if not isinstance(body, bytes) or len(body) > MAX_WIRE_BYTES:
+                    raise CompanyPolicySandboxExecutorError("company_policy_live_request_size_invalid")
+                wire = json.loads(body)
+                if not isinstance(wire, dict) or set(wire) != {
+                    "schema_version", "request_id", "synthetic", "prompt", "cameras", "state"
+                }:
+                    raise CompanyPolicySandboxExecutorError("company_policy_live_request_schema_invalid")
+                approved = project_controlled_observation(contract=normalized_contract,
+                    request_id=wire["request_id"], prompt=wire["prompt"],
+                    camera_pngs={name: base64.b64decode(frame["data_base64"], validate=True)
+                                 for name, frame in wire["cameras"].items()},
+                    robot_state=wire["state"], synthetic=wire["synthetic"])
+                if approved != wire:
+                    raise CompanyPolicySandboxExecutorError("company_policy_live_observation_projection_mismatch")
+                real_observation_sent = real_observation_sent or wire["synthetic"] is not True
+                response = proxy_request(socket_path, approved, min(
+                    int(timeout * 1000), int(normalized_contract["container"]["resources"]["request_timeout_ms"])))
+                actions = validate_action_response(response, action_schema=normalized_contract["action_schema"])
+                return json.dumps(actions, allow_nan=False, separators=(",", ":")).encode()
+
+            result.update(status="controlled_session_incomplete", scene_access_authorized=True)
+            session = qualified_session(controlled_transport)
+            result.update(status="controlled_session_completed", controlled_session=dict(session),
+                          real_observation_sent=real_observation_sent, scene_access_authorized=True)
     except (
         CompanyPolicySandboxExecutorError,
         CompanyPolicySandboxV2Error,
+        ValueError,
+        TypeError,
+        KeyError,
+        RuntimeError,
         OSError,
         subprocess.SubprocessError,
     ) as exc:
         terminal_blockers.append(str(exc))
         result = {
-            "status": "blocked_before_first_observation",
+            "status": "blocked_after_observation" if real_observation_sent else "blocked_before_first_observation",
             "blockers": sorted(set(terminal_blockers)),
-            "real_observation_sent": False,
+            "real_observation_sent": real_observation_sent,
             "launch_authority_granted": False,
             "provider_mutation_authorized": False,
             "provider_mutation_performed": False,
@@ -931,7 +975,7 @@ def execute_company_policy_sandbox_preobservation(
             result = {
                 "status": "blocked_teardown_incomplete",
                 "blockers": sorted(set(cleanup_failures)),
-                "real_observation_sent": False,
+                "real_observation_sent": real_observation_sent,
                 "launch_authority_granted": False,
                 "provider_mutation_authorized": False,
                 "provider_mutation_performed": False,
@@ -948,7 +992,7 @@ def execute_company_policy_sandbox_preobservation(
                 "cleanup_complete": not cleanup_failures,
                 "credential_ciphertext_deleted": credential_acknowledged,
                 "customer_policy_image_removed": not cleanup_failures,
-                "real_observation_sent": False,
+                "real_observation_sent": real_observation_sent,
                 "blockers": result.get("blockers", []),
                 "launch_authority_granted": False,
                 "provider_mutation_authorized": False,
