@@ -58,6 +58,10 @@ def retirement_installation(installation, monkeypatch):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_scratch_retention as observer
     config, settings, _, policy_path = installation
     settings['experiment_retirement_enabled'] = True
+    gc_environment = config.parent / 'gc.env'
+    gc_environment.write_text('BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=' + str(config.parent / 'pins') + '\n')
+    gc_environment.chmod(0o600)
+    settings['experiment_gc_environment_file'] = str(gc_environment)
     config.write_bytes(encoded(settings))
     policy = json.loads(policy_path.read_bytes())
     # Preserve the existing policy grammar: owner_review selects KEEP, not a
@@ -219,4 +223,29 @@ def test_owner_review_has_no_payload_or_provider_mutation(
     assert receipt['removed_allocated_bytes'] == 0
     assert _payload_snapshot(target) == before
     _gc(installation)
+    assert _payload_snapshot(target) == before
+
+
+@pytest.mark.parametrize('fault', ['alternate_empty_root', 'duplicate', 'relative'])
+def test_actual_action_refuses_wrong_or_ambiguous_installed_reference_authority(
+        retirement_installation, monkeypatch, fault):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    installation = retirement_installation
+    grant, _, target = _born_scratch(installation)
+    action = _issue_action(installation, grant)
+    before = _payload_snapshot(target)
+    pins = installation[0].parent / 'pins'
+    pins.mkdir()
+    environment = Path(installation[1]['experiment_gc_environment_file'])
+    if fault == 'alternate_empty_root':
+        pins = installation[0].parent / 'wrong-empty-pins'
+        pins.mkdir()
+    elif fault == 'duplicate':
+        with environment.open('a') as output:
+            output.write('BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=' + str(pins) + '\n')
+    else:
+        environment.write_text('BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=relative/path\n')
+    with pytest.raises(ValueError, match='experiment_reference_configuration'):
+        root.run_registered_experiment_action(action['action_id'], expected_action_intent=action['action_intent'],
+            installed_config_path=installation[0], now=lambda: 2900, _pins_root=pins)
     assert _payload_snapshot(target) == before

@@ -60,6 +60,7 @@ class DoorConfig:
     owner_census_decisions_enabled: int = 0
     experiment_creation_enabled: bool = False
     experiment_retirement_enabled: bool = False
+    experiment_gc_environment_file: str = "/etc/blueprint/pipeline-control-plane.env"
     needed_checkpoint_cache_creation_enabled: bool = False
     needed_checkpoint_cache_inventory_file: str = "/opt/blueprint/control-plane-config-tools/operator-door-source/configs/g1_humanoidarena_checkpoint_inventory.v1.json"
     lane_owner_policy_file: str = "/etc/blueprint-operator-door/lane-owner-policy.json"
@@ -140,7 +141,7 @@ _PATH_SCALARS = (
     "source_clone", "reference_repo", "github_deploy_key", "github_known_hosts", "venv_python",
     "capacity_summary",
     "lane_scratch_work_root", "lane_scratch_inputs_root", "lane_owner_policy_file",
-    "needed_checkpoint_cache_inventory_file",
+    "needed_checkpoint_cache_inventory_file", "experiment_gc_environment_file",
 )
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
