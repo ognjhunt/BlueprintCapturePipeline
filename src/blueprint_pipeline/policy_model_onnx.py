@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -27,6 +28,8 @@ class OnnxStatePolicy:
     """One pinned, static float32 state vector to a fixed action chunk."""
 
     def __init__(self, *, model_path: Path, artifact: Mapping[str, Any]):
+        if not (3, 11) <= sys.version_info[:2] < (3, 13):
+            raise ValueError("policy_model_runner_python_version_unsupported")
         import onnx
         import onnxruntime as ort
 

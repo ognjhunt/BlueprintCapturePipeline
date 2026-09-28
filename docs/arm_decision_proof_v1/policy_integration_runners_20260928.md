@@ -10,7 +10,9 @@ prerequisites for that goal, not a terminal production receipt.
 
 ## Initial model profile
 
-`onnx_state_mlp_cpu_v1` uses ONNX 1.23.0 and ONNX Runtime 1.30.0. Install the
+`onnx_state_mlp_cpu_v1` requires Python 3.11–3.12 and uses ONNX 1.23.0 and
+ONNX Runtime 1.30.0. The legacy Python 3.10 control plane remains supported
+without this optional runner. Install the
 `policy_model_cpu` extra in the isolated policy worker only. The WebApp stores
 private bytes and metadata; it never deserializes an uploaded inference graph.
 
