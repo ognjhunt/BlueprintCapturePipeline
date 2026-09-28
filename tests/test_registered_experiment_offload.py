@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -215,6 +215,23 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
             assert {str(path.relative_to(stage)): path.read_bytes() for path in stage.rglob('*') if path.is_file()} == retained
             assert _current_entry(value, intent_id)['state'] == 'restoring'
             return
+    if certificate_case == 'member_link_crash':
+        from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+        actual_event = actions._event
+        stopped = False
+        def interrupted_after_link(*args, **kwargs):
+            nonlocal stopped
+            selected = actual_event(*args, **kwargs)
+            if args[3] == 'restore_member' and not stopped:
+                stopped = True
+                raise OSError('killed_after_real_link_and_durable_event_before_source_unlink')
+            return selected
+        monkeypatch.setattr(actions, '_event', interrupted_after_link)
+        with pytest.raises(ValueError, match='experiment_'):
+            root.restore_registered_experiment(grant['action_id'], **arguments)
+        assert stopped and _current_entry(value, intent_id)['state'] == 'restoring'
+        transport_calls = list(cloud.calls)
+        monkeypatch.setattr(actions, '_event', actual_event)
     if certificate_case == 'activation_crash':
         from blueprint_pipeline import control_plane_lane_experiment_actions as actions
         actual_event = actions._event
@@ -232,7 +249,7 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         replay = root.restore_registered_experiment(grant['action_id'], **arguments)
         assert replay['receipt'] == outcome['receipt'] and cloud.calls == calls
 
-    if certificate_case == 'stage_ready_crash':
+    if certificate_case in ('stage_ready_crash', 'member_link_crash'):
         assert cloud.calls == transport_calls  # Durable stage proof avoids new transfer.
     assert outcome['decision'] == 'restored' and reservation.released
     assert len(allocations) == (2 if certificate_case == 'before_stage_crash' else 1)
