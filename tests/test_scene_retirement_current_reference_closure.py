@@ -11,10 +11,11 @@ from blueprint_pipeline.task_evaluation_scene_retirement_preservation import Act
 @pytest.mark.parametrize('changed',[None,'path','sha256','size_bytes'])
 def test_native_intent_provenance_preserves_exact_raw_owner_tuple(monkeypatch,changed):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
-    from tests.test_scene_lifecycle_plan import fixture
-    args,context=fixture()
+    from tests.test_scene_inventory_history import fixture
+    args=fixture()
+    context={}
     from blueprint_pipeline.task_evaluation_scene_preparation_lineage import _record
-    _,proof=_record(args['seed_records']['intent'],'intent',set())
+    _,proof=_record(args['records']['intent'],'intent',set())
     reference={key:proof[key] for key in ('path','sha256','size_bytes')}
     if changed=='path':
         reference['path']+='.foreign'
