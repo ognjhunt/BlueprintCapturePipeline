@@ -160,7 +160,7 @@ def test_public_recovery_cannot_borrow_a_changed_consent(tmp_path,monkeypatch):
 
 
 def test_completed_preparation_before_private_initial_resumes_without_second_upload(tmp_path,monkeypatch):
-    engine,_,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    engine,policy,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
     create=engine.SceneJournal.create
     def interrupted(*args,**kwargs):
         raise OSError('owned fault after archive before private initializer')
@@ -172,7 +172,8 @@ def test_completed_preparation_before_private_initial_resumes_without_second_upl
     second=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
     assert set(transport.objects)==old_objects,'unproven preparation retried under a new archive token'
     assert second['status']=='retired',second
-    assert second['token']==Path(next(iter(old_objects))).name.split('.')[0]
+    claim=json.loads((Path(policy['journal_store'])/('retirement-attempt.'+scope['consent_id']+'.json')).read_bytes())
+    assert second['token']==claim['token']
     assert all(not Path(row['canonical_path']).exists() for row in scope['members'])
 
 
@@ -269,3 +270,14 @@ def test_unknown_partial_attempt_never_refunds_escrow_on_retry(tmp_path,monkeypa
     assert result['reason']=='scene_retirement_byte_limit',result
     assert len(entered)==1,'retry reached physical transport after original escrow exhausted remaining cap'
     assert all(Path(row['canonical_path']).exists() for row in scope['members'])
+
+
+def test_changed_consent_inventory_refuses_before_archive_upload(tmp_path,monkeypatch):
+    engine,_,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    payload=Path(scope['members'][0]['canonical_path'])/'proof.bin'
+    payload.write_bytes(b'changed-private-source')
+    original_objects=dict(transport.objects)
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    assert result['reason']=='scene_retirement_inventory_changed',result
+    assert transport.objects==original_objects,'unknown changed bytes crossed archive transport before consent inventory proof'
+    assert payload.read_bytes()==b'changed-private-source'
