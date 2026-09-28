@@ -76,3 +76,51 @@ def test_proved_internal_cross_member_hardlink_union_removes_completely(tmp_path
     assert outcome['removed_allocated_bytes']==preserved['unique_allocated_bytes']
     assert first_outcome['removed_file_count']==outcome['removed_file_count']==1
     assert first_outcome['logical_bytes']==outcome['logical_bytes']==len(b'preserved-evidence')
+
+
+def test_resume_only_prejournaled_exact_detach_after_rename_before_event(tmp_path,monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
+    from blueprint_pipeline import control_plane_lane_scratch as primitive
+    access,member,preserved,journal=setup_operation(tmp_path,monkeypatch)
+    original=primitive._publish_no_replace
+    class Interrupted(RuntimeError):
+        pass
+    def rename_then_interrupt(*args):
+        original(*args)
+        raise Interrupted()
+    with monkeypatch.context() as patch:
+        patch.setattr(primitive,'_publish_no_replace',rename_then_interrupt)
+        with access.exclusive_scene_access(),pytest.raises(Interrupted):
+            detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+    destination=member.parent/('.scene-retirement-'+journal.token+'-0')
+    assert not member.exists() and destination.is_dir()
+    resumed=SceneJournal.resume(journal.initial_ref,allowance=journal.allowance)
+    with access.exclusive_scene_access():
+        outcome=detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=resumed)
+    assert outcome['outcome']=='removed' and not destination.exists()
+    assert len([row for row in resumed.events if row['event']=='detach_planned'])==1
+
+
+def test_resume_never_adopts_substituted_detach_inode(tmp_path,monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline import control_plane_lane_scratch as primitive
+    access,member,preserved,journal=setup_operation(tmp_path,monkeypatch)
+    original=primitive._publish_no_replace
+    class Interrupted(RuntimeError):
+        pass
+    def rename_then_interrupt(*args):
+        original(*args)
+        raise Interrupted()
+    with monkeypatch.context() as patch:
+        patch.setattr(primitive,'_publish_no_replace',rename_then_interrupt)
+        with access.exclusive_scene_access(),pytest.raises(Interrupted):
+            detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+    destination=member.parent/('.scene-retirement-'+journal.token+'-0')
+    parked=destination.with_name('unmodified-original-detach')
+    destination.rename(parked)
+    destination.mkdir();(destination/'foreign.bin').write_bytes(b'new-generation')
+    with access.exclusive_scene_access(),pytest.raises(ValueError):
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+    assert (destination/'foreign.bin').read_bytes()==b'new-generation'
+    assert (parked/'nested'/'evidence.bin').read_bytes()==b'preserved-evidence'
