@@ -7,6 +7,8 @@ its exact protected copy intent. Unknown or changed bytes are preserved and refu
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -312,6 +314,34 @@ def dependency_root(venv):
         raise ValueError(_ERROR) from exc
 
 
+@contextmanager
+def _installation_lock():
+    """Only one root installer may advance the fixed copy intent."""
+    _mkdir(_BOOT_ROOT)
+    path = _BOOT_ROOT / 'installation.lock'
+    if not path.exists() and not path.is_symlink():
+        try:
+            created = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            try:
+                os.fsync(created)
+            finally:
+                os.close(created)
+    fd = _open(path, directory=False, partial=True)
+    try:
+        before = os.fstat(fd)
+        _require(before.st_size == 0 and stat.S_IMODE(before.st_mode) == 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _require(_identity(path.lstat()) == _identity(before))
+        yield
+        _require(_identity(os.fstat(fd)) == _identity(before)
+                 and _identity(path.lstat()) == _identity(before))
+    finally:
+        os.close(fd)
+
+
 def prepare(source, dependencies):
     """Copy exact protected inputs; no policy, consent, generation or flag writes."""
     try:
@@ -326,39 +356,40 @@ def prepare(source, dependencies):
         boot_source = source / 'scripts/scene_retirement_continuous_bootstrap.py'
         boot_row = _read(boot_source, deadline)
         boot = _BOOT_ROOT / 'continuous_bootstrap.py'
-        record = _BOOT_ROOT / 'installation.json'
-        if boot.exists() or boot.is_symlink():
+        with _installation_lock():
+            record = _BOOT_ROOT / 'installation.json'
+            if boot.exists() or boot.is_symlink():
+                _verify(_RUNTIME_ROOT, rows, boot, boot_row, deadline)
+                return {'status': 'already_prepared', 'authority_issued': False, 'cleanup_enabled': False}
+            if _RUNTIME_ROOT.exists() or _RUNTIME_ROOT.is_symlink():
+                _require(record.exists() and not record.is_symlink())
+                _intent(rows, boot_row, deadline)
+                _partial_tree(_RUNTIME_ROOT, rows, sources, deadline)
+            temporary_boot = _BOOT_ROOT / 'continuous_bootstrap.pending.py'
+            if temporary_boot.exists() or temporary_boot.is_symlink():
+                _require(record.exists() and not record.is_symlink())
+                _intent(rows, boot_row, deadline)
+                _prefix(boot_source, temporary_boot, boot_row, deadline)
+            total = sum(row['size'] for row in rows.values()) + boot_row['size']
+            available = os.statvfs(_nearest(_RUNTIME_ROOT.parent))
+            _require(available.f_bavail * available.f_frsize >= total + _FREE_FLOOR)
+            boot_available = os.statvfs(_nearest(_BOOT_ROOT.parent))
+            _require(boot_available.f_bavail * boot_available.f_frsize >= boot_row['size'] + _FREE_FLOOR)
+            _intent(rows, boot_row, deadline)
+            _mkdir(_RUNTIME_ROOT)
+            for name, row in rows.items():
+                _copy(sources[name], _RUNTIME_ROOT / name, row, deadline)
+            # The fixed executable appears only after all runtime copies verify.
+            _copy(boot_source, temporary_boot, boot_row, deadline)
+            os.rename(temporary_boot, boot)
+            parent = _open(_BOOT_ROOT, directory=True)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
             _verify(_RUNTIME_ROOT, rows, boot, boot_row, deadline)
-            return {'status': 'already_prepared', 'authority_issued': False, 'cleanup_enabled': False}
-        if _RUNTIME_ROOT.exists() or _RUNTIME_ROOT.is_symlink():
-            _require(record.exists() and not record.is_symlink())
-            _intent(rows, boot_row, deadline)
-            _partial_tree(_RUNTIME_ROOT, rows, sources, deadline)
-        temporary_boot = _BOOT_ROOT / 'continuous_bootstrap.pending.py'
-        if temporary_boot.exists() or temporary_boot.is_symlink():
-            _require(record.exists() and not record.is_symlink())
-            _intent(rows, boot_row, deadline)
-            _prefix(boot_source, temporary_boot, boot_row, deadline)
-        total = sum(row['size'] for row in rows.values()) + boot_row['size']
-        available = os.statvfs(_nearest(_RUNTIME_ROOT.parent))
-        _require(available.f_bavail * available.f_frsize >= total + _FREE_FLOOR)
-        boot_available = os.statvfs(_nearest(_BOOT_ROOT.parent))
-        _require(boot_available.f_bavail * boot_available.f_frsize >= boot_row['size'] + _FREE_FLOOR)
-        _intent(rows, boot_row, deadline)
-        _mkdir(_RUNTIME_ROOT)
-        for name, row in rows.items():
-            _copy(sources[name], _RUNTIME_ROOT / name, row, deadline)
-        # The fixed executable appears only after all runtime copies verify.
-        _copy(boot_source, temporary_boot, boot_row, deadline)
-        os.rename(temporary_boot, boot)
-        parent = _open(_BOOT_ROOT, directory=True)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
-        _verify(_RUNTIME_ROOT, rows, boot, boot_row, deadline)
-        return {'status': 'prepared', 'authority_issued': False, 'cleanup_enabled': False,
-                'files': len(rows), 'bytes': total}
+            return {'status': 'prepared', 'authority_issued': False, 'cleanup_enabled': False,
+                    'files': len(rows), 'bytes': total}
     except (OSError, ValueError) as exc:
         raise ValueError(_ERROR) from exc
 
