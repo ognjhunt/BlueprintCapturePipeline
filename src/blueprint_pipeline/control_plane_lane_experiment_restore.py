@@ -425,7 +425,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         public, current, entry = actions._selected(files, config, action['intent_id'], issued, gid)
         if entry['state'] == 'active' and entry['restoration'] is not None:
             return _activated(files, config, gid, action, expected_restore_intent, public, current, entry, issued, pins_root)
-        _require(entry['state'] == 'retired' and entry['operation_id'] == action_id and current[1]['policy'] == action['policy']
+        _require(entry['state'] in ('retired', 'restoring') and entry['operation_id'] == action_id and current[1]['policy'] == action['policy']
                  and all(entry[key] == action[key] for key in ('generation', 'birth', 'lease', 'target_identity', 'owner')),
                  'experiment_restore_current_changed')
         target, target_fd = actions._target(files, config, entry)
@@ -460,21 +460,62 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         # The exact old operation/store lock and pins EX remain held.
         occupied = issuance._capacity(files, store, adding_registration=False)
         reserved = 2 * len(rows) * 4096 + 8 * 32768
-        _require(occupied + reserved + 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES, 'experiment_store_full')
+        _require(occupied + (reserved if entry['state'] == 'retired' else 0) + 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES, 'experiment_store_full')
         reservation_raw = actions._encoded(dict(schema_version='control_plane_lane_experiment_reservation.v1',
             operation_id=action_id, reserved_bytes=reserved), 'reservation_digest', 4096)
-        _publish(files, store, action_id + '.reservation.json', reservation_raw, kind='private')
+        files._store_path = config.experiment_record_store
+        recovery._once(files, store, action_id + '.reservation.json', reservation_raw, kind='private')
         operations = actions._directory(files, store, 'operations')
-        operation = actions._directory(files, operations, action_id, create=True)
+        operation = actions._directory(files, operations, action_id, create=entry['state'] == 'retired')
+        files.location(operation)
+        files.proof(operation)
+        try:
+            fcntl.flock(operation, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise OwnerTargetVersionError('experiment_restore_operation_busy') from None
+        files._operation_path = str(store_path / 'operations' / action_id)
         stage_name = '.restore-' + action_id
-        started = actions._event(files, operation, action, 'restore_started', dict(restore_intent=expected_restore_intent,
-            preservation=action['preservation'], retired=selection['retired'], stage_name=stage_name,
-            new_lease_expiry=action['new_lease_expires_at_epoch'], reference_authority=reference), 0, None, issued)
-        prepared, old_head = actions._version(files, public, refreshed, entry | {'state': 'restoring'},
-                                              gid, action['policy'], issued)
-        _publish(files, store, action_id + '.restore-head.json', prepared, kind='private')
-        actions._install_head(files, public, prepared, gid, old_head)
-        restoring = _current(files, public, gid)
+        if entry['state'] == 'retired':
+            started = actions._event(files, operation, action, 'restore_started', dict(restore_intent=expected_restore_intent,
+                preservation=action['preservation'], retired=selection['retired'], stage_name=stage_name,
+                new_lease_expiry=action['new_lease_expires_at_epoch'], reference_authority=reference,
+                controller_origin_epoch=issued, deadline_epoch=min(issued + 4*3600, action['expires_at_epoch'])), 0, None, issued)
+            prepared, old_head = actions._version(files, public, refreshed, entry | {'state': 'restoring'},
+                                                  gid, action['policy'], issued)
+            _publish(files, store, action_id + '.restore-head.json', prepared, kind='private')
+            actions._install_head(files, public, prepared, gid, old_head)
+            restoring = _current(files, public, gid)
+        else:
+            selected = recovery._read_event(files, operation, action, 0, None)
+            _require(selected is not None, 'experiment_restore_operation_invalid')
+            original_event, started = selected
+            body = original_event['body']
+            _require(original_event['event_kind'] == 'restore_started' and set(body) == {
+                'restore_intent', 'preservation', 'retired', 'stage_name', 'new_lease_expiry',
+                'reference_authority', 'controller_origin_epoch', 'deadline_epoch'}
+                and all(body[key] == expected for key, expected in dict(restore_intent=expected_restore_intent,
+                    preservation=action['preservation'], retired=selection['retired'], stage_name=stage_name,
+                    new_lease_expiry=action['new_lease_expires_at_epoch'], reference_authority=reference).items())
+                and _epoch(body['controller_origin_epoch']) and _epoch(body['deadline_epoch'])
+                and body['controller_origin_epoch'] <= issued < body['deadline_epoch']
+                <= min(body['controller_origin_epoch'] + 4*3600, action['expires_at_epoch']),
+                'experiment_restore_operation_invalid')
+            files.bind_deadline(body['deadline_epoch'])
+            prepared, _ = _document(files, store_path / (action_id + '.restore-head.json'), 4096)
+            _require(prepared == (json.dumps(refreshed[0], sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n').encode(),
+                     'experiment_restore_current_changed')
+            # Only the proven pre-stage boundary is resumable here. Existing
+            # partial/foreign stages are retained before any token/client call.
+            files.location(target_fd)
+            try:
+                os.stat(stage_name, dir_fd=target_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise OwnerTargetVersionError('experiment_restore_stage_requires_reconciliation')
+            _require(recovery._read_event(files, operation, action, 1, started) is None,
+                     'experiment_restore_operation_invalid')
+            restoring = refreshed
         def guard():
             _require(now() < action['expires_at_epoch'], 'experiment_restore_expired')
             files.verify()
