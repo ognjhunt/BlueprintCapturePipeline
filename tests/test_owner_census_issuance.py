@@ -170,3 +170,54 @@ def test_parent_security_change_during_publication_refuses_and_cleans_own_temp(i
     with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_record_changed"):
         c.issue_owner_consent(paths[0], paths[1], **args)
     assert [p.name for p in store.iterdir()] == [".owner-consents.lock"]
+
+
+def test_busy_existing_lock_refuses_without_creating_or_replacing_metadata(issuer):
+    import fcntl
+
+    paths, store, args, _ = issuer
+    lock = store / ".owner-consents.lock"
+    original = lock.stat().st_ino
+    fd = os.open(lock, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_store_busy"):
+            c.issue_owner_consent(paths[0], paths[1], **args)
+        assert lock.stat().st_ino == original
+        assert [p.name for p in store.iterdir()] == [lock.name]
+    finally:
+        os.close(fd)
+
+
+def test_private_publication_refuses_unproven_root_group_before_consent_success(
+    issuer, monkeypatch
+):
+    paths, store, args, actual_protection = issuer
+    original_fchmod, original_fstat = os.fchmod, os.fstat
+    created = []
+    fixture_protection = c._protected
+
+    def chmod(fd, mode):
+        original_fchmod(fd, mode)
+        created.append(fd)
+
+    def fstat(fd):
+        info = original_fstat(fd)
+        if fd in created:
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            fields.update(st_uid=0, st_gid=42)
+            return SimpleNamespace(**fields)
+        return info
+
+    def protected(info, **kw):
+        if info.st_uid == 0 and info.st_gid == 42 and kw.get("mode") == 0o600:
+            actual_protection(info, **kw)
+        else:
+            fixture_protection(info, **kw)
+
+    monkeypatch.setattr(os, "fchmod", chmod)
+    monkeypatch.setattr(os, "fstat", fstat)
+    monkeypatch.setattr(c, "_protected", protected)
+    with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_store_unsafe"):
+        c.issue_owner_consent(paths[0], paths[1], **args)
+    assert [p.name for p in store.iterdir()] == [".owner-consents.lock"]

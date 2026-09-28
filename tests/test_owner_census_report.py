@@ -47,6 +47,7 @@ def test_report_observes_owner_and_positive_metadata_without_any_action(issuer):
         is result["eta_seconds"]
         is None
     )
+    assert result["references_clear"] is False and result["eta_contribution_bytes"] is None
     assert result["decisions"][0]["decision"]["owner"] == "owner"
     assert "target_generation_unbound" in result["decisions"][0]["unmet_requirements"]
     assert {p.name: p.read_bytes() for p in store.iterdir()} == before
@@ -115,6 +116,19 @@ def test_report_constructs_strict_cumulative_budget_before_config(issuer, monkey
 
 def public(issuer, monkeypatch):
     value, store, args, paths = issue(issuer)
+    import stat
+
+    original_security = c._security
+
+    def fixture_public_ancestors(info):
+        # This root fixture models installed 0755 public ancestry without changing
+        # pytest's private temporary ancestors. Regular file modes remain real.
+        result = original_security(info)
+        if stat.S_ISDIR(info.st_mode):
+            result = result[:2] + (stat.S_IFDIR | 0o755,) + result[3:]
+        return result
+
+    monkeypatch.setattr(c, "_security", fixture_public_ancestors)
     cfg = c._installed_config(None, None)
     cfg.spool_root = str(store.parent / "requests")
     directory = store.parent / "requests" / "results"
@@ -143,6 +157,15 @@ def test_public_report_and_summary_are_readable_exact_bounded_artifacts(issuer, 
     assert summary["result_sha256"] == "sha256:" + hashlib.sha256(raw).hexdigest()
     assert summary["result_size_bytes"] == len(raw)
     assert summary_path.stat().st_size <= 8192 and report_path.stat().st_size <= 524288
+    assert summary["references_clear"] is False and summary["eta_contribution_bytes"] is None
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "deploy/operator-door"))
+    from operator_door.config import DoorConfig
+    from operator_door.fsview import FileView
+
+    view = FileView(DoorConfig(read_roots=(str(directory),), hidden_paths=()))
+    assert view.read_range(str(report_path))[0] == raw
     assert json.loads(raw)["principal_source"] == "protected_root_consent"
     assert json.loads(raw)["requestor_context_verified"] is False
 
@@ -193,3 +216,84 @@ def test_successful_publication_does_not_unlink_recreated_former_temp(issuer, mo
     monkeypatch.setattr(os, "replace", replace)
     c._run_report(value["consent_id"], **kwargs)
     assert all(p.read_bytes() == b"foreign" for p in foreign)
+
+
+def test_report_cli_serializes_success_under_same_open_budget(issuer, monkeypatch, capsys):
+    import time
+
+    value, directory, request_id, kwargs, _ = public(issuer, monkeypatch)
+    previous = c._installed_config
+    budgets = []
+    dump = json.dumps
+
+    def acquire(files, path):
+        budgets.append(files.budget)
+        return previous(files, path)
+
+    def encode(*a, **kw):
+        if budgets:
+            assert not budgets[-1].closed, "encoded success after invocation closed"
+        return dump(*a, **kw)
+
+    monkeypatch.setattr(c, "_installed_config", acquire)
+    monkeypatch.setattr(json, "dumps", encode)
+    monkeypatch.setattr(time, "time", lambda: 1001)
+    assert (
+        c.main(
+            [
+                "report",
+                "--consent-id",
+                value["consent_id"],
+                "--expected-sha256",
+                value["expected_sha256"],
+                "--expected-size-bytes",
+                str(value["expected_size_bytes"]),
+                "--door-config",
+                str(kwargs["installed_config_path"]),
+                "--results-dir",
+                str(directory),
+                "--request-id",
+                request_id,
+            ]
+        )
+        == 0
+    )
+    assert (
+        budgets[-1].closed
+        and json.loads(capsys.readouterr().out)["status"] == "owner_consent_observed"
+    )
+
+
+def test_publication_refuses_inaccessible_intermediate_ancestor_before_output(issuer, monkeypatch):
+    import stat
+
+    value, directory, _, kwargs, _ = public(issuer, monkeypatch)
+    inaccessible = directory.parent.stat().st_ino
+    original_security = c._security
+
+    def restricted(info):
+        result = original_security(info)
+        if info.st_ino == inaccessible:
+            result = result[:2] + (stat.S_IFDIR | 0o700,) + result[3:]
+        return result
+
+    monkeypatch.setattr(c, "_security", restricted)
+    with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_publication_failed"):
+        c._run_report(value["consent_id"], **kwargs)
+    assert not list(directory.iterdir())
+
+
+def test_publication_mode_drift_cannot_claim_readable_success(issuer, monkeypatch):
+    import os
+
+    value, directory, _, kwargs, _ = public(issuer, monkeypatch)
+    original = os.replace
+
+    def private_mode(source, target, **kw):
+        original(source, target, **kw)
+        os.chmod(target, 0o600, dir_fd=kw["dst_dir_fd"])
+
+    monkeypatch.setattr(os, "replace", private_mode)
+    with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_publication_failed"):
+        c._run_report(value["consent_id"], **kwargs)
+    assert not list(directory.glob("*.outcome.json"))

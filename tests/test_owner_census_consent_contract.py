@@ -154,3 +154,15 @@ def test_selector_lexical_refusal_precedes_hash_or_dedup(text):
         def __hash__(self):
             raise AssertionError('selector hashed before lexical bound')
     refuse('owner_consent_selection_invalid', selected=[Unhashed(text)])
+
+
+def test_printable_multibyte_owner_guess_uses_utf8_bound_not_ascii_escape_size():
+    raw, _ = payloads()
+    census = json.loads(raw)
+    census["rows"][0]["owner_guess"] = "界" * 80  # 240 UTF8 bytes, 480 JSON escape bytes.
+    raw = _json(census)
+    annotation = _annotations(
+        raw, [dict(path="/work/sample", action="keep", owner="owner", expires_at_epoch=1100)]
+    )
+    result = build(census=raw, annotations=annotation)
+    assert result["decisions"][0]["census_row"]["owner_guess"] == "界" * 80

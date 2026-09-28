@@ -248,7 +248,7 @@ class _Acquired(NamedTuple):
 
 
 def _metadata(info):
-    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
             info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
@@ -501,6 +501,7 @@ def _store(files, config, consent_id, *, lock=False):
 
 def _capacity(files, parent):
     count, records, occupied = 0, 0, 0
+    files.slot()  # scandir owns one temporary descriptor while its context is open.
     with os.scandir(parent) as entries:
         for entry in entries:
             files.budget.charge('entries')
@@ -549,6 +550,7 @@ def _publish(files, parent, name, payload, *, mode=0o600, immutable=True):
     owned = True
     try:
         os.fchmod(fd, mode)
+        _protected(os.fstat(fd), mode=mode if immutable else None)
         offset = 0
         while offset < len(payload):
             files.budget.tick()
@@ -573,8 +575,9 @@ def _publish(files, parent, name, payload, *, mode=0o600, immutable=True):
         os.fsync(parent)
         files.verify()
         published = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        _require((published.st_dev, published.st_ino) == identity and published.st_nlink == 1,
-                 'owner_consent_publication_failed')
+        _require((published.st_dev, published.st_ino) == identity and published.st_nlink == 1
+                 and stat.S_IMODE(published.st_mode) == mode, 'owner_consent_publication_failed')
+        _protected(published, mode=mode if immutable else None)
     except OSError:
         raise OwnerCensusConsentError('owner_consent_publication_failed') from None
     finally:
@@ -611,9 +614,9 @@ def _issue(census_path, annotations_path, *, census_sha256, census_size_bytes,
                 target_generation_bound=False, requires_fresh_reference_check=True, mutations=0)
 
 
-def issue_owner_consent(census_path, annotations_path, *, census_sha256, census_size_bytes,
+def _run_issue(census_path, annotations_path, *, census_sha256, census_size_bytes,
                         annotations_sha256, annotations_size_bytes, principal, selected_paths,
-                        expires_at_epoch, installed_config_path, now, monotonic):
+                        expires_at_epoch, installed_config_path, now, monotonic, _encoded_stdout=False):
     """Root-admin attests finite intent; immutable metadata grants no target action."""
     from .control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
     try:
@@ -623,11 +626,13 @@ def issue_owner_consent(census_path, annotations_path, *, census_sha256, census_
     files = _Files(budget)
     try:
         budget.tick()
-        return _issue(census_path, annotations_path, census_sha256=census_sha256,
+        result = _issue(census_path, annotations_path, census_sha256=census_sha256,
             census_size_bytes=census_size_bytes, annotations_sha256=annotations_sha256,
             annotations_size_bytes=annotations_size_bytes, principal=principal,
             selected_paths=selected_paths, expires_at_epoch=expires_at_epoch,
             installed_config_path=installed_config_path, now=now, budget=budget, files=files)
+        budget.measure(result, cap=8192)
+        return _encoded(result, budget, cap=8192) if _encoded_stdout else result
     except ReferenceCollectionBudgetError as error:
         raise OwnerCensusConsentError('owner_consent_resource_exhausted') from error
     except (OSError, TypeError, UnicodeError):
@@ -637,6 +642,17 @@ def issue_owner_consent(census_path, annotations_path, *, census_sha256, census_
             files.finish()
         finally:
             budget.close()
+
+
+def issue_owner_consent(census_path, annotations_path, *, census_sha256, census_size_bytes,
+                        annotations_sha256, annotations_size_bytes, principal, selected_paths,
+                        expires_at_epoch, installed_config_path, now, monotonic):
+    """Root-admin attests finite intent; immutable metadata grants no target action."""
+    return _run_issue(census_path, annotations_path, census_sha256=census_sha256,
+        census_size_bytes=census_size_bytes, annotations_sha256=annotations_sha256,
+        annotations_size_bytes=annotations_size_bytes, principal=principal,
+        selected_paths=selected_paths, expires_at_epoch=expires_at_epoch,
+        installed_config_path=installed_config_path, now=now, monotonic=monotonic)
 
 
 _CONSENT_FIELDS = frozenset({'schema_version', 'consent_id', 'issuer_kind', 'issuer_uid', 'principal',
@@ -745,15 +761,15 @@ def _report(consent_id, *, expected_sha256, expected_size_bytes, installed_confi
         inventory_count=record['inventory_count'], selected_count=record['selected_count'], decisions=rows,
         scope=_SCOPE, execution_authorized=False, target_generation_bound=False,
         requires_fresh_reference_check=True, general_reference_inventory_complete=False,
-        consumer_fence_checked=False, retirement_admission_checked=False, candidate_bytes=None,
-        estimated_reclaimable_bytes=None, eta_seconds=None, mutations=0, blockers=[])
+        consumer_fence_checked=False, references_clear=False, retirement_admission_checked=False, candidate_bytes=None,
+        estimated_reclaimable_bytes=None, eta_contribution_bytes=None, eta_seconds=None, mutations=0, blockers=[])
     budget.measure(result, cap=MAX_RECORD_BYTES)
     if _publication is not None:
         return _publish_reports(files, config, result, _publication)
     return result
 
 
-def _run_report(consent_id, *, expected_sha256, expected_size_bytes, installed_config_path, now, monotonic, publication=None):
+def _run_report(consent_id, *, expected_sha256, expected_size_bytes, installed_config_path, now, monotonic, publication=None, _encoded_stdout=False):
     """One budget from installed acquisition through optional public publication."""
     from .control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
     try:
@@ -763,8 +779,11 @@ def _run_report(consent_id, *, expected_sha256, expected_size_bytes, installed_c
     files = _Files(budget, raw_cap=MAX_CONSUMPTION_RAW)
     try:
         budget.tick()
-        return _report(consent_id, expected_sha256=expected_sha256, expected_size_bytes=expected_size_bytes,
+        result = _report(consent_id, expected_sha256=expected_sha256, expected_size_bytes=expected_size_bytes,
                        installed_config_path=installed_config_path, now=now, budget=budget, files=files, _publication=publication)
+        if _encoded_stdout:
+            return _encoded(result, budget, cap=8192 if publication else MAX_RECORD_BYTES)
+        return result
     except ReferenceCollectionBudgetError as error:
         raise OwnerCensusConsentError('owner_consent_resource_exhausted') from error
     except (OSError, TypeError, UnicodeError):
@@ -784,7 +803,16 @@ def report_owner_consent(consent_id, *, expected_sha256, expected_size_bytes, in
 
 
 def _public_parent(files, config, path):
+    first_anchor, first_edge = len(files.anchors), len(files.edges)
     parent, name = files.parent(path, protected=True)
+    # A protected 0700 ancestor is valid for private records, but public report
+    # transport needs the independently installed 0755 path at every level.
+    for _, security, _ in files.anchors[first_anchor:]:
+        files.budget.tick()
+        _require(stat.S_IMODE(security[2]) == 0o755, 'owner_consent_publication_failed')
+    for _, _, _, security, _ in files.edges[first_edge:]:
+        files.budget.tick()
+        _require(stat.S_IMODE(security[2]) == 0o755, 'owner_consent_publication_failed')
     _protected(os.fstat(parent), directory=True)
     _require(stat.S_IMODE(os.fstat(parent).st_mode) == 0o755, 'owner_consent_publication_failed')
     try:
@@ -817,8 +845,8 @@ def _publish_reports(files, config, report, publication):
         inventory_count=report['inventory_count'], expires_at_epoch=report['expires_at_epoch'], blockers=[],
         result=str(report_path), result_sha256=retained._digest(payload, _work_budget=files.budget),
         result_size_bytes=len(payload), execution_authorized=False, target_generation_bound=False,
-        general_reference_inventory_complete=False, consumer_fence_checked=False, mutations=0,
-        candidate_bytes=None, eta_seconds=None)
+        general_reference_inventory_complete=False, consumer_fence_checked=False, references_clear=False, mutations=0,
+        candidate_bytes=None, eta_contribution_bytes=None, eta_seconds=None)
     parent, name = _public_parent(files, config, Path(directory) / (request_id + '.outcome.json'))
     _publish(files, parent, name, _encoded(summary, files.budget, cap=8192), mode=0o644, immutable=False)
     return summary
@@ -833,7 +861,8 @@ def _refusal(error):
     return dict(schema_version=REPORT_SCHEMA, status='refused', blockers=blockers, complete=False,
                 execution_authorized=False, target_generation_bound=False,
                 general_reference_inventory_complete=False, consumer_fence_checked=False,
-                requires_fresh_reference_check=True, candidate_bytes=None, eta_seconds=None, mutations=0)
+                requires_fresh_reference_check=True, references_clear=False, candidate_bytes=None,
+                eta_contribution_bytes=None, eta_seconds=None, mutations=0)
 
 
 def main(argv=None):
@@ -858,11 +887,11 @@ def main(argv=None):
         publication = None if args.results_dir is None else (args.results_dir, args.request_id)
         report = _run_report(args.consent_id, expected_sha256=args.expected_sha256,
             expected_size_bytes=args.expected_size_bytes, installed_config_path=args.door_config,
-            now=time.time(), monotonic=time.monotonic, publication=publication)
+            now=time.time(), monotonic=time.monotonic, publication=publication, _encoded_stdout=True)
     except OwnerCensusConsentError as error:
         print(json.dumps(_refusal(error), sort_keys=True, separators=(',', ':')))
         return 1
-    print(json.dumps(report, sort_keys=True, separators=(',', ':'), ensure_ascii=False))
+    print(report.decode("utf-8"), end="")
     return 0
 
 

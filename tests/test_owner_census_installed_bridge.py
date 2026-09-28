@@ -63,3 +63,27 @@ def test_changed_source_is_rechecked_after_code_execution(tmp_path, monkeypatch)
             c._installed_config(files, path)
     finally:
         files.finish()
+
+
+def test_installed_config_accepts_root_blueprint_2750_parent_and_0640_file(tmp_path, monkeypatch):
+    import stat
+    from types import SimpleNamespace
+
+    original = c._protected
+    path, _ = installed(tmp_path, monkeypatch)
+    path.chmod(0o640)
+
+    def installed_permissions(info, **kwargs):
+        fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+        fields.update(st_uid=0, st_gid=42)
+        if stat.S_ISDIR(info.st_mode):
+            fields["st_mode"] = stat.S_IFDIR | 0o2750
+        original(SimpleNamespace(**fields), **kwargs)
+
+    monkeypatch.setattr(c, "_protected", installed_permissions)
+    files = c._Files(ReferenceCollectionBudget(monotonic=lambda: 0))
+    try:
+        assert c._installed_config(files, path).owner_census_decisions_enabled == 1
+        files.verify()
+    finally:
+        files.finish()

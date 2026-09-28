@@ -278,3 +278,39 @@ def test_root_owned_blueprint_group_ancestor_is_safe_but_private_store_requires_
     with pytest.raises(c.OwnerCensusConsentError):
         c._protected(ancestor, directory=True, mode=0o700)
     c._protected(SimpleNamespace(st_uid=0, st_gid=42, st_mode=stat.S_IFREG | 0o640, st_nlink=1))
+
+
+def test_acquired_file_group_drift_refuses_even_when_other_metadata_is_stable(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    path = tmp_path / "private"
+    path.write_bytes(b"{}")
+    f = files()
+    f.read(path, cap=8)
+    record = f.records[0]
+    original = os.fstat
+
+    def drift(fd):
+        info = original(fd)
+        if fd == record.fd:
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            fields["st_gid"] += 1
+            return SimpleNamespace(**fields)
+        return info
+
+    monkeypatch.setattr(os, "fstat", drift)
+    try:
+        with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_record_changed"):
+            f.verify_record(record)
+    finally:
+        f.finish()
+
+
+def test_store_iteration_reserves_temporary_descriptor_before_scandir(monkeypatch):
+    f = files()
+    f.owned = {i: (1, i) for i in range(c.MAX_DESCRIPTOR_COUNT)}
+    monkeypatch.setattr(os, "scandir", lambda *a: pytest.fail("scandir before FD capacity"))
+    with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_resource_exhausted"):
+        c._capacity(f, 777)
