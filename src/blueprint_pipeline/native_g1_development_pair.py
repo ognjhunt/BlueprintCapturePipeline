@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .control_plane_lane_scratch import create_lane_scratch
+from .control_plane_leased_scratch import LeasedScratchDirectory
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_worker import (
     PATH_FIELDS,
@@ -476,7 +477,12 @@ def run_g1_development_pair(
         output.mkdir(parents=True)
     diagnostics = output / "_worker_diagnostics"
     if mode == "subprocess":
-        diagnostics.mkdir()
+        if lane_root is not None:
+            with LeasedScratchDirectory.open(root=lane_root, lane="g1", name=relative.parts[1],
+                                             owner=scratch_owner, run_ref=scratch_run_ref) as scratch:
+                scratch.mkdir("_worker_diagnostics")
+        else:
+            diagnostics.mkdir()
     by_candidate = {request["candidate_id"]: (path, request)
                     for path, request in zip(request_paths, requests, strict=True)}
     attempts: list[dict[str, Any]] = []

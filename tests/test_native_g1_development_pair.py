@@ -236,6 +236,56 @@ def test_lane_output_rejects_nested_and_wrong_lane_before_creation(
         assert not output.exists()
 
 
+@pytest.mark.parametrize("release_before_diagnostics", [False, True])
+def test_lane_diagnostics_use_live_capability_before_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release_before_diagnostics: bool,
+) -> None:
+    from blueprint_pipeline.control_plane_leased_scratch import LeasedScratchDirectory
+    from blueprint_pipeline.control_plane_lane_scratch import LaneScratchError, release_lane_scratch
+
+    paths, _ = _paired_requests(tmp_path)
+    root = tmp_path / "lanes"
+    root.mkdir()
+    output = root / "g1" / "diagnostic-pair"
+    launcher = tmp_path / "python.sh"
+    launcher.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(pair, "LANE_SCRATCH_ROOTS", (root,))
+    monkeypatch.setattr(pair, "sys", SimpleNamespace(platform="linux"))
+    calls = []
+    original_mkdir, original_create = LeasedScratchDirectory.mkdir, pair.create_lane_scratch
+
+    def observed_mkdir(self, relative, **kwargs):
+        calls.append(relative)
+        return original_mkdir(self, relative, **kwargs)
+
+    def create(*args, **kwargs):
+        folder = original_create(*args, **kwargs)
+        if release_before_diagnostics:
+            lease = json.loads((folder / ".lane-scratch.v1.json").read_text())
+            release_lane_scratch(root=root, lane="g1", name=folder.name, owner="operator-a",
+                                 expected_digest=lease["lease_digest"])
+        return folder
+
+    monkeypatch.setattr(LeasedScratchDirectory, "mkdir", observed_mkdir)
+    monkeypatch.setattr(pair, "create_lane_scratch", create)
+    monkeypatch.setattr(pair.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=-11))
+    options = dict(request_paths=paths, output_dir=output, mode="subprocess", worker_launcher=launcher,
+                   scratch_owner="operator-a", scratch_run_ref="run-a", scratch_ttl_seconds=86400)
+    if release_before_diagnostics:
+        with pytest.raises(LaneScratchError, match="inactive"):
+            pair.run_g1_development_pair(**options)
+        assert not (output / "_worker_diagnostics").exists()
+    else:
+        result = pair.run_g1_development_pair(**options)
+        assert result["status"] == "blocked"
+        assert calls == ["_worker_diagnostics"]
+        marker = (output / "_worker_diagnostics" / "kept")
+        marker.write_text("retain")
+        with pytest.raises(ValueError, match="g1_pair_output_directory_invalid"):
+            pair.run_g1_development_pair(**options)
+        assert marker.read_text() == "retain"
+
+
 def test_new_unbound_work_volume_output_refuses_but_bound_run_output_still_works(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

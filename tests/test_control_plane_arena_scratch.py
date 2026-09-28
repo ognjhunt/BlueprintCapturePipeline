@@ -109,3 +109,61 @@ def test_lane_parent_symlink_refuses_before_following_attempt(tmp_path: Path) ->
     (lanes / "arena").symlink_to(elsewhere, target_is_directory=True)
     with pytest.raises(ArenaScratchError, match="arena_scratch_root_unsafe"):
         resolve_arena_attempt("r33", inputs_root=inputs, lane_root=lanes)
+
+
+def test_arena_payload_retry_opens_exact_lease_and_keeps_receipts(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_arena_scratch import mkdir_arena_payload
+
+    inputs, lanes = _roots(tmp_path)
+    folder = prepare_arena_attempt("r33", owner="operator-a", run_ref="run-a", ttl_seconds=100,
+                                   inputs_root=inputs, lane_root=lanes, now=lambda: 1000)
+    payload = mkdir_arena_payload("r33", "arena_packet", inputs_root=inputs,
+                                  lane_root=lanes, now=lambda: 1001)
+    (payload / "receipt").write_text("retain")
+    lease_bytes = (folder / ".lane-scratch.v1.json").read_bytes()
+    assert mkdir_arena_payload("r33", "arena_packet", owner="operator-a", run_ref="run-a",
+                               inputs_root=inputs, lane_root=lanes, now=lambda: 1002) == payload
+    assert (payload / "receipt").read_text() == "retain"
+    assert (folder / ".lane-scratch.v1.json").read_bytes() == lease_bytes
+    for metadata in ({"owner": "other", "run_ref": "run-a"},
+                     {"owner": "operator-a", "scene_ref": "run-a"}):
+        with pytest.raises(ArenaScratchError, match="owner_mismatch"):
+            mkdir_arena_payload("r33", "refused", inputs_root=inputs, lane_root=lanes,
+                                now=lambda: 1002, **metadata)
+    with pytest.raises(ArenaScratchError, match="inactive"):
+        mkdir_arena_payload("r33", "refused", inputs_root=inputs, lane_root=lanes, now=lambda: 1100)
+    assert not (folder / "refused").exists()
+
+
+def test_arena_payload_refuses_legacy_and_traversal(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_arena_scratch import mkdir_arena_payload
+
+    inputs, lanes = _roots(tmp_path)
+    legacy = inputs / "arena-launch-r20"
+    (legacy / "arena_packet").mkdir(parents=True)
+    with pytest.raises(ArenaScratchError, match="legacy_write_requires_review"):
+        mkdir_arena_payload("r20", "new", inputs_root=inputs, lane_root=lanes)
+    assert not (legacy / "new").exists() and not (legacy / ".lane-scratch.v1.json").exists()
+    folder = prepare_arena_attempt("r33", owner="operator-a", scene_ref="scene-a", ttl_seconds=100,
+                                   inputs_root=inputs, lane_root=lanes, now=lambda: 1000)
+    with pytest.raises(ArenaScratchError, match="payload_path_invalid"):
+        mkdir_arena_payload("r33", "../sibling", inputs_root=inputs, lane_root=lanes, now=lambda: 1001)
+    assert not (folder.parent / "sibling").exists()
+
+
+def test_arena_payload_cli_uses_bounded_relative_operation(tmp_path, monkeypatch, capsys):
+    from blueprint_pipeline import control_plane_arena_scratch as arena
+
+    inputs, lanes = _roots(tmp_path)
+    folder = prepare_arena_attempt("r33", owner="operator-a", run_ref="run-a", ttl_seconds=100,
+                                   inputs_root=inputs, lane_root=lanes, now=lambda: 1000)
+    make_payload = arena.mkdir_arena_payload
+    monkeypatch.setattr(arena, "mkdir_arena_payload", lambda tag, relative, **metadata: make_payload(
+        tag, relative, inputs_root=inputs, lane_root=lanes, now=lambda: 1001, **metadata))
+    assert arena.main(["mkdir-payload", "--tag", "r33", "--relative", "arena_packet",
+                       "--owner", "operator-a", "--run-ref", "run-a"]) == 0
+    assert capsys.readouterr().out.strip() == str(folder / "arena_packet")
+    assert arena.main(["mkdir-payload", "--tag", "r33", "--relative", "../outside"]) == 3
+    assert "payload_path_invalid" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        arena.main(["mkdir-payload", "--tag", "r33"])
