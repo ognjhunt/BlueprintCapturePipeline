@@ -177,9 +177,16 @@ def _build_consent(*, census_bytes, annotation_bytes, census_sha256, census_size
     _identity(census_bytes, census_sha256, census_size_bytes, budget)
     _identity(annotation_bytes, annotations_sha256, annotations_size_bytes, budget)
     _require(isinstance(selected_paths, (list, tuple)) and 0 < len(selected_paths) <= MAX_SELECTED
-             and all(isinstance(path, str) for path in selected_paths)
-             and len(set(selected_paths)) == len(selected_paths), 'owner_consent_selection_invalid')
-    budget.charge('entries', len(selected_paths))
+             and all(isinstance(path, str) for path in selected_paths), 'owner_consent_selection_invalid')
+    for path in selected_paths:
+        budget.charge('entries')
+        try:
+            _require(len(path) <= retained.MAX_PATH_BYTES, 'owner_consent_selection_invalid')
+            _require(len(path.encode('utf-8')) <= retained.MAX_PATH_BYTES, 'owner_consent_selection_invalid')
+            retained._path(path, _work_budget=budget)
+        except (retained.CensusDecisionError, UnicodeError):
+            raise OwnerCensusConsentError('owner_consent_selection_invalid') from None
+    _require(len(set(selected_paths)) == len(selected_paths), 'owner_consent_selection_invalid')
     policy = _policy(policy_bytes, principal, budget)
     try:
         validation = retained._validate_census_annotations(census_bytes, annotation_bytes, now=now,

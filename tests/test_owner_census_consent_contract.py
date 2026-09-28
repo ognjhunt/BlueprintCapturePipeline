@@ -146,3 +146,11 @@ def test_both_retained_documents_preflight_before_any_integrity_hash(monkeypatch
             policy_bytes=_json(policy()), principal='operator', selected_paths=['/work/sample'],
             expires_at_epoch=1050, now=1000, allowed_roots=('/work',), consent_id='a'*32,
             budget=b.ReferenceCollectionBudget(monotonic=lambda:0))
+
+
+@pytest.mark.parametrize('text', ['/'+'x'*4096, '/'+'/'.join(['a']*65), '/work/\ud800'])
+def test_selector_lexical_refusal_precedes_hash_or_dedup(text):
+    class Unhashed(str):
+        def __hash__(self):
+            raise AssertionError('selector hashed before lexical bound')
+    refuse('owner_consent_selection_invalid', selected=[Unhashed(text)])
