@@ -1004,3 +1004,36 @@ fixtures do not establish guest packages, CUDA, VM-provider or episode support.
 Guest boot follows only after clean immutable commit/push and a fresh local
 capacity check. Primary references: official Vast VM docs, cloud-init NoCloud
 CIDATA local drive, and QEMU invocation documentation.
+
+### Reviewed observed CPU-boot transport repair
+
+Actual immutablef9d6b7291 CPU run downloaded and verified the complete layer,
+extracted the exact5,196,152,832-byte disk and booted Ubuntu22.04.5 with
+5.15.0-1067-kvm/systemd. The current boot log enumerates only virtio vda; there
+is no sr0/AHCI/CD-ROM or cloud-init/terminal diagnostic observation. The process
+is still live under its15minute watchdog; absence of a receipt is not terminal.
+
+Prepare the seed as a read-only virtio block drive, matching the actually
+observed guest storage driver and NoCloud's labeled-local-drive contract. Test
+the exact seed drive before changing it. Add a verified retained-image replay:
+new stage/overlay/log only, reopen the original compressed layer SHA/size and
+manifest binding, validate all tar rows, stream-hash the guest member and require
+the retained base's exact same hash/size before boot. Reject changed assets or
+ambiguity; never redownload or copy the unchanged5GB base. No deletion or original
+base writes. Reserve only bounded overlay/log when verified inputs are reused.
+
+Tests first: retained layer/base changes and exact unchanged stream binding,
+same fixed regular-file tar validation, new virtio seed with no network/device
+exposure. Preserve the live first process until its authoritative terminal;
+the repaired replay must be a separate fresh stage after terminal, not a restart
+on an observation timeout. This is a boot-transport finding, not yet proof of
+missing packages. Accepted for focused repair and actual retained-input replay.
+
+Repair checkpoint: exact virtio seed and all three retained-input binding cases
+were red before implementation. All14 CPU-preflight cases now pass in0.41s,
+with changed-file Ruff/diff clean. The source's replay path streams and reopens
+both original assets; it creates only a new bounded overlay/seed/log and never
+downloads or copies those assets. At09:35UTC the original f9d6b7291 controller
+PID3035/QEMU10227 were confirmed live (10m28s guest elapsed), with no terminal
+receipt. Keep this authoritative process under its original deadline; tests do
+not convert its missing diagnostic into success or permission to replace it.

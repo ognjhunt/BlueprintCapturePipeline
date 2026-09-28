@@ -48,26 +48,52 @@ def require_capacity(path, *, additional_bytes):
         raise ValueError("g1_vm_cpu_capacity_insufficient")
 
 
-def extract_guest_disk(layer, destination, *, expected_sha256, expected_layer_bytes, expected_disk_bytes):
-    if (destination.exists() or destination.is_symlink() or
-            layer.lstat().st_size != expected_layer_bytes or file_sha(layer) != expected_sha256):
+def _verify_layer(layer, sha256, size):
+    if layer.lstat().st_size != size or file_sha(layer) != sha256:
         raise ValueError("g1_vm_cpu_layer_binding_invalid")
+
+
+def _guest_member(archive, expected_disk_bytes):
+    members = archive.getmembers()
+    names = [member.name for member in members]
+    if len(names) != len(set(names)) or set(names) - {"root", "root/images", "root/images/ubuntu.img"}:
+        raise ValueError("g1_vm_cpu_layer_members_invalid")
+    disks = [member for member in members if member.name == "root/images/ubuntu.img"]
+    if (len(disks) != 1 or not disks[0].isfile() or disks[0].size != expected_disk_bytes
+            or any(not member.isdir() for member in members if member.name != "root/images/ubuntu.img")):
+        raise ValueError("g1_vm_cpu_guest_disk_invalid")
+    return disks[0]
+
+
+def extract_guest_disk(layer, destination, *, expected_sha256, expected_layer_bytes, expected_disk_bytes):
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("g1_vm_cpu_layer_binding_invalid")
+    _verify_layer(layer, expected_sha256, expected_layer_bytes)
     with tarfile.open(layer, "r:gz") as archive:
-        members = archive.getmembers()
-        names = [member.name for member in members]
-        if len(names) != len(set(names)) or set(names) - {"root", "root/images", "root/images/ubuntu.img"}:
-            raise ValueError("g1_vm_cpu_layer_members_invalid")
-        disks = [member for member in members if member.name == "root/images/ubuntu.img"]
-        if (len(disks) != 1 or not disks[0].isfile() or disks[0].size != expected_disk_bytes
-                or any(not member.isdir() for member in members if member.name != "root/images/ubuntu.img")):
-            raise ValueError("g1_vm_cpu_guest_disk_invalid")
+        member = _guest_member(archive, expected_disk_bytes)
         require_capacity(destination.parent, additional_bytes=expected_disk_bytes + OVERLAY_LIMIT + LOG_LIMIT)
-        with archive.extractfile(disks[0]) as source, destination.open("xb") as output:
+        with archive.extractfile(member) as source, destination.open("xb") as output:
             shutil.copyfileobj(source, output, length=4 * 1024**2)
         destination.chmod(0o400)
     if destination.stat().st_size != expected_disk_bytes:
         raise ValueError("g1_vm_cpu_guest_disk_size_mismatch")
     return file_sha(destination)
+
+
+def verify_retained_guest_disk(layer, base, *, expected_sha256, expected_layer_bytes, expected_disk_bytes):
+    _verify_layer(layer, expected_sha256, expected_layer_bytes)
+    if base.lstat().st_size != expected_disk_bytes:
+        raise ValueError("g1_vm_cpu_retained_guest_binding_invalid")
+    digest = hashlib.sha256()
+    with tarfile.open(layer, "r:gz") as archive:
+        member = _guest_member(archive, expected_disk_bytes)
+        with archive.extractfile(member) as source:
+            for chunk in iter(lambda: source.read(4 * 1024**2), b""):
+                digest.update(chunk)
+    expected = "sha256:" + digest.hexdigest()
+    if file_sha(base) != expected:
+        raise ValueError("g1_vm_cpu_retained_guest_binding_invalid")
+    return expected
 
 
 def _registry_request(path, token):
@@ -137,7 +163,7 @@ subprocess.run(['systemctl','poweroff'],timeout=30,check=False)
 def qemu_command(executable, overlay, seed):
     return [executable, "-machine", "q35,accel=tcg", "-cpu", "max", "-m", "2048", "-smp", "2",
             "-drive", "file=" + str(overlay) + ",format=qcow2,if=virtio",
-            "-drive", "file=" + str(seed) + ",format=raw,media=cdrom,readonly=on",
+            "-drive", "file=" + str(seed) + ",format=raw,if=virtio,readonly=on",
             "-nic", "none", "-nographic", "-no-reboot"]
 
 
@@ -175,7 +201,7 @@ def _stop(child):
             child.wait(timeout=20)
 
 
-def run(*, root, implementation_commit):
+def run(*, root, implementation_commit, retained_image_root=None):
     if (not re.fullmatch(r"[0-9a-f]{40}", implementation_commit) or not root.is_absolute()
             or root.exists() or root.is_symlink() or root.parent.resolve() != root.parent):
         raise ValueError("g1_vm_cpu_fresh_stage_required")
@@ -184,7 +210,8 @@ def run(*, root, implementation_commit):
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout, text=True).strip()
     if head != implementation_commit or dirty:
         raise ValueError("g1_vm_cpu_immutable_source_required")
-    require_capacity(root.parent, additional_bytes=LAYER_BYTES + DISK_BYTES + OVERLAY_LIMIT + LOG_LIMIT)
+    required_assets = LAYER_BYTES + DISK_BYTES if retained_image_root is None else 0
+    require_capacity(root.parent, additional_bytes=required_assets + OVERLAY_LIMIT + LOG_LIMIT)
     binaries = {name: shutil.which(name) for name in ("qemu-img", "qemu-system-x86_64", "hdiutil")}
     if not all(binaries.values()):
         raise ValueError("g1_vm_cpu_local_tools_missing")
@@ -196,12 +223,25 @@ def run(*, root, implementation_commit):
               "claim_ceiling": "development_only", "stage": "layer_download"}
     child = None
     try:
-        layer, base = root / "guest-layer.tar.gz", root / "base.qcow2"
-        download_layer(layer)
-        result["stage"] = "guest_disk_extract"
-        print(json.dumps({"stage": result["stage"]}), flush=True)
-        result["guest_disk_sha256"] = extract_guest_disk(layer, base, expected_sha256=LAYER_SHA,
-                                                       expected_layer_bytes=LAYER_BYTES, expected_disk_bytes=DISK_BYTES)
+        if retained_image_root is None:
+            layer, base = root / "guest-layer.tar.gz", root / "base.qcow2"
+            download_layer(layer)
+            result["stage"] = "guest_disk_extract"
+            print(json.dumps({"stage": result["stage"]}), flush=True)
+            result["guest_disk_sha256"] = extract_guest_disk(layer, base, expected_sha256=LAYER_SHA,
+                                                           expected_layer_bytes=LAYER_BYTES, expected_disk_bytes=DISK_BYTES)
+        else:
+            if not retained_image_root.is_absolute() or retained_image_root.resolve() != retained_image_root:
+                raise ValueError("g1_vm_cpu_retained_root_invalid")
+            result["stage"] = "retained_image_reverification"
+            print(json.dumps({"stage": result["stage"]}), flush=True)
+            manifest_path = retained_image_root / "image-manifest.json"
+            if manifest_path.stat().st_size > 2 * 1024**2 or file_sha(manifest_path) != IMAGE_SHA:
+                raise ValueError("g1_vm_cpu_retained_manifest_invalid")
+            layer, base = retained_image_root / "guest-layer.tar.gz", retained_image_root / "base.qcow2"
+            result["guest_disk_sha256"] = verify_retained_guest_disk(layer, base, expected_sha256=LAYER_SHA,
+                                                                   expected_layer_bytes=LAYER_BYTES, expected_disk_bytes=DISK_BYTES)
+            result["retained_image_root"] = str(retained_image_root)
         result["layer_sha256"] = LAYER_SHA
         result["stage"] = "seed_and_overlay"
         seed_root = root / "seed"
@@ -264,9 +304,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--retained-image-root", type=Path)
     parser.add_argument("--execute-local-cpu", action="store_true", required=True)
     args = parser.parse_args()
-    result = run(root=args.root, implementation_commit=args.implementation_commit)
+    result = run(root=args.root, implementation_commit=args.implementation_commit, retained_image_root=args.retained_image_root)
     return 0 if result["status"] == "guest_cpu_observed" else 1
 
 

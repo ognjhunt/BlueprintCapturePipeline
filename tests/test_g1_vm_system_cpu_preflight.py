@@ -61,6 +61,9 @@ def test_cpu_command_has_no_network_host_mounts_or_hardware_acceleration(tmp_pat
     assert argv[argv.index("-nic") + 1] == "none"
     assert not any(option in argv for option in ("-virtfs", "-fsdev", "-enable-kvm", "-device", "-usbdevice"))
     assert len([option for option in argv if option == "-drive"]) == 2
+    seed_drive = argv[argv.index("-drive", argv.index("-drive") + 1) + 1]
+    assert ",if=virtio,readonly=on" in seed_drive
+    assert "media=cdrom" not in seed_drive
 
 
 def test_seed_contains_only_fixed_cpu_diagnostics_and_terminal_receipt():
@@ -77,3 +80,27 @@ def test_cpu_result_cannot_be_accepted_without_one_terminal_guest_receipt():
         probe.read_guest_result("boot output only")
     with pytest.raises(ValueError, match="terminal"):
         probe.read_guest_result('BLUEPRINT_G1_VM_CPU_RESULT:{}\nBLUEPRINT_G1_VM_CPU_RESULT:{}')
+
+
+@pytest.mark.parametrize("fault", [None, "layer", "base"])
+def test_replay_reverifies_existing_guest_bytes_without_copy_or_download(tmp_path, fault):
+    layer, base = tmp_path / "layer.tar.gz", tmp_path / "base.qcow2"
+    data = b"QFI\xfbimmutable guest bytes"
+    with tarfile.open(layer, "w:gz") as archive:
+        info = tarfile.TarInfo("root/images/ubuntu.img")
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+    base.write_bytes(data)
+    sha = "sha256:" + hashlib.sha256(layer.read_bytes()).hexdigest()
+    size = layer.stat().st_size
+    if fault:
+        (base if fault == "base" else layer).write_bytes(b"changed retained asset")
+        with pytest.raises(ValueError, match="g1_vm_cpu"):
+            probe.verify_retained_guest_disk(layer, base, expected_sha256=sha,
+                                              expected_layer_bytes=size, expected_disk_bytes=len(data))
+    else:
+        digest = probe.verify_retained_guest_disk(layer, base, expected_sha256=sha,
+                                                 expected_layer_bytes=size, expected_disk_bytes=len(data))
+        assert digest == "sha256:" + hashlib.sha256(data).hexdigest()
+        assert base.read_bytes() == data
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["base.qcow2", "layer.tar.gz"]
