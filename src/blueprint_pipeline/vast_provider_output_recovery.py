@@ -43,6 +43,7 @@ _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
     "native_task_arena": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_task_arena_policy_canary_session": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_g1_development_campaign": "/workspace/adp_arena_provider_runtime_output.zip",
+    "native_g1_team_policy": "/workspace/adp_arena_provider_runtime_output.zip",
     "paired_target_native_import": "/workspace/adp_arena_provider_runtime_output.zip",
 }
 
@@ -161,7 +162,7 @@ def recover_provider_output_before_teardown(
         }
     recovery_cap = (
         MAX_G1_RECOVERY_SECONDS
-        if provider_bundle_kind == "native_g1_development_campaign"
+        if provider_bundle_kind in {"native_g1_development_campaign", "native_g1_team_policy"}
         else MAX_RECOVERY_SECONDS
     )
     try:
@@ -298,6 +299,7 @@ def recover_provider_output_before_teardown(
     if provider_bundle_kind in {
         "task_evaluation_scene_configuration",
         "native_g1_development_campaign",
+        "native_g1_team_policy",
     } and not zipfile.is_zipfile(partial):
         partial.unlink(missing_ok=True)
         return {"status": "blocked", "blockers": ["provider_output_ssh_recovery_archive_invalid"],

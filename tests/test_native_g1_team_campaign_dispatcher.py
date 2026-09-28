@@ -209,3 +209,59 @@ def test_prior_release_dry_bundle_is_preserved_and_superseded_without_paid_start
     assert len(commands) == 1
     assert not list(args["work_root"].glob("g1-*/execution_started.json"))
     assert dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)["status"] == "no_pending_intent"
+
+
+def test_existing_entrypoint_dispatches_selected_only_queue(tmp_path, monkeypatch, capsys):
+    from blueprint_pipeline import native_g1_team_campaign_dispatcher as dispatcher
+    from blueprint_pipeline import native_g1_team_policy_dispatcher as selected
+    calls = []
+    def chosen(**kwargs):
+        calls.append(kwargs)
+        return {"status": "dry_run_ready", "intent_id": "chosen"}
+    monkeypatch.setattr(selected, "dispatch_one_g1_team_policy", chosen)
+    monkeypatch.setattr(dispatcher, "dispatch_one_g1_team_campaign", lambda **kwargs: pytest.fail("absent builtin queue"))
+    options = []
+    for name in ("queue-root", "work-root", "approval-root", "credential-registry-path", "sonic-asset-dir"):
+        path = tmp_path / name
+        if name not in {"work-root", "credential-registry-path"}:
+            path.mkdir()
+        options.extend(["--selected-" + name, str(path)])
+    registry = tmp_path / "registry.json"
+    registry.write_text("{}")
+    assert dispatcher.main(["--queue-root", str(tmp_path / "absent-builtins"),
+                            "--registry-path", str(registry), "--work-root", str(tmp_path / "legacy-work"),
+                            "--implementation-commit", COMMIT, "--selected-trusted-client", "blueprint-webapp", *options]) == 0
+    assert calls[0]["execute"] is False
+    assert calls[0]["trusted_clients"] == {"blueprint-webapp"}
+    assert json.loads(capsys.readouterr().out)["intent_id"] == "chosen"
+
+
+def test_existing_entrypoint_waiting_selected_choice_does_not_starve_builtins(tmp_path, monkeypatch, capsys):
+    from blueprint_pipeline import native_g1_team_campaign_dispatcher as dispatcher
+    from blueprint_pipeline import native_g1_team_policy_dispatcher as selected
+    monkeypatch.setattr(selected, "dispatch_one_g1_team_policy", lambda **kwargs: {"status": "awaiting_operator_approval"})
+    monkeypatch.setattr(dispatcher, "dispatch_one_g1_team_campaign", lambda **kwargs: {"status": "dry_run_ready", "intent_id": "builtin"})
+    for name in ("selected", "approvals", "sonic", "builtin"):
+        (tmp_path / name).mkdir()
+    registry = tmp_path / "registry.json"
+    registry.write_text("{}")
+    options = ["--queue-root", str(tmp_path / "builtin"), "--registry-path", str(registry),
+               "--work-root", str(tmp_path / "work"), "--implementation-commit", COMMIT,
+               "--selected-queue-root", str(tmp_path / "selected"),
+               "--selected-work-root", str(tmp_path / "selected-work"),
+               "--selected-approval-root", str(tmp_path / "approvals"),
+               "--selected-sonic-asset-dir", str(tmp_path / "sonic"),
+               "--selected-credential-registry-path", str(tmp_path / "private.json"),
+               "--selected-trusted-client", "blueprint-webapp"]
+    assert dispatcher.main(options) == 0
+    assert json.loads(capsys.readouterr().out)["intent_id"] == "builtin"
+
+
+def test_entrypoint_rejects_partial_selected_configuration_before_either_queue(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_team_campaign_dispatcher as dispatcher
+    monkeypatch.setattr(dispatcher, "dispatch_one_g1_team_campaign", lambda **kwargs: pytest.fail("partial configuration dispatched"))
+    with pytest.raises(SystemExit) as error:
+        dispatcher.main(["--queue-root", str(tmp_path), "--registry-path", str(tmp_path / "registry"),
+                         "--work-root", str(tmp_path / "work"), "--implementation-commit", COMMIT,
+                         "--selected-queue-root", str(tmp_path / "selected")])
+    assert error.value.code == 2
