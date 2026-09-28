@@ -1,7 +1,7 @@
 """Pure bounded byte/provenance primitives for ADP-009D retained lineage."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work_sort, _work_order, _work, _work_call, _work_hash, _work_items, _work_kwargs, _work_parse, _work_rows
+from .task_evaluation_scene_lineage_budget import _work_collect, _work_sort, _work_order, _work, _work_call, _work_hash, _work_items, _work_kwargs, _work_parse, _work_rows
 
 import hashlib
 import json
@@ -73,11 +73,11 @@ def bounded_size(value, limit, *, work_budget=None):
         item = stack.pop()
         if isinstance(item, dict):
             size += 2 + max(0, len(item) - 1) + len(item)
-            (stack.extend(_work_items(item.values(), work_budget)) if work_budget is not None else stack.extend(item.values()))
-            (stack.extend(_work_items(item.keys(), work_budget)) if work_budget is not None else stack.extend(item.keys()))
+            ((stack.extend(_work_items(_work_items(item.values(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item.values(), work_budget))) if work_budget is not None else stack.extend(item.values()))
+            ((stack.extend(_work_items(_work_items(item.keys(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item.keys(), work_budget))) if work_budget is not None else stack.extend(item.keys()))
         elif isinstance(item, list):
             size += 2 + max(0, len(item) - 1)
-            (stack.extend(_work_items(item, work_budget)) if work_budget is not None else stack.extend(item))
+            ((stack.extend(_work_items(_work_items(item, work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item, work_budget))) if work_budget is not None else stack.extend(item))
         elif isinstance(item, str):
             require(len(item) <= limit - size, 'output_limit', **_work_kwargs(work_budget))
             size += 2
@@ -240,7 +240,7 @@ def decode(groups, limits, *, work_budget=None):
                 nodes += 1
                 require(nodes <= limits['MAX_NODES'] and depth <= limits['MAX_DEPTH'], 'nodes_limit', **_work_kwargs(work_budget))
                 children = current.values() if isinstance(current, dict) else current if isinstance(current, list) else ()
-                (stack.extend(_work_items(((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children)), work_budget)) if work_budget is not None else stack.extend((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children)))
+                ((stack.extend(_work_items(_work_items(((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children)), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children)), work_budget))) if work_budget is not None else stack.extend((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children)))
             bounded_size(value, limits['MAX_TOTAL_BYTES'], **_work_kwargs(work_budget))  # Surrogate/type checks after decoded bounds, before hashes.
             decoded[role].append((value, proof))
             raw_pairs.append((pair[1], proof))
@@ -285,7 +285,7 @@ class Context:
             work_budget = getattr(self, "work_budget", None)
         if work_budget is not None:
             _work(work_budget)
-        return self.emission_budget.reserve_provenance(values) if self.emission_budget is not None else list(values)
+        return self.emission_budget.reserve_provenance(values) if self.emission_budget is not None else (_work_collect(work_budget, list, values) if work_budget is not None else list(values))
 
     def seed_budget(self, seed, *, work_budget=None):
         if work_budget is None:
@@ -318,7 +318,7 @@ class Context:
         if work_budget is not None:
             _work(work_budget)
         self.consume()
-        require(isinstance(ref, dict) and {'path', 'sha256', 'size_bytes'} <= set(ref), 'reference_invalid', **_work_kwargs(work_budget))
+        require(isinstance(ref, dict) and {'path', 'sha256', 'size_bytes'} <= (_work_collect(work_budget, set, ref) if work_budget is not None else set(ref)), 'reference_invalid', **_work_kwargs(work_budget))
         path(ref['path'], **_work_kwargs(work_budget))
         require(matches(ref['sha256'], **_work_kwargs(work_budget)) and type(ref['size_bytes']) is int and ref['size_bytes'] >= 0, 'reference_invalid', **_work_kwargs(work_budget))
         self.size(ref['sha256'], ref['size_bytes'])
@@ -367,9 +367,9 @@ class Context:
                             self.remote.append({'uri': uri, 'digest': digest, 'size_bytes': size,
                                                 'status': 'kept_unresolved', 'reason': 'remote_availability_unverified',
                                                 'source_provenance': [proof]})
-                        (stack.extend(_work_items(current.values(), work_budget)) if work_budget is not None else stack.extend(current.values()))
+                        ((stack.extend(_work_items(_work_items(current.values(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(current.values(), work_budget))) if work_budget is not None else stack.extend(current.values()))
                     elif isinstance(current, list):
-                        (stack.extend(_work_items(current, work_budget)) if work_budget is not None else stack.extend(current))
+                        ((stack.extend(_work_items(_work_items(current, work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(current, work_budget))) if work_budget is not None else stack.extend(current))
 
     def missing(self, role, reason, sources, expected=None, selector=None, *, work_budget=None):
         if work_budget is None:
@@ -406,4 +406,4 @@ def unique(rows, limit, *, work_budget=None):
     for row in (_work_items(rows, work_budget) if work_budget is not None else rows):
         total += bounded_size(row, limit - total, **_work_kwargs(work_budget))
         pairs[encoded(row, **_work_kwargs(work_budget))] = row
-    return [row for _, row in (_work_items(sorted(pairs.items()), work_budget) if work_budget is not None else sorted(pairs.items()))]
+    return [row for _, row in (_work_items((_work_order(work_budget, sorted, pairs.items()) if work_budget is not None else sorted(pairs.items())), work_budget) if work_budget is not None else sorted(pairs.items()))]

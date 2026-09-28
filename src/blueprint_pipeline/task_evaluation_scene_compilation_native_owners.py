@@ -1,7 +1,7 @@
 """Retained non-policy owner metadata; no execution-authority validation."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_call, _work_hash, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_call, _work_hash, _work_items, _work_kwargs
 
 import hashlib
 from pathlib import PurePosixPath
@@ -30,21 +30,21 @@ def _owner(context, row, *, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
     value, proof = row
-    c.require(RECORD_FIELDS <= set(value) and value.get('schema_version') == c.SCHEMAS['native_owner_records'][0], 'owner_record_invalid', **_work_kwargs(work_budget))
+    c.require(RECORD_FIELDS <= (_work_collect(work_budget, set, value) if work_budget is not None else set(value)) and value.get('schema_version') == c.SCHEMAS['native_owner_records'][0], 'owner_record_invalid', **_work_kwargs(work_budget))
     c.seal(row, 'owner_attempt_digest', **_work_kwargs(work_budget))
     context.fields(row, RECORD_FIELDS)
     c.require(all(c.matches(value.get(k), c.OWNER_ID, **_work_kwargs(work_budget)) for k in (_work_items(('scene_attempt_id', 'scene_id', 'task_id', 'team_namespace'), work_budget) if work_budget is not None else ('scene_attempt_id', 'scene_id', 'task_id', 'team_namespace')))
         and value.get('phase') in {'construction', 'destination', 'controls'}
         and all(c.matches(value.get(k), **_work_kwargs(work_budget)) for k in (_work_items(('scene_intent_digest', 'runtime_source_bundle_digest'), work_budget) if work_budget is not None else ('scene_intent_digest', 'runtime_source_bundle_digest'))), 'owner_record_invalid', **_work_kwargs(work_budget))
     binding = value.get('scene_attempt_binding')
-    c.require(isinstance(binding, dict) and BINDING_FIELDS <= set(binding)
+    c.require(isinstance(binding, dict) and BINDING_FIELDS <= (_work_collect(work_budget, set, binding) if work_budget is not None else set(binding))
         and binding.get('schema_version') == 'task_evaluation_scene_attempt_binding.v1'
         and all(c.matches(binding.get(k), c.OWNER_ID, **_work_kwargs(work_budget)) for k in (_work_items(('intent_id', 'attempt_id'), work_budget) if work_budget is not None else ('intent_id', 'attempt_id')))
         and c.matches(binding.get('source_commit'), c.COMMIT, **_work_kwargs(work_budget))
         and all(c.matches(binding.get(k), **_work_kwargs(work_budget)) for k in (_work_items(('intent_digest', 'runtime_digest', 'input_digest'), work_budget) if work_budget is not None else ('intent_digest', 'runtime_digest', 'input_digest')))
         and binding['attempt_id'] == value['scene_attempt_id'] and binding['intent_digest'] == value['scene_intent_digest'], 'owner_binding_invalid', **_work_kwargs(work_budget))
-    if set(binding) != BINDING_FIELDS:
-        context.fields(row, set(value) - {'scene_attempt_binding'})
+    if (_work_collect(work_budget, set, binding) if work_budget is not None else set(binding)) != BINDING_FIELDS:
+        context.fields(row, (_work_collect(work_budget, set, value) if work_budget is not None else set(value)) - {'scene_attempt_binding'})
     intent = context.decoded['intent'][0][0]
     c.require(binding['intent_id'] == context.intent_id and binding['intent_digest'] == intent['intent_digest']
         and value['task_id'] == intent['request']['task']['task_id'], 'owner_intent_invalid', **_work_kwargs(work_budget))

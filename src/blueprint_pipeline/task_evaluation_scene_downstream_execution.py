@@ -1,7 +1,7 @@
 """Pure activation and historical owner-attempt launch joins; no runtime imports."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work_order, _work, _work_hash, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work_order, _work, _work_hash, _work_items, _work_kwargs
 
 from pathlib import PurePosixPath
 
@@ -99,7 +99,7 @@ def owner(context, row, *, work_budget=None):
     if direct is not None or 'scene_attempt_id' in profile or ('scene_intent_digest' in profile and policy is None):
         c.require(not scene_execution_binding_blockers(profile), 'owner_binding_invalid', **_work_kwargs(work_budget))
     if policy is not None:
-        c.require(isinstance(policy, dict) and set(policy) == {'schema_version', 'scene_intent_digest', 'attempt_id',
+        c.require(isinstance(policy, dict) and (_work_collect(work_budget, set, policy) if work_budget is not None else set(policy)) == {'schema_version', 'scene_intent_digest', 'attempt_id',
                   'policy_candidates', 'runtime_digest', 'input_digest', 'binding_digest'}
                   and policy.get('schema_version') == 'task_evaluation_scene_policy_binding.v1', 'owner_binding_invalid', **_work_kwargs(work_budget))
         c.seal((policy, {}), 'binding_digest', **_work_kwargs(work_budget))
@@ -109,7 +109,7 @@ def owner(context, row, *, work_budget=None):
         if 'scene_intent_digest' in profile:
             c.require(profile['scene_intent_digest'] == policy['scene_intent_digest'], 'owner_binding_invalid', **_work_kwargs(work_budget))
         candidates = policy['policy_candidates']
-        c.require(isinstance(candidates, list) and len(candidates) == 2 and all(isinstance(r, dict) and set(r) == {'id', 'artifact_digest'}
+        c.require(isinstance(candidates, list) and len(candidates) == 2 and all(isinstance(r, dict) and (_work_collect(work_budget, set, r) if work_budget is not None else set(r)) == {'id', 'artifact_digest'}
                   and c.matches(r['id'], c.ID, **_work_kwargs(work_budget)) and c.matches(r['artifact_digest'], **_work_kwargs(work_budget)) for r in (_work_items(candidates, work_budget) if work_budget is not None else candidates))
                   and candidates[0]['id'] != candidates[1]['id'], 'owner_binding_invalid', **_work_kwargs(work_budget))
         if direct is not None:

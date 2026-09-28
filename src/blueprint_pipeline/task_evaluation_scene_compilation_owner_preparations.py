@@ -1,7 +1,7 @@
 """Native preparation/compilation handoff metadata; no payload reads."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_call, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_call, _work_items, _work_kwargs
 
 from pathlib import PurePosixPath
 
@@ -34,7 +34,7 @@ def _references(context, rows, *, work_budget=None):
     identities, contracts, reuse = set(), set(), 0
     for row in (_work_items(rows, work_budget) if work_budget is not None else rows):
         c.require(isinstance(row, dict) and {'contract_path', 'uri', 'digest', 'size_bytes', 'materialized_path',
-            'content_addressed_reuse', 'full_byte_service_account_readback_passed'} <= set(row), 'reference_invalid', **_work_kwargs(work_budget))
+            'content_addressed_reuse', 'full_byte_service_account_readback_passed'} <= (_work_collect(work_budget, set, row) if work_budget is not None else set(row)), 'reference_invalid', **_work_kwargs(work_budget))
         name = c.text(row['contract_path'], 512, **_work_kwargs(work_budget))
         c.require(not any(ch.isspace() for ch in (_work_items(name, work_budget) if work_budget is not None else name)) and name not in contracts, 'reference_contract_invalid', **_work_kwargs(work_budget))
         contracts.add(name)
@@ -292,7 +292,7 @@ def inventory(context, *, work_budget=None):
                 c.require(intake[0]['envelope_digest'] == compilation['envelope_digest'], 'handoff_intake_invalid', **_work_kwargs(work_budget))
             if not intake_rows:
                 context.canonical('compilation_intake', final['episode_compilation_queue_receipt_digest'], proof)
-            if set(final) in (BASE | HANDOFF, BASE | HANDOFF | {'policy_run_plan'}):
+            if (_work_collect(work_budget, set, final) if work_budget is not None else set(final)) in (BASE | HANDOFF, BASE | HANDOFF | {'policy_run_plan'}):
                 inverse = {key: value for key, value in (_work_items(final.items(), work_budget) if work_budget is not None else final.items()) if key not in HANDOFF | {'result_digest'}}
                 inverse['status'] = PRE
                 context.emission_budget.reserve_row(inverse)  # Charge bounded temporary before canonical encoding/hash.

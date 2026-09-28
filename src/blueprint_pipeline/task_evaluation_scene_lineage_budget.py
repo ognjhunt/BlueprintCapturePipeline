@@ -64,10 +64,15 @@ def _work_order(budget, function, values, *args, **kwargs):
     budget.tick()
     retained = []
     for value in _work_items(values, budget):
+        budget.charge('facts')
         retained.append(value)
     result = function(retained, *args, **kwargs)
     budget.tick()
     return result
+
+
+def _work_collect(budget, function, values, *args, **kwargs):
+    return _work_order(budget, function, values, *args, **kwargs)
 
 
 def _work_sort(budget, values, *args, **kwargs):

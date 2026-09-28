@@ -1,7 +1,7 @@
 """Bounded retained prefix graph; original evidence is protected, never owned anew."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_items, _work_kwargs
 
 from . import task_evaluation_scene_source_family_contracts as c
 from . import task_evaluation_scene_source_family_sam as sam
@@ -103,7 +103,7 @@ class Graph:
         if parent and (parent[0].get('schema_version') != sam.SCHEMAS['sam_parent_envelopes'][0] or sam._parent(context, parent, **_work_kwargs(work_budget)) is None):
             parent = None
         current_host = value.get('current_host_inputs')
-        c.require(isinstance(current_host, dict) and set(current_host) == sam.HOST_NAMES, 'adoption_current_host_invalid', **_work_kwargs(work_budget))
+        c.require(isinstance(current_host, dict) and (_work_collect(work_budget, set, current_host) if work_budget is not None else set(current_host)) == sam.HOST_NAMES, 'adoption_current_host_invalid', **_work_kwargs(work_budget))
         sam.refs(context, current_host, proof, **_work_kwargs(work_budget))
         task_key = tuple(current_host['task_request'][k] for k in (_work_items(('path', 'sha256', 'size_bytes'), work_budget) if work_budget is not None else ('path', 'sha256', 'size_bytes')))
         current_plans = [plan for plan in (_work_items(context.sam_current_plans.get(task_key, []), work_budget) if work_budget is not None else context.sam_current_plans.get(task_key, []))
@@ -158,13 +158,13 @@ class Graph:
         start = inherited['phase_count'] if inherited else 0
         phase_rows = value.get('phase_records')
         c.require(isinstance(phase_rows, list) and 1 <= len(phase_rows) <= 10
-            and all(isinstance(r, dict) and set(r) == {'phase', 'job', 'result', 'execution_receipt'} for r in (_work_items(phase_rows, work_budget) if work_budget is not None else phase_rows)), 'adoption_phase_rows_invalid', **_work_kwargs(work_budget))
+            and all(isinstance(r, dict) and (_work_collect(work_budget, set, r) if work_budget is not None else set(r)) == {'phase', 'job', 'result', 'execution_receipt'} for r in (_work_items(phase_rows, work_budget) if work_budget is not None else phase_rows)), 'adoption_phase_rows_invalid', **_work_kwargs(work_budget))
         phase_names = [r['phase'] for r in (_work_items(phase_rows, work_budget) if work_budget is not None else phase_rows)]
-        c.require(all(name in sam.PHASES for name in (_work_items(phase_names, work_budget) if work_budget is not None else phase_names)) and len(set(phase_names)) == len(phase_names), 'adoption_phase_rows_invalid', **_work_kwargs(work_budget))
+        c.require(all(name in sam.PHASES for name in (_work_items(phase_names, work_budget) if work_budget is not None else phase_names)) and len((_work_collect(work_budget, set, phase_names) if work_budget is not None else set(phase_names))) == len(phase_names), 'adoption_phase_rows_invalid', **_work_kwargs(work_budget))
         if profile and not predecessor_missing:
-            c.require(start < end and phase_names == list(sam.PHASES[start:end]), 'adoption_phase_order_invalid', **_work_kwargs(work_budget))
+            c.require(start < end and phase_names == (_work_collect(work_budget, list, sam.PHASES[start:end]) if work_budget is not None else list(sam.PHASES[start:end])), 'adoption_phase_order_invalid', **_work_kwargs(work_budget))
         else:
-            c.require(phase_names == list(sam.PHASES[end - len(phase_rows):end]), 'adoption_phase_order_invalid', **_work_kwargs(work_budget))
+            c.require(phase_names == (_work_collect(work_budget, list, sam.PHASES[end - len(phase_rows):end]) if work_budget is not None else list(sam.PHASES[end - len(phase_rows):end])), 'adoption_phase_order_invalid', **_work_kwargs(work_budget))
         for phase_row in (_work_items(phase_rows, work_budget) if work_budget is not None else phase_rows):
             complete, inputs_available = self._phase(row, phase_row, parent, inputs, artifacts, complete, inputs_available)
         rebindings, successors = _rebindings(context, row, artifacts, current_host, **_work_kwargs(work_budget))
@@ -280,10 +280,10 @@ def _rebindings(context, row, artifacts, current_host, *, work_budget=None):
         _work(work_budget)
     value, proof = row
     rebindings = value.get('administrative_rebindings')
-    c.require(isinstance(rebindings, dict) and set(rebindings) == REBIND_NAMES, 'adoption_rebinding_invalid', **_work_kwargs(work_budget))
+    c.require(isinstance(rebindings, dict) and (_work_collect(work_budget, set, rebindings) if work_budget is not None else set(rebindings)) == REBIND_NAMES, 'adoption_rebinding_invalid', **_work_kwargs(work_budget))
     successors = {}
     for name, rebinding in (_work_items(rebindings.items(), work_budget) if work_budget is not None else rebindings.items()):
-        c.require(isinstance(rebinding, dict) and set(rebinding) == {'original', 'successor'}, 'adoption_rebinding_invalid', **_work_kwargs(work_budget))
+        c.require(isinstance(rebinding, dict) and (_work_collect(work_budget, set, rebinding) if work_budget is not None else set(rebinding)) == {'original', 'successor'}, 'adoption_rebinding_invalid', **_work_kwargs(work_budget))
         context.selected(rebinding['original'], proof)
         context.selected(rebinding['successor'], proof)
         if name in artifacts:

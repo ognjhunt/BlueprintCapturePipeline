@@ -5,7 +5,7 @@ Existing downstream helpers/APIs are reused without changing their contracts.
 """
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work_sort, _work, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work_sort, _work, _work_items, _work_kwargs
 
 from . import task_evaluation_scene_downstream_contracts as c
 
@@ -103,7 +103,7 @@ class Context(c.Context):
             work_budget = getattr(self, "work_budget", None)
         if work_budget is not None:
             _work(work_budget)
-        require(isinstance(reference, dict) and {'path', 'sha256', 'size_bytes'} <= set(reference), 'reference_invalid', **_work_kwargs(work_budget))
+        require(isinstance(reference, dict) and {'path', 'sha256', 'size_bytes'} <= (_work_collect(work_budget, set, reference) if work_budget is not None else set(reference)), 'reference_invalid', **_work_kwargs(work_budget))
         require(type(reference['size_bytes']) is int and reference['size_bytes'] >= (1 if positive else 0),
                 'reference_invalid', **_work_kwargs(work_budget))
         self.raw_ref(reference, source)
@@ -175,11 +175,11 @@ class Context(c.Context):
                 work_budget.charge("values")
             value = stack.pop()
             if isinstance(value, dict):
-                (stack.extend(_work_items(value.values(), work_budget)) if work_budget is not None else stack.extend(value.values()))
+                ((stack.extend(_work_items(_work_items(value.values(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(value.values(), work_budget))) if work_budget is not None else stack.extend(value.values()))
             elif isinstance(value, list):
                 self.budget['rows'] += len(value)
                 require(self.budget['rows'] <= self.limits['MAX_ROWS'], 'rows_limit', **_work_kwargs(work_budget))
-                (stack.extend(_work_items(value, work_budget)) if work_budget is not None else stack.extend(value))
+                ((stack.extend(_work_items(_work_items(value, work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(value, work_budget))) if work_budget is not None else stack.extend(value))
         self.budget['bytes'] += c.bounded_size(result, self.limits['MAX_OUTPUT_BYTES'] - self.budget['bytes'], **_work_kwargs(work_budget))
         for key in (_work_items(('raw_reference_obligations', 'remote_reference_obligations', 'structural_join_obligations'), work_budget) if work_budget is not None else ('raw_reference_obligations', 'remote_reference_obligations', 'structural_join_obligations')):
             for _ in (_work_items(result[key], work_budget) if work_budget is not None else result[key]):

@@ -1,7 +1,7 @@
 """Supplied compiler/adapter metadata edges; never reads packet bytes."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_items, _work_kwargs
 
 from pathlib import PurePosixPath
 
@@ -68,8 +68,8 @@ def _adapters(context, *, work_budget=None):
             c.require(c.matches(value.get(field), **_work_kwargs(work_budget)), 'adapter_invalid', **_work_kwargs(work_budget))
             context.canonical(field, value[field], proof)
         c.require(value.get('adapter_kind') == 'native_task_arena' and value.get('adapter_version') == 'v1', 'adapter_kind_invalid', **_work_kwargs(work_budget))
-        c.require(ADAPTER_FIELDS <= set(value), 'adapter_invalid', **_work_kwargs(work_budget))
-        if set(value) != ADAPTER_FIELDS:
+        c.require(ADAPTER_FIELDS <= (_work_collect(work_budget, set, value) if work_budget is not None else set(value)), 'adapter_invalid', **_work_kwargs(work_budget))
+        if (_work_collect(work_budget, set, value) if work_budget is not None else set(value)) != ADAPTER_FIELDS:
             context.unproven_adapter_seals.add(value['result_digest'])
             context.missing('adapter', 'unsupported_retained_field_set', [proof])
         c.require(all(value.get(k) is False for k in (_work_items(('provider_mutation_performed', 'catalog_mutation_performed', 'paid_execution_requested'), work_budget) if work_budget is not None else ('provider_mutation_performed', 'catalog_mutation_performed', 'paid_execution_requested'))),
@@ -101,19 +101,19 @@ def _outputs(context, adapters, *, work_budget=None):
             and all(value.get(k) is False for k in (_work_items(('customer_supplied_prebuilt_episode_packet', 'provider_mutation_performed',
                 'paid_execution_requested', 'raw_secret_values_recorded'), work_budget) if work_budget is not None else ('customer_supplied_prebuilt_episode_packet', 'provider_mutation_performed',
                 'paid_execution_requested', 'raw_secret_values_recorded'))), 'compiler_output_invalid', **_work_kwargs(work_budget))
-        c.require(OUTPUT_FIELDS <= set(value) and isinstance(value.get('configured_task_template_adapter'), dict)
+        c.require(OUTPUT_FIELDS <= (_work_collect(work_budget, set, value) if work_budget is not None else set(value)) and isinstance(value.get('configured_task_template_adapter'), dict)
             and isinstance(value.get('native_scene_appearance'), dict), 'compiler_output_invalid', **_work_kwargs(work_budget))
         fields = {'compiled_episode_packet': {'format', 'path', 'digest', 'size_bytes'},
             'adapter_result': {'path', 'digest', 'packet_receipt_digest', 'runtime_source_receipt_digest'},
             'configured_task_template_adapter': {'schema_version', 'adapter_digest', 'source_documents_digest', 'manipulation_strategy'}}
         if 'destination_native_probe_request' in value:
             fields['destination_native_probe_request'] = {'path', 'digest', 'size_bytes', 'request_digest'}
-        c.require(all(isinstance(value.get(k), dict) and required <= set(value[k]) for k, required in (_work_items(fields.items(), work_budget) if work_budget is not None else fields.items())), 'compiler_artifact_invalid', **_work_kwargs(work_budget))
+        c.require(all(isinstance(value.get(k), dict) and required <= (_work_collect(work_budget, set, value[k]) if work_budget is not None else set(value[k])) for k, required in (_work_items(fields.items(), work_budget) if work_budget is not None else fields.items())), 'compiler_artifact_invalid', **_work_kwargs(work_budget))
         template = value['configured_task_template_adapter']
         c.require(c.matches(template.get('adapter_digest'), **_work_kwargs(work_budget)) and c.matches(template.get('source_documents_digest'), **_work_kwargs(work_budget)), 'compiler_template_invalid', **_work_kwargs(work_budget))
         c.text(template.get('schema_version'), **_work_kwargs(work_budget))
         c.text(template.get('manipulation_strategy'), **_work_kwargs(work_budget))
-        if set(value) not in (OUTPUT_FIELDS, OUTPUT_FIELDS | {'destination_native_probe_request'}) or any(set(value[k]) != required for k, required in (_work_items(fields.items(), work_budget) if work_budget is not None else fields.items())):
+        if (_work_collect(work_budget, set, value) if work_budget is not None else set(value)) not in (OUTPUT_FIELDS, OUTPUT_FIELDS | {'destination_native_probe_request'}) or any((_work_collect(work_budget, set, value[k]) if work_budget is not None else set(value[k])) != required for k, required in (_work_items(fields.items(), work_budget) if work_budget is not None else fields.items())):
             context.unproven_output_seals.add(value['compiler_output_digest'])
             context.missing('compiler_output', 'unsupported_retained_field_set', [proof])
         packet = value.get('compiled_episode_packet')

@@ -1,7 +1,7 @@
 """Pure retained compilation metadata primitives; ADP-009D/day28."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_items, _work_kwargs
 
 from . import task_evaluation_scene_source_family_contracts as retained
 from .task_evaluation_scene_lineage_budget import RetainedEmissionBudgetError
@@ -130,7 +130,7 @@ class Context(retained.Context):
             _work(work_budget)
         if not hasattr(self, 'unsupported_records'):
             self.unsupported_records = set()
-        if set(row[0]) - allowed:
+        if (_work_collect(work_budget, set, row[0]) if work_budget is not None else set(row[0])) - allowed:
             key = tuple(row[1][k] for k in (_work_items(('role', 'path', 'sha256', 'size_bytes'), work_budget) if work_budget is not None else ('role', 'path', 'sha256', 'size_bytes')))
             if key not in self.unsupported_records:
                 self.unsupported_records.add(key)

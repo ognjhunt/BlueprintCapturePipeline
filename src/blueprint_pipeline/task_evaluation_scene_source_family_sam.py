@@ -1,7 +1,7 @@
 """Current and retained SAM metadata only; no phase/runtime/science validators."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_call, _work_hash, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_call, _work_hash, _work_items, _work_kwargs
 
 import re
 import json
@@ -51,7 +51,7 @@ def refs(context, value, proof, *, maximum=64, nonempty=False, work_budget=None)
     c.require(isinstance(value, dict) and len(value) <= maximum and (value or not nonempty)
         and all(c.matches(k, NAME, **_work_kwargs(work_budget)) for k in (_work_items(value, work_budget) if work_budget is not None else value)), 'sam_artifacts_invalid', **_work_kwargs(work_budget))
     for reference in (_work_items(value.values(), work_budget) if work_budget is not None else value.values()):
-        c.require(isinstance(reference, dict) and set(reference) == {'path', 'sha256', 'size_bytes'}, 'sam_artifact_reference_invalid', **_work_kwargs(work_budget))
+        c.require(isinstance(reference, dict) and (_work_collect(work_budget, set, reference) if work_budget is not None else set(reference)) == {'path', 'sha256', 'size_bytes'}, 'sam_artifact_reference_invalid', **_work_kwargs(work_budget))
         context.selected(reference, proof)
     return value
 
@@ -86,12 +86,12 @@ def _plan(context, row, *, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
     value, proof = row
-    c.require(c.matches(value.get('source_commit'), c.COMMIT, **_work_kwargs(work_budget)) and value.get('phase_sequence') == list(PHASES)
+    c.require(c.matches(value.get('source_commit'), c.COMMIT, **_work_kwargs(work_budget)) and value.get('phase_sequence') == (_work_collect(work_budget, list, PHASES) if work_budget is not None else list(PHASES))
         and isinstance(value.get('scene_identity'), dict) and bool(value['scene_identity'])
         and isinstance(value.get('task_identity'), dict) and bool(value['task_identity'])
         and c.matches(value.get('publisher_scene_id'), c.ID, **_work_kwargs(work_budget)) and c.matches(value.get('server_profile_sha256'), **_work_kwargs(work_budget)),
         'sam_plan_invalid', **_work_kwargs(work_budget))
-    c.require(isinstance(value.get('host_inputs'), dict) and set(value['host_inputs']) == HOST_NAMES, 'sam_plan_inputs_invalid', **_work_kwargs(work_budget))
+    c.require(isinstance(value.get('host_inputs'), dict) and (_work_collect(work_budget, set, value['host_inputs']) if work_budget is not None else set(value['host_inputs'])) == HOST_NAMES, 'sam_plan_inputs_invalid', **_work_kwargs(work_budget))
     refs(context, value['host_inputs'], proof, **_work_kwargs(work_budget))
     task = context.selected(value['host_inputs']['task_request'], proof, {'sam_host_tasks'})
     if task and task[0].get('schema_version') == SCHEMAS['sam_host_tasks'][0]:
@@ -115,7 +115,7 @@ def _job(context, row, *, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
     value, proof = row
-    c.require(set(value) == {'schema_version', 'child_id', 'parent_preparation_id', 'parent_request_digest',
+    c.require((_work_collect(work_budget, set, value) if work_budget is not None else set(value)) == {'schema_version', 'child_id', 'parent_preparation_id', 'parent_request_digest',
         'plan_digest', 'phase', 'inputs_digest', 'expected_source_commit', 'plan_ref', 'inputs', 'job_digest'}, 'sam_job_invalid', **_work_kwargs(work_budget))
     c.require(value['phase'] in PHASES and c.matches(value['child_id'], CHILD, **_work_kwargs(work_budget))
         and c.matches(value['parent_preparation_id'], c.ID, **_work_kwargs(work_budget)) and c.matches(value['expected_source_commit'], c.COMMIT, **_work_kwargs(work_budget))
@@ -428,7 +428,7 @@ def _source_progress(context, parents, observations, *, work_budget=None):
                 observations.append(c.observation(row, role='sam_source_progress', sequence=value['sequence'], progress_status=value['status'], **_work_kwargs(work_budget)))
                 continue
             c.require(final.get('status') == 'exact_mask_inputs_ready' and final.get('source_commit') == value['source_commit']
-                and c.matches(final.get('plan_digest'), **_work_kwargs(work_budget)) and isinstance(final.get('evidence'), dict) and set(final['evidence']) == EVIDENCE
+                and c.matches(final.get('plan_digest'), **_work_kwargs(work_budget)) and isinstance(final.get('evidence'), dict) and (_work_collect(work_budget, set, final['evidence']) if work_budget is not None else set(final['evidence'])) == EVIDENCE
                 and final['evidence'] == value['advancement'].get('sam31_exact_mask_inputs')
                 and value['advancement'].get('evidence_refs') == [final['evidence'][name] for name in (_work_items(EVIDENCE_ORDER, work_budget) if work_budget is not None else EVIDENCE_ORDER)], 'sam_final_invalid', **_work_kwargs(work_budget))
             refs(context, final['evidence'], nested[1], **_work_kwargs(work_budget))

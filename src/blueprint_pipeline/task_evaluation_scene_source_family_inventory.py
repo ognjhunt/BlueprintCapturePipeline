@@ -5,7 +5,7 @@ provider state, presence, scientific validity, rights or original-owner transfer
 """
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_items, _work_kwargs
 
 from . import task_evaluation_scene_downstream_inventory as downstream
 from . import task_evaluation_scene_source_family_contracts as contracts
@@ -58,23 +58,23 @@ def _join(intent_id, seed_records, downstream_records, source_records, roots, pa
         _work(work_budget)
     c = contracts
     c.require(c.matches(intent_id, downstream.contracts.ID, **_work_kwargs(work_budget)) and isinstance(seed_records, dict)
-        and set(seed_records) == downstream.seed_module._ROLES | {'intent', 'projection'}
+        and (_work_collect(work_budget, set, seed_records) if work_budget is not None else set(seed_records)) == downstream.seed_module._ROLES | {'intent', 'projection'}
         and all(isinstance(seed_records[r], (list, tuple)) for r in (_work_items(downstream.seed_module._ROLES, work_budget) if work_budget is not None else downstream.seed_module._ROLES))
-        and isinstance(downstream_records, dict) and set(downstream_records) == downstream.ROLES
-        and isinstance(source_records, dict) and set(source_records) == ROLES
+        and isinstance(downstream_records, dict) and (_work_collect(work_budget, set, downstream_records) if work_budget is not None else set(downstream_records)) == downstream.ROLES
+        and isinstance(source_records, dict) and (_work_collect(work_budget, set, source_records) if work_budget is not None else set(source_records)) == ROLES
         and all(isinstance(rows, (list, tuple)) for rows in (_work_items([*downstream_records.values(), *source_records.values()], work_budget) if work_budget is not None else [*downstream_records.values(), *source_records.values()]))
-        and isinstance(roots, dict) and set(roots) == downstream.seed_module._ROOTS | downstream.EXTRA_ROOTS | EXTRA_ROOTS,
+        and isinstance(roots, dict) and (_work_collect(work_budget, set, roots) if work_budget is not None else set(roots)) == downstream.seed_module._ROOTS | downstream.EXTRA_ROOTS | EXTRA_ROOTS,
         'parameters_invalid', **_work_kwargs(work_budget))
     roots = {k: c.path(v, **_work_kwargs(work_budget)) for k, v in (_work_items(roots.items(), work_budget) if work_budget is not None else roots.items())}
     c.require(isinstance(parent_routes, (list, tuple)) and 1 <= len(parent_routes) <= 4
         and isinstance(metadata_roots, (list, tuple)) and 1 <= len(metadata_roots) <= 8, 'routes_invalid', **_work_kwargs(work_budget))
     routes = []
     for route in (_work_items(parent_routes, work_budget) if work_budget is not None else parent_routes):
-        c.require(isinstance(route, dict) and set(route) == {'queue_root', 'input_root'}, 'routes_invalid', **_work_kwargs(work_budget))
+        c.require(isinstance(route, dict) and (_work_collect(work_budget, set, route) if work_budget is not None else set(route)) == {'queue_root', 'input_root'}, 'routes_invalid', **_work_kwargs(work_budget))
         routes.append({k: c.path(v, **_work_kwargs(work_budget)) for k, v in (_work_items(route.items(), work_budget) if work_budget is not None else route.items())})
     metadata_roots = [c.path(v, **_work_kwargs(work_budget)) for v in (_work_items(metadata_roots, work_budget) if work_budget is not None else metadata_roots)]
     c.require(len({r['queue_root'] for r in (_work_items(routes, work_budget) if work_budget is not None else routes)}) == len(routes)
-        and len(set(metadata_roots)) == len(metadata_roots)
+        and len((_work_collect(work_budget, set, metadata_roots) if work_budget is not None else set(metadata_roots))) == len(metadata_roots)
         and {'queue_root': roots['preparation_queue_root'], 'input_root': roots['preparation_input_root']} in routes,
         'routes_invalid', **_work_kwargs(work_budget))
     groups = {'intent': [seed_records['intent']], 'projection': [] if seed_records['projection'] is None else [seed_records['projection']],

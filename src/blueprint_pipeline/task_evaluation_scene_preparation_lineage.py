@@ -5,7 +5,7 @@ of payload existence, exclusive ownership, complete inventory or authorization.
 """
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work_order, _work, _work_call, _work_hash, _work_items, _work_kwargs, _work_parse
+from .task_evaluation_scene_lineage_budget import _work_collect, _work_order, _work, _work_call, _work_hash, _work_items, _work_kwargs, _work_parse
 
 import hashlib
 import json
@@ -166,7 +166,7 @@ def _intent(value: dict[str, Any], provenance: dict[str, Any], intent_id: str,
              and request.get("schema_version") == "task_evaluation_scene_intake_request.v1"
              and _matches(request.get("submission_id"), _ID, **_work_kwargs(work_budget)), "intent_request_invalid", **_work_kwargs(work_budget))
     owner, task, source = (request.get(k) for k in (_work_items(("owner", "task", "source"), work_budget) if work_budget is not None else ("owner", "task", "source")))
-    _require(isinstance(owner, dict) and set(owner) == {"user_id", "organization_id"}
+    _require(isinstance(owner, dict) and (_work_collect(work_budget, set, owner) if work_budget is not None else set(owner)) == {"user_id", "organization_id"}
              and all(_matches(v, _OWNER, **_work_kwargs(work_budget)) for v in (_work_items(owner.values(), work_budget) if work_budget is not None else owner.values()))
              and isinstance(task, dict) and _matches(task.get("task_id"), _ID, **_work_kwargs(work_budget))
              and isinstance(source, dict) and _matches(source.get("content_digest"), _DIGEST, **_work_kwargs(work_budget)),
@@ -259,13 +259,11 @@ def _attempt(link: dict[str, Any], request: dict[str, Any], intent: dict[str, An
 
 def join_scene_preparation_lineage(*, intent_id: str, intent_record: Any,
                                    preparation_links: Any, preparation_envelopes: Any,
-                                   configuration_attempt_records: Any, roots: Any, work_budget=None) -> dict[str, Any]:
+                                   configuration_attempt_records: Any, roots: Any) -> dict[str, Any]:
     """Join only supplied historical records; perform no I/O or authority checks."""
-    if work_budget is not None:
-        _work(work_budget)
     try:
         return _join(intent_id, intent_record, preparation_links, preparation_envelopes,
-                     configuration_attempt_records, roots, **_work_kwargs(work_budget))
+                     configuration_attempt_records, roots)
     except SceneLineageError:
         raise
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError, UnicodeError):
@@ -276,9 +274,11 @@ def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
           attempts: Any, roots: Any, *, emission_budget=None, work_budget=None) -> dict[str, Any]:
     if work_budget is not None:
         _work(work_budget)
+        _require(emission_budget is not None and getattr(emission_budget, 'work_budget', None) is work_budget,
+                 'parameters_invalid', **_work_kwargs(work_budget))
     if emission_budget is not None:
         emission_budget = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_RECORDS, max_references=MAX_RECORDS)
-    _require(_matches(intent_id, _ID, **_work_kwargs(work_budget)) and isinstance(roots, dict) and set(roots) == _ROOTS,
+    _require(_matches(intent_id, _ID, **_work_kwargs(work_budget)) and isinstance(roots, dict) and (_work_collect(work_budget, set, roots) if work_budget is not None else set(roots)) == _ROOTS,
              "parameters_invalid", **_work_kwargs(work_budget))
     roots = {key: _path(value, **_work_kwargs(work_budget)) for key, value in (_work_items(roots.items(), work_budget) if work_budget is not None else roots.items())}
     _require(all(isinstance(group, (list, tuple)) for group in (_work_items((links, envelopes, attempts), work_budget) if work_budget is not None else (links, envelopes, attempts)))

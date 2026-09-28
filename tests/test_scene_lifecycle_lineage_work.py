@@ -67,7 +67,7 @@ def test_every_owned_private_helper_stops_at_closed_work_boundary(suffix):
     from types import SimpleNamespace
     module = importlib.import_module('blueprint_pipeline.task_evaluation_scene_' + suffix)
     candidates = [fn for fn in vars(module).values() if inspect.isfunction(fn)
-                  and fn.__module__ == module.__name__ and not fn.__name__.startswith('join_retained_')]
+                  and fn.__module__ == module.__name__ and not fn.__name__.startswith(('join_retained_', 'join_scene_'))]
     for cls in vars(module).values():
         if inspect.isclass(cls) and cls.__module__ == module.__name__:
             candidates.extend(fn.fget if isinstance(fn, property) else fn for fn in vars(cls).values()
@@ -133,3 +133,32 @@ def test_sort_refuses_before_retaining_fanout():
         yield 'second'
     with pytest.raises(ValueError, match='reference_values_limit'):
         m._work_order(budget, sorted, source())
+
+
+def test_final_sort_refuses_after_pair_construction_before_sorted(monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_downstream_contracts as c
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    budget.charge('values', budget.limits['values'] - 4)
+    monkeypatch.setattr(c, 'bounded_size', lambda *a, **k: 0)
+    monkeypatch.setattr(c, 'encoded', lambda row, **k: bytes([row['a']]))
+    monkeypatch.setattr(c, 'sorted', lambda *a, **k: pytest.fail('unguarded final sorting allocation'), raising=False)
+    with pytest.raises(ValueError, match='reference_values_limit'):
+        c.unique([{'a': 1}, {'a': 2}, {'a': 3}], 1000, work_budget=budget)
+
+
+@pytest.mark.parametrize('module,name', [('preparation_lineage', 'join_scene_preparation_lineage'),
+                                         ('source_attempt_lineage', 'join_scene_source_attempt_lineage')])
+def test_older_public_signatures_omit_private_work_allowance(module, name):
+    import importlib
+    import inspect
+    function = getattr(importlib.import_module('blueprint_pipeline.task_evaluation_scene_' + module), name)
+    assert 'work_budget' not in inspect.signature(function).parameters
+
+
+def test_private_source_branch_refuses_live_work_without_emission_sink():
+    from blueprint_pipeline import task_evaluation_scene_inventory_seed as seed
+    from tests.test_scene_inventory_history import fixture as history_fixture
+    args = history_fixture()
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    with pytest.raises(ValueError, match='scene_inventory_parameters_invalid'):
+        seed._sources(args['intent_id'], args['records'], args['roots'], set(), [], work_budget=budget)

@@ -5,7 +5,7 @@ identity and lexical membership never become paid proof or retirement approval.
 """
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_items, _work_kwargs
 
 from . import task_evaluation_scene_inventory_seed as seed_module
 from . import task_evaluation_scene_downstream_contracts as contracts
@@ -40,15 +40,17 @@ def join_retained_scene_downstream_inventory(*, intent_id, seed_records, downstr
 def _join(intent_id, seed_records, downstream_records, roots, *, emission_budget=None, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
+        contracts.require(emission_budget is not None and getattr(emission_budget, 'work_budget', None) is work_budget,
+                 'parameters_invalid', **_work_kwargs(work_budget))
     c = contracts
     if emission_budget is not None:
         emission_budget = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
     c.require(c.matches(intent_id, c.ID, **_work_kwargs(work_budget)) and isinstance(seed_records, dict)
-              and set(seed_records) == seed_module._ROLES | {'intent', 'projection'}
+              and (_work_collect(work_budget, set, seed_records) if work_budget is not None else set(seed_records)) == seed_module._ROLES | {'intent', 'projection'}
               and all(isinstance(seed_records[r], (list, tuple)) for r in (_work_items(seed_module._ROLES, work_budget) if work_budget is not None else seed_module._ROLES))
-              and isinstance(downstream_records, dict) and set(downstream_records) == ROLES
+              and isinstance(downstream_records, dict) and (_work_collect(work_budget, set, downstream_records) if work_budget is not None else set(downstream_records)) == ROLES
               and all(isinstance(rows, (list, tuple)) for rows in (_work_items(downstream_records.values(), work_budget) if work_budget is not None else downstream_records.values()))
-              and isinstance(roots, dict) and set(roots) == seed_module._ROOTS | EXTRA_ROOTS, 'parameters_invalid', **_work_kwargs(work_budget))
+              and isinstance(roots, dict) and (_work_collect(work_budget, set, roots) if work_budget is not None else set(roots)) == seed_module._ROOTS | EXTRA_ROOTS, 'parameters_invalid', **_work_kwargs(work_budget))
     roots = {k: c.path(v, **_work_kwargs(work_budget)) for k, v in (_work_items(roots.items(), work_budget) if work_budget is not None else roots.items())}
     groups = {'intent': [seed_records['intent']], 'projection': [] if seed_records['projection'] is None else [seed_records['projection']],
               **{r: seed_records[r] for r in (_work_items(seed_module._ROLES, work_budget) if work_budget is not None else seed_module._ROLES)}, **downstream_records}

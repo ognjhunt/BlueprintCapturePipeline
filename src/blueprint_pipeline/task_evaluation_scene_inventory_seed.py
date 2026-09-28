@@ -5,7 +5,7 @@ bind supplied owner/workspace identity. Recorded bytes are never measured disk.
 """
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work_sort, _work_order, _work, _work_call, _work_hash, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work_sort, _work_order, _work, _work_call, _work_hash, _work_items, _work_kwargs
 
 import re
 import hashlib
@@ -61,7 +61,7 @@ def _identity(record: tuple, *, work_budget=None) -> tuple:
 def _raw_reference(value: Any, *, work_budget=None) -> tuple:
     if work_budget is not None:
         _work(work_budget)
-    _require(isinstance(value, dict) and set(value) == {"path", "sha256", "size_bytes"}, "reference_invalid", **_work_kwargs(work_budget))
+    _require(isinstance(value, dict) and (_work_collect(work_budget, set, value) if work_budget is not None else set(value)) == {"path", "sha256", "size_bytes"}, "reference_invalid", **_work_kwargs(work_budget))
     path = retained._path(value["path"], **_work_kwargs(work_budget))
     _shape(value["sha256"], retained._DIGEST, "reference_invalid", **_work_kwargs(work_budget))
     _require(type(value["size_bytes"]) is int and value["size_bytes"] > 0, "reference_invalid", **_work_kwargs(work_budget))
@@ -74,7 +74,7 @@ def _decode(records: dict, *, work_budget=None) -> dict:
     count = 1 + int(records["projection"] is not None) + sum(len(records[role]) for role in (_work_items(_ROLES, work_budget) if work_budget is not None else _ROLES))
     _require(count <= MAX_RECORDS, "records_limit", **_work_kwargs(work_budget))
     groups = {"intent": [records["intent"]], "projection": [] if records["projection"] is None else [records["projection"]],
-              **{role: records[role] for role in (_work_items(sorted(_ROLES), work_budget) if work_budget is not None else sorted(_ROLES))}}
+              **{role: records[role] for role in (_work_items((_work_order(work_budget, sorted, _ROLES) if work_budget is not None else sorted(_ROLES)), work_budget) if work_budget is not None else sorted(_ROLES))}}
     total = 0
     for group in (_work_items(groups.values(), work_budget) if work_budget is not None else groups.values()):
         for pair in (_work_items(group, work_budget) if work_budget is not None else group):
@@ -104,7 +104,7 @@ def _decode(records: dict, *, work_budget=None) -> dict:
 def _remote(value: Any, *, work_budget=None) -> None:
     if work_budget is not None:
         _work(work_budget)
-    _require(isinstance(value, dict) and set(value) == {"uri", "digest", "size_bytes"}
+    _require(isinstance(value, dict) and (_work_collect(work_budget, set, value) if work_budget is not None else set(value)) == {"uri", "digest", "size_bytes"}
              and isinstance(value["uri"], str) and value["uri"].startswith(("https://", "s3://", "b2://", "gs://", "r2://"))
              and "?" not in value["uri"] and type(value["size_bytes"]) is int and value["size_bytes"] > 0, "remote_invalid", **_work_kwargs(work_budget))
     _shape(value["digest"], retained._DIGEST, "remote_invalid", **_work_kwargs(work_budget))
@@ -129,7 +129,7 @@ def _history(decoded: dict, intent: dict, roots: dict, reasons: set, *, work_bud
     events = {}
     for value, provenance in (_work_items(decoded["events"], work_budget) if work_budget is not None else decoded["events"]):
         sequence = value.get("sequence")
-        _require(set(value) == _EVENT_FIELDS and value.get("schema_version") == "task_evaluation_scene_progression_event.v1"
+        _require((_work_collect(work_budget, set, value) if work_budget is not None else set(value)) == _EVENT_FIELDS and value.get("schema_version") == "task_evaluation_scene_progression_event.v1"
                  and type(sequence) is int and 1 <= sequence <= MAX_RECORDS and sequence not in events, "event_invalid", **_work_kwargs(work_budget))
         _require(provenance["path"] == retained._child(directory, "progression-events", f"{sequence:06d}.json", **_work_kwargs(work_budget))
                  and value["intent_id"] == intent["intent_id"] and value["intent_digest"] == intent["intent_digest"], "event_identity_invalid", **_work_kwargs(work_budget))
@@ -182,14 +182,14 @@ def _supported_path(role: str, path: str, roots: dict, intent_id: str, *, work_b
 def _output_rows(emission_budget, values=(), *, reference=False, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
-    return emission_budget.rows(values, reference=reference) if emission_budget is not None else list(values)
+    return emission_budget.rows(values, reference=reference) if emission_budget is not None else (_work_collect(work_budget, list, values) if work_budget is not None else list(values))
 
 
 def _proofs(emission_budget, *groups, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
     values = (p for group in (_work_items(groups, work_budget) if work_budget is not None else groups) for p in (_work_items(group, work_budget) if work_budget is not None else group))
-    return emission_budget.reserve_provenance(values) if emission_budget is not None else list(values)
+    return emission_budget.reserve_provenance(values) if emission_budget is not None else (_work_collect(work_budget, list, values) if work_budget is not None else list(values))
 
 
 def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_id: str, *, emission_budget=None, work_budget=None) -> tuple:
@@ -218,8 +218,8 @@ def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_
                     add("attempt", row["attempt"], sequence)
                     if row.get("factory") is not None:
                         add("factory", row["factory"], sequence)
-                    deferred += len(set(row) - {"attempt", "factory", "new_source_commit"})
-        deferred += len(set(state) & _DEFERRED)
+                    deferred += len((_work_collect(work_budget, set, row) if work_budget is not None else set(row)) - {"attempt", "factory", "new_source_commit"})
+        deferred += len((_work_collect(work_budget, set, state) if work_budget is not None else set(state)) & _DEFERRED)
         ref = value["result_reference"]
         if ref is not None:
             occurrences += 1
@@ -259,6 +259,8 @@ def _member(path: str, kind: str, binding: dict, sources: list, *, emission_budg
 def _sources(intent_id: str, records: dict, roots: dict, reasons: set, members: list, *, emission_budget=None, work_budget=None) -> list:
     if work_budget is not None:
         _work(work_budget)
+        _require(emission_budget is not None and getattr(emission_budget, 'work_budget', None) is work_budget,
+                 'parameters_invalid', **_work_kwargs(work_budget))
     if emission_budget is not None:
         child = source._join(intent_id, records['intent'], records['attempts'], records['source_snapshots'],
             records['factories'], records['source_submissions'], {key: roots[key] for key in (_work_items(('intent_root', 'factory_output_root'), work_budget) if work_budget is not None else ('intent_root', 'factory_output_root'))},
@@ -300,6 +302,8 @@ def _missing(group: dict, role: str, path: str | None, root: str, states: set, r
 def _preparations(decoded: dict, records: dict, intent: dict, roots: dict, reasons: set, members: list, missing: dict, *, emission_budget=None, work_budget=None) -> dict:
     if work_budget is not None:
         _work(work_budget)
+        _require(emission_budget is not None and getattr(emission_budget, 'work_budget', None) is work_budget,
+                 'parameters_invalid', **_work_kwargs(work_budget))
     directory = retained._child(roots["intent_root"], intent["intent_id"], **_work_kwargs(work_budget))
     grouped, envelopes, attempts = {}, {}, {_identity(row, **_work_kwargs(work_budget)): row for row in (_work_items(decoded["attempts"], work_budget) if work_budget is not None else decoded["attempts"])}
     for value, provenance in (_work_items(decoded["preparation_links"], work_budget) if work_budget is not None else decoded["preparation_links"]):
@@ -463,9 +467,9 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
             if emission_budget is not None:
                 emission_budget.reserve_reference(cache_row)
             shared[row["digest"]] = cache_row
-    if promote and set(request_refs) - observed:
+    if promote and (_work_collect(work_budget, set, request_refs) if work_budget is not None else set(request_refs)) - observed:
         reasons.add("request_projection_missing")
-        for contract_path in (_work_items((_work_order(work_budget, sorted, set(request_refs) - observed) if work_budget is not None else sorted(set(request_refs) - observed)), work_budget) if work_budget is not None else sorted(set(request_refs) - observed)):
+        for contract_path in (_work_items((_work_order(work_budget, sorted, (_work_collect(work_budget, set, request_refs) if work_budget is not None else set(request_refs)) - observed) if work_budget is not None else sorted(set(request_refs) - observed)), work_budget) if work_budget is not None else sorted(set(request_refs) - observed)):
             missing["count"] += 1
             _require(missing["count"] <= MAX_REFERENCES, "references_limit", **_work_kwargs(work_budget))
             sources = _proofs(emission_budget, context['sources'], (provenance,), **_work_kwargs(work_budget))
@@ -525,9 +529,9 @@ def _results(decoded: dict, context: dict, roots: dict, reasons: set, members: l
             materialized[(link["preparation_id"], value["result_digest"])] = value, provenance
         else:
             reasons.add("preparation_result_scope_unproven")
-    if set(context) - seen:
+    if (_work_collect(work_budget, set, context) if work_budget is not None else set(context)) - seen:
         reasons.add("preparation_result_missing")
-        for key in (_work_items((_work_order(work_budget, sorted, set(context) - seen) if work_budget is not None else sorted(set(context) - seen)), work_budget) if work_budget is not None else sorted(set(context) - seen)):
+        for key in (_work_items((_work_order(work_budget, sorted, (_work_collect(work_budget, set, context) if work_budget is not None else set(context)) - seen) if work_budget is not None else sorted(set(context) - seen)), work_budget) if work_budget is not None else sorted(set(context) - seen)):
             group = context[key]
             _missing(group, "preparation_result", retained._child(roots["preparation_queue_root"], "results", group["link"]["result_filename"], **_work_kwargs(work_budget)),
                      roots["preparation_queue_root"], {"results"}, "preparation_result_missing", missing, emission_budget=emission_budget, **_work_kwargs(work_budget))
@@ -597,7 +601,7 @@ def _configurations(decoded: dict, context: dict, materialized: dict, roots: dic
             members.append(_member(str(PurePosixPath(provenance["path"]).parent), "configuration_progression_workspace",
                 {"preparation_id": preparation_id, "request_digest": value["preparation_request_digest"], "result_digest": value["preparation_result_digest"]},
                 _proofs(emission_budget, group['sources'], (provenance, result[1], envelope[1]), **_work_kwargs(work_budget)), emission_budget=emission_budget, **_work_kwargs(work_budget)))
-    for key in (_work_items((_work_order(work_budget, sorted, set(context) - seen) if work_budget is not None else sorted(set(context) - seen)), work_budget) if work_budget is not None else sorted(set(context) - seen)):
+    for key in (_work_items((_work_order(work_budget, sorted, (_work_collect(work_budget, set, context) if work_budget is not None else set(context)) - seen) if work_budget is not None else sorted(set(context) - seen)), work_budget) if work_budget is not None else sorted(set(context) - seen)):
         reasons.add("configuration_join_unresolved")
         _missing(context[key], "configuration_progression", retained._child(roots["configuration_progression_root"],
             "scene-configuration-activations", key, "activation_progression.json", **_work_kwargs(work_budget)), roots["configuration_progression_root"], set(),
@@ -619,12 +623,14 @@ def join_retained_scene_inventory_seed(*, intent_id: str, records: Any, roots: A
 def _join(intent_id: str, records: Any, roots: Any, *, emission_budget=None, work_budget=None) -> dict:
     if work_budget is not None:
         _work(work_budget)
+        _require(emission_budget is not None and getattr(emission_budget, 'work_budget', None) is work_budget,
+                 'parameters_invalid', **_work_kwargs(work_budget))
     if emission_budget is not None:
         emission_budget = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
     _shape(intent_id, retained._ID, "parameters_invalid", **_work_kwargs(work_budget))
-    _require(isinstance(records, dict) and set(records) == _ROLES | {"intent", "projection"}
+    _require(isinstance(records, dict) and (_work_collect(work_budget, set, records) if work_budget is not None else set(records)) == _ROLES | {"intent", "projection"}
              and all(isinstance(records[role], (list, tuple)) for role in (_work_items(_ROLES, work_budget) if work_budget is not None else _ROLES))
-             and isinstance(roots, dict) and set(roots) == _ROOTS, "parameters_invalid", **_work_kwargs(work_budget))
+             and isinstance(roots, dict) and (_work_collect(work_budget, set, roots) if work_budget is not None else set(roots)) == _ROOTS, "parameters_invalid", **_work_kwargs(work_budget))
     for value in (_work_items(roots.values(), work_budget) if work_budget is not None else roots.values()):
         _require(isinstance(value, str) and len(value) <= retained.MAX_PATH_BYTES, "path_invalid", **_work_kwargs(work_budget))
     roots = {key: retained._path(value, **_work_kwargs(work_budget)) for key, value in (_work_items(roots.items(), work_budget) if work_budget is not None else roots.items())}
@@ -646,12 +652,12 @@ def _join(intent_id: str, records: Any, roots: Any, *, emission_budget=None, wor
     obligation_index = {obligation_key(row): row for row in (_work_items(obligations, work_budget) if work_budget is not None else obligations)}
     for row in (_work_items(missing["raw"], work_budget) if work_budget is not None else missing["raw"]):
         obligation_index.setdefault(obligation_key(row), row)
-    obligations = [obligation_index[key] for key in (_work_items(sorted(obligation_index), work_budget) if work_budget is not None else sorted(obligation_index))]
+    obligations = [obligation_index[key] for key in (_work_items((_work_order(work_budget, sorted, obligation_index) if work_budget is not None else sorted(obligation_index)), work_budget) if work_budget is not None else sorted(obligation_index))]
     result = {"schema_version": "task_evaluation_scene_inventory_seed.v1", "status": "kept_unresolved" if reasons else "joined_supplied_seed",
               "scope": "supplied_retained_history_and_preparation_records", "intent_id": intent_id,
               "intent_digest": intent["intent_digest"], "intent_provenance": provenance, "history": history,
               "obligations": obligations, "members": (_work_order(work_budget, sorted, members, key=lambda row: (row["kind"], row["path"])) if work_budget is not None else sorted(members, key=lambda row: (row["kind"], row["path"]))),
-              "source_attempt_obligations": source_rows, "shared_cache_references": [shared[key] for key in (_work_items(sorted(shared), work_budget) if work_budget is not None else sorted(shared))],
+              "source_attempt_obligations": source_rows, "shared_cache_references": [shared[key] for key in (_work_items((_work_order(work_budget, sorted, shared) if work_budget is not None else sorted(shared)), work_budget) if work_budget is not None else sorted(shared))],
               "deferred_result_references": (_work_order(work_budget, sorted, deferred_results, key=lambda row: (row["preparation_id"], row["contract_path"], row["digest"])) if work_budget is not None else sorted(deferred_results, key=lambda row: (row["preparation_id"], row["contract_path"], row["digest"]))),
               "preparation_join_obligations": (_work_order(work_budget, sorted, missing["joins"], key=lambda row: (row["preparation_id"], row["request_digest"], row["role"])) if work_budget is not None else sorted(missing["joins"], key=lambda row: (row["preparation_id"], row["request_digest"], row["role"]))),
               "request_projection_obligations": (_work_order(work_budget, sorted, missing["projections"], key=lambda row: (row["preparation_id"], row["contract_path"], row["digest"])) if work_budget is not None else sorted(missing["projections"], key=lambda row: (row["preparation_id"], row["contract_path"], row["digest"]))),

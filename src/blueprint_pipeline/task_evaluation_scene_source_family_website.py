@@ -1,7 +1,7 @@
 """Retained website capture/publication joins, never a capture or remote reader."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_call, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_call, _work_items, _work_kwargs
 
 from . import task_evaluation_scene_source_family_contracts as c
 
@@ -63,7 +63,7 @@ def capture(context, old, *, work_budget=None):
         c.require(proof['path'] == c.child(context.roots['website_source_binding_root'], value['request_digest'][7:] + '.json', **_work_kwargs(work_budget)),
                   'registration_path_invalid', **_work_kwargs(work_budget))
         refs = value.get('references')
-        c.require(isinstance(refs, dict) and set(refs) == {'preparation', 'runtime_inputs', 'task_context'}, 'registration_invalid', **_work_kwargs(work_budget))
+        c.require(isinstance(refs, dict) and (_work_collect(work_budget, set, refs) if work_budget is not None else set(refs)) == {'preparation', 'runtime_inputs', 'task_context'}, 'registration_invalid', **_work_kwargs(work_budget))
         selected = {role: context.selected(ref, proof, {'website_' + {'preparation': 'preparations',
             'runtime_inputs': 'runtime_inputs', 'task_context': 'task_contexts'}[role]}) for role, ref in (_work_items(refs.items(), work_budget) if work_budget is not None else refs.items())}
         selected_layouts = {_layout(context, ({}, {'path': reference['path'],
@@ -98,7 +98,7 @@ def capture(context, old, *, work_budget=None):
             and proof['path'] == c.child(context.roots['factory_output_root'], context.intent_id,
                                         'website-source', value['binding_digest'][7:] + '.json', **_work_kwargs(work_budget)), 'binding_path_invalid', **_work_kwargs(work_budget))
         selected = context.selected(value.get('registration'), proof, {'website_registrations'})
-        c.require(isinstance(value.get('references'), dict) and set(value['references']) == {'preparation', 'runtime_inputs', 'task_context'},
+        c.require(isinstance(value.get('references'), dict) and (_work_collect(work_budget, set, value['references']) if work_budget is not None else set(value['references'])) == {'preparation', 'runtime_inputs', 'task_context'},
                   'binding_invalid', **_work_kwargs(work_budget))
         if selected:
             c.require(value['references'] == selected[0]['references'], 'binding_reference_invalid', **_work_kwargs(work_budget))
@@ -272,7 +272,7 @@ def _manifest(context, row, *, work_budget=None):
     paths, uris, by_uri = set(), set(), {}
     prefix = 's3://blueprint/task-evaluation/production-inputs/' + value['input_namespace'] + '/'
     for item in (_work_items(inventory, work_budget) if work_budget is not None else inventory):
-        c.require(isinstance(item, dict) and set(item) == {'relative_path', 'uri', 'digest', 'size_bytes', 'publication_allowed'},
+        c.require(isinstance(item, dict) and (_work_collect(work_budget, set, item) if work_budget is not None else set(item)) == {'relative_path', 'uri', 'digest', 'size_bytes', 'publication_allowed'},
                   'manifest_row_invalid', **_work_kwargs(work_budget))
         relative = c.relative(item['relative_path'], **_work_kwargs(work_budget))
         c.require(isinstance(item['uri'], str) and len(item['uri']) <= 4096 and not any(ch.isspace() for ch in (_work_items(item['uri'], work_budget) if work_budget is not None else item['uri']))
@@ -318,13 +318,13 @@ def publication(context, old, *, work_budget=None):
                     work_budget.charge("values")
                 item = stack.pop()
                 if isinstance(item, dict):
-                    if {'uri', 'digest', 'size_bytes'} <= set(item):
+                    if {'uri', 'digest', 'size_bytes'} <= (_work_collect(work_budget, set, item) if work_budget is not None else set(item)):
                         ref = inventory.get(item['uri'])
                         c.require(ref is not None and all(ref[k] == item[k] for k in (_work_items(('uri', 'digest', 'size_bytes'), work_budget) if work_budget is not None else ('uri', 'digest', 'size_bytes'))),
                                   'manifest_request_invalid', **_work_kwargs(work_budget))
-                    (stack.extend(_work_items(item.values(), work_budget)) if work_budget is not None else stack.extend(item.values()))
+                    ((stack.extend(_work_items(_work_items(item.values(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item.values(), work_budget))) if work_budget is not None else stack.extend(item.values()))
                 elif isinstance(item, list):
-                    (stack.extend(_work_items(item, work_budget)) if work_budget is not None else stack.extend(item))
+                    ((stack.extend(_work_items(_work_items(item, work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item, work_budget))) if work_budget is not None else stack.extend(item))
     for row in (_work_items(receipts, work_budget) if work_budget is not None else receipts):
         value, proof = row
         c.require(value.get('status') == 'published_and_read_back' and c.matches(value.get('source_commit'), c.COMMIT, **_work_kwargs(work_budget))
@@ -351,7 +351,7 @@ def publication(context, old, *, work_budget=None):
             seen_paths.add(relative)
         host_seen, host_uris = set(), set()
         for item in (_work_items(value['host_only_source_objects'], work_budget) if work_budget is not None else value['host_only_source_objects']):
-            c.require(isinstance(item, dict) and set(item) == {'relative_path', 'uri', 'digest', 'size_bytes', 'publication_allowed'},
+            c.require(isinstance(item, dict) and (_work_collect(work_budget, set, item) if work_budget is not None else set(item)) == {'relative_path', 'uri', 'digest', 'size_bytes', 'publication_allowed'},
                       'publication_host_source_invalid', **_work_kwargs(work_budget))
             relative = c.relative(item['relative_path'], **_work_kwargs(work_budget))
             c.require(relative.startswith('source/') and isinstance(item['uri'], str) and len(item['uri']) <= 4096

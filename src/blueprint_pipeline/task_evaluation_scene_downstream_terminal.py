@@ -1,7 +1,7 @@
 """Pure historical terminal/pointer joins, including protected nonexecution."""
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work, _work_hash, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work_order, _work, _work_hash, _work_items, _work_kwargs
 
 import hashlib
 from pathlib import PurePosixPath
@@ -38,7 +38,7 @@ def _members(context, value, *, work_budget=None):
     seen = set()
     for member in (_work_items(members, work_budget) if work_budget is not None else members):
         context.consume()
-        c.require(isinstance(member, dict) and set(member) == {'relative_path', 'size_bytes', 'sha256'}, 'pointer_member_invalid', **_work_kwargs(work_budget))
+        c.require(isinstance(member, dict) and (_work_collect(work_budget, set, member) if work_budget is not None else set(member)) == {'relative_path', 'size_bytes', 'sha256'}, 'pointer_member_invalid', **_work_kwargs(work_budget))
         _relative(member['relative_path'], **_work_kwargs(work_budget))
         c.require(type(member['size_bytes']) is int and member['size_bytes'] >= 0 and c.matches(member['sha256'], **_work_kwargs(work_budget))
                   and member['relative_path'] not in seen, 'pointer_member_invalid', **_work_kwargs(work_budget))
@@ -75,7 +75,7 @@ def _nonexecution(row, *, work_budget=None):
 def _positive_ref(ref, *, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
-    c.require(isinstance(ref, dict) and {'path', 'sha256', 'size_bytes'} <= set(ref)
+    c.require(isinstance(ref, dict) and {'path', 'sha256', 'size_bytes'} <= (_work_collect(work_budget, set, ref) if work_budget is not None else set(ref))
               and c.matches(ref.get('sha256'), **_work_kwargs(work_budget)) and type(ref.get('size_bytes')) is int and ref['size_bytes'] > 0, 'dispatch_reference_invalid', **_work_kwargs(work_budget))
     c.path(ref['path'], **_work_kwargs(work_budget))
 
@@ -200,7 +200,7 @@ def _available_edge(context, indexes, role, ref, *, row, work_budget=None):
     copied = 'policy_canary_result_projection.json' if role == 'canary_projections' else 'policy_canary_webapp_sync.json'
     names = {ref['path'], c.child(directory, copied, **_work_kwargs(work_budget)),
              c.child(directory, 'runs', (_work_hash(work_budget, hashlib.sha256, value['run_id'].encode()) if work_budget is not None else hashlib.sha256(value['run_id'].encode())).hexdigest(), copied, **_work_kwargs(work_budget))}
-    matches = [indexes[role][key] for path in (_work_items(sorted(names), work_budget) if work_budget is not None else sorted(names))
+    matches = [indexes[role][key] for path in (_work_items((_work_order(work_budget, sorted, names) if work_budget is not None else sorted(names)), work_budget) if work_budget is not None else sorted(names))
                if (key := (path, ref['sha256'], ref['size_bytes'])) in indexes[role]]
     copies = [r[1] for r in (_work_items(matches, work_budget) if work_budget is not None else matches) if r[1]['path'] != ref['path']]
     if copies:
@@ -212,11 +212,11 @@ def _available_edge(context, indexes, role, ref, *, row, work_budget=None):
 def _raw_select(paths, role, ref, expected, copied, *, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
-    c.require(isinstance(ref, dict) and {'path', 'sha256', 'size_bytes'} <= set(ref)
+    c.require(isinstance(ref, dict) and {'path', 'sha256', 'size_bytes'} <= (_work_collect(work_budget, set, ref) if work_budget is not None else set(ref))
               and ref['path'] == expected, 'dispatch_reference_path_invalid', **_work_kwargs(work_budget))
     # A byte-identical indexed copy proves retained bytes, never original presence.
     index = paths['_raw_index'][role]
-    return [index[key] for key in (_work_items(sorted({(expected, ref['sha256'], ref['size_bytes']), (copied, ref['sha256'], ref['size_bytes'])}), work_budget) if work_budget is not None else sorted({(expected, ref['sha256'], ref['size_bytes']), (copied, ref['sha256'], ref['size_bytes'])})) if key in index]
+    return [index[key] for key in (_work_items((_work_order(work_budget, sorted, {(expected, ref['sha256'], ref['size_bytes']), (copied, ref['sha256'], ref['size_bytes'])}) if work_budget is not None else sorted({(expected, ref['sha256'], ref['size_bytes']), (copied, ref['sha256'], ref['size_bytes'])})), work_budget) if work_budget is not None else sorted({(expected, ref['sha256'], ref['size_bytes']), (copied, ref['sha256'], ref['size_bytes'])})) if key in index]
 
 
 def _archive_index(context, paths, pointer_members, dispatch_types, *, work_budget=None):

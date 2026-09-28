@@ -6,7 +6,7 @@ Shared parser/path/resource limits remain owned by preparation lineage.
 """
 from __future__ import annotations
 
-from .task_evaluation_scene_lineage_budget import _work_order, _work, _work_call, _work_items, _work_kwargs
+from .task_evaluation_scene_lineage_budget import _work_collect, _work_order, _work, _work_call, _work_items, _work_kwargs
 
 import re
 from typing import Any
@@ -60,7 +60,7 @@ def _shape(value: Any, pattern: re.Pattern[str], code: str, *, work_budget=None)
 def _reference(value: Any, path: str, record: tuple | None, *, work_budget=None) -> None:
     if work_budget is not None:
         _work(work_budget)
-    _require(isinstance(value, dict) and set(value) == {"path", "sha256", "size_bytes"}
+    _require(isinstance(value, dict) and (_work_collect(work_budget, set, value) if work_budget is not None else set(value)) == {"path", "sha256", "size_bytes"}
              and value.get("path") == path and retained._path(value["path"], **_work_kwargs(work_budget)) == path
              and retained._matches(value.get("sha256"), retained._DIGEST, **_work_kwargs(work_budget))
              and type(value.get("size_bytes")) is int and value["size_bytes"] > 0, "reference_invalid", **_work_kwargs(work_budget))
@@ -77,7 +77,7 @@ def _attempt(value: dict, provenance: dict, intent: dict, directory: str, *, wor
     admin = value.get("schema_version") == _ADMIN_SCHEMA
     _require(admin or value.get("schema_version") == _PAID_SCHEMA, "attempt_invalid", **_work_kwargs(work_budget))
     if admin:
-        _require(set(value) == _ATTEMPT_FIELDS, "attempt_invalid", **_work_kwargs(work_budget))
+        _require((_work_collect(work_budget, set, value) if work_budget is not None else set(value)) == _ATTEMPT_FIELDS, "attempt_invalid", **_work_kwargs(work_budget))
     retained._seal(value, provenance, "attempt_digest", cross=True, **_work_kwargs(work_budget))
     _require(value.get("intent_id") == intent["intent_id"]
              and value.get("intent_digest") == intent["intent_digest"], "attempt_identity_invalid", **_work_kwargs(work_budget))
@@ -245,7 +245,7 @@ def _workspace(intent: dict, intent_provenance: dict, attempt: dict, provenance:
         reasons.add("source_factory_missing")
     if factory is not None and family == "public":
         identity = factory.get("identity")
-        _require(isinstance(identity, dict) and set(identity) == {
+        _require(isinstance(identity, dict) and (_work_collect(work_budget, set, identity) if work_budget is not None else set(identity)) == {
             "intent", "attempt", "source_binding", "machinery", "release", "factory_started_at_epoch"},
             "factory_identity_invalid", **_work_kwargs(work_budget))
         started = identity["factory_started_at_epoch"]
@@ -297,16 +297,14 @@ def _paid_row(attempt: dict, provenance: dict, alias: str, *, emission_budget=No
 
 def join_scene_source_attempt_lineage(*, intent_id: str, intent_record: Any, attempt_records: Any,
                                     snapshot_records: Any, factory_records: Any, submission_records: Any,
-                                    roots: Any, work_budget=None) -> dict:
+                                    roots: Any) -> dict:
     """Join supplied historical records without I/O, runtime imports or authority."""
-    if work_budget is not None:
-        _work(work_budget)
     try:
         return _join(intent_id, intent_record, attempt_records, snapshot_records, factory_records,
-                     submission_records, roots, **_work_kwargs(work_budget))
+                     submission_records, roots)
     except retained.SceneLineageError as exc:
         suffix = str(exc).removeprefix("scene_lineage_")
-        _require(str(exc).startswith("scene_lineage_") and suffix in _SHARED_BLOCKERS, "input_invalid", **_work_kwargs(work_budget))
+        _require(str(exc).startswith("scene_lineage_") and suffix in _SHARED_BLOCKERS, "input_invalid")
         raise SceneSourceLineageError("scene_source_lineage_" + suffix) from None
     except SceneSourceLineageError:
         raise
@@ -317,11 +315,13 @@ def join_scene_source_attempt_lineage(*, intent_id: str, intent_record: Any, att
 def _join(intent_id, intent_record, attempts, snapshots, factories, submissions, roots, *, emission_budget=None, work_budget=None):
     if work_budget is not None:
         _work(work_budget)
+        _require(emission_budget is not None and getattr(emission_budget, 'work_budget', None) is work_budget,
+                 'parameters_invalid', **_work_kwargs(work_budget))
     if emission_budget is not None:
         emission_budget = emission_budget.scope(max_bytes=retained.MAX_OUTPUT_BYTES, max_rows=retained.MAX_RECORDS,
                                                 max_references=retained.MAX_RECORDS)
     _require(retained._matches(intent_id, retained._ID, **_work_kwargs(work_budget)) and isinstance(roots, dict)
-             and set(roots) == {"intent_root", "factory_output_root"}, "parameters_invalid", **_work_kwargs(work_budget))
+             and (_work_collect(work_budget, set, roots) if work_budget is not None else set(roots)) == {"intent_root", "factory_output_root"}, "parameters_invalid", **_work_kwargs(work_budget))
     groups = (attempts, snapshots, factories, submissions)
     _require(all(isinstance(group, (list, tuple)) for group in (_work_items(groups, work_budget) if work_budget is not None else groups))
              and 1 + sum(len(group) for group in (_work_items(groups, work_budget) if work_budget is not None else groups)) <= retained.MAX_RECORDS, "records_limit", **_work_kwargs(work_budget))
