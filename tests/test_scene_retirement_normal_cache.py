@@ -420,6 +420,7 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
     policy=access._policy()
     policy['reference_context']={'roots':{'intent_root':str(Path(consent['intent_raw_ref']['path']).parent.parent)}}
     _sealed_file(tmp_path/'policy.json',policy,'policy_digest',mode=0o644)
+    policy=access._policy()
     source=json.loads(Path(consent['cache_objects'][0]['source_raw_ref']['path']).read_bytes())
     request=json.loads(Path(source['submission_request_raw_ref']['path']).read_bytes())
     root=Path(consent['cache_objects'][0]['canonical_path']).parents[2]/request['preparation_id']
@@ -437,7 +438,8 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
     consent['members']=[dict(canonical_path=str(root),**{key:generation[key] for key in
         ('owner_intent_id','owner_raw_ref','generation_id','dev','ino','mode')},
         inventory_sha256=inventory_digest(preserved,0),**{'class':'host'})]
-    store=Path(policy['journal_store']);store.mkdir(mode=0o700)
+    store=Path(policy['journal_store'])
+    store.mkdir(mode=0o700)
     (store/'retired').mkdir(mode=0o700)
     initial=dict(schema_version='scene_retirement_journal.v1',status='pending',
         intent_id=consent['intent_id'],intent_raw_ref=consent['intent_raw_ref'],plan_raw_ref=consent['plan_raw_ref'],
