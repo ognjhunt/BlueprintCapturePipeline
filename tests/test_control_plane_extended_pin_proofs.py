@@ -1167,6 +1167,44 @@ def test_an_unreadable_or_linked_queue_row_keeps_the_stale_pin(tmp_path, monkeyp
     assert result["candidates"] == [] and _states(args)[("preparation", "prep-x")] == "live"
 
 
+def test_a_row_that_moves_mid_read_is_seen_while_a_linked_row_still_fails(tmp_path, monkeypatch) -> None:
+    """Code review of 10c: a row a worker moves between listing and reading made the strict reader
+    raise, so ordinary queue churn failed the read as queue_unreadable. The row is skipped where it
+    was and found where it went; a linked row still fails the read."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    for state in ("pending", "processing"):
+        (queue / state).mkdir(parents=True)
+    (queue / "pending" / "row.json").write_text('{"name": "moving-row"}', encoding="utf-8")
+    real_scandir = references.os.scandir
+
+    class Listed:
+        def __init__(self, entries):
+            self.entries = entries
+
+        def __enter__(self):
+            return iter(self.entries)
+
+        def __exit__(self, *_exc):
+            return False
+
+    def scandir_then_move(path):
+        entries = list(real_scandir(path))
+        if Path(path) == queue / "pending" and (queue / "pending" / "row.json").exists():
+            # The worker claims the row just after the reader listed pending.
+            (queue / "pending" / "row.json").rename(queue / "processing" / "row.json")
+        return Listed(entries)
+
+    monkeypatch.setattr(references.os, "scandir", scandir_then_move)
+
+    assert "moving-row" in references.queue_reference_text([queue], strict=True)
+    (queue / "pending" / "linked.json").symlink_to(queue / "processing" / "row.json")
+    with pytest.raises(references.QueueReferenceUnreadable, match="queue_row_linked"):
+        references.queue_reference_text([queue], strict=True)
+
+
 def test_the_original_queue_reader_is_unchanged(tmp_path) -> None:
     """Every original caller still skips a linked, oversized or unreadable row; only strict reads refuse one."""
 

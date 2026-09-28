@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -48,7 +49,9 @@ def queue_reference_text(
     original caller reads that way. ``strict`` raises ``QueueReferenceUnreadable``
     for each of those instead, and for a linked queue root, since a row that
     cannot be read proves nothing about what it names. A missing root or state
-    directory holds no rows either way.
+    directory holds no rows either way, and a row that moved to another state
+    between the listing and the read is skipped where it was: a strict caller
+    reads twice and unions, so it is seen where it went.
     """
 
     chunks: list[str] = []
@@ -113,11 +116,16 @@ def _strict_rows(directory: Path) -> list[str]:
     for name in names:
         path = directory / name
         try:
-            if path.is_symlink() or not path.is_file():
+            observed = path.lstat()
+            if not stat.S_ISREG(observed.st_mode):
                 raise QueueReferenceUnreadable("queue_row_linked")
-            if path.stat().st_size > MAX_QUEUE_MESSAGE_BYTES:
+            if observed.st_size > MAX_QUEUE_MESSAGE_BYTES:
                 raise QueueReferenceUnreadable("queue_row_oversized")
             rows.append(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            # Moved to another state since the listing: callers read twice and union, so it is
+            # seen where it went. A row that is linked, not regular, oversized or unreadable is not.
+            continue
         except (OSError, UnicodeDecodeError) as exc:
             raise QueueReferenceUnreadable("queue_row_unreadable") from exc
     return rows
