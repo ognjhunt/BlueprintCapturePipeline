@@ -42,12 +42,12 @@ def fixture(*, nonexecution=None, original='dispatch_receipt.json', pointer=Fals
         put(rows, 'terminal_states', index + '/nonexecution_terminal_state.json', state, 'state_digest')
         return args
     projection = {'schema_version': 'task_evaluation_policy_canary_result_projection.v1', 'run_id': 'run-2',
-                  'request_digest': D, 'configuration_digest': D, 'result_delivery_digest': D, 'result_status': 'completed'}
+                  'request_digest': D, 'configuration_digest': D, 'result_delivery_digest': D, 'result_status': 'completed_unqualified'}
     put(rows, 'canary_projections', canary + '/artifacts/result_delivery/policy_canary_result_projection.json', projection, 'projection_digest', cross=True)
     rows['canary_projections'].append((index + '/policy_canary_result_projection.json', rows['canary_projections'][0][1]))
     projection = json.loads(rows['canary_projections'][0][1])
     sync = {'schema_version': 'task_evaluation_policy_canary_webapp_sync_result.v1', 'status': 'succeeded', 'run_id': 'run-2',
-            'request_digest': D, 'configuration_digest': D, 'result_status': 'completed',
+            'request_digest': D, 'configuration_digest': D, 'result_status': 'completed_unqualified',
             'policy_canary_projection_digest': projection['projection_digest'], 'notification_delivery': {'status': 'delivered'}}
     rows['canary_syncs'] = [pair(canary + '/artifacts/result_delivery/policy_canary_webapp_sync.json', sync),
                             pair(index + '/policy_canary_webapp_sync.json', sync)]
@@ -56,7 +56,7 @@ def fixture(*, nonexecution=None, original='dispatch_receipt.json', pointer=Fals
     put(rows, 'provider_zero_receipts', canary + '/post_teardown_global_provider_zero.json', zero, 'receipt_digest')
     rows['provider_zero_receipts'].append((index + '/provider_zero_closure.json', rows['provider_zero_receipts'][0][1]))
     dispatch = {'schema_version': 'task_evaluation_policy_canary_dispatch.v1', 'run_kind': 'internal_policy_canary',
-                'run_id': 'run-2', 'status': 'completed', 'policy_canary_projection_digest': projection['projection_digest'],
+                'run_id': 'run-2', 'status': 'completed_unqualified', 'policy_canary_projection_digest': projection['projection_digest'],
                 'result_delivery_digest': D, 'policy_canary_result_projection': ref(rows['canary_projections'][0]),
                 'policy_canary_webapp_sync': ref(rows['canary_syncs'][0]),
                 'provider_zero': {**ref(rows['provider_zero_receipts'][0]), 'provider_zero_verified': True},

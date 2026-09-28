@@ -53,19 +53,23 @@ def _join(intent_id, seed_records, downstream_records, roots):
     context.references()
     seed = seed_module.join_retained_scene_inventory_seed(intent_id=intent_id, records=seed_records,
                                                           roots={k: roots[k] for k in seed_module._ROOTS})
+    context.seed_budget(seed)
     activations, matched = execution.activation(context, seed)
     launches, bound = execution.launches(context, matched)
     terminals = terminal.terminal(context, bound)
     compilations = terminal.compilations(context)
     result = {'schema_version': 'task_evaluation_scene_downstream_inventory.v1', 'scope': 'supplied_retained_execution_records',
               'status': 'kept_unresolved', 'intent_id': intent_id, 'seed': seed,
-              'activation_observations': c.unique(activations), 'launch_observations': c.unique(launches), 'terminal_observations': c.unique(terminals),
-              'compilation_observations': c.unique(compilations), 'raw_versions': c.unique(context.raw),
-              'raw_reference_obligations': c.unique(context.obligations), 'remote_reference_obligations': c.unique(context.remote),
-              'structural_join_obligations': c.unique(context.structural), 'lexical_members': c.unique(context.members),
+              'activation_observations': activations, 'launch_observations': launches, 'terminal_observations': terminals,
+              'compilation_observations': compilations, 'raw_versions': context.raw,
+              'raw_reference_obligations': context.obligations, 'remote_reference_obligations': context.remote,
+              'structural_join_obligations': context.structural, 'lexical_members': context.members,
               'mutations': 0, **{flag: False for flag in FALSE_FLAGS}}
     rows = sum(len(value) for value in result.values() if isinstance(value, list))
     rows += sum(len(value) for value in seed.values() if isinstance(value, list))
     c.require(rows <= MAX_ROWS, 'rows_limit')
-    c.require(len(c.encoded(result)) <= MAX_OUTPUT_BYTES, 'output_limit')
+    c.bounded_size(result, MAX_OUTPUT_BYTES)  # Refuse BEFORE bulk row-key/document serialization.
+    for key, value in result.items():
+        if isinstance(value, list):
+            result[key] = c.unique(value, MAX_OUTPUT_BYTES)
     return result

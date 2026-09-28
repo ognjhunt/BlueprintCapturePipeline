@@ -202,3 +202,79 @@ def test_input_order_and_nonmutation():
     for rows in args['downstream_records'].values():
         rows.reverse()
     assert api().join_retained_scene_downstream_inventory(**args) == result
+
+
+def policy_fixture():
+    from tests.test_scene_inventory_history import fixture as empty_seed
+    args = fixture()
+    args['seed_records'] = empty_seed()['records']
+    rows = args['downstream_records']
+    for role in ('activation_results', 'launch_progressions', 'launch_receipts'):
+        rows[role] = []
+    intent_path, raw = args['seed_records']['intent']
+    intent = json.loads(raw)
+    candidates = [{'id': 'candidate-1', 'artifact_digest': D}, {'id': 'candidate-2', 'artifact_digest': 'sha256:' + 'e' * 64}]
+    intent['request']['execution'] = {'policy_candidates': candidates}
+    intent = seal(intent, 'intent_digest', cross=True)
+    args['seed_records']['intent'] = pair(intent_path, intent)
+    attempt = {'schema_version': 'task_evaluation_scene_attempt.v1', 'intent_id': args['intent_id'],
+               'intent_digest': intent['intent_digest'], 'attempt_id': 'paid-1', 'source_commit': 'a' * 40,
+               'input_digest': D, 'runtime_digest': D}
+    args['seed_records']['attempts'] = [pair(args['roots']['intent_root'] + '/' + args['intent_id'] + '/attempts/paid-1.json', seal(attempt, 'attempt_digest', cross=True))]
+    binding = seal({'schema_version': 'task_evaluation_scene_policy_binding.v1', 'scene_intent_digest': intent['intent_digest'],
+                    'attempt_id': 'paid-1', 'policy_candidates': candidates, 'runtime_digest': D, 'input_digest': D}, 'binding_digest')
+    path, raw = rows['launch_profiles'][0]
+    profile = json.loads(raw)
+    for key in ('scene_attempt_binding', 'scene_attempt_id'):
+        profile.pop(key)
+    profile.update(scene_intent_digest=intent['intent_digest'], internal_policy_canary_execution_plan={'scene_policy_binding': binding})
+    profile = seal(profile, 'profile_digest')
+    rows['launch_profiles'] = [pair(path, profile)]
+    edit(args, 'launch_requests', {'launch_profile_digest': profile['profile_digest']}, 'request_digest')
+    return args
+
+
+def test_policy_owner_form_binds_exact_historical_attempt_and_frozen_pair():
+    result = api().join_retained_scene_downstream_inventory(**policy_fixture())
+    assert any(row['kind'] == 'launch_workspace' for row in result['lexical_members'])
+    assert result['seed']['source_attempt_obligations'][0]['child_status'] == 'kept_out_of_scope'
+
+
+@pytest.mark.parametrize('change', ['candidate', 'runtime', 'commit', 'attempt'])
+def test_resealed_policy_attempt_contradictions_refuse(change):
+    args = policy_fixture()
+    path, raw = args['downstream_records']['launch_profiles'][0]
+    profile = json.loads(raw)
+    binding = profile['internal_policy_canary_execution_plan']['scene_policy_binding']
+    if change == 'candidate':
+        binding['policy_candidates'][0]['artifact_digest'] = 'sha256:' + 'f' * 64
+    elif change == 'runtime':
+        binding['runtime_digest'] = 'sha256:' + 'f' * 64
+    elif change == 'commit':
+        profile['source_commit'] = 'f' * 40
+    else:
+        binding['attempt_id'] = 'paid-2'
+        # Missing proof remains unresolved; supplied contradiction uses the
+        # selected attempt's canonical path with mismatched actual attempt ID.
+        original_path, attempt_raw = args['seed_records']['attempts'][0]
+        args['seed_records']['attempts'][0] = (original_path.replace('paid-1.json', 'paid-2.json'), attempt_raw)
+    profile['internal_policy_canary_execution_plan']['scene_policy_binding'] = seal(binding, 'binding_digest')
+    profile = seal(profile, 'profile_digest')
+    args['downstream_records']['launch_profiles'][0] = pair(path, profile)
+    edit(args, 'launch_requests', {'launch_profile_digest': profile['profile_digest'], 'source_commit': profile['source_commit']}, 'request_digest')
+    refuses(args)
+
+
+def test_launch_and_profile_contract_ids_support_192_character_producer_limit():
+    args = fixture(launch='l' * 192, run='r' * 192)
+    rows = args['downstream_records']
+    edit(args, 'launch_profiles', {'profile_id': 'p' * 192}, 'profile_digest')
+    digest = json.loads(rows['launch_profiles'][0][1])['profile_digest']
+    edit(args, 'launch_requests', {'launch_profile_id': 'p' * 192, 'launch_profile_digest': digest}, 'request_digest')
+    edit(args, 'activation_results', {'profile_id': 'p' * 192, 'profile_digest': digest}, 'result_digest')
+    edit(args, 'launch_progressions', {'profile_id': 'p' * 192, 'profile_digest': digest,
+         'activation_result_digest': json.loads(rows['activation_results'][0][1])['result_digest']}, 'progression_digest')
+    edit(args, 'launch_receipts', {'launch_profile_digest': digest,
+         'request_digest': json.loads(rows['launch_requests'][0][1])['request_digest']}, 'receipt_digest', cross=True)
+    result = api().join_retained_scene_downstream_inventory(**args)
+    assert any(row['path'].endswith('/' + 'l' * 192) for row in result['lexical_members'])
