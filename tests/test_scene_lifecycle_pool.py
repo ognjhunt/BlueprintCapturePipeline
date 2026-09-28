@@ -130,7 +130,7 @@ def test_unknown_selected_schema_keeps_raw_without_following_fictional_selectors
 
 def test_native_and_scene_activation_roles_use_actual_lane_not_identifier_length():
     from tests.test_scene_compilation_native_owner import fixture as native_fixture
-    args = native_fixture()
+    args = native_fixture(activation_id='scene-short')  # Same ID as acquired scene_configuration fixture.
     parent = args['bridge_records']['native_activation_envelopes'][0]
     result = args['bridge_records']['native_activation_results'][0]
     records = [decoded('intent', args['seed_records']['intent']),

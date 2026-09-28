@@ -157,7 +157,7 @@ def intersect(members, observation, budget, sink):
     """Componentwise positive historical matches; absence never clears a member."""
     indexed, selected, seen = {}, sink.rows(), set()
     for row in _work_items(observation['protections'], budget):
-        if row['kind'] == 'positive_pin_path':
+        if row['kind'] in {'positive_pin_path', 'other_owner_capture_reference'}:
             protected = row['path']
         elif row['kind'] == 'local_path_protections':
             protected = row['observation'].get('path')

@@ -62,3 +62,39 @@ def test_real_acquired_config_enters_report_before_planning(tmp_path):
     context['progression_config'] = config['path']
     report = run(context, intent)
     assert report['configuration_observation']['status'] == 'retained_configuration_roots_matched'
+
+
+def test_other_owner_sealed_capture_reference_keeps_only_actual_capture_leaf():
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_metadata import other_capture_references
+    from tests.test_scene_source_family_website import fixture as website
+    from tests.test_scene_lifecycle_pool import decoded
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    args = website(website=True)
+    records = [decoded('other_owner_intents', args['seed_records']['intent']),
+               decoded('website_registrations', args['source_records']['website_registrations'][0])]
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    sink = RetainedEmissionBudget(max_bytes=16*1024*1024, max_rows=10000, max_references=10000, work_budget=budget)
+    result = other_capture_references(records, {'roots': args['roots']}, 'different-selected-owner', budget, sink)
+    assert len(result) == 1
+    assert result[0]['path'] == args['roots']['pubsub_root']+'/bucket/scenes/scene-1/captures/capture-1'
+    assert result[0]['current_owner_open_verified'] is False and result[0]['action'] == 'KEEP'
+    assert {p['role'] for p in result[0]['source_provenance']} == {'other_owner_intents', 'website_registrations'}
+
+
+def test_primary_contract_accepts_actual_activation_and_sam_states(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import _context
+    context, _ = context_fixture(tmp_path)
+    context['primary_queue_contracts'] = [
+        {'root_path': context['roots']['activation_queue_root'], 'states': ['prepared']},
+        {'root_path': context['roots']['sam_queue_root'], 'states': ['waiting_external', 'failed']}]
+    assert _context(context, ReferenceCollectionBudget(monotonic=lambda: 0)) is context
+
+
+@pytest.mark.parametrize(('field', 'family'), [
+    ('auxiliary_queue_contracts', 'activation'), ('reference_family_contracts', 'sam')])
+def test_contract_family_rejects_before_calling_incompatible_child(tmp_path, field, family):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import _context
+    context, _ = context_fixture(tmp_path)
+    context[field][0]['family'] = family
+    with pytest.raises(ValueError, match='context_contracts_invalid'):
+        _context(context, ReferenceCollectionBudget(monotonic=lambda: 0))

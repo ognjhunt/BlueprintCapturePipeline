@@ -254,3 +254,36 @@ def test_empty_output_allowance_refuses_before_first_member_stat(tmp_path, monke
     reader.budget = budget
     with pytest.raises(ValueError):
         m.measure(reader, {}, sink, [])
+
+
+def test_future_required_history_keeps_raw_and_blocks_cropped_pure_join(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_plan as planner
+    context, intent_id = context_fixture(tmp_path, completed=True)
+    event = next((Path(context['roots']['intent_root'])/intent_id/'progression-events').glob('*.json'))
+    value = json.loads(event.read_bytes())
+    value['schema_version'] = 'future_progression_event.v99'
+    event.write_text(json.dumps(value))
+    monkeypatch.setattr(planner.native, '_join', lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError('strict join was invoked with cropped history')))
+    report = run(context, intent_id)
+    assert 'historical_lineage' not in report
+    assert 'strict_lineage_join_unavailable' in report['blockers']
+    assert report['finished_observation']['status'] == 'unknown'
+    assert report['reference_observation']['historical_only']
+    assert any(row['path'] == str(event) and row['status'] == 'kept_unsupported_schema'
+               for row in report['unselected_metadata_protections'])
+    assert report['action'] == 'KEEP' and report['cleanup_authorized'] is False
+
+
+def test_public_plan_secret_shaped_projection_refuses_without_returning_identity(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_plan as planner
+    context, intent_id = context_fixture(tmp_path)
+    original = planner.native._join
+    def secret(*a, **k):
+        result = original(*a, **k)
+        result['remote_uri_observation'] = {'uri': 'https://example.invalid/data?X-Amz-Credential=unsafe-secret'}
+        return result
+    monkeypatch.setattr(planner.native, '_join', secret)
+    report = run(context, intent_id)
+    assert 'unsafe-secret' not in json.dumps(report)
+    assert 'historical_lineage' not in report and report['action'] == 'KEEP'

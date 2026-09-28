@@ -152,3 +152,43 @@ current filesystem/reference state. It issues no lease, pointer, cleanup ACK or
 reclaimed-byte forecast. Applying decisions, registering old folders, enabling
 cleanup and preserving/restoring evidence remain separately reviewed execution
 gates after the merged reference/pin proofs; this command frees no bytes.
+
+### Exact-scene metadata and measured KEEP plan
+
+The standalone planner reads bounded retained JSON and measures only paths bound
+by the supported historical lineage. It opens no payload files and returns a
+KEEP-only report. It does not establish current rights, provider-zero, exclusive
+ownership, consumer fences, restore proof or retirement eligibility.
+
+```bash
+python -m blueprint_pipeline.task_evaluation_scene_lifecycle_plan \
+  --intent-id INTENT_ID --context-file retained-planner-context.json \
+  --now UNIX_SECONDS
+```
+
+The context is an operator-supplied regular JSON file with these exact fields:
+`roots`, `parent_routes`, `retained_metadata_roots`, `acquisition_anchors`,
+`retained_metadata_files`, `pins_root`, `primary_queue_contracts`,
+`auxiliary_queue_contracts`, `reference_family_contracts`, and `progression_config`.
+`roots` names the 18 roots accepted by the retained native-owner inventory;
+`parent_routes` contains explicit `queue_root`/`input_root` pairs including the
+canonical preparation route. At most four physical acquisition anchors are
+allowed, including the context's retained parent unless it coalesces with an
+anchor. Explicit metadata selectors contain only a supported `role` and `path`
+under a declared retained metadata root. They authorize lookup, not ownership.
+
+Primary queue contracts contain `root_path` and a finite `states` list;
+auxiliary contracts contain `family` (`preparation` or `sam`) and `root_path`;
+reference contracts contain `family` (`preparation` or `activation`) and
+`queue_root`. `progression_config` is a retained JSON path or null. Matching its
+sealed root declarations does not prove the running service configuration.
+
+One five-second resource budget covers context acquisition, lineage, pins and
+queue observers, measurement and output. Physical acquired bytes are reported
+separately from the reference interpreter's additional conservative supplied-input
+work charge. Both consume the same allowance. Metadata changes, missing or unknown
+history, linked metadata, unsafe output identities and exhausted budgets keep the
+report incomplete. Observed counts may remain available after later metadata drift;
+current measured totals become null. An absent family is unknown, not zero bytes.
+Malformed input and resource/publication failures return bounded typed JSON without
+echoing raw input. There is no apply option and this command frees no bytes.

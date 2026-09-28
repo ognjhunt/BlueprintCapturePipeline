@@ -28,6 +28,9 @@ SELECTOR_ROLES = ALL_ROLES | {'revocations', 'extensions', 'progression_config'}
 SCHEMAS = {
     'intent': {'task_evaluation_scene_intent.v1'},
     'projection': {'task_evaluation_scene_progression.v1'},
+    'other_owner_intents': {'task_evaluation_scene_intent.v1'},
+    'other_owner_projections': {'task_evaluation_scene_progression.v1'},
+    'other_owner_revocations': {'task_evaluation_scene_intent_revocation.v1'},
     'events': {'task_evaluation_scene_progression_event.v1'},
     'attempts': {attempts._ADMIN_SCHEMA, attempts._PAID_SCHEMA},
     'source_snapshots': set(attempts._BINDINGS) | set().union(*attempts._MACHINERY.values()) | {'task_evaluation_public_scene_release_binding.v1'},
@@ -132,6 +135,12 @@ class Pool:
             self.rows(role, owner + '/' + dirname, pattern + r'\.json')
         self.rows('attempts', owner + '/preparation-attempts', ID + r'\.json')
         self.read('revocations', owner + '/revoked.json')
+        for other in self.names('other_owner_groups', roots['intent_root'], ID):
+            if other != self.intent_id:
+                for role, name in [('other_owner_intents', 'intent.json'),
+                                   ('other_owner_projections', 'progression.json'),
+                                   ('other_owner_revocations', 'revoked.json')]:
+                    self.read(role, roots['intent_root']+'/'+other+'/'+name)
         self.rows('extensions', owner + '/execution-window-extensions', HEX + r'\.json')
         factory = roots['factory_output_root'] + '/' + self.intent_id
         for attempt in self.names('factory_children', factory, ID):
@@ -321,7 +330,8 @@ def select(decoded, context, intent_id, budget):
                         budget.charge('facts')
                         frontier.append(found)
                 for key, child in _work_items(node.items(), budget):
-                    if key in {'request_digest', 'envelope_digest', 'preparation_result_digest', 'profile_digest',
+                    if key in {'request_digest', 'preparation_request_digest', 'activation_request_digest',
+                               'envelope_digest', 'preparation_result_digest', 'profile_digest',
                                'intent_digest', 'plan_digest', 'adoption_digest', 'launch_request_digest', 'launch_receipt_digest'}:
                         for found in _work_items(canonical.get(child, ()) if isinstance(child, str) else (), budget):
                             budget.charge('facts')
@@ -398,5 +408,4 @@ def select(decoded, context, intent_id, budget):
             source[role].append(pair)
         elif role in bridge:
             bridge[role].append(pair)
-    require(seed['intent'] is not None, 'intent_unavailable')
     return seed, downstream, source, bridge, protected

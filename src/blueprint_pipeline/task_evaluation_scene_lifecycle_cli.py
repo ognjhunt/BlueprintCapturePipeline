@@ -26,7 +26,9 @@ def main(argv=None, *, monotonic=time.monotonic):
     try:
         budget = ReferenceCollectionBudget(monotonic=monotonic)
         budget.tick()
-        argv = sys.argv[1:] if argv is None else argv
+        if argv is None:
+            require(isinstance(sys.argv, list) and len(sys.argv) <= 17, 'cli_arguments_invalid')
+            argv = sys.argv[1:]
         require(isinstance(argv, list) and len(argv) <= 16, 'cli_arguments_invalid')
         for value in _work_items(argv, budget):
             require(type(value) is str and len(value) <= 4096, 'cli_arguments_invalid')
