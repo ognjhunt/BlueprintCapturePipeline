@@ -126,6 +126,7 @@ def _mkdir_registered_arena(use, relative):
 def run_registered_arena_chain(tag, *, previous_tag, now=time.time):
     """Fixed direct shell lifetime; descendant/provider completeness is unknown."""
     from .control_plane_lane_experiment_publication import _BirthFiles
+    from . import control_plane_lane_owner_consents as owners
     from .control_plane_lane_owner_target_versions import _require
     from .control_plane_reference_budget import ReferenceCollectionBudget
     _require(isinstance(previous_tag, str) and re.fullmatch(r"r[1-9][0-9]{0,5}", previous_tag),
@@ -137,11 +138,20 @@ def run_registered_arena_chain(tag, *, previous_tag, now=time.time):
         _, source = files.read(REGISTERED_CHAIN_PATH, cap=1048576, protected=True)
         use.check()
         files.verify_record(source)
+        files.budget.close()
+        remaining = use._started + 4 * 3600 - time.monotonic()
+        _require(remaining > 0, "experiment_consumer_resource_exhausted")
         env = dict(os.environ, CUR=tag, PREV=previous_tag,
                    BLUEPRINT_REGISTERED_ARENA_FD=str(use.fd))
         child = subprocess.run(["/bin/bash", str(REGISTERED_CHAIN_PATH), "--registered-child"],
-                               env=env, pass_fds=(use.fd,), check=False)
-        files.verify_record(source)
+                               env=env, pass_fds=(use.fd,), check=False, timeout=remaining)
+        # The bounded admission is closed. Only this retained original record
+        # and its named ancestors are checked; no new metadata or payload read.
+        files.location(source.parent, cleanup=True)
+        files.proof(source.fd)
+        _require(owners._metadata(os.fstat(source.fd)) == owners._metadata(source.info)
+                 == owners._metadata(os.stat(source.name, dir_fd=source.parent, follow_symlinks=False)),
+                 "experiment_arena_source_changed")
         use.check()
         _require(type(child.returncode) is int, "experiment_arena_child_failed")
         return child.returncode
