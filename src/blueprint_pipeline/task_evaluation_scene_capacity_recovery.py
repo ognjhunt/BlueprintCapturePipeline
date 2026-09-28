@@ -53,6 +53,17 @@ DEAD_MACHINE_CONSEQUENCE_BLOCKERS = frozenset({
 })
 
 
+def preallocation_capacity_failure(result) -> bool:
+    """A $0 disk refusal before allocation that may be retried once capacity returns.
+
+    A measured refusal after paid API pretraining keeps its blocker but is
+    withheld, as a credit refusal is once that preparation has run.
+    """
+    from .task_evaluation_scene_configuration_output_admission import recovery_withheld
+    return (isinstance(result, Mapping) and result.get("blockers") in PREALLOCATION_BLOCKERS
+            and not recovery_withheld(result))
+
+
 def credit_launch_failure(result) -> bool:
     """A funding refusal before any allocation or API preparation executed."""
     if not isinstance(result, Mapping):
@@ -233,7 +244,7 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
             continue
         # Surface other terminal failures, but do not turn them into capacity retries.
         kind = None
-        if result.get("blockers") in PREALLOCATION_BLOCKERS:
+        if preallocation_capacity_failure(result):
             kind = "preallocation_capacity"
         elif credit_launch_failure(result):
             kind = CREDIT_KIND

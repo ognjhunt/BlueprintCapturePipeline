@@ -1,6 +1,7 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_evaluation_scene_configuration_output_admission.py
 #   src/blueprint_pipeline/task_evaluation_scene_configuration_vast.py
+#   src/blueprint_pipeline/task_evaluation_scene_capacity_recovery.py
 #   src/blueprint_pipeline/control_plane_disk_budget.py
 #   src/blueprint_pipeline/control_plane_disk_ledger.py
 """Measured admission for the website scene-configuration provider output (plan 13a.1, 3a1.0).
@@ -25,8 +26,10 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import control_plane_capacity_controller as controller
 from blueprint_pipeline import control_plane_disk_budget as disk_budget
 from blueprint_pipeline import task_evaluation_artifixer_pretraining as pretraining
+from blueprint_pipeline import task_evaluation_scene_capacity_recovery as capacity
 from blueprint_pipeline import task_evaluation_scene_configuration_cpu_prestage as cpu_prestage
 from blueprint_pipeline import (
     task_evaluation_scene_configuration_output_admission as admission,
@@ -259,6 +262,7 @@ def _harness(
     mode: str | None = admission.MEASURED_MODE,
     bundle_size_bytes: int | None = None,
     free_bytes: int = 90 * GIB,
+    api_pretraining: bool = False,
 ) -> types.SimpleNamespace:
     """The retry-zero lane with fake staging, provider and object stores.
 
@@ -343,10 +347,11 @@ def _harness(
             ),
         ),
     )
-    monkeypatch.setattr(
-        scene_vast, "close_independent_vast_watchdog",
-        lambda **_kwargs: {"status": "provider_terminal"},
-    )
+    def close_watchdog(**kwargs):  # type: ignore[no-untyped-def]
+        events.append(("watchdog_close", kwargs))
+        return {"status": "provider_terminal"}
+
+    monkeypatch.setattr(scene_vast, "close_independent_vast_watchdog", close_watchdog)
     monkeypatch.setattr(
         scene_vast, "cleanup_staged_wam_provider_objects",
         lambda _root: {"all_objects_absent": True},
@@ -359,9 +364,17 @@ def _harness(
         scene_vast, "_stage_owner_only_runtime_secrets", lambda **_kwargs: ({}, None)
     )
 
+    behaviour: dict[str, object] = {
+        "output": "completed", "large_member_bytes": 0, "free_after_adapter": None,
+        "free_after_pretraining": None,
+    }
+
     def prepare_semantics(**kwargs):  # type: ignore[no-untyped-def]
         path = Path(kwargs["job_dir"]) / "fixture_pretraining.zip"
         path.write_bytes(b"prepared")
+        if behaviour["free_after_pretraining"] is not None:
+            # Another writer filled the volume while the paid API preparation ran.
+            volume.free = int(behaviour["free_after_pretraining"])
         return {"capsule_path": str(path), "capsule_sha256": _sha256(path),
                 "capsule_bytes": path.stat().st_size}
 
@@ -400,19 +413,17 @@ def _harness(
         lane_envelope["request"]["scene"]["website_native_inputs"] = {
             "prepared_appearance": {"digest": "sha256:" + "1" * 64},
         }
+        # Stage 1 stays ArtiFixer when the run needs its paid API preparation.
+        adapters = ("website_prepared_collision",) if api_pretraining else (
+            "website_prepared_appearance", "website_prepared_collision")
         for row, adapter in zip(
-            lane_envelope["recipe"]["stage_sequence"],
-            ("website_prepared_appearance", "website_prepared_collision"),
+            lane_envelope["recipe"]["stage_sequence"][2 - len(adapters):], adapters
         ):
             row["adapter"] = {"id": adapter, "version": "v1"}
     monkeypatch.setattr(scene_vast, "_portable_construction_envelope", lambda _r: lane_envelope)
     monkeypatch.setattr(
         scene_vast, "_publication_envelope", lambda _receipt, **_kwargs: publication_envelope
     )
-
-    behaviour: dict[str, object] = {
-        "output": "completed", "large_member_bytes": 0, "free_after_adapter": None,
-    }
 
     def adapter(**kwargs):  # type: ignore[no-untyped-def]
         provider_run = Path(kwargs["job_dir"])
@@ -527,8 +538,12 @@ def _install_prestage(
     work: Path,
     *,
     prefix_output: bool = False,
+    free_after: int | None = None,
 ) -> dict:
-    """A CPU prefix that reserves its real need on the same ledger and volume."""
+    """A CPU prefix that reserves its real need on the same ledger and volume.
+
+    ``free_after`` is what another writer left free by the time the prefix ended.
+    """
 
     monkeypatch.setenv(cpu_prestage.WORK_DIR_ENV, str(work))
     observed: dict[str, object] = {}
@@ -546,6 +561,8 @@ def _install_prestage(
                 archive.writestr("cpu_prestage_transport.json", "{}")
             if prefix_output:
                 _write_prefix_archive(Path(job_dir) / "cpu_prestage_output.zip", bundle_receipt)
+        if free_after is not None:
+            lane.volume.free = free_after
         return {"capsule_path": str(capsule), "capsule_sha256": _sha256(capsule),
                 "capsule_bytes": capsule.stat().st_size}
 
@@ -711,6 +728,108 @@ def test_prestage_and_output_hold_are_sequential_not_additive(
         {"phase": "cpu_prestage", "peak_bytes": need, "shares_output_volume": True}
     ]
     assert _ledger_rows(lane.ledger) == []
+
+
+def _recheck_by_role(lane, monkeypatch, tmp_path, result, free_bytes) -> str:
+    """Capacity recovery's re-check of ``result`` with ``free_bytes`` on the volume."""
+
+    monkeypatch.setattr(controller, "whole_chain_admission", lambda *_a, **_k: {
+        "required_workspace_bytes": 0,
+        "measurement": {"status": "measured", "floor_bytes": 0, "reserved_bytes": 0,
+                        "free_bytes": 10**15}})
+    monkeypatch.setattr(capacity.shutil, "disk_usage", lane.volume)
+    lane.volume.free = free_bytes
+    observation = {"values": {"bundle": lane.receipt, "result": result}, "kind": capacity.KIND}
+    config = {"factory_output_root": str(tmp_path), "launch_execution_root": str(lane.job.parent),
+              "preparation_worker": {"disk_reservation_root": str(lane.ledger)}}
+    return capacity.capacity_admission(observation, config, 100)["status"]
+
+
+def test_deferred_hold_refusal_is_typed_and_recoverable_by_role(tmp_path, monkeypatch) -> None:
+    """The volume shrank while the CPU prefix ran, so the hold after it is refused.
+
+    That is the same $0 refusal as one before staging: exactly one typed blocker,
+    no provider touched, the ledger's own numbers at refusal time, and capacity
+    recovery re-checks max(hold, prefix need) through the role's projection.
+    """
+
+    lane = _harness(tmp_path, monkeypatch)
+    work = tmp_path / "prestage-work"
+    work.mkdir()
+    hold = SMALL_UPLOAD + RESERVE
+    observed = _install_prestage(lane, monkeypatch, work, free_after=FLOOR + hold - 1)
+    required = max(hold, int(observed["need"]))
+    lane.volume.free = FLOOR + required
+
+    result = lane.run(cpu_prestage_stage_limit="stage-2")
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
+    assert result["provider_mutations_performed"] == 0
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["api_pretraining"] is None
+    assert result["cpu_prestage"]["capsule_path"].endswith("cpu_prestage_capsule.zip")
+    assert not [event for event in lane.events if event[0] == "adapter"]
+    [close] = [event[1] for event in lane.events if event[0] == "watchdog_close"]
+    assert close["provider_allocation_impossible"] is True and close["instance_ids"] == []
+    # Sealed as never entering the adapter, not as an adapter failure.
+    teardown = json.loads((lane.job / "vast_provider_run/vast_teardown_manifest.json").read_text())
+    assert teardown["vast_instance_ids"] == [] and teardown["continuing_spend_from_this_run"] is False
+    assert teardown["zero_continuing_spend_scope"].endswith(
+        "scene_configuration_provider_adapter_not_invoked"
+    )
+    record = result["provider_output_disk_capacity"]
+    assert record["hold"] == "refused" and record["hold_phase"] == "after_cpu_prefix"
+    assert record["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
+    # The ledger's numbers when the hold was refused, not the up-front projection's.
+    assert (record["free_bytes"], record["available_bytes"]) == (FLOOR + hold - 1, hold - 1)
+    assert record["projection_before_staging"]["available_bytes"] == required
+    assert record["required_available_bytes"] == required
+    assert record.get("recovery_withheld") is None
+    assert _ledger_rows(lane.ledger) == []
+    # Recoverable like the pre-staging refusal, re-checked by the role's projection.
+    assert capacity.preallocation_capacity_failure(result) is True
+    assert admission.recorded_preallocation_refusal(
+        result, maximum_archive_bytes=SMALL_UPLOAD, job_dir=lane.job
+    ) == record
+    room = FLOOR + required + lane.receipt["bundle_size_bytes"]
+    assert _recheck_by_role(lane, monkeypatch, tmp_path, result, room) == "admitted"
+    assert _recheck_by_role(lane, monkeypatch, tmp_path, result, room - 1) == (
+        "waiting_for_capacity"
+    )
+
+
+def test_deferred_hold_refusal_after_api_pretraining_is_typed_but_withheld(
+    tmp_path, monkeypatch
+) -> None:
+    """A refusal after paid API preparation keeps its code but is not retried."""
+
+    lane = _harness(tmp_path, monkeypatch, api_pretraining=True)
+    semantic_root = tmp_path / "semantic-pretraining"
+    semantic_root.mkdir()
+    monkeypatch.setattr(pretraining, "LOGICAL_ROOT", semantic_root)
+    hold = SMALL_UPLOAD + RESERVE
+    need = admission.cpu_prefix_peak_bytes(Path(lane.receipt["bundle_path"]))
+    lane.volume.free = FLOOR + max(hold, need)
+    lane.behaviour["free_after_pretraining"] = FLOOR + hold - 1
+
+    result = lane.run()
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
+    assert result["provider_mutations_performed"] == 0
+    assert result["api_pretraining"]["capsule_path"].endswith("fixture_pretraining.zip")
+    assert not [event for event in lane.events if event[0] == "adapter"]
+    record = result["provider_output_disk_capacity"]
+    assert record["sequential_phases"] == [
+        {"phase": "semantic_pretraining", "peak_bytes": need, "shares_output_volume": True}
+    ]
+    assert record["hold"] == "refused" and record["hold_phase"] == "after_cpu_prefix"
+    assert record["recovery_withheld"] == "api_pretraining_consumed"
+    assert capacity.preallocation_capacity_failure(result) is False
+    assert admission.recorded_preallocation_refusal(
+        result, maximum_archive_bytes=SMALL_UPLOAD, job_dir=lane.job
+    ) is None
 
 
 def test_up_front_prefix_need_is_what_the_prestage_reserves(tmp_path) -> None:

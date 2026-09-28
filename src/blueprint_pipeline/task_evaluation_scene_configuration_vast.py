@@ -77,7 +77,8 @@ from .task_evaluation_scene_configuration_provider_artifacts import (
     extract_provider_output_with_capacity_guard,
 )
 from .task_evaluation_scene_configuration_output_admission import (
-    open_scene_configuration_output_admission, release_scene_configuration_output,
+    SceneConfigurationOutputHoldRefused, open_scene_configuration_output_admission,
+    release_scene_configuration_output,
 )
 from .task_evaluation_scene_configuration_openai_runtime_scope import (
     MANAGED_GUARD_FILE_ENV,
@@ -1605,6 +1606,8 @@ def run_scene_configuration_vast(
                     watchdog_handoff if retain_warm_session else None
                 ),
             )
+    except SceneConfigurationOutputHoldRefused:
+        pass  # sealed below, once staging is clean, as a typed $0 pre-allocation refusal
     except (OSError, RuntimeError, ValueError) as exc:
         if cpu_prestage_stage_limit and not cpu_prestage:
             write_json(job / "cpu_prestage_failure.json", {
@@ -1655,6 +1658,14 @@ def run_scene_configuration_vast(
             write_json(job / "cpu_prestage_object_store_cleanup.json", prestage_cleanup)
             if prestage_cleanup.get("all_objects_absent") is not True:
                 runtime_secret_cleanup_blockers.append("cpu_prestage_staging_cleanup_unproven")
+    if output_admission.hold_refused:
+        watchdog_close = close_independent_vast_watchdog(job_dir=job, handle=watchdog, instance_ids=[],
+            provider_teardown_completed=False, provider_allocation_impossible=True)
+        return _seal_live_terminal_result(job, output_admission.refused_hold_result(
+            authority=authority, consumption=consumption, api_pretraining=api_pretraining,
+            cpu_prestage=cpu_prestage, expected_download_bytes=expected_download_bytes, cleanup=cleanup,
+            cleanup_blockers=runtime_secret_cleanup_blockers, watchdog_close=watchdog_close),
+            receipt=receipt, scene_construction_queue_root=scene_construction_queue_root)
 
     if retain_warm_session and adapter.get("retained_owned") is True:
         from .task_evaluation_scene_configuration_warm_bootstrap import (  # noqa: PLC0415

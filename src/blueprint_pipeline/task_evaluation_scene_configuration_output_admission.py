@@ -10,11 +10,18 @@ largest extraction that zip may declare. Under ``measured``:
    result is sealed, bound to the job directory so its history learns real
    footprints. A CPU prefix that runs on this host first and reserves on the
    same volume is checked up front, as the larger of the two needs, and the
-   hold is taken only after that prefix released its own reservation;
+   hold is taken only after that prefix released its own reservation. A hold
+   refused then is sealed like a refusal before staging: typed, zero provider
+   mutations, and retried by capacity recovery unless paid API pretraining
+   already ran in the attempt;
 2. the local zip, from whichever source, is published to B2 before anything is
    extracted, on every outcome;
 3. the extraction is sized from the zip's own central directory, and whatever
-   the hold no longer covers is taken as a growth reservation or refused.
+   the hold no longer covers is taken as a growth reservation or refused. A
+   refused extraction leaves the output durable (B2 and the local zip), but
+   nothing recovers it automatically yet: publication recovery requires
+   ``configuration_completed``, which stays false until readers can fetch
+   archive members on demand (plan 13a.1, PR C).
 
 Only production website runs are measured. Diagnostic and warm-session runs
 carry their checkpoint subtree into the next run and non-website runs are
@@ -45,6 +52,7 @@ from .task_evaluation_scene_configuration_provider_artifacts import (
     PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT,
     PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES,
     TaskEvaluationSceneConfigurationVastError,
+    _provider_output_disk_requirements,
     _publish_provider_output_archive,
 )
 
@@ -71,6 +79,12 @@ WORKLOAD = "website_scene_configuration"
 CPU_PREFIX_EXPANSION = 3
 CPU_PREFIX_OVERHEAD_BYTES = 512 * 1024**2
 PREALLOCATION_PHASE = "before_allocation_and_staging"
+#: Where a hold deferred behind a CPU prefix sharing the volume is taken.
+DEFERRED_HOLD_PHASE = "after_cpu_prefix"
+#: Why a typed refusal after the prefix is not retried automatically.
+API_PRETRAINING_CONSUMED = "api_pretraining_consumed"
+#: The lane's result schema; measured runs are never diagnostic.
+LANE_RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_vast_result.v1"
 _HOLD_DEFERRED = "deferred_until_after_cpu_prefix"
 _LEDGER_EXCEEDED = "control_plane_disk_budget_exceeded:"
 _LEDGER_NUMBERS = re.compile(r"(need|available|free|floor|reserved)_bytes=(\d+)")
@@ -80,6 +94,10 @@ _READ_ERRORS = (
 #: Admissions holding ledger entries, keyed by job directory, until the lane
 #: seals that job's terminal result (``release_scene_configuration_output``).
 _HELD: dict[str, SceneConfigurationOutputAdmission] = {}
+
+
+class SceneConfigurationOutputHoldRefused(TaskEvaluationSceneConfigurationVastError):
+    """The hold deferred behind a CPU prefix no longer fits; nothing was allocated."""
 
 
 def configured_output_admission_mode(environment: Mapping[str, str] | None = None) -> str | None:
@@ -201,6 +219,7 @@ class SceneConfigurationOutputAdmission:
         self._disk_usage = disk_usage
         self._publication: tuple[dict[str, Any], dict[str, Any], Path] | None = None
         self._publication_error: Exception | None = None
+        self._deferred_hold_refused = False
 
     # -- before allocation -------------------------------------------------
 
@@ -254,29 +273,104 @@ class SceneConfigurationOutputAdmission:
                     )
                 )
         except ControlPlaneDiskBudgetError as exc:
-            record["ledger_refusal"] = str(exc)
+            record.update(hold_phase=PREALLOCATION_PHASE, ledger_refusal=str(exc))
             return self._refuse(ADMISSION_UNAVAILABLE_BLOCKER)
         except _READ_ERRORS as exc:
-            record["measurement_error_type"] = type(exc).__name__
+            record.update(hold_phase=PREALLOCATION_PHASE, measurement_error_type=type(exc).__name__)
             return self._refuse(ADMISSION_UNAVAILABLE_BLOCKER)
         if not shared:
             blocker = self._take_hold(PREALLOCATION_PHASE)
             return self._refuse(blocker) if blocker else record
         if record["available_bytes"] < record["required_available_bytes"]:
+            record["hold_phase"] = PREALLOCATION_PHASE
             return self._refuse(BUDGET_EXCEEDED_BLOCKER)
-        record.update(status="ready", hold=_HOLD_DEFERRED)
+        record.update(
+            status="ready",
+            hold=_HOLD_DEFERRED,
+            hold_phase=DEFERRED_HOLD_PHASE,
+            projection_before_staging={
+                key: record[key]
+                for key in ("free_bytes", "floor_bytes", "reserved_bytes", "available_bytes")
+            },
+        )
         return record
 
     def hold_before_allocation(self) -> None:
-        """Take a hold deferred behind a CPU prefix; refuse typed if it no longer fits."""
+        """Take a hold deferred behind a CPU prefix; refuse typed if it no longer fits.
+
+        A refusal raises ``SceneConfigurationOutputHoldRefused`` before the
+        adapter is entered; the lane then seals ``refused_hold_result``.
+        """
 
         if not self.measured or self.record.get("hold") != _HOLD_DEFERRED:
             return None
-        blocker = self._take_hold("after_cpu_prefix")
+        blocker = self._take_hold(DEFERRED_HOLD_PHASE)
         if blocker:
+            self._deferred_hold_refused = True
             self._refuse(blocker)
-            raise TaskEvaluationSceneConfigurationVastError(blocker)
+            raise SceneConfigurationOutputHoldRefused(blocker)
         return None
+
+    @property
+    def hold_refused(self) -> bool:
+        """The hold deferred behind a CPU prefix was refused; no provider was touched."""
+
+        return self._deferred_hold_refused
+
+    def refused_hold_result(
+        self,
+        *,
+        authority: Mapping[str, Any],
+        consumption: Mapping[str, Any],
+        api_pretraining: Mapping[str, Any],
+        cpu_prestage: Mapping[str, Any],
+        expected_download_bytes: int,
+        cleanup: Mapping[str, Any],
+        cleanup_blockers: list[str],
+        watchdog_close: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """The terminal result of a hold refused after the CPU prefix.
+
+        It has the shape of a refusal before staging, so capacity recovery
+        re-opens it the same way, and adds what the attempt already did: the
+        consumed authority, the prefix receipts, the staging cleanup and the
+        watchdog closed as no allocation. Paid API pretraining that already
+        ran withholds automatic recovery, as it does for a credit refusal.
+        """
+
+        record = self.record
+        if api_pretraining:
+            record["recovery_withheld"] = API_PRETRAINING_CONSUMED
+        blockers = [*record["blockers"], *cleanup_blockers]
+        if cleanup.get("all_objects_absent") is not True:
+            blockers.append("object_store_provider_zero_not_proven")
+        if watchdog_close.get("status") not in {"provider_terminal", "cancelled_no_allocation"}:
+            blockers.append("independent_watchdog_not_closed")
+        return {
+            "schema_version": LANE_RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "run_id": self.receipt["run_id"],
+            "source_commit": self.receipt["source_commit"],
+            "bundle_sha256": self.receipt["bundle_sha256"],
+            "authority_digest": authority["authority_digest"],
+            "authorization_consumption": dict(consumption),
+            "api_pretraining": dict(api_pretraining) or None,
+            "cpu_prestage": dict(cpu_prestage) or None,
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "continuing_spend_from_this_run": False,
+            "expected_provider_download_bytes": expected_download_bytes,
+            "expected_provider_upload_bytes": self.maximum_archive_bytes,
+            "provider_output_disk_requirements": _provider_output_disk_requirements(
+                self.maximum_archive_bytes
+            ),
+            "provider_output_disk_capacity": record,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "object_store_cleanup": dict(cleanup),
+            "independent_watchdog": dict(watchdog_close),
+            "runtime_secret_cleanup_completed": not cleanup_blockers,
+            "blockers": sorted(set(blockers)),
+        }
 
     def _shared_cpu_prefix_needs(self) -> list[int]:
         """Each pre-GPU CPU phase's need that lands on the output's volume."""
@@ -312,26 +406,28 @@ class SceneConfigurationOutputAdmission:
                 fresh=True,
             )
         except ControlPlaneDiskBudgetError as exc:
-            record.update(hold="refused", ledger_refusal=str(exc))
-            if hold_phase == PREALLOCATION_PHASE:
-                numbers = _ledger_numbers(str(exc))
-                numbers.pop("need_bytes", None)
-                record.update(numbers)
+            # The ledger's own numbers at refusal time, whichever phase refused.
+            numbers = _ledger_numbers(str(exc))
+            numbers.pop("need_bytes", None)
+            record.update(hold="refused", hold_phase=hold_phase, ledger_refusal=str(exc), **numbers)
             return _refusal_blocker(str(exc), BUDGET_EXCEEDED_BLOCKER)
         except OSError as exc:
-            record.update(hold="refused", measurement_error_type=type(exc).__name__)
+            record.update(
+                hold="refused", hold_phase=hold_phase, measurement_error_type=type(exc).__name__
+            )
             return ADMISSION_UNAVAILABLE_BLOCKER
         _HELD[str(self.job)] = self
         receipt = self.hold.receipt()
-        record.update(hold="held", hold_phase=hold_phase, hold_reservation=receipt)
-        if hold_phase == PREALLOCATION_PHASE:
-            record.update(
-                status="ready",
-                free_bytes=receipt["free_bytes_at_admission"],
-                floor_bytes=receipt["floor_bytes"],
-                reserved_bytes=receipt["reserved_bytes_before_admission"],
-                available_bytes=receipt["available_bytes_before_admission"],
-            )
+        record.update(
+            status="ready",
+            hold="held",
+            hold_phase=hold_phase,
+            hold_reservation=receipt,
+            free_bytes=receipt["free_bytes_at_admission"],
+            floor_bytes=receipt["floor_bytes"],
+            reserved_bytes=receipt["reserved_bytes_before_admission"],
+            available_bytes=receipt["available_bytes_before_admission"],
+        )
         return None
 
     def _refuse(self, blocker: str) -> dict[str, Any]:
@@ -522,10 +618,29 @@ def release_scene_configuration_output(
     return sealed
 
 
+def recovery_withheld(result: Mapping[str, Any]) -> bool:
+    """A measured refusal whose attempt already ran paid API pretraining.
+
+    It keeps its typed blocker, but capacity recovery does not retry it, as it
+    does not retry a credit refusal once that preparation has run.
+    """
+
+    record = measured_admission_record(result)
+    return record is not None and bool(
+        record.get("recovery_withheld")
+        or (record.get("hold_phase") == DEFERRED_HOLD_PHASE
+            and result.get("api_pretraining") is not None)
+    )
+
+
 def recorded_preallocation_refusal(
     result: Mapping[str, Any], *, maximum_archive_bytes: int, job_dir: Path
 ) -> dict[str, Any] | None:
-    """The measured pre-allocation refusal this job sealed, or None if it is not one."""
+    """The measured refusal this job sealed before allocation, or None if it is not one.
+
+    Refused before staging, or after a CPU prefix sharing the volume when no
+    paid API pretraining ran; the ledger's own numbers must show the refusal.
+    """
 
     record = result.get("provider_output_disk_capacity")
     if not isinstance(record, Mapping):
@@ -539,6 +654,8 @@ def recorded_preallocation_refusal(
         and record.get("mode") == MEASURED_MODE
         and record.get("role") == OUTPUT_ROLE
         and record.get("phase") == PREALLOCATION_PHASE
+        and record.get("hold_phase") in (PREALLOCATION_PHASE, DEFERRED_HOLD_PHASE)
+        and not recovery_withheld(result)
         and record.get("status") == "blocked"
         and record.get("blockers") == [BUDGET_EXCEEDED_BLOCKER]
         and record.get("measurement_path") == str(job_dir)
@@ -611,6 +728,7 @@ __all__ = [
     "OUTPUT_ADMISSION_ENV",
     "OUTPUT_ROLE",
     "SceneConfigurationOutputAdmission",
+    "SceneConfigurationOutputHoldRefused",
     "configured_output_admission_mode",
     "cpu_prefix_peak_bytes",
     "extraction_requirement",
@@ -618,5 +736,6 @@ __all__ = [
     "open_scene_configuration_output_admission",
     "output_role_projection",
     "recorded_preallocation_refusal",
+    "recovery_withheld",
     "release_scene_configuration_output",
 ]
