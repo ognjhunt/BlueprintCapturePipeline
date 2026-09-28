@@ -622,6 +622,76 @@ def _s3_absence_confirmed(client: Any, *, bucket: str, key: str) -> dict[str, An
     }
 
 
+def _staging_store_values(
+    *,
+    access_key_id_file: str | Path | None,
+    secret_access_key_file: str | Path | None,
+    endpoint_url: str,
+    endpoint_url_file: str | Path | None,
+    bucket: str,
+    bucket_file: str | Path | None,
+    region: str,
+    region_file: str | Path | None,
+) -> tuple[str, str, str, str, str]:
+    """The staging store's access key, secret, endpoint, bucket and region."""
+
+    access_key, _ = _read_first_file(
+        explicit_path=access_key_id_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
+        default_paths=DEFAULT_ACCESS_KEY_FILES,
+        label="object_store_access_key_id",
+    )
+    secret_key, _ = _read_first_file(
+        explicit_path=secret_access_key_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
+        default_paths=DEFAULT_SECRET_KEY_FILES,
+        label="object_store_secret_access_key",
+    )
+    endpoint, _ = _read_first_file(
+        explicit_path=endpoint_url_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
+        default_paths=DEFAULT_ENDPOINT_FILES,
+        label="object_store_endpoint_url",
+        allow_env_value=True,
+    )
+    bucket_value, _ = _read_first_file(
+        explicit_path=bucket_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
+        default_paths=DEFAULT_BUCKET_FILES,
+        label="object_store_bucket",
+        allow_env_value=True,
+    )
+    region_value, _ = _read_first_file(
+        explicit_path=region_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
+        default_paths=DEFAULT_REGION_FILES,
+        label="object_store_region",
+        allow_env_value=True,
+    )
+    return (
+        access_key,
+        secret_key,
+        endpoint_url or endpoint,
+        bucket or bucket_value,
+        region or region_value or "us-east-1",
+    )
+
+
+def _s3_client(*, access_key: str, secret_key: str, endpoint: str, region: str) -> Any:
+    import boto3  # type: ignore[import-not-found]
+    from botocore.client import Config  # type: ignore[import-not-found]
+
+    kwargs: dict[str, Any] = {
+        "aws_access_key_id": access_key,
+        "aws_secret_access_key": secret_key,
+        "region_name": region,
+        "config": Config(signature_version="s3v4"),
+    }
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+    return boto3.client("s3", **kwargs)
+
+
 def cleanup_staged_wam_provider_objects(
     job_dir: str | Path,
     *,
@@ -721,42 +791,16 @@ def cleanup_staged_wam_provider_objects(
         ):
             blockers.append("blocked_staging_binding_invalid")
 
-    access_key, _ = _read_first_file(
-        explicit_path=access_key_id_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
-        default_paths=DEFAULT_ACCESS_KEY_FILES,
-        label="object_store_access_key_id",
+    access_key, secret_key, endpoint, bucket_value, region_value = _staging_store_values(
+        access_key_id_file=access_key_id_file,
+        secret_access_key_file=secret_access_key_file,
+        endpoint_url=endpoint_url,
+        endpoint_url_file=endpoint_url_file,
+        bucket=bucket,
+        bucket_file=bucket_file,
+        region=region,
+        region_file=region_file,
     )
-    secret_key, _ = _read_first_file(
-        explicit_path=secret_access_key_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
-        default_paths=DEFAULT_SECRET_KEY_FILES,
-        label="object_store_secret_access_key",
-    )
-    endpoint, _ = _read_first_file(
-        explicit_path=endpoint_url_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
-        default_paths=DEFAULT_ENDPOINT_FILES,
-        label="object_store_endpoint_url",
-        allow_env_value=True,
-    )
-    endpoint = endpoint_url or endpoint
-    bucket_value, _ = _read_first_file(
-        explicit_path=bucket_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
-        default_paths=DEFAULT_BUCKET_FILES,
-        label="object_store_bucket",
-        allow_env_value=True,
-    )
-    bucket_value = bucket or bucket_value
-    region_value, _ = _read_first_file(
-        explicit_path=region_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
-        default_paths=DEFAULT_REGION_FILES,
-        label="object_store_region",
-        allow_env_value=True,
-    )
-    region_value = region or region_value or "us-east-1"
     if not access_key or not secret_key or not bucket_value:
         blockers.append("object_store_cleanup_credentials_missing")
 
@@ -773,18 +817,12 @@ def cleanup_staged_wam_provider_objects(
             cleanup_rows = []
             attempt_blockers: list[str] = []
             try:
-                import boto3  # type: ignore[import-not-found]
-                from botocore.client import Config  # type: ignore[import-not-found]
-
-                kwargs: dict[str, Any] = {
-                    "aws_access_key_id": access_key,
-                    "aws_secret_access_key": secret_key,
-                    "region_name": region_value,
-                    "config": Config(signature_version="s3v4"),
-                }
-                if endpoint:
-                    kwargs["endpoint_url"] = endpoint
-                client = boto3.client("s3", **kwargs)
+                client = _s3_client(
+                    access_key=access_key,
+                    secret_key=secret_key,
+                    endpoint=endpoint,
+                    region=region_value,
+                )
                 for key in cleanup_keys:
                     client.delete_object(Bucket=bucket_value, Key=key)
                     absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
@@ -999,7 +1037,16 @@ def stage_wam_provider_bundle_object_store(
     generated_at: str | None = None,
     retain_content_addressed_bundle: bool = False,
     paired_witness_binding: Mapping[str, Any] | None = None,
+    output_promotion_required: bool = False,
 ) -> dict[str, Any]:
+    """Stage one provider bundle and a run-unique output key with signed URLs.
+
+    ``output_promotion_required=True`` records ``"output_promotion_required":
+    true`` in the manifest, which makes ``cleanup_staged_wam_provider_objects``
+    delete a present output or paired witness only when a promotion receipt
+    bound to this manifest allows it. Without it the manifest has no such key
+    and cleanup is unchanged.
+    """
     generated = generated_at or utc_now_iso()
     expiry_metadata = _presigned_url_expiry_metadata(generated, expiration_seconds)
     resolved_job_dir = Path(job_dir).expanduser().resolve()
@@ -1403,6 +1450,7 @@ def stage_wam_provider_bundle_object_store(
         "fresh_output_key_absence": output_key_absence,
         "output_key_run_unique": bool(binding_initialized and output_key),
         "output_url_object_binding_sha256": (output_url_object_binding_sha256 or None),
+        **({"output_promotion_required": True} if output_promotion_required else {}),
         "bundle_key": bundle_key if binding_initialized else None,
         "output_key": output_key if binding_initialized else None,
         "provider_bundle_url_file": bundle_url_file_status,
@@ -1434,6 +1482,93 @@ def stage_wam_provider_bundle_object_store(
     }
     write_json(resolved_job_dir / STAGING_MANIFEST_FILENAME, manifest)
     return manifest
+
+
+STAGED_OBJECT_ROLES = ("output", "paired_witness")
+
+
+def presign_staged_object_get(
+    job_dir: str | Path,
+    *,
+    object_role: str,
+    expiration_seconds: int = 2 * 60 * 60,
+    access_key_id_file: str | Path | None = None,
+    secret_access_key_file: str | Path | None = None,
+    endpoint_url: str = "",
+    endpoint_url_file: str | Path | None = None,
+    bucket: str = "",
+    bucket_file: str | Path | None = None,
+    region: str = "",
+    region_file: str | Path | None = None,
+) -> str:
+    """Return a GET URL for one staged object, in memory only.
+
+    ``object_role`` is ``output`` or ``paired_witness``. Unlike
+    ``refresh_wam_provider_output_get_url`` this never rewrites the staging
+    manifest, whose digest promotion receipts and the continuation's
+    ingestion binding pin, and never writes a URL file. It reads the manifest
+    and the staging store's credentials; the only store call is presigning.
+    Refusals raise ``ValueError`` with a stable, secret-free code.
+    """
+
+    if object_role not in STAGED_OBJECT_ROLES:
+        raise ValueError("staged_object_presign_role_invalid")
+    if (
+        isinstance(expiration_seconds, bool)
+        or not isinstance(expiration_seconds, int)
+        or not 60 <= expiration_seconds <= 7 * 24 * 60 * 60
+    ):
+        raise ValueError("staged_object_presign_expiration_invalid")
+    manifest_path = Path(job_dir).expanduser().resolve() / STAGING_MANIFEST_FILENAME
+    try:
+        manifest = _mapping(json.loads(manifest_path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        manifest = {}
+    output_key = _string(manifest.get("output_key"))
+    key = output_key
+    if object_role == "paired_witness":
+        from .native_task_arena_paired_witness_staging import SUFFIX
+
+        witness = _mapping(manifest.get("paired_witness"))
+        key = _string(witness.get("witness_key")) if witness.get("status") == "ready" else ""
+        if key != output_key + SUFFIX:
+            key = ""
+    if (
+        manifest.get("schema_version") != SCHEMA_VERSION
+        or _string(manifest.get("status")) not in {"completed", "blocked"}
+        or not output_key
+        or not key
+    ):
+        raise ValueError("staged_object_presign_manifest_invalid")
+    access_key, secret_key, endpoint, bucket_value, region_value = _staging_store_values(
+        access_key_id_file=access_key_id_file,
+        secret_access_key_file=secret_access_key_file,
+        endpoint_url=endpoint_url,
+        endpoint_url_file=endpoint_url_file,
+        bucket=bucket,
+        bucket_file=bucket_file,
+        region=region,
+        region_file=region_file,
+    )
+    if not access_key or not secret_key or not bucket_value:
+        raise ValueError("staged_object_presign_credentials_missing")
+    try:
+        client = _s3_client(
+            access_key=access_key,
+            secret_key=secret_key,
+            endpoint=endpoint,
+            region=region_value,
+        )
+        return str(
+            client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket_value, "Key": key},
+                ExpiresIn=expiration_seconds,
+                HttpMethod="GET",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - never echo a signed URL or key
+        raise ValueError(f"staged_object_presign_failed:{type(exc).__name__}") from None
 
 
 def refresh_wam_provider_output_get_url(
