@@ -14,8 +14,11 @@ import builtins
 from contextlib import contextmanager
 from dataclasses import dataclass
 import functools
+import hashlib
 import io
+import json
 import os
+from pathlib import PurePosixPath
 import re
 import struct
 import urllib.error
@@ -176,7 +179,8 @@ class RangeStore:
     ``(object, etag)`` just before the next whole-object GET. ``max_read``
     makes every response return at most that many bytes per read, and
     ``range_fault`` ("content_length", "content_range" or "overlong") breaks
-    every ranged response in that way.
+    every ranged response in that way. ``absent`` answers every request 404,
+    as a store does for an object that was never written or was deleted.
     """
 
     def __init__(self, data, *, etag='"version1"', generation=None, url=URL):
@@ -190,6 +194,7 @@ class RangeStore:
         self.range_fault = None
         self.ignore_if_match = False
         self.next_version = None
+        self.absent = False
 
     def opener(self, request, timeout, policy):
         headers = {key.lower(): value for key, value in request.header_items()}
@@ -202,6 +207,8 @@ class RangeStore:
             first, last = map(int, re.fullmatch(r"bytes=(\d+)-(\d+)", requested).groups())
             entry["range"] = (first, last)
         self.requests.append(entry)
+        if self.absent:
+            raise urllib.error.HTTPError("redacted", 404, "Not Found", {}, None)
         if not self.ignore_if_match and entry["if_match"] not in (None, self.etag):
             # The URL is deliberately not the signed one: errors must stay secret-free.
             raise urllib.error.HTTPError("redacted", 412, "Precondition Failed", {}, None)
@@ -342,6 +349,91 @@ def build_zip(entries, *, zip64_end=False, prepend=b"", shift_offsets=True, comm
                                 capped(count, 0xFFFF), capped(len(directory), 0xFFFFFFFF),
                                 capped(directory_offset, 0xFFFFFFFF), len(comment)) + comment)
     return VirtualObject(segments)
+
+
+QUICK10_RESULT = "native_task_arena_policy_canary_session_result.v1.json"
+QUICK10_CAMERAS = ("external", "wrist", "overview")
+QUICK10_CANDIDATES = ("pi05_droid", "groot_n17_droid")
+
+
+@dataclass(frozen=True)
+class Quick10Archive:
+    """A Quick-10-shaped output: the archive plus which members are which."""
+
+    archive: VirtualObject
+    result: dict
+    json_members: tuple[str, ...]
+    bulk_members: tuple[str, ...]
+    payloads: dict
+
+    @property
+    def names(self) -> list[str]:
+        return list(self.payloads)
+
+
+def _json_bytes(value) -> bytes:
+    return json.dumps(value, sort_keys=True).encode()
+
+
+def quick10_shaped_archive(*, cells: int = 10, frames_per_camera: int = 4, png_bytes: int = 48 * 1024,
+                           mp4_bytes: int = 256 * 1024, policy_requests_per_episode: int = 2,
+                           policy_request_bytes: int = 64 * 1024,
+                           result_status: str = "runtime_completed_unqualified_pending_closeout",
+                           extra_members: dict | None = None) -> Quick10Archive:
+    """A Quick-10-shaped provider output whose bulk members are zero runs.
+
+    Members follow the provider packer's order (``sorted(rglob)``): every cell's
+    tree, then the top-level JSON. The JSON members (the aggregate result, the
+    ten child results, per-episode receipts and frame manifests, the telemetry
+    index) are real and deflated. PNG frames, the three-camera MP4 reviews and
+    the policy requests are stored ``Zeros``. ``mp4_bytes`` scales the archive:
+    at 72 MiB the top-level result starts past 4 GiB, so its offsets are ZIP64.
+    """
+    payloads: dict = {}
+    episodes = []
+    for cell in range(cells):
+        root = f"cell_runs/{cell:02d}"
+        payloads[f"{root}/{QUICK10_RESULT}"] = _json_bytes({
+            "schema_version": QUICK10_RESULT.removesuffix(".json"), "cell_index": cell,
+            "status": "runtime_selected_cell_completed_pending_aggregation", "blockers": []})
+        for candidate in QUICK10_CANDIDATES:
+            episode = f"cell{cell:02d}-{candidate}"
+            episodes.append({"episode_id": episode, "candidate_id": candidate, "cell_index": cell})
+            payloads[f"{root}/episodes/{episode}.score_receipt.json"] = _json_bytes(
+                {"episode_id": episode, "task_success": cell % 2 == 0})
+            payloads[f"{root}/episodes/{episode}.state_trace.json"] = _json_bytes(
+                {"episode_id": episode, "steps": list(range(40))})
+            media = f"{root}/episodes/media/{episode}"
+            payloads[f"{media}/frame_manifest.json"] = _json_bytes(
+                {"episode_id": episode, "frames": frames_per_camera * len(QUICK10_CAMERAS)})
+            for camera in QUICK10_CAMERAS:
+                payloads[f"{media}/{camera}.mp4"] = Zeros(mp4_bytes)
+                for frame in range(frames_per_camera):
+                    payloads[f"{media}/frames/{camera}/{frame:06d}.png"] = Zeros(png_bytes)
+            for request in range(policy_requests_per_episode):
+                payloads[f"{media}/policy-requests/{request:04d}.json"] = Zeros(policy_request_bytes)
+    result = {"schema_version": QUICK10_RESULT.removesuffix(".json"), "status": result_status,
+              "blockers": [], "run_kind": "internal_policy_canary", "episodes": episodes}
+    payloads[QUICK10_RESULT] = _json_bytes(result)
+    payloads["policy_canary_telemetry_index.json"] = _json_bytes({"episodes": len(episodes)})
+    payloads.update(extra_members or {})
+    ordered = dict(sorted(payloads.items(), key=lambda item: PurePosixPath(item[0]).parts))
+    archive = build_zip([Entry(name, data, method=STORED if isinstance(data, Zeros) else DEFLATED)
+                         for name, data in ordered.items()])
+    bulk = tuple(name for name, data in ordered.items() if isinstance(data, Zeros))
+    small = tuple(name for name, data in ordered.items() if not isinstance(data, Zeros))
+    return Quick10Archive(archive=archive, result=result, json_members=small, bulk_members=bulk,
+                          payloads=ordered)
+
+
+def zero_run_sha256(size: int) -> str:
+    """The SHA-256 of ``size`` zero bytes, hashed in 16 MiB steps."""
+    digest, remaining, view = hashlib.sha256(), size, memoryview(_ZERO_BLOCK)
+    while remaining:
+        step = min(remaining, len(_ZERO_BLOCK))
+        digest.update(view[:step])
+        remaining -= step
+    return "sha256:" + digest.hexdigest()
 
 
 class _Unseekable(io.RawIOBase):
