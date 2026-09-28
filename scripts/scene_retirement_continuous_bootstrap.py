@@ -7,9 +7,11 @@ the root boundary. Installing this entrypoint does not enable retirement.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.abc
 import importlib.util
+import json
 import os
 from pathlib import Path
 import stat
@@ -18,6 +20,7 @@ from types import MappingProxyType
 
 
 _RUNTIME_ROOT = Path('/mnt/blueprint-work/scene-retirement-runtime')
+_BOOT_ROOT = Path('/usr/lib/blueprint/scene-retirement-runtime')
 _OWNER = 0
 _CORE = ('__init__.py', 'task_evaluation_scene_retirement_supervisor.py',
          'task_evaluation_scene_retirement_access.py', 'decision_evidence_contracts.py',
@@ -97,8 +100,57 @@ class _RetainedSources(dict):
     """Bytes and acquisition identities retained by the native root loader."""
 
 
+def _unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        _require(key not in value)
+        value[key] = item
+    return value
+
+
+def _select_runtime():
+    """Select one protected source/SDK tuple before application import."""
+    current = _BOOT_ROOT / 'CURRENT.json'
+    if not os.path.lexists(current):
+        return _RUNTIME_ROOT, _RUNTIME_ROOT / 'dependencies'
+    raw = _source(current)
+    _require(len(raw) <= 4096)
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_object)
+    except (ValueError, UnicodeError, TypeError) as exc:
+        raise ValueError(_ERROR) from exc
+    fields = {'schema', 'runtime_root', 'dependencies_root', 'source_digest',
+              'dependency_digest', 'bootstrap', 'previous'}
+    _require(type(value) is dict and set(value) == fields
+             and value['schema'] == 'scene-retirement-runtime-cohort.v1')
+    for key in ('source_digest', 'dependency_digest'):
+        digest = value[key]
+        _require(type(digest) is str and len(digest) == 64
+                 and all(char in '0123456789abcdef' for char in digest))
+    source = _RUNTIME_ROOT / 'generations' / value['source_digest']
+    sdk = Path(value['dependencies_root']) if type(value['dependencies_root']) is str else None
+    _require(value['runtime_root'] == str(source)
+             and sdk in {_RUNTIME_ROOT / 'dependencies',
+                         _RUNTIME_ROOT / 'sdk-generations' / value['dependency_digest']})
+    bootstrap = value['bootstrap']
+    _require(type(bootstrap) is dict and set(bootstrap) == {'sha256', 'size', 'mode'}
+             and type(bootstrap['size']) is int and bootstrap['size'] > 0
+             and type(bootstrap['mode']) is int and bootstrap['mode'] == 0o644)
+    installed = _BOOT_ROOT / 'continuous_bootstrap.py'
+    _require(Path(__file__) == installed)
+    executable = _source(installed)
+    _require(len(executable) == bootstrap['size']
+             and hashlib.sha256(executable).hexdigest() == bootstrap['sha256'])
+    _directory(source / 'src')
+    _directory(source / 'scripts')
+    _directory(sdk)
+    _require(_source(current) == raw)
+    return source, sdk
+
+
 def _core_sources():
-    package = _RUNTIME_ROOT / 'src/blueprint_pipeline'
+    root, dependencies = _select_runtime()
+    package = root / 'src/blueprint_pipeline'
     values = _RetainedSources()
     identities = {}
     for name in _CORE:
@@ -108,13 +160,15 @@ def _core_sources():
         values[module] = (path, raw)
         identities[module] = identity
     values.identities = MappingProxyType(identities)
+    values.runtime_root = root
+    values.dependencies_root = dependencies
     return values
 
 
 def _action_sources(module):
     _require(module in _ACTIONS)
     values = _core_sources()
-    path = _RUNTIME_ROOT / 'src' / (module.replace('.', '/') + '.py')
+    path = values.runtime_root / 'src' / (module.replace('.', '/') + '.py')
     raw, identity = _source(path, retain_identity=True)
     values[module] = (path, raw)
     values.identities = MappingProxyType(dict(values.identities) | {module: identity})
@@ -144,18 +198,19 @@ def _directory(path):
 
 def _action_main(module, arguments):
     """Root GC and door actions share one installed, isolated entry boundary."""
-    _directory(_RUNTIME_ROOT / 'src')
-    _directory(_RUNTIME_ROOT / 'dependencies')
-    _directory(_RUNTIME_ROOT / 'scripts')
+    values = _action_sources(module)
+    root, dependencies = values.runtime_root, values.dependencies_root
+    _directory(root / 'src')
+    _directory(dependencies)
+    _directory(root / 'scripts')
     stdlib = [value for value in sys.path if value and value.startswith('/usr/lib/python')]
     _require(stdlib)
     for path in stdlib:
         if Path(path).is_dir():
             _directory(Path(path))
-    sys.path[:] = [str(_RUNTIME_ROOT / 'src'), str(_RUNTIME_ROOT / 'dependencies'),
-                   str(_RUNTIME_ROOT), *stdlib]
+    sys.path[:] = [str(root / 'src'), str(dependencies), str(root), *stdlib]
     os.chdir('/')
-    loader = _SourceOnly(_action_sources(module))
+    loader = _SourceOnly(values)
     sys.meta_path.insert(0, loader)
     try:
         supervisor = importlib.import_module('blueprint_pipeline.task_evaluation_scene_retirement_supervisor')
@@ -171,6 +226,8 @@ class _SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def __init__(self, values):
         self.values = MappingProxyType(dict(values))
         self.source_identities = MappingProxyType(dict(values.identities))
+        self.runtime_root = values.runtime_root
+        self.dependencies_root = values.dependencies_root
 
     def find_spec(self, fullname, path=None, target=None):
         if fullname not in self.values:
@@ -188,6 +245,9 @@ class _SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         if module.__name__ == 'blueprint_pipeline':
             module.__path__ = [str(source.parent)]
         exec(compile(raw, str(source), 'exec', dont_inherit=True), module.__dict__)
+        if module.__name__ == 'blueprint_pipeline.task_evaluation_scene_retirement_supervisor':
+            module._TRUSTED_SOURCE_ROOT = self.runtime_root / 'src'
+            module._TRUSTED_DEPENDENCIES = self.dependencies_root
 
 
 def main(argv=None):
