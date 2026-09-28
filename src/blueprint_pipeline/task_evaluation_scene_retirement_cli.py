@@ -301,9 +301,21 @@ def load_installed_environment():
     """Read only this action's literal settings from the protected host file."""
     allowed=set(_ENV_FILES.values()) | {'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',
         'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET'}
-    with access._opened(ENVIRONMENT_FILE,protected=True) as (_,info):
+    def version(info):
+        return (access._identity(info),info.st_uid,info.st_gid,info.st_size,
+                info.st_mtime_ns,info.st_ctime_ns)
+    # Permissions, contents and publication all refer to the same acquisition.
+    # Reopening without an exact version tie could substitute a different file
+    # after the private-mode proof but before importing its settings.
+    with access._opened(ENVIRONMENT_FILE,protected=True) as (fd,info):
         _require(stat.S_IMODE(info.st_mode) in {0o600,0o640}, 'scene_retirement_authority_permissions')
-    raw=access._bytes(str(ENVIRONMENT_FILE),protected=True)
+        _require(0<info.st_size<=access._MAX_JSON_BYTES)
+        expected=version(info)
+        raw=os.read(fd,access._MAX_JSON_BYTES+1)
+        _require(len(raw)==info.st_size and version(os.fstat(fd))==expected,
+                 'scene_retirement_environment_changed')
+    with access._opened(ENVIRONMENT_FILE,protected=True) as (_,current):
+        _require(version(current)==expected,'scene_retirement_environment_changed')
     selected={}
     for line in raw.decode().splitlines():
         key,separator,value=line.partition('=')
