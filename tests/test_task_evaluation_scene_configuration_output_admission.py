@@ -849,6 +849,7 @@ def test_deferred_hold_refusal_is_typed_and_recoverable_by_role(tmp_path, monkey
     lane, result, required = _refused_after_prefix(tmp_path, monkeypatch)
     hold = SMALL_UPLOAD + RESERVE
 
+    assert result["schema_version"] == scene_vast.RESULT_SCHEMA_VERSION
     assert result["status"] == "blocked"
     assert result["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
     assert result["provider_mutations_performed"] == 0
@@ -1240,10 +1241,11 @@ def test_a_publish_failure_keeps_todays_blocker_and_records_the_archive_not_dura
 
     assert result["status"] == "blocked"
     assert result["provider_output_archive_durable"] is False
-    assert any(
-        blocker.startswith("scene_configuration_provider_output_durable_publication_failed:")
-        for blocker in result["blockers"]
-    )
+    # The object store's own failure, re-raised from the publication before extraction.
+    assert (
+        "scene_configuration_provider_output_durable_publication_failed:"
+        "RuntimeError:fixture object store unavailable"
+    ) in result["blockers"]
     # The extraction still ran from the local zip, which stays for recovery.
     assert _event_names(lane.events) == [
         ("publish", "vast_provider_runtime_output.zip"),

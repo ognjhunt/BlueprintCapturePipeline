@@ -44,7 +44,7 @@ import shutil
 import zipfile
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from .decision_evidence_contracts import canonical_digest
 from .control_plane_disk_budget import (
@@ -106,8 +106,6 @@ PREFIX_SPEND_UNPROVEN = "prefix_spend_unproven"
 PREFIX_SPEND_NONE = "no_external_spend_recorded"
 #: The prestage's retained output, the cost reservations of failed stages included.
 CPU_PREFIX_OUTPUT_ARCHIVE = "cpu_prestage_output.zip"
-#: The lane's result schema; measured runs are never diagnostic.
-LANE_RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_vast_result.v1"
 _HOLD_DEFERRED = "deferred_until_after_cpu_prefix"
 _LEDGER_EXCEEDED = "control_plane_disk_budget_exceeded:"
 _LEDGER_NUMBERS = re.compile(r"(need|available|free|floor|reserved)_bytes=(\d+)")
@@ -499,6 +497,10 @@ class SceneConfigurationOutputAdmission:
         the CPU prefix's own records show, or cannot rule out, external spend.
         """
 
+        # The lane imports this module, so its own schema is read at call time.
+        # Measured runs are never diagnostic.
+        from .task_evaluation_scene_configuration_vast import RESULT_SCHEMA_VERSION
+
         record = self.record
         prefix_spend = (
             cpu_prefix_spend(self.job / CPU_PREFIX_OUTPUT_ARCHIVE) if cpu_prestage else None
@@ -517,7 +519,7 @@ class SceneConfigurationOutputAdmission:
         if watchdog_close.get("status") not in {"provider_terminal", "cancelled_no_allocation"}:
             blockers.append("independent_watchdog_not_closed")
         return {
-            "schema_version": LANE_RESULT_SCHEMA_VERSION,
+            "schema_version": RESULT_SCHEMA_VERSION,
             "status": "blocked",
             "run_id": self.receipt["run_id"],
             "source_commit": self.receipt["source_commit"],
@@ -720,19 +722,14 @@ class SceneConfigurationOutputAdmission:
     def durable_archive(
         self, publish: Callable[..., tuple[dict[str, Any], dict[str, Any], Path]], **arguments: Any
     ) -> tuple[dict[str, Any], dict[str, Any], Path]:
-        """The durable reference: published now under ``ceiling``, before extraction otherwise."""
+        """The durable reference: published now under ``ceiling``. Under ``measured``,
+        ``extract`` already published this zip, on every outcome, before extracting."""
 
         if not self.measured:
             return publish(**arguments)
-        if self._publication is None and self._publication_error is None:
-            self._publish(Path(arguments["output_zip"]))
         if self._publication_error is not None:
             raise self._publication_error
-        if self._publication is None:
-            raise TaskEvaluationSceneConfigurationVastError(
-                "scene_configuration_provider_output_archive_missing"
-            )
-        return self._publication
+        return cast("tuple[dict[str, Any], dict[str, Any], Path]", self._publication)
 
     def result_fields(self) -> dict[str, Any]:
         if not self.measured:

@@ -1736,9 +1736,7 @@ def run_scene_configuration_vast(
                 provider_output_remote_index,
                 provider_output_remote_index_path,
             ) = output_admission.durable_archive(
-                _publish_provider_output_archive, output_zip=output_zip,
-                job=job,
-                receipt=receipt,
+                _publish_provider_output_archive, output_zip=output_zip, job=job, receipt=receipt,
             )
         except Exception as exc:  # noqa: BLE001 - object-store clients vary
             blockers.append(
