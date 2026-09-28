@@ -243,6 +243,8 @@ def test_installed_environment_reads_only_selected_literal_settings(tmp_path,mon
     path.write_text('LD_PRELOAD=/evil\nPATH=/evil\nBLUEPRINT_SCENE_RETIREMENT_POLICY_FILE="/etc/blueprint/policy.json"\n')
     path.chmod(0o640)
     monkeypatch.setattr(module,'ENVIRONMENT_FILE',path)
+    # delenv alone records no undo when absent; the loader publishes directly.
+    monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', '')
     monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',raising=False)
     oldpath=__import__('os').environ['PATH']
     module.load_installed_environment()
@@ -272,7 +274,8 @@ def test_installed_environment_test_restores_absent_policy_before_other_consumer
     monkeypatch.delenv(key)
     with pytest.MonkeyPatch.context() as scoped:
         test_installed_environment_reads_only_selected_literal_settings(tmp_path, scoped)
-    assert key not in os.environ
+    present = key in os.environ
+    assert not present
 
 
 def test_installer_stages_the_actual_whole_scene_script():
