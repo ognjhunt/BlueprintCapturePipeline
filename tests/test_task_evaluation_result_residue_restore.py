@@ -44,7 +44,10 @@ def test_residue_restore_round_trips(tmp_path) -> None:
     assert _local_files(f.run) == before
     assert {relative: stat.S_IMODE((f.run / relative).stat().st_mode) for relative in RESIDUE} == modes
     assert (f.run / "logs/worker.log").stat().st_mtime == OLD
-    assert f.pointer.read_bytes() == pointer_bytes
+    # The pointer stays, now saying the run was restored, so no tick offloads it again.
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer == {**json.loads(pointer_bytes), "state": "restored", "pointer_digest": pointer["pointer_digest"]}
+    assert pointer["pointer_digest"] == canonical_digest(pointer, digest_field="pointer_digest")
     receipt_path = f.evidence / f"{f.run.name}{residue.RESTORE_RECEIPT_SUFFIX}"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt == {**restored} and receipt["receipt_digest"] == canonical_digest(
@@ -95,8 +98,8 @@ def test_the_service_owner_is_given_each_file_last(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(restore, "_adopt_owner", recording)
     residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
         store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
-    # One (utime, adopt) pair per restored file, then the receipt's own adopt.
-    assert order == ["utime", "adopt"] * len(RESIDUE) + ["adopt"]
+    # One (utime, adopt) pair per restored file, then the rewritten pointer's and the receipt's own.
+    assert order == ["utime", "adopt"] * len(RESIDUE) + ["adopt", "adopt"]
 
 
 def _materializer(f):

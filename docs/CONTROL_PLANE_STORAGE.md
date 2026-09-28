@@ -735,12 +735,17 @@ so each manifest (and its receipt) also records `walked_file_count` and
   cannot be read), `deferred_tick_cap` (the tick's publications were used up),
   `publication_failed` (including a member swapped while it was packed),
   `run_changed_or_active`, `pointer_failed`, `nothing_evicted` (every member
-  stayed, so the pointer was withdrawn and the next tick tries again) or
-  `pointer_invalid` (a pointer that does not verify leaves the run alone)). A
-  pointed run reports the listed members still local
-  (`pointed_remaining_count`, `pointed_remaining_bytes`, totalled per phase); if
-  a crash left some behind that the pointer does not keep, an applying tick
-  resumes (`resume`) and evicts each one whose bytes still hash to the pointer's.
+  stayed, so the pointer was withdrawn and the next tick tries again),
+  `pointer_invalid` (a pointer that does not verify leaves the run alone),
+  `already_offloaded` or `restored` (an operator restored the run, and no tick
+  offloads it again without a new decision)). The pointer records its eviction
+  `state`: `evicting` from before the first unlink until eviction is over, then
+  `offloaded` (a pointer without a state reads as `offloaded`), and `restored`
+  once a restore finished. A pointed run reports the listed members still local
+  (`pointed_remaining_count`, `pointed_remaining_bytes`, totalled per phase); only
+  when a crash left an `evicting` pointer does an applying tick resume (`resume`):
+  it evicts each listed member the pointer does not keep whose bytes still hash
+  to the pointer's, then settles the pointer `offloaded`.
   Every file it left counts under
   `member_skipped:<reason>` with its bytes: `reader_reopened` (the surveyed
   reopened names, including scene-attempt recovery's `*.lease.json` and
@@ -790,8 +795,11 @@ links the names of one inode (a pointer `group`) back together, fsyncs every
 directory it adds an entry to, and needs no sealed registry: only the pointer's
 run name, and its run id where the registry still names one. It always writes
 `<name>.residue-restore.v1.json` beside the pointer, with a `failure` when the
-archive could not be fetched or verified. The pointer stays, so the next tick
-does not offload the restored files again.
+archive could not be fetched or verified. It holds the run's
+`artifacts/result_delivery/.offload.lock` for its whole pass, so no tick resumes
+an eviction while members come back, and refuses to start while a tick holds it
+(`result_residue_restore_locked`). A pass that finishes rewrites the pointer
+`restored`: the pointer stays, and no tick offloads the run again.
 
 The manual single-root form
 `python -m blueprint_pipeline.control_plane_storage_gc --content-store-root <root>/sha256 [--apply --ack reap-unreferenced-content]`

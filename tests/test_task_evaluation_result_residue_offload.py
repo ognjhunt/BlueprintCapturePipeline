@@ -485,7 +485,7 @@ def test_residue_offload_writes_pointer_before_evicting(tmp_path, monkeypatch) -
     def replace(source, destination, *args, **kwargs):
         outcome = real_replace(source, destination, *args, **kwargs)
         if str(destination).endswith(residue.POINTER_SUFFIX):
-            events.append(("pointer", f.pointer.is_file()))
+            events.append(("pointer", json.loads(f.pointer.read_text(encoding="utf-8"))["state"]))
         return outcome
 
     def unlink(path, *args, **kwargs):
@@ -503,15 +503,17 @@ def test_residue_offload_writes_pointer_before_evicting(tmp_path, monkeypatch) -
     kinds = [event[0] for event in events]
     assert kinds[0] == "publish" and events[0][1:] == (False, True)
     assert kinds.index("pointer") < kinds.index("unlink")
-    assert kinds.count("pointer") == 1  # nothing was kept, so the pointer is written once
+    # Written evicting before the first unlink, and offloaded once the last is done, even with nothing kept.
+    assert [event[1] for event in events if event[0] == "pointer"] == ["evicting", "offloaded"]
+    assert len(kinds) - 1 - kinds[::-1].index("pointer") > len(kinds) - 1 - kinds[::-1].index("unlink")
     unlinks = [event for event in events if event[0] == "unlink"]
     assert all(pointer_present for _kind, pointer_present, _name in unlinks)
     assert sorted(name for *_rest, name in unlinks) == sorted(names)
     pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
     assert pointer["schema_version"] == "control_plane_result_residue_pointer.v1"
     assert pointer["pointer_digest"] == canonical_digest(pointer, digest_field="pointer_digest")
-    assert (pointer["run"], pointer["registry_digest"], pointer["kept"]) == (
-        f.run.name, f.registry["registry_digest"], [])
+    assert (pointer["run"], pointer["registry_digest"], pointer["kept"], pointer["state"]) == (
+        f.run.name, f.registry["registry_digest"], [], "offloaded")
     stored = f.client.objects[(BUCKET, pointer["archive"]["uri"].split(f"s3://{BUCKET}/", 1)[1])]
     assert (_sha(stored), len(stored)) == (pointer["archive"]["sha256"], pointer["archive"]["size_bytes"])
     # One inode group per name here, numbered in the plan's order.
@@ -1238,6 +1240,7 @@ def test_an_eviction_a_crash_cut_short_resumes_on_the_next_tick(tmp_path, monkey
     _crash_on_second_group(monkeypatch, f)
     left = sorted(relative for relative in RESIDUE if (f.run / relative).exists())
     assert f.pointer.is_file() and len(left) == len(RESIDUE) - 1
+    assert json.loads(f.pointer.read_text(encoding="utf-8"))["state"] == "evicting"
 
     plan = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
     left_bytes = sum(len(RESIDUE[relative]) for relative in left)
@@ -1252,6 +1255,7 @@ def test_an_eviction_a_crash_cut_short_resumes_on_the_next_tick(tmp_path, monkey
     assert not set(RESIDUE) & set(_local_files(f.run))
     pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
     assert pointer["kept"] == [] and pointer["pointer_digest"] == canonical_digest(pointer, digest_field="pointer_digest")
+    assert pointer["state"] == "offloaded"
     assert f.client.upload_count == 2  # the resume published nothing
     again = _offload(f)
     assert (again["status"], again["retained_reason"], again["pointed_remaining_bytes"]) == (
@@ -1521,3 +1525,91 @@ def test_a_member_whose_name_the_search_cannot_read_stays(tmp_path) -> None:
     assert _offload(f)["status"] == "applied"
     assert {relative: (f.run / relative).read_bytes() for relative in unsupported} == unsupported
     assert (f.run / "work/stage/state.npz").read_bytes() == RESIDUE["work/stage/state.npz"]
+
+
+def _restore(f) -> dict:
+    return residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
+        store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
+
+
+def test_a_restored_run_is_never_offloaded_again_by_a_tick(tmp_path) -> None:
+    """Code review of 10d: after a restore every member is local, not kept and matches the pointer,
+    which is exactly what an eviction cut short looks like, so the next applying tick resumed and
+    evicted all of them again. The pointer now says which it is: only an ``evicting`` pointer is
+    resumed, and a restore records ``restored``, which no tick offloads again."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    assert _offload(f)["status"] == "applied"
+    assert json.loads(f.pointer.read_text(encoding="utf-8"))["state"] == "offloaded"
+
+    assert _restore(f)["restored_count"] == len(RESIDUE)
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer["state"] == "restored"
+    assert pointer["pointer_digest"] == canonical_digest(pointer, digest_field="pointer_digest")
+
+    planned = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+    applied = _offload(f)
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    ticked = _tick(f, pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                   result_residue_offload_enabled=True)["result_residue_offload"]
+
+    for row in (planned, applied, *ticked["runs"]):
+        assert (row["status"], row["retained_reason"], row.get("resume")) == ("retained", "restored", None)
+    assert ticked["retained_by_reason"] == {"restored": {"count": 1, "bytes": None}}
+    assert {relative: (f.run / relative).read_bytes() for relative in RESIDUE} == RESIDUE
+    assert f.client.upload_count == 2  # the fixture's bulk artifact and the one residue archive
+
+
+def test_a_pointer_without_a_state_is_never_resumed(tmp_path, monkeypatch) -> None:
+    """A pointer that does not say its eviction is running is read as offloaded, so nothing
+    resumes behind it: what is local stays local."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    value = json.loads(f.pointer.read_text(encoding="utf-8"))
+    del value["state"]
+    value["pointer_digest"] = canonical_digest(value, digest_field="pointer_digest")
+    f.pointer.chmod(0o640)
+    f.pointer.write_text(json.dumps(value), encoding="utf-8")
+    before = _local_files(f.run)
+
+    result = _offload(f)
+
+    assert (result["status"], result["retained_reason"], result.get("resume")) == (
+        "retained", "already_offloaded", None)
+    assert _local_files(f.run) == before
+
+
+def test_a_restore_and_a_resume_never_interleave(tmp_path, monkeypatch) -> None:
+    """Restore holds the run's offload lock for its whole pass, so no tick resumes an eviction while
+    members come back, and a restore refuses to start while a tick holds the lock."""
+
+    import fcntl
+
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    before = _local_files(f.run)
+    holder = (f.run / "artifacts/result_delivery/.offload.lock").open("a+b")
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        with pytest.raises(residue.ResultResidueOffloadError, match="restore_locked"):
+            _restore(f)
+    finally:
+        holder.close()
+    assert _local_files(f.run) == before
+    assert not (f.evidence / f"{f.run.name}{residue.RESTORE_RECEIPT_SUFFIX}").exists()
+
+    materialize = functools.partial(store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET)
+    during: list[dict] = []
+
+    def materializing(**kwargs):
+        during.append(_offload(f))  # a tick while the restore runs
+        return materialize(**kwargs)
+
+    restored = residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=materializing)
+
+    assert [(row["retained_reason"], row.get("resume")) for row in during] == [("offload_locked", True)]
+    assert restored["status"] == "restored"
+    assert _offload(f)["retained_reason"] == "restored"
+    assert {relative: (f.run / relative).read_bytes() for relative in RESIDUE} == RESIDUE

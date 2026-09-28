@@ -114,7 +114,7 @@ link or blocking and requires the planned inode, so nothing else can reach the
 archive. Only after a verified upload, with the registry
 and the run unchanged and still unprotected, does it write the digest-bound
 pointer ``<run>.residue.v1.json`` beside the run (temporary file, fsync,
-``os.replace``, directory fsync). Then it unlinks each member through directory
+``os.replace``, directory fsync) in state ``evicting``. Then it unlinks each member through directory
 descriptors held from the run root (``completed_replay_cache_retention``'s
 ``_HeldChild`` and ``_remove_group``): device, inode, links, size and mtime are
 rechecked and its bytes hashed once, as the other offloads do, and a member that
@@ -123,12 +123,16 @@ changed, moved or became a link is skipped and recorded in the pointer as
 and a name that went without the offload (its directory moved away) is
 ``member_vanished``: neither offloaded nor kept, so restore brings it back.
 A pointer behind which nothing could be evicted is withdrawn (``nothing_evicted``)
-so the next tick tries again. A crash after the pointer is written leaves members
-behind it: every later tick reports the listed members still local
-(``pointed_remaining_*``), and one that applies and passes every gate under the
-lock resumes (``resume``), evicting each listed member the pointer does not keep
-whose bytes still hash to the pointer's, keeping the rest and rewriting the
-pointer; it publishes nothing and never withdraws that pointer. A pointer that
+so the next tick tries again; otherwise, once eviction is over, the pointer is
+rewritten ``offloaded`` with what it kept. A crash during eviction leaves an
+``evicting`` pointer with members behind it: every later tick reports the listed
+members still local (``pointed_remaining_*``), and one that applies and passes
+every gate under the lock resumes (``resume``), evicting each listed member the
+pointer does not keep whose bytes still hash to the pointer's, keeping the rest
+and settling the pointer ``offloaded``; it publishes nothing and never withdraws
+that pointer. Only an ``evicting`` pointer is resumed: an ``offloaded`` one (or one
+without a state) is ``already_offloaded``, and a run an operator restored is
+``restored`` and is never offloaded again without a new decision. A pointer that
 does not verify, or whose registry digest is not the run's, leaves the run alone
 (``pointer_invalid``). ``restore_result_residue``
 (``task_evaluation_result_residue_restore``) streams the archive back, verifies
@@ -175,6 +179,9 @@ from .task_evaluation_result_artifact_store import (
 REPORT_SCHEMA_VERSION = "control_plane_result_residue_offload.v1"
 PHASE_SCHEMA_VERSION = "control_plane_result_residue_offload_phase.v1"
 POINTER_SCHEMA_VERSION = "control_plane_result_residue_pointer.v1"
+#: A pointer's eviction state: members are being evicted behind it, eviction is over, or an operator
+#: restored the run. A pointer without one is read as ``offloaded``, so nothing resumes behind it.
+POINTER_STATES = ("evicting", "offloaded", "restored")
 RESTORE_SCHEMA_VERSION = "control_plane_result_residue_restore_receipt.v1"
 POINTER_SUFFIX = evidence.RESIDUE_POINTER_SUFFIX
 RESTORE_RECEIPT_SUFFIX = evidence.RESIDUE_RESTORE_SUFFIX
@@ -787,10 +794,12 @@ def offload_result_residue(
             pointed = _read_pointer(root)
         except Exception as exc:  # noqa: BLE001 - a pointer that does not verify is left alone
             return _retained(row, "pointer_invalid", failure=offload_failure(exc, "pointer"))
-        resumable, row["pointed_remaining_count"], row["pointed_remaining_bytes"] = _pointed_state(root, pointed)
-        if not resumable:
-            return _retained(row, "already_offloaded")
-        # A crash after the pointer left members behind it: evict them, through every gate below.
+        _resumable, row["pointed_remaining_count"], row["pointed_remaining_bytes"] = _pointed_state(root, pointed)
+        state = pointed.get("state", "offloaded")
+        if state != "evicting":
+            # Eviction is over, or an operator restored the run: only a new decision offloads it again.
+            return _retained(row, "restored" if state == "restored" else "already_offloaded")
+        # A crash during eviction left members behind the pointer: evict them, through every gate below.
         row["resume"] = True
     try:
         registry, registry_path, registry_bytes = _sealed_registry(root)
@@ -868,6 +877,8 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
         value: dict[str, Any] = {
             "schema_version": POINTER_SCHEMA_VERSION,
             "status": "offloaded",
+            # Until eviction is over: a tick finds an evicting pointer only after a crash, and resumes it.
+            "state": "evicting",
             "run": root.name,
             "run_id": registry.get("run_id"),
             "registry_digest": registry["registry_digest"],
@@ -895,13 +906,7 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
             else:
                 del row["pointer"]
                 return _retained(row, "nothing_evicted")
-        if kept:
-            value["kept"] = kept
-            value["pointer_digest"] = canonical_digest(value, digest_field="pointer_digest")
-            try:
-                _write_json(pointer, value)
-            except Exception as exc:  # noqa: BLE001 - kept members are still local; restore finds them
-                row["failure"] = offload_failure(exc, "pointer")
+        _settle(row, pointer, value, kept)
         return _finished(row)
     finally:
         reservation.release()
@@ -922,6 +927,7 @@ def _read_pointer(root: Path) -> dict[str, Any]:
         or not isinstance(value.get("archive"), dict)
         or not isinstance(value.get("members"), list)
         or not isinstance(value.get("kept"), list)
+        or value.get("state", "offloaded") not in POINTER_STATES
     ):
         raise ResultResidueOffloadError("result_residue_pointer_invalid")
     for member in value["members"]:
@@ -975,25 +981,42 @@ def _pointed_state(root: Path, value: Mapping[str, Any]) -> tuple[list[dict[str,
     return sorted(members, key=lambda group: group["relative_paths"]), count, size
 
 
+def pointer_with_state(value: Mapping[str, Any], state: str, **fields: Any) -> dict[str, Any]:
+    """``value`` in ``state`` (with ``fields``), digest-bound again."""
+
+    changed = {**value, **fields, "state": state, "pointer_digest": ""}
+    changed["pointer_digest"] = canonical_digest(changed, digest_field="pointer_digest")
+    return changed
+
+
+def _settle(row: dict[str, Any], pointer: Path, value: Mapping[str, Any], kept: Sequence[Mapping[str, str]]) -> None:
+    """Rewrite the pointer ``offloaded`` once eviction is over, with every member it newly kept.
+
+    If the rewrite fails the pointer still says ``evicting``, and the next tick
+    resumes: it evicts what still matches the archive and settles it then.
+    """
+
+    known = {str(entry.get("relative_path")) for entry in value["kept"] if isinstance(entry, Mapping)}
+    added = [dict(entry) for entry in kept if entry["relative_path"] not in known]
+    try:
+        _write_json(pointer, pointer_with_state(value, "offloaded", kept=[*value["kept"], *added]))
+    except Exception as exc:  # noqa: BLE001 - kept members are still local; restore finds them
+        row["failure"] = offload_failure(exc, "pointer")
+
+
 def _resume(row: dict[str, Any], root: Path, pointer: Path, value: dict[str, Any]) -> dict[str, Any]:
     """Finish an eviction a crash cut short, under the run lock and every gate.
 
-    Each listed member the pointer does not keep, still local, goes only when its
-    bytes still hash to the pointer's (the archive's); any other is kept, and the
-    pointer is rewritten to say so. Nothing is published again, and the pointer is
-    never withdrawn: members evicted before the crash live only in its archive.
+    Only an ``evicting`` pointer gets here. Each listed member the pointer does
+    not keep, still local, goes only when its bytes still hash to the pointer's
+    (the archive's); any other is kept. The pointer is then rewritten
+    ``offloaded``. Nothing is published again, and the pointer is never
+    withdrawn: members evicted before the crash live only in its archive.
     """
 
     members, _count, _size = _pointed_state(root, value)
     kept = _evict(root, members, {member["relative_path"]: member["sha256"] for member in value["members"]}, row)
-    if kept:
-        known = {str(entry.get("relative_path")) for entry in value["kept"] if isinstance(entry, Mapping)}
-        value = {**value, "kept": [*value["kept"], *(entry for entry in kept if entry["relative_path"] not in known)]}
-        value["pointer_digest"] = canonical_digest(value, digest_field="pointer_digest")
-        try:
-            _write_json(pointer, value)
-        except Exception as exc:  # noqa: BLE001 - kept members are still local; restore finds them
-            row["failure"] = offload_failure(exc, "pointer")
+    _settle(row, pointer, value, kept)
     _members, row["pointed_remaining_count"], row["pointed_remaining_bytes"] = _pointed_state(root, value)
     return _finished(row)
 
@@ -1160,6 +1183,7 @@ def residue_phase(
 __all__ = [
     "APPLY_ACK",
     "POINTER_SCHEMA_VERSION",
+    "POINTER_STATES",
     "POINTER_SUFFIX",
     "QueueRows",
     "READER_REOPENED_DIRECTORIES",
@@ -1171,6 +1195,7 @@ __all__ = [
     "ResidueTick",
     "ResultResidueOffloadError",
     "offload_result_residue",
+    "pointer_with_state",
     "queue_snapshot",
     "residue_phase",
     "residue_row",

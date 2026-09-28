@@ -4,8 +4,11 @@
 ``<run>.residue.v1.json``. Restore streams that archive back and verifies it,
 then puts each member back through directory descriptors held from the run
 root, verifying its digest and size, and records a receipt beside the pointer as
-``<run>.residue-restore.v1.json``. The pointer stays, so the next storage GC tick
-does not offload the restored files again.
+``<run>.residue-restore.v1.json``. It holds the run's offload lock
+(``artifacts/result_delivery/.offload.lock``) for its whole pass, so no tick can
+resume an eviction while members come back, and it refuses to start while a tick
+holds it (``result_residue_restore_locked``). Once its pass is done it rewrites
+the pointer ``restored``: the pointer stays, and no tick offloads the run again.
 
 It never overwrites: a member whose path holds a different file, or whose place
 cannot be reached (its directory became a file or a link), is a typed conflict
@@ -28,6 +31,7 @@ import tarfile
 import tempfile
 import time
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
@@ -36,12 +40,15 @@ from . import control_plane_evidence_offload as evidence
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_result_artifact_store import offload_failure
 from .task_evaluation_result_residue_offload import (
+    POINTER_SUFFIX,
     RESTORE_RECEIPT_SUFFIX,
     RESTORE_SCHEMA_VERSION,
     RESULT_DELIVERY,
     _adopt_owner,
+    _hold_offload_lock,
     _read_pointer,
     _write_json,
+    pointer_with_state,
 )
 from .task_evaluation_result_residue_scan import ResultResidueOffloadError
 
@@ -213,16 +220,25 @@ def restore_result_residue(
     Members the pointer lists as ``kept`` never left and are not touched. A
     member already in place with the same bytes is ``already_present``; a
     different file at its path, or a place it cannot reach, is a typed
-    ``conflict`` and the rest still come back. The receipt is written beside the
-    pointer whatever happens once the pointer verified; a failure before any
-    member (the archive cannot be fetched or does not verify) is recorded in it
-    and then raised.
+    ``conflict`` and the rest still come back. The run's offload lock is held
+    throughout, and a pass that finishes rewrites the pointer ``restored``. The
+    receipt is written beside the pointer whatever happens once the pointer
+    verified; a failure (the archive cannot be fetched or does not verify, or
+    the pointer cannot be rewritten) is recorded in it and then raised.
     """
 
     unresolved = Path(run_root).expanduser()
     if unresolved.is_symlink() or not unresolved.is_dir():
         raise ResultResidueOffloadError("result_residue_restore_run_invalid")
     root = unresolved.resolve()
+    with ExitStack() as stack:
+        if not _hold_offload_lock(root, stack):
+            # A tick is offloading or resuming this run: restoring now would race its eviction.
+            raise ResultResidueOffloadError("result_residue_restore_locked")
+        return _restore_locked(root, materializer, now)
+
+
+def _restore_locked(root: Path, materializer: Callable[..., Any] | None, now: Callable[[], float]) -> dict[str, Any]:
     pointer = _read_pointer(root)
     run_id = _registry_run_id(root)
     if run_id is not None and run_id != pointer.get("run_id"):
@@ -288,6 +304,12 @@ def restore_result_residue(
             shutil.rmtree(staging, ignore_errors=True)
         if reservation is not None:
             reservation.release()
+    if failure is None and pointer.get("state") != "restored":
+        try:
+            # An operator brought the run back: no tick may evict it again, or resume an eviction.
+            _write_json(root.parent / f"{root.name}{POINTER_SUFFIX}", pointer_with_state(pointer, "restored"))
+        except Exception as exc:  # noqa: BLE001 - recorded in the receipt, then raised
+            failure = exc
     receipt: dict[str, Any] = {
         "schema_version": RESTORE_SCHEMA_VERSION,
         "status": "failed" if failure is not None else ("restored_with_conflicts" if conflicts else "restored"),
