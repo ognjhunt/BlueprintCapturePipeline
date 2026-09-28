@@ -1092,14 +1092,62 @@ def _sdk_git_rows(package, checkout, deadline):
     return rows
 
 
+def _sdk_toml(raw, wheelhouse, deadline):
+    try:
+        import tomllib
+        return tomllib.loads(raw.decode())
+    except ImportError:
+        # Python 3.10 has no stdlib TOML parser. Bootstrap only a hash-bound
+        # pure parser from this authenticated lock, never the mutable venv.
+        text = raw.decode()
+        _require(len(raw) <= 1024*1024 and time.monotonic() <= deadline)
+        blocks = re.findall(r'(?m)^\[\[package\]\]\n(.*?)(?=^\[\[package\]\]|\Z)', text, re.S)
+        blocks = [block for block in blocks if re.match(r'name = "tomli"\n', block)]
+        _require(len(blocks) == 1)
+        block = blocks[0]
+        version = re.findall(r'(?m)^version = "([0-9.]+)"$', block)
+        _require(len(version) == 1 and '\nsource = { registry = "https://pypi.org/simple" }\n' in block)
+        wheels = re.findall(r'(?m)^wheels = \[(.*?)\]\s*(?=\n\[|\Z)', block, re.S)
+        _require(len(wheels) == 1)
+        candidates = re.findall(r'\{ url = "(https://files\.pythonhosted\.org/[^"\\\s]+-py3-none-any\.whl)", hash = "(sha256:[0-9a-f]{64})", size = ([0-9]+)(?:, upload-time = "[^"\n]+")? \}', wheels[0])
+        _require(len(candidates) == 1)
+        url, digest, size = candidates[0]
+        _require(Path(urllib.parse.urlsplit(url).path).name == 'tomli-'+version[0]+'-py3-none-any.whl')
+        selected = {'url': url, 'hash': digest, 'size': int(size)}
+        path = _sdk_artifact(selected, wheelhouse, deadline)
+        rows = _wheel_entries(path, deadline)
+        _require('tomli/__init__.py' in rows)
+        root = _sdk_root() / 'sdk-tools' / digest[7:]
+        _sdk_extract(root, rows, deadline)
+        prefix = '_blueprint_verified_sdk_tomli_' + digest[7:]
+        _require(not any(name == prefix or name.startswith(prefix+'.') for name in sys.modules))
+        spec = importlib.util.spec_from_file_location(prefix, root/'tomli/__init__.py',
+            submodule_search_locations=[str(root/'tomli')])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[prefix] = module
+        try:
+            spec.loader.exec_module(module)
+            lock = module.loads(text)
+            parsers = [row for row in lock['package'] if row.get('name') == 'tomli']
+            _require(len(parsers) == 1 and parsers[0]['version'] == version[0]
+                     and parsers[0].get('source') == {'registry': 'https://pypi.org/simple'}
+                     and any(all(row.get(key) == value for key, value in selected.items())
+                             for row in parsers[0].get('wheels', ()))
+                     and time.monotonic() <= deadline)
+            return lock
+        finally:
+            for name in tuple(sys.modules):
+                if name == prefix or name.startswith(prefix+'.'):
+                    del sys.modules[name]
+
+
 def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=None):
     """Build the locked base production closure for this system ABI, no setup.py."""
     deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
     try:
-        import tomllib
         source = Path(source)
         raw, _ = _record_bytes(source / 'uv.lock', deadline)
-        lock = tomllib.loads(raw.decode())
+        lock = _sdk_toml(raw, wheelhouse, deadline)
         packages = lock['package']
         _require(type(packages) is list and 0 < len(packages) <= 4096)
         tools = _sdk_marker_tools(packages, wheelhouse, deadline)
