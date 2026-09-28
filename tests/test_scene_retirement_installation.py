@@ -41,7 +41,8 @@ def test_actual_installer_provisions_distinct_private_and_readable_stores(tmp_pa
     commands = result.stdout
     for suffix, mode, owner in [('', '0755', 'root'), ('/coordinator', '0755', 'root'),
                                 ('/generations', '0700', 'blueprint'), ('/journals', '0700', 'root'),
-                                ('/journals/retired', '0700', 'root'), ('/journals.metadata', '0750', 'root')]:
+                                ('/journals/retired', '0700', 'root'), ('/journals.metadata', '0750', 'root'),
+                                ('/consents', '0700', 'root')]:
         assert f'<install> <-d> <-m> <{mode}> <-o> <{owner}> <-g> <blueprint> <{root}{suffix}>' in commands
     assert not root.exists()  # A dry run never creates or adopts authority.
     assert 'chmod -R' not in commands and 'chown -R' not in commands

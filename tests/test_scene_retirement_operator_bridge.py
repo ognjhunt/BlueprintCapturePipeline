@@ -4,6 +4,9 @@
 #   deploy/operator-door/operator_door/requests.py
 #   deploy/operator-door/operator_door/spool_runner.py
 #   src/blueprint_pipeline/control_plane_storage_gc.py
+#   scripts/operator_door.py
+#   deploy/operator-door/door-scene-lifecycle.sh
+#   deploy/operator-door/install.sh
 
 import hashlib
 import io
@@ -194,3 +197,75 @@ def test_existing_tick_invokes_same_scene_phase_without_caller_flag_or_path(monk
     result = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
                             pins_root='/absent', now=lambda:100)
     assert result['scene_lifecycle']['status'] == 'disabled' and calls == [(False,100)]
+
+
+@pytest.mark.parametrize('kind', ['retire-scene', 'restore-scene'])
+def test_actual_spool_runner_launches_fixed_scene_script_with_no_public_paths(tmp_path, kind):
+    from operator_door.config import DoorConfig
+    from operator_door.requests import enqueue, validate_request
+    from operator_door.spool_runner import process_spool
+    from tests.test_operator_door_runner import FakeRunner
+    for state in ('pending','processing','completed','results'):
+        (tmp_path/'requests'/state).mkdir(parents=True)
+    config = DoorConfig(state_root=str(tmp_path))
+    body=request(kind)
+    enqueue(config,validate_request(body),requested_by='operator')
+    runner=FakeRunner()
+    process_spool(config,runner=runner)
+    argv=next(call for call in runner.calls if call[0]=='systemd-run')
+    assert argv[-1] == config.install_root+'/door-scene-lifecycle.sh'
+    assert '--setenv=DOOR_SCENE_ACTION='+('retire' if kind=='retire-scene' else 'restore') in argv
+    assert '--setenv=DOOR_SCENE_INTENT_ID=scene-1' in argv
+    assert '--setenv=DOOR_SCENE_CONSENT_ID='+'1'*32 in argv
+    assert '--property=RuntimeMaxSec=2h' in argv
+    assert '--property=ProtectSystem=strict' in argv
+    assert any(x.startswith('--property=ReadWritePaths=') and '/var/lib/blueprint/scene-retirement' in x for x in argv)
+    assert not any('DOOR_PLAN_PATH=' in x or 'DOOR_POLICY_PATH=' in x or 'DOOR_BUCKET=' in x for x in argv)
+
+
+@pytest.mark.parametrize('action', ['retire-scene','restore-scene'])
+def test_actual_client_submits_exact_selector_without_hidden_path_flags(monkeypatch,action):
+    from tests.test_operator_door_client import client
+    seen=[]
+    monkeypatch.setattr(client,'_submit',lambda body,args:seen.append(body) or 0)
+    argv=[action,'scene-1','--consent-id','1'*32,'--expected-sha256','sha256:'+'a'*64,
+          '--expected-size-bytes','101']
+    assert client.main(argv)==0
+    assert seen==[request(action)]
+
+
+def test_installed_environment_reads_only_selected_literal_settings(tmp_path,monkeypatch):
+    module=bridge()
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    monkeypatch.setattr(access,'_POLICY_UID',__import__('os').getuid())
+    path=tmp_path/'environment'
+    path.write_text('LD_PRELOAD=/evil\nPATH=/evil\nBLUEPRINT_SCENE_RETIREMENT_POLICY_FILE="/etc/blueprint/policy.json"\n')
+    path.chmod(0o640)
+    monkeypatch.setattr(module,'ENVIRONMENT_FILE',path)
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',raising=False)
+    oldpath=__import__('os').environ['PATH']
+    module.load_installed_environment()
+    assert __import__('os').environ['PATH']==oldpath
+    assert __import__('os').environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE']=='/etc/blueprint/policy.json'
+
+
+def test_installed_environment_duplicate_selection_refuses_before_partial_export(tmp_path,monkeypatch):
+    module=bridge()
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    monkeypatch.setattr(access,'_POLICY_UID',__import__('os').getuid())
+    path=tmp_path/'environment'
+    path.write_text('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE=/one\nBLUEPRINT_SCENE_RETIREMENT_POLICY_FILE=/two\n')
+    path.chmod(0o640)
+    monkeypatch.setattr(module,'ENVIRONMENT_FILE',path)
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',raising=False)
+    with pytest.raises(ValueError):
+        module.load_installed_environment()
+    assert 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE' not in __import__('os').environ
+
+
+def test_installer_stages_the_actual_whole_scene_script():
+    root=Path(__file__).resolve().parents[1]
+    assert '"$source_dir"/door-scene-lifecycle.sh' in (root/'deploy/operator-door/install.sh').read_text()
+    source=(root/'deploy/operator-door/door-scene-lifecycle.sh').read_text()
+    assert 'blueprint_pipeline.task_evaluation_scene_retirement_cli' in source
+    assert 'DOOR_PLAN_PATH' not in source and 'DOOR_POLICY_PATH' not in source
