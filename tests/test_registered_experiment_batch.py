@@ -6,6 +6,7 @@
 import json
 from pathlib import Path
 
+from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
 from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
 from tests.test_registered_experiment_birth import birth
 
