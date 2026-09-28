@@ -132,11 +132,15 @@ def connected_native_terminal():
 
 
 @pytest.mark.slow
-def test_terminal_scene_report_acquires_exact_members_once_with_unique_inode_bytes(tmp_path, monkeypatch):
+def test_terminal_scene_report_acquires_exact_members_once_with_unique_inode_bytes(tmp_path, monkeypatch, record_property):
     # One real-shaped completed scene traverses all retained producer families
     # through the actual planner and advancing clock. No child joins, readers,
     # members, budgets, caps or elapsed-clock semantics are replaced.
     report, args, metadata, elapsed = actual_report(tmp_path, monkeypatch, full_connected_finished_scene())
+    record_property('actual_elapsed_seconds', elapsed)
+    record_property('raw_metadata_records', len(metadata))
+    record_property('raw_metadata_bytes', sum(len(raw) for _, raw in metadata.values()))
+    record_property('measured_members', len(report['measured_members']))
     historical = report['historical_lineage']
     source = historical['source_family_inventory']
     downstream = source['downstream_inventory']
@@ -187,7 +191,7 @@ def test_terminal_scene_report_acquires_exact_members_once_with_unique_inode_byt
 
 
 @pytest.mark.slow
-def test_actual_cli_connected_graph_keeps_one_budget_and_one_emission_sink(tmp_path, monkeypatch, capsys):
+def test_actual_cli_connected_graph_keeps_one_budget_and_one_emission_sink(tmp_path, monkeypatch, capsys, record_property):
     import json
     from blueprint_pipeline import task_evaluation_scene_lifecycle_cli as cli
     from blueprint_pipeline import task_evaluation_scene_lifecycle_plan as planner
@@ -221,7 +225,9 @@ def test_actual_cli_connected_graph_keeps_one_budget_and_one_emission_sink(tmp_p
     monkeypatch.setattr(os, 'open', guarded)
     start = time.monotonic()
     assert cli.main(['--intent-id', args['intent_id'], '--context-file', str(file.resolve()), '--now', '900000']) == 0
-    assert time.monotonic() - start < 30
+    elapsed = time.monotonic() - start
+    assert elapsed < 30
+    record_property('actual_elapsed_seconds', elapsed)
     report = json.loads(capsys.readouterr().out)
     assert len(budgets) == len(acquired) == 1
     assert acquired[0] is budgets[0]
@@ -233,6 +239,10 @@ def test_actual_cli_connected_graph_keeps_one_budget_and_one_emission_sink(tmp_p
     assert all(sink is roots[0] or roots[0] in sink.ancestors for sink in sinks)
     assert budgets[0].closed and budgets[0].failure is None
     assert budgets[0].limits['values'] == 1_000_000 and budgets[0].duration == 30
+    record_property('actual_budget_counts', json.dumps(dict(budgets[0].counts), sort_keys=True))
+    record_property('root_emission_counts', json.dumps(roots[0].used, sort_keys=True))
+    record_property('native_child_scope_views', len(sinks)-1)
+    record_property('compact_report_bytes', len(json.dumps(report, separators=(',', ':')).encode()))
     assert report['finished_observation']['status'] == 'completed'
     assert report['context_acquisition']['metadata_only'] and report['context_acquisition']['anchor_coalesced']
     assert 'historical_lineage' in report and len(report['measured_members']) >= 20
