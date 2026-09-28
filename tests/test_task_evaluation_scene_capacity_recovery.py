@@ -272,3 +272,161 @@ def test_capacity_blocker_is_not_treated_as_a_dead_machine():
     )
 
     assert dead_machine_launch_failure(_dead_machine_result(blockers=[BLOCKER])) is False
+
+
+def _measured_refusal(tmp_path, monkeypatch):
+    """The fixture's launch, refused by measured admission instead of the ceiling."""
+    from blueprint_pipeline import task_evaluation_scene_configuration_output_admission as output
+    intent, first, observed, config, evidence = capacity_fixture(tmp_path, monkeypatch)
+    result_path = Path(observed["records"]["result"]["path"])
+    bundle = observed["values"]["bundle"]
+    _download, upload = _provider_transfer_byte_budget(bundle)
+    hold = upload + 512 * 1024**2
+    floor = 8 * 1024**3
+    gate = output.open_scene_configuration_output_admission(
+        job=result_path.parent, receipt=bundle,
+        read_envelope=lambda _r: {"request": {"scene": {"website_native_inputs": {"x": 1}}}},
+        expected_upload_bytes=upload, diagnostic_only=False, retain_warm_session=False,
+        api_pretraining=False, cpu_prestage=False,
+        disk_usage_provider=lambda _p: shutil._ntuple_diskusage(
+            100 * 1024**3, 100 * 1024**3 - floor - hold + 1, floor + hold - 1),
+        environment={output.OUTPUT_ADMISSION_ENV: "measured",
+                     "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT": str(tmp_path / "reservations")},
+    )
+    record = gate.before_allocation(lambda **_kwargs: pytest.fail("the 5U formula was consulted"))
+    assert record["blockers"] == [output.BUDGET_EXCEEDED_BLOCKER]
+    producer = json.loads(result_path.read_text())
+    producer.update(blockers=[output.BUDGET_EXCEEDED_BLOCKER], provider_output_disk_capacity=record)
+    refs = dict(observed["records"])
+    refs["result"] = write(result_path, producer, "result_digest")
+    return first, refs, config, hold, observed["_free_bytes"]
+
+
+def test_capacity_recovery_rechecks_by_role(tmp_path, monkeypatch):
+    """A measured pre-allocation refusal is a $0 capacity failure like the ceiling one,
+    and it is re-checked through the scene_configuration_output ledger projection
+    (bulk floor, live reservations, then U + 512 MiB), never through 5U."""
+    from blueprint_pipeline import control_plane_capacity_controller as controller
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    first, refs, config, hold, free = _measured_refusal(tmp_path, monkeypatch)
+    observation = capacity.observe_failure(
+        attempt=first, link_path=Path(refs["link"]["path"]),
+        preparation_path=Path(refs["preparation"]["path"]),
+        factory_path=Path(refs["factory"]["path"]), config=config)
+    assert observation["recoverable"] is True and observation["kind"] == capacity.KIND
+    assert observation["blockers"] == ["scene_configuration_provider_output_disk_budget_exceeded"]
+    # The CPU side is not what this test measures.
+    monkeypatch.setattr(controller, "whole_chain_admission", lambda *_a, **_k: {
+        "required_workspace_bytes": 0,
+        "measurement": {"status": "measured", "floor_bytes": 0, "reserved_bytes": 0,
+                        "free_bytes": 10**15}})
+    floor, overhead = 8 * 1024**3, observation["values"]["bundle"]["bundle_size_bytes"]
+    upload = _provider_transfer_byte_budget(observation["values"]["bundle"])[1]
+    ceiling = _provider_output_disk_requirements(upload)["required_free_bytes_before_download"]
+    free["value"] = floor + hold + overhead
+    admitted = capacity.capacity_admission(observation, config, 103)
+    assert admitted["status"] == "admitted"
+    assert admitted["output_required_free_bytes"] == floor + hold + overhead
+    assert admitted["output_role_projection"]["role"] == "scene_configuration_output"
+    free["value"] -= 1
+    assert capacity.capacity_admission(observation, config, 103)["status"] == "waiting_for_capacity"
+    # Room for the old 5U ceiling is not room for this hold above the bulk floor.
+    free["value"] = ceiling + overhead
+    assert free["value"] < floor + hold + overhead
+    assert capacity.capacity_admission(observation, config, 103)["status"] == "waiting_for_capacity"
+    # Another job's live reservation on the same volume is counted, as admission will.
+    free["value"] = floor + hold + overhead
+    usage = shutil.disk_usage
+    with disk.reserve_control_plane_disk(
+        "launch_dispatch", target_root=Path(config["launch_execution_root"]), expected_bytes=1,
+        reservation_root=config["preparation_worker"]["disk_reservation_root"],
+        disk_usage=lambda _p: usage(_p)):
+        assert capacity.capacity_admission(observation, config, 103)["status"] == "waiting_for_capacity"
+    assert capacity.capacity_admission(observation, config, 103)["status"] == "admitted"
+
+
+@pytest.mark.parametrize("fault", ["hold", "phase", "scope", "room", "extra_blocker"])
+def test_a_changed_measured_refusal_cannot_authorize_recovery(tmp_path, monkeypatch, fault):
+    first, refs, _config, _hold, _free = _measured_refusal(tmp_path, monkeypatch)
+    path = Path(refs["result"]["path"])
+    value = json.loads(path.read_text())
+    record = value["provider_output_disk_capacity"]
+    if fault == "hold":
+        record["hold_bytes"] -= 1
+    elif fault == "phase":
+        record["phase"] = "before_extraction"
+    elif fault == "scope":
+        record["measurement_path"] = str(tmp_path / "another-job")
+    elif fault == "room":
+        record["available_bytes"] = record["required_available_bytes"]
+    else:
+        value["blockers"].append("scientific_failure")
+    refs["result"] = write(path, value, "result_digest")
+    with pytest.raises(ValueError):
+        capacity.validate_source(refs, prior_attempt=first)
+
+
+def test_a_measured_dead_machine_is_rechecked_by_role_not_5u(tmp_path, monkeypatch):
+    """Dead-machine auto-retry treats a measured run like its ceiling twin in every
+    respect but the output re-check, which follows how the successor will be
+    admitted: the role projection for a measured run, the recorded 5U otherwise."""
+    from blueprint_pipeline import control_plane_capacity_controller as controller
+    from blueprint_pipeline import task_evaluation_scene_configuration_output_admission as output
+    gib = 1024**3
+    bundle = {"bundle_size_bytes": 1_260_479_494, "bundle_path": str(tmp_path / "removed.zip")}
+    upload = _provider_transfer_byte_budget(bundle)[1]
+    hold, floor, overhead = upload + 512 * 1024**2, 8 * gib, bundle["bundle_size_bytes"]
+    free = {"value": 90 * gib}
+
+    def usage(_path):
+        return shutil._ntuple_diskusage(100 * gib, 100 * gib - free["value"], free["value"])
+
+    monkeypatch.setattr(capacity.shutil, "disk_usage", usage)
+    monkeypatch.setattr(controller, "whole_chain_admission", lambda *_a, **_k: {
+        "required_workspace_bytes": 0,
+        "measurement": {"status": "measured", "floor_bytes": 0, "reserved_bytes": 0,
+                        "free_bytes": 10**15}})
+    launches, ledger = tmp_path / "launches", tmp_path / "ledger"
+    job = launches / "configuration-one-launch" / "allocator/scene-configuration-job"
+    job.mkdir(parents=True)
+    (tmp_path / "cpu").mkdir()
+    gate = output.open_scene_configuration_output_admission(
+        job=job, receipt=bundle,
+        read_envelope=lambda _r: {"request": {"scene": {"website_native_inputs": {"x": 1}}}},
+        expected_upload_bytes=upload, diagnostic_only=False, retain_warm_session=False,
+        api_pretraining=False, cpu_prestage=False, disk_usage_provider=usage,
+        environment={output.OUTPUT_ADMISSION_ENV: "measured",
+                     "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT": str(ledger)})
+    admitted_record = gate.before_allocation(lambda **_k: pytest.fail("5U consulted"))
+    gate.release("blocked")
+    assert admitted_record["status"] == "ready" and admitted_record["hold"] == "held"
+    requirements = _provider_output_disk_requirements(upload)
+    dead = {"schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+            "status": "blocked", "continuing_spend_from_this_run": False,
+            "blockers": ["scene_configuration_provider_not_completed",
+                         "scene_configuration_provider_output_zip_invalid",
+                         "vast_heartbeat_instance_exited"],
+            "provider_output_disk_requirements": requirements}
+    measured = {**dead, "provider_output_disk_capacity": {
+        "before_allocation_and_staging": admitted_record, "before_extraction": {}}}
+    ceiling = {**dead, "provider_output_disk_capacity": {
+        "before_allocation_and_staging": {
+            "schema_version": "scene_configuration_provider_output_disk_capacity.v1"},
+        "before_extraction": {}}}
+    assert capacity.dead_machine_launch_failure(measured) is True
+    assert capacity.dead_machine_launch_failure(ceiling) is True
+    config = {"factory_output_root": str(tmp_path / "cpu"), "launch_execution_root": str(launches),
+              "preparation_worker": {"disk_reservation_root": str(ledger)}}
+
+    def status(result):
+        observation = {"values": {"bundle": bundle, "result": result}, "kind": "provider_dead_machine"}
+        return capacity.capacity_admission(observation, config, 100)["status"]
+
+    free["value"] = floor + hold + overhead
+    assert free["value"] < requirements["required_free_bytes_before_download"] + overhead
+    assert status(measured) == "admitted"
+    assert status(ceiling) == "waiting_for_capacity"
+    free["value"] -= 1
+    assert status(measured) == "waiting_for_capacity"
+    free["value"] = requirements["required_free_bytes_before_download"] + overhead
+    assert status(ceiling) == "admitted"

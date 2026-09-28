@@ -552,6 +552,30 @@ def recorded_preallocation_refusal(
     return dict(record) if valid else None
 
 
+def measured_admission_record(result: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The measured pre-allocation record a sealed lane result carries, or None.
+
+    A refusal carries it as ``provider_output_disk_capacity``; a run that got
+    past admission nests it under ``before_allocation_and_staging``. None
+    means the run was admitted by the ceiling formula.
+    """
+
+    capacity = result.get("provider_output_disk_capacity")
+    if not isinstance(capacity, Mapping):
+        return None
+    record = (
+        capacity if "schema_version" in capacity
+        else capacity.get("before_allocation_and_staging")
+    )
+    if (
+        isinstance(record, Mapping)
+        and record.get("schema_version") == ADMISSION_SCHEMA_VERSION
+        and record.get("mode") == MEASURED_MODE
+    ):
+        return record
+    return None
+
+
 def output_role_projection(
     *,
     output_path: Path,
@@ -590,6 +614,7 @@ __all__ = [
     "configured_output_admission_mode",
     "cpu_prefix_peak_bytes",
     "extraction_requirement",
+    "measured_admission_record",
     "open_scene_configuration_output_admission",
     "output_role_projection",
     "recorded_preallocation_refusal",

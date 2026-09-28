@@ -2,6 +2,9 @@
 
 Historical bundle receipts prove what failed; a removed historical ZIP never
 becomes executable input. Every successor still builds and admits a new bundle.
+A ceiling refusal is re-checked against its recorded 5U + 512 MiB; a measured
+one (BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured) through the
+scene_configuration_output ledger projection its hold is admitted by.
 """
 from __future__ import annotations
 
@@ -19,6 +22,10 @@ from .task_evaluation_scene_progression_state import require, safe_path
 
 KIND = "preallocation_capacity"
 BLOCKER = "scene_configuration_provider_output_disk_capacity_insufficient"
+#: The same $0 refusal under measured output admission: the ledger could not
+#: hold the output's upload ceiling plus 512 MiB before staging.
+MEASURED_BLOCKER = "scene_configuration_provider_output_disk_budget_exceeded"
+PREALLOCATION_BLOCKERS = ([BLOCKER], [MEASURED_BLOCKER])
 CREDIT_KIND = "preallocation_credit"
 #: A scene-configuration launch whose provider machine was created and then produced
 #: nothing. The disk-capacity path above is strictly a $0 no-instance refusal, so this
@@ -153,7 +160,7 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
             and result.get("authority_digest") == authority.get("authority_digest")
             and result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
             and result.get("status") == "blocked"
-            and (result.get("blockers") == [BLOCKER] if kind == KIND
+            and (result.get("blockers") in PREALLOCATION_BLOCKERS if kind == KIND
                  else credit_launch_failure(result) if kind == CREDIT_KIND
                  else auth.initial_authentication_failure(result) is not None if kind == auth.KIND
                  else kind == "provider_dead_machine" and dead_machine_launch_failure(result))
@@ -181,6 +188,14 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
         # measurement to reopen. Every identity and binding assertion above still ran.
         return values
     _download, upload = _provider_transfer_byte_budget(bundle)
+    if result.get("blockers") == [MEASURED_BLOCKER]:
+        from .task_evaluation_scene_configuration_output_admission import (
+            recorded_preallocation_refusal,
+        )
+        require(recorded_preallocation_refusal(
+            result, maximum_archive_bytes=upload, job_dir=Path(refs["result"]["path"]).parent,
+        ) is not None, "capacity_phase_or_requirement_invalid")
+        return values
     requirements = _provider_output_disk_requirements(upload)
     disk = result.get("provider_output_disk_capacity") or {}
     require(result.get("expected_provider_upload_bytes") == upload
@@ -218,7 +233,7 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
             continue
         # Surface other terminal failures, but do not turn them into capacity retries.
         kind = None
-        if result.get("blockers") == [BLOCKER]:
+        if result.get("blockers") in PREALLOCATION_BLOCKERS:
             kind = "preallocation_capacity"
         elif credit_launch_failure(result):
             kind = CREDIT_KIND
@@ -261,9 +276,19 @@ def capacity_admission(observation, config, now):
     # both terms explicitly. Exact future bundle/capsule gates still run normally.
     cpu_required = measurement["floor_bytes"] + measurement["reserved_bytes"] + max(
         chain["required_workspace_bytes"], ROLE_FOOTPRINT_BYTES["semantic_pretraining"])
-    output_required = result["provider_output_disk_requirements"]["required_free_bytes_before_download"]
     output_path = safe_path(config["launch_execution_root"])
-    output_free = shutil.disk_usage(output_path).free
+    measured, projection = _measured_output_requirement(bundle, result), None
+    if measured is None:
+        output_required = result["provider_output_disk_requirements"]["required_free_bytes_before_download"]
+        output_free = shutil.disk_usage(output_path).free
+    else:
+        # A measured run is re-checked the way its successor will be admitted:
+        # the role's ledger projection (floor, live reservations), never 5U.
+        from .task_evaluation_scene_configuration_output_admission import output_role_projection
+        projection = output_role_projection(
+            output_path=output_path, reservation_root=reservation_root,
+            required_available_bytes=measured, disk_usage=shutil.disk_usage)
+        output_required, output_free = projection["required_free_bytes"], projection["free_bytes"]
     passed = measurement["free_bytes"] >= cpu_required + overhead and output_free >= output_required + overhead
     credit = None
     if observation.get("kind") == CREDIT_KIND:
@@ -287,8 +312,25 @@ def capacity_admission(observation, config, now):
         value["authoring_authentication_admission"] = authentication
     if credit is not None:
         value["provider_credit_admission"] = credit
+    if projection is not None:
+        value["output_role_projection"] = projection
     value["capacity_digest"] = canonical_digest(value, digest_field="capacity_digest")
     return value
+
+
+def _measured_output_requirement(bundle, result):
+    """Bytes a measured run needed above the floor on its volume; None for a ceiling run."""
+    from .task_evaluation_scene_configuration_output_admission import measured_admission_record
+    from .task_evaluation_scene_configuration_provider_artifacts import (
+        PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES, _provider_transfer_byte_budget,
+    )
+    record = measured_admission_record(result)
+    if record is None:
+        return None
+    required = record.get("required_available_bytes")
+    hold = _provider_transfer_byte_budget(bundle)[1] + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+    require(type(required) is int and required >= hold, "capacity_phase_or_requirement_invalid")
+    return required
 
 
 def retain_failure(*, observation, attempt, output_root, admission):
