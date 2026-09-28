@@ -37,7 +37,8 @@ def test_existing_journal_token_cannot_be_replaced_and_expiry_refuses_new_event(
     from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
     from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
     access,_,_=access_fixture(tmp_path,monkeypatch)
-    store=tmp_path/'journals'; store.mkdir(mode=0o700)
+    store=tmp_path/'journals'
+    store.mkdir(mode=0o700)
     now=[100]
     allowance=ActionAllowance(expires_at=200,now=lambda:now[0],monotonic=lambda:0)
     journal=SceneJournal.create(store,token='1'*32,initial={'status':'pending'},allowance=allowance)
