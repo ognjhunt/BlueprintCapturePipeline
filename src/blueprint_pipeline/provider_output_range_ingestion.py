@@ -460,6 +460,31 @@ class CasArchiveSource:
             raise ProviderOutputIngestionError('provider_output_cas_presign_invalid') from None
 
 
+class _RunJournal:
+    """One run's journal file, created by its first row.
+
+    A run that records nothing (a refusal before any write, or a resume with
+    nothing left to do) leaves no file behind, so such runs never count
+    towards the resume's journal-file cap.
+    """
+
+    def __init__(self, meta):
+        self._meta, self._stream = meta, None
+
+    def append(self, name, record):
+        if self._stream is None:
+            self._stream = (self._meta / ('members-' + uuid.uuid4().hex + '.jsonl')).open('x')
+        _append_journal(self._stream, name, record)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if self._stream is not None:
+            self._stream.close()
+        return False
+
+
 def _reserve(reserve, needed):
     try:
         reserve(needed)
@@ -589,10 +614,10 @@ def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selecti
                     _atomic_json(source_path, record)
                 resumed = len(verified)
                 step_bytes = inflate_step_bytes(source.block_bytes)
-                with (meta / ('members-' + uuid.uuid4().hex + '.jsonl')).open('x') as journal:
+                with _RunJournal(meta) as journal:
                     for path, record in verified.items():
                         if path not in records:
-                            _append_journal(journal, path, record)
+                            journal.append(path, record)
                     unwritten = {}
                     for row in pending:
                         partial = _partial_path(meta, row['path'])
@@ -604,7 +629,7 @@ def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selecti
                         sample()
                         record = _materialize_member(remote, row, _safe_destination(members, row['path']),
                                                      _partial_path(meta, row['path']), step_bytes=step_bytes)
-                        _append_journal(journal, row['path'], record)
+                        journal.append(row['path'], record)
                         verified[row['path']] = record
                         needed -= unwritten[row['path']]
                         sample()

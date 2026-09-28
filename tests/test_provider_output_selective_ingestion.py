@@ -206,6 +206,25 @@ def test_resume_refuses_a_different_index_or_contract(tmp_path, indexed):
 
 
 
+
+def test_runs_that_record_nothing_leave_no_journal_and_never_wedge_resume(tmp_path, indexed):
+    archive, index = indexed
+    selection = build_member_selection(index, EPISODES, selection_version=CONSUMERS)
+
+    def refuse(needed):
+        raise ProviderOutputIngestionError("provider_output_disk_reservation_refused")
+
+    for _ in range(300):
+        refused = _ingest(tmp_path, RangeStore(archive), index, selection, reserve=refuse)
+        assert refused["blockers"] == ["provider_output_disk_reservation_refused"]
+    assert not list((tmp_path / "ingestion").glob("members-*.jsonl"))
+
+    result = _ingest(tmp_path, RangeStore(archive), index, selection)
+    assert result["status"] == "materialized", result["blockers"]
+    again = _ingest(tmp_path, RangeStore(archive), index, selection)
+    assert again["status"] == "materialized" and again["resumed_member_count"] == len(EPISODES)
+    assert len(list((tmp_path / "ingestion").glob("members-*.jsonl"))) == 1
+
 def test_interrupted_member_resumes_from_its_partial_file(tmp_path, indexed):
     archive, index = indexed
     frame = _rows(index)["runtime/frames/0001.png"]
