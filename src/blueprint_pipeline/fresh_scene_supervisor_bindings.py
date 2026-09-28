@@ -893,7 +893,7 @@ def materialize_fresh_scene_semantic_teacher_edit_request(
     output_path: str | Path,
     selected_task_ids: Sequence[str] | None = None,
     object_absent_reference_receipt_paths: Sequence[str | Path] = (),
-    prompt_policy: str = "generic_masked_object_absent_background_completion_v2",
+    prompt_policy: str = "generic_masked_object_absent_background_completion_v3",
     output_format: str = "png",
     retry_count: int = 0,
     roots: Sequence[Path] | None = None,
@@ -1266,7 +1266,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     teacher.add_argument(
         "--prompt-policy",
-        default="generic_masked_object_absent_background_completion_v2",
+        default="generic_masked_object_absent_background_completion_v3",
     )
     teacher.add_argument("--output-format", default="png")
     teacher.add_argument("--retry-count", type=int, default=0)

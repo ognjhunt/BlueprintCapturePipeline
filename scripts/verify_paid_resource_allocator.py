@@ -50,7 +50,10 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
     "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
+    "src/blueprint_pipeline/native_g1_paid_campaign.py",
+    "src/blueprint_pipeline/native_g1_team_paid_policy.py",
     "src/blueprint_pipeline/paid_resource_allocator.py",
+    "src/blueprint_pipeline/policy_canary_allocator_lane.py",
     "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
@@ -60,7 +63,9 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
     "src/blueprint_pipeline/teleport_paid_allocator.py",
+    "src/blueprint_pipeline/website_task_context.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
@@ -68,7 +73,10 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
     "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
     "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
+    "src/blueprint_pipeline/native_g1_paid_campaign.py",
+    "src/blueprint_pipeline/native_g1_team_paid_policy.py",
     "src/blueprint_pipeline/paid_resource_allocator.py",
+    "src/blueprint_pipeline/policy_canary_allocator_lane.py",
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
     "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
@@ -77,6 +85,7 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
     "src/blueprint_pipeline/teleport_paid_allocator.py",
 }
 APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {

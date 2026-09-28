@@ -13,6 +13,8 @@ from collections.abc import Mapping
 
 
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
+    "native_task_camera_start_configuration.py",
+    "franka_kinematics.py",
     "articulation_graph_contract.py",
     "articulated_control_planner.py",
     "decision_evidence_contracts.py",
@@ -20,6 +22,12 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_articulated_motion_geometry.py",
     "native_articulated_task_state.py",
     "native_task_construction_plan.py",
+    # native_task_construction_plan imports the retreat planner at module level;
+    # the bundle must ship it wherever the plan ships or the pod fails at import.
+    "adp_rigid_retreat_scoring.py",
+    "native_task_construction_authored_contract.py",
+    "native_task_construction_validation.py",
+    "native_task_rigid_gate_evaluation.py",
     "native_franka_pose_servo.py",
     "native_franka_grasp_geometry.py",
     "native_franka_action_math.py",
@@ -27,14 +35,45 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "rigid_frame_transforms.py",
     "native_task_arena_readback.py",
     "native_task_arena_device_readback.py",
+    "native_task_arena_dependency_contract.py",
     "native_task_arena_import_scope.py",
+    "native_task_robot_registry.py",
+    "native_g1_embodiment.py",
+    "native_g1_usd_dependency_closure.py",
+    "gear_sonic_joint_order_contract.py",
     "native_task_arena_preconstruction.py",
     "native_task_arena_runtime.py",
+    "native_rigid_friction_scenario.py",
+    "native_task_direct_camera_aim.py",
     "native_task_isaaclab_launch.py",
     "native_task_camera_observability.py",
+    "native_task_frame_display_encoding.py",
+    # measure_native_task_camera_observability imports the framing
+    # expectation module lazily, so the closure import probe cannot see
+    # this edge; ship it beside observability everywhere observability
+    # ships or the pod fails at snapshot time, mid paid run.
+    "native_task_camera_framing_expectation.py",
+    "appearance_render_backend.py",
+    "native_task_nurec_render_setup.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
     "native_task_torch_runtime_lock.py",
+    "native_task_g1_runtime_lock.py",
+    # The warm construction-repair loop invokes cuRobo as a separate process
+    # before the next native attempt.  Ship the exact typed boundary and lazy
+    # service entry point; cuRobo itself is independently source-pinned and
+    # must pass its GPU runtime probe before use.
+    "task_evaluation_collision_aware_candidate_generation.py",
+    "task_evaluation_curobo_candidate_generator.py",
+    "task_evaluation_curobo_candidate_service.py",
+    "task_evaluation_control_search_funnel.py",
+    "task_evaluation_isaaclab_control_sweep.py",
+    "native_task_isaaclab_control_sweep_runtime.py",
+    "native_task_arena_control_sweep_worker.py",
+    "native_task_curobo_path_execution.py",
+    "native_task_servo_command_limits.py",
+    "native_construction_terminal_feedback_contract.py",
+    "native_task_arena_feedback_bootstrap_runtime.py",
 )
 
 RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(
@@ -42,12 +81,26 @@ RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(
         {
             *CONSTRUCTION_RUNTIME_MODULE_NAMES,
             "native_task_arena_construction_worker.py",
+            "native_task_wrist_camera_mount_sweep.py",
             "rigid_frame_transforms.py",
         }
     )
 )
 
+DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
+    sorted(
+        {
+            *RUNTIME_PREFLIGHT_MODULE_NAMES,
+            "native_task_arena_runtime_preflight_worker.py",
+            "task_evaluation_rigid_destination_native_observation.py",
+        }
+    )
+)
+
 CONTROLS_RUNTIME_MODULE_NAMES = (
+    "native_task_camera_start_configuration.py",
+    "franka_kinematics.py",
+    "policy_scientific_reset.py",
     "adp009d_control_episode.py",
     "adp009d_contact_envelope.py",
     "adp009d_newton_gripper_drive.py",
@@ -56,11 +109,25 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "adp009d_isaac_episode_adapter.py",
     "adp009d_task_scoring.py",
     "adp_task_scoring.py",
+    "adp_articulated_task_success_contract.py",
+    "adp_rigid_task_scoring.py",
+    "adp_rigid_retreat_scoring.py",
+    "task_evaluation_surface_target.py",
+    "native_rigid_episode_telemetry.py",
+    "native_policy_canary_control_gate.py",
+    "task_evaluation_control_stage_policy.py",
+    "native_task_arena_controls_worker.py",
+    "native_policy_canary_matrix_gate.py",
+    "native_policy_canary_witness_delivery.py",
+    "provider_signed_object_binding.py",
+    "task_control_diagnostic_boundary.py",
     "articulation_graph_contract.py",
+    "articulated_control_planner.py",
     "decision_evidence_contracts.py",
     "episode_visual_evidence.py",
     "groot_n17_droid_policy_runtime.py",
     "native_articulated_motion_geometry.py",
+    "native_articulated_construction_plan.py",
     "native_articulated_task_state.py",
     "native_franka_action_math.py",
     "native_franka_pose_servo.py",
@@ -73,26 +140,98 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_franka_global_seed_search.py",
     "native_task_arena_grasp_roll.py",
     "native_task_arena_construction_worker.py",
+    "native_construction_terminal_feedback_contract.py",
+    "native_task_arena_feedback_bootstrap_runtime.py",
+    "native_task_curobo_path_execution.py",
+    "native_task_arena_dependency_contract.py",
     "native_task_arena_import_scope.py",
+    "native_task_robot_registry.py",
+    "native_g1_embodiment.py",
+    "native_g1_usd_dependency_closure.py",
+    "gear_sonic_joint_order_contract.py",
     "native_task_arena_preconstruction.py",
     "native_task_arena_device_readback.py",
     "native_task_arena_readback.py",
     "native_task_arena_runtime.py",
+    "native_rigid_friction_scenario.py",
+    "native_task_direct_camera_aim.py",
     "native_task_isaaclab_launch.py",
     "native_task_camera_observability.py",
+    "native_task_frame_display_encoding.py",
+    # measure_native_task_camera_observability imports the framing
+    # expectation module lazily, so the closure import probe cannot see
+    # this edge; ship it beside observability everywhere observability
+    # ships or the pod fails at snapshot time, mid paid run.
+    "native_task_camera_framing_expectation.py",
+    "native_task_construction_plan.py",
+    "native_task_construction_authored_contract.py",
+    "native_task_construction_validation.py",
+    "native_task_rigid_gate_evaluation.py",
+    "appearance_render_backend.py",
+    "native_task_nurec_render_setup.py",
+    "native_task_rigid_controls.py",
     "native_task_episode_environment.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
     "native_task_torch_runtime_lock.py",
+    "native_task_g1_runtime_lock.py",
+    "native_task_servo_command_limits.py",
+    "task_evaluation_collision_aware_candidate_generation.py",
+    "task_evaluation_curobo_candidate_generator.py",
+    "task_evaluation_curobo_candidate_service.py",
+    "task_evaluation_control_search_funnel.py",
+    "task_evaluation_isaaclab_control_sweep.py",
+    "native_task_isaaclab_control_sweep_runtime.py",
+    "native_task_arena_control_sweep_worker.py",
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    "native_g1_humanoidarena_interface.py",
+    "native_g1_humanoidarena_policy_client.py",
+    "native_g1_joint_episode_environment.py",
+    "native_g1_navigation_goal.py",
+    "native_g1_official_sonic_target_bridge.py",
+    "native_g1_run_preflight.py",
+    "native_g1_shared_scene_episode.py",
+    "native_g1_policy_server_supervisor.py",
+    "native_g1_pi_tokenizer_assets.py",
+    "native_g1_runtime_assembly.py",
+    "native_g1_sonic_cuda_runtime.py",
+    "native_task_asset_composition_gate.py",
+    "native_task_composition_diagnostic.py",
+    "native_task_composition_worker.py",
+    "adp009d_isaac_runtime.py",
+    "adp009d_approach_capture.py",
+    "adp009d_hold_trace.py",
+    "adp009d_newton_collision_adapter.py",
+    "policy_canary_worker_evidence.py",
+    "task_object_native_settle_gate.py",
+    "task_object_native_settle_runtime.py",
+    "policy_canary_media_integrity.py",
+    "policy_scientific_reset.py",
+    "policy_request_evidence.py",
+    "policy_interface_binding.py",
+    "policy_paired_summary.py",
     "adp009d_policy_episode.py",
+    "adp009d_policy_episode_evidence.py",
+    "adp009d_policy_episode_native_validation.py",
     "adp009d_droid_action_execution.py",
+    # Imported as ``.adp009d_groot_worker_identity`` by the GR00T runtime and
+    # by the rights module inside the package; the flat root copy used by the
+    # provisioning script does not satisfy a package-relative import.
+    "adp009d_groot_worker_identity.py",
     "adp009d_policy_rights.py",
     "droid_policy_bridge.py",
+    "droid_policy_canary_embodiment.py",
     "groot_n17_wire_client.py",
     "openpi_droid_policy_runtime.py",
+    "policy_episode_trace_evidence.py",
+    "policy_episode_lifecycle.py",
+    # Policy sessions perform the same native camera-mount sweep as the
+    # render-only preflight before either model client is loaded.
+    "native_task_arena_runtime_preflight_worker.py",
+    "native_task_wrist_camera_mount_sweep.py",
+    "native_task_rtx_streaming_guard.py",
 )
 
 POLICY_RUNTIME_MODULE_NAMES = tuple(
@@ -113,6 +252,12 @@ class NativeTaskArenaExecutionContract:
 
 
 EXECUTION_MODE_CONTRACTS = {
+    "destination_qualification": NativeTaskArenaExecutionContract(
+        expected_output_filename=(
+            "task_evaluation_rigid_destination_native_observation.v1.json"
+        ),
+        runtime_module_names=DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES,
+    ),
     "runtime_preflight": NativeTaskArenaExecutionContract(
         expected_output_filename="native_task_arena_runtime_preflight.v1.json",
         runtime_module_names=RUNTIME_PREFLIGHT_MODULE_NAMES,
@@ -148,6 +293,9 @@ NATIVE_TASK_ARENA_POLICY_CANDIDATES = frozenset(
 )
 
 CONTROLS_RESULT_FILENAME = "native_task_arena_control_result.v1.json"
+POLICY_CANARY_RESULT_FILENAME = (
+    "native_task_arena_policy_canary_session_result.v1.json"
+)
 CONTROLS_RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 DOWNSTREAM_DIAGNOSTIC_RESULT_SCHEMA_VERSION = (
     "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
@@ -180,8 +328,40 @@ def native_task_arena_execution_transport_completed(
     a policy or ordinary controls result cannot borrow this transport status.
     """
 
+    if expected_output_filename == "native_g1_team_provider_result.v1.json":
+        # This proves transport only. The paid controller must reopen the real
+        # selected worker's score/frame/video bytes and settle resource costs.
+        from .decision_evidence_contracts import canonical_digest
+        verified = result.get("verified_output")
+        return (
+            result.get("schema_version") == "native_g1_team_provider_result.v1"
+            and result.get("status") == "completed_development_only"
+            and result.get("claim_ceiling") == "development_only"
+            and result.get("candidate_policy_queried") is True
+            and result.get("provider_teardown_verified") is False
+            and result.get("official_billing_reconciled") is False
+            and result.get("public_redistribution_authorized") is False
+            and isinstance(verified, Mapping)
+            and verified.get("status") == "verified_development_only"
+            and type(verified.get("policy_query_count")) is int
+            and verified["policy_query_count"] > 0
+            and result.get("result_digest") == canonical_digest(result, digest_field="result_digest")
+        )
     if result.get("status") == "completed":
         return True
+    if expected_output_filename == POLICY_CANARY_RESULT_FILENAME:
+        return (
+            result.get("status")
+            == "runtime_completed_unqualified_pending_closeout"
+            and result.get("schema_version")
+            == "native_task_arena_policy_canary_session_result.v1"
+            and result.get("run_kind") == "internal_policy_canary"
+            and result.get("claim_ceiling") == "diagnostic_policy_execution"
+            and result.get("learned_policy_rollout_count") == 20
+            and result.get("candidate_policy_queried") is True
+            and result.get("scene_promotion_performed") is False
+            and result.get("official_ranking_performed") is False
+        )
     if (
         expected_output_filename != CONTROLS_RESULT_FILENAME
         or result.get("status") != "diagnostic_completed"
@@ -270,6 +450,7 @@ def required_archive_entries(execution_mode: str) -> set[str]:
 __all__ = [
     "CONSTRUCTION_RUNTIME_MODULE_NAMES",
     "CONTROLS_RUNTIME_MODULE_NAMES",
+    "DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES",
     "CONTROLS_RESULT_FILENAME",
     "CONTROLS_RESULT_SCHEMA_VERSION",
     "DOWNSTREAM_DIAGNOSTIC_RESULT_SCHEMA_VERSION",

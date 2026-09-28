@@ -1,0 +1,14 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-launch-preparation.timer.json
+Description=Retry no-spend Task Evaluation preparations waiting for disk capacity
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+AccuracySec=30s
+Unit=blueprint-task-evaluation-launch-preparation.service
+
+[Install]
+WantedBy=timers.target

@@ -27,6 +27,184 @@ def require_contains(text: str, needle: str, description: str) -> None:
         fail(f"missing {description}: {needle}")
 
 
+PUBSUB_SERVICE_AGENT_LOCAL = (
+    'pubsub_service_agent = "serviceAccount:service-${data.google_project.current.number}'
+    '@gcp-sa-pubsub.iam.gserviceaccount.com"'
+)
+DEAD_LETTER_SERVICE_AGENT_GRANTS = (
+    (
+        'resource "google_pubsub_topic_iam_member" "pipeline_dlq_pubsub_agent_publisher" {',
+        (
+            "topic = google_pubsub_topic.pipeline_dlq.name",
+            'role = "roles/pubsub.publisher"',
+            "member = local.pubsub_service_agent",
+        ),
+        "Pub/Sub service agent publisher on the dead-letter topic",
+    ),
+    (
+        'resource "google_pubsub_subscription_iam_member" '
+        '"pipeline_handoff_listener_pubsub_agent_subscriber" {',
+        (
+            "subscription = google_pubsub_subscription.pipeline_handoff_listener.name",
+            'role = "roles/pubsub.subscriber"',
+            "member = local.pubsub_service_agent",
+        ),
+        "Pub/Sub service agent subscriber on the handoff subscription",
+    ),
+)
+
+
+def terraform_block_body(text: str, header: str) -> str | None:
+    """Return the body of the first block opened by ``header``, or None."""
+
+    start = text.find(header)
+    if start < 0:
+        return None
+    body_start = start + len(header)
+    depth = 1
+    for index in range(body_start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[body_start:index]
+    return None
+
+
+DEPLOY_PROJECT_NUMBER_LOOKUP = "gcloud projects describe \"$PROJECT_ID\" --format='value(projectNumber)'"
+DEPLOY_PUBSUB_SERVICE_AGENT_IDENTITY = (
+    'PUBSUB_SERVICE_AGENT="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"'
+)
+DEPLOY_PUBSUB_SERVICE_AGENT_MEMBER = '--member "$PUBSUB_SERVICE_AGENT"'
+DEPLOY_DEAD_LETTER_SERVICE_AGENT_BINDINGS = (
+    (
+        "gcloud pubsub topics add-iam-policy-binding pipeline-trigger-dlq",
+        '--role "roles/pubsub.publisher"',
+        "deploy Pub/Sub service agent publisher on the dead-letter topic",
+    ),
+    (
+        "gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener",
+        '--role "roles/pubsub.subscriber"',
+        "deploy Pub/Sub service agent subscriber on the handoff subscription",
+    ),
+)
+
+
+def shell_commands(text: str) -> list[str]:
+    """Logical shell lines: backslash continuations joined, whitespace collapsed."""
+
+    return [compact(line).strip() for line in re.sub(r"\\\r?\n", " ", text).splitlines()]
+
+
+def missing_deploy_dead_letter_service_agent_bindings(deploy_text: str) -> list[str]:
+    """Describe each deploy.sh piece the dead-letter grants need that is missing.
+
+    A binding counts only when one gcloud command names the resource, the
+    service agent as its member and the exact role, so the listener service
+    account's own subscriber grant cannot stand in for the service agent's.
+    """
+
+    commands = shell_commands(deploy_text)
+    missing: list[str] = []
+    if not any(DEPLOY_PROJECT_NUMBER_LOOKUP in command for command in commands):
+        missing.append("deploy project number for the Pub/Sub service agent")
+    if not any(command.startswith(DEPLOY_PUBSUB_SERVICE_AGENT_IDENTITY) for command in commands):
+        missing.append("deploy Pub/Sub service agent identity")
+    for command_prefix, role, description in DEPLOY_DEAD_LETTER_SERVICE_AGENT_BINDINGS:
+        if not any(
+            command.startswith(f"{command_prefix} ")
+            and f" {DEPLOY_PUBSUB_SERVICE_AGENT_MEMBER} " in f" {command} "
+            and f" {role} " in f" {command} "
+            for command in commands
+        ):
+            missing.append(description)
+    return missing
+
+
+def missing_dead_letter_service_agent_iam(terraform_text: str) -> list[str]:
+    """Describe each grant the handoff dead-letter policy needs that is missing.
+
+    Pub/Sub dead-letters a message as its own service agent, which needs
+    publisher on the dead-letter topic and subscriber on the source
+    subscription. Without both, the policy never moves an exhausted handoff.
+    """
+
+    text = compact(terraform_text)
+    missing: list[str] = []
+    if PUBSUB_SERVICE_AGENT_LOCAL not in text:
+        missing.append("Pub/Sub service agent identity (local.pubsub_service_agent)")
+    for header, attributes, description in DEAD_LETTER_SERVICE_AGENT_GRANTS:
+        body = terraform_block_body(text, header)
+        if body is None or any(f" {attribute} " not in f" {body} " for attribute in attributes):
+            missing.append(description)
+    return missing
+
+
+DEAD_LETTER_RETAINED_SUBSCRIPTION_HEADER = 'resource "google_pubsub_subscription" "pipeline_dlq_retained" {'
+DEAD_LETTER_RETAINED_SUBSCRIPTION_ATTRIBUTES = (
+    "topic = google_pubsub_topic.pipeline_dlq.id",
+    # A replay pulls, republishes and only then acknowledges; the default 10 s
+    # deadline would redeliver a message mid-replay.
+    "ack_deadline_seconds = 600",
+    'message_retention_duration = "604800s"',
+    "retain_acked_messages = false",
+    'expiration_policy { ttl = "" }',
+)
+DEAD_LETTER_PUBLISHER_WAITS_FOR_RETENTION = "depends_on = [google_pubsub_subscription.pipeline_dlq_retained]"
+
+
+def missing_dead_letter_retention(terraform_text: str) -> list[str]:
+    """Describe what keeps dead-lettered handoffs recoverable that is missing.
+
+    Pub/Sub keeps a message only for the subscriptions a topic has when the
+    message is published, so a dead-letter topic without one discards every
+    exhausted handoff. The retained subscription keeps them for seven days and
+    never expires, and the service agent may not publish (dead-letter) until it
+    exists.
+    """
+
+    text = compact(terraform_text)
+    missing: list[str] = []
+    body = terraform_block_body(text, DEAD_LETTER_RETAINED_SUBSCRIPTION_HEADER)
+    if body is None or any(
+        f" {attribute} " not in f" {body} " for attribute in DEAD_LETTER_RETAINED_SUBSCRIPTION_ATTRIBUTES
+    ):
+        missing.append("retained dead-letter subscription (7-day retention, never expires)")
+    publisher = terraform_block_body(text, DEAD_LETTER_SERVICE_AGENT_GRANTS[0][0])
+    if publisher is None or f" {DEAD_LETTER_PUBLISHER_WAITS_FOR_RETENTION} " not in f" {publisher} ":
+        missing.append("dead-letter publisher grant waits for the retained subscription")
+    return missing
+
+
+DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION = "gcloud pubsub subscriptions create pipeline-trigger-dlq-retained"
+DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION_FLAGS = (
+    "--topic pipeline-trigger-dlq",
+    "--ack-deadline 600",
+    "--message-retention-duration 7d",
+    "--expiration-period never",
+)
+
+
+def missing_deploy_dead_letter_retention(deploy_text: str) -> list[str]:
+    """Describe what deploy.sh lacks to keep dead-lettered handoffs recoverable."""
+
+    commands = shell_commands(deploy_text)
+    created = [
+        index
+        for index, command in enumerate(commands)
+        if command.startswith(f"{DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION} ")
+        and all(f" {flag} " in f" {command} " for flag in DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION_FLAGS)
+    ]
+    if not created:
+        return ["deploy retained dead-letter subscription"]
+    publisher_command = DEPLOY_DEAD_LETTER_SERVICE_AGENT_BINDINGS[0][0]
+    granted = [index for index, command in enumerate(commands) if command.startswith(f"{publisher_command} ")]
+    if granted and min(granted) < min(created):
+        return ["deploy creates the retained dead-letter subscription before granting dead-letter access"]
+    return []
+
+
 def has_project_runtime_dependency(text: str, package_name: str) -> bool:
     """Return whether a package is a direct production dependency.
 
@@ -68,8 +246,8 @@ def has_run_e2e_result_binding(text: str) -> bool:
     )
 
 
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+def main(repo_root: Path | None = None) -> None:
+    repo_root = repo_root or Path(__file__).resolve().parents[1]
     pyproject = repo_root / "pyproject.toml"
     listener = repo_root / "src" / "blueprint_pipeline" / "pubsub_handoff_listener.py"
     terraform = repo_root / "deploy" / "terraform" / "main.tf"
@@ -165,6 +343,15 @@ def main() -> None:
         ('output "pubsub_handoff_listener_subscription"', "subscription output"),
     ]:
         require_contains(terraform_text, needle, description)
+    missing_dead_letter_iam = missing_dead_letter_service_agent_iam(terraform_text)
+    if missing_dead_letter_iam:
+        fail(
+            "dead-letter policy cannot move exhausted handoffs; missing "
+            + "; ".join(missing_dead_letter_iam)
+        )
+    missing_retention = missing_dead_letter_retention(terraform_text)
+    if missing_retention:
+        fail("dead-lettered handoffs would be discarded; missing " + "; ".join(missing_retention))
     if 'resource "google_project_iam_member" "pipeline_runner_pubsub_subscriber"' in terraform_text:
         fail("pipeline-runner must not retain project-wide Pub/Sub subscriber IAM")
 
@@ -200,6 +387,15 @@ def main() -> None:
         ("python3 \"$PROJECT_ROOT/scripts/validate_pubsub_handoff_infra.py\"", "deploy preflight validator"),
     ]:
         require_contains(deploy_text, needle, description)
+    missing_deploy_bindings = missing_deploy_dead_letter_service_agent_bindings(deploy_text)
+    if missing_deploy_bindings:
+        fail(
+            "deploy script cannot enable dead-lettering; missing "
+            + "; ".join(missing_deploy_bindings)
+        )
+    missing_deploy_retention = missing_deploy_dead_letter_retention(deploy_text)
+    if missing_deploy_retention:
+        fail("deploy script would discard dead-lettered handoffs; " + "; ".join(missing_deploy_retention))
     runner_grants = deploy_text[
         deploy_text.find("RUNNER_EMAIL=") : deploy_text.find("# The persistent-host listener")
     ]

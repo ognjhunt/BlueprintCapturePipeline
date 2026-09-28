@@ -67,6 +67,16 @@ def test_room_survey_uses_interiorgs_rooms_and_assigns_publisher_objects(
     assert observed["room_assigned_object_count"] == 2
     assert observed["unassigned_object_ids"] == ["30"]
     assert observed["rooms"][0]["publisher_objects"][0]["ins_id"] == "10"
+    assert observed["rooms"][0]["publisher_objects"][0]["aabb_size_m"] == [
+        0.2,
+        0.2,
+        0.2,
+    ]
+    assert len(
+        observed["rooms"][0]["publisher_objects"][0][
+            "oriented_bounding_box"
+        ]["corners_world_m"]
+    ) == 8
     assert observed["rooms"][1]["publisher_objects"][0]["ins_id"] == "20"
     assert observed["source_files"]["labels"]["sha256"].startswith("sha256:")
     assert observed["survey_digest"].startswith("sha256:")
@@ -115,6 +125,7 @@ def test_room_survey_derives_same_room_target_closeups_from_existing_planner(
     closeup = observed["target_closeup"]
     assert closeup["target_ins_id"] == "10"
     assert closeup["target_room_id"] == "room_00"
+    assert closeup["target_aabb_size_m"] == [0.2, 0.2, 0.2]
     assert closeup["camera_count"] >= 4
     assert closeup["planner"] == "scene_placement.perception_views.generate_view_ring"
 

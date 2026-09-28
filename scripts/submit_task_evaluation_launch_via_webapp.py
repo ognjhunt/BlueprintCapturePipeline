@@ -609,7 +609,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--receipt-out", required=True)
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
-    parser.add_argument("--timeout-seconds", type=float, default=30.0)
+    # Allow the WebApp's serial catalog, authority-store, forward, and receipt-store
+    # waits (50s at defaults), within the activation controller's 120s subprocess cap.
+    parser.add_argument("--timeout-seconds", type=float, default=60.0)
     parser.add_argument(
         "--allow-replay",
         action="store_true",

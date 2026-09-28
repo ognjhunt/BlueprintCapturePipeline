@@ -90,6 +90,7 @@ UV_ROOT = "/opt/adp009d-uv"
 # so an exact bundle cannot execute a different package resolver later.
 UV_VERSION = "0.12.5"
 UV_PLATFORM = "x86_64-unknown-linux-gnu"
+UV_VERSION_OUTPUT = f"uv {UV_VERSION} ({UV_PLATFORM})"
 UV_ARCHIVE_SHA256 = "68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2"
 UV_ARCHIVE_URL = (
     f"https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/"
@@ -441,7 +442,7 @@ mkdir -p "$UV_INSTALL_DIR"
 tar -xzf "$UV_ARCHIVE" -C "$UV_INSTALL_DIR" --strip-components=1
 UV="$UV_INSTALL_DIR/uv"
 test -x "$UV"
-test "$("$UV" --version)" = "uv {UV_VERSION}"
+test "$("$UV" --version)" = "{UV_VERSION_OUTPUT}"
 
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:started"
 "$UV" venv --python "{SYSTEM_INTERPRETER}" "{venv_root}"
@@ -508,6 +509,7 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "isaac_interpreter": ISAAC_INTERPRETER,
         "policy_interpreter": f"{policy_venv_root(candidate_id)}/bin/python",
         "uv_version": UV_VERSION,
+        "uv_version_output": UV_VERSION_OUTPUT,
         "uv_archive_url": UV_ARCHIVE_URL,
         "uv_archive_sha256": UV_ARCHIVE_SHA256,
         "checkpoint_root": f"{CHECKPOINT_ROOT}/{candidate_id}",
@@ -746,6 +748,7 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
 
     if (
         receipt.get("uv_version") != UV_VERSION
+        or receipt.get("uv_version_output") != UV_VERSION_OUTPUT
         or receipt.get("uv_archive_url") != UV_ARCHIVE_URL
         or receipt.get("uv_archive_sha256") != UV_ARCHIVE_SHA256
     ):

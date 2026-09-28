@@ -607,7 +607,7 @@ def test_malformed_output_fails_science_but_still_tears_down(tmp_path: Path):
     assert provider.launched is False
 
 
-def test_ambiguous_create_is_failed_and_resolved_only_by_provider_zero(tmp_path: Path):
+def test_ambiguous_create_keeps_its_obligation_without_exact_identity(tmp_path: Path):
     provider = _Provider(launch_status="ambiguous")
     times = iter([1000.0, 1001.0])
     result = run_reconstruction_vast_worker_smoke(
@@ -626,7 +626,7 @@ def test_ambiguous_create_is_failed_and_resolved_only_by_provider_zero(tmp_path:
     assert result["provider_mutations_performed"] == 1
     assert result["provider_zero_verified"] is True
     pending = list((tmp_path / "pending_teardowns").glob("*.json"))
-    assert json.loads(pending[0].read_text(encoding="utf-8"))["status"] == "cancelled_no_allocation"
+    assert json.loads(pending[0].read_text(encoding="utf-8"))["status"] == "open"
 
 
 def test_teardown_failure_keeps_pending_record_and_lane_lease(tmp_path: Path):

@@ -176,8 +176,9 @@ def test_aura_file_conversion_is_digest_bound_and_uses_surflet_api(tmp_path: Pat
         "shader": "ParticleFieldEmissive.mdl",
         "sub_identifier": "ParticleFieldEmissive",
         "apply_inverse_tonemap": False,
-        "apply_srgb_linear": False,
+        "apply_srgb_linear": True,
         "basis": "official_isaac_lab_gaussian_camera_test_asset",
+        "colour_space": "display_referred_srgb",
     }
     assert receipt_path.is_file()
     assert result["receipt_digest"] == canonical_digest(result, digest_field="receipt_digest")
@@ -197,6 +198,6 @@ def test_aura_file_conversion_is_digest_bound_and_uses_surflet_api(tmp_path: Pat
     )
     assert shader.GetAttribute("info:mdl:sourceAsset").Get().path == "ParticleFieldEmissive.mdl"
     assert shader.GetAttribute("inputs:apply_inverse_tonemap").Get() is False
-    assert shader.GetAttribute("inputs:apply_srgb_linear").Get() is False
+    assert shader.GetAttribute("inputs:apply_srgb_linear").Get() is True
     assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
     assert UsdGeom.GetStageMetersPerUnit(stage) == 1.0

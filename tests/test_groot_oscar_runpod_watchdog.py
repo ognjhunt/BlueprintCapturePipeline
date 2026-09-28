@@ -187,6 +187,7 @@ def test_watchdog_rejects_unadmitted_semantic_editor_prefix(
     "prefix",
     (
         "blueprint-native-task-arena-bound-run-",
+        "blueprint-native-task-destination-qualification-bound-run-",
         "blueprint-native-task-controls-bound-run-",
         "blueprint-native-task-policy-bound-run-",
     ),
@@ -1592,3 +1593,19 @@ def test_elapsed_beyond_reservation_retains_open_budget_breach(tmp_path, monkeyp
     snapshot = ledger.snapshot()
     assert snapshot["open_reservation_count"] == 1
     assert snapshot["reservations"][0]["status"] == "open"
+
+
+def test_all_native_allocator_label_prefixes_arm_the_real_watchdog(tmp_path):
+    import ast
+    import inspect
+    from blueprint_pipeline import native_task_arena_vast
+
+    tree = ast.parse(inspect.getsource(native_task_arena_vast))
+    prefixes = {node.value.value for node in ast.walk(tree)
+                if isinstance(node, ast.keyword) and node.arg in {'instance_label_prefix', 'label_prefix'}
+                and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+                and node.value.value.startswith('blueprint-native-task-')}
+    assert 'blueprint-native-task-destination-qualification-' in prefixes
+    for index, prefix in enumerate(sorted(prefixes)):
+        result = arm_watchdog(out_dir=tmp_path / str(index), pod_name_prefix=prefix+'bound-run-', deadline_epoch=watchdog_module.time.time()+300, pid=os.getpid(), provider_name='vast')
+        assert result['status'] == 'armed'

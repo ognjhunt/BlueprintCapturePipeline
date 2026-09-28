@@ -323,8 +323,13 @@ exact action-producing contract is proved.
 Test the frozen task across deterministic start-pose, camera, lighting, object
 pose, friction, and mass variations that stay inside the already qualified
 scene envelope. Preserve one immutable canonical anchor, one-factor diagnosis,
-fixed seeds, admitted visual/material and geometric object cousins, and
-held-out composed cases. Implement this as the reusable ADP simulator
+fixed seeds, a pairwise covering array, targeted interactions, and held-out
+composed cases. The primary exact-workcell matrix keeps the task-object identity
+fixed and excludes cousins; admitted visual/material or geometric cousin suites
+are optional, separately labeled robustness evidence and cannot alter the
+primary score. Follow
+[`EXACT_WORKCELL_VARIATION_MATRIX.md`](EXACT_WORKCELL_VARIATION_MATRIX.md).
+Implement this as the reusable ADP simulator
 evaluation harness used by future runs, not as a scene-specific script. Both
 frozen candidates must receive identical resolved cells and seeds, and the
 zero-action negative plus deterministic scripted positive controls must run on
@@ -351,6 +356,11 @@ Day-21 transition outcome: Aura locality, known-background scoring, exact
 replacement, and typed abstentions are retained. Day-28 gate: the Franka
 two-candidate public-data rehearsal is reproducible. Real metric transfer then
 occurs through the fresh Raw V3.2 capture in ADP-021.
+
+Optional whole-episode learned interpretation is specified in
+[`EPISODE_INTERPRETATION.md`](EPISODE_INTERPRETATION.md). It attaches only after
+the deterministic episode evidence is sealed and cannot change scoring,
+ranking, promotion, or the Day-28 acceptance gate.
 
 ## Partner Proof: Day 7 From Partner-Phase Start
 

@@ -1,6 +1,7 @@
+import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -161,6 +162,81 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
         if "amazonaws.com" in url
     )
     assert all("-value" not in json.dumps(row) for row in source["sources"])
+
+
+def test_repeated_provider_responses_keep_distinct_paths_on_one_digest_inode(
+    tmp_path: Path,
+) -> None:
+    audit_root = tmp_path / "audit"
+    secrets = _secrets(tmp_path)
+    first = reconcile_provider_billing(
+        secrets_dir=secrets,
+        billing_export_path=tmp_path / "guard" / "billing.json",
+        audit_root=audit_root,
+        start_at="2026-01-01T00:00:00Z",
+        now=NOW,
+        transport=_Transport(),
+        **_aws_kwargs(secrets),
+    )
+    second = reconcile_provider_billing(
+        secrets_dir=secrets,
+        billing_export_path=tmp_path / "guard" / "billing.json",
+        audit_root=audit_root,
+        start_at="2026-01-01T00:00:00Z",
+        now=NOW + timedelta(minutes=1),
+        transport=_Transport(),
+        **_aws_kwargs(secrets),
+    )
+
+    first_source = json.loads(Path(first["source_receipt_path"]).read_text())
+    second_source = json.loads(Path(second["source_receipt_path"]).read_text())
+    first_path = Path(first_source["sources"][0]["retained_path"])
+    second_path = Path(second_source["sources"][0]["retained_path"])
+
+    assert first_path != second_path
+    assert first_path.stat().st_ino == second_path.stat().st_ino
+    assert first_path.read_bytes() == second_path.read_bytes()
+    assert first_path.stat().st_mode & 0o777 == 0o600
+    assert first_source["sources"][0]["response_digest"] == second_source["sources"][0][
+        "response_digest"
+    ]
+
+
+def test_existing_digest_object_with_wrong_bytes_blocks_reconciliation(
+    tmp_path: Path,
+) -> None:
+    audit_root = tmp_path / "audit"
+    audit_root.mkdir(mode=0o700)
+    payload = json.dumps([{"amount": 3.25}]).encode()
+    hexadecimal = hashlib.sha256(payload).hexdigest()
+    object_parent = audit_root / "objects" / "sha256" / hexadecimal[:2]
+    object_parent.mkdir(parents=True, mode=0o700)
+    for path in (
+        audit_root / "objects",
+        audit_root / "objects" / "sha256",
+        object_parent,
+    ):
+        path.chmod(0o700)
+    object_path = object_parent / hexadecimal
+    object_path.write_bytes(b"not the bound response")
+    object_path.chmod(0o600)
+    secrets = _secrets(tmp_path)
+
+    with pytest.raises(
+        ProviderBillingReconciliationError,
+        match="provider_billing_audit_response_metadata_invalid|"
+        "provider_billing_audit_response_digest_mismatch",
+    ):
+        reconcile_provider_billing(
+            secrets_dir=secrets,
+            billing_export_path=tmp_path / "guard" / "billing.json",
+            audit_root=audit_root,
+            start_at="2026-01-01T00:00:00Z",
+            now=NOW,
+            transport=_Transport(),
+            **_aws_kwargs(secrets),
+        )
+    assert list(audit_root.glob("20*Z")) == []
 
 
 def test_atomic_service_owned_refresh_is_trusted_by_root_guard(
@@ -478,3 +554,27 @@ def test_aws_billing_loads_only_the_named_canonical_profile(tmp_path: Path) -> N
     receipt = Path(result["source_receipt_path"]).read_text(encoding="utf-8")
     assert "aws_secret_access_key" not in receipt
     assert "test-secret" not in receipt
+
+
+def test_repeated_page_cursor_is_bounded_and_preserves_prior_accounting(tmp_path):
+    secrets = _secrets(tmp_path)
+    export = tmp_path / "export.json"
+    kwargs = dict(secrets_dir=secrets, billing_export_path=export, audit_root=tmp_path / "audit",
+                  start_at="2026-01-01T00:00:00Z", now=NOW, required_providers=("vast",), **_aws_kwargs(secrets))
+    reconcile_provider_billing(**kwargs, transport=_Transport())
+    prior = export.read_bytes()
+    class Loop(_Transport):
+        vast_reads = 0
+        def __call__(self, request, timeout):
+            data = super().__call__(request, timeout)
+            if urlsplit(request.full_url).netloc == "console.vast.ai":
+                self.vast_reads += 1
+                value = json.loads(data)
+                value["next_token"] = "page-two"
+                return json.dumps(value).encode()
+            return data
+    transport = Loop()
+    with pytest.raises(ProviderBillingReconciliationError, match="vast_billing_cursor_invalid"):
+        reconcile_provider_billing(**kwargs, transport=transport)
+    assert transport.vast_reads == 2
+    assert export.read_bytes() == prior

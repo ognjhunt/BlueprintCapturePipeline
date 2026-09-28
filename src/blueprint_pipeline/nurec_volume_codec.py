@@ -36,6 +36,8 @@ GAUSSIAN_KEY_PREFIX = ".gaussians_nodes.gaussians."
 # Arrays a gaussian layer carries, and the trailing dimension each must have.
 # features_specular is 45 because a degree-3 spherical-harmonic radiance keeps
 # 15 non-DC coefficients across 3 channels; features_albedo is the DC term.
+# NuRec stores features_specular coefficient-major as 15 consecutive RGB
+# triplets. This differs from INRIA PLY's three channel-major coefficient bands.
 GAUSSIAN_ARRAY_WIDTHS: dict[str, int] = {
     "positions": 3,
     "rotations": 4,

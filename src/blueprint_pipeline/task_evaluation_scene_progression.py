@@ -1,0 +1,900 @@
+"""Drive persistent scene intent through real no-allocation preparation services."""
+from __future__ import annotations
+
+import argparse
+from copy import deepcopy
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+import time
+from typing import Callable
+
+from . import task_evaluation_scene_intake as intake
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .task_evaluation_public_scene_attempt_factory import materialize_public_scene_attempt, record
+from .task_evaluation_scene_configuration_submission_inputs import read, checked_file
+from .validation_progress import FILENAME as PROGRESS_FILENAME, progress_sink
+from .task_evaluation_scene_progression_state import (
+    advance, atomic_json, intent_lock, load_progression, require, safe_path,
+)
+from .task_evaluation_scene_progression_transport import submit_preparation, read_preparation_status
+
+CONFIG_SCHEMA = "task_evaluation_scene_progression_config.v1"
+CONFIG_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG"
+
+
+@dataclass(frozen=True)
+class SourceResolution:
+    status: str
+    binding_path: Path | None = None
+    machinery_path: Path | None = None
+    materializer: Callable[..., dict] | None = None
+    blockers: tuple[str, ...] = ()
+    analysis_reference: dict | None = None
+
+
+def _reference(ref):
+    require(isinstance(ref, dict) and set(ref) == {"path", "sha256", "size_bytes"}, "reference_invalid")
+    return checked_file(safe_path(ref["path"]), ref)
+
+
+def _put(path, value):
+    path = safe_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    if path.exists():
+        require(read(path) == value, "immutable_record_conflict")
+    else:
+        intake.write_exclusive(path, value)
+    return path
+
+
+def _source(intent, config, release, resolver):
+    if intent["request"]["source"]["kind"] == "public_scene":
+        if config.get("public_source_bootstrap_enabled") is True:
+            from .task_evaluation_public_scene_catalog import load_catalog
+            registered = load_catalog(config.get("public_source_catalog_path"))["sources"]
+            if any(row["binding_id"] == intent["request"]["source"]["binding_id"] for row in registered):
+                from .task_evaluation_public_scene_bootstrap import prepare_registered_public_scene
+                # Registered sources bind per intent, so two owners/tasks may
+                # use the same publisher scene without sharing consent or state.
+                return prepare_registered_public_scene(intent=intent, config=config, release=release)
+        path = safe_path(Path(config["public_source_binding_root"]) / (intent["request"]["source"]["binding_id"] + ".json"))
+        if not path.is_file():
+            if config.get("public_source_bootstrap_enabled") is True:
+                from .task_evaluation_public_scene_bootstrap import prepare_registered_public_scene
+                return prepare_registered_public_scene(intent=intent, config=config, release=release)
+            return SourceResolution("awaiting_source", blockers=("public_source_binding_missing",))
+        return SourceResolution("resolved", path, Path(config["machinery_path"]), materialize_public_scene_attempt)
+    if resolver is None:
+        try:
+            from .task_evaluation_scene_source_resolver import resolve_scene_source
+        except ImportError:
+            return SourceResolution("awaiting_source", blockers=("scene_source_resolver_unavailable",))
+        resolver = resolve_scene_source
+    result = resolver(intent=intent, config=config, release=release)
+    require(isinstance(result, SourceResolution), "source_resolution_invalid")
+    return result
+
+
+def _queue(preparation, queue_root):
+    from .task_evaluation_launch_preparation_queue import QUEUE_STATES, ENVELOPE_SCHEMA_VERSION
+    from .task_evaluation_launch_preparation_contract import launch_preparation_request_digest
+    queue = safe_path(queue_root)
+    require(queue.is_dir(), "preparation_queue_missing")
+    matches = [(state, path) for state in QUEUE_STATES
+               for path in (queue / state).glob(preparation["preparation_id"] + "-*.json")]
+    require(len(matches) <= 1, "preparation_identity_ambiguous")
+    if not matches:
+        return {"status": "not_found"}
+    state, path = matches[0]
+    envelope = read(path, digest_field="envelope_digest")
+    actual = envelope["request"]
+    require(envelope.get("schema_version") == ENVELOPE_SCHEMA_VERSION
+            and cross_runtime_canonical_digest(actual) == cross_runtime_canonical_digest(preparation)
+            and envelope.get("request_digest") == launch_preparation_request_digest(actual),
+            "preparation_envelope_mismatch")
+    observed = {"status": state, "envelope": record(path), "request": actual,
+                "request_digest": envelope["request_digest"], "result_filename": path.name}
+    result_path = queue / "results" / path.name
+    if result_path.exists():
+        result = read(result_path, digest_field="result_digest")
+        observer_commit = result.get("source_commit")
+        rejected_old_release = (
+            state == "blocked"
+            and result.get("schema_version") == "task_evaluation_launch_preparation_result.v1"
+            and result.get("status") == "blocked"
+            and result.get("blockers") == ["launch_preparation_worker_source_commit_mismatch"]
+            and all(result.get(key) is False for key in
+                    ("paid_execution_requested", "provider_mutation_performed", "catalog_mutation_performed"))
+            and isinstance(observer_commit, str) and len(observer_commit) == 40
+            and all(c in "0123456789abcdef" for c in observer_commit)
+        )
+        require(result.get("preparation_id") == preparation["preparation_id"]
+                and (observer_commit == preparation["expected_production_commit"] or rejected_old_release),
+                "preparation_result_mismatch")
+        observed.update(result=result, result_reference=record(result_path))
+    if state == "awaiting_source_preparation":
+        from .task_evaluation_sam31_preparation_queue import load_progress
+        progress = load_progress(queue, path.name, envelope["request_digest"])
+        require(progress is not None, "source_progress_missing")
+        observed["source_progress"] = progress
+    return observed
+
+
+def _publish(factory, output, config, publisher):
+    if publisher is None:
+        from .task_evaluation_scene_configuration_submission_publication import publish_scene_configuration_submission
+        publisher = publish_scene_configuration_submission
+    manifest_path = _reference(factory["submission_manifest"])
+    path = output / "publication.json"
+    result = publisher(manifest_path=manifest_path, receipt_path=path,
+        expected_source_commit=factory["source_commit"], service_account=config.get("service_account", "blueprint"),
+        lock_root=Path(config["publication_lock_root"]))
+    require(result.get("status") == "published_and_read_back"
+            and result.get("source_commit") == factory["source_commit"]
+            and result.get("raw_source_uploaded") is False and result.get("provider_allocated") is False
+            and result.get("manifest_sha256") == factory["submission_manifest"]["sha256"], "publication_receipt_invalid")
+    _put(path, result)
+    return record(path)
+
+
+def _submission(*, request_path, output, config, observed, submitter, status_reader, now, intent_reference=None):
+    preparation = read(request_path)
+    digest = cross_runtime_canonical_digest(preparation)
+    receipt_path = output / "submission.json"
+    if receipt_path.exists():
+        value = intake._read(receipt_path, "receipt_digest")
+        require(value.get("request_digest") == digest and value.get("preparation_id") == preparation["preparation_id"],
+                "submission_receipt_mismatch")
+        return record(receipt_path)
+    calls_root = output / "submission-attempts"
+    calls = sorted(calls_root.glob("*.json"))
+    for path in calls:
+        row = intake._read(path, "receipt_digest")
+        require(row.get("request_digest") == digest, "submission_attempt_mismatch")
+    if calls:
+        if observed["status"] != "not_found":
+            value = {"status": "reconciled_from_pipeline_envelope", "envelope": observed["envelope"]}
+            _put(receipt_path, intake._seal({"schema_version": "task_evaluation_scene_submission.v1",
+                "request_digest": digest, "preparation_id": preparation["preparation_id"],
+                "observed_at_epoch": now, **value}, "receipt_digest"))
+            return record(receipt_path)
+        local = config.get("submission_transport") == "local_owned_queue"
+        status = ({"status": "not_found", "authoritative": True,
+                   "request_digest": digest, "preparation_id": preparation["preparation_id"]}
+                  if local else (status_reader or read_preparation_status)(request_path=request_path, config=config))
+        require(status.get("authoritative") is True and status.get("request_digest") == digest
+                and status.get("preparation_id") == preparation["preparation_id"], "submission_status_binding_invalid")
+        status_path = output / "submission-status" / (str(len(calls)) + ".json")
+        if not status_path.exists():
+            _put(status_path, intake._seal(status, "receipt_digest"))
+        if status["status"] != "not_found":
+            return None  # Forwarding is known, but no local envelope exists yet.
+        require(len(calls) < config.get("maximum_http_submission_attempts", 2), "submission_retry_cap_exhausted")
+    elif observed["status"] != "not_found":
+        raise ValueError("scene_progression_unowned_preparation_already_exists")
+    # Persist uncertainty BEFORE POST. A crash cannot erase a transport attempt
+    # and silently lead to another idempotency key or unchecked resubmission.
+    call = intake._seal({"schema_version": "task_evaluation_scene_submission_attempt.v1",
+        "request_digest": digest, "preparation_id": preparation["preparation_id"],
+        "request": record(request_path), "sequence": len(calls) + 1,
+        "observed_at_epoch": now, "status": "sending"}, "receipt_digest")
+    _put(calls_root / f"{len(calls) + 1:03d}.json", call)
+    local = config.get("submission_transport") == "local_owned_queue"
+    if local:
+        from .task_evaluation_scene_progression_transport import submit_owned_preparation
+        result = submit_owned_preparation(request_path=request_path, config=config, intent_reference=intent_reference)
+    else:
+        result = (submitter or submit_preparation)(request_path=request_path, config=config)
+    require(result.get("schema_version") == ("task_evaluation_owned_preparation_submission.v1" if local
+                else "task_evaluation_launch_preparation_web_submission_receipt.v1")
+            and result.get("status") in {"submitted", "replayed"}
+            and result.get("request_digest" if local else "webapp_request_digest") == digest
+            and result.get("preparation_id") == preparation["preparation_id"]
+            and result.get("paid_execution_requested_by_this_tool") is False, "submission_response_invalid")
+    value = intake._seal({"schema_version": "task_evaluation_scene_submission.v1",
+        "status": "submitted", "request_digest": digest, "preparation_id": preparation["preparation_id"],
+        "webapp_evidence": result, "observed_at_epoch": now}, "receipt_digest")
+    _put(receipt_path, value)
+    return record(receipt_path)
+
+
+def _link(*, intent, attempt, observed, directory, config, now):
+    from .task_evaluation_controls_autoprovision import build_preparation_link
+    request = observed["request"]
+    digest = observed["request_digest"]
+    for key in ("preparation_id", "team_namespace"):
+        require(intake._identifier(request[key]), "preparation_identifier_too_long")
+    # R3: the preparation link is immutable and mode-independent -- it never carries
+    # the paid construction reservation. The scene_configuration_attempt is added by
+    # a separate, versioned activation link (_activation_link) only when activation
+    # is authorized, so a prepared-then-authorized transition never rewrites this
+    # link in place (and _activation never KeyErrors on a link prepared unarmed).
+    link = build_preparation_link(intent_id=intent["intent_id"], intent_digest=intent["intent_digest"],
+        preparation_id=request["preparation_id"], request_digest=digest, expected_production_commit=attempt["source_commit"],
+        team_namespace=request["team_namespace"], scene_id=request["scene"]["identity"]["id"],
+        task_id=request["task"]["identity"]["id"], result_filename=observed["result_filename"])
+    path = _put(directory / "preparations" / (digest[7:] + ".json"), link)
+    atomic_json(directory / "preparation-link.json", link)
+    return record(path)
+
+
+def _activation_link(*, intent, attempt, link, observed, directory, config, now):
+    """R3: under current consent, reserve the paid construction attempt and build a
+    versioned, digest-bound activation link from the immutable preparation link.
+
+    Idempotent: the reservation is keyed by the exact scene-configuration attempt id
+    and the activation-link file is content-addressed, so prepare -> restart ->
+    authorize -> activate -> restart creates exactly one reservation and one link.
+    """
+    request = observed["request"]
+    digest = link["request_digest"]
+    main = intake.reserve_scene_attempt(queue_root=config["intent_root"], intent_id=intent["intent_id"],
+        attempt_id="scene-configuration-" + digest[7:31], source_commit=attempt["source_commit"],
+        runtime_digest=request["execution_adapter"]["runtime_source_bundle"]["digest"],
+        input_digest=digest, provider="vast", maximum_spend_usd=request["spend"]["hard_cap_usd"], now=now)
+    from .task_evaluation_controls_autoprovision import build_preparation_link
+    activation = build_preparation_link(intent_id=link["intent_id"], intent_digest=link["intent_digest"],
+        preparation_id=link["preparation_id"], request_digest=digest,
+        expected_production_commit=link["expected_production_commit"], team_namespace=link["team_namespace"],
+        scene_id=link["scene_id"], task_id=link["task_id"], result_filename=link["result_filename"],
+        scene_configuration_attempt=record(directory / "attempts" / (main["attempt_id"] + ".json")))
+    path = _put(directory / "preparations" / (digest[7:] + ".activation.json"), activation)
+    return record(path)
+
+
+def _activation(*, intent, link, config, output, now, provisioner):
+    from .task_evaluation_scene_configuration_activation_automation import provision_scene_configuration_activation_intent
+    from .project_spend_reconciliation import validate_project_spend_reconciliation
+    path = output / "activation_provisioning.json"
+    if path.exists():
+        value = intake._read(path, "receipt_digest")
+        require(value.get("link_digest") == link["link_digest"], "activation_link_changed")
+        return record(path)
+    if provisioner is None:
+        from .task_evaluation_scene_spend import refresh_configured_scene_project_spend
+        # Stamp the fresh project-spend pointer with THIS tick's ``now`` so the
+        # freshness gate below (``0 <= now - observed_at_epoch <= 900``) holds; a
+        # bare refresh stamps ``time.time()`` (later than ``now``) and the gate
+        # inverts to a permanent ``project_spend_stale`` -- activation never completes.
+        refresh_configured_scene_project_spend(now=now)
+    inputs_path = output / "activation_inputs.json"
+    if inputs_path.exists():
+        inputs = intake._read(inputs_path, "receipt_digest")
+    else:
+        current = read(config["project_spend_current_path"], digest_field="receipt_digest")
+        require(current.get("schema_version") == "task_evaluation_project_spend_current.v1"
+                and intake._number(current.get("observed_at_epoch"))
+                and 0 <= now - current["observed_at_epoch"] <= 900, "project_spend_stale")
+        source = checked_file(current["path"], {"sha256": current["digest"], "size_bytes": Path(current["path"]).stat().st_size})
+        validate_project_spend_reconciliation(source)
+        snapshot = _put(output / "project_spend_snapshot.json", read(source))
+        inputs = intake._seal({"spend": record(snapshot), "issued_at_epoch": now,
+                               "link_digest": link["link_digest"]}, "receipt_digest")
+        _put(inputs_path, inputs)
+    require(inputs["link_digest"] == link["link_digest"], "activation_inputs_changed")
+    owner = intent["request"]["owner"]["user_id"]
+    seconds = min(86400, int(intake.effective_execution_expiry(Path(config["intent_root"])/intent["intent_id"], intent) - inputs["issued_at_epoch"]))
+    require(seconds >= 300, "activation_authority_window_too_short")
+    main = intake._read(_reference(link["scene_configuration_attempt"]), "attempt_digest")
+    result = (provisioner or provision_scene_configuration_activation_intent)(
+        expected_production_commit=link["expected_production_commit"], team_namespace=link["team_namespace"],
+        scene_id=link["scene_id"], task_id=link["task_id"], authorization_reference="scene-intent:" + intent["intent_digest"],
+        authorized_by=owner, profile_revision="scene-" + intent["intent_id"][-16:], valid_for_seconds=seconds,
+        project_spend_reconciliation_path=_reference(inputs["spend"]),
+        rights_scope=intent["request"]["consent"]["rights_reference"], maximum_hard_cap_usd=main["maximum_spend_usd"],
+        release_reference="scene-intent:" + intent["intent_digest"], intent_root=config["activation_intent_root"],
+        materialization_root=output / "activation-inputs", release_window_valid_for_seconds=seconds,
+        service_group=config.get("service_group"), release_scoped=True)
+    require(result.get("expected_production_commit") == link["expected_production_commit"]
+            and result.get("provider_mutation_performed") is False, "activation_producer_invalid")
+    _put(path, intake._seal({"link_digest": link["link_digest"], "activation_intent": result,
+                          "provider_allocation_performed": False}, "receipt_digest"))
+    return record(path)
+
+
+# Every state key that belongs to ONE attempt. A successor (release transition or
+# recovery) starts with none of them; lineage keys (binding_digest, source_binding,
+# source_analysis, release_predecessors, recovery_predecessors) survive.
+ATTEMPT_STATE_KEYS = ("attempt_id", "attempt_commit", "attempt", "factory", "publication", "submission",
+                      "preparation_state", "preparation_link", "preparation_result", "activation_link",
+                      "activation", "failure", "preparation_failure", "configuration_failure", "capacity_recovery_admission")
+
+
+def _clear_attempt(state):
+    # activation_link was missing here until 2026-09-12: after a release successor the
+    # new attempt activated through the previous attempt's link (bound to the old
+    # request digest and commit) and the intent registry refused it as
+    # intent_registry_same_release_conflict on every tick.
+    for key in ATTEMPT_STATE_KEYS:
+        state.pop(key, None)
+
+
+def _settle_retired_rows(*, directory, state, config, retired=None, evidence=None):
+    """Release the holds of retired attempts; accounting only, never a progression gate."""
+    from .task_evaluation_terminal_scene_attempt_settlement import settle_retired_attempt_rows, sweep_retired_attempts
+    summary = state.get("terminal_settlements") or {}
+    try:
+        if retired is not None and evidence is not None:
+            outcome = settle_retired_attempt_rows(directory=directory, retired_attempt=retired,
+                retirement_record=evidence["failure"], ownership_record=evidence["ownership_reconciliation"],
+                launch_execution_root=Path(config["launch_execution_root"]),
+                launch_queue_root=Path(config["launch_queue_root"]), source_factory=state.get("factory"))
+            settled = sum(1 for row in outcome["rows"] if row["status"] == "settled")
+            summary = {**summary, "settled_rows": int(summary.get("settled_rows") or 0) + settled}
+        else:
+            swept = sweep_retired_attempts(directory=directory, state=state, config=config)
+            summary = {**summary, "sweep": {k: swept[k] for k in ("settled_rows", "already_released_rows", "skipped")}}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        summary = {**summary, "last_error": str(exc)[:160]}
+    state["terminal_settlements"] = summary
+
+
+def _release_successor(*, directory, intent, state, config, release, now):
+    from .task_evaluation_scene_progression_recovery import reconcile_ownership
+    previous_id = state["attempt_id"]
+    previous_path = _reference(state["attempt"])
+    previous = intake._read(previous_path, "attempt_digest")
+    old_output = Path(config["factory_output_root"]) / intent["intent_id"] / previous_id
+    calls = list((old_output / "submission-attempts").glob("*.json"))
+    lineage = {"attempt": record(previous_path), "factory": state.get("factory"),
+               "new_source_commit": release["source_commit"]}
+    if state.get("preparation_failure"):
+        lineage["preparation_failure"] = state["preparation_failure"]
+    preparation_only = previous.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+    execution_attempt = None
+    if preparation_only:
+        require(previous.get("maximum_spend_usd") == 0
+                and previous.get("paid_authority_granted") is False,
+                "preparation_release_authority_conflict")
+        if state.get("activation_link"):
+            link = read(_reference(state["activation_link"]), digest_field="link_digest")
+            execution_attempt = intake._read(_reference(link["scene_configuration_attempt"]), "attempt_digest")
+            require(execution_attempt["intent_digest"] == previous["intent_digest"]
+                    and execution_attempt["source_commit"] == previous["source_commit"]
+                    and execution_attempt["input_digest"] == link["request_digest"]
+                    and bool(calls), "preparation_release_execution_binding_invalid")
+    if preparation_only and execution_attempt is None:
+        # Historical rows remain on disk after settlement. Only a validated
+        # terminal cancellation excludes one from live execution ownership;
+        # budget admission still accounts for its retained spend separately.
+        from .task_evaluation_retained_controls_evidence import validated_cancellation
+        for path in (directory / "attempts").glob("*.json"):
+            paid = intake._read(path, "attempt_digest")
+            require(validated_cancellation(directory, paid) is not None,
+                    "preparation_release_paid_reservation_exists")
+        lineage["basis"] = "preparation_only_no_execution_authority_issued"
+    elif not calls:
+        lineage["basis"] = "no_submission_attempt_performed"
+    else:
+        factory = read(_reference(state["factory"]), digest_field="factory_digest")
+        old_request = read(_reference(factory["submission_request"]))
+        observed = _queue(old_request, config["preparation_queue_root"])
+        if observed["status"] not in {"blocked", "completed", "materialized"}:
+            return False
+        transition_path = old_output / "release-transition.json"
+        if not transition_path.exists():
+            value = {"schema_version": "task_evaluation_scene_release_transition.v1",
+                "attempt_digest": previous["attempt_digest"], "observed_at_epoch": now,
+                "parent_envelope": observed["envelope"], "parent_state": observed["status"],
+                "provider_allocation_performed": False}
+            value["failure_digest"] = canonical_digest(value, digest_field="failure_digest")
+            _put(transition_path, value)
+        lineage["reconciliation"] = reconcile_ownership(attempt=previous, failure_path=transition_path,
+            config=config, output_root=old_output / "release-reconciliation", now=now,
+            **({"execution_attempt": execution_attempt} if execution_attempt is not None else {}))
+        lineage["basis"] = "terminal_preparation_and_reconciled_global_ownership"
+        _settle_retired_rows(directory=directory, state=state, config=config,
+                             retired=previous, evidence=lineage["reconciliation"])
+    state.setdefault("release_predecessors", []).append(lineage)
+    _clear_attempt(state)
+    return True
+
+
+def _recover(*, directory, intent, state, attempt, link, config, release, machinery, output, now):
+    from .task_evaluation_scene_progression_recovery import retain_failure, reconcile_ownership
+    if intent["request"]["execution"]["max_retries"] == 0:
+        return False
+    failure = retain_failure(attempt=attempt, link=link, child_queue_root=config["child_queue_root"],
+        output_root=output / "recovery", now=now)
+    if failure is None:
+        return False
+    state["failure"] = record(failure)
+    if intent["request"]["execution"]["max_retries"] == 0:
+        return False
+    evidence = reconcile_ownership(attempt=attempt, failure_path=failure, config=config,
+        output_root=output / "recovery/reconciliations", now=now)
+    _settle_retired_rows(directory=directory, state=state, config=config, retired=attempt, evidence=evidence)
+    successor_id = "source-" + canonical_digest({"prior_attempt_digest": attempt["attempt_digest"],
+        "source_commit": release["source_commit"], "intent_digest": intent["intent_digest"]})[7:31]
+    successor = intake.reserve_scene_attempt(queue_root=config["intent_root"], intent_id=intent["intent_id"],
+        attempt_id=successor_id, source_commit=release["source_commit"], runtime_digest=release["runtime_digest"],
+        input_digest=state["binding_digest"], provider=attempt["provider"],
+        maximum_spend_usd=machinery["maximum_preparation_spend_usd"], now=now,
+        recovery_from_attempt_id=attempt["attempt_id"], recovery_evidence=evidence)
+    state.setdefault("recovery_predecessors", []).append({"attempt": state["attempt"], "evidence": evidence})
+    _clear_attempt(state)
+    state.update(attempt_id=successor_id, attempt_commit=release["source_commit"],
+                 attempt=record(directory / "attempts" / (successor["attempt_id"] + ".json")))
+    return True
+
+
+def _recover_configuration_capacity(*, directory, intent, state, attempt, link_path, preparation_path,
+                                    config, release, machinery, output, now):
+    from .task_evaluation_scene_capacity_recovery import observe_failure, capacity_admission, retain_failure, KIND
+    from .task_evaluation_scene_progression_recovery import reconcile_ownership
+    observed = observe_failure(attempt=attempt, link_path=link_path, preparation_path=preparation_path,
+                               factory_path=_reference(state["factory"]), config=config)
+    if observed is None:
+        return None
+    state["configuration_failure"] = observed["result"]
+    if not observed["recoverable"]:
+        return {"status": "blocked", "phase": "scene_configuration_failed", "blockers": observed["blockers"]}
+    admission = capacity_admission(observed, config, now)
+    state["capacity_recovery_admission"] = admission
+    if admission["status"] != "admitted":
+        credit = admission.get("authoring_authentication_admission") or admission.get("provider_credit_admission") or {}
+        return {"status": "blocked", "phase": "configuration_capacity",
+                "blockers": credit.get("blockers") or ["preallocation_capacity_not_recovered"]}
+    # Funding/authentication refusals did not execute the model or simulator.
+    # Retain the first rejected request allowance and bound administrative recovery.
+    from .task_evaluation_scene_capacity_recovery import CREDIT_KIND
+    from .task_evaluation_authoring_auth_recovery import KIND as AUTH_KIND
+    unstarted_credit = (attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+                        and observed.get("kind") in {CREDIT_KIND, AUTH_KIND})
+    require(intent["request"]["execution"]["max_retries"] > 0 or unstarted_credit, "retry_cap_exhausted")
+    successor_id = "source-" + canonical_digest({"prior_attempt_digest": attempt["attempt_digest"],
+        "source_commit": release["source_commit"], "intent_digest": intent["intent_digest"],
+        "failure_result_digest": observed["values"]["result"]["result_digest"], "kind": KIND})[7:31]
+    if attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1":
+        from .task_evaluation_scene_preparation_attempts import create_preparation_attempt, preparation_attempt_path
+        from .task_evaluation_scene_recovery import MAX_PREALLOCATION_CAPACITY_RECOVERIES
+        require(sum(row.get("kind") == KIND for row in state.get("recovery_predecessors", []))
+                < MAX_PREALLOCATION_CAPACITY_RECOVERIES, "preallocation_capacity_recovery_cap_exhausted")
+        failure_path = retain_failure(observation=observed, attempt=attempt,
+            output_root=output / "capacity-recovery", admission=admission)
+        evidence = reconcile_ownership(attempt=attempt, failure_path=failure_path, config=config,
+            output_root=output / "capacity-recovery/reconciliations", now=now,
+            execution_attempt=observed["values"]["configuration_attempt"])
+        _settle_retired_rows(directory=directory, state=state, config=config, retired=attempt, evidence=evidence)
+        create_preparation_attempt(directory=directory, attempt_id=successor_id, now=now,
+            source_commit=release["source_commit"], runtime_digest=release["runtime_digest"],
+            input_digest=state["binding_digest"])
+        state.setdefault("recovery_predecessors", []).append(
+            {"attempt": state["attempt"], "factory": state["factory"], "evidence": evidence, "kind": KIND})
+        _clear_attempt(state)
+        state.update(attempt_id=successor_id, attempt_commit=release["source_commit"],
+                     attempt=record(preparation_attempt_path(directory, successor_id)))
+        return {"status": "preparing", "phase": "capacity_recovery_reserved", "blockers": []}
+    successor_path = directory / "attempts" / (successor_id + ".json")
+    prior_reservation = intake._read(successor_path, "attempt_digest") if successor_path.exists() else None
+    if prior_reservation is not None:
+        require(prior_reservation.get("recovery", {}).get("prior_attempt_digest") == attempt["attempt_digest"]
+                and prior_reservation["recovery"]["budget"] == KIND, "capacity_successor_binding_changed")
+        evidence = prior_reservation["recovery"]["evidence"]
+        failure_path = _reference(evidence["failure"])
+    else:
+        failure_path = retain_failure(observation=observed, attempt=attempt,
+            output_root=output / "capacity-recovery", admission=admission)
+    reconciled = reconcile_ownership(attempt=attempt, failure_path=failure_path, config=config,
+        output_root=output / "capacity-recovery/reconciliations", now=now)
+    if prior_reservation is None:
+        evidence = reconciled
+    successor = intake.reserve_scene_attempt(queue_root=config["intent_root"], intent_id=intent["intent_id"],
+        attempt_id=successor_id, source_commit=release["source_commit"], runtime_digest=release["runtime_digest"],
+        input_digest=state["binding_digest"], provider=attempt["provider"],
+        maximum_spend_usd=machinery["maximum_preparation_spend_usd"], now=now,
+        recovery_from_attempt_id=attempt["attempt_id"], recovery_evidence=evidence)
+    state.setdefault("recovery_predecessors", []).append({"attempt": state["attempt"], "evidence": evidence})
+    _clear_attempt(state)
+    state.update(attempt_id=successor_id, attempt_commit=release["source_commit"], attempt=record(successor_path))
+    require(successor["attempt_id"] == successor_id, "capacity_successor_invalid")
+    return {"status": "preparing", "phase": "capacity_recovery_reserved", "blockers": []}
+
+
+def _record_capacity_wait(state, admission, *, now):
+    from .control_plane_capacity_controller import _read_attention_summary, capacity_eta
+
+    devices = [
+        {key: row[key] for key in ("device", "required_bytes", "available_bytes", "passed") if key in row}
+        for row in admission.get("devices") or [] if isinstance(row, dict)
+    ]
+    required = int(admission.get("required_workspace_bytes") or 0)
+    if devices:
+        available = sum(int(row.get("available_bytes") or 0) for row in devices)
+        shortfall = sum(max(0, int(row.get("required_bytes") or 0) - int(row.get("available_bytes") or 0))
+                        for row in devices)
+    else:
+        available = int((admission.get("measurement") or {}).get("available_bytes") or 0)
+        shortfall = max(0, required - available)
+    summary_path = Path(os.getenv("BLUEPRINT_CAPACITY_SUMMARY_PATH",
+                                  "/var/lib/blueprint/pipeline-control-plane/capacity/summary.json"))
+    summary = _read_attention_summary(summary_path)
+    observed = summary.get("observed_at_epoch") if isinstance(summary, dict) else None
+    if not isinstance(observed, (int, float)) or now - observed > 7200 or observed > now + 300:
+        summary = None
+    eta = capacity_eta(shortfall, summary=summary, now=now)
+    prior = state.get("capacity_wait") or {}
+    state["capacity_wait"] = {
+        "since_epoch": prior.get("since_epoch", now),
+        "required_bytes": required,
+        "available_bytes": available,
+        "shortfall_bytes": shortfall,
+        "basis": admission.get("required_workspace_basis", "unknown"),
+        "devices": devices,
+        **eta,
+        "next_check_epoch": now + 600,
+    }
+
+
+def _advance_intent(directory, intent, config, release, *, resolver, publisher, submitter, status_reader,
+                    activation_provisioner, now):
+    progress = load_progression(directory, intent)
+    state = deepcopy(progress.get("state", {})) if progress else {}
+    def emit(status, phase, blockers=(), result_reference=None):
+        nonlocal progress
+        progress = advance(directory, intent, progress, status=status, phase=phase, state=deepcopy(state),
+                           blockers=blockers, result_reference=result_reference, now=now)
+        return progress
+    if progress and progress["status"] == "completed":
+        return progress
+    if state.get("release_predecessors") or state.get("recovery_predecessors"):
+        _settle_retired_rows(directory=directory, state=state, config=config)
+    # Spec E: once activation has been issued, join any retained downstream
+    # terminal receipts (policy result, authenticated Website readback,
+    # provider-zero closure) back into the persistent owner status. This is a
+    # READ-ONLY closeout of already-authorized execution and runs BEFORE the
+    # expiry/revocation/pause gates below (A8): those gate NEW execution, not the
+    # read-only join of a run that was authorized when it executed -- otherwise a
+    # completed run whose authority window later lapsed could never close out. It
+    # never launches, retries, or reruns completed GPU work; when there is no
+    # owner-bound terminal result yet it returns None and control falls through to
+    # the authority gates unchanged.
+    from .task_evaluation_scene_scope_restriction import preparation_only
+    is_preparation_only = preparation_only(directory=directory, intent=intent)
+    if is_preparation_only and state.get('activation'):
+        from .task_evaluation_scene_preparation_completion import reconcile_preparation_completion
+        terminal = reconcile_preparation_completion(intent=intent, config=config)
+        if terminal is not None:
+            state.update(terminal['state'])
+            return emit(terminal['status'], terminal['phase'], terminal['blockers'], terminal.get('result_reference'))
+    if not is_preparation_only and config.get("terminal_result_root") and (state.get("activation") or intent["request"]["task"].get("evaluation_source")):
+        from .task_evaluation_scene_terminal_reconciler import reconcile_terminal_owner_result
+        terminal = reconcile_terminal_owner_result(intent=intent, config=config, release=release, now=now,
+            output=safe_path(Path(config["factory_output_root"]) / intent["intent_id"] / "terminal-reconciliation"))
+        if terminal is not None:
+            state.update(terminal.get("state", {}))
+            return emit(terminal["status"], terminal["phase"], terminal.get("blockers", ()),
+                        terminal.get("result_reference"))
+    if (directory / "revoked.json").exists() or now >= intake.effective_execution_expiry(directory, intent):
+        return emit("blocked", "authority", ["scene_intake_authority_revoked" if (directory / "revoked.json").exists()
+                                              else "scene_intake_authority_expired"])
+    if intent["intent_id"] in config.get("paused_intent_ids", []):
+        return emit("awaiting_execution", "paused", ["scene_intent_paused"])
+    if intent['request']['task'].get('evaluation_source') is not None:
+        return emit('awaiting_execution', 'selected_team_evaluation')
+    if is_preparation_only and state.get("activation"):
+        from .website_publication_recovery import reconcile_website_publication
+        recovery = reconcile_website_publication(intent=intent, config=config, release=release)
+        if recovery is not None:
+            return emit(recovery["status"], recovery["phase"], recovery["blockers"])
+    if state.get("activation") and not is_preparation_only:
+        from .task_evaluation_controls_autoprovision import CONFIG_ENV as CONTROLS_CONFIG_ENV, _registered_terminal_adoption
+        controls_config_path = os.getenv(CONTROLS_CONFIG_ENV)
+        if controls_config_path:
+            controls_config = read(controls_config_path)
+            require(controls_config.get("scene_root") == config["intent_root"], "controls_adoption_owner_root_mismatch")
+            adopted = _registered_terminal_adoption(config=controls_config, intent_id=intent["intent_id"],
+                                                    expected_production_commit=release["source_commit"])
+            if adopted is not None:
+                state["configured_scene_terminal_adoption"] = adopted
+                return emit("awaiting_execution", "configured_controls")
+            from .task_evaluation_controls_terminal_adoption import terminal_adoption_source
+            source = terminal_adoption_source(config=controls_config, intent_id=intent["intent_id"],
+                                              expected_production_commit=release["source_commit"])
+            if source is not None:
+                state["configured_scene_terminal_adoption"] = source["adoption"]
+                return emit("awaiting_execution", "configured_controls_adoption")
+    if config.get("supported_source_kinds") is not None and intent["request"]["source"]["kind"] not in config["supported_source_kinds"]:
+        return emit("needs_input", "source", ["source_kind_not_supported_by_progression"])
+    from .task_evaluation_scene_policy_capability import policy_capability_blockers
+    if capability_blockers := policy_capability_blockers(intent["request"]):
+        return emit("needs_input", "policy_capability", capability_blockers)
+    source_bootstrap = (config.get("public_source_bootstrap_enabled") is True
+        and intent["request"]["source"]["kind"] == "public_scene"
+        and not (Path(config["public_source_binding_root"]) / (intent["request"]["source"]["binding_id"] + ".json")).is_file())
+    if config.get("require_whole_chain_capacity", False) and not state.get("attempt_id") and not source_bootstrap:
+        from .control_plane_capacity_controller import whole_chain_admission
+        admission = whole_chain_admission(
+            config["factory_output_root"],
+            reservation_root=(config.get("preparation_worker") or {}).get(
+                "disk_reservation_root", "/var/lib/blueprint/pipeline-control-plane/disk-reservations"),
+            now=now)
+        state["capacity_admission"] = admission
+        if admission["status"] != "admitted":
+            _record_capacity_wait(state, admission, now=now)
+            return emit("awaiting_execution", "capacity", ["scene_whole_chain_capacity_insufficient"])
+        state.pop("capacity_wait", None)
+    if (config.get("public_source_bootstrap_enabled") is True
+            and intent["request"]["source"]["kind"] == "public_scene" and not state.get("source_analysis")):
+        emit("preparing", "source_preparation")
+    resolution = _source(intent, config, release, resolver)
+    if resolution.analysis_reference is not None:
+        _reference(resolution.analysis_reference)
+        state["source_analysis"] = resolution.analysis_reference
+    if resolution.status != "resolved":
+        require(resolution.status in {"awaiting_source", "needs_input", "blocked"}, "source_status_invalid")
+        return emit(resolution.status, "source", resolution.blockers)
+    if source_bootstrap and config.get("require_whole_chain_capacity", False) and not state.get("attempt_id"):
+        from .control_plane_capacity_controller import whole_chain_admission
+        admission = whole_chain_admission(config["factory_output_root"],
+            reservation_root=(config.get("preparation_worker") or {}).get(
+                "disk_reservation_root", "/var/lib/blueprint/pipeline-control-plane/disk-reservations"), now=now)
+        state["capacity_admission"] = admission
+        if admission["status"] != "admitted":
+            _record_capacity_wait(state, admission, now=now)
+            return emit("awaiting_execution", "capacity", ["scene_whole_chain_capacity_insufficient"])
+        state.pop("capacity_wait", None)
+    require(resolution.binding_path is not None and resolution.machinery_path is not None and callable(resolution.materializer),
+            "source_resolution_incomplete")
+    binding = read(resolution.binding_path, digest_field="binding_digest")
+    machinery = read(resolution.machinery_path, digest_field="machinery_digest")
+    require(binding.get("binding_id") == intent["request"]["source"]["binding_id"]
+            and binding.get("source_content_digest") == intent["request"]["source"]["content_digest"],
+            "source_binding_mismatch")
+    if state.get("binding_digest") is not None:
+        require(state["binding_digest"] == binding["binding_digest"], "source_binding_changed")
+    state["binding_digest"] = binding["binding_digest"]
+    state["source_binding"] = record(resolution.binding_path)
+    active_id = state.get("attempt_id")
+    if active_id and state.get("attempt_commit") != release["source_commit"]:
+        # Do not replace an old in-flight attempt merely because a deploy moved.
+        # A terminal preparation and fresh ownership/zero reconciliation must
+        # precede an administrative successor.
+        if not _release_successor(directory=directory, intent=intent, state=state,
+                                  config=config, release=release, now=now):
+            return emit("running", "previous_release", ["previous_release_attempt_not_terminal"])
+        active_id = None
+    if not active_id:
+        identity = {"intent_digest": intent["intent_digest"], "binding_digest": binding["binding_digest"],
+                    "source_commit": release["source_commit"], "runtime_digest": release["runtime_digest"]}
+        active_id = "source-" + canonical_digest(identity)[7:31]
+        state.update(attempt_id=active_id, attempt_commit=release["source_commit"])
+    # R2: the SOURCE attempt's accounting follows the source's own contract, NOT
+    # activation permission. Completed-scene machinery declares zero preparation
+    # spend on the control plane, so it takes the administrative (zero-cost)
+    # preparation attempt in BOTH unarmed and authorized modes; the paid
+    # CONSTRUCTION exposure is reserved separately (scene_configuration_attempt in
+    # _link) only when activation is authorized. Paid-preparation sources (e.g. the
+    # public-scene SAM machinery) keep their real reserve_scene_attempt path.
+    preparation_only = (machinery.get("schema_version") in {"task_evaluation_completed_scene_machinery.v1",
+                                                          "task_evaluation_website_scene_machinery.v1"}
+                        or (machinery.get("schema_version") == "task_evaluation_public_scene_machinery.v1"
+                            and binding["binding_id"] in machinery.get("retained_prefix_only_binding_ids", [])))
+    attempt_args = {"source_commit": release["source_commit"], "runtime_digest": release["runtime_digest"],
+        "input_digest": binding["binding_digest"], "provider": machinery.get("provider", "vast"),
+        "maximum_spend_usd": machinery["maximum_preparation_spend_usd"]}
+    attempt_path = directory / "attempts" / (active_id + ".json")
+    if preparation_only:
+        from .task_evaluation_scene_preparation_attempts import create_preparation_attempt, preparation_attempt_path
+        attempt = create_preparation_attempt(directory=directory, attempt_id=active_id, now=now,
+            **{key: attempt_args[key] for key in ("source_commit", "runtime_digest", "input_digest")})
+        attempt_path = preparation_attempt_path(directory, active_id)
+    elif attempt_path.exists():
+        attempt = intake._read(attempt_path, "attempt_digest")
+        require(attempt.get("intent_digest") == intent["intent_digest"]
+                and all(attempt.get(key) == value for key, value in attempt_args.items()), "attempt_binding_changed")
+    else:
+        attempt = intake.reserve_scene_attempt(queue_root=config["intent_root"], intent_id=intent["intent_id"],
+            attempt_id=active_id, **attempt_args, now=now)
+    output = safe_path(Path(config["factory_output_root"]) / intent["intent_id"] / active_id)
+    output.mkdir(parents=True, exist_ok=True, mode=0o750)
+    state["attempt"] = record(attempt_path)
+    if not state.get("factory"):
+        emit("preparing", "factory")
+    # Mutable service pointers are snapshotted once per immutable attempt.
+    binding_path = _put(output / "source_binding.json", binding)
+    machinery_path = _put(output / "machinery.json", machinery)
+    release_path = _put(output / "release_binding.json", release)
+    factory_path = output / "factory.json"
+    if state.get("factory"):
+        factory = read(_reference(state["factory"]), digest_field="factory_digest")
+    else:
+        from .task_evaluation_scene_preparation_attempts import preparation_storage, settle_preparation_storage
+        with preparation_storage(config, binding, output) as storage:
+            factory = resolution.materializer(intent_path=directory / "intent.json", source_binding_path=binding_path,
+                machinery_path=machinery_path, release_binding_path=release_path, output_root=output / "materialized",
+                attempt_id=active_id)
+            settle_preparation_storage(storage, factory)
+            if factory.get("status") in {"needs_input", "awaiting_source", "blocked"}:
+                return emit(factory["status"], "factory", factory.get("blockers", []))
+            require(factory.get("status") == "publication_ready"
+                    and factory.get("source_commit") == attempt["source_commit"]
+                    and factory.get("intent_digest") == intent["intent_digest"]
+                    and factory.get("attempt_digest") == attempt["attempt_digest"]
+                    and factory.get("factory_digest") == canonical_digest(factory, digest_field="factory_digest")
+                    and factory.get("provider_mutation_performed") is False, "factory_receipt_invalid")
+        _put(factory_path, factory)
+        state["factory"] = record(factory_path)
+    request_path = _reference(factory["submission_request"])
+    preparation = read(request_path)
+    require(preparation.get("scene_intent_digest") == intent["intent_digest"]
+            and intake._identifier(preparation.get("preparation_id")), "preparation_intent_or_identifier_invalid")
+    if not config.get("submission_enabled", False):
+        return emit("awaiting_execution", "publication_ready", ["scene_submission_paused"])
+    if not state.get("publication"):
+        emit("preparing", "publication")
+        state["publication"] = _publish(factory, output, config, publisher)
+    else:
+        _reference(state["publication"])
+    observed = _queue(preparation, config["preparation_queue_root"])
+    if not state.get("submission"):
+        emit("preparing", "submission")
+    submitted = _submission(request_path=request_path, output=output, config=config, observed=observed,
+                            submitter=submitter, status_reader=status_reader, now=now,
+                            intent_reference=record(directory / "intent.json"))
+    if submitted is None:
+        return emit("preparing", "submission_reconciliation", ["preparation_forwarding_pending"])
+    state["submission"] = submitted
+    observed = _queue(preparation, config["preparation_queue_root"])
+    if observed["status"] == "not_found":
+        return emit("preparing", "submission_reconciliation", ["pipeline_preparation_receipt_pending"])
+    state["preparation_state"] = observed["status"]
+    if not state.get("preparation_link"):
+        state["preparation_link"] = _link(intent=intent, attempt=attempt, observed=observed,
+                                          directory=directory, config=config, now=now)
+    link = read(_reference(state["preparation_link"]), digest_field="link_digest")
+    try:
+        from .agent_execution.failure_events import register_preparation_failure_subscription
+        register_preparation_failure_subscription(preparation_link=link, controller_config=config)
+    except (OSError, ValueError, RuntimeError) as exc:
+        import logging
+        logging.getLogger(__name__).warning("agent_failure_subscription_unavailable:%s", type(exc).__name__)
+    if observed.get("result_reference"):
+        state["preparation_result"] = observed["result_reference"]
+    if observed["status"] in {"blocked", "awaiting_source_preparation"}:
+        if preparation_only:
+            return emit("blocked", "source_preparation", observed.get("result", {}).get("blockers") or ["preparation_failed"])
+        if _recover(directory=directory, intent=intent, state=state, attempt=attempt, link=link,
+                    config=config, release=release, machinery=machinery, output=output, now=now):
+            return emit("preparing", "recovery_reserved")
+        if observed["status"] == "blocked" or state.get("failure"):
+            return emit("blocked", "source_preparation", ["preparation_failed"])
+    if observed["status"] == "awaiting_source_preparation":
+        phase = observed["source_progress"].get("advancement", {}).get("phase", "source_preparation")
+        return emit("running", phase if intake._identifier(phase) else "source_preparation")
+    if observed["status"] in {"pending", "processing"}:
+        return emit("running", "source_preparation")
+    result = observed.get("result", {})
+    if result.get("status") == "queued_for_production_scene_configuration":
+        if config.get("activation_enabled", True) is False:
+            return emit("awaiting_execution", "construction_prepared")
+        # R3: mint (once) the versioned activation link carrying the paid
+        # construction reservation from the immutable preparation link, then activate
+        # from it -- never from the unarmed preparation link.
+        if not state.get("activation_link"):
+            state["activation_link"] = _activation_link(intent=intent, attempt=attempt, link=link,
+                observed=observed, directory=directory, config=config, now=now)
+        link = read(_reference(state["activation_link"]), digest_field="link_digest")
+        if not state.get("activation"):
+            emit("preparing", "activation")
+        state["activation"] = _activation(intent=intent, link=link, config=config, output=output,
+                                           now=now, provisioner=activation_provisioner)
+        recovery = _recover_configuration_capacity(directory=directory, intent=intent, state=state, attempt=attempt,
+            link_path=_reference(state["activation_link"]), preparation_path=request_path, config=config, release=release,
+            machinery=machinery, output=output, now=now)
+        if recovery is not None:
+            return emit(recovery["status"], recovery["phase"], recovery["blockers"])
+        return emit("awaiting_execution", "scene_configuration")
+    return emit("awaiting_execution", "preparation_complete")
+
+
+def process_scene_intents(*, config_path, source_resolver=None, publisher=None, submitter=None,
+                          status_reader=None, activation_provisioner=None, now=None, only_intent_id=None):
+    config_path = safe_path(config_path)
+    require(config_path.stat().st_mode & 0o002 == 0, "config_world_writable")
+    config = read(config_path, digest_field="config_digest")
+    scope = config.get("only_intent_id")
+    require(scope is None or (isinstance(scope, str) and scope.startswith("scene-") and intake._identifier(scope)),
+            "scoped_intent_invalid")
+    require(scope is None or only_intent_id is None or scope == only_intent_id, "scoped_intent_mismatch")
+    if only_intent_id is None:
+        from .agent_execution.controller_recovery import consume_controller_requests
+        try:
+            consume_controller_requests(controller_config_path=config_path, only_intent_id=scope)
+        except (OSError, ValueError, RuntimeError) as exc:
+            # The reasoning sidecar cannot disable the existing deterministic
+            # controller. Its pending requests remain available for reconciliation.
+            import logging
+            logging.getLogger(__name__).warning("agent_controller_requests_unavailable:%s", type(exc).__name__)
+    only_intent_id = only_intent_id or scope
+    require(config.get("schema_version") == CONFIG_SCHEMA, "config_schema_invalid")
+    root = safe_path(config["intent_root"])
+    require(root.is_dir(), "intent_root_missing")
+    require(type(config.get("require_whole_chain_capacity", False)) is bool, "capacity_admission_mode_invalid")
+    require(type(config.get("maximum_intents_per_pass", 16)) is int
+            and 1 <= config.get("maximum_intents_per_pass", 16) <= 64, "pass_bound_invalid")
+    require(type(config.get("maximum_http_submission_attempts", 2)) is int
+            and 1 <= config.get("maximum_http_submission_attempts", 2) <= 3, "http_retry_bound_invalid")
+    require(type(config.get("submission_enabled", False)) is bool, "submission_mode_invalid")
+    require(type(config.get("activation_enabled", True)) is bool, "activation_mode_invalid")
+    require(config.get("submission_transport", "webapp") in {"webapp", "local_owned_queue"},
+            "submission_transport_invalid")
+    from .public_scene_host_input_intake import _verified_checkout_head
+    from .task_evaluation_scene_release_binding import resolve_release_binding
+    release = resolve_release_binding(config, running_commit=_verified_checkout_head())
+    moment = time.time() if now is None else now
+    directories = sorted(path for path in root.glob("scene-*") if path.is_dir())
+    require(len(directories) <= 10000, "intent_inventory_bound_exceeded")
+    cursor_path = root / "progression-cursor.json"
+    cursor = intake._read(cursor_path, "cursor_digest")["last_intent_id"] if cursor_path.exists() else ""
+    ordered = [p for p in directories if p.name > cursor] + [p for p in directories if p.name <= cursor]
+    chosen = ordered[:config.get("maximum_intents_per_pass", 16)]
+    if only_intent_id is not None:
+        require(isinstance(only_intent_id, str) and only_intent_id.startswith("scene-")
+                and intake._identifier(only_intent_id), "scoped_intent_invalid")
+        chosen = [directory for directory in directories if directory.name == only_intent_id]
+        require(len(chosen) == 1, "scoped_intent_missing")
+    if chosen and only_intent_id is None:
+        atomic_json(cursor_path, intake._seal({"last_intent_id": chosen[-1].name}, "cursor_digest"))
+    rows = []
+    for directory in chosen:
+        try:
+            with intent_lock(directory) as acquired:
+                if not acquired:
+                    rows.append({"intent_id": directory.name, "status": "writer_active"})
+                    continue
+                intent = intake._read(directory / "intent.json", "intent_digest")
+                require(intent.get("intent_id") == directory.name
+                        and intent.get("authenticated_issuer") in config["trusted_clients"], "intent_issuer_invalid")
+                intake.validate_request(intent["request"], now=intent["accepted_at_epoch"])
+                from .agent_execution.supervision_producer import best_effort_register_run_supervision
+                best_effort_register_run_supervision(intent=intent, directory=directory,
+                    source_commit=release["source_commit"])
+                try:
+                    # Operational heartbeat only: the factory and prefix selector report
+                    # step, elapsed time and bytes hashed here; no gate reads this file.
+                    with progress_sink(directory / PROGRESS_FILENAME, intent_id=directory.name,
+                                       source_commit=release["source_commit"]):
+                        progress = _advance_intent(directory, intent, config, release, resolver=source_resolver,
+                            publisher=publisher, submitter=submitter, status_reader=status_reader,
+                            activation_provisioner=activation_provisioner, now=moment)
+                except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+                    progress = load_progression(directory, intent)
+                    failure_state = dict(progress.get("state", {}) if progress else {})
+                    if getattr(exc, "failure_reference", None) is not None:
+                        _reference(exc.failure_reference)
+                        failure_state["preparation_failure"] = exc.failure_reference
+                    code = str(exc).split(":", 1)[0] if isinstance(exc, ValueError) else "scene_progression_dependency_unavailable"
+                    if not code or not all(c.islower() or c.isdigit() or c == "_" for c in code):
+                        code = "scene_progression_dependency_unavailable"
+                    progress = advance(directory, intent, progress, status="blocked", phase="preparation",
+                        state=failure_state, blockers=[code], now=moment)
+                rows.append({"intent_id": directory.name, "status": progress["status"], "phase": progress["phase"],
+                             "blockers": progress.get("blockers", []),
+                             **({"source_binding": progress["state"]["source_binding"]}
+                                if (progress.get("state") or {}).get("source_binding") else {}),
+                             "progression_digest": progress["progression_digest"]})
+        except (OSError, ValueError, KeyError, TypeError):
+            rows.append({"intent_id": directory.name, "status": "blocked", "blockers": ["scene_progression_state_invalid"]})
+    return intake._seal({"schema_version": "task_evaluation_scene_progression_run.v1",
+        "status": "processed" if rows else "idle", "source_commit": release["source_commit"], "results": rows,
+        "provider_allocation_performed": False}, "run_digest")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default=os.getenv(CONFIG_ENV), required=not os.getenv(CONFIG_ENV))
+    args = parser.parse_args(argv)
+    config = read(safe_path(args.config), digest_field="config_digest")
+    if config.get("preparation_worker") is not None:
+        from .task_evaluation_scene_preparation_service import run_preparation_service
+        result = run_preparation_service(config_path=args.config)
+    else:
+        result = process_scene_intents(config_path=args.config)
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

@@ -19,6 +19,9 @@ def _shell_script(unit: str, directive: str) -> str:
 
 def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
     units_and_directives = (
+        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStartPre"),
+        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStart"),
+        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStartPost"),
         ("deploy/systemd/blueprint-capture-reconstruction-dispatcher.service", "ExecStart"),
         ("deploy/systemd/blueprint-capture-reconstruction-dispatcher.service", "ExecStartPre"),
         ("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service", "ExecStart"),
@@ -37,6 +40,15 @@ def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
             text=True,
         )
         assert completed.returncode == 0, f"{relative} {directive}: {completed.stderr}"
+
+
+def test_task_evaluation_dispatcher_optuna_guard_survives_systemd_parsing() -> None:
+    dispatcher = _text(
+        "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service"
+    )
+
+    assert "optuna.__version__ == str(4)+chr(46)+str(9)+chr(46)+str(0)" in dispatcher
+    assert 'optuna.__version__ == \\\"4.9.0\\\"' not in dispatcher
 
 
 def test_canonical_allocator_dependencies_are_in_the_production_base() -> None:
@@ -93,6 +105,10 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         in dispatcher
     )
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in dispatcher
+    assert (
+        "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT="
+        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions"
+    ) in dispatcher
     assert "task-evaluation-launch-profile-catalog.json" in dispatcher
     # Execution is armed by the execute flag; the launch id narrows the window
     # when one is set. Coupling them meant a standing per-profile authorization
@@ -112,6 +128,30 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     # developer home is unreadable here -- which is how the Content Agents
     # paid preflight came to be unproducible on the deployed host.
     assert "OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key" in dispatcher
+    assert (
+        "OPENAI_ADMIN_API_KEY_FILE="
+        "/etc/blueprint/provider-secrets/openai_admin_api_key"
+    ) in dispatcher
+    assert (
+        "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE="
+        "/etc/blueprint/provider-secrets/openai_cost_scope_attestation.json"
+    ) in dispatcher
+    # Scene-configuration OpenAI stages each need an exclusive key scope; a
+    # shared key/attestation cannot pass the per-stage official-cost gate.
+    for stage in (
+        "artifixer_semantic_teacher",
+        "artifixer_visual_review",
+        "content_agents",
+    ):
+        upper = stage.upper()
+        assert (
+            f"OPENAI_{upper}_API_KEY_FILE="
+            f"/etc/blueprint/provider-secrets/openai_api_key_{stage}"
+        ) in dispatcher
+        assert (
+            f"BLUEPRINT_OPENAI_{upper}_COST_SCOPE_ATTESTATION_FILE="
+            f"/etc/blueprint/provider-secrets/openai_cost_scope_attestation_{stage}.json"
+        ) in dispatcher
     assert (
         "BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets"
     ) in dispatcher
@@ -142,6 +182,12 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url",
         "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket",
         "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod",
     ):
         assert binding in dispatcher
     assert (
@@ -154,8 +200,58 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "task_evaluation_launch_reconciler" in reconciler
     assert "blueprint-gpu-spend-guard.service" in reconciler
     assert "--guard-report" in reconciler
+    # R8: the reconciler tick files owner terminal receipts; the unit must forward
+    # the canary dispatch root, the terminal result root and the owner intent
+    # store, and each must be the path the producing/consuming unit uses.
+    for flag, variable, path in (
+        ("--policy-canary-dispatch-root", "BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT",
+         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries"),
+        ("--terminal-result-root", "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESULT_ROOT",
+         "/var/lib/blueprint/task-evaluation-inputs/task-evaluation-terminal-results"),
+        ("--scene-intent-root", "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT",
+         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"),
+    ):
+        assert f'{flag} "$${{{variable}}}"' in reconciler
+        assert f"Environment={variable}={path}" in reconciler
+    canary = _text("deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.service")
+    assert ("Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT="
+            "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries") in canary
 
     assert "task_evaluation_launch_supervisor" in supervisor
+
+
+def test_production_launch_units_keep_webapp_offering_callbacks_reachable_after_rebuild() -> None:
+    dispatcher = _text("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service")
+    reconciler = _text("deploy/systemd/blueprint-task-evaluation-launch-reconciler.service")
+    supervisor = _text("deploy/systemd/blueprint-task-evaluation-launch-supervisor.service")
+    terminal = (
+        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL="
+        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launches"
+    )
+
+    assert terminal in dispatcher
+    assert terminal in reconciler
+    assert (
+        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PUBLICATION_READINESS_URL="
+        "https://tryblueprint.io/api/internal/pipeline/"
+        "task-evaluation-launch-publication-readiness"
+    ) in dispatcher
+    assert (
+        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL="
+        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-progress"
+    ) in reconciler
+    assert (
+        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL="
+        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-supervision"
+    ) in supervisor
+    for unit in (dispatcher, reconciler, supervisor):
+        assert (
+            "Environment=PIPELINE_SYNC_TOKEN_FILE="
+            "/etc/blueprint/provider-secrets/pipeline_sync_token"
+        ) in unit
+        assert unit.index("Environment=PIPELINE_TASK_EVALUATION") < unit.index(
+            "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env"
+        )
     assert "ReadOnlyPaths=" in supervisor
     assert "task-evaluation-launches" in supervisor
     assert "task-evaluation-launch-runs" in supervisor
@@ -163,8 +259,73 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in supervisor
     assert "--public-catalog" in supervisor
     assert "paid_resource_allocator" not in supervisor
-    assert "provider-secrets" not in supervisor
+    assert "/etc/blueprint/provider-secrets" in supervisor
     assert '"$${ARGS[@]}"\'' in supervisor
+
+
+def test_launch_read_only_catalog_is_optional_until_first_publication() -> None:
+    """An absent catalog must not prevent either reader unit from starting.
+
+    The activation publisher creates the catalog atomically, so a fresh host
+    legitimately has no catalog before its first successful publication.
+    systemd's ``-`` prefix ignores only that absent-path setup error; once the
+    path exists it remains mounted read-only in both reader units.
+    """
+
+    catalog = (
+        "-/var/lib/blueprint/pipeline-control-plane/"
+        "task-evaluation-launch-profile-catalog.json"
+    )
+    for unit in (
+        "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service",
+        "deploy/systemd/blueprint-task-evaluation-launch-supervisor.service",
+    ):
+        # systemd merges every ReadOnlyPaths= line; the catalog may sit on any of them
+        # (release-retention and the SAM profile registry now precede it), so scan all.
+        read_only_paths = [
+            entry
+            for line in _text(unit).splitlines()
+            if line.startswith("ReadOnlyPaths=")
+            for entry in line.removeprefix("ReadOnlyPaths=").split()
+        ]
+        assert catalog in read_only_paths, unit
+
+
+def test_canonical_environment_binds_scene_configuration_runtime_secret_paths() -> None:
+    """A rebuilt host must retain every non-secret runtime path binding."""
+
+    environment = _text("deploy/systemd/pipeline-control-plane.env.example")
+    expected = {
+        "OPENAI_API_KEY_FILE": "/etc/blueprint/provider-secrets/openai_api_key",
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE": (
+            "/etc/blueprint/provider-secrets/openai_api_key_artifixer_semantic_teacher"
+        ),
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE": (
+            "/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review"
+        ),
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE": (
+            "/etc/blueprint/provider-secrets/openai_api_key_content_agents"
+        ),
+        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE": (
+            "/etc/blueprint/provider-secrets/"
+            "openai_cost_scope_attestation_artifixer_semantic_teacher.json"
+        ),
+        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE": (
+            "/etc/blueprint/provider-secrets/"
+            "openai_cost_scope_attestation_artifixer_visual_review.json"
+        ),
+        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": (
+            "/etc/blueprint/provider-secrets/"
+            "openai_cost_scope_attestation_content_agents.json"
+        ),
+    }
+    declared = {
+        name: value
+        for line in environment.splitlines()
+        if line and not line.lstrip().startswith("#") and "=" in line
+        for name, value in [line.split("=", 1)]
+    }
+    assert {name: declared.get(name) for name in expected} == expected
 
 
 def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> None:
@@ -193,6 +354,27 @@ def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> N
     assert "BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT=/var/lib/blueprint/pipeline-control-plane" in guard
     assert '--output-root "$${BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT}"' in guard
     assert "blueprint_pipeline.provider_billing_reconciler" in billing
+
+
+def test_core_control_plane_uses_the_active_immutable_release() -> None:
+    unit = _text("deploy/systemd/blueprint-pipeline-control-plane.service")
+
+    assert (
+        "BLUEPRINT_PIPELINE_REPO=/opt/blueprint/task-evaluation-control-plane"
+        in unit
+    )
+    assert (
+        "BLUEPRINT_PIPELINE_PYTHON="
+        "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
+        in unit
+    )
+    assert 'cd -P "$${BLUEPRINT_PIPELINE_REPO}"' in unit
+    assert "GIT_CONFIG_KEY_0=safe.directory" in unit
+    assert 'PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}"' in unit
+    assert ".venv/bin/python -m blueprint_pipeline.production_runtime_env_guard" not in unit
+
+    deployer = _text("scripts/deploy_control_plane_commit.py")
+    assert '"blueprint-pipeline-control-plane.service",' in deployer
 
 
 def test_installer_and_environment_enable_durable_queue_and_independent_recovery() -> None:
@@ -240,6 +422,13 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
         "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url",
         "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket",
         "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod",
+        "PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token",
     ):
         assert binding in environment
 
@@ -271,3 +460,18 @@ def test_dispatcher_exit_code_separates_outcome_from_dispatch_failure() -> None:
         'return 0 if result.get("schema_version") == QUEUE_RUN_SCHEMA_VERSION else 2'
         in source
     )
+
+
+def test_provider_billing_reconciler_timer_is_deployed_for_accounting_closure() -> None:
+    """The provider billing reconciler must be part of the deployed unit set.
+
+    Its evidence is the accounting-closure feed the capacity/credit guard reads;
+    an enabled-but-unmanaged timer drifts inactive after a deploy or reboot (it
+    last fired weeks before its omission was noticed), leaving spend accounting
+    stale on a control plane that is meant to run hands-off with real money.
+    Deploying the service + timer makes every deploy install, enable, and start
+    them, so the ten-minute reconciliation keeps running.
+    """
+    deployer = _text("scripts/deploy_control_plane_commit.py")
+    assert '"blueprint-provider-billing-reconciler.service",' in deployer
+    assert '"blueprint-provider-billing-reconciler.timer",' in deployer

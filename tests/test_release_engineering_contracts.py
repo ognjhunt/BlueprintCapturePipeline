@@ -178,6 +178,24 @@ def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:
         )
         before_first_step = workflow.split("steps:", 1)[0]
         assert "${{ runner.temp }}" not in before_first_step, workflow_name
+
+
+def test_core_workflows_use_nonexpiring_digest_pinned_ffmpeg_release() -> None:
+    expected_url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1"
+    expected_digests = {
+        "bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa",
+        "25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067",
+    }
+    for workflow_name in ("ci.yml", "full-test-lane.yml"):
+        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
+            encoding="utf-8"
+        )
+        assert expected_url in workflow
+        assert expected_digests.issubset(set(workflow.split()))
+        assert "for attempt in 1 2 3; do" in workflow
+        assert "download_verified ffmpeg-linux-x64.gz" in workflow
+        assert "download_verified ffprobe-linux-x64.gz" in workflow
+        assert "BtbN/FFmpeg-Builds/releases/download/autobuild-" not in workflow
         assert (
             'BLUEPRINT_ARTIFACT_CACHE_ROOT=${RUNNER_TEMP}/blueprint-artifact-cache'
             in workflow

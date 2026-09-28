@@ -1,0 +1,80 @@
+"""Preparation identities are not paid reservations and cannot authorize a GPU."""
+from __future__ import annotations
+
+from contextlib import contextmanager
+from pathlib import Path
+
+from . import task_evaluation_scene_intake as intake
+from .task_evaluation_scene_owner_authority import reopen_scene_intent
+from .task_evaluation_public_scene_attempt_factory import record
+from .task_evaluation_scene_progression_state import require, safe_path
+
+SCHEMA = "task_evaluation_scene_preparation_attempt.v1"
+
+
+@contextmanager
+def preparation_storage(config, binding, output_root):
+    """Reserve normalization/staging headroom before the first large write.
+
+    Yields the reservation (``None`` without a host ledger) so the caller can
+    settle its footprint sample by the factory's outcome.
+    """
+    root = (config.get("preparation_worker") or {}).get("disk_reservation_root")
+    if root is None:
+        yield None  # Hermetic/direct factory callers have no shared host ledger.
+        return
+    from .control_plane_disk_budget import reserve_control_plane_disk
+    refs = binding.get("references", {})
+    expected = (3 * refs.get("primary", {}).get("size_bytes", 0)
+                + 8 * refs.get("collision", {}).get("size_bytes", 0) + 256 * 1024**2)
+    if binding.get("schema_version") == "website_scene_source_binding.v1":
+        expected = binding.get("required_staging_bytes")
+        require(type(expected) is int and expected > 256 * 1024**2, "website_staging_size_invalid")
+    with reserve_control_plane_disk("launch_preparation", target_root=output_root,
+                                   expected_bytes=expected, reservation_root=root,
+                                   workspace=output_root, workload="scene_preparation_attempt",
+                                   # Factory output already on disk means this re-runs an
+                                   # earlier pass of the attempt; it does not prepare it.
+                                   fresh=False if (Path(output_root) / "materialized").exists()
+                                   else None) as reservation:
+        yield reservation
+
+
+def settle_preparation_storage(reservation, factory):
+    """Record a factory that stopped short of publication as a blocked sample.
+
+    Such a factory measured only part of its workspace, so its sample must not
+    shape admission.  A factory that raised is recorded as failed on exit.
+    """
+    if reservation is not None and (
+            not isinstance(factory, dict) or factory.get("status") != "publication_ready"):
+        reservation.release(outcome="blocked")
+
+
+def preparation_attempt_path(directory, attempt_id):
+    require(intake._identifier(attempt_id), "preparation_attempt_id_invalid")
+    directory = safe_path(directory)
+    paths = [directory / name / (attempt_id + ".json") for name in ("preparation-attempts", "attempts")]
+    found = [path for path in paths if path.exists()]
+    require(len(found) <= 1, "preparation_attempt_identity_ambiguous")
+    return found[0] if found else paths[0]
+
+
+def create_preparation_attempt(*, directory, attempt_id, source_commit, runtime_digest, input_digest, now=None):
+    directory = safe_path(directory)
+    intent = reopen_scene_intent(record(directory / "intent.json"), now=now)
+    require(intake._COMMIT.fullmatch(source_commit) is not None
+            and intake._DIGEST.fullmatch(runtime_digest) is not None
+            and intake._DIGEST.fullmatch(input_digest) is not None, "preparation_attempt_binding_invalid")
+    value = {"schema_version": SCHEMA, "intent_id": intent["intent_id"], "intent_digest": intent["intent_digest"],
+        "attempt_id": attempt_id, "source_commit": source_commit, "runtime_digest": runtime_digest,
+        "input_digest": input_digest, "provider": "control_plane", "maximum_spend_usd": 0,
+        "status": "preparation_only", "paid_authority_granted": False, "provider_allocation_permitted": False}
+    value = intake._seal(value, "attempt_digest")
+    path = preparation_attempt_path(directory, attempt_id)
+    require(path.parent.name == "preparation-attempts", "preparation_attempt_paid_record_conflict")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    if not path.exists():
+        intake.write_exclusive(path, value)
+    require(intake._read(path, "attempt_digest") == value, "preparation_attempt_immutable_conflict")
+    return value

@@ -1,0 +1,185 @@
+{
+  "fixture_only": true,
+  "claim_ceiling": "offline_contract_test",
+  "synthetic_media_and_closure_records": true,
+  "website_commit": "5b07fe48e93cabf2a758b7740aab3d6594cbdd10",
+  "producer_candidate_results": [
+    {
+      "candidate_id": "pi05_droid",
+      "episodes_completed": 10,
+      "interpretable_episode_count": 6,
+      "success_count": 2,
+      "success_rate": 0.3333333333333333,
+      "progress_score": 1.0,
+      "mean_destination_error": 0.01,
+      "contact_maintenance_rate": null,
+      "collision_rate": 0.0,
+      "action_delivery_rate": 1.0
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "episodes_completed": 10,
+      "interpretable_episode_count": 6,
+      "success_count": 4,
+      "success_rate": 0.6666666666666666,
+      "progress_score": 1.0,
+      "mean_destination_error": 0.01,
+      "contact_maintenance_rate": null,
+      "collision_rate": 0.0,
+      "action_delivery_rate": 1.0
+    }
+  ],
+  "episode_cells": [
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-0",
+      "seed": 100,
+      "interpretable": true,
+      "success": true
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-0",
+      "seed": 100,
+      "interpretable": true,
+      "success": false
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-1",
+      "seed": 101,
+      "interpretable": true,
+      "success": true
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-1",
+      "seed": 101,
+      "interpretable": true,
+      "success": false
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-2",
+      "seed": 102,
+      "interpretable": true,
+      "success": false
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-2",
+      "seed": 102,
+      "interpretable": false,
+      "success": null
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-3",
+      "seed": 103,
+      "interpretable": true,
+      "success": false
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-3",
+      "seed": 103,
+      "interpretable": false,
+      "success": null
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-4",
+      "seed": 104,
+      "interpretable": true,
+      "success": false
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-4",
+      "seed": 104,
+      "interpretable": false,
+      "success": null
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-5",
+      "seed": 105,
+      "interpretable": true,
+      "success": false
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-5",
+      "seed": 105,
+      "interpretable": false,
+      "success": null
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-6",
+      "seed": 106,
+      "interpretable": false,
+      "success": null
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-6",
+      "seed": 106,
+      "interpretable": true,
+      "success": true
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-7",
+      "seed": 107,
+      "interpretable": false,
+      "success": null
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-7",
+      "seed": 107,
+      "interpretable": true,
+      "success": true
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-8",
+      "seed": 108,
+      "interpretable": false,
+      "success": null
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-8",
+      "seed": 108,
+      "interpretable": true,
+      "success": true
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "cell_id": "cell-9",
+      "seed": 109,
+      "interpretable": false,
+      "success": null
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "cell_id": "cell-9",
+      "seed": 109,
+      "interpretable": true,
+      "success": true
+    }
+  ],
+  "independent_paired_cohort": {
+    "cells": [
+      "cell-0",
+      "cell-1"
+    ],
+    "pairs": 2,
+    "pi05_only_wins": 2,
+    "groot_only_wins": 0,
+    "two_sided_sign_test_p": 0.5
+  },
+  "integration_instruction": "Keep marginal summaries separate from the paired headline; no winner or qualification."
+}

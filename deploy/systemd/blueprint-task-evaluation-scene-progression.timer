@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-scene-progression.timer.json
+Description=Reconcile authenticated scene intent progression
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+RandomizedDelaySec=10s
+Persistent=true
+Unit=blueprint-task-evaluation-scene-progression.service
+
+[Install]
+WantedBy=timers.target

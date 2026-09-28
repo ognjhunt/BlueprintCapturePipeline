@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -81,6 +82,39 @@ def read_reviewed_lock_keys(paths: list[Path]) -> frozenset[str]:
                 name = re.sub(r"[-_.]+", "-", match.group(1)).lower()
                 keys.add(f"{name}=={match.group(2)}")
     return frozenset(keys)
+
+
+def reviewed_g1_runtime_wheel_keys(root: Path) -> frozenset[str]:
+    """Read exact provider pins without importing a runtime module in CI."""
+
+    path = root / "src/blueprint_pipeline/native_task_g1_runtime_lock.py"
+    if not path.is_file() or path.is_symlink():
+        return frozenset()
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        assignments = [
+            node.value for node in module.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "G1_RUNTIME_DEPENDENCY_WHEELS"
+        ]
+        if len(assignments) != 1:
+            return frozenset()
+        wheels = ast.literal_eval(assignments[0])
+    except (OSError, UnicodeError, SyntaxError, ValueError, TypeError):
+        return frozenset()
+    if not isinstance(wheels, tuple) or not 1 <= len(wheels) <= 100:
+        return frozenset()
+    keys = [
+        _component_key(row.get("package"), row.get("version"))
+        for row in wheels if isinstance(row, dict)
+    ]
+    if len(keys) != len(wheels) or any(
+        key.startswith("==") or key.endswith("==") for key in keys
+    ):
+        return frozenset()
+    return frozenset(keys) if len(set(keys)) == len(keys) else frozenset()
 
 
 def _spdx_id(index: int, name: str) -> str:
@@ -411,8 +445,10 @@ def main(argv: list[str] | None = None) -> int:
         image_digest=args.image_digest.strip().lower() if args.image_digest else None,
         artifact_paths=[path.resolve() for path in args.artifact],
         today=date.today(),
-        additional_reviewed_component_keys=read_reviewed_lock_keys(
-            [path if path.is_absolute() else root / path for path in reviewed_locks]
+        additional_reviewed_component_keys=(
+            read_reviewed_lock_keys(
+                [path if path.is_absolute() else root / path for path in reviewed_locks]
+            ) | reviewed_g1_runtime_wheel_keys(root)
         ),
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)

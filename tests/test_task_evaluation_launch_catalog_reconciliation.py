@@ -235,6 +235,77 @@ def test_a_symlinked_profile_fails_closed(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("inactive_blocker", ["scene_execution_owner_revoked",
+                                              "scene_execution_owner_expired",
+                                              "scene_execution_owner_attempt_cancelled_before_execution",
+                                              "scene_execution_owner_store_missing"])
+@pytest.mark.parametrize("extra_blocker", [None, "scene_execution_owner_record_mismatch"])
+def test_revoked_owner_profile_is_retained_as_non_runnable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_blocker: str | None, inactive_blocker: str
+) -> None:
+    from blueprint_pipeline import task_evaluation_launch_catalog as catalog_module
+
+    revoked_path = _profile(tmp_path, "revoked-profile")
+    _profile(tmp_path, "other-profile")
+    original = revoked_path.read_bytes()
+    real_validate = catalog_module.validate_launch_profile
+
+    def validate(profile):
+        if profile["profile_id"] == "revoked-profile":
+            return [inactive_blocker, *([extra_blocker] if extra_blocker else [])]
+        return real_validate(profile)
+
+    monkeypatch.setattr(catalog_module, "validate_launch_profile", validate)
+    if extra_blocker:
+        with pytest.raises(LaunchCatalogError, match=extra_blocker):
+            build_catalog_payload(tmp_path / "profiles")
+    else:
+        rows = {row["profile_id"]: row for row in json.loads(build_catalog_payload(tmp_path / "profiles"))}
+        assert set(rows) == {"revoked-profile", "other-profile"}
+        admission = rows["revoked-profile"]["execution_admission"]
+        assert admission["live_enabled"] is False
+        assert inactive_blocker in admission["blockers"]
+    assert revoked_path.read_bytes() == original
+
+
+def test_one_unreadable_owner_store_cannot_starve_the_whole_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scene 840938, 2026-09-16: one retired source blocked every launch.
+
+    A single stale profile carried scene_execution_owner_store_missing. The
+    builder raised, the catalog never reconciled, and launch activation
+    starved -- a healthy retargeted run sat at awaiting_execution for hours
+    with nothing wrong with it. An owner record this host cannot read is
+    unavailability, not corrupted evidence, so it demotes like a missing input.
+    """
+    from blueprint_pipeline import task_evaluation_launch_catalog as catalog_module
+
+    _profile(tmp_path, "retired-source-profile")
+    _profile(tmp_path, "live-profile")
+    real_validate = catalog_module.validate_launch_profile
+
+    def validate(profile):
+        if profile["profile_id"] == "retired-source-profile":
+            return ["scene_execution_owner_store_missing"]
+        return real_validate(profile)
+
+    monkeypatch.setattr(catalog_module, "validate_launch_profile", validate)
+    rows = {row["profile_id"]: row for row in json.loads(build_catalog_payload(tmp_path / "profiles"))}
+
+    # The catalog builds at all -- that is the whole point. Before this change
+    # the single stale profile raised and no catalog was produced, so every
+    # other profile became unreachable and activation had nothing to read.
+    assert set(rows) == {"retired-source-profile", "live-profile"}
+    assert "scene_execution_owner_store_missing" not in (
+        rows["live-profile"]["execution_admission"]["blockers"]
+    )
+    # The stale one is retained as evidence but cannot start a run.
+    demoted = rows["retired-source-profile"]["execution_admission"]
+    assert demoted["live_enabled"] is False
+    assert "scene_execution_owner_store_missing" in demoted["blockers"]
+
+
 def test_a_profile_whose_inputs_are_missing_is_demoted_not_fatal(tmp_path):
     import sys
 
@@ -295,3 +366,35 @@ def test_a_malformed_profile_still_fails_the_whole_catalog(tmp_path):
 
     with _pytest.raises(LaunchCatalogError):
         build_catalog_payload(profile_dir)
+
+
+def test_repair_works_on_the_read_only_catalog_publication_installs(
+    tmp_path: Path,
+) -> None:
+    """Publication installs the catalog 0440 and the reconciler must still fix drift.
+
+    ``publish_task_evaluation_launch_profiles`` seals the catalog read-only so
+    no consumer can edit it in place. Its owner cannot reopen 0440 for writing
+    either, so an in-place rewrite raises ``catalog_unwritable`` -- and since
+    this reconciler runs from the intake unit's ExecStartPre, that stops intake
+    from starting at all. Repair must replace the inode and preserve the mode.
+    """
+
+    import os
+    import stat
+
+    _profile(tmp_path, "profile-a")
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text("[]\n", encoding="utf-8")
+    os.chmod(catalog, 0o440)
+
+    result = reconcile_public_catalog(
+        profile_dir=profile_dir, catalog_path=catalog
+    )
+
+    assert result["status"] == "repaired"
+    assert "profile-a" in result["profile_ids_added"]
+    assert stat.S_IMODE(catalog.stat().st_mode) == 0o440
+    assert json.loads(catalog.read_text(encoding="utf-8"))
+    assert not list(catalog.parent.glob(".catalog.json.*.tmp"))

@@ -71,13 +71,13 @@ def _camera(role: str) -> dict:
             0.0,
             0.0,
             0.0,
-            1.0,
+            -1.0,
             0.0,
             0.0,
             0.0,
             0.0,
-            1.0,
-            0.0,
+            -1.0,
+            2.0,
             0.0,
             0.0,
             0.0,
@@ -200,6 +200,27 @@ def Xform "Asset"
             # and a placeholder cannot answer that question either way.
             write_appearance_usdz(
                 path, _fixture_room_positions(), matrix=appearance_matrix
+            )
+        elif role == "task_object":
+            # Measurable geometry, not a stub: the plan now seals per-camera
+            # framing expectations from the task object's authored extent, and
+            # an extent-free asset is refused fail-closed.
+            path.write_text(
+                '''#usda 1.0
+(
+    defaultPrim = "Asset"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Asset"
+{
+    def Mesh "body"
+    {
+        point3f[] points = [(-0.06, -0.06, 0.0), (0.06, 0.06, 0.12)]
+    }
+}
+''',
+                encoding="utf-8",
             )
         else:
             path.write_bytes(f"fixture:{role}:{articulated}".encode())
@@ -438,6 +459,22 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
         "robot_scene_contact": 18,
     }
 
+    # A support Xform is only resolvable when its collider is unambiguous.
+    affordance["intended_support_prim_paths"] = ["/Scene"]
+    affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+    with pytest.raises(NativeTaskArenaScenePlanError, match="rigid_support_body_paths_invalid"):
+        _articulation_plan(contract, task_object_asset_path=task_path, scene_collision_asset_path=scene_path)
+    scene_stage.RemovePrim("/Scene/wall")
+    scene_stage.GetRootLayer().Save()
+    grouped = _articulation_plan(contract, task_object_asset_path=task_path, scene_collision_asset_path=scene_path)
+    assert grouped["support_contact_body_paths"] == ["{ENV_REGEX_NS}/scene_collision/floor"]
+    assert grouped["non_support_scene_contact_body_paths"] == []
+    wall = UsdGeom.Cube.Define(scene_stage, "/Scene/wall").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(wall)
+    scene_stage.GetRootLayer().Save()
+    affordance["intended_support_prim_paths"] = ["/Scene/floor"]
+    affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+
     contract["objects"][0]["object_type"] = "ARTICULATION"
     contract["objects"][0]["reset_state"] = {
         "joint_positions": {"display_hinge": 0.0}
@@ -472,6 +509,139 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
         "native_task_arena_rigid_contact_body_paths_invalid",
     )
 
+
+def test_rigid_destination_support_binds_contact_to_passive_asset(
+    tmp_path: Path,
+) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    task_path = tmp_path / "book.usda"
+    task_stage = Usd.Stage.CreateNew(str(task_path))
+    task_root = UsdGeom.Xform.Define(task_stage, "/Book")
+    task_stage.SetDefaultPrim(task_root.GetPrim())
+    task_body = UsdGeom.Xform.Define(task_stage, "/Book/body").GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(task_body)
+    task_stage.GetRootLayer().Save()
+
+    scene_path = tmp_path / "scene.usda"
+    scene_stage = Usd.Stage.CreateNew(str(scene_path))
+    scene_root = UsdGeom.Xform.Define(scene_stage, "/Scene")
+    scene_stage.SetDefaultPrim(scene_root.GetPrim())
+    floor = UsdGeom.Cube.Define(scene_stage, "/Scene/floor").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(floor)
+    scene_stage.GetRootLayer().Save()
+
+    support_path = tmp_path / "tray.usda"
+    support_stage = Usd.Stage.CreateNew(str(support_path))
+    support_root = UsdGeom.Xform.Define(support_stage, "/Tray")
+    support_stage.SetDefaultPrim(support_root.GetPrim())
+    UsdPhysics.RigidBodyAPI.Apply(support_root.GetPrim())
+    support_stage.GetRootLayer().Save()
+
+    affordance = {
+        "allowed_contact_prim_paths": ["/Book/body"],
+        "intended_support_prim_paths": ["/Tray"],
+        "affordance_digest": "",
+    }
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    contract = {
+        "task_kind": "rigid_pick_place",
+        "task_spec": {
+            "destination_support_asset_id": "document_tray",
+            "destination_placement_support_prim_paths": ["/Scene/floor"],
+            "task_contact_minimum_force_n": 0.5,
+            "collision_failure_minimum_force_n": 1.0,
+            "reset_translation_tolerance_m": 0.001,
+            "reset_orientation_tolerance_rad": 0.01,
+            "interaction_affordance": affordance,
+        },
+        "robot": {"robot_id": "franka_panda"},
+        "objects": [
+            {
+                "task_subject": True,
+                "semantic_role": "task_object",
+                "asset_id": "book",
+                "runtime_name": "task_object",
+                "object_type": "RIGID",
+                "reset_state": {"joint_positions": {}},
+            },
+            {
+                "task_subject": False,
+                "semantic_role": "task_support",
+                "asset_id": "document_tray",
+                "runtime_name": "task_support",
+                "object_type": "RIGID",
+                "reset_state": {"joint_positions": {}},
+            },
+        ],
+    }
+
+    topology = _articulation_plan(
+        contract,
+        task_object_asset_path=task_path,
+        scene_collision_asset_path=scene_path,
+        task_support_asset_path=support_path,
+    )
+
+    assert topology["support_contact_body_paths"] == [
+        "{ENV_REGEX_NS}/task_support"
+    ]
+    support_sensors = [
+        row
+        for row in topology["contact_sensors"]
+        if row["logical_sensor_id"] == "task_support_contact"
+    ]
+    assert support_sensors[0]["filter_prim_paths_expr"] == [
+        "{ENV_REGEX_NS}/task_support"
+    ]
+
+    episode_contact_sensors = topology["contact_sensors"]
+    assert topology["destination_placement_support_body_paths"] == ["{ENV_REGEX_NS}/scene_collision/floor"]
+    assert topology["destination_placement_forbidden_body_paths"] == []
+    contract["task_spec"].update(
+        destination_qualification_probe=True,
+        destination_placement_support_prim_paths=["/Scene/floor"],
+    )
+    topology = _articulation_plan(
+        contract,
+        task_object_asset_path=task_path,
+        scene_collision_asset_path=scene_path,
+        task_support_asset_path=support_path,
+    )
+    assert topology["contact_sensors"] == episode_contact_sensors
+    by_id = {
+        row["logical_sensor_id"]: row for row in topology["contact_sensors"]
+    }
+    assert by_id["destination_scene_support_contact"][
+        "filter_prim_paths_expr"
+    ] == ["{ENV_REGEX_NS}/scene_collision/floor"]
+    assert "destination_scene_forbidden_contact" not in by_id
+
+    # Initial subject support is independent of the tray's placement support.
+    cabinet = UsdGeom.Cube.Define(scene_stage, "/Scene/cabinet").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(cabinet)
+    scene_stage.GetRootLayer().Save()
+    contract["task_spec"]["initial_source_support"] = {
+        "scene_prim_paths": ["/Scene/cabinet"],
+        "support_plane_digest": "sha256:" + "a" * 64,
+        "contact_permission": "initial_pickup_until_first_separation_or_lift",
+    }
+    topology = _articulation_plan(contract, task_object_asset_path=task_path,
+        scene_collision_asset_path=scene_path, task_support_asset_path=support_path)
+    by_id = {row["logical_sensor_id"]: row for row in topology["contact_sensors"]}
+    assert by_id["task_initial_support_contact"]["filter_prim_paths_expr"] == [
+        "{ENV_REGEX_NS}/scene_collision/cabinet"]
+    assert by_id["task_scene_collision"]["filter_prim_paths_expr"] == [
+        "{ENV_REGEX_NS}/scene_collision/floor"]
+    assert by_id["task_support_contact"]["filter_prim_paths_expr"] == ["{ENV_REGEX_NS}/task_support"]
+    assert by_id["destination_scene_support_contact"]["filter_prim_paths_expr"] == [
+        "{ENV_REGEX_NS}/scene_collision/floor"]
+    contract["task_spec"]["initial_source_support"]["scene_prim_paths"] = ["/Scene/unobserved"]
+    with pytest.raises(NativeTaskArenaScenePlanError, match="initial_support_invalid"):
+        _articulation_plan(contract, task_object_asset_path=task_path,
+            scene_collision_asset_path=scene_path, task_support_asset_path=support_path)
 
 def test_graph_articulation_plan_binds_complete_joint_and_body_topology(
     tmp_path: Path,

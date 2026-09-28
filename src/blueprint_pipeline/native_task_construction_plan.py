@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .adp_rigid_retreat_scoring import planned_retreat_position
 from .native_franka_action_math import is_unauthored_identity_quaternion_xyzw
 from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 from .articulation_graph_contract import (
@@ -23,19 +24,27 @@ from .articulation_graph_contract import (
 from .native_articulated_construction_plan import (
     materialize_articulated_construction_phase_plan,
 )
+from .native_task_construction_validation import (
+    RIGID_SCHEMA_VERSION,
+    NativeTaskConstructionPlanError,
+    construction_total_step_budget,
+    finite_vector as _finite_vector,
+    positive as _positive,
+)
+from .native_task_rigid_gate_evaluation import (
+    evaluate_rigid_construction_gates,
+)
+from .native_task_construction_authored_contract import (
+    native_task_construction_authored_contract_digest,
+)
 
 
 SCHEMA_VERSION = "native_task_construction_phase_plan.v1"
-RIGID_SCHEMA_VERSION = "native_rigid_construction_phase_plan.v1"
 SUPPORTED_TASK_KINDS = frozenset({"articulated_open_close", "rigid_pick_place"})
 RIGID_AFFORDANCE_SCHEMA_VERSION = "native_rigid_interaction_affordance.v1"
 RIGID_MANIPULATION_STRATEGIES = frozenset({"pick_and_place", "planar_push"})
-GRAPH_ARTICULATED_SCHEMA_VERSION = (
-    "native_articulated_graph_construction_phase_plan.v1"
-)
-GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION = (
-    "native_articulated_graph_interaction_affordance.v1"
-)
+GRAPH_ARTICULATED_SCHEMA_VERSION = "native_articulated_graph_construction_phase_plan.v1"
+GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION = "native_articulated_graph_interaction_affordance.v1"
 # Single source of truth for the two bounds that actually reach the native
 # joint-position command.  ``max_joint_delta_rad`` limits how far the commanded
 # setpoint may move in one control step; ``max_joint_setpoint_lead_rad``
@@ -92,34 +101,6 @@ GRAPH_ARTICULATED_PREALIGN_CLEARANCE_M = 0.30
 # jaw-closing axis and strike the door before the panel entered between the
 # fingers.  Keep the tolerance numeric rather than trusting a source label.
 GRAPH_ARTICULATED_STANDOFF_ALIGNMENT_MIN = 1.0 - 1.0e-6
-
-
-class NativeTaskConstructionPlanError(ValueError):
-    """Stable pre-native failures for task-neutral construction planning."""
-
-    def __init__(self, errors: Sequence[str]):
-        self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
-        super().__init__(";".join(self.errors))
-
-
-def _finite_vector(value: Any, *, length: int, error: str) -> list[float]:
-    try:
-        result = [float(item) for item in value]
-    except (TypeError, ValueError) as exc:
-        raise NativeTaskConstructionPlanError([error]) from exc
-    if len(result) != length or not all(math.isfinite(item) for item in result):
-        raise NativeTaskConstructionPlanError([error])
-    return result
-
-
-def _positive(value: Any, *, error: str, allow_zero: bool = False) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise NativeTaskConstructionPlanError([error]) from exc
-    if not math.isfinite(result) or result < 0.0 or (result == 0.0 and not allow_zero):
-        raise NativeTaskConstructionPlanError([error])
-    return result
 
 
 def joint_command_limits(
@@ -296,10 +277,19 @@ def _affordance(task_spec: Mapping[str, Any], *, subject_asset_id: str) -> dict[
         value.get("lift_unit_world"),
         error="native_rigid_construction_lift_direction_invalid",
     )
-    value["gripper_orientation_scoring_frame_xyzw"] = _quaternion(
+    if value.get("insertion_withdrawal_unit_world") is not None:
+        value["insertion_withdrawal_unit_world"] = _unit(
+            value.get("insertion_withdrawal_unit_world"),
+            error="native_rigid_construction_insertion_withdrawal_direction_invalid",
+        )
+    orientation = value["gripper_orientation_scoring_frame_xyzw"] = _quaternion(
         value.get("gripper_orientation_scoring_frame_xyzw"),
         error="native_rigid_construction_gripper_orientation_invalid",
     )
+    if is_unauthored_identity_quaternion_xyzw(orientation):
+        raise NativeTaskConstructionPlanError(
+            ["native_rigid_construction_gripper_orientation_unauthored"]
+        )
     value["pregrasp_clearance_m"] = _positive(
         value.get("pregrasp_clearance_m"),
         error="native_rigid_construction_pregrasp_clearance_invalid",
@@ -1140,6 +1130,13 @@ def materialize_graph_articulated_construction_phase_plan(
         "recovery": "native_end_effector_pose_readback",
         "reset_readback": "native_robot_and_complete_joint_graph_reset_replay",
     }
+    maximum_construction_total_steps = construction_total_step_budget(
+        maximum_action_steps=task_spec.get("maximum_action_steps"),
+        settle_window_samples=task_spec.get("settle_window_samples"),
+        minimum_required_steps=len(phases) * stable_samples,
+        invalid_error="native_articulated_graph_construction_action_budget_invalid",
+        infeasible_error="native_articulated_graph_construction_total_budget_infeasible",
+    )
     result: dict[str, Any] = {
         "schema_version": GRAPH_ARTICULATED_SCHEMA_VERSION,
         "task_kind": "articulated_open_close",
@@ -1173,6 +1170,7 @@ def materialize_graph_articulated_construction_phase_plan(
             ],
             "stable_samples": stable_samples,
             "maximum_steps_per_phase": maximum_steps_per_phase,
+            "maximum_construction_total_steps": maximum_construction_total_steps,
             # The sealed affordance already carries the two bounds the servo
             # executes.  Publish them here so construction executes the pair the
             # task author sealed instead of the servo's own defaults.
@@ -1524,7 +1522,6 @@ def materialize_rigid_construction_phase_plan(
         raise NativeTaskConstructionPlanError(
             ["native_rigid_construction_settle_window_exceeds_phase_budget"]
         )
-
     start = start_pose[:3]
     contact_local = affordance["contact_point_scoring_frame_m"]
     approach_world = _quaternion_rotate_xyzw(
@@ -1532,6 +1529,9 @@ def materialize_rigid_construction_phase_plan(
     )
     destination_approach_world = _quaternion_rotate_xyzw(
         destination_orientation, affordance["approach_unit_scoring_frame"]
+    )
+    destination_withdrawal_world = affordance.get(
+        "insertion_withdrawal_unit_world", destination_approach_world
     )
     lift_world = affordance["lift_unit_world"]
     contact_start_offset = _quaternion_rotate_xyzw(start_orientation, contact_local)
@@ -1560,10 +1560,56 @@ def materialize_rigid_construction_phase_plan(
         affordance["gripper_orientation_scoring_frame_xyzw"],
     )
     if manipulation_strategy == "planar_push":
+        # The gripper is closed for the whole push, so the commanded frame is
+        # the pinch centre while the surface that meets the object is the
+        # closed fingertip, ``closed_fingertip_forward_offset_m`` farther
+        # along the approach.  Every contact-frame target therefore backs off
+        # by that offset, minus ``push_contact_interference_m`` of commanded
+        # bias -- position control cannot hold a measurable contact normal at
+        # exact tangency, so the bias is what keeps
+        # ``push_contact_maintained`` a real force measurement instead of a
+        # sample-order lottery.  Scene-839873 franka-controls attempt 001 paid
+        # to show the uncorrected frame: fingertips struck 39 mm early at
+        # approach speed, punted the object 93 mm past its first waypoint, and
+        # every push waypoint then measured 0 N.
+        fingertip_offset = _positive(
+            affordance.get("closed_fingertip_forward_offset_m"),
+            error="native_rigid_construction_push_fingertip_offset_invalid",
+        )
+        contact_interference = _positive(
+            affordance.get("push_contact_interference_m"),
+            error="native_rigid_construction_push_contact_interference_invalid",
+        )
+        push_contact_max_displacement = _positive(
+            task_spec.get("push_contact_max_displacement_m"),
+            error=(
+                "native_rigid_construction_push_contact_displacement_bound_invalid"
+            ),
+        )
+        if (
+            contact_interference >= fingertip_offset
+            or fingertip_offset >= pregrasp_clearance
+            or push_contact_max_displacement <= contact_interference
+        ):
+            raise NativeTaskConstructionPlanError(
+                ["native_rigid_construction_push_standoff_geometry_infeasible"]
+            )
+        push_standoff = fingertip_offset - contact_interference
+        push_threshold_extra = {
+            "push_contact_max_displacement_m": push_contact_max_displacement,
+        }
+        contact_start_ee = [
+            contact_start[index] + approach_world[index] * push_standoff
+            for index in range(3)
+        ]
+        pregrasp_push = [
+            contact_start_ee[index] + approach_world[index] * pregrasp_clearance
+            for index in range(3)
+        ]
         phases = [
             _phase(
                 "precontact",
-                pregrasp,
+                pregrasp_push,
                 gripper_state="open",
                 gate_ids=("precontact_reachability", "base_collision_clearance"),
                 orientation_world_xyzw=start_gripper_orientation,
@@ -1572,9 +1618,13 @@ def materialize_rigid_construction_phase_plan(
             ),
             _phase(
                 "push_contact",
-                contact_start,
+                contact_start_ee,
                 gripper_state="closed",
-                gate_ids=("push_contact", "support_contact"),
+                gate_ids=(
+                    "push_contact",
+                    "push_contact_standoff",
+                    "support_contact",
+                ),
                 orientation_world_xyzw=start_gripper_orientation,
                 expected_scoring_position_world_m=start,
                 expected_scoring_orientation_world_xyzw=start_orientation,
@@ -1594,11 +1644,16 @@ def materialize_rigid_construction_phase_plan(
             contact_offset = _quaternion_rotate_xyzw(
                 scoring_orientation, contact_local
             )
+            waypoint_approach = _quaternion_rotate_xyzw(
+                scoring_orientation, affordance["approach_unit_scoring_frame"]
+            )
             phases.append(
                 _phase(
                     f"push_{index:02d}",
                     [
-                        scoring_position[axis] + contact_offset[axis]
+                        scoring_position[axis]
+                        + contact_offset[axis]
+                        + waypoint_approach[axis] * push_standoff
                         for axis in range(3)
                     ],
                     gripper_state="closed",
@@ -1616,13 +1671,31 @@ def materialize_rigid_construction_phase_plan(
                     expected_scoring_orientation_world_xyzw=scoring_orientation,
                 )
             )
-        destination_retreat = [
+        contact_destination_ee = [
             contact_destination[index]
+            + destination_approach_world[index] * push_standoff
+            for index in range(3)
+        ]
+        destination_retreat = [
+            contact_destination_ee[index]
             + destination_approach_world[index] * pregrasp_clearance
             for index in range(3)
         ]
         phases.extend(
             [
+                # Break contact by retreating with the fingers still closed;
+                # opening them while the fingertips are engaged sweeps the
+                # linkage through the object (attempt 001 dragged it 93 mm
+                # back out of the destination and spun it 25 degrees).
+                _phase(
+                    "push_detach",
+                    destination_retreat,
+                    gripper_state="closed",
+                    gate_ids=("workspace_containment",),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
                 _phase(
                     "push_release",
                     destination_retreat,
@@ -1652,7 +1725,7 @@ def materialize_rigid_construction_phase_plan(
                 ),
                 _phase(
                     "recovery",
-                    pregrasp,
+                    pregrasp_push,
                     gripper_state="open",
                     gate_ids=("recovery", "reset_readback"),
                     orientation_world_xyzw=start_gripper_orientation,
@@ -1665,6 +1738,7 @@ def materialize_rigid_construction_phase_plan(
             "precontact_reachability": "native_end_effector_pose_readback",
             "base_collision_clearance": "native_robot_scene_contact_readback",
             "push_contact": "native_task_robot_contact_force_readback",
+            "push_contact_standoff": "native_task_root_pose_readback",
             "push_contact_maintained": "native_task_robot_contact_force_readback",
             "push_path": "native_task_root_pose_path_readback",
             "release": "native_gripper_and_task_contact_readback",
@@ -1677,6 +1751,14 @@ def materialize_rigid_construction_phase_plan(
             "reset_readback": "native_robot_and_object_reset_replay",
         }
     else:
+        push_threshold_extra = {}
+        try:
+            destination_retreat = planned_retreat_position(
+                task_spec=task_spec, subject_position=destination, subject_orientation=destination_orientation,
+                grasp_position=contact_destination, withdrawal_direction=destination_withdrawal_world,
+                minimum_displacement_m=pregrasp_clearance, arrival_tolerance_m=arrival_tolerance)
+        except ValueError as exc:
+            raise NativeTaskConstructionPlanError([str(exc)]) from exc
         phases = [
             _phase(
                 "pregrasp",
@@ -1766,11 +1848,7 @@ def materialize_rigid_construction_phase_plan(
                 ),
                 _phase(
                     "settle_observe",
-                    [
-                        contact_destination[index]
-                        + destination_approach_world[index] * pregrasp_clearance
-                        for index in range(3)
-                    ],
+                    destination_retreat,
                     gripper_state="open",
                     gate_ids=("support_stability", "destination_containment"),
                     orientation_world_xyzw=destination_gripper_orientation,
@@ -1779,11 +1857,7 @@ def materialize_rigid_construction_phase_plan(
                 ),
                 _phase(
                     "retreat",
-                    [
-                        contact_destination[index]
-                        + destination_approach_world[index] * pregrasp_clearance
-                        for index in range(3)
-                    ],
+                    destination_retreat,
                     gripper_state="open",
                     gate_ids=("retreat",),
                     orientation_world_xyzw=destination_gripper_orientation,
@@ -1817,6 +1891,13 @@ def materialize_rigid_construction_phase_plan(
         "recovery": "native_end_effector_pose_readback",
         "reset_readback": "native_robot_and_object_reset_replay",
         }
+    maximum_construction_total_steps = construction_total_step_budget(
+        maximum_action_steps=(plan.get("cadence") or {}).get("maximum_action_steps"),
+        settle_window_samples=settle_samples,
+        minimum_required_steps=(len(phases) - 1) * stable_samples + settle_samples,
+        invalid_error="native_rigid_construction_action_budget_invalid",
+        infeasible_error="native_rigid_construction_total_budget_infeasible",
+    )
     result: dict[str, Any] = {
         "schema_version": RIGID_SCHEMA_VERSION,
         "task_kind": "rigid_pick_place",
@@ -1844,6 +1925,7 @@ def materialize_rigid_construction_phase_plan(
             ],
             "stable_samples": stable_samples,
             "maximum_steps_per_phase": maximum_steps_per_phase,
+            "maximum_construction_total_steps": maximum_construction_total_steps,
             "relocation_waypoint_count": waypoint_count,
             **joint_command_limits(
                 max_joint_delta_rad=max_joint_delta_rad,
@@ -1862,6 +1944,7 @@ def materialize_rigid_construction_phase_plan(
             "relocation_tracking_tolerance_m": relocation_tracking,
             "destination_orientation_tolerance_rad": destination_orientation_tolerance,
             "settle_orientation_tolerance_rad": settle_orientation,
+            **push_threshold_extra,
         },
         "phases": phases,
         "phase_count": len(phases),
@@ -1876,301 +1959,6 @@ def materialize_rigid_construction_phase_plan(
         "plan_digest": "",
     }
     result["plan_digest"] = canonical_digest(result, digest_field="plan_digest")
-    return result
-
-
-def evaluate_rigid_construction_gates(
-    *,
-    phase_plan: Mapping[str, Any],
-    phase_results: Sequence[Mapping[str, Any]],
-    reset_replay: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Evaluate rigid construction solely from retained native readbacks."""
-
-    if (
-        phase_plan.get("schema_version") != RIGID_SCHEMA_VERSION
-        or phase_plan.get("plan_digest")
-        != canonical_digest(dict(phase_plan), digest_field="plan_digest")
-    ):
-        raise NativeTaskConstructionPlanError(
-            ["native_rigid_construction_phase_plan_invalid"]
-        )
-    expected_ids = [row["phase_id"] for row in phase_plan["phases"]]
-    observed = {
-        str(row.get("phase_id") or ""): dict(row)
-        for row in phase_results
-        if isinstance(row, Mapping)
-    }
-    if set(observed) != set(expected_ids) or len(observed) != len(expected_ids):
-        raise NativeTaskConstructionPlanError(
-            ["native_rigid_construction_phase_results_invalid"]
-        )
-
-    def samples(phase_id: str) -> list[dict[str, Any]]:
-        rows = list(observed[phase_id].get("task_samples") or [])
-        terminal = observed[phase_id].get("task_sample")
-        if isinstance(terminal, Mapping):
-            rows.append(dict(terminal))
-        if not rows or any(not isinstance(row, Mapping) for row in rows):
-            raise NativeTaskConstructionPlanError(
-                [f"native_rigid_construction_readback_missing:{phase_id}"]
-            )
-        return [dict(row) for row in rows]
-
-    def pose(sample: Mapping[str, Any]) -> list[float]:
-        value = _finite_vector(
-            sample.get("task_scoring_pose_world"),
-            length=7,
-            error="native_rigid_construction_scoring_pose_readback_invalid",
-        )
-        _quaternion(
-            value[3:],
-            error="native_rigid_construction_scoring_pose_readback_invalid",
-        )
-        return value
-
-    def position(sample: Mapping[str, Any]) -> list[float]:
-        return pose(sample)[:3]
-
-    thresholds = phase_plan["thresholds"]
-    contact_threshold = float(thresholds["task_contact_minimum_force_n"])
-    collision_threshold = float(thresholds["collision_failure_minimum_force_n"])
-    start = list(phase_plan["start_position_world_m"])
-    bounds = phase_plan["destination_position_bounds_world_m"]
-    support = list(phase_plan["support_height_interval_m"])
-    settle_count = int(phase_plan["settle_window_samples"])
-    settle_tolerance = float(thresholds["settle_position_tolerance_m"])
-    settle_orientation_tolerance = float(
-        thresholds["settle_orientation_tolerance_rad"]
-    )
-    destination_orientation_tolerance = float(
-        thresholds["destination_orientation_tolerance_rad"]
-    )
-
-    all_samples = [sample for phase_id in expected_ids for sample in samples(phase_id)]
-    collision_clear = all(
-        max(
-            float(sample.get("robot_scene_contact_peak_force_n", float("inf"))),
-            float(
-                sample.get(
-                    "robot_task_forbidden_collision_peak_force_n", float("inf")
-                )
-            ),
-            float(sample.get("task_scene_collision_peak_force_n", float("inf"))),
-        )
-        < collision_threshold
-        and sample.get("locked_joint_containment_violation") is False
-        for sample in all_samples
-    )
-    strategy = str(phase_plan.get("manipulation_strategy") or "pick_and_place")
-    push = strategy == "planar_push"
-    contact_phase_id = "push_contact" if push else "grasp_contact"
-    contact_rows = samples(contact_phase_id)
-    initial_contact = max(
-        float(row.get("task_robot_contact_peak_force_n", 0.0))
-        for row in contact_rows
-    ) >= contact_threshold
-    if push:
-        support_clearance = True
-        relocation_ids = [
-            phase_id for phase_id in expected_ids if phase_id.startswith("push_")
-            and phase_id not in {"push_contact", "push_release"}
-        ]
-    else:
-        lift_position = position(samples("lift_clearance")[-1])
-        lift_delta = [lift_position[index] - start[index] for index in range(3)]
-        support_clearance = sum(
-            lift_delta[index]
-            * float(phase_plan["interaction_affordance"]["lift_unit_world"][index])
-            for index in range(3)
-        ) + 1.0e-9 >= float(thresholds["minimum_lift_m"])
-        relocation_ids = [
-            phase_id
-            for phase_id in expected_ids
-            if phase_id.startswith("relocate_")
-        ]
-    relocation_terminal_samples = [samples(phase_id)[-1] for phase_id in relocation_ids]
-    phase_by_id = {row["phase_id"]: row for row in phase_plan["phases"]}
-    relocation_tracking = all(
-        math.dist(
-            position(sample),
-            phase_by_id[phase_id]["expected_scoring_position_world_m"],
-        )
-        <= float(thresholds["relocation_tracking_tolerance_m"])
-        and _quaternion_angle_xyzw(
-            pose(sample)[3:],
-            phase_by_id[phase_id]["expected_scoring_orientation_world_xyzw"],
-        )
-        <= destination_orientation_tolerance
-        for phase_id, sample in zip(
-            relocation_ids, relocation_terminal_samples, strict=True
-        )
-    )
-    relocation_progress = (
-        bool(relocation_terminal_samples)
-        and math.dist(start, position(relocation_terminal_samples[-1]))
-        >= float(thresholds["minimum_translation_m"])
-    )
-    relocation_path = relocation_tracking and relocation_progress
-    closed_motion_ids = (
-        [contact_phase_id, *relocation_ids]
-        if push
-        else ["lift_clearance", *relocation_ids, "place"]
-    )
-    closed_motion_samples = [
-        sample for phase_id in closed_motion_ids for sample in samples(phase_id)
-    ]
-    contact_local = phase_plan["interaction_affordance"][
-        "contact_point_scoring_frame_m"
-    ]
-    if push:
-        contact_maintained = relocation_path and all(
-            float(sample.get("task_robot_contact_peak_force_n", 0.0))
-            >= contact_threshold
-            and float(sample.get("task_support_contact_peak_force_n", 0.0))
-            >= contact_threshold
-            for sample in closed_motion_samples
-        )
-    else:
-        contact_maintained = relocation_path and all(
-            math.dist(
-                [
-                    pose(sample)[index]
-                    + _quaternion_rotate_xyzw(pose(sample)[3:], contact_local)[index]
-                    for index in range(3)
-                ],
-                _finite_vector(
-                    sample.get("grasp_frame_position_world_m"),
-                    length=3,
-                    error="native_rigid_construction_grasp_frame_readback_invalid",
-                ),
-            )
-            <= float(thresholds["relocation_tracking_tolerance_m"])
-            and float(sample.get("task_robot_contact_peak_force_n", 0.0))
-            >= contact_threshold
-            for sample in closed_motion_samples
-        )
-    release_phase_id = "push_release" if push else "release"
-    release_rows = samples(release_phase_id)
-    release = (
-        observed[release_phase_id].get("gripper_state") == "open"
-        and release_rows[-1].get("finger_separation_m") is not None
-        and float(release_rows[-1]["finger_separation_m"])
-        > float(contact_rows[-1].get("finger_separation_m", float("inf")))
-        and float(release_rows[-1].get("task_robot_contact_peak_force_n", float("inf")))
-        < contact_threshold
-    )
-    settle_rows = samples("settle_observe")[-settle_count:]
-    settle_positions = [position(row) for row in settle_rows]
-    settle_poses = [pose(row) for row in settle_rows]
-    final_position = settle_positions[-1]
-    destination_containment = all(
-        low <= value <= high
-        for low, value, high in zip(
-            bounds["minimum"], final_position, bounds["maximum"], strict=True
-        )
-    )
-    destination_orientation = all(
-        _quaternion_angle_xyzw(
-            row[3:], phase_plan["destination_orientation_xyzw"]
-        )
-        <= destination_orientation_tolerance
-        for row in settle_poses
-    )
-    support_contact = (
-        len(settle_rows) >= settle_count
-        and all(support[0] <= row[2] <= support[1] for row in settle_poses)
-        and all(
-            float(row.get("task_support_contact_peak_force_n", 0.0))
-            >= contact_threshold
-            for row in settle_rows
-        )
-    )
-    support_stability = len(settle_rows) >= settle_count and all(
-        math.dist(final_position, observed_position) <= settle_tolerance
-        and _quaternion_angle_xyzw(settle_poses[-1][3:], observed_pose[3:])
-        <= settle_orientation_tolerance
-        for observed_position, observed_pose in zip(
-            settle_positions, settle_poses, strict=True
-        )
-    )
-    workspace = phase_plan["workspace_position_bounds_world_m"]
-    workspace_containment = all(
-        all(
-            low <= value <= high
-            for low, value, high in zip(
-                workspace["minimum"],
-                position(sample),
-                workspace["maximum"],
-                strict=True,
-            )
-        )
-        for sample in all_samples
-    )
-    reachability = all(
-        observed[phase_id].get("target_reached") is True
-        for phase_id in expected_ids
-    )
-    gate_values = {
-        "base_collision_clearance": collision_clear,
-        "release": release,
-        "retreat": observed["retreat"].get("target_reached") is True,
-        "support_contact": support_contact,
-        "support_stability": support_stability,
-        "destination_containment": (
-            destination_containment and destination_orientation
-        ),
-        "workspace_containment": workspace_containment,
-        "recovery": observed["recovery"].get("target_reached") is True,
-        "reset_readback": reset_replay.get("passed") is True,
-        **(
-            {
-                "precontact_reachability": observed["precontact"].get(
-                    "target_reached"
-                )
-                is True,
-                "push_contact": initial_contact,
-                "push_contact_maintained": contact_maintained,
-                "push_path": relocation_path,
-            }
-            if push
-            else {
-                "pregrasp_reachability": observed["pregrasp"].get(
-                    "target_reached"
-                )
-                is True,
-                "grasp_contact": initial_contact,
-                "grasp_retention": support_clearance and contact_maintained,
-                "support_clearance": support_clearance,
-                "relocation_path": relocation_path,
-            }
-        ),
-    }
-    gate_rows = [
-        {
-            "gate_id": gate_id,
-            "measurement_authority": phase_plan["gate_contract"][gate_id],
-            "passed": bool(gate_values[gate_id]),
-        }
-        for gate_id in phase_plan["required_gate_ids"]
-    ]
-    blockers = [
-        f"native_rigid_construction_gate_failed:{row['gate_id']}"
-        for row in gate_rows
-        if not row["passed"]
-    ]
-    result = {
-        "schema_version": "native_rigid_construction_gate_evaluation.v1",
-        "phase_plan_digest": phase_plan["plan_digest"],
-        "all_phase_targets_reached": reachability,
-        "gates": gate_rows,
-        "passed": not blockers and reachability,
-        "blockers": sorted(blockers),
-        "evaluation_digest": "",
-    }
-    result["evaluation_digest"] = canonical_digest(
-        result, digest_field="evaluation_digest"
-    )
     return result
 
 
@@ -2278,4 +2066,5 @@ __all__ = [
     "materialize_graph_articulated_construction_phase_plan",
     "materialize_native_task_construction_phase_plan",
     "materialize_rigid_construction_phase_plan",
+    "native_task_construction_authored_contract_digest",
 ]

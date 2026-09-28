@@ -60,13 +60,18 @@ STAGE_CONTRACTS: tuple[dict[str, Any], ...] = (
     },
     {
         "stage_id": "sam31_track_selection_review",
-        "schemas": ("public_scene_sam31_track_selection_ai_visual_review.v1",),
+        "schemas": ("public_scene_sam31_track_selection_ai_visual_review.v1",
+                    "public_scene_sam31_track_selection_review.v1"),
         "digest_fields": ("receipt_digest",),
         "accepted_statuses": ("selected_tracks_ai_visual_review_accepted",),
         "accepted_schema_status_pairs": (
             (
                 "public_scene_sam31_track_selection_ai_visual_review.v1",
                 "selected_tracks_ai_visual_review_accepted",
+            ),
+            (
+                "public_scene_sam31_track_selection_review.v1",
+                "selected_tracks_human_review_accepted",
             ),
         ),
         "cardinality": "one",
@@ -300,8 +305,12 @@ def materialize_fresh_scene_preparation_status(
     task_freeze_paths: Sequence[str | Path],
     artifacts: Mapping[str, Any],
     output_path: str | Path,
+    track_selection_reviewer_kind: str = "ai",
 ) -> dict[str, Any]:
-    """Inspect the producer chain and seal the earliest actionable blocker."""
+    """Inspect the producer chain without substituting AI for required human review."""
+
+    if track_selection_reviewer_kind not in {"human", "ai"}:
+        raise FreshScenePreparationError("fresh_scene_track_selection_reviewer_kind_invalid")
 
     paths = [Path(path).expanduser().resolve() for path in task_freeze_paths]
     try:
@@ -318,6 +327,23 @@ def materialize_fresh_scene_preparation_status(
     first_blocker: str | None = None
     blocked_upstream = False
     for contract in STAGE_CONTRACTS:
+        if contract["stage_id"] == "sam31_track_selection_review":
+            contract = dict(contract)
+            human = track_selection_reviewer_kind == "human"
+            schema = ("public_scene_sam31_track_selection_review.v1" if human else
+                      "public_scene_sam31_track_selection_ai_visual_review.v1")
+            status_name = ("selected_tracks_human_review_accepted" if human else
+                           "selected_tracks_ai_visual_review_accepted")
+            contract.update(
+                schemas=(schema,), accepted_statuses=(status_name,),
+                accepted_schema_status_pairs=((schema, status_name),),
+            )
+            if human:
+                contract.update(
+                    producer="sam31_human_track_selection_review",
+                    implementation="blueprint_pipeline.public_scene_sam31_track_selection_review",
+                    backend="explicit human acceptance of exact calibrated selected-track overlays",
+                )
         stage_paths = _paths(
             artifacts.get(contract["stage_id"]),
             cardinality=contract["cardinality"],
@@ -357,6 +383,7 @@ def materialize_fresh_scene_preparation_status(
         "task_count": len(task_ids),
         "task_ids": list(task_ids),
         "task_freeze_set_digest": task_set["set_digest"],
+        "track_selection_reviewer_kind": track_selection_reviewer_kind,
         "task_freezes": [_record(path) for path in paths],
         "stages": rows,
         "first_blocker": first_blocker,
@@ -392,6 +419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="JSON object mapping stage IDs to one path or a task_id-to-path map.",
     )
     parser.add_argument("--output", required=True)
+    parser.add_argument("--track-selection-reviewer-kind", choices=("human", "ai"), default="ai")
     args = parser.parse_args(argv)
     inventory_path = Path(args.artifact_inventory).expanduser().resolve()
     inventory = _read(inventory_path)
@@ -399,6 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         task_freeze_paths=args.task_freeze,
         artifacts=inventory,
         output_path=args.output,
+        track_selection_reviewer_kind=args.track_selection_reviewer_kind,
     )
     return 0
 

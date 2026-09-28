@@ -8,9 +8,7 @@ teardown artifacts without promoting any of those into rank-fidelity proof.
 
 from __future__ import annotations
 
-import argparse
 import base64
-import fcntl
 import hashlib
 import io
 import ipaddress
@@ -34,17 +32,33 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
+from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
+from .vast_provider_log_observations import (
+    _log_result_saw_container_missing,
+    _log_result_container_vanished_after_output,
+)
 from .common import ensure_dir, utc_now_iso, write_json
+from .vast_launch_slots import (  # noqa: F401 - re-exported for existing callers
+    DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES,
+    MAX_CONCURRENT_PAID_LAUNCHES_ENV,
+    _max_concurrent_paid_launches,
+    _release_vast_launch_lock,
+    _try_acquire_vast_launch_lock,
+    _vast_launch_lock_path,
+    vast_launch_gate_path,
+    vast_launch_lock_paths,
+)
 from .decision_evidence_contracts import canonical_digest
+from .vast_create_failure_diagnosis import diagnose_empty_create_400
+from .vast_render_bundle_inventory import RETAINED_ENTRIES, read_render_manifest, resolve_render_inventory
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
 from .isaac_driver_support import (
     driver_newer_branch_sort_rank as _driver_newer_branch_sort_rank,
     driver_sort_rank as _driver_sort_rank,
     isaac_driver_support_status as _isaac_driver_support_status,
 )
-from . import vast_compute_capability as vcc
+from . import gpu_render_providers, vast_compute_capability as vcc
 from .gpu_selection_policy import (
-    GPU_SELECTION_POLICIES,
     _is_disallowed_for_isaac,
     _is_isaac_rt_candidate,
     gpu_allowed_by_policy,
@@ -68,19 +82,52 @@ from .vast_offer_selection_helpers import (
     regex_match_rank as _regex_match_rank,
     version_at_least as _version_at_least,
 )
+from .vast_provider_runtime_identity import (
+    provider_remote_work_dir,
+    runtime_dependency_cache_ready,
+)
 from .provider_attempt_classification import classify_provider_attempt
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 from .provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
+    g1_provider_output_contract,
+    provider_command_execute_fallback_allowed,
     wam_registered_alternative_inputs_present,
+)
+from . import vast_runtime_environment_contract as vrec
+from .vast_scene_private_startup_environment import (
+    SENSITIVE_KEY_MARKERS,
+    VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX,
+    private_startup_environment_script as _private_startup_environment_script,
+    scene_configuration_startup_environments as _scene_configuration_startup_environments,
+)
+from .task_evaluation_scene_configuration_provider_preflight import (
+    scene_configuration_bundle_contract as _scene_configuration_bundle_contract,
 )
 from .native_task_arena_execution_contract import (
     EXECUTION_MODE_CONTRACTS as NATIVE_TASK_ARENA_EXECUTION_MODE_CONTRACTS,
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
     required_archive_entries as native_task_arena_required_archive_entries,
 )
-from .wam_async_runner_common import download_url_to_file
+from .vast_provider_field_parsing import (
+    number as _number,
+    normalized_binary_capability as _normalized_binary_capability,
+    content_range_total_bytes as _content_range_total_bytes,
+    version_tuple as _version_tuple,
+)
+from .native_g1_vast_bundle_contract import (
+    REQUIRED_ENTRIES as NATIVE_G1_REQUIRED_ENTRIES,
+    validate_manifest as validate_g1_manifest,
+)
+from .provider_output_disk_capacity import (
+    download_provider_output_with_capacity_guard as _download_provider_output_with_capacity_guard,
+)
+from .provider_machine_avoidlist import (
+    avoidlist_machine_ids,
+    load_machine_avoidlist as _load_machine_avoidlist,
+    machine_avoidlist_ids as _machine_avoidlist_ids,
+)
 from .vast_independent_watchdog_control import write_started_vast_instance_id
 from .vast_attempt_preservation import (
     VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
@@ -115,15 +162,32 @@ from .wam_provider_output import (
 from .retained_gpu_session_lifecycle import record_retained_gpu_state
 from .vast_retained_instance import (
     NATIVE_TASK_ARENA_WARM_RETENTION_MODE,
+    SCENE_CONFIGURATION_WARM_RETENTION_MODE,
     bind_all_in_cost,
     record_initial_lifecycle,
     record_terminal_lifecycle,
     retention_decision as _retention_decision,
 )
 from .vast_provider_validation import final_validation as _final_validation
+from .vast_evidence_contracts import (
+    VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION,
+    VAST_TEARDOWN_SCHEMA_VERSION,
+)
+from .vast_scene_configuration_warm_readiness import (
+    observed_scene_configuration_warm_readiness,
+    scene_configuration_warm_validation_fields,
+)
+from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
+from .vast_provider_output_recovery import (
+    MAX_G1_RECOVERY_SECONDS,
+    MAX_RECOVERY_SECONDS,
+    recover_provider_output_before_teardown,
+)
+from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress
+from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
+from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
 
-VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "vast_provider_adapter_result.v1"
 VAST_RUNTIME_DISCOVERY_SCHEMA_VERSION = "vast_runtime_discovery.v1"
 VAST_PROVIDER_PLAN_SCHEMA_VERSION = "vast_provider_plan.v1"
 VAST_OFFER_SELECTION_SCHEMA_VERSION = "vast_offer_selection_manifest.v1"
@@ -137,7 +201,6 @@ VAST_VIDEO_SMOKE_SCHEMA_VERSION = "vast_video_smoke_result.v1"
 VAST_BLUEPRINT_BUNDLE_PREFLIGHT_SCHEMA_VERSION = "vast_blueprint_bundle_preflight.v1"
 VAST_ISAAC_IMAGE_STARTUP_PREFLIGHT_SCHEMA_VERSION = "vast_isaac_image_startup_preflight.v1"
 VAST_TEMPLATE_DISCOVERY_SCHEMA_VERSION = "vast_template_discovery.v1"
-VAST_TEARDOWN_SCHEMA_VERSION = "vast_teardown_manifest.v1"
 VAST_FINAL_VALIDATION_SCHEMA_VERSION = "vast_final_validation.v1"
 
 VAST_API_BASE = "https://console.vast.ai/api/v0"
@@ -160,10 +223,23 @@ VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV = (
 )
 VAST_CONTAINER_MISSING_RETRY_ATTEMPTS_ENV = "BLUEPRINT_VAST_CONTAINER_MISSING_RETRY_ATTEMPTS"
 VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV = (
+    "BLUEPRINT_VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS"
+)
+VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV = (
+    "BLUEPRINT_VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS"
+)
+#: A thin marketplace refills over minutes, not seconds. Scene 840938, 2026-09-12:
+#: the same render query returned 27 qualifying offers at 20:49, 3 (none in the
+#: US) at 22:02 and 42 at 22:10; six re-searches 5 s apart gave up inside 30 s and
+#: burned a scene-level retry for $0 of provider evidence.
+DEFAULT_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS = 60.0
 VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64"
 VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256"
 VAST_INLINE_PROVIDER_BUNDLE_MAX_RAW_BYTES = 96_000
 VAST_INLINE_PROVIDER_BUNDLE_MAX_BASE64_CHARS = 130_000
+VAST_RUNTIME_SECRET_FILE_LIMIT = 8
+VAST_RUNTIME_SECRET_MAX_BYTES = 65_536
 VAST_IMAGE_LOGIN_MODE_ENV = "BLUEPRINT_VAST_IMAGE_LOGIN_MODE"
 DEFAULT_VAST_API_KEY_FILE = "~/.blueprint-secrets/vast_api_key"
 DEFAULT_VAST_LAUNCH_LOCK_FILENAME = "vast_paid_launch.lock"
@@ -261,15 +337,6 @@ VAST_REQUIRED_PHASES = (
     "vast_instance_teardown_started",
     "vast_instance_teardown_completed",
 )
-SENSITIVE_KEY_MARKERS = (
-    "KEY",
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "CREDENTIAL",
-    "LOGIN",
-    "JUPYTER",
-)
 REDACTED_SECRET = "REDACTED_SECRET"
 REDACTED_SECRET_FIELD = "REDACTED_SECRET_FIELD"
 REDACTED_INLINE_PROVIDER_BUNDLE = "REDACTED_INLINE_PROVIDER_BUNDLE"
@@ -302,35 +369,6 @@ def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _runtime_dependency_cache_ready(
-    *, startup_log_text: str, isaac_smoke: Mapping[str, Any]
-) -> bool:
-    """Read cache proof from both transient logs and their durable receipt.
-
-    Vast's SSH proxy can flood the bounded local log tail after execution and
-    evict an earlier cache marker.  The Isaac smoke receipt independently
-    seals every observed Blueprint marker line, so retention must accept that
-    durable observation rather than tear down a healthy requested worker.
-    """
-
-    container_log = isaac_smoke.get("container_log_result")
-    durable_lines = (
-        container_log.get("observed_blueprint_marker_lines")
-        if isinstance(container_log, Mapping)
-        else []
-    )
-    durable_lines = durable_lines if isinstance(durable_lines, list) else []
-    markers = (
-        "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_HIT:",
-        "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED:",
-    )
-    return any(
-        marker in startup_log_text
-        or any(isinstance(line, str) and marker in line for line in durable_lines)
-        for marker in markers
-    )
-
-
 def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
     """Return whether a bundle must use the Isaac image/runtime safety path."""
 
@@ -342,7 +380,11 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
+        "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
+        "task_evaluation_scene_configuration",
     }
 
 
@@ -353,7 +395,11 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
+        "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
+        "task_evaluation_scene_configuration",
     }:
         return 0
     if _is_isaac_provider_bundle(provider_bundle_kind):
@@ -426,63 +472,6 @@ def _default_machine_avoidlist_path(job_dir: Path) -> Path:
     """Share proven-bad hosts across sibling jobs in one bounded run root."""
 
     return job_dir.parent / "vast_machine_avoidlist.json"
-
-
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _normalized_binary_capability(value: Any) -> bool | None:
-    """Normalize provider 0/1 capability fields without treating unknown as false."""
-    if isinstance(value, bool):
-        return value
-    number = _number(value)
-    if number == 1:
-        return True
-    if number == 0:
-        return False
-    text = _string(value).strip().lower()
-    if text in {"true", "yes"}:
-        return True
-    if text in {"false", "no"}:
-        return False
-    return None
-
-
-def _content_range_total_bytes(value: Any) -> int | None:
-    text = _string(value)
-    if "/" not in text:
-        return None
-    total = text.rsplit("/", 1)[-1].strip()
-    if not total or total == "*":
-        return None
-    try:
-        parsed = int(total)
-    except ValueError:
-        return None
-    return parsed if parsed >= 0 else None
-
-
-def _version_tuple(value: Any) -> tuple[int, int, int] | None:
-    text = _string(value)
-    if not text:
-        return None
-    parts = re.findall(r"\d+", text)
-    if not parts:
-        return None
-    numbers = [int(item) for item in parts[:3]]
-    while len(numbers) < 3:
-        numbers.append(0)
-    return numbers[0], numbers[1], numbers[2]
 
 
 def _driver_version(offer: Mapping[str, Any]) -> str:
@@ -629,6 +618,35 @@ def _read_secret_file(env_var: str, default_path: str) -> tuple[str, dict[str, A
         return "", status
     status["secret_nonempty"] = bool(key)
     return key, status
+
+
+def _runtime_secret_file_values(
+    paths: Mapping[str, str | Path] | None,
+) -> dict[str, str]:
+    """Read a bounded set of private files for ephemeral provider bootstrap."""
+
+    if not paths:
+        return {}
+    if len(paths) > VAST_RUNTIME_SECRET_FILE_LIMIT:
+        raise ValueError("too_many_vast_runtime_secret_files")
+    values: dict[str, str] = {}
+    for name, unresolved in sorted(paths.items()):
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{1,120}_FILE", str(name or "")) is None:
+            raise ValueError("invalid_vast_runtime_secret_file_name")
+        path = Path(unresolved).expanduser().resolve()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_mode & 0o077
+            or path.stat().st_size <= 0
+            or path.stat().st_size > VAST_RUNTIME_SECRET_MAX_BYTES
+        ):
+            raise ValueError(f"invalid_vast_runtime_secret_file:{name}")
+        value = path.read_text(encoding="utf-8").strip()
+        if not value or "\x00" in value:
+            raise ValueError(f"invalid_vast_runtime_secret_file:{name}")
+        values[str(name)] = value
+    return values
 
 
 def _read_hf_token_file() -> tuple[str, dict[str, Any]]:
@@ -988,15 +1006,18 @@ def _api_json(
     )
     from .provider_transport import provider_json_request
 
+    read_options = {}
+    if method.upper() == "GET" and path in {"/instances", "/instances/"}:
+        from .vast_inventory_read_retry import inventory_read_retry
+        read_options["read_retry"] = inventory_read_retry()
+
     return provider_json_request(
         url=url,
         method=method,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         body_json=payload,
         timeout_seconds=timeout_seconds,
+        **read_options,
     )
 
 
@@ -1164,7 +1185,7 @@ def _runtime_discovery(
             "create_instance": "PUT /api/v0/asks/{id}/",
             "show_instance": "GET /api/v0/instances/{id}/",
             "execute_command": "PUT /api/v0/instances/command/{id}/",
-            "show_logs": "PUT /api/v0/instances/request_logs/{id}",
+            "show_logs": "PUT /api/v0/instances/request_logs/{id}/",
             "destroy_instance": "DELETE /api/v0/instances/{id}/",
         },
         "launch_mode_notes": {
@@ -1327,7 +1348,10 @@ def _search_payload(
     min_compute_cap: int = 0,
     max_compute_cap: int = 0,
     required_provider_disk_gb: int = 0,
+    require_virtual_machine: bool = False,
 ) -> dict[str, Any]:
+    if type(require_virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
     payload: dict[str, Any] = {
         "limit": limit,
         "type": "on-demand",
@@ -1336,6 +1360,8 @@ def _search_payload(
         "rented": {"eq": False},
         "num_gpus": {"eq": 1},
     }
+    if require_virtual_machine:
+        payload["vms_enabled"] = {"eq": True}
     if max_hourly_rate is not None:
         payload["dph_total"] = {"lte": max_hourly_rate}
     # ``gpu_ram`` is MEGABYTES at this endpoint. A gigabyte value is not
@@ -1508,6 +1534,15 @@ def _offer_storage_hourly_rate(
     return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
 
 
+def _virtual_machine_capability(value: Any) -> bool | None:
+    """Preserve unknown capability; accept only explicit provider booleans/0/1."""
+    if type(value) is bool:
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def _offer_summary(
     offer: Mapping[str, Any],
     *,
@@ -1596,6 +1631,9 @@ def _offer_summary(
             )
         ),
         "num_gpus": offer.get("num_gpus"),
+        # VM capability is independent of GPU/driver support. Do not interpret
+        # provider strings or a missing field as explicit capability proof.
+        "vms_enabled": _virtual_machine_capability(offer.get("vms_enabled")),
         "reliability": offer.get("reliability"),
         "verified": offer.get("verified"),
         "rentable": offer.get("rentable"),
@@ -1648,6 +1686,7 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "known_model_vram_cap_mb": offer.get("known_model_vram_cap_mb"),
         "gpu_ram_normalization": offer.get("gpu_ram_normalization"),
         "num_gpus": offer.get("num_gpus"),
+        "vms_enabled": _virtual_machine_capability(offer.get("vms_enabled")),
         "reliability": offer.get("reliability"),
         "verified": offer.get("verified"),
         "rentable": offer.get("rentable"),
@@ -1659,6 +1698,90 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "disallowed_for_isaac_rendering": bool(offer.get("disallowed_for_isaac_rendering")),
         "raw_secret_values_recorded": False,
     }
+
+
+#: The scene's nested ArtiFixer runtime imports 3DGRUT's CUDA JIT graph and
+#: explicitly refuses without ``nvcc``.  The Isaac image used by production
+#: does not contain it: run
+#: ``adp-new-scene-simple-relocation-839873-7c0ec0c0-r2-web-20260827T015257Z``
+#: proved that even with ``/usr/local/cuda/bin`` on PATH.  Install the smallest
+#: NVIDIA CUDA 12.8 compiler package that satisfies that existing gate.  The
+#: repository keyring is digest-pinned before dpkg sees it; do not replace this
+#: with an unverified repository bootstrap or remove ``nvcc`` from the nested
+#: preflight.
+SCENE_CONFIGURATION_CUDA_KEYRING_URL = (
+    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/"
+    "x86_64/cuda-keyring_1.1-1_all.deb"
+)
+SCENE_CONFIGURATION_CUDA_KEYRING_SHA256 = (
+    "d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba"
+)
+SCENE_CONFIGURATION_CUDA_NVCC_PACKAGE = "cuda-nvcc-12-8=12.8.93-1"
+SCENE_CONFIGURATION_HOST_COMPILER_MAJOR = "11"
+
+#: Packages the scene-configuration onstart installs, and the commands each
+#: one puts on PATH. The boundary check is derived from this map so every
+#: command demanded before bundle execution is installed by the same caller.
+SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
+    "coreutils": ("timeout",),
+    "bubblewrap": ("bwrap",),
+    "libseccomp2": (),
+    "python3": ("python3",),
+    "util-linux": ("setpriv",),
+    "curl": ("curl",),
+    "wget": ("wget",),
+    "unzip": ("unzip",),
+    "git": ("git",),
+    "build-essential": ("gcc", "g++", "make"),
+    "gcc-11": ("gcc-11",),
+    "g++-11": ("g++-11",),
+    "cmake": ("cmake",),
+    "ninja-build": ("ninja",),
+    SCENE_CONFIGURATION_CUDA_NVCC_PACKAGE: ("nvcc",),
+    "ffmpeg": ("ffmpeg",),
+    "libgl1": (),
+    "libglib2.0-0": (),
+    "libopengl0": (),
+    "libvulkan1": (),
+    "xvfb": ("Xvfb",),
+    # Shared libraries the bundled Chromium links against. The renderer ships
+    # its own browser binary, not its loader dependencies, so the Isaac image
+    # has to supply these -- and it does not. Run
+    # adp-new-scene-simple-relocation-839873-679542d9-r2-web-20260827T034953Z
+    # reached stage 1 on a rented GPU and the browser died before its first
+    # frame with: `chrome: error while loading shared libraries: libnspr4.so:
+    # cannot open shared object file`, exitCode=127. This is Playwright's
+    # published Chromium dependency set for Debian/Ubuntu; none of them
+    # provides a command, so the boundary check below cannot verify them by
+    # name and the renderer's own launch is what proves them.
+    "libnspr4": (),
+    "libnss3": (),
+    "libatk1.0-0t64": (),
+    "libatk-bridge2.0-0t64": (),
+    "libatspi2.0-0t64": (),
+    "libcups2t64": (),
+    "libdrm2": (),
+    "libxcomposite1": (),
+    "libxdamage1": (),
+    "libxfixes3": (),
+    "libxrandr2": (),
+    "libxkbcommon0": (),
+    "libgbm1": (),
+    "libpango-1.0-0": (),
+    "libcairo2": (),
+    "libasound2t64": (),
+}
+#: Provided by the ``/isaac-sim/python.sh`` shim the onstart writes onto PATH,
+#: not by apt, so it is named separately rather than assumed.
+SCENE_CONFIGURATION_SHIMMED_COMMANDS: tuple[str, ...] = ("python3",)
+SCENE_CONFIGURATION_APT_PACKAGES = " ".join(SCENE_CONFIGURATION_PROVISIONED_COMMANDS)
+SCENE_CONFIGURATION_REQUIRED_COMMANDS = " ".join(
+    sorted(
+        set(SCENE_CONFIGURATION_SHIMMED_COMMANDS).union(
+            *SCENE_CONFIGURATION_PROVISIONED_COMMANDS.values()
+        )
+    )
+)
 
 
 def _projected_provider_transfer_cost_usd(
@@ -1706,46 +1829,10 @@ def _offer_fits_total_cost_bound(
     )
 
 
-def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "empty",
-            "machine_ids": [],
-            "entries": [],
-            "raw_secret_values_recorded": False,
-        }
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "blocked_parse_failed",
-            "machine_ids": [],
-            "entries": [],
-            "parse_error": f"{type(exc).__name__}:{str(exc)[:200]}",
-            "raw_secret_values_recorded": False,
-        }
-    return (
-        dict(data)
-        if isinstance(data, Mapping)
-        else {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "blocked_invalid_shape",
-            "machine_ids": [],
-            "entries": [],
-            "raw_secret_values_recorded": False,
-        }
-    )
-
-
 def _avoidlist_machine_ids(path: Path) -> set[int]:
-    data = _load_machine_avoidlist(path)
-    ids = _machine_id_set(data.get("machine_ids") or [])
-    for entry in data.get("entries") or []:
-        if isinstance(entry, Mapping):
-            ids.update(_machine_id_set([entry.get("machine_id")]))
-    return ids
+    """Compatibility seam for callers that inspect the adapter directly."""
+
+    return avoidlist_machine_ids(path)
 
 
 def _record_machine_avoidlist_entry(
@@ -1773,7 +1860,7 @@ def _record_machine_avoidlist_entry(
             "retry_policy": "exclude_persistently_across_sibling_jobs_until_manual_review",
         }
         entries.append(entry)
-    machine_ids = sorted(_avoidlist_machine_ids(path) | _machine_id_set([machine_id]))
+    machine_ids = sorted(_machine_avoidlist_ids(data) | _machine_id_set([machine_id]))
     payload = {
         "schema_version": "vast_machine_avoidlist.v1",
         "generated_at": generated_at,
@@ -1808,6 +1895,9 @@ def _machine_avoidlist_reason(blockers: Sequence[str]) -> str | None:
     """Return the evidence-bounded machine exclusion reason, if any."""
 
     observed = set(blockers)
+    if {"provider_remote_blocker:download_failed:28", "provider_bundle_download_marker_missing",
+            "provider_entrypoint_start_marker_missing"}.issubset(observed):
+        return "vast_provider_bootstrap_input_download_transport_timeout"
     if "provider_instance_exited_before_bundle_terminal_marker" in observed:
         return "vast_provider_bundle_instance_exited_before_terminal_marker"
     startup_blockers = {
@@ -1873,7 +1963,10 @@ def _select_offer(
     max_live_minutes: int = 0,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    require_virtual_machine: bool = False,
 ) -> dict[str, Any] | None:
+    if type(require_virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
     allowed_countries = normalize_vast_country_allowlist(
@@ -1892,6 +1985,7 @@ def _select_offer(
         item
         for item in summaries
         if item["ask_contract_id"]
+        and (not require_virtual_machine or item["vms_enabled"] is True)
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
@@ -1964,14 +2058,44 @@ def _vast_stale_offer_create_retry_attempts() -> int:
         return 2
 
 
+def _vast_empty_offer_search_retry_attempts() -> int:
+    """Bound read-only re-searches before authority consumption or provider mutation."""
+
+    text = _string(os.getenv(VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV))
+    if not text:
+        return 6
+    try:
+        return max(0, int(text))
+    except ValueError:
+        return 6
+
+
+def _vast_empty_offer_search_retry_interval_seconds() -> float:
+    """Seconds to wait between read-only re-searches; no authority or mutation is involved."""
+
+    text = _string(os.getenv(VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV))
+    if not text:
+        return DEFAULT_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS
+    try:
+        value = float(text)
+    except ValueError:
+        return DEFAULT_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS
+    if not math.isfinite(value) or value < 0:
+        return DEFAULT_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS
+    return value
+
+
 def _is_stale_offer_create_http_error(
     exc: urllib.error.HTTPError,
     error_text: str = "",
+    *,
+    selected_offer_absent_from_fresh_search: bool = False,
 ) -> bool:
     code = int(getattr(exc, "code", 0) or 0)
     if code in {404, 409, 410}:
         return True
     normalized = error_text.lower()
+    # Offer disappearance is not proof that an ambiguous create did not allocate.
     return code == 400 and "no_such_ask" in normalized
 
 
@@ -1999,6 +2123,7 @@ def _offer_selection_manifest(
     prefer_isaac_rt: bool = True,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
+    offer_search_retry_attempts: Sequence[Mapping[str, Any]] = (),
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
     allowed_geolocation_country_codes: Iterable[str] = (),
@@ -2155,6 +2280,9 @@ def _offer_selection_manifest(
         "avoidlist_status": avoidlist_status,
         "considered_offers": [_offer_artifact_summary(item) for item in summaries[:25]],
         "create_retry_attempts": [dict(item) for item in create_retry_attempts],
+        "offer_search_retry_attempts": [
+            dict(item) for item in offer_search_retry_attempts
+        ],
         "blockers": list(blockers),
         "raw_secret_values_recorded": False,
     }
@@ -2318,6 +2446,40 @@ def _session_budget_guard(
     return guard
 
 
+def _validate_policy_canary_provider_manifest(
+    payload: object,
+) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise TypeError("native_task_arena_policy_canary_manifest_not_mapping")
+    if (
+        payload.get("schema_version")
+        != "native_task_arena_policy_canary_provider_bundle.v1"
+        or payload.get("status") != "ready"
+        or payload.get("blockers") != []
+        or payload.get("input_digest")
+        != canonical_digest(payload, digest_field="input_digest")
+        or payload.get("execution_mode")
+        != "internal_policy_canary_paired_session"
+        or payload.get("run_kind") != "internal_policy_canary"
+        or payload.get("claim_ceiling") != "diagnostic_policy_execution"
+        or payload.get("candidate_ids") != ["pi05_droid", "groot_n17_droid"]
+        or payload.get("episodes_per_policy") != 10
+        or payload.get("learned_policy_rollout_count") != 20
+        or payload.get("maximum_provider_allocations") != 1
+        or payload.get("retry_cap") != 0
+        or payload.get("expected_output_filename")
+        != "native_task_arena_policy_canary_session_result.v1.json"
+        or payload.get("runtime_entrypoint")
+        != "provider_runtime/run_adp_arena_provider_runtime.sh"
+        or payload.get("candidate_policy_queried") is not False
+        or payload.get("provider_zero_required_after_return") is not True
+    ):
+        raise ValueError("native_task_arena_policy_canary_manifest_invalid")
+    readiness = dict(payload)
+    readiness["local_bundle_ready_for_remote_staging"] = True
+    return readiness
+
+
 def _blueprint_bundle_preflight(
     *,
     job_dir: Path,
@@ -2430,6 +2592,20 @@ def _blueprint_bundle_preflight(
         "provider_runtime/blueprint_pipeline/native_task_arena_runtime.py",
         "provider_runtime/blueprint_pipeline/native_task_camera_observability.py",
     }
+    policy_canary_session_required_entries = native_task_arena_required_entries | {
+        "provider_runtime/runtime_inputs/policy_canary_runtime_inputs.json",
+        "provider_runtime/runtime_inputs/policy_canary_session_authority.json",
+        "provider_runtime/runtime_inputs/policy_execution_spec.pi05_droid.json",
+        "provider_runtime/runtime_inputs/policy_execution_spec.groot_n17_droid.json",
+        "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
+        "provider_runtime/blueprint_pipeline/native_task_arena_policy_canary_session.py",
+        "provider_runtime/blueprint_pipeline/native_task_arena_policy_worker.py",
+        "provider_runtime/blueprint_pipeline/openpi_droid_policy_runtime.py",
+        "provider_runtime/blueprint_pipeline/groot_n17_droid_policy_runtime.py",
+        "provider_runtime/blueprint_pipeline/policy_episode_trace_evidence.py",
+        "provider_runtime/blueprint_pipeline/episode_visual_evidence.py",
+        "provider_runtime/adp009d_policy_server_worker.py",
+    }
     paired_target_native_import_required_entries = {
         "provider_runtime/run_paired_target_native_import_probe.sh",
         "provider_runtime/run_paired_target_native_import_probe.py",
@@ -2531,15 +2707,14 @@ def _blueprint_bundle_preflight(
         "input/cameras.v1.json",
         "freeze/adp009b_gaussian_excision_audit_freeze.v1.json",
     }
-    adp_retained_scene_render_required_entries = {
-        "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh",
-        "provider_runtime/adp_retained_scene_render_provider_runner.mjs",
-        "provider_runtime/adp_retained_scene_gpu_render_manifest.json",
-        "provider_runtime/render_request.json",
-        "provider_runtime/execution_authority.json",
-        "provider_runtime/input/shared_deleted_source_layer.ply",
-        "provider_runtime/input/shared_retained_scene.ply",
-        "provider_runtime/renderer/render_splat.mjs",
+    scene_configuration_required_entries = {
+        "provider_runtime/run_task_evaluation_scene_configuration_provider.sh",
+        "provider_runtime/task_evaluation_scene_configuration_provider_runner.py",
+        "provider_runtime/task_evaluation_scene_configuration_provider_bundle.v1.json",
+        "provider_runtime/input/portable_construction_envelope.v1.json",
+        "provider_runtime/toolchain/task_evaluation_scene_configuration_toolchain.v1.json",
+        "provider_runtime/blueprint_pipeline/__init__.py",
+        "provider_runtime/blueprint_pipeline/task_evaluation_scene_configuration_provider_runtime.py",
     }
     if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
         required_entries = isaac_required_entries
@@ -2571,11 +2746,27 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/articulated_native_diagnostic_runtime.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "native_task_arena_policy_canary_session":
+        required_entries = policy_canary_session_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_arena_provider_runner.py"
+        readiness_name = "adp_arena_provider_manifest.json"
     elif provider_bundle_kind == "native_task_arena":
         required_entries = native_task_arena_required_entries
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "native_g1_development_campaign":
+        required_entries = NATIVE_G1_REQUIRED_ENTRIES
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/blueprint_pipeline/native_g1_provider_runtime.py"
+        readiness_name = "native_g1_provider_manifest.json"
+    elif provider_bundle_kind == "native_g1_team_policy":
+        from .native_g1_team_provider_bundle import REQUIRED_ENTRIES, validate_g1_team_provider_manifest
+        required_entries = set(REQUIRED_ENTRIES)
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/blueprint_pipeline/native_g1_team_provider_runtime.py"
+        readiness_name = "native_g1_team_provider_manifest.json"
     elif provider_bundle_kind == "paired_target_native_import":
         required_entries = paired_target_native_import_required_entries
         entrypoint_member = "provider_runtime/run_paired_target_native_import_probe.sh"
@@ -2627,7 +2818,7 @@ def _blueprint_bundle_preflight(
         runner_member = "provider_runtime/adp_inpaint360_interiorgs_provider_runner.py"
         readiness_name = "adp_inpaint360_interiorgs_provider_manifest.json"
     elif provider_bundle_kind == "adp_retained_scene_render":
-        required_entries = adp_retained_scene_render_required_entries
+        required_entries = RETAINED_ENTRIES
         entrypoint_member = "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh"
         runner_member = "provider_runtime/adp_retained_scene_render_provider_runner.mjs"
         readiness_name = "adp_retained_scene_gpu_render_bundle_receipt.json"
@@ -2636,6 +2827,17 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "run_adp_gaussian_excision_provider_runtime.sh"
         runner_member = "adp_gaussian_excision_provider_runner.py"
         readiness_name = "adp_gaussian_excision_bundle_receipt.json"
+    elif provider_bundle_kind == "task_evaluation_scene_configuration":
+        required_entries = scene_configuration_required_entries
+        entrypoint_member = (
+            "provider_runtime/run_task_evaluation_scene_configuration_provider.sh"
+        )
+        runner_member = (
+            "provider_runtime/task_evaluation_scene_configuration_provider_runner.py"
+        )
+        readiness_name = (
+            "task_evaluation_scene_configuration_provider_bundle.v1.json"
+        )
     elif provider_bundle_kind == "unitree_unifolm":
         required_entries = unitree_unifolm_required_entries
         entrypoint_member = "provider_runtime/run_unitree_unifolm_provider_runtime.sh"
@@ -2663,6 +2865,7 @@ def _blueprint_bundle_preflight(
     zip_parse_error = None
     zip_testzip_result: str | None = None
     json_member_parse_errors: list[str] = []
+    retained_render_manifest: dict[str, Any] = {}
     entrypoint_text = ""
     runner_text = ""
     eval_manifest: dict[str, Any] = {}
@@ -2684,6 +2887,9 @@ def _blueprint_bundle_preflight(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
@@ -2695,7 +2901,9 @@ def _blueprint_bundle_preflight(
             "adp_artifixer3d",
             "adp_inpaint360_interiorgs",
             "adp_retained_scene_render",
+            "task_evaluation_scene_configuration",
             "adp_gaussian_excision",
+            "task_evaluation_scene_configuration",
         }
         and not readiness_path.is_file()
     ):
@@ -2744,6 +2952,28 @@ def _blueprint_bundle_preflight(
                         )
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
+                    retained_render_manifest = read_render_manifest(archive, provider_bundle_kind)
+                    if provider_bundle_kind == "native_task_arena_policy_canary_session":
+                        readiness_member = (
+                            "provider_runtime/adp_arena_provider_manifest.json"
+                        )
+                        readiness_source = "immutable_bundle_member"
+                        try:
+                            native_manifest = json.loads(
+                                archive.read(readiness_member).decode("utf-8")
+                            )
+                            readiness = _validate_policy_canary_provider_manifest(
+                                native_manifest
+                            )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            json.JSONDecodeError,
+                        ):
+                            blockers.append(
+                                "native_task_arena_policy_canary_provider_manifest_invalid"
+                            )
                     if provider_bundle_kind == "native_task_arena":
                         readiness_member = (
                             "provider_runtime/adp_arena_provider_manifest.json"
@@ -2831,6 +3061,38 @@ def _blueprint_bundle_preflight(
                         ):
                             blockers.append(
                                 "native_task_arena_provider_manifest_invalid"
+                            )
+                    if provider_bundle_kind == "native_g1_development_campaign":
+                        readiness_member = "provider_runtime/native_g1_provider_manifest.json"
+                        readiness_source = "immutable_bundle_member"
+                        try:
+                            readiness = dict(validate_g1_manifest(archive))
+                            readiness["local_bundle_ready_for_remote_staging"] = True
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            blockers.append("native_g1_provider_manifest_invalid")
+                    if provider_bundle_kind == "native_g1_team_policy":
+                        readiness_member = "provider_runtime/native_g1_team_provider_manifest.json"
+                        readiness_source = "immutable_bundle_member"
+                        try:
+                            readiness = dict(validate_g1_team_provider_manifest(archive))
+                            readiness["local_bundle_ready_for_remote_staging"] = True
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            blockers.append("native_g1_team_provider_manifest_invalid")
+                    if provider_bundle_kind == "task_evaluation_scene_configuration":
+                        readiness_member = (
+                            "provider_runtime/"
+                            "task_evaluation_scene_configuration_provider_bundle.v1.json"
+                        )
+                        readiness_source = "immutable_bundle_member"
+                        scene_manifest, scene_required, scene_blockers = (
+                            _scene_configuration_bundle_contract(archive)
+                        )
+                        required_entries.update(scene_required)
+                        blockers.extend(scene_blockers)
+                        if scene_manifest:
+                            readiness = dict(scene_manifest)
+                            readiness["local_bundle_ready_for_remote_staging"] = (
+                                not scene_blockers
                             )
                     if provider_bundle_kind == "adp009d_ovrtx":
                         manifest_member = "provider_runtime/adp009d_ovrtx_provider_manifest.json"
@@ -2959,7 +3221,7 @@ def _blueprint_bundle_preflight(
                                 len(camera_ids) >= 3
                                 and len(camera_ids) == len(set(camera_ids))
                                 and all(
-                                    re.fullmatch(r"[a-z][a-z0-9_]{0,63}", camera_id)
+                                    re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", camera_id)
                                     for camera_id in camera_ids
                                 )
                             )
@@ -3089,6 +3351,10 @@ def _blueprint_bundle_preflight(
                 blockers.append(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
+            required_entries, render_blockers = resolve_render_inventory(
+                provider_bundle_kind, retained_render_manifest, required_entries,
+            )
+            blockers.extend(render_blockers)
             missing_entries = sorted(required_entries - set(zip_entries))
             if provider_bundle_kind == "adp_content_agents":
                 # This used to require exactly one reference image. The bundle
@@ -3236,6 +3502,11 @@ def _blueprint_bundle_preflight(
                         provider_bundle_kind=provider_bundle_kind,
                         entrypoint_text=entrypoint_text,
                         runner_text=runner_text,
+                        task_evaluation_scene_configuration_diagnostic=(
+                            provider_bundle_kind
+                            == "task_evaluation_scene_configuration"
+                            and readiness.get("diagnostic_only") is True
+                        ),
                     )
                 )
                 if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
@@ -3253,7 +3524,13 @@ def _blueprint_bundle_preflight(
                         blockers.append(
                             "provider_runtime_bundle_stale_prefixed_paths_without_resolver"
                         )
-        if provider_bundle_kind == "native_task_arena":
+        if provider_bundle_kind in {
+            "native_task_arena",
+            "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
+            "native_g1_team_policy",
+            "task_evaluation_scene_configuration",
+        }:
             # The native readiness manifest is a required, JSON-validated member
             # of the immutable bundle above.  Reopening its adjacent build
             # sidecar would create a second mutable authority and can fail when
@@ -3504,6 +3781,7 @@ def _blueprint_bundle_preflight(
         and zip_testzip_result is None,
         "zip_testzip_result": zip_testzip_result,
         "json_member_parse_errors": json_member_parse_errors,
+        "render_scope": retained_render_manifest.get("render_scope"),
         "missing_zip_entries": missing_entries,
         "zip_parse_error": zip_parse_error,
         "provider_eval_manifest_parse_error": eval_manifest_parse_error,
@@ -3656,6 +3934,9 @@ def _resolve_launch_mode(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
             "paired_target_native_import",
             "adp009d_ovrtx",
@@ -3710,6 +3991,8 @@ def _probe_env(
     retain_cosmos_server: bool = False,
     forward_hf_token: bool = True,
     provider_bundle_kind: str = "isaac",
+    runtime_secret_file_values: Mapping[str, str] | None = None,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     env = {
         "BLUEPRINT_VAST_PROBE": "true",
@@ -3720,7 +4003,11 @@ def _probe_env(
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
+        "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
+        "task_evaluation_scene_configuration",
     }:
         env.update(
             {
@@ -3749,9 +4036,7 @@ def _probe_env(
     if _string(provider_output_put_url):
         env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] = _string(provider_output_put_url)
     if _string(runtime_dependency_url):
-        env["BLUEPRINT_RUNTIME_DEPENDENCY_URI"] = _string(
-            runtime_dependency_url
-        )
+        env["BLUEPRINT_RUNTIME_DEPENDENCY_URI"] = _string(runtime_dependency_url)
     if _string(provider_bundle_inline_base64):
         env[VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV] = _string(provider_bundle_inline_base64)
     if _string(provider_bundle_inline_sha256):
@@ -3764,6 +4049,35 @@ def _probe_env(
         env["HF_TOKEN"] = hf_token
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
         env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    for name, value in sorted((provider_runtime_environment or {}).items()):
+        public_identity_name = vrec.is_public_openai_identity_name(name)
+        if (
+            (
+                not public_identity_name
+                and re.fullmatch(r"BLUEPRINT_[A-Z0-9_]{1,120}", str(name or ""))
+                is None
+            )
+            or (
+                not public_identity_name
+                and any(marker in str(name).upper() for marker in SENSITIVE_KEY_MARKERS)
+            )
+            or not isinstance(value, str)
+            or not value
+            or len(value) > 1_000
+            or "\x00" in value
+        ):
+            raise ValueError("invalid_vast_provider_runtime_environment")
+        env[name] = value
+    for name, value in sorted((runtime_secret_file_values or {}).items()):
+        if (
+            re.fullmatch(r"[A-Z][A-Z0-9_]{1,120}_FILE", str(name or "")) is None
+            or not isinstance(value, str)
+            or not value
+        ):
+            raise ValueError("invalid_vast_runtime_secret_file")
+        env[VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX + name] = base64.b64encode(
+            value.encode("utf-8")
+        ).decode("ascii")
     for env_name in (
         "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY",
         "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL",
@@ -3924,9 +4238,25 @@ def _create_payload(
     probe_script: str,
     disk_gb: int,
     env: Mapping[str, str] | None = None,
+    private_startup_env: Mapping[str, str] | None = None,
     image_login: str | None = None,
     template_hash_id: str | None = None,
+    virtual_machine: bool = False,
+    selected_offer: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if type(virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
+    if virtual_machine and (
+        not isinstance(image, str)
+        or re.fullmatch(r"docker\.io/vastai/kvm@sha256:[0-9a-f]{64}", image) is None
+        or launch_mode != "ssh_direct"
+        or template_hash_id is not None
+        or not isinstance(selected_offer, Mapping)
+        or selected_offer.get("vms_enabled") is not True
+        or type(selected_offer.get("ask_contract_id")) is not int
+        or selected_offer["ask_contract_id"] <= 0
+    ):
+        raise ValueError("vast_virtual_machine_create_contract_invalid")
     payload: dict[str, Any] = {
         "label": label,
         "disk": disk_gb,
@@ -3935,10 +4265,18 @@ def _create_payload(
         "cancel_unavail": True,
         "env": dict(env or {}),
     }
+    if virtual_machine:
+        # This helper remains behind canonical admission. The public allocator
+        # has no VM option until its host/bootstrap/worker integration is ready.
+        payload["vm"] = True
     if image:
         payload["image"] = image
     if _string(template_hash_id):
         payload["template_hash_id"] = _string(template_hash_id)
+    private_startup_script = _private_startup_environment_script(
+        private_startup_env or {}
+    )
+    resolved_probe_script = private_startup_script + probe_script
     if launch_mode == "args":
         # Vast API args mode uses args_str, not onstart. Run through bash so
         # images whose entrypoint execs CMD still receive an executable command.
@@ -3953,7 +4291,7 @@ def _create_payload(
         wrapped_script = (
             "set +e\n"
             "(\n"
-            f"{probe_script.rstrip()}\n"
+            f"{resolved_probe_script.rstrip()}\n"
             ")\n"
             "script_rc=$?\n"
             "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED\n"
@@ -3961,9 +4299,19 @@ def _create_payload(
             "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_DONE\n"
             'exit "$script_rc"'
         )
-        payload["args_str"] = "bash -lc " + shlex.quote(wrapped_script)
+        payload["args_str"] = args_mode_command(
+            wrapped_script, force_compression=bool(private_startup_env)
+        )
     else:
-        payload["onstart"] = probe_script
+        vm_header = "#!/usr/bin/env bash\n" if virtual_machine else ""
+        payload["onstart"] = onstart_mode_script(
+            resolved_probe_script, force_compression=(bool(private_startup_env) or
+                bool(vm_header) and len((vm_header + resolved_probe_script).encode()) > VAST_ARGS_STR_SAFE_MAX_BYTES)
+        )
+        if vm_header:
+            payload["onstart"] = vm_header + payload["onstart"]
+            if len(payload["onstart"].encode()) > VAST_ARGS_STR_SAFE_MAX_BYTES:
+                raise ValueError("vast_vm_onstart_exceeds_safe_inline_command_size")
         if launch_mode == "jupyter_direct":
             payload["use_jupyter_lab"] = True
             payload["jupyter_dir"] = "/workspace"
@@ -3978,10 +4326,26 @@ def _probe_shell_script(
     enable_isaac_smoke: bool = False,
     enable_blueprint_bundle: bool = False,
     provider_bundle_kind: str = "isaac",
+    expected_provider_bundle_sha256: str | None = None,
+    virtual_machine: bool = False,
 ) -> str:
+    if type(virtual_machine) is not bool:
+        raise ValueError("virtual_machine_flag_invalid")
+    if virtual_machine:
+        if (provider_bundle_kind != "native_g1_team_policy" or not enable_blueprint_bundle
+                or enable_isaac_smoke or expected_provider_bundle_sha256 is None):
+            raise ValueError("vm_transport_probe_contract_invalid")
+        from .native_g1_team_vm_transport import vm_probe_script
+        return vm_probe_script(expected_provider_bundle_sha256, heartbeat_url)
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
+    if expected_provider_bundle_sha256 is not None and re.fullmatch(
+        r"sha256:[0-9a-f]{64}", expected_provider_bundle_sha256
+    ) is None:
+        raise ValueError("expected_provider_bundle_sha256_invalid")
     quoted_url = shlex.quote(heartbeat_url)
+    scene_bundle_digest_guard = provider_bundle_digest_guard(expected_provider_bundle_sha256, '"$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip"', "scene_configuration_bundle_digest_mismatch", "BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED", emit_downloaded_marker=True)
+    arena_bundle_digest_guard = provider_bundle_digest_guard(expected_provider_bundle_sha256, '"$WORK_DIR/adp_arena_provider_runtime_bundle.zip"', "arena_bundle_digest_mismatch", "BLUEPRINT_VAST_ARENA_BUNDLE_SHA256_VERIFIED")
     # Unconditional, and retried.  This began as an allowlist of the four kinds
     # observed to fail, but an HTTP/2 stream reset is a property of the
     # transport and the object size, not of what is inside the zip: a bundle
@@ -4021,6 +4385,50 @@ def _probe_shell_script(
         "if command -v python3 >/dev/null 2>&1; then PY_NET=$(command -v python3); "
         "elif command -v python >/dev/null 2>&1; then PY_NET=$(command -v python); fi; "
         "echo BLUEPRINT_VAST_ONSTART_STARTED; date -u; "
+        "SECRET_EXPORTS=$WORK_DIR/blueprint_runtime_secret_exports.sh; "
+        'rm -f "$SECRET_EXPORTS"; '
+        "if env | grep -q '^BLUEPRINT_VAST_RUNTIME_SECRET_B64_'; then "
+        'SECRET_ROOT="$WORK_DIR/.blueprint-runtime-secrets"; '
+        'mkdir -p "$SECRET_ROOT" && chmod 700 "$SECRET_ROOT"; '
+        'BLUEPRINT_RUNTIME_SECRET_ROOT="$SECRET_ROOT" '
+        'BLUEPRINT_RUNTIME_SECRET_EXPORTS="$SECRET_EXPORTS" '
+        '"${PY_NET:-python3}" - <<\'PY\'\n'
+        "import base64\n"
+        "import os\n"
+        "import pathlib\n"
+        "import re\n"
+        "prefix = 'BLUEPRINT_VAST_RUNTIME_SECRET_B64_'\n"
+        "root = pathlib.Path(os.environ['BLUEPRINT_RUNTIME_SECRET_ROOT'])\n"
+        "exports = pathlib.Path(os.environ['BLUEPRINT_RUNTIME_SECRET_EXPORTS'])\n"
+        "rows = []\n"
+        "for bootstrap_name, encoded in sorted(os.environ.items()):\n"
+        "    if not bootstrap_name.startswith(prefix):\n"
+        "        continue\n"
+        "    name = bootstrap_name[len(prefix):]\n"
+        "    if re.fullmatch(r'[A-Z][A-Z0-9_]{1,120}_FILE', name) is None:\n"
+        "        raise SystemExit(41)\n"
+        "    value = base64.b64decode(encoded.encode('ascii'), validate=True)\n"
+        "    if not value or len(value) > 65536 or b'\\x00' in value:\n"
+        "        raise SystemExit(42)\n"
+        "    path = root / name.lower()\n"
+        "    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n"
+        "    with os.fdopen(descriptor, 'wb') as stream:\n"
+        "        stream.write(value)\n"
+        "        stream.flush()\n"
+        "        os.fsync(stream.fileno())\n"
+        "    rows.append((name, path, bootstrap_name))\n"
+        "with exports.open('x', encoding='utf-8') as stream:\n"
+        "    for name, path, bootstrap_name in rows:\n"
+        "        stream.write(f'export {name}={path}\\n')\n"
+        "        stream.write(f'unset {bootstrap_name}\\n')\n"
+        "os.chmod(exports, 0o600)\n"
+        "print('BLUEPRINT_VAST_RUNTIME_SECRET_FILES_READY:%d' % len(rows))\n"
+        "PY\n"
+        "secret_rc=$?; "
+        'if [ $secret_rc -ne 0 ] || [ ! -f "$SECRET_EXPORTS" ]; then '
+        "echo BLUEPRINT_VAST_RUNTIME_SECRET_FILES_BLOCKED:$secret_rc; exit $secret_rc; fi; "
+        '. "$SECRET_EXPORTS"; rm -f "$SECRET_EXPORTS"; '
+        "fi; "
         "blueprint_http_get() { "
         'blueprint_get_url="$1"; '
         'if command -v curl >/dev/null 2>&1; then curl -fsSL "$blueprint_get_url"; return $?; fi; '
@@ -4110,32 +4518,8 @@ def _probe_shell_script(
         "fi; "
         "return 127; "
         "}; "
-        "blueprint_upload_put() { "
-        'blueprint_upload_url="$1"; blueprint_upload_path="$2"; '
-        'if command -v curl >/dev/null 2>&1; then curl -fsS -X PUT -H \'Content-Type: application/zip\' --data-binary @"$blueprint_upload_path" "$blueprint_upload_url" >/tmp/blueprint_provider_upload_response.json; return $?; fi; '
-        'blueprint_upload_py="${PY_NET:-${RUNTIME_PY:-}}"; '
-        'if [ -n "$blueprint_upload_py" ]; then '
-        'BLUEPRINT_UPLOAD_URL="$blueprint_upload_url" BLUEPRINT_UPLOAD_PATH="$blueprint_upload_path" "$blueprint_upload_py" - <<\'PY\' >/tmp/blueprint_provider_upload_response.json\n'
-        "import os\n"
-        "import sys\n"
-        "import urllib.request\n"
-        "url = os.environ.get('BLUEPRINT_UPLOAD_URL', '')\n"
-        "path = os.environ.get('BLUEPRINT_UPLOAD_PATH', '')\n"
-        "try:\n"
-        "    with open(path, 'rb') as handle:\n"
-        "        data = handle.read()\n"
-        "    request = urllib.request.Request(url, data=data, method='PUT', headers={'Content-Type': 'application/zip', 'User-Agent': 'BlueprintVastProbe/1.0'})\n"
-        "    with urllib.request.urlopen(request, timeout=120) as response:\n"
-        "        sys.stdout.buffer.write(response.read())\n"
-        "except Exception as exc:\n"
-        "    print('BLUEPRINT_VAST_PY_UPLOAD_ERROR:%s' % type(exc).__name__)\n"
-        "    raise SystemExit(1)\n"
-        "PY\n"
-        "return $?; "
-        "fi; "
-        "return 127; "
-        "}; "
-        f"blueprint_http_get {quoted_url}; hb=$?; "
+        + provider_output_upload_shell_fragment()
+        + f"blueprint_http_get {quoted_url}; hb=$?; "
         "if [ $hb -eq 0 ]; then echo BLUEPRINT_VAST_HEARTBEAT_OK; "
         "else echo BLUEPRINT_VAST_HEARTBEAT_BLOCKED:$hb; fi; "
         "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader; smi=$?; "
@@ -4245,6 +4629,95 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
                 "fi; fi; fi; "
             )
+        elif provider_bundle_kind == "task_evaluation_scene_configuration":
+            script += (
+                common_start
+                + "RUNTIME_PY=/isaac-sim/python.sh; "
+                'export PATH="/usr/local/cuda-12.8/bin:/usr/local/cuda/bin:$PATH"; '
+                'if [ ! -x "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
+                "else toolchain_rc=0; "
+                'CUDA_KEYRING="$WORK_DIR/cuda-keyring.deb"; '
+                "blueprint_download_url "
+                + shlex.quote(SCENE_CONFIGURATION_CUDA_KEYRING_URL)
+                + ' "$CUDA_KEYRING" || toolchain_rc=$?; '
+                'if [ $toolchain_rc -eq 0 ]; then observed_cuda_keyring_sha=$("$RUNTIME_PY" -c \'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())\' "$CUDA_KEYRING") || toolchain_rc=$?; fi; '
+                "if [ $toolchain_rc -eq 0 ] && [ \"$observed_cuda_keyring_sha\" != "
+                + shlex.quote(SCENE_CONFIGURATION_CUDA_KEYRING_SHA256)
+                + " ]; then toolchain_rc=86; fi; "
+                'if [ $toolchain_rc -eq 0 ]; then dpkg -i "$CUDA_KEYRING" >/tmp/blueprint_scene_configuration_cuda_keyring.log 2>&1 || toolchain_rc=$?; fi; '
+                'rm -f "$CUDA_KEYRING"; '
+                "if [ $toolchain_rc -eq 0 ] && command -v apt-get >/dev/null 2>&1; then "
+                "timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update >/tmp/blueprint_scene_configuration_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y "
+                + SCENE_CONFIGURATION_APT_PACKAGES
+                + " >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; "
+                "elif [ $toolchain_rc -eq 0 ]; then toolchain_rc=127; "
+                "fi; "
+                'mkdir -p "$WORK_DIR/scene_configuration_bin"; '
+                'printf \'#!/bin/sh\\nexec /isaac-sim/python.sh "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/python3"; '
+                'printf \'#!/bin/sh\\nexec /usr/bin/gcc-11 "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/gcc"; '
+                'printf \'#!/bin/sh\\nexec /usr/bin/g++-11 "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/g++"; '
+                'chmod 0755 "$WORK_DIR/scene_configuration_bin/python3" "$WORK_DIR/scene_configuration_bin/gcc" "$WORK_DIR/scene_configuration_bin/g++"; '
+                'export PATH="$WORK_DIR/scene_configuration_bin:$PATH"; '
+                'export CC=/usr/bin/gcc-11 CXX=/usr/bin/g++-11 CUDAHOSTCXX=/usr/bin/g++-11; '
+                "for required_command in "
+                + SCENE_CONFIGURATION_REQUIRED_COMMANDS
+                + '; do command -v "$required_command" >/dev/null 2>&1 || toolchain_rc=127; done; '
+                'compiler_rc=0; '
+                'if [ $toolchain_rc -eq 0 ]; then observed_gcc_major=$(gcc -dumpfullversion -dumpversion | cut -d. -f1) || compiler_rc=$?; fi; '
+                'if [ $toolchain_rc -eq 0 ]; then observed_gxx_major=$(g++ -dumpfullversion -dumpversion | cut -d. -f1) || compiler_rc=$?; fi; '
+                "if [ $toolchain_rc -eq 0 ] && { [ \"$observed_gcc_major\" != "
+                + shlex.quote(SCENE_CONFIGURATION_HOST_COMPILER_MAJOR)
+                + " ] || [ \"$observed_gxx_major\" != "
+                + shlex.quote(SCENE_CONFIGURATION_HOST_COMPILER_MAJOR)
+                + " ]; }; then compiler_rc=86; fi; "
+                "if [ $toolchain_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_toolchain_missing:$toolchain_rc; "
+                "elif [ $compiler_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_artifixer_host_compiler_invalid:$compiler_rc; "
+                "else "
+                'rm -rf "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else "
+                + scene_bundle_digest_guard
+                + "if [ $bundle_digest_rc -eq 0 ]; then "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/provider_runtime/run_task_evaluation_scene_configuration_provider.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/provider_runtime"; '
+                'export BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/runtime_output"; '
+                'export BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH="$WORK_DIR/task_evaluation_scene_configuration_stage_checkpoint.zip"; '
+                'mkdir -p "$BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                'rm -rf "$WORK_DIR/.blueprint-runtime-secrets" "$WORK_DIR/blueprint_runtime_secret_exports.sh"; secret_scrub_rc=$?; '
+                'if [ $secret_scrub_rc -eq 0 ] && [ ! -e "$WORK_DIR/.blueprint-runtime-secrets" ] && [ ! -e "$WORK_DIR/blueprint_runtime_secret_exports.sh" ]; then echo BLUEPRINT_VAST_SCENE_CONFIGURATION_RUNTIME_SECRETS_SCRUBBED; else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_secret_scrub_failed; fi; '
+                'if [ $secret_scrub_rc -eq 0 ] && [ -d "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/input/diagnostic_checkpoint/task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_warm_readiness.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh" ]; then echo BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_READY; else echo BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_NOT_READY; fi; '
+                'if [ $secret_scrub_rc -eq 0 ] && [ -d "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/input/diagnostic_checkpoint/task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/input/artifixer_post_training_checkpoint/task_evaluation_scene_configuration_artifixer_post_training_checkpoint.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_artifixer_warm_readiness.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh" ]; then echo BLUEPRINT_VAST_SCENE_CONFIGURATION_ARTIFIXER_WARM_RUNTIME_READY; else echo BLUEPRINT_VAST_SCENE_CONFIGURATION_ARTIFIXER_WARM_RUNTIME_NOT_READY; fi; '
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT', '/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'task_evaluation_scene_configuration_provider_output.zip'\n"
+                "import sys\n"
+                "if os.environ.get('BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT'):\n"
+                "    sys.path.insert(0, os.environ['BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT'])\n"
+                "from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import write_output_archive\n"
+                "write_output_archive(output_dir, output_zip)\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/task_evaluation_scene_configuration_provider_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; fi; fi; "
+            )
         elif provider_bundle_kind == "adp_simpler":
             script += (
                 common_start + "RUNTIME_PY=''; "
@@ -4300,6 +4773,9 @@ def _probe_shell_script(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
         }:
             script += (
@@ -4309,6 +4785,9 @@ def _probe_shell_script(
                 'rm -rf "$WORK_DIR/adp_arena_provider_bundle" "$WORK_DIR/adp_arena_provider_runtime_bundle.zip" "$WORK_DIR/adp_arena_provider_runtime_output.zip"; '
                 'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp_arena_provider_runtime_bundle.zip"; dl=$?; '
                 "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else "
+                + arena_bundle_digest_guard
+                + "if [ $bundle_digest_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:bundle_digest_invalid:$bundle_digest_rc; "
                 "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
                 '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_arena_provider_runtime_bundle.zip" "$WORK_DIR/adp_arena_provider_bundle"; unzip_rc=$?; '
                 "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
@@ -4375,15 +4854,51 @@ def _probe_shell_script(
                 "output_dir = Path(os.environ.get('BLUEPRINT_ADP_ARENA_OUTPUT_DIR', '/workspace/adp_arena_provider_bundle/runtime_output'))\n"
                 "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
                 "output_zip = work_dir / 'adp_arena_provider_runtime_output.zip'\n"
+                # The twenty-row policy canary aggregate exceeded the generic
+                # 100 MB cap in V25. Keep this required record with a bounded
+                # allowance; refusing retention must prevent a success upload.
+                "required_result_name = "
+                + repr(
+                    "native_task_arena_policy_canary_session_result.v1.json"
+                    if provider_bundle_kind == "native_task_arena_policy_canary_session"
+                    else g1_provider_output_contract(provider_bundle_kind)[0]
+                )
+                + "\n"
+                "preserve_all_output = "
+                + repr(g1_provider_output_contract(provider_bundle_kind)[1])
+                + "\n"
+                # The pinned checkpoint and SONIC receipts live directly under
+                # models/. Their downloaded weights are execution inputs, not
+                # review evidence, and exceed the bounded output PUT ceiling.
+                "g1_transient_runtime_prefixes = "
+                + repr(
+                    g1_provider_output_contract(provider_bundle_kind)[2]
+                )
+                + "\n"
+                "required_result_max_bytes = 512 * 1024 * 1024\n"
+                "if required_result_name is not None:\n"
+                "    required_result = output_dir / required_result_name\n"
+                "    if required_result.is_symlink() or not required_result.is_file():\n"
+                "        raise SystemExit('policy_canary_required_terminal_result_missing_or_not_regular')\n"
+                "    required_result_size = required_result.stat().st_size\n"
+                "    if not 0 < required_result_size <= required_result_max_bytes:\n"
+                "        raise SystemExit('policy_canary_required_terminal_result_size_invalid:%d' % required_result_size)\n"
                 "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
                 "    if output_dir.is_dir():\n"
                 "        for path in sorted(output_dir.rglob('*')):\n"
                 "            if path.is_file():\n"
                 "                size = path.stat().st_size\n"
-                "                if size <= 100_000_000:\n"
-                "                    archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "                relative_name = path.relative_to(output_dir).as_posix()\n"
+                "                if relative_name.startswith(g1_transient_runtime_prefixes):\n"
+                "                    continue\n"
+                "                size_limit = required_result_max_bytes if relative_name == required_result_name else 100_000_000\n"
+                "                if preserve_all_output or size <= size_limit:\n"
+                "                    archive.write(path, relative_name)\n"
                 "    else:\n"
                 "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "    if required_result_name is not None:\n"
+                "        if archive.getinfo(required_result_name).file_size != required_result_size:\n"
+                "            raise SystemExit('policy_canary_required_terminal_result_archive_size_mismatch')\n"
                 "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
                 "PY\n"
                 "zip_rc=$?; "
@@ -4392,7 +4907,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
-                "fi; fi; fi; fi; fi; "
+                "fi; fi; fi; fi; fi; fi; "
             )
         elif provider_bundle_kind == "adp009d_ovrtx":
             script += (
@@ -5212,11 +5727,20 @@ def _create_request_summary(
 ) -> dict[str, Any]:
     env = _mapping(payload.get("env"))
     inline_payload = _string(env.get(VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV))
+    receipt_payload = dict(payload)
+    # Startup programs may be compressed. Once compressed, ordinary value
+    # replacement cannot see credential bytes embedded in the encoded stream.
+    # Length and presence are sufficient evidence; never retain the reversible
+    # command body in a receipt.
+    for command_field in ("args", "args_str", "onstart"):
+        if command_field in receipt_payload:
+            receipt_payload[command_field] = REDACTED_SECRET_FIELD
     return {
         "image": payload.get("image"),
         "label": payload.get("label"),
         "disk_gb": payload.get("disk"),
         "runtype": payload.get("runtype"),
+        "virtual_machine": payload.get("vm") is True,
         "target_state": payload.get("target_state"),
         "cancel_unavail": payload.get("cancel_unavail"),
         "template_hash_present": bool(_string(payload.get("template_hash_id"))),
@@ -5242,7 +5766,7 @@ def _create_request_summary(
             "NVIDIA_DRIVER_CAPABILITIES": bool(env.get("NVIDIA_DRIVER_CAPABILITIES")),
         },
         "image_login_supplied": bool(payload.get("image_login")),
-        "raw_payload_redacted": _redact_runtime_value(payload, secret_values),
+        "raw_payload_redacted": _redact_runtime_value(receipt_payload, secret_values),
     }
 
 
@@ -5381,7 +5905,7 @@ def _instance_liveness_from_payload(
         # endpoint identity then binds this row to ``instance_id``.
         if row_instance_id is None or row_instance_id == float(int(instance_id)):
             status = _instance_status(row).lower()
-            ssh_port = _number(row.get("ssh_port"))
+            connection = gpu_render_providers._vast_ssh_connection_metadata(row)
             result = {
                 "observed": True,
                 "status": status,
@@ -5389,8 +5913,8 @@ def _instance_liveness_from_payload(
                 "probe_error": None,
                 # Absent rather than invented: a fabricated endpoint would send
                 # a human to a host that is not there.
-                "ssh_host": _string(row.get("ssh_host")) or None,
-                "ssh_port": int(ssh_port) if ssh_port is not None else None,
+                "ssh_host": connection["ssh_host"],
+                "ssh_port": connection["ssh_port"],
             }
             terminal_startup_error = _terminal_startup_error(row)
             if terminal_startup_error:
@@ -5486,14 +6010,13 @@ def _sanitized_instance_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _instance_inventory_valid(payload: Any) -> bool:
+    return instance_inventory_valid(payload, status_reader=_instance_status)
+
+
 def _active_instance_rows_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    active_rows: list[dict[str, Any]] = []
-    for row in _instance_list_rows(payload):
-        sanitized = _sanitized_instance_row(row)
-        status = _string(sanitized.get("raw_status_normalized")).lower()
-        if status and status not in set(VAST_TERMINAL_INSTANCE_STATUSES):
-            active_rows.append(sanitized)
-    return active_rows
+    return active_instance_rows(payload, status_reader=_instance_status, row_reader=_instance_list_rows,
+                                sanitizer=_sanitized_instance_row, terminal_statuses=VAST_TERMINAL_INSTANCE_STATUSES)
 
 
 def _prelaunch_inventory_guard(
@@ -5828,6 +6351,18 @@ def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
     return _probe
 
 
+def _remote_progress_probe_for_bundle(
+    provider_bundle_kind: str, job_dir: Path
+) -> Callable[[Mapping[str, Any]], Mapping[str, Any]] | None:
+    """Only the policy canary has an SSH milestone probe."""
+
+    if provider_bundle_kind != "native_task_arena_policy_canary_session":
+        return None
+    return lambda connection: probe_policy_canary_remote_progress(
+        connection, attempt_dir=job_dir / "policy_remote_progress_ssh"
+    )
+
+
 def _request_logs_and_fetch(
     *,
     instance_id: int,
@@ -5843,6 +6378,7 @@ def _request_logs_and_fetch(
     no_progress_seconds: int | None = None,
     log_transport_failure_limit: int = 6,
     output_probe: Callable[[], bool] | None = None,
+    remote_progress_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, max_wait_seconds)
     attempts: list[dict[str, Any]] = []
@@ -5888,6 +6424,8 @@ def _request_logs_and_fetch(
     output_probe_first_observed_attempt: int | None = None
     observed_blueprint_marker_lines: list[str] = []
     observed_blueprint_marker_line_set: set[str] = set()
+    previous_remote_milestones: list[str] = []
+    last_remote_probe_status = "not_configured" if remote_progress_probe is None else "not_checked"
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -5896,7 +6434,7 @@ def _request_logs_and_fetch(
         try:
             status_code, response = _api_json(
                 method="PUT",
-                path=f"/instances/request_logs/{instance_id}",
+                path=f"/instances/request_logs/{instance_id}/",
                 api_key=api_key,
                 payload={"tail": str(tail_lines), "daemon_logs": "false"},
                 timeout_seconds=30,
@@ -5957,6 +6495,30 @@ def _request_logs_and_fetch(
             for line in semantic_text.splitlines()
             if line.startswith("BLUEPRINT_") and "_PROGRESS:" in line
         )
+        remote_progress_observed = False
+        if remote_progress_probe is not None and (
+            attempt_index == 1
+            or attempt_index % 4 == 0
+            or time.monotonic() - last_progress_monotonic
+            >= max(0, no_progress_limit_seconds - 2 * retry_interval_seconds)
+        ):
+            try:
+                remote_probe_result = remote_progress_probe(last_instance_liveness)
+            except Exception:  # noqa: BLE001 - diagnostic transport cannot end a paid run
+                remote_probe_result = {"status": "unavailable", "milestones": []}
+            if not isinstance(remote_probe_result, Mapping):
+                remote_probe_result = {"status": "unavailable", "milestones": []}
+            last_remote_probe_status = str(remote_probe_result.get("status") or "unavailable")
+            remote_milestones = remote_probe_result.get("milestones")
+            if (
+                last_remote_probe_status == "observed"
+                and isinstance(remote_milestones, list)
+                and len(previous_remote_milestones) < len(remote_milestones) <= 100
+                and remote_milestones[:len(previous_remote_milestones)] == previous_remote_milestones
+                and all(isinstance(marker, str) for marker in remote_milestones)
+            ):
+                previous_remote_milestones = list(remote_milestones)
+                remote_progress_observed = True
         output_changed = previous_output_text is None or attempt_text != previous_output_text
         semantic_output_changed = (
             previous_semantic_text is None or semantic_text != previous_semantic_text
@@ -5981,15 +6543,16 @@ def _request_logs_and_fetch(
             or previous_runtime_phase_count
             or structured_progress
             or previous_structured_progress
+            or previous_remote_milestones
         )
         progress_observed = (
-            runtime_phase_progress or structured_progress_observed
+            runtime_phase_progress or structured_progress_observed or remote_progress_observed
             if structured_phase_tracking_active
             else (
                 bool(semantic_text.strip())
                 and semantic_output_changed
                 and not container_or_daemon_error_only
-            )
+            ) or remote_progress_observed
         )
         if progress_observed:
             last_progress_monotonic = time.monotonic()
@@ -6028,6 +6591,9 @@ def _request_logs_and_fetch(
                 "runtime_phase_marker_count": runtime_phase_count,
                 "runtime_phase_progress_observed": runtime_phase_progress,
                 "structured_progress_observed": structured_progress_observed,
+                "remote_progress_observed": remote_progress_observed,
+                "remote_progress_status": last_remote_probe_status,
+                "remote_milestone_count": len(previous_remote_milestones),
                 "structured_phase_tracking_active": structured_phase_tracking_active,
                 "progress_observed": progress_observed,
                 "no_progress_elapsed_seconds": round(no_progress_elapsed_seconds, 6),
@@ -6170,6 +6736,8 @@ def _request_logs_and_fetch(
             and attempt_index > output_probe_first_observed_attempt
         ),
         "observed_blueprint_marker_lines": observed_blueprint_marker_lines,
+        "remote_progress_milestones": previous_remote_milestones,
+        "remote_progress_status": last_remote_probe_status,
         # A no-progress verdict that was suppressed because the only channel
         # reporting no progress was the one that never worked.
         "no_log_progress_deferred_to_output_probe": bool(
@@ -6221,6 +6789,9 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
+            "native_g1_team_policy",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -6231,62 +6802,10 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp_artifixer3d",
             "paired_target_native_import",
             "adp_inpaint360_interiorgs",
+            "task_evaluation_scene_configuration",
         }
         else 60
     )
-
-
-def _log_result_saw_container_missing(log_result: Mapping[str, Any]) -> bool:
-    """Did any poll see "No such container"?
-
-    This answers a transport question -- *should we try another channel* -- and
-    any sighting is the right trigger for that, including one during startup.
-    It deliberately does not answer whether the container died; see
-    `_log_result_container_vanished_after_output`, which is the one a blocker
-    may rely on.
-    """
-
-    attempts = log_result.get("log_poll_attempts")
-    if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
-        return False
-    return any(
-        isinstance(item, Mapping) and bool(item.get("container_missing_marker_observed"))
-        for item in attempts
-    )
-
-
-def _log_result_container_vanished_after_output(log_result: Mapping[str, Any]) -> bool:
-    """Did the container go missing *after* we watched it working?
-
-    "No such container" before the first byte of output is a startup race, not
-    a dead container: the poll simply arrived before Docker created it. Treating
-    that as terminal kills runs that are about to work.
-
-    That is not hypothetical. `adp-gaussian-excision-live-20260813T160321Z` was
-    torn down four minutes in on `vast_heartbeat_container_missing`, having
-    compiled and installed three CUDA rasterizer extensions -- the whole log
-    ends on `Successfully installed`, with no error and no terminal marker,
-    because the workload was still going. The final fetched log contains zero
-    occurrences of the marker the blocker is named for.
-
-    So the marker only counts once output has been seen. After that, a missing
-    container is a real one: it was there, and now it is not. The same shape as
-    the transport-failure and instance-exited blockers beside it, both of which
-    were misattributions until they were made to corroborate.
-    """
-
-    attempts = log_result.get("log_poll_attempts")
-    if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
-        return False
-    seen_output = False
-    for item in attempts:
-        if not isinstance(item, Mapping):
-            continue
-        if seen_output and bool(item.get("container_missing_marker_observed")):
-            return True
-        if int(item.get("output_size_bytes") or 0) > 0:
-            seen_output = True
-    return False
 
 
 def _log_text_has_success_marker(text: str, markers: Sequence[str]) -> bool:
@@ -6635,183 +7154,6 @@ def _api_gate_blockers(
     return blockers
 
 
-#: How many paid launches may hold a provider at once, fleet-wide.
-#:
-#: This is a spend policy, not a technical limit. It was 1 for a long time and
-#: that made every lane queue behind the slowest run in flight -- a Content
-#: Agents run held the provider for 78 minutes on 2026-08-13 while three other
-#: lanes waited. Raised to 3 on explicit authorization the same day.
-#:
-#: What it does NOT change: each attempt still carries its own hard cap, TTL,
-#: and watchdog, so the worst case is N times one attempt's ceiling rather than
-#: an unbounded fleet. And a run still proves teardown from its own receipt.
-#: Fleet-wide provider zero simply becomes provable between batches rather than
-#: after every run, which is where the reconciler already looks for it.
-DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES = 3
-MAX_CONCURRENT_PAID_LAUNCHES_ENV = "BLUEPRINT_VAST_MAX_CONCURRENT_PAID_LAUNCHES"
-
-
-def _max_concurrent_paid_launches() -> int:
-    raw = _string(os.environ.get(MAX_CONCURRENT_PAID_LAUNCHES_ENV))
-    if not raw:
-        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
-    # Never widen past the compiled policy from an environment variable, and
-    # never fall below one: an env typo must not silently authorize more
-    # concurrent spend, nor deadlock every lane.
-    return max(1, min(value, DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES))
-
-
-def vast_launch_lock_paths(lock_path: Path | None = None) -> list[Path]:
-    """One path per concurrency slot.
-
-    Slot 0 keeps the historical filename, so a host, a reaper, or an operator
-    that knows only `vast_paid_launch.lock` still sees a real lock rather than
-    nothing.
-    """
-
-    base = lock_path or _vast_launch_lock_path()
-    paths = [base]
-    for slot in range(1, _max_concurrent_paid_launches()):
-        paths.append(base.with_name(f"{base.stem}.slot{slot}{base.suffix}"))
-    return paths
-
-
-def _vast_launch_lock_path() -> Path:
-    configured = _string(os.environ.get(VAST_LAUNCH_LOCK_FILE_ENV))
-    if configured:
-        return Path(configured).expanduser().resolve()
-    api_key_path = Path(
-        os.environ.get(VAST_API_KEY_FILE_ENV, DEFAULT_VAST_API_KEY_FILE)
-    ).expanduser()
-    return (api_key_path.parent / DEFAULT_VAST_LAUNCH_LOCK_FILENAME).resolve()
-
-
-def _try_acquire_vast_launch_lock(
-    *,
-    job_dir: Path,
-    generated_at: str,
-    lock_path: Path | None = None,
-) -> tuple[Any | None, dict[str, Any]]:
-    slots = vast_launch_lock_paths(lock_path)
-    handle = None
-    held_path: Path | None = None
-    last_holder = ""
-    unusable: list[str] = []
-    for candidate in slots:
-        ensure_dir(candidate.parent)
-        # A slot the launching account cannot open is a provisioning fault, not
-        # a busy slot, and no amount of waiting clears it. Production reached
-        # this state when a tool run as root created `slot1`/`slot2` owned
-        # `root:root` at 0644 while the adapter runs as `blueprint`. Both calls
-        # sat outside the `try:` below, which catches only `BlockingIOError`,
-        # so the `PermissionError` escaped as an unhandled traceback at the
-        # money boundary -- and only when slot 0 was already held, because slot
-        # 0 is tried first and is usually fine.
-        try:
-            attempt = candidate.open("a+", encoding="utf-8")
-        except OSError as exc:
-            unusable.append(f"{candidate.name}:{type(exc).__name__}")
-            continue
-        try:
-            candidate.chmod(0o600)
-        except OSError as exc:
-            unusable.append(f"{candidate.name}:{type(exc).__name__}")
-            attempt.close()
-            continue
-        try:
-            fcntl.flock(attempt.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            attempt.seek(0)
-            last_holder = attempt.read()[:1000]
-            attempt.close()
-            continue
-        handle = attempt
-        held_path = candidate
-        break
-    if handle is None or held_path is None:
-        # Two different refusals share this exit. "Busy" is the fleet at its
-        # authorized concurrency and says nothing about whether a *particular*
-        # run may proceed. "Unusable" is a host that cannot honour its own
-        # semaphore, which an operator has to repair.
-        every_slot_unusable = len(unusable) == len(slots)
-        manifest = {
-            "schema_version": "vast_launch_lock_manifest.v1",
-            "generated_at": generated_at,
-            "status": "blocked",
-            "lock_path": str(slots[0]),
-            "lock_slots": [str(item) for item in slots],
-            "lock_acquired": False,
-            "blockers": [
-                "vast_paid_launch_lock_unusable"
-                if every_slot_unusable
-                else "vast_paid_launch_lock_busy"
-            ],
-            "existing_lock_record_prefix": last_holder,
-            "unusable_lock_slots": unusable,
-            "raw_secret_values_recorded": False,
-        }
-        write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
-        return None, manifest
-    lock_path = held_path
-    record = {
-        "pid": os.getpid(),
-        "job_dir": str(job_dir),
-        "acquired_at": generated_at,
-        "purpose": "vast_paid_instance_launch_single_flight_guard",
-    }
-    handle.seek(0)
-    handle.truncate()
-    handle.write(json.dumps(record, sort_keys=True) + "\n")
-    handle.flush()
-    os.fsync(handle.fileno())
-    manifest = {
-        "schema_version": "vast_launch_lock_manifest.v1",
-        "generated_at": generated_at,
-        "status": "acquired",
-        "lock_path": str(lock_path),
-        "lock_slots": [str(item) for item in slots],
-        "lock_acquired": True,
-        "lock_record": record,
-        "blockers": [],
-        # Recorded on the success path too: a fleet silently running at lower
-        # concurrency than it is authorized for is the failure this hides.
-        "unusable_lock_slots": unusable,
-        "raw_secret_values_recorded": False,
-    }
-    write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
-    return handle, manifest
-
-
-def _release_vast_launch_lock(
-    handle: Any | None,
-    *,
-    job_dir: Path | None = None,
-    generated_at: str | None = None,
-) -> dict[str, Any] | None:
-    if handle is None:
-        return None
-    lock_path = Path(handle.name).expanduser()
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    finally:
-        handle.close()
-    manifest = {
-        "schema_version": "vast_launch_lock_manifest.v1",
-        "generated_at": generated_at or utc_now_iso(),
-        "status": "released",
-        "lock_path": str(lock_path),
-        "lock_released": True,
-        "raw_secret_values_recorded": False,
-    }
-    if job_dir is not None:
-        write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
-    return manifest
-
-
 def run_vast_provider_adapter(
     *,
     job_dir: str | Path,
@@ -6871,6 +7213,7 @@ def run_vast_provider_adapter(
     started_instance_id_path: str | Path | None = None,
     retain_instance_on_runtime_failure: bool = False,
     retain_native_task_arena_warm_session: bool = False,
+    retain_scene_configuration_warm_session: bool = False,
     retention_watchdog_handoff: Mapping[str, Any] | None = None,
     forward_hf_token: bool = True,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
@@ -6879,16 +7222,46 @@ def run_vast_provider_adapter(
     stale_offer_create_retry_limit: int | None = None,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    expected_provider_bundle_sha256: str | None = None,
+    provider_output_minimum_free_bytes: int = 0,
+    runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if retain_native_task_arena_warm_session and provider_bundle_kind != "native_task_arena":
         raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
-    if retain_native_task_arena_warm_session and retain_instance_on_runtime_failure:
+    if (
+        retain_scene_configuration_warm_session
+        and provider_bundle_kind != "task_evaluation_scene_configuration"
+    ):
+        raise ValueError("scene_configuration_warm_retention_bundle_kind_invalid")
+    if expected_provider_bundle_sha256 is not None and re.fullmatch(
+        r"sha256:[0-9a-f]{64}", expected_provider_bundle_sha256
+    ) is None:
+        raise ValueError("expected_provider_bundle_sha256_invalid")
+    if retain_scene_configuration_warm_session and expected_provider_bundle_sha256 is None:
+        raise ValueError("scene_configuration_warm_bundle_sha256_missing")
+    retention_requested = any(
+        (
+            retain_instance_on_runtime_failure,
+            retain_native_task_arena_warm_session,
+            retain_scene_configuration_warm_session,
+        )
+    )
+    if sum(
+        int(value)
+        for value in (
+            retain_instance_on_runtime_failure,
+            retain_native_task_arena_warm_session,
+            retain_scene_configuration_warm_session,
+        )
+    ) > 1:
         raise ValueError("multiple_vast_retention_modes_invalid")
     for field, value in (
         ("expected_provider_download_bytes", expected_provider_download_bytes),
         ("expected_provider_upload_bytes", expected_provider_upload_bytes),
+        ("provider_output_minimum_free_bytes", provider_output_minimum_free_bytes),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"invalid_vast_{field}")
@@ -6933,10 +7306,23 @@ def run_vast_provider_adapter(
         raise ValueError("invalid_vast_stale_offer_create_retry_limit")
     ensure_dir(resolved_job_dir)
     generated_at = utc_now_iso()
+    runtime_secret_values = _runtime_secret_file_values(runtime_secret_file_paths)
+    # A proven-bad host must outlive the attempt that proved it: runs
+    # ...-202000Z and ...-204021Z paid for the same container-exit failure on
+    # machines 140607 and 138964 back to back because each attempt's default
+    # avoidlist lives under its own run root and dies with it. An operator-set
+    # path makes the memory persistent; the default remains per-run.
+    environment_avoidlist = str(
+        os.environ.get("BLUEPRINT_VAST_MACHINE_AVOIDLIST_PATH") or ""
+    ).strip()
     resolved_machine_avoidlist_path = (
         Path(machine_avoidlist_path).expanduser().resolve()
         if machine_avoidlist_path
-        else _default_machine_avoidlist_path(resolved_job_dir)
+        else (
+            Path(environment_avoidlist).expanduser().resolve()
+            if environment_avoidlist
+            else _default_machine_avoidlist_path(resolved_job_dir)
+        )
     )
     resolved_session_budget_ledger_path = (
         Path(session_budget_ledger_path).expanduser().resolve()
@@ -6996,9 +7382,9 @@ def run_vast_provider_adapter(
         else bool(prefer_isaac_rt)
     )
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
-    excluded_machine_ids = _avoidlist_machine_ids(
-        resolved_machine_avoidlist_path
-    ) | _machine_id_set(excluded_machine_ids)
+    excluded_machine_ids = _machine_avoidlist_ids(avoidlist) | _machine_id_set(
+        excluded_machine_ids
+    )
     resolved_allowed_machine_ids = _machine_id_set(allowed_machine_ids)
     resolved_allowed_active_instance_ids = _machine_id_set(allowed_active_instance_ids)
     launch_mode = _resolve_launch_mode(
@@ -7100,6 +7486,9 @@ def run_vast_provider_adapter(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
+            "native_g1_team_policy",
             "adp009d_ovrtx",
             "adp009d_aura_native",
         }
@@ -7201,6 +7590,7 @@ def run_vast_provider_adapter(
         "vast_instance_ids": instance_ids,
         "vast_launch_mode": launch_mode,
         "provider_bundle_kind": provider_bundle_kind,
+        "provider_bundle_sha256": expected_provider_bundle_sha256,
         "ngc_image_login_mode": resolved_image_login_mode,
         "vast_template_hash_present": bool(template_hash),
         "use_vast_template_image": use_vast_template_image,
@@ -7893,6 +8283,10 @@ def run_vast_provider_adapter(
         lane_label_prefix=resolved_label_prefix,
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
+    from .provider_credit_admission import record_vast_credit_admission
+    credit_guard = record_vast_credit_admission(resolved_job_dir, api_key, hard_cap_usd)
+    prelaunch_inventory_blockers.extend(credit_guard["blockers"])
+    base_result["provider_credit_admission"] = credit_guard
     base_result.update(
         {
             "prelaunch_inventory_guard_status": prelaunch_inventory_guard.get("status"),
@@ -8009,8 +8403,15 @@ def run_vast_provider_adapter(
             provider_output_put_url,
             provider_output_get_url,
             runtime_dependency_url,
+            *(value for name, value in (provider_runtime_environment or {}).items()
+              if name.endswith("_URL")),
         ),
         _string(inline_bundle_transport.get("inline_provider_bundle_base64")),
+        *runtime_secret_values.values(),
+        *(
+            base64.b64encode(value.encode("utf-8")).decode("ascii")
+            for value in runtime_secret_values.values()
+        ),
     ]
     teardown_actions: list[dict[str, Any]] = []
     continuing_spend = False
@@ -8079,17 +8480,24 @@ def run_vast_provider_adapter(
             previous_signal_handlers.pop(signum, None)
     try:
         create_retry_attempts: list[dict[str, Any]] = []
+        create_attempt_labels: set[str] = set()
+        offer_search_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
         max_stale_offer_retries = (
             stale_offer_create_retry_limit
             if stale_offer_create_retry_limit is not None
             else _vast_stale_offer_create_retry_attempts()
         )
+        max_empty_offer_search_retries = _vast_empty_offer_search_retry_attempts()
+        empty_offer_search_retry_interval = _vast_empty_offer_search_retry_interval_seconds()
+        empty_offer_search_retry_count = 0
+        stale_offer_create_retry_count = 0
+        create_attempt_index = 0
         create_status = 0
         create_response: dict[str, Any] = {}
         create_payload: dict[str, Any] = {}
         image_login_summary: dict[str, Any] = {}
-        for create_attempt_index in range(max_stale_offer_retries + 1):
+        while True:
             search_request = _search_payload(
                 limit=100,
                 max_hourly_rate=max_hourly_rate,
@@ -8160,6 +8568,24 @@ def run_vast_provider_adapter(
                     if require_known_supported_isaac_driver
                     else "no_vast_offer_at_or_below_max_hourly_rate"
                 )
+            retry_empty_offer_search = bool(
+                not selected_offer
+                and empty_offer_search_retry_count < max_empty_offer_search_retries
+            )
+            if retry_empty_offer_search:
+                offer_search_retry_attempts.append(
+                    {
+                        "attempt": empty_offer_search_retry_count,
+                        "status": "no_qualifying_offer_read_only_retry",
+                        "http_status_code": status_code,
+                        "offer_count": len(offers),
+                        "blockers": list(offer_blockers),
+                        "wait_seconds": empty_offer_search_retry_interval,
+                        "authority_consumed": False,
+                        "provider_mutation_performed": False,
+                        "raw_secret_values_recorded": False,
+                    }
+                )
             offer_manifest = _offer_selection_manifest(
                 generated_at=generated_at,
                 status_code=status_code,
@@ -8183,6 +8609,7 @@ def run_vast_provider_adapter(
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
                 gpu_selection_policy=gpu_selection_policy,
                 create_retry_attempts=create_retry_attempts,
+                offer_search_retry_attempts=offer_search_retry_attempts,
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
                 allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
@@ -8201,6 +8628,10 @@ def run_vast_provider_adapter(
                 create_attempt_index=create_attempt_index,
             )
             if not selected_offer:
+                if retry_empty_offer_search:
+                    empty_offer_search_retry_count += 1
+                    time.sleep(empty_offer_search_retry_interval)
+                    continue
                 raise RuntimeError("no_vast_offer_selected")
 
             projected_transfer_cost = _projected_provider_transfer_cost_usd(
@@ -8233,7 +8664,31 @@ def run_vast_provider_adapter(
                 enable_isaac_smoke=enable_isaac_smoke,
                 enable_blueprint_bundle=enable_blueprint_bundle,
                 provider_bundle_kind=provider_bundle_kind,
+                expected_provider_bundle_sha256=expected_provider_bundle_sha256,
             )
+            probe_env = _probe_env(
+                job_dir=resolved_job_dir,
+                enable_isaac_smoke=enable_isaac_smoke,
+                provider_bundle_url=provider_bundle_url,
+                provider_output_put_url=provider_output_put_url,
+                runtime_dependency_url=runtime_dependency_url,
+                provider_bundle_inline_base64=_string(
+                    inline_bundle_transport.get("inline_provider_bundle_base64")
+                ),
+                provider_bundle_inline_sha256=_string(
+                    inline_bundle_transport.get("inline_provider_bundle_sha256")
+                ),
+                retain_cosmos_server=retain_instance_on_runtime_failure,
+                forward_hf_token=forward_hf_token,
+                provider_bundle_kind=provider_bundle_kind,
+                runtime_secret_file_values=runtime_secret_values,
+                provider_runtime_environment=provider_runtime_environment,
+            )
+            private_startup_env: dict[str, str] = {}
+            if provider_bundle_kind == "task_evaluation_scene_configuration":
+                probe_env, private_startup_env = (
+                    _scene_configuration_startup_environments(probe_env)
+                )
             create_payload = _create_payload(
                 image=create_request_image,
                 label=(
@@ -8244,22 +8699,8 @@ def run_vast_provider_adapter(
                 launch_mode=launch_mode,
                 probe_script=probe_script,
                 disk_gb=resolved_disk_gb,
-                env=_probe_env(
-                    job_dir=resolved_job_dir,
-                    enable_isaac_smoke=enable_isaac_smoke,
-                    provider_bundle_url=provider_bundle_url,
-                    provider_output_put_url=provider_output_put_url,
-                    runtime_dependency_url=runtime_dependency_url,
-                    provider_bundle_inline_base64=_string(
-                        inline_bundle_transport.get("inline_provider_bundle_base64")
-                    ),
-                    provider_bundle_inline_sha256=_string(
-                        inline_bundle_transport.get("inline_provider_bundle_sha256")
-                    ),
-                    retain_cosmos_server=retain_instance_on_runtime_failure,
-                    forward_hf_token=forward_hf_token,
-                    provider_bundle_kind=provider_bundle_kind,
-                ),
+                env=probe_env,
+                private_startup_env=private_startup_env,
                 image_login=image_login,
                 template_hash_id=template_hash,
             )
@@ -8282,6 +8723,7 @@ def run_vast_provider_adapter(
                             else "pre_provider_mutation_authorization_not_consumed"
                         )
                 base_result["provider_create_attempted"] = True
+                create_attempt_labels.add(_string(create_payload.get("label")))
                 create_status, create_response = _api_json(
                     method="PUT",
                     path=f"/asks/{selected_offer['ask_contract_id']}/",
@@ -8295,26 +8737,75 @@ def run_vast_provider_adapter(
                 # Preserve the response for the outer fail-closed HTTP error
                 # receipt when this is not the documented stale-offer race.
                 exc.fp = io.BytesIO(error_text.encode("utf-8"))
-                if (
-                    not _is_stale_offer_create_http_error(exc, error_text)
-                    or create_attempt_index >= max_stale_offer_retries
-                ):
+                if _is_stale_offer_create_http_error(exc, error_text) or (int(exc.code or 0) == 400 and not error_text.strip()):
+                    empty_400_diagnosis = diagnose_empty_create_400(
+                        api_json=_api_json,
+                        api_key=api_key,
+                        search_request=search_request,
+                        offer_id=int(selected_offer["ask_contract_id"]),
+                        attempted_label=_string(create_payload.get("label")),
+                        offers_from_response=_offers_from_response,
+                        instance_rows=_instance_list_rows,
+                        attempted_labels=tuple(create_attempt_labels),
+                        instance_label=lambda row: _string(row.get("label")),
+                    )
+                else:
+                    empty_400_diagnosis = {
+                        "selected_offer_absent_from_fresh_search": False,
+                        "catalog_readback_http_status_code": None,
+                        "catalog_readback_offer_count": None,
+                        "catalog_readback_error": None,
+                        "create_produced_no_instance": False,
+                        "create_inventory_http_status_code": None,
+                        "create_inventory_error": None,
+                    }
+                selected_offer_absent_from_fresh_search = bool(
+                    empty_400_diagnosis["selected_offer_absent_from_fresh_search"]
+                )
+                create_produced_no_instance = bool(
+                    empty_400_diagnosis["create_produced_no_instance"]
+                )
+                create_failure_diagnosis = {
+                    **empty_400_diagnosis,
+                    "attempt": stale_offer_create_retry_count,
+                    "http_status_code": exc.code,
+                    "offer_id": selected_offer.get("ask_contract_id"),
+                    "error_preview": _redact_text(error_text[:500], secret_values),
+                    "raw_secret_values_recorded": False,
+                }
+                create_failure_diagnosis["definite_create_refusal"] = _is_stale_offer_create_http_error(exc, error_text)
+                base_result["create_failure_diagnosis"] = create_failure_diagnosis
+                instance_ids.extend(i for i in empty_400_diagnosis.get("matching_attempt_instance_ids", []) if i not in instance_ids)
+                retryable = bool(create_failure_diagnosis["definite_create_refusal"] and create_produced_no_instance
+                                 and empty_400_diagnosis.get("create_inventory_verified") is True and not instance_ids)
+                if not retryable or stale_offer_create_retry_count >= max_stale_offer_retries:
+                    # Record why this run stopped here. Without it the receipt
+                    # says only "empty 400" and cannot distinguish a vanished
+                    # offer from a rejected payload, which is what made the
+                    # previous failure undiagnosable from its own evidence.
+                    create_failure_diagnosis["status"] = (
+                        "create_retry_budget_exhausted"
+                        if retryable
+                        else "create_failure_not_proven_safe_to_retry"
+                    )
+                    create_retry_attempts.append(create_failure_diagnosis)
                     raise
                 selected_machine_id = _number(selected_offer.get("machine_id"))
                 if selected_machine_id is not None:
                     excluded_machine_ids.add(int(selected_machine_id))
                 retry_attempt = {
-                    "attempt": create_attempt_index,
-                    "status": "stale_offer_retry",
-                    "http_status_code": exc.code,
-                    "offer_id": selected_offer.get("ask_contract_id"),
+                    **create_failure_diagnosis,
+                    "status": (
+                        "stale_offer_retry"
+                        if selected_offer_absent_from_fresh_search
+                        else "create_no_mutation_reselect"
+                    ),
                     "machine_id": int(selected_machine_id)
                     if selected_machine_id is not None
                     else None,
-                    "error_preview": _redact_text(error_text[:500], secret_values),
-                    "raw_secret_values_recorded": False,
                 }
                 create_retry_attempts.append(retry_attempt)
+                stale_offer_create_retry_count += 1
                 _append_phase(
                     resolved_job_dir,
                     "vast_instance_create_requested",
@@ -8348,6 +8839,7 @@ def run_vast_provider_adapter(
                     prefer_isaac_rt=resolved_prefer_isaac_rt,
                     gpu_selection_policy=gpu_selection_policy,
                     create_retry_attempts=create_retry_attempts,
+                    offer_search_retry_attempts=offer_search_retry_attempts,
                     disk_gb=resolved_disk_gb,
                     required_provider_disk_gb=required_provider_disk_gb,
                     allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
@@ -8361,13 +8853,14 @@ def run_vast_provider_adapter(
                     offer_manifest,
                 )
                 time.sleep(1)
+                create_attempt_index += 1
                 continue
         instance_id = _instance_id_from_create_response(create_response)
         if not instance_id:
             raise RuntimeError("vast_create_response_missing_instance_id")
         started_at_monotonic = time.monotonic()
         instance_ids.append(instance_id)
-        if retain_instance_on_runtime_failure or retain_native_task_arena_warm_session:
+        if retention_requested:
             record_initial_lifecycle(
                 resolved_job_dir,
                 instance_id=instance_id,
@@ -8526,17 +9019,51 @@ def run_vast_provider_adapter(
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
+            remote_progress_probe=_remote_progress_probe_for_bundle(
+                provider_bundle_kind, resolved_job_dir
+            ),
         )
+        # Result and log transport are independent. Preserve an observed upload
+        # before any startup classification can raise and trigger teardown.
+        # A missing log marker must never erase the worker's diagnostic result.
+        preclassification_transfer = None
+        if enable_blueprint_bundle and onstart_logs.get("output_probe_observed"):
+            transfer = _download_provider_output_with_capacity_guard(
+                url=_string(provider_output_get_url),
+                output_path=output_zip_path,
+                minimum_free_bytes=provider_output_minimum_free_bytes,
+            )
+            preclassification_transfer = transfer
+            write_json(
+                resolved_job_dir / "vast_provider_output_preclassification_receipt.json",
+                {
+                    "schema_version": "vast_provider_output_preclassification.v1",
+                    "generated_at": utc_now_iso(),
+                    "output_probe_observed": True,
+                    "output_zip_path": str(output_zip_path),
+                    "transfer": transfer,
+                    "startup_or_scientific_success_claimed": False,
+                },
+            )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         observed_marker_text = "\n".join(
             _string_list(onstart_logs.get("observed_blueprint_marker_lines"))
         )
         if observed_marker_text:
             heartbeat_text = "\n".join((heartbeat_text, observed_marker_text))
-        if not _log_text_has_success_marker(
-            heartbeat_text, log_success_markers
-        ) and _log_result_saw_container_missing(onstart_logs):
-            if _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV):
+        request_logs_unavailable = bool(
+            _log_result_saw_container_missing(onstart_logs)
+            or onstart_logs.get("break_reason") == "log_transport_unavailable"
+        )
+        command_execute_fallback_allowed = provider_command_execute_fallback_allowed(
+            provider_bundle_kind,
+            configured_override=_env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV),
+        )
+        if (
+            not _log_text_has_success_marker(heartbeat_text, log_success_markers)
+            and request_logs_unavailable
+        ):
+            if command_execute_fallback_allowed:
                 execute_logs = _execute_and_fetch(
                     instance_id=instance_id,
                     api_key=api_key,
@@ -8875,6 +9402,20 @@ def run_vast_provider_adapter(
                 "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED" in heartbeat_text
             )
             provider_upload_ok = "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK" in heartbeat_text
+            scene_runtime_secrets_scrubbed = (
+                "BLUEPRINT_VAST_SCENE_CONFIGURATION_RUNTIME_SECRETS_SCRUBBED"
+                in heartbeat_text
+            )
+            (
+                scene_warm_runtime_ready,
+                scene_artifixer_warm_runtime_ready,
+            ) = observed_scene_configuration_warm_readiness(
+                heartbeat_text
+            )
+            scene_bundle_sha256_verified = (
+                "BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED"
+                in heartbeat_text
+            )
             provider_completed_or_blocked = (
                 "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED" in heartbeat_text
             )
@@ -8917,11 +9458,16 @@ def run_vast_provider_adapter(
             # been fetched. The object's presence is stronger evidence than a
             # line claiming it was written.
             if _string(provider_output_get_url):
-                transfer = download_url_to_file(
+                transfer = preclassification_transfer or _download_provider_output_with_capacity_guard(
                     url=_string(provider_output_get_url),
                     output_path=output_zip_path,
-                    user_agent="BlueprintVastProviderAdapter/1.0",
-                    timeout_seconds=60,
+                    minimum_free_bytes=provider_output_minimum_free_bytes,
+                )
+                output_download_manifest.update(
+                    {
+                        "download_attempted": transfer.get("download_attempted"),
+                        "disk_capacity": transfer.get("disk_capacity"),
+                    }
                 )
                 if transfer["status"] == "completed":
                     output_download_manifest.update(
@@ -8938,7 +9484,10 @@ def run_vast_provider_adapter(
                             "status": "blocked",
                             "error_type": transfer.get("error_type"),
                             "http_status_code": transfer.get("http_status_code"),
-                            "blockers": ["provider_output_get_url_download_failed"],
+                            "blockers": list(
+                                transfer.get("blockers")
+                                or ["provider_output_get_url_download_failed"]
+                            ),
                         }
                     )
             elif provider_upload_ok and not _string(provider_output_get_url):
@@ -8948,6 +9497,66 @@ def run_vast_provider_adapter(
                         "blockers": ["provider_output_get_url_missing"],
                     }
                 )
+            if output_download_manifest.get("status") != "completed":
+                output_size_match = re.search(
+                    r"BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:([0-9]+)",
+                    heartbeat_text,
+                )
+                recover_unmarked_scene_output = (
+                    provider_bundle_kind == "task_evaluation_scene_configuration"
+                    and expected_provider_upload_bytes > 0
+                )
+                if output_size_match is not None or recover_unmarked_scene_output:
+                    recovery_started = time.monotonic()
+                    prefer_checkpoint = recover_unmarked_scene_output and output_size_match is None
+                    recovery = recover_provider_output_before_teardown(
+                        connection={
+                            "ssh_host": onstart_logs.get("instance_ssh_host"),
+                            "ssh_port": onstart_logs.get("instance_ssh_port"),
+                        },
+                        provider_bundle_kind=provider_bundle_kind,
+                        output_path=output_zip_path,
+                        attempt_dir=resolved_job_dir / "provider_output_ssh_recovery",
+                        expected_size_bytes=(int(output_size_match.group(1))
+                                             if output_size_match is not None else None),
+                        **({"maximum_size_bytes": int(expected_provider_upload_bytes),
+                            "stage_checkpoint": prefer_checkpoint}
+                           if recover_unmarked_scene_output else {}),
+                        minimum_free_bytes=provider_output_minimum_free_bytes,
+                        timeout_seconds=(
+                            MAX_G1_RECOVERY_SECONDS
+                            if provider_bundle_kind in {"native_g1_development_campaign", "native_g1_team_policy"}
+                            else MAX_RECOVERY_SECONDS
+                        ),
+                    )
+                    remaining_recovery = MAX_RECOVERY_SECONDS - (time.monotonic() - recovery_started)
+                    if (recovery.get("status") != "completed" and recover_unmarked_scene_output
+                            and remaining_recovery > 0):
+                        recovery = recover_provider_output_before_teardown(
+                            connection={"ssh_host": onstart_logs.get("instance_ssh_host"),
+                                        "ssh_port": onstart_logs.get("instance_ssh_port")},
+                            provider_bundle_kind=provider_bundle_kind,
+                            output_path=output_zip_path,
+                            attempt_dir=resolved_job_dir / "provider_checkpoint_ssh_recovery",
+                            expected_size_bytes=None,
+                            maximum_size_bytes=int(expected_provider_upload_bytes),
+                            minimum_free_bytes=provider_output_minimum_free_bytes,
+                            stage_checkpoint=not prefer_checkpoint, timeout_seconds=remaining_recovery,
+                        )
+                    recovery["successful_zip_marker_observed"] = output_size_match is not None
+                    recovery["artifact_recovery_does_not_grant_success"] = True
+                    output_download_manifest["ssh_recovery"] = recovery
+                    if recovery.get("status") == "completed":
+                        output_download_manifest.update(
+                            {
+                                "status": "completed",
+                                "output_zip_present_after_download": output_zip_path.is_file(),
+                                "output_zip_size_bytes": recovery.get(
+                                    "recovered_size_bytes", 0
+                                ),
+                                "blockers": [],
+                            }
+                        )
             write_json(
                 resolved_job_dir / "vast_provider_output_download_manifest.json",
                 output_download_manifest,
@@ -8971,6 +9580,10 @@ def run_vast_provider_adapter(
                 if provider_upload_ok and output_zip_received
                 else "object_store_only"
                 if output_zip_received
+                and _mapping(output_download_manifest.get("ssh_recovery")).get("status")
+                != "completed"
+                else "pinned_ssh_recovery"
+                if output_zip_received
                 else "none"
             )
             write_json(
@@ -8987,6 +9600,9 @@ def run_vast_provider_adapter(
                 and provider_completed_or_blocked
             )
             completion_blockers: list[str] = []
+            completion_blockers.extend(
+                _string_list(output_download_manifest.get("blockers"))
+            )
             if not provider_started:
                 completion_blockers.append("provider_bundle_start_marker_missing")
             if not provider_downloaded:
@@ -9059,6 +9675,18 @@ def run_vast_provider_adapter(
                     "provider_bundle_downloaded": provider_downloaded,
                     "provider_entrypoint_started": provider_entrypoint_started,
                     "provider_entrypoint_exit_code": provider_entrypoint_exit_code,
+                    "scene_configuration_runtime_secrets_scrubbed": (
+                        scene_runtime_secrets_scrubbed
+                    ),
+                    "scene_configuration_warm_runtime_ready": (
+                        scene_warm_runtime_ready
+                    ),
+                    "scene_configuration_artifixer_warm_runtime_ready": (
+                        scene_artifixer_warm_runtime_ready
+                    ),
+                    "scene_configuration_bundle_sha256_verified": (
+                        scene_bundle_sha256_verified
+                    ),
                     "provider_remote_blocked_markers": provider_blocked_markers,
                     "provider_completed_or_blocked_marker_seen": provider_completed_or_blocked,
                     "provider_output_upload_ok": provider_upload_ok,
@@ -9242,12 +9870,44 @@ def run_vast_provider_adapter(
             ).read_text(encoding="utf-8", errors="replace")
         except OSError:
             pass
+        provider_command = _read_mapping_json(
+            resolved_job_dir / "vast_provider_command_result.json"
+        )
+        fresh_ssh_secret_probe: dict[str, Any] = {}
+        if retain_scene_configuration_warm_session:
+            try:
+                from .vast_scene_warm_secret_probe import (  # noqa: PLC0415
+                    probe_fresh_ssh_secret_environment_absent,
+                )
+
+                fresh_ssh_secret_probe = (
+                    probe_fresh_ssh_secret_environment_absent(
+                        {
+                            "ssh_host": startup_probe.get("instance_ssh_host"),
+                            "ssh_port": startup_probe.get("instance_ssh_port"),
+                        },
+                        attempt_dir=(
+                            resolved_job_dir
+                            / "scene_warm_fresh_ssh_secret_probe"
+                        ),
+                    )
+                )
+            except Exception:  # noqa: BLE001 - uncertainty requires teardown
+                fresh_ssh_secret_probe = {
+                    "status": "blocked",
+                    "fresh_ssh_runtime_secret_environment_absent": False,
+                    "blockers": [
+                        "fresh_ssh_runtime_secret_environment_probe_failed"
+                    ],
+                    "raw_secret_values_recorded": False,
+                }
         warm_worker_evidence = {
             "provider_bundle_kind": provider_bundle_kind,
-            "runtime_dependency_cache_ready": _runtime_dependency_cache_ready(
+            "runtime_dependency_cache_ready": runtime_dependency_cache_ready(
                 startup_log_text=startup_log_text,
                 isaac_smoke=isaac_smoke,
             ),
+            "remote_work_dir": provider_remote_work_dir(startup_log_text),
             "instance_running": (
                 str(startup_probe.get("instance_final_status") or "").lower()
                 == "running"
@@ -9257,19 +9917,49 @@ def run_vast_provider_adapter(
             ),
             "ssh_host": startup_probe.get("instance_ssh_host"),
             "ssh_port": startup_probe.get("instance_ssh_port"),
+            "scene_configuration_bundle_downloaded": (
+                provider_command.get("provider_bundle_kind")
+                == "task_evaluation_scene_configuration"
+                and provider_command.get("provider_bundle_downloaded") is True
+            ),
+            "scene_configuration_bundle_sha256_verified": (
+                provider_command.get("provider_bundle_kind")
+                == "task_evaluation_scene_configuration"
+                and provider_command.get(
+                    "scene_configuration_bundle_sha256_verified"
+                )
+                is True
+            ),
+            "scene_configuration_entrypoint_started": (
+                provider_command.get("provider_bundle_kind")
+                == "task_evaluation_scene_configuration"
+                and provider_command.get("provider_entrypoint_started") is True
+            ),
+            **scene_configuration_warm_validation_fields(provider_command),
+            "scene_configuration_runtime_secrets_scrubbed": (
+                provider_command.get(
+                    "scene_configuration_runtime_secrets_scrubbed"
+                )
+                is True
+            ),
+            "fresh_ssh_runtime_secret_environment_absent": (
+                fresh_ssh_secret_probe.get(
+                    "fresh_ssh_runtime_secret_environment_absent"
+                )
+                is True
+            ),
         }
         retention_decision = _retention_decision(
-            requested=(
-                retain_instance_on_runtime_failure
-                or retain_native_task_arena_warm_session
-            ),
+            requested=retention_requested,
             watchdog_handoff=retention_watchdog_handoff,
             instance_ids=instance_ids,
             startup_probe=startup_probe,
             gpu_sanity=gpu_sanity,
             video_smoke=video_smoke,
             retention_mode=(
-                NATIVE_TASK_ARENA_WARM_RETENTION_MODE
+                SCENE_CONFIGURATION_WARM_RETENTION_MODE
+                if retain_scene_configuration_warm_session
+                else NATIVE_TASK_ARENA_WARM_RETENTION_MODE
                 if retain_native_task_arena_warm_session
                 else "cosmos_server"
             ),
@@ -9280,10 +9970,7 @@ def run_vast_provider_adapter(
             resolved_job_dir / "vast_retained_instance_decision.json",
             retention_decision,
         )
-        if (
-            retain_instance_on_runtime_failure
-            or retain_native_task_arena_warm_session
-        ) and instance_ids:
+        if retention_requested and instance_ids:
             lifecycle_recorded = _record_lifecycle_or_block(
                 base_result,
                 operation="terminal",
@@ -9379,7 +10066,7 @@ def run_vast_provider_adapter(
                     }
                 )
         if (
-            (retain_instance_on_runtime_failure or retain_native_task_arena_warm_session)
+            retention_requested
             and instance_ids
             and not retention_authorized
             and not continuing_spend
@@ -9598,7 +10285,7 @@ def run_vast_provider_adapter(
                 blockers=current_blockers,
                 reason=avoidlist_reason,
             )
-            excluded_machine_ids = _machine_id_set(avoidlist.get("machine_ids") or [])
+            excluded_machine_ids = _machine_avoidlist_ids(avoidlist)
         base_result.update(
             {
                 "vast_instance_ids": instance_ids,
@@ -9683,197 +10370,9 @@ def run_vast_provider_adapter(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Run a gated Vast.ai startup probe for Blueprint robot-eval GPU lanes."
-    )
-    parser.add_argument("--job-dir", required=True)
-    parser.add_argument(
-        "--mode",
-        choices=["dry-run", "template-discovery", "live-startup-probe"],
-        default="dry-run",
-    )
-    parser.add_argument(
-        "--gpu-selection-policy",
-        choices=sorted(GPU_SELECTION_POLICIES),
-        default=None,
-        help="workload GPU policy; see gpu_selection_policy.GPU_SELECTION_POLICIES",
-    )
-    parser.add_argument("--max-hourly-rate", type=float, default=DEFAULT_MAX_HOURLY_RATE)
-    parser.add_argument("--target-spend-usd", type=float, default=DEFAULT_TARGET_SPEND_USD)
-    parser.add_argument("--hard-cap-usd", type=float, default=DEFAULT_HARD_CAP_USD)
-    parser.add_argument("--max-live-minutes", type=int, default=DEFAULT_MAX_LIVE_MINUTES)
-    parser.add_argument("--public-image", default=DEFAULT_PUBLIC_CUDA_IMAGE)
-    parser.add_argument("--isaac-image", default=DEFAULT_ISAAC_IMAGE)
-    parser.add_argument("--heartbeat-url", default=DEFAULT_HEARTBEAT_URL)
-    parser.add_argument("--previous-job-dir")
-    parser.add_argument("--provider-bundle")
-    parser.add_argument(
-        "--provider-bundle-url",
-        help="Provider-fetchable URL for isaac_provider_runtime_bundle.zip; token values are redacted from artifacts.",
-    )
-    parser.add_argument(
-        "--provider-output-put-url",
-        help="Provider-writable PUT URL for vast_provider_runtime_output.zip; token values are redacted from artifacts.",
-    )
-    parser.add_argument(
-        "--provider-output-get-url",
-        help="Provider-readable GET URL for downloading the uploaded runtime output zip; token values are redacted from artifacts.",
-    )
-    parser.add_argument(
-        "--provider-runtime-output-zip",
-        help="Local path expected to contain the uploaded provider runtime output zip.",
-    )
-    parser.add_argument("--enable-isaac-smoke", action="store_true")
-    parser.add_argument("--enable-blueprint-bundle", action="store_true")
-    parser.add_argument(
-        "--provider-bundle-kind",
-        choices=VAST_PROVIDER_BUNDLE_KINDS,
-        default="isaac",
-        help="Provider bundle runtime contract to execute. Defaults to the existing Isaac path.",
-    )
-    parser.add_argument(
-        "--vast-launch-mode",
-        choices=VAST_LAUNCH_MODES,
-        default=DEFAULT_VAST_LAUNCH_MODE,
-        help="Use auto to select args for Isaac smoke and ssh_direct otherwise.",
-    )
-    parser.add_argument(
-        "--ngc-image-login-mode",
-        choices=NGC_IMAGE_LOGIN_MODES,
-        default=os.getenv(VAST_IMAGE_LOGIN_MODE_ENV, DEFAULT_NGC_IMAGE_LOGIN_MODE),
-        help="Use auto to avoid login for the official public Isaac image; always forces NGC credentials.",
-    )
-    parser.add_argument(
-        "--vast-template-hash-id",
-        help=(
-            "Optional Vast template hash for launch configuration reuse. "
-            "A template hash alone is not image-cache or prewarm proof."
-        ),
-    )
-    parser.add_argument(
-        "--use-vast-template-image",
-        action="store_true",
-        help="Omit the direct image override and use the image configured on --vast-template-hash-id.",
-    )
-    parser.add_argument(
-        "--allow-cold-isaac-image-pull",
-        action="store_true",
-        dest="allow_cold_isaac_image_pull",
-        help="Allow direct cold pulls of the official Isaac image. The authorized wrapper disables this by default.",
-    )
-    parser.add_argument(
-        "--block-cold-isaac-image-pull",
-        action="store_false",
-        dest="allow_cold_isaac_image_pull",
-        help="Block paid live probes that would directly cold-pull the official Isaac image.",
-    )
-    parser.set_defaults(allow_cold_isaac_image_pull=True)
-    parser.add_argument(
-        "--min-cold-isaac-pull-live-minutes",
-        type=int,
-        default=DEFAULT_MIN_COLD_ISAAC_PULL_LIVE_MINUTES,
-        help="Minimum live window required when allowing a direct cold pull of the official Isaac image.",
-    )
-    parser.add_argument(
-        "--disk-gb",
-        type=int,
-        help=f"Override Vast disk GB. Defaults to {DEFAULT_ISAAC_DISK_GB} for Isaac smoke and {DEFAULT_PUBLIC_DISK_GB} otherwise.",
-    )
-    parser.add_argument("--poll-interval-seconds", type=int, default=10)
-    parser.add_argument("--startup-timeout-seconds", type=int, default=420)
-    parser.add_argument(
-        "--heartbeat-no-progress-seconds",
-        type=int,
-        default=None,
-        help=(
-            "Maximum seconds to wait with no onstart/request_logs progress before "
-            f"blocking startup. Defaults to {VAST_HEARTBEAT_NO_PROGRESS_SECONDS_ENV} "
-            f"or {DEFAULT_HEARTBEAT_NO_PROGRESS_SECONDS}."
-        ),
-    )
-    parser.add_argument(
-        "--machine-avoidlist",
-        help="Optional JSON avoidlist of Vast machine IDs to exclude from offer selection. Defaults to <job-dir>/vast_machine_avoidlist.json.",
-    )
-    parser.add_argument(
-        "--allowed-machine-id",
-        action="append",
-        default=[],
-        help=(
-            "Restrict offer selection to this Vast machine ID. Can be repeated; "
-            "use after a host-specific canary has passed."
-        ),
-    )
-    parser.add_argument(
-        "--session-budget-ledger",
-        help=(
-            "Optional session cost summary JSON used to block paid launches before Vast API calls. "
-            f"Defaults to {DEFAULT_VAST_SESSION_BUDGET_FILENAME} beside {VAST_API_KEY_FILE_ENV}; "
-            f"{VAST_SESSION_BUDGET_LEDGER_FILE_ENV} can override the default."
-        ),
-    )
-    parser.add_argument(
-        "--vast-launch-lock-file",
-        help=(
-            "Optional single-flight lock file for paid Vast launches. Defaults to "
-            "vast_paid_launch.lock beside VAST_API_KEY_FILE."
-        ),
-    )
-    parser.add_argument(
-        "--session-max-live-minutes",
-        type=int,
-        default=DEFAULT_SESSION_MAX_LIVE_MINUTES,
-        help=f"Maximum cumulative live Vast runtime allowed for this session. Defaults to {DEFAULT_SESSION_MAX_LIVE_MINUTES}.",
-    )
-    parser.add_argument(
-        "--verify-staging-urls",
-        action="store_true",
-        help="Verify provider bundle URL reachability before Vast offer search.",
-    )
-    parser.add_argument(
-        "--allow-staging-output-put-probe",
-        action="store_true",
-        help="Allow a small pre-allocation PUT probe to the provider output URL. This is intentionally opt-in because some signed URLs are one-shot or overwrite targets.",
-    )
-    parser.add_argument(
-        "--require-known-supported-isaac-driver",
-        action="store_true",
-        help="Exclude offers in the known unsupported Omniverse RTX driver range; recommended for Blueprint bundle/video proof.",
-    )
-    parser.add_argument(
-        "--allow-vast-api-call",
-        action="store_true",
-        help=f"Required with {VAST_API_GATE_ENV}=true for live Vast API calls.",
-    )
-    parser.add_argument(
-        "--allow-vast-instance-launch",
-        action="store_true",
-        help=f"Required with {VAST_INSTANCE_LAUNCH_GATE_ENV}=true for paid Vast instance launch.",
-    )
-    args = parser.parse_args(argv)
-    if args.mode == "live-startup-probe":
-        print("legacy_vast_provider_mutation_cli_disabled", file=sys.stderr)
-        return 2
-    adapter_kwargs = vars(args).copy()
-    for cli_name, adapter_name in (
-        ("allow_vast_instance_launch", "allow_instance_launch"),
-        ("machine_avoidlist", "machine_avoidlist_path"),
-        ("allowed_machine_id", "allowed_machine_ids"),
-        ("session_budget_ledger", "session_budget_ledger_path"),
-    ):
-        adapter_kwargs[adapter_name] = adapter_kwargs.pop(cli_name)
-    result = run_vast_provider_adapter(**adapter_kwargs)
-    print(
-        f"[vast-provider-adapter] result={Path(args.job_dir).resolve() / 'vast_provider_adapter_result.json'}"
-    )
-    print(f"[vast-provider-adapter] status={result.get('status')}")
-    print(
-        f"[vast-provider-adapter] instance_ids={','.join(str(item) for item in result.get('vast_instance_ids', []))}"
-    )
-    blockers = _string_list(result.get("blockers"))
-    if blockers:
-        print("[vast-provider-adapter] blockers=" + ",".join(blockers))
-    return 0 if result.get("status") in {"completed", "dry_run_ready"} else 1
+    from .vast_provider_adapter_cli import main as cli_main
+
+    return cli_main(argv, adapter_module=sys.modules[__name__])
 
 
 if __name__ == "__main__":  # pragma: no cover

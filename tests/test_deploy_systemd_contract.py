@@ -26,6 +26,24 @@ def _read(name: str) -> str:
     return (SYSTEMD_DIR / name).read_text(encoding="utf-8")
 
 
+def test_scene_progression_uses_pinned_checkout_and_config_gated_periodic_worker():
+    unit = _read("blueprint-task-evaluation-scene-progression.service")
+    assert "User=blueprint" in unit
+    assert "ProtectSystem=strict" in unit and "NoNewPrivileges=true" in unit
+    assert "ConditionPathExists=/etc/blueprint/task-evaluation-scene-progression.json" in unit
+    assert "exec env PYTHONPATH=src" in unit
+    assert "-m blueprint_pipeline.task_evaluation_scene_progression" in unit
+    assert "paid_resource_allocator" not in unit
+    queue = "Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions"
+    assert queue in unit
+    assert queue in _read("blueprint-task-evaluation-launch-dispatcher.service")
+    assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in unit
+    assert "OnUnitInactiveSec=1min" in _read("blueprint-task-evaluation-scene-progression.timer")
+    installer = INSTALL_SCRIPT.read_text()
+    for suffix in ("service", "timer"):
+        assert "blueprint-task-evaluation-scene-progression." + suffix in installer
+
+
 def _terraform_resource_body(text: str, resource_type: str, name: str) -> str:
     needle = f'resource "{resource_type}" "{name}" {{'
     start = text.index(needle)
@@ -80,7 +98,34 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
         text = _read(unit)
 
         assert re.search(r"/Users/[^/]+/", text) is None
-        assert "BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline" in text
+        if unit in {
+            "blueprint-pipeline-control-plane.service",
+            "blueprint-pubsub-handoff-listener.service",
+        }:
+            repo_key = (
+                "BLUEPRINT_PUBSUB_HANDOFF_REPO"
+                if unit == "blueprint-pubsub-handoff-listener.service"
+                else "BLUEPRINT_PIPELINE_REPO"
+            )
+            assert f"{repo_key}=/opt/blueprint/task-evaluation-control-plane" in text
+            assert (
+                "BLUEPRINT_PIPELINE_PYTHON="
+                "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
+            ) in text
+        else:
+            assert (
+                "BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline"
+                in text
+            )
+        if unit == "blueprint-pubsub-handoff-listener.service":
+            # Website handoffs register prepared sources in the same namespace
+            # consumed by scene progression before enqueueing the signed intake.
+            assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in text
+            assert text.count('exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m') == 2
+            assert ".venv/bin/blueprint-pubsub-handoff-listener" not in text
+            assert text.count('cd -P "$${BLUEPRINT_PUBSUB_HANDOFF_REPO}"') == 2
+            assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
+            assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 2
         assert "BLUEPRINT_LAUNCH_PROOF_MODE=production" in text
         assert "PRIVACY_PIPELINE_ENABLED=true" in text
         assert "PRIVACY_FAIL_CLOSED=true" in text
@@ -111,14 +156,146 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
         "SystemCallFilter=@system-service",
         "ReadWritePaths=/var/lib/blueprint",
-        "TasksMax=512",
-        "MemoryMax=8G",
         "CPUQuota=200%",
     )
     for unit in SYSTEMD_DIR.glob("*.service"):
+        if unit.name in {"blueprint-agent-execution.service", "blueprint-agent-stage-replay.service"}:
+            text = unit.read_text(encoding="utf-8")
+            narrower = ("RestrictAddressFamilies=", "ReadWritePaths=", "TasksMax=", "MemoryMax=", "CPUQuota=")
+            for control in required_controls:
+                if not control.startswith(narrower):
+                    assert control in text, (unit.name, control)
+            assert "TasksMax=128" in text and "CPUQuota=100%" in text
+            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution\n" in text
+            assert "ReadWritePaths=/var/lib/blueprint\n" not in text
+            if unit.name == "blueprint-agent-stage-replay.service":
+                assert "PrivateNetwork=true" in text and "RestrictAddressFamilies=AF_UNIX\n" in text
+                assert "MemoryMax=4G" in text
+                assert "InaccessiblePaths=-/etc/blueprint/provider-secrets" in text
+            else:
+                assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n" in text
+                assert "MemoryMax=2G" in text
+            continue
+        if unit.name in {"blueprint-completed-replay-cache-gc.service", "blueprint-scene-project-spend-refresh.service"}:
+            text = unit.read_text(encoding="utf-8")
+            for control in ("NoNewPrivileges=true", "PrivateDevices=true", "PrivateNetwork=true",
+                            "ProtectSystem=strict", "ProtectHome=true", "TasksMax=32", "MemoryMax=512M",
+                            "SystemCallFilter=~ptrace process_vm_readv process_vm_writev"):
+                assert control in text, (unit.name, control)
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            if unit.name == "blueprint-completed-replay-cache-gc.service":
+                assert "User=root" in text
+                assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_PTRACE" in text
+                assert "ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/stage-replays " in text
+            else:
+                assert "User=blueprint" in text and "Group=blueprint" in text
+                assert "CapabilityBoundingSet=\n" in text and "AmbientCapabilities=\n" in text
+                assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-project-spend" in text
+                writable = next(line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+                assert set(writable) == {
+                    "/var/lib/blueprint/pipeline-control-plane/scene-project-spend",
+                    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/.lock",
+                }
+            continue
+        if unit.name == "blueprint-operator-door.service":
+            # Cloud agents' HTTPS window onto this host (deploy/operator-door). It
+            # reads as the service account, with journal access, in a read-only,
+            # loopback-only sandbox that hides every known secret location.
+            text = unit.read_text(encoding="utf-8")
+            for control in ("User=blueprint", "Group=blueprint",
+                            "SupplementaryGroups=systemd-journal blueprint-door\n",
+                            "UMask=0077", "NoNewPrivileges=true", "PrivateTmp=true", "PrivateDevices=true",
+                            "ProtectSystem=strict", "ProtectHome=true", "ProtectProc=invisible",
+                            "ProtectKernelTunables=true", "ProtectKernelModules=true",
+                            "ProtectKernelLogs=true", "ProtectControlGroups=true", "RestrictSUIDSGID=true",
+                            "CapabilityBoundingSet=\n", "AmbientCapabilities=\n",
+                            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", "IPAddressDeny=any",
+                            "IPAddressAllow=localhost", "SystemCallFilter=@system-service",
+                            "ReadWritePaths=/var/lib/blueprint-operator-door\n", "TasksMax=64",
+                            "MemoryMax=1G", "CPUQuota=100%"):
+                assert control in text, (unit.name, control)
+            assert "InaccessiblePaths=-/etc/blueprint/provider-secrets" in text
+            assert "ReadWritePaths=/var/lib/blueprint\n" not in text
+            continue
+        if unit.name == "blueprint-operator-door-runner.service":
+            # Root oneshot behind the door's spool: revalidates each request and
+            # only runs systemctl --no-block or starts a fixed transient unit. It
+            # owns the directories it writes, so it holds no capability at all.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=\n" in text and "AmbientCapabilities=\n" in text
+            assert "StartLimitIntervalSec=0" in text
+            for control in ("NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true",
+                            "PrivateNetwork=true", "RestrictAddressFamilies=AF_UNIX\n",
+                            "SystemCallFilter=@system-service", "TasksMax=32", "MemoryMax=256M",
+                            "ReadWritePaths=/var/lib/blueprint-operator-door/requests\n"):
+                assert control in text, (unit.name, control)
+            continue
+        if unit.name == "blueprint-operator-door-hold-sweep.service":
+            # Boot reconciliation must ask PID 1 to keep root-owned holds stopped
+            # before timer/path targets start; it writes only the door spool.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "DefaultDependencies=no" in text
+            assert "Before=timers.target paths.target" in text
+            assert "CapabilityBoundingSet=\n" in text and "AmbientCapabilities=\n" in text
+            for control in ("NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true",
+                            "PrivateNetwork=true", "RestrictAddressFamilies=AF_UNIX\n",
+                            "SystemCallFilter=@system-service", "TasksMax=32", "MemoryMax=256M",
+                            "ReadWritePaths=/var/lib/blueprint-operator-door/requests\n"):
+                assert control in text, (unit.name, control)
+            continue
+        if unit.name == "blueprint-control-plane-storage-gc.service":
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE" in text
+            assert "AmbientCapabilities=CAP_DAC_OVERRIDE" in text
+            assert "NoNewPrivileges=true" in text
+            assert "ProtectSystem=strict" in text
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            continue
+        if unit.name == "blueprint-control-plane-preflight.service":
+            # Root housekeeping: replays each unit's sandbox through PID 1 and
+            # writes one evidence root; blockers are content, so exit 2 is success.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE" in text
+            assert "AmbientCapabilities=CAP_DAC_OVERRIDE" in text
+            assert "NoNewPrivileges=true" in text
+            assert "ProtectSystem=strict" in text
+            assert "SuccessExitStatus=2" in text
+            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/preflight" in text
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            continue
+        if unit.name == "blueprint-control-plane-capacity.service":
+            # Root housekeeping like the reaper: growing the work volume needs the
+            # block device and the online-resize ioctl, nothing wider.  It writes
+            # one evidence root and reads the reservation ledger and secrets.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_RESOURCE CAP_SYS_ADMIN" in text
+            assert "AmbientCapabilities=CAP_DAC_OVERRIDE CAP_SYS_RESOURCE CAP_SYS_ADMIN" in text
+            assert "DeviceAllow=block-* rw" in text and "DevicePolicy=closed" in text
+            assert "NoNewPrivileges=true" in text
+            assert "ProtectSystem=strict" in text
+            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/capacity" in text
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            assert "SystemCallFilter=@system-service" in text
+            continue
         text = unit.read_text(encoding="utf-8")
         for control in required_controls:
             assert control in text, (unit.name, control)
+        task_limit = {"blueprint-existing-policy-canary-watchdog.service": 64,
+                      "blueprint-existing-policy-canary-continuation.service": 128}.get(unit.name, 512)
+        assert f"TasksMax={task_limit}" in text, unit.name
+        # Compilation uses bounded appearance-cache chunks and a tighter limit
+        # so it cannot exhaust the shared control-plane host during packet build.
+        memory_limit = (
+            "1G" if unit.name == "blueprint-existing-policy-canary-watchdog.service"
+            else "4G" if unit.name == "blueprint-task-evaluation-episode-compilation.service"
+            else "8G"
+        )
+        assert f"MemoryMax={memory_limit}" in text, unit.name
 
     installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
     assert 'SERVICE_USER="${SERVICE_USER:-blueprint}"' in installer
@@ -728,3 +905,100 @@ def test_sim_only_gate_uses_headless_linux_mujoco_rendering():
     assert "libosmesa6" in text
     assert "runs-on: macos-latest" not in text
     assert "MUJOCO_GL: glfw" not in text
+
+
+def test_sam31_profile_registry_is_content_bound_in_the_base_units():
+    """Every unit that resolves the SAM server profile -- including the progression
+    service that runs the look-ahead admission replay, which never received a
+    per-scene PROFILE_ENV drop-in -- reads one fixed content-addressed registry from
+    its base unit file. The scene-progression factory (the registrar) mounts it
+    read-write; the resolvers mount it read-only. The path lives under
+    /var/lib/blueprint so the deploy's unit-sandbox installer creates it."""
+    from blueprint_pipeline.task_evaluation_sam31_profile_registry import (
+        DEFAULT_PROFILE_REGISTRY_ROOT as FIXED,
+    )
+
+    assert FIXED.startswith("/var/lib/blueprint/") and Path(FIXED).suffix == ""
+    env_line = f"Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR={FIXED}"
+
+    resolvers = (
+        "blueprint-task-evaluation-configured-controls-progression.service",
+        "blueprint-task-evaluation-launch-preparation.service",
+        "blueprint-task-evaluation-sam31-preparation-execution.service",
+        "blueprint-task-evaluation-launch-activation.service",
+        "blueprint-task-evaluation-launch-supervisor.service",
+        "blueprint-task-evaluation-launch-reconciler.service",
+        "blueprint-task-evaluation-launch-dispatcher.service",
+    )
+    for name in resolvers:
+        text = _read(name)
+        assert env_line in text, name
+        assert f"ReadOnlyPaths={FIXED}" in text, name
+        assert f"ReadWritePaths={FIXED}" not in text, name
+
+    registrar = _read("blueprint-task-evaluation-scene-progression.service")
+    assert env_line in registrar
+    assert f"ReadWritePaths={FIXED}" in registrar
+    assert f"ReadOnlyPaths={FIXED}" not in registrar
+
+
+def test_activation_loads_operator_owned_preparation_routing():
+    assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in _read(
+        "blueprint-task-evaluation-launch-activation.service"
+    )
+
+
+def test_website_capture_worker_loads_deployed_geometry_runtime(monkeypatch):
+    service = _read("blueprint-pubsub-handoff-listener.service")
+    assert service.index("EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env") < service.index(
+        "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env"
+    )
+    from blueprint_pipeline import vast_independent_watchdog_control as watchdog
+    assert "KillMode=process" in service
+    declaration = next(line.split("=", 2)[2] for line in service.splitlines()
+                       if line.startswith(f"Environment={watchdog.CALLER_EXIT_SURVIVAL_ENV}="))
+    monkeypatch.setenv("INVOCATION_ID", "website-service")
+    monkeypatch.setenv(watchdog.CALLER_EXIT_SURVIVAL_ENV, declaration)
+    assert watchdog._caller_exit_survival_proven(watchdog._caller_exit_survival_contract())
+
+
+def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read_credit():
+    """The per-attempt credit guard and the hourly credit alert are opt-in in code
+    (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED); production turns them on in the unit files
+    that reach the Vast adapter, and the chain preflight refuses a paid unit without it."""
+
+    flag = "Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true"
+    for name in (
+        "blueprint-pubsub-handoff-listener.service",
+        "blueprint-task-evaluation-launch-dispatcher.service",
+        "blueprint-task-evaluation-policy-canary-dispatcher.service",
+        "blueprint-task-evaluation-sam31-preparation-execution.service",
+    ):
+        assert flag in (SYSTEMD_DIR / name).read_text(encoding="utf-8"), name
+    capacity = (SYSTEMD_DIR / "blueprint-control-plane-capacity.service").read_text(encoding="utf-8")
+    assert flag in capacity
+    assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in capacity
+    assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in capacity
+    assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in capacity
+
+
+def test_volume_admission_units_map_bulk_roles_to_their_writers() -> None:
+    role_targets = (
+        "Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS="
+        "launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,"
+        "episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,"
+        "launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,"
+        "launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,"
+        "policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,"
+        "handoff_staging=/var/lib/blueprint/pubsub-handoffs"
+    )
+    for name in (
+        "blueprint-pipeline-intake.service",
+        "blueprint-task-evaluation-scene-progression.service",
+        "blueprint-control-plane-capacity.service",
+    ):
+        assert role_targets in (SYSTEMD_DIR / name).read_text(encoding="utf-8")
+    capacity = (SYSTEMD_DIR / "blueprint-control-plane-capacity.service").read_text(
+        encoding="utf-8"
+    )
+    assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work" in capacity

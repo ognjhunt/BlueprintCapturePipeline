@@ -12,6 +12,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
+from .paid_cpu_builder_arguments import cpu_vector as _cpu_vector
 from .decision_evidence_contracts import canonical_digest
 from .groot_oscar_digitalocean_builder import (
     DETACHED_CPU_BUILD_SUPERVISOR_ENV,
@@ -161,6 +163,12 @@ from .adp_isaac_lab_arena_vast import (
     build_arena_native_control_bundle,
     run_arena_native_control_vast,
 )
+from .native_g1_paid_campaign import (
+    PROBE_KIND as NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
+    dispatch_g1_paid_campaign,
+)
+from . import native_g1_team_paid_policy as g1_team_lane
+from .native_g1_team_paid_policy import PROBE_KIND as NATIVE_G1_TEAM_POLICY_PROBE_KIND
 from .adp009d_franka_vast import (
     controls_only_max_compute_cap,
     run_adp009d_native_microcheck_vast,
@@ -168,32 +176,37 @@ from .adp009d_franka_vast import (
 from .native_task_arena_construction_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
     build_native_task_arena_construction_bundle,
-    load_verified_native_task_arena_construction_bundle,
 )
 from .native_task_arena_controls_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
     build_native_task_arena_controls_bundle,
-    load_verified_native_task_arena_controls_bundle,
+)
+from .native_task_arena_destination_qualification_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
 )
 from .native_task_arena_policy_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
     build_native_task_arena_policy_bundle,
-    load_verified_native_task_arena_policy_bundle,
 )
 from .native_task_arena_policy_diagnostic_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
     build_native_task_arena_policy_diagnostic_bundle,
-    load_verified_native_task_arena_policy_diagnostic_bundle,
 )
+from . import policy_canary_allocator_lane as policy_canary_lane
 from .native_task_arena_runtime_preflight_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
     build_native_task_arena_runtime_preflight_bundle,
-    load_verified_native_task_arena_runtime_preflight_bundle,
+)
+from .native_task_arena_allocator_dispatch import (
+    native_task_arena_probe_mode,
+    native_task_arena_verified_bundle_loader,
 )
 from .native_task_arena_vast import (
+    POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES,
     run_native_task_arena_controls_vast,
-    run_native_task_arena_policy_vast,
+    run_native_task_arena_destination_qualification_vast,
     run_native_task_arena_policy_diagnostic_vast,
+    run_native_task_arena_policy_vast,
     run_native_task_arena_runtime_preflight_vast,
     run_native_task_arena_vast,
 )
@@ -206,7 +219,15 @@ from .native_task_arena_warm_authority import (
     validate_native_task_arena_warm_attempt_authority,
     validate_native_task_arena_warm_session,
 )
-from .native_task_arena_warm_vast import run_native_task_arena_warm_controls_vast
+from .native_task_arena_warm_vast import (
+    run_native_task_arena_warm_controls_vast,
+    validate_native_task_arena_warm_ssh_identity_file,
+)
+from .native_task_arena_feedback_allocator_adapter import (
+    continue_retained_feedback_if_requested,
+    native_feedback_runtime_blockers,
+    terminal_feedback_bootstrap_blockers,
+)
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -341,6 +362,10 @@ from .task_evaluation_profile_preflight import (
     PROBE_KIND as TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
     run_task_evaluation_profile_preflight,
 )
+from .task_evaluation_scene_configuration_allocator import (
+    PROBE_KIND as TASK_EVALUATION_SCENE_CONFIGURATION_PROBE_KIND,
+    run_scene_configuration_allocator_probe,
+)
 from .task_evaluation_terminal_resource_release import dispatch_terminal_resource_release
 
 
@@ -349,7 +374,6 @@ _TYPED_AUTHORITY_ERROR = re.compile(r"^[a-z0-9_]+(?::[a-z0-9_,]+)?$")
 
 def _native_authority_validation_diagnostic(exc: BaseException) -> dict[str, Any]:
     """Retain a typed authority failure without leaking paths or payloads."""
-
     if isinstance(exc, json.JSONDecodeError):
         error_code = "json_decode_error"
     elif isinstance(exc, PermissionError):
@@ -369,6 +393,18 @@ def _native_authority_validation_diagnostic(exc: BaseException) -> dict[str, Any
         "error_code": error_code,
         "raw_error_message_recorded": False,
     }
+
+
+def _write_native_task_arena_adapter_output(
+    path: str | Path, result: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Seal the exact terminal mapping at the allocator's adapter output."""
+    sealed = json.loads(json.dumps(dict(result), allow_nan=False))
+    sealed["result_digest"] = canonical_digest(
+        sealed, digest_field="result_digest"
+    )
+    write_json(Path(path), sealed)
+    return sealed
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -448,13 +484,11 @@ CHECKOUT_IDENTITY_PROBE_BACKOFF_SECONDS = 2.0
 
 def _checkout_git_command(*arguments: str) -> list[str]:
     """Trust only the physical immutable checkout used by this allocator."""
-
     return ["git", "-c", f"safe.directory={ROOT}", "-C", str(ROOT), *arguments]
 
 
 def _run_checkout_probe(argv: Sequence[str]) -> subprocess.CompletedProcess | None:
     """Probe immutable checkout identity, retrying a transient Git lock."""
-
     result: subprocess.CompletedProcess | None = None
     for attempt in range(CHECKOUT_IDENTITY_PROBE_ATTEMPTS):
         try:
@@ -551,11 +585,28 @@ def _commit_has_verified_production_promotion(commit: str) -> bool:
 
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         return False
-    path = (
-        CONTROL_PLANE_RELEASE_STATE_ROOT
+    # Two deploy surfaces install the same receipt under different roots: the
+    # task-evaluation release-state root this module has always read, and the
+    # control-plane root one directory above it, where the 2026-08-30 deploy
+    # chain installed every release's receipt (8f5b2313 admitted as
+    # development_only until an operator hard-linked the verified receipt
+    # across).  Accept the identical fail-closed content proof at either exact
+    # location; nothing about what the receipt must say is weakened.
+    candidates = (
+        CONTROL_PLANE_RELEASE_STATE_ROOT / commit / DEPLOY_RELEASE_PROVENANCE_NAME,
+        CONTROL_PLANE_RELEASE_STATE_ROOT.parent
         / commit
-        / DEPLOY_RELEASE_PROVENANCE_NAME
+        / DEPLOY_RELEASE_PROVENANCE_NAME,
     )
+    return any(
+        _verified_release_provenance_at(path, commit=commit)
+        for path in candidates
+    )
+
+
+def _verified_release_provenance_at(path: Path, *, commit: str) -> bool:
+    """One exact location's receipt proves the canonical Full Test Lane."""
+
     try:
         if path.is_symlink() or not path.is_file():
             return False
@@ -685,6 +736,54 @@ def _current_remote_branch_commit(branch: str) -> str:
     return commit
 
 
+def run_sponsored_website_geometry(*, input_manifest: Path, output_root: Path,
+                                   task_context: Mapping[str, Any]) -> dict[str, Any]:
+    """Use the existing GPU admission/worker from the normal website controller."""
+    from .website_geometry_dispatch import dispatch_geometry
+    commit, _, _ = _current_checkout_source_state()
+    blockers, _ = _source_checkout_blockers(commit)
+    if blockers:
+        raise ValueError("website_mapanything_release_not_admitted:" + ",".join(blockers))
+    return dispatch_geometry(input_manifest=input_manifest, output_root=output_root,
+        task_context=task_context, source_commit=commit, allocate=_run_reconstruction_gpu_canary)
+
+
+def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
+    """Canonical allocator entry retaining the provider operation across restarts."""
+    from .provider_preview import WorldLabsPreviewProvider, _worldlabs_api_key
+    from .website_task_context import reserve_website_preparation_spend
+    from .website_worldlabs import (MAX_GENERATION_COST_USD, validate_website_prepared_views,
+                                    website_reconstruction_retry_state)
+
+    _, binding = validate_website_prepared_views(descriptor=descriptor, capture_root=capture_root)
+    root = capture_root / "pipeline" / "website_reconstruction"
+    provider = WorldLabsPreviewProvider()
+    binding, retry_digest, retained_result, attempt = website_reconstruction_retry_state(
+        descriptor=descriptor, capture_root=capture_root, base_binding=binding, provider=provider)
+    if retained_result is not None:
+        return retained_result
+    commit, _, _ = _current_checkout_source_state()
+    blockers, _ = _source_checkout_blockers(commit)
+    if blockers:
+        raise ValueError("website_reconstruction_release_not_admitted:" + ",".join(blockers))
+    if not _worldlabs_api_key():
+        raise ValueError("website_reconstruction_api_key_missing")
+    retained_path = root / ("controller_admission.json" if attempt == 0 else f"controller_admission_retry_{attempt}.json")
+    retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
+    admission, grant = reserve_website_preparation_spend(
+        task_context=descriptor["metadata"]["site_task_context"], binding_digest=canonical_digest(binding),
+        maximum_cost_usd=MAX_GENERATION_COST_USD, request_count=1,
+        resource_class="provider_reconstruction_api", provider="world_labs", retained_admission=retained)
+    admission = {**admission, "source_commit": commit}
+    root.mkdir(parents=True, exist_ok=True)
+    write_json(retained_path, admission)
+    prepared = {**descriptor, "metadata": {**descriptor["metadata"],
+        "website_reconstruction_admission": admission,
+        **({"website_reconstruction_retry_digest": retry_digest} if retry_digest else {})}}
+    return provider.submit(descriptor=prepared, capture_root=capture_root,
+                           provider_adapter_input={"paid_resource_admission_grant": grant})
+
+
 def _source_checkout_blockers(
     expected_source_commit: str, *, allow_pushed_branch_diagnostic: bool = False
 ) -> tuple[list[str], str]:
@@ -696,6 +795,11 @@ def _source_checkout_blockers(
         blockers.append("gpu_canary_checkout_source_commit_unavailable")
     elif expected_source_commit.strip().lower() != checkout_commit:
         blockers.append("gpu_canary_expected_source_commit_not_current_checkout")
+    from .active_deployed_release_admission import inspect_active_deployed_release
+    deployed = inspect_active_deployed_release(ROOT, checkout_commit)
+    if deployed is not None:
+        blockers.extend(deployed["blockers"] + ([] if checkout_clean else ["gpu_canary_checkout_not_clean"]))
+        return blockers, checkout_commit
     if allow_pushed_branch_diagnostic:
         branch = _current_branch_name()
         remote_branch_commit = _current_remote_branch_commit(branch)
@@ -1022,7 +1126,26 @@ def maybe_launch_detached_gpu_canary(
         }
     root = declared.resolve()
     ensure_dir(root)
-    os.chmod(root, 0o700)
+    try:
+        if stat.S_IMODE(root.stat().st_mode) != 0o700:
+            os.chmod(root, 0o700)
+        installed_mode = stat.S_IMODE(root.stat().st_mode)
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": [
+                "detached_gpu_canary_supervisor_dir_permission_install_failed"
+            ],
+            "provider_mutations_performed": 0,
+        }
+    if not root.is_dir() or installed_mode != 0o700:
+        return {
+            "status": "blocked",
+            "blockers": [
+                "detached_gpu_canary_supervisor_dir_permission_install_failed"
+            ],
+            "provider_mutations_performed": 0,
+        }
     manifest_path = root / DETACHED_GPU_CANARY_MANIFEST
     log_path = root / DETACHED_GPU_CANARY_LOG
     lock_path = root / DETACHED_GPU_CANARY_LOCK
@@ -1128,42 +1251,6 @@ def configure_or_launch_detached_gpu_canary(
         return 0 if detached.get("status") == "supervisor_started" else 2
     _configure_detached_supervisor_signal_policy(command)
     return None
-
-
-def _cpu_vector(args: argparse.Namespace) -> list[str]:
-    values = [
-        "--output-dir",
-        args.output_dir,
-        "--packet-manifest",
-        args.packet_manifest,
-        "--builder-evidence",
-        args.builder_evidence,
-        "--spend",
-        args.spend,
-        "--token-file",
-        args.token_file,
-        "--docker-username-file",
-        args.docker_username_file,
-        "--docker-password-file",
-        args.docker_password_file,
-        "--hf-token-file",
-        args.hf_token_file,
-        "--runpod-s3-access-key-file",
-        args.runpod_s3_access_key_file,
-        "--runpod-s3-secret-key-file",
-        args.runpod_s3_secret_key_file,
-        "--login-private-key",
-        args.login_private_key,
-        "--host-private-key",
-        args.host_private_key,
-        "--ssh-key-id",
-        str(args.ssh_key_id),
-        "--region",
-        args.region,
-    ]
-    if args.allow_paid:
-        values.append("--allow-paid")
-    return values
 
 
 def _missing_cpu_provider_arguments(args: argparse.Namespace) -> list[str]:
@@ -1478,7 +1565,7 @@ def _run_reconstruction_gpu_canary(
             output_fetcher=_windows_output_fetcher,
             output_validator=_windows_output_validator,
         )
-    elif operation in {"pose_canary", "trainer_canary"}:
+    elif operation in {"pose_canary", "trainer_canary", "website_mapanything"}:
         result = run_reconstruction_vast_operation(
             bound_request=_load(args.bound_request_out),
             bundle_receipt=operation_bundle_receipt,
@@ -1541,10 +1628,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--bound-request-out")
     gpu.add_argument("--adapter-output")
     gpu.add_argument("--pod-name")
-    gpu.add_argument(
-        "--terminal-resource-release",
-        help="Immutable release-only request; cannot be combined with a launch profile.",
-    )
+    gpu.add_argument("--terminal-resource-release", help="Immutable release-only request; cannot be combined with a launch profile.")
     gpu.add_argument(
         "--terminal-resource-release-output",
         help="Receipt destination for an exact stopped-provider-record release.",
@@ -1592,10 +1676,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+            NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
             NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
+            NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
+            NATIVE_G1_TEAM_POLICY_PROBE_KIND,
+            policy_canary_lane.PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1610,6 +1698,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_ARTIFIXER3D_PROBE_KIND,
             ADP_INPAINT360_INTERIORGS_PROBE_KIND,
             TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
+            TASK_EVALUATION_SCENE_CONFIGURATION_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -1744,6 +1833,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--native-task-arena-control-result")
     gpu.add_argument("--native-task-arena-policy-execution-spec")
+    gpu.add_argument("--g1-campaign-bundle-receipt")
+    gpu.add_argument("--g1-campaign-manipulation-packet")
+    gpu.add_argument("--g1-campaign-movement-packet")
+    gpu.add_argument("--g1-campaign-book-handoff")
+    gpu.add_argument("--g1-campaign-movement-handoff")
+    gpu.add_argument("--g1-campaign-navigation-authority")
+    gpu.add_argument("--g1-campaign-publisher-source")
+    gpu.add_argument("--g1-campaign-runtime-source-receipt")
+    gpu.add_argument("--g1-campaign-rights-review", action="append", default=[])
+    g1_team_lane.add_g1_team_policy_allocator_arguments(gpu)
+    policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
     gpu.add_argument(
         "--native-task-arena-retain-warm-session",
         action="store_true",
@@ -1758,6 +1858,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Sealed retained-worker receipt. With a warm-attempt authority, "
             "attach the controls bundle without allocating another GPU."
         ),
+    )
+    gpu.add_argument(
+        "--native-task-arena-terminal-feedback-adoption",
+        help="Exact checkpoint for retained bootstrap without baseline replay.",
     )
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
@@ -1872,6 +1976,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-retained-scene-render-job-dir")
     gpu.add_argument("--adp-retained-scene-render-max-hourly-rate-usd", type=float, default=2.0)
     gpu.add_argument("--adp-retained-scene-render-hard-ttl-seconds", type=int, default=10_800)
+    gpu.add_argument("--scene-configuration-bundle-receipt")
+    gpu.add_argument("--scene-configuration-attempt-authority")
+    gpu.add_argument("--scene-configuration-job-dir")
+    gpu.add_argument("--scene-configuration-queue-root")
+    gpu.add_argument(
+        "--scene-configuration-diagnostic-only",
+        action="store_true",
+        help=(
+            "Resume an immutable scene-configuration checkpoint for blocker "
+            "diagnosis only; never qualify or publish the result."
+        ),
+    )
+    gpu.add_argument(
+        "--scene-configuration-retain-warm-session",
+        action="store_true",
+        help=(
+            "Retain the one admitted diagnostic Vast worker under its independent "
+            "watchdog for immutable checkpoint-resume source overlays."
+        ),
+    )
+    gpu.add_argument(
+        "--scene-configuration-allowed-vast-machine-id",
+        action="append",
+        type=int,
+        default=[],
+        help=(
+            "Restrict a diagnostic scene-configuration allocation to a "
+            "receipt-bound set of previously proven Vast machines. Repeat the "
+            "option for multiple machines. Production qualification rejects it."
+        ),
+    )
+    gpu.add_argument("--scene-configuration-warm-session-authority")
+    gpu.add_argument("--scene-configuration-warm-session-output-root")
+    gpu.add_argument(
+        "--scene-configuration-warm-action",
+        choices=("iterate", "closeout"),
+    )
+    gpu.add_argument("--scene-configuration-warm-session-root")
+    gpu.add_argument("--scene-configuration-warm-iteration-authority")
+    gpu.add_argument("--scene-configuration-warm-closeout-receipt")
     gpu.add_argument("--adp-aura-bundle-receipt")
     gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
     gpu.add_argument("--adp-aura-exact-residual-bundle-receipt")
@@ -2094,13 +2238,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
     if args.command == "provider-reconstruction":
-        result = run_teleport_provider(
-            args,
-            load_json=_load,
-            source_checkout_blockers=_source_checkout_blockers,
-            credential_loader=load_teleport_credentials,
-        )
-        success = result.get("status") in {"dry_run_ready", "succeeded_unqualified"}
+        if args.provider == "world_labs":
+            from .website_worldlabs_allocator import run_website_worldlabs
+            result = run_website_worldlabs(args, load_json=_load, source_checkout_blockers=_source_checkout_blockers,
+                                           admission_issuer=require_paid_resource_admission)
+            success = result.get("status") in {"dry_run_ready", "submitted"}
+        else:
+            result = run_teleport_provider(
+                args,
+                load_json=_load,
+                source_checkout_blockers=_source_checkout_blockers,
+                credential_loader=load_teleport_credentials,
+            )
+            success = result.get("status") in {"dry_run_ready", "succeeded_unqualified"}
     elif args.command == "cpu-build":
         if args.execution_plane == "local":
             missing = [
@@ -2149,6 +2299,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             write_json(output, result)
             success = result.get("status") == "completed"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == NATIVE_G1_TEAM_POLICY_PROBE_KIND:
+            return g1_team_lane.dispatch_g1_team_policy_allocator_cli(args, control_recheck=_control_plane_checkout_blockers)
+        if args.probe_kind == NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND:
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            result = dispatch_g1_paid_campaign(
+                args,
+                control_identity=control_identity,
+                control_blockers=control_blockers,
+                control_recheck=_control_plane_checkout_blockers,
+            )
+            success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == SEMANTIC_TEACHER_IMAGE_EDIT_PROBE_KIND:
@@ -2394,6 +2557,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") == "dry_run_ready"
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
+        if args.probe_kind == TASK_EVALUATION_SCENE_CONFIGURATION_PROBE_KIND:
+            return run_scene_configuration_allocator_probe(
+                args,
+                control_plane_identity_probe=_control_plane_checkout_blockers,
+                expected_source_commit_probe=_adp_expected_source_commit_blockers,
+            )
         if args.probe_kind == ADP_RETAINED_SCENE_RENDER_PROBE_KIND:
             missing = [
                 name
@@ -2574,8 +2743,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "program_id": "arm-decision-proof-v1",
                     "probe_kind": ADP_RETAINED_SCENE_RENDER_PROBE_KIND,
                     "control_plane_identity": control_identity,
-                    "authority": "user_authorized_retained_scene_gpu_render",
-                    "private_scene_derived_input_only": True,
+                    "authority": ("user_authorized_source_calibration_gpu_render"
+                        if prepared_bundle and prepared_bundle.get("render_scope") == "source_calibration"
+                        else "user_authorized_retained_scene_gpu_render"),
+                    "private_scene_derived_input_only": not (prepared_bundle and prepared_bundle.get("render_scope") == "source_calibration"),
+                    "full_source_scene_content_upload_authorized": bool(prepared_bundle and prepared_bundle.get("render_scope") == "source_calibration"),
                     "raw_interiorgs_downloaded_bytes_uploaded": False,
                     "provider_training_authorized": False,
                     "publication_authorized": False,
@@ -3276,6 +3448,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
+        if args.probe_kind == policy_canary_lane.PROBE_KIND:
+            return policy_canary_lane.run_policy_canary_allocator_lane(args, _control_plane_checkout_blockers())
         if args.probe_kind in {
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,
@@ -5006,40 +5180,54 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if success else 2
         if args.probe_kind in {
             NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
+            NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
         }:
-            preflight_requested = (
-                args.probe_kind == NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND
-            )
-            controls_requested = args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
-            policy_requested = args.probe_kind == NATIVE_TASK_ARENA_POLICY_PROBE_KIND
-            policy_diagnostic_requested = (
-                args.probe_kind == NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND
-            )
+            probe_mode = native_task_arena_probe_mode(args.probe_kind)
+            preflight_requested = probe_mode == "runtime_preflight"
+            destination_requested = probe_mode == "destination_qualification"
+            controls_requested = probe_mode == "controls"
+            from .task_evaluation_control_stage_policy import CONTROLS_PAUSED
+            if controls_requested and CONTROLS_PAUSED:
+                result = {"status": "blocked", "blockers": ["task_evaluation_controls_paused_by_owner"],
+                          "provider_allocations_performed": 0, "continuing_spend_from_this_run": False}
+                write_json(Path(args.adapter_output), result)
+                print(json.dumps({"success": False}, sort_keys=True))
+                return 2
+            policy_requested = probe_mode == "policy"
+            policy_diagnostic_requested = probe_mode == "policy_diagnostic"
             any_policy_requested = policy_requested or policy_diagnostic_requested
             warm_attach_requested = bool(args.native_task_arena_warm_session)
-            missing = [
-                name
-                for name in (
-                    "native_task_arena_packet",
-                    "native_task_arena_runtime_source_packet",
-                    "adp_job_dir",
-                )
-                if not getattr(args, name, None)
-            ]
+            feedback_bootstrap_requested = bool(
+                args.native_task_arena_terminal_feedback_adoption
+            )
+            required_inputs = ("native_task_arena_packet", "native_task_arena_runtime_source_packet", "adp_job_dir")
+            missing = [name for name in required_inputs if not getattr(args, name, None)]
+            missing.extend(
+                native_feedback_runtime_blockers(args.native_task_arena_packet)
+            )
             if (controls_requested or any_policy_requested) and not (
                 args.native_task_arena_construction_result
             ):
                 missing.append("native_task_arena_construction_result")
+            if feedback_bootstrap_requested and (
+                preflight_requested or destination_requested or controls_requested or any_policy_requested or warm_attach_requested
+                or not args.native_task_arena_retain_warm_session
+            ):
+                missing.append("native_task_arena_feedback_bootstrap_mode_invalid")
             if any_policy_requested and not args.native_task_arena_control_result:
                 missing.append("native_task_arena_control_result")
             if any_policy_requested and not args.native_task_arena_policy_execution_spec:
                 missing.append("native_task_arena_policy_execution_spec")
-            if warm_attach_requested and not controls_requested:
-                missing.append("native_task_arena_warm_attach_requires_controls")
+            if warm_attach_requested and (
+                preflight_requested or destination_requested or any_policy_requested
+            ):
+                missing.append(
+                    "native_task_arena_warm_attach_requires_construction_or_controls"
+                )
             if warm_attach_requested and args.native_task_arena_retain_warm_session:
                 missing.append("native_task_arena_warm_modes_conflict")
             if warm_attach_requested and not args.native_task_arena_attempt_authority:
@@ -5158,16 +5346,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             / "native_task_arena_packet_receipt.v1.json"
                         )
                         packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
-                        bundle_loader = (
-                            load_verified_native_task_arena_runtime_preflight_bundle
-                            if preflight_requested
-                            else load_verified_native_task_arena_policy_diagnostic_bundle
-                            if policy_diagnostic_requested
-                            else load_verified_native_task_arena_policy_bundle
-                            if policy_requested
-                            else load_verified_native_task_arena_controls_bundle
-                            if controls_requested
-                            else load_verified_native_task_arena_construction_bundle
+                        bundle_loader = native_task_arena_verified_bundle_loader(
+                            args.probe_kind
                         )
                         prepared_bundle = bundle_loader(
                             args.native_task_arena_bundle_receipt,
@@ -5188,6 +5368,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ),
                             "implementation_commit": control_identity["orchestrator_source_commit"],
                         }
+                        if destination_requested:
+                            raise ValueError(
+                                "native_task_arena_destination_qualification_requires_dry_run_bundle_receipt"
+                            )
                         prepared_bundle = (
                             build_native_task_arena_runtime_preflight_bundle(
                                 **bundle_kwargs
@@ -5218,12 +5402,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 ),
                             )
                             if controls_requested
-                            else build_native_task_arena_construction_bundle(**bundle_kwargs)
+                            else build_native_task_arena_construction_bundle(
+                                **bundle_kwargs, terminal_feedback_adoption_path=args.native_task_arena_terminal_feedback_adoption
+                            )
                         )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(
                         f"native_task_arena_bundle_preparation_failed:{type(exc).__name__}"
                     )
+            blockers.extend(
+                terminal_feedback_bootstrap_blockers(
+                    packet_dir=args.native_task_arena_packet,
+                    prepared_bundle=prepared_bundle,
+                    adoption_path=args.native_task_arena_terminal_feedback_adoption,
+                )
+            )
             if (
                 any_policy_requested
                 and prepared_bundle is not None
@@ -5306,6 +5499,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     native_authority_validation = (
                         _native_authority_validation_diagnostic(exc)
                     )
+            if (
+                args.execute
+                and warm_attach_requested
+                and native_authority_validation.get("status") == "passed"
+            ):
+                try:
+                    validate_native_task_arena_warm_ssh_identity_file()
+                except ValueError:
+                    blockers.append("native_task_arena_warm_ssh_identity_invalid")
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": args.probe_kind,
@@ -5336,17 +5538,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "scenario_instance_digest": (
                     prepared_bundle.get("scenario_instance_digest") if prepared_bundle else None
                 ),
-                "execution_mode": (
-                    "runtime_preflight"
-                    if preflight_requested
-                    else "policy_diagnostic"
-                    if policy_diagnostic_requested
-                    else "policy"
-                    if policy_requested
-                    else "controls"
-                    if controls_requested
-                    else "construction_canary"
-                ),
+                "execution_mode": probe_mode,
                 "retain_warm_session": bool(
                     args.native_task_arena_retain_warm_session
                 ),
@@ -5441,7 +5633,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "blockers": exc.blockers,
                         "provider_mutations_performed": 0,
                     }
-                    write_json(Path(args.adapter_output), result)
+                    result = _write_native_task_arena_adapter_output(
+                        args.adapter_output, result
+                    )
                     print(json.dumps({"success": False}, sort_keys=True))
                     return 2
             if prepared_bundle is None:
@@ -5459,8 +5653,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         warm_attempt_authority=native_authority,
                         paid_resource_admission_grant=grant,
                         execute=args.execute,
+                        close_on_success=controls_requested,
                     )
-                    write_json(Path(args.adapter_output), result)
+                    result = _write_native_task_arena_adapter_output(
+                        args.adapter_output, result
+                    )
                     success = result.get("status") in {
                         "dry_run_ready",
                         "completed",
@@ -5470,6 +5667,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_native = (
                     run_native_task_arena_runtime_preflight_vast
                     if preflight_requested
+                    else run_native_task_arena_destination_qualification_vast
+                    if destination_requested
                     else run_native_task_arena_policy_diagnostic_vast
                     if policy_diagnostic_requested
                     else run_native_task_arena_policy_vast
@@ -5497,21 +5696,54 @@ def main(argv: Sequence[str] | None = None) -> int:
                     run_kwargs["authorize_gated_backbone"] = bool(
                         args.adp009d_authorize_gated_backbone
                     )
+                    run_kwargs["provider_runtime_environment"] = {
+                        name: os.environ[name]
+                        for name in POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES
+                        if name in os.environ
+                    }
                 if args.native_task_arena_retain_warm_session:
-                    if not controls_requested:
+                    if preflight_requested or destination_requested or any_policy_requested:
                         result = {
                             "status": "blocked",
                             "blockers": [
-                                "native_task_arena_warm_session_requires_controls"
+                                "native_task_arena_warm_session_requires_construction_or_controls"
                             ],
                             "provider_mutations_performed": 0,
                         }
-                        write_json(Path(args.adapter_output), result)
+                        result = _write_native_task_arena_adapter_output(
+                            args.adapter_output, result
+                        )
                         print(json.dumps({"success": False}, sort_keys=True))
                         return 2
                     run_kwargs["retain_warm_instance"] = True
                 result = run_native(**run_kwargs)
-            write_json(Path(args.adapter_output), result)
+                result = continue_retained_feedback_if_requested(
+                    execute=args.execute,
+                    construction_requested=not (
+                        preflight_requested
+                        or destination_requested
+                        or controls_requested
+                        or any_policy_requested
+                    ),
+                    retain_warm_session=args.native_task_arena_retain_warm_session,
+                    result=result,
+                    packet_dir=args.native_task_arena_packet,
+                    runtime_source_packet_receipt_path=(
+                        args.native_task_arena_runtime_source_packet
+                    ),
+                    prepared_bundle=prepared_bundle,
+                    native_authority=native_authority,
+                    job_dir=args.adp_job_dir,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    terminal_feedback_adoption_path=(
+                        args.native_task_arena_terminal_feedback_adoption
+                    ),
+                )
+            result = _write_native_task_arena_adapter_output(
+                args.adapter_output, result
+            )
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2

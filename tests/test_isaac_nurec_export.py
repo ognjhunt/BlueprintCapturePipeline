@@ -94,3 +94,4 @@ def test_runner_requires_ply_or_usdz(tmp_path: Path) -> None:
     )
     assert process.returncode == 2
     assert "ply" in process.stderr.lower()
+

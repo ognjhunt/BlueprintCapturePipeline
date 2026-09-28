@@ -50,6 +50,7 @@ from .wam_provider_object_store import (
 
 
 from .spend_authority_consumption_root import consumption_root
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _VAST_SINGLE_ATTEMPT_ENV, pre_mutation_offer_reselection_attempts
 
 PROBE_KIND = "adp-gaussian-excision"
 PROVIDER_BUNDLE_KIND = "adp_gaussian_excision"
@@ -96,11 +97,26 @@ EXPECTED_SUBMODULES = {
     SIMPLE_KNN_PATH: SIMPLE_KNN_COMMIT,
 }
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/gaussian-excision"
+GAUSSIAN_EXCISION_ALLOWED_GEOLOCATION_COUNTRY_CODES = ("US",)
+GAUSSIAN_EXCISION_PREFERRED_GEOLOCATION_REGEX = (
+    "california|oregon|washington|nevada|arizona|utah|idaho|montana|"
+    "wyoming|colorado|new mexico"
+)
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
-_VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+
+
+def _geolocation_policy() -> dict[str, Any]:
+    return {
+        "allowed_geolocation_country_codes": list(
+            GAUSSIAN_EXCISION_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": (
+            GAUSSIAN_EXCISION_PREFERRED_GEOLOCATION_REGEX
+        ),
+    }
 
 
 def _execution_purpose(freeze: Mapping[str, Any]) -> str:
@@ -1254,7 +1270,7 @@ def _authority_environment():
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = "0"
+        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = pre_mutation_offer_reselection_attempts()
         yield
     finally:
         for name, value in previous.items():
@@ -1311,6 +1327,7 @@ def run_gaussian_excision_vast(
             "bundle": bundle,
             "provider_mutations_performed": 0,
             "retry_cap": 0,
+            **_geolocation_policy(),
             "blockers": [],
         }
         write_json(job / "gaussian_excision_vast_result.json", result)
@@ -1451,6 +1468,12 @@ def run_gaussian_excision_vast(
                 verify_staging_urls=True,
                 require_known_supported_isaac_driver=False,
                 preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000", "A100"),
+                preferred_geolocation_regex=(
+                    GAUSSIAN_EXCISION_PREFERRED_GEOLOCATION_REGEX
+                ),
+                allowed_geolocation_country_codes=(
+                    GAUSSIAN_EXCISION_ALLOWED_GEOLOCATION_COUNTRY_CODES
+                ),
                 prefer_isaac_rt=False,
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 machine_avoidlist_path=machine_avoidlist_path,
@@ -1545,6 +1568,7 @@ def run_gaussian_excision_vast(
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": 0,
+        **_geolocation_policy(),
         **paid_attempt_binding,
         "continuing_spend_from_this_run": teardown.get(
             "continuing_spend_from_this_run"

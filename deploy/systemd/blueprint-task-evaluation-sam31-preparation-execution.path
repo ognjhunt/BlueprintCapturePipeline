@@ -1,0 +1,12 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-sam31-preparation-execution.path.json
+Description=Watch bounded Blueprint SAM preparation child jobs
+
+[Path]
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/pending/*.json
+Unit=blueprint-task-evaluation-sam31-preparation-execution.service
+
+[Install]
+WantedBy=multi-user.target

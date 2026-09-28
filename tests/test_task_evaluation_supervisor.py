@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import hashlib
 import json
+import os
 import shutil
 import sys
 from dataclasses import replace
@@ -244,6 +245,7 @@ class _FixtureAgentsSDKInvoker:
 
 def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     import agents
 
@@ -275,13 +277,24 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
         return _Result()
 
     monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    key_file = tmp_path / "openai-api-key"
+    key_file.write_text("test-only-openai-api-key\n", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY_FILE", str(key_file))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        agents,
+        "set_default_openai_key",
+        lambda key, *, use_for_tracing: captured.update(
+            file_key=key, file_key_used_for_tracing=use_for_tracing
+        ),
+    )
     monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_fake_run_sync))
     invoker = OpenAIAgentsSDKInvoker(
         OpenAIAgentsSDKConfig(
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             allow_live_invocation=True,
             tracing_disabled=True,
-            max_inference_cost_usd=1.0,
+            max_inference_cost_usd=2.0,
         )
     )
     result = invoker.invoke(
@@ -290,9 +303,12 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
             capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
             name="Blueprint Claim Interpreter",
             instructions="Return a typed proposal only.",
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             max_turns=2,
             max_output_tokens=1_000,
+            max_input_tokens=100_000,
+            max_tool_output_bytes=10_000,
+            reasoning_effort="max",
             tool_bindings=(
                 RegisteredToolBinding(
                     tool_id="inspect_fixture",
@@ -321,11 +337,18 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     assert captured["kwargs"]["max_turns"] == 2
     assert captured["kwargs"]["run_config"].trace_include_sensitive_data is False
     assert captured["kwargs"]["run_config"].tracing_disabled is True
+    assert captured["file_key"] == "test-only-openai-api-key"
+    assert captured["file_key_used_for_tracing"] is False
+    assert "OPENAI_API_KEY" not in os.environ
     assert captured["agent"].model_settings.store is False
+    assert captured["agent"].model_settings.reasoning.effort == "max"
     assert result.provider == "openai"
     assert result.sdk_version == importlib.metadata.version("openai-agents")
     assert result.usage["total_tokens"] == 12
     assert result.usage["projected_max_cost_usd"] > 0
+    assert result.usage["projected_max_cost_usd"] == pytest.approx(
+        2 * result.usage["projected_max_cost_per_request_usd"]
+    )
 
     multimodal_input = [
         {
@@ -346,7 +369,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
             capability="fixture_multimodal_review",
             name="Blueprint fixture visual reviewer",
             instructions="Return a typed fixture result only.",
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             max_turns=1,
             max_output_tokens=1_000,
             max_input_tokens=250_000,
@@ -354,7 +377,34 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
         multimodal_input,
     )
     assert captured["input"] == multimodal_input
-    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(0.64)
+    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(1.02)
+
+
+def test_live_sdk_refuses_unbounded_multi_turn_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    invoker = OpenAIAgentsSDKInvoker(
+        OpenAIAgentsSDKConfig(
+            model="gpt-6-sol",
+            allow_live_invocation=True,
+            max_inference_cost_usd=5.0,
+        )
+    )
+    spec = AgentsSDKAgentSpec(
+        run_id="unbounded-multi-turn",
+        capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
+        name="Unbounded multi-turn",
+        instructions="Return a typed proposal only.",
+        model="gpt-6-sol",
+        max_turns=2,
+        max_output_tokens=1_000,
+    )
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="agents_sdk_multi_turn_input_token_ceiling_missing",
+    ):
+        invoker.invoke(spec, "{}")
 
 
 def test_multimodal_sdk_invocation_requires_explicit_input_token_ceiling(
@@ -377,12 +427,74 @@ def test_multimodal_sdk_invocation_requires_explicit_input_token_ceiling(
                 capability="fixture_multimodal_review",
                 name="Blueprint fixture visual reviewer",
                 instructions="No provider call should occur.",
-                model="gpt-5.6-terra",
+                model="gpt-6-sol",
                 max_turns=1,
                 max_output_tokens=1_000,
             ),
             [{"role": "user", "content": [{"type": "input_text", "text": "x"}]}],
         )
+
+
+def test_multimodal_multi_turn_needs_a_declared_image_ceiling_and_still_bounds_growth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An iterating session may see the capture stills, but not unpriced ones.
+
+    Image tokenization is provider dependent, so a multimodal caller that
+    wants more than one turn declares what its payload costs. Without that
+    figure the later turns' reservation is unprovable and the call is refused;
+    with it, the ordinary growth bound applies unchanged.
+    """
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    invoker = OpenAIAgentsSDKInvoker(
+        OpenAIAgentsSDKConfig(
+            model="gpt-5.6-terra",
+            allow_live_invocation=True,
+            max_inference_cost_usd=5.0,
+        )
+    )
+    stills = [{"role": "user", "content": [
+        {"type": "input_text", "text": "Author this object."},
+        {"type": "input_image", "image_url": "data:image/png;base64,AA==", "detail": "high"},
+    ]}]
+
+    def spec(**overrides):
+        values = dict(
+            run_id="authoring-session",
+            capability="fixture_multimodal_review",
+            name="Blueprint authoring session",
+            instructions="Return a typed fixture result only.",
+            model="gpt-5.6-terra",
+            max_turns=3,
+            max_output_tokens=1_000,
+            max_input_tokens=250_000,
+            max_tool_output_bytes=8_000,
+        )
+        values.update(overrides)
+        return AgentsSDKAgentSpec(**values)
+
+    # Undeclared image payload: refused exactly as before.
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="agents_sdk_multimodal_multi_turn_context_bound_unavailable",
+    ):
+        invoker.invoke(spec(), stills)
+
+    # Declared but larger than the ceiling it must fit inside: still refused.
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="agents_sdk_multimodal_multi_turn_context_bound_unavailable",
+    ):
+        invoker.invoke(spec(max_initial_multimodal_input_tokens=250_001), stills)
+
+    # Declared and admitted past the multimodal gate, where the ordinary
+    # growth bound now judges it: a payload leaving no room for the turns it
+    # asked for is refused on growth, not on the missing declaration.
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="agents_sdk_multi_turn_context_growth_exceeds_declared_ceiling",
+    ):
+        invoker.invoke(spec(max_initial_multimodal_input_tokens=249_000), stills)
 
 
 def test_live_sdk_requires_and_enforces_inference_budget(
@@ -408,7 +520,7 @@ def test_live_sdk_requires_and_enforces_inference_budget(
                 capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
                 name="Budget test",
                 instructions="No live call should occur.",
-                model="gpt-5.6-terra",
+                model="gpt-6-sol",
                 max_turns=1,
                 max_output_tokens=1_000,
             ),
@@ -471,6 +583,77 @@ def test_live_sdk_persists_reservation_before_call_and_refuses_ambiguous_resume(
     ):
         resumed.invoke(spec, "{}")
     assert provider_calls == 1
+
+
+def test_inference_completion_is_bound_to_reserved_identity_and_release(
+    tmp_path: Path,
+) -> None:
+    audit = InferenceReservationAudit(run_root=tmp_path, run_id="bound-run")
+    policy_digest = "sha256:" + "a" * 64
+    identity = {
+        "run_id": "bound-run",
+        "capability": "claim_task_interpreter",
+        "model": "gpt-6-sol",
+        "input_digest": "sha256:" + "b" * 64,
+        "max_turns": 1,
+        "max_output_tokens": 1_000,
+        "cache_policy_digest": policy_digest,
+    }
+    reservation = {
+        "schema_version": "task_evaluation_inference_reservation.v1",
+        "reservation_id": canonical_digest(identity),
+        **identity,
+        "input_kind": "text",
+        "input_token_ceiling": 10_000,
+        "projected_max_cost_usd": 0.5,
+        "projected_max_cost_per_request_usd": 0.5,
+        "cache_policy": {"policy_digest": policy_digest, "status": "enabled"},
+        "breakpoint_digests": ["sha256:" + "c" * 64],
+        "billing_status": "worst_case_reserved_before_provider_call",
+        "proof_effect": "none",
+    }
+    reservation["inference_reservation_digest"] = canonical_digest(
+        reservation,
+        digest_field="inference_reservation_digest",
+    )
+    audit.record_reservation(reservation)
+    completion = {
+        "schema_version": "task_evaluation_inference_completion.v1",
+        "reservation_id": reservation["reservation_id"],
+        "run_id": "bound-run",
+        "capability": "claim_task_interpreter",
+        "provider": "openai",
+        "model": "gpt-6-sol",
+        "cache_policy": reservation["cache_policy"],
+        "breakpoint_digests": reservation["breakpoint_digests"],
+        "projected_max_cost_usd": 0.5,
+        "reconciled_actual_cost_usd": 0.1,
+        "released_reservation_usd": 0.4,
+        "proof_effect": "none",
+    }
+    for field, invalid_value, message in (
+        ("run_id", "other-run", "inference_completion_run_id_mismatch"),
+        ("model", "gpt-6-luna", "inference_completion_model_mismatch"),
+        ("projected_max_cost_usd", 0.4, "projected_cost_mismatch"),
+        ("released_reservation_usd", 0.3, "released_reservation_mismatch"),
+        ("cache_policy", {"policy_digest": policy_digest, "status": "disabled"}, "cache_policy_mismatch"),
+    ):
+        invalid = {**completion, field: invalid_value}
+        invalid["inference_completion_digest"] = canonical_digest(
+            invalid,
+            digest_field="inference_completion_digest",
+        )
+        with pytest.raises(InferenceReservationError, match=message):
+            audit.record_completion(invalid)
+
+    completion["inference_completion_digest"] = canonical_digest(
+        completion,
+        digest_field="inference_completion_digest",
+    )
+    audit.record_completion(completion)
+    manifest = audit.manifest()
+    assert manifest["reserved_max_cost_usd"] == pytest.approx(0.1)
+    assert manifest["projected_max_cost_usd_total"] == pytest.approx(0.5)
 
 
 class _MaliciousAgentsSDKInvoker:
@@ -2502,7 +2685,7 @@ def test_failed_live_manager_call_preserves_reservation_and_reports_unknown_bill
     monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_provider_failure))
     execution = TaskEvaluationSupervisor(
         allow_live_agents_sdk=True,
-        agent_inference_budget_usd=1.0,
+        agent_inference_budget_usd=3.0,
     ).run(
         _context(),
         output_dir=tmp_path / "failed-live-manager",
@@ -6109,3 +6292,125 @@ def test_agents_cannot_assert_measurement_admission_or_execution_controls() -> N
     for field in ("catalog_mutated", "qualification_created"):
         with pytest.raises(ValueError, match="protected_agent_control_field"):
             _reject_protected_fields({field: False})
+
+
+def _invalid_structured_sdk_fixture(tmp_path, monkeypatch, *, token_usage=True, mode="sdk"):
+    import agents
+    from agents.exceptions import ModelBehaviorError, RunErrorDetails
+    from agents.items import ModelResponse
+    from agents.usage import Usage
+    from types import SimpleNamespace
+
+    usage = Usage(requests=1, input_tokens=8 if token_usage else 0,
+                  output_tokens=4 if token_usage else 0, total_tokens=12 if token_usage else 0)
+    response = ModelResponse(output=[{
+        "id": "msg-invalid", "type": "message", "role": "assistant", "status": "completed",
+        "content": [{"type": "output_text", "text": '{"nested":"DO_NOT_LOG_SECRET', "annotations": []}],
+    }], usage=usage, response_id="resp-invalid", request_id="req-invalid")
+    context = SimpleNamespace(usage=usage)
+    run_data = RunErrorDetails(input="DO_NOT_LOG_PROMPT_SECRET", new_items=[], raw_responses=[response],
+        last_agent=None, context_wrapper=context, input_guardrail_results=[], output_guardrail_results=[])
+    error = ModelBehaviorError("invalid nested JSON DO_NOT_LOG_SECRET")
+    error.run_data = run_data
+    calls = []
+    def fake_run(*args, **kwargs):
+        calls.append(True)
+        if mode == "transport":
+            # Prior completed turns cannot settle a later transport failure.
+            transport = RuntimeError("transport failed")
+            transport.run_data = run_data
+            raise transport
+        if mode == "validation":
+            return SimpleNamespace(final_output={"invalid": True}, context_wrapper=context, raw_responses=[response])
+        raise error
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
+    monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(fake_run))
+    audit = InferenceReservationAudit(run_root=tmp_path, run_id="invalid-structured")
+    invoker = OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(allow_live_invocation=True, max_inference_cost_usd=.03))
+    invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
+        record_completion=audit.record_completion, restored_reserved_cost_usd=0.)
+    spec = AgentsSDKAgentSpec(run_id="invalid-structured", capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
+        name="Invalid structured output accounting", instructions="Typed output", model="gpt-6-sol",
+        max_turns=1, max_output_tokens=1000)
+    return invoker, audit, spec, error, run_data, calls
+
+
+@pytest.mark.parametrize("mode", ["sdk", "validation"])
+def test_invalid_structured_provider_response_records_cost_without_output_claim(tmp_path, monkeypatch, mode):
+    from agents.exceptions import ModelBehaviorError
+    from pydantic import ValidationError
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch, mode=mode)
+    with pytest.raises((ModelBehaviorError, ValidationError)):
+        invoker.invoke(spec, "fixture")
+    manifest = audit.manifest()
+    assert manifest["in_flight_unknown_count"] == 0
+    completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
+    assert completion["status"] == completion["provider_outcome"] == "invalid_structured_output"
+    assert completion["reconciled_actual_cost_usd"] == pytest.approx(.000112)
+    assert completion["released_reservation_usd"] > 0
+    assert completion["cost_basis"] == "actual_token_usage"
+    assert completion["usage"]["cost_is_actual"] is True
+    assert completion["raw_response_metadata"][0]["response_id"] == "resp-invalid"
+    assert completion["raw_response_metadata"][0]["raw_response_digest"].startswith("sha256:")
+    assert "structured_output_digest" not in completion
+    assert completion["proof_effect"] == "none"
+    assert "DO_NOT_LOG" not in json.dumps(completion)
+    assert completion["inference_completion_digest"] == canonical_digest(completion, digest_field="inference_completion_digest")
+    with pytest.raises(InferenceReservationError, match="prior_inference_reservation"):
+        invoker.invoke(spec, "fixture")
+    assert len(calls) == 1
+
+
+def test_invalid_structured_response_unknown_usage_is_charged_full_upper_bound(tmp_path, monkeypatch):
+    from agents.exceptions import ModelBehaviorError
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch, token_usage=False)
+    with pytest.raises(ModelBehaviorError):
+        invoker.invoke(spec, "fixture")
+    completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
+    assert completion["reconciled_actual_cost_usd"] == completion["projected_max_cost_usd"] > 0
+    assert completion["observed_actual_cost_usd"] is None
+    assert completion["released_reservation_usd"] == 0
+    assert completion["cost_basis"] == "reserved_upper_bound"
+    assert completion["usage"]["cost_is_actual"] is False
+    with pytest.raises(AgentsSDKInvocationBlocked, match="budget_ceiling_exceeded"):
+        invoker.invoke(spec, "distinct bounded repair")
+    assert len(calls) == 1
+
+
+def test_invalid_structured_accounting_never_settles_transport_or_missing_run_data(tmp_path, monkeypatch):
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch, mode="transport")
+    with pytest.raises(RuntimeError, match="transport failed"):
+        invoker.invoke(spec, "fixture")
+    assert audit.manifest()["in_flight_unknown_count"] == 1
+    assert not list(audit.completed_root.glob("*.json"))
+    from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import _invalid_output_completion
+    assert _invalid_output_completion(None, error, {}) is None
+
+
+def test_invalid_structured_cost_overrun_blocks_followup_even_if_audit_refuses_receipt(tmp_path, monkeypatch):
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch)
+    usage = run_data.context_wrapper.usage
+    usage.input_tokens, usage.output_tokens, usage.total_tokens = 1_000_000, 1000, 1_001_000
+    with pytest.raises(InferenceReservationError, match="exceeds_reservation"):
+        invoker.invoke(spec, "fixture")
+    assert audit.manifest()["in_flight_unknown_count"] == 1
+    assert invoker._reserved_cost_usd > invoker.config.max_inference_cost_usd
+    with pytest.raises(AgentsSDKInvocationBlocked, match="budget_ceiling_exceeded"):
+        invoker.invoke(spec, "distinct repair")
+    assert len(calls) == 1
+
+
+def test_invalid_structured_partial_aggregate_usage_cannot_release_reservation(tmp_path, monkeypatch):
+    import copy
+    from agents.exceptions import ModelBehaviorError
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch)
+    extra_response = copy.deepcopy(run_data.raw_responses[0])
+    extra_response.response_id = "resp-second-unaccounted"
+    run_data.raw_responses.append(extra_response)
+    with pytest.raises(ModelBehaviorError):
+        invoker.invoke(spec, "fixture")
+    completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
+    assert completion["cost_basis"] == "reserved_upper_bound"
+    assert completion["released_reservation_usd"] == 0
+    assert completion["reconciled_actual_cost_usd"] == completion["projected_max_cost_usd"]

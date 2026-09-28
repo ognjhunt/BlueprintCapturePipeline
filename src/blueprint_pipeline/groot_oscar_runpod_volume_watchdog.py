@@ -239,6 +239,8 @@ def watchdog(*, state_path: Path) -> int:
                         "status": "PASS",
                         "provider_absence_confirmed": True,
                         "instance_id": refreshed_state.get("volume_id"),
+                        "allocation_id": refreshed_state.get("volume_id"),
+                        "provider": "runpod",
                     },
                 )
             reconciliation = build_paid_provider_lane_reconciliation(

@@ -5,21 +5,192 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline.native_task_episode_environment import (
+    NativeRigidScoringEnvironment,
     NativeTaskEpisodeEnvironmentError,
     build_native_task_episode_environment,
 )
+
+
+class _RigidEpisodeEnvironment:
+    def read_object_sample(self):
+        return {
+            "task_object_pose_world": [1.0, 2.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+            "gripper_width_m": 0.08,
+        }
+
+    def reset(self):
+        return None
+
+
+class _RigidNativeReadback:
+    def __init__(self, **overrides):
+        self.overrides = overrides
+
+    def read_task_sample(self):
+        return {
+            "task_scoring_pose_world": [
+                1.1,
+                2.1,
+                0.8,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            "task_robot_contact_peak_force_n": 0.0,
+            "task_support_contact_peak_force_n": 1.0,
+            "task_scene_collision_peak_force_n": 0.0,
+            "robot_scene_contact_peak_force_n": 0.0,
+            "robot_task_forbidden_collision_peak_force_n": 0.0,
+            "locked_joint_containment_violation": False,
+            **self.overrides,
+        }
+
+
+def _rigid_scoring_task_spec():
+    return {
+        "task_contact_minimum_force_n": 0.5,
+        "collision_failure_minimum_force_n": 5.0,
+        "workspace_position_bounds_world_m": {
+            "minimum": [0.0, 1.0, 0.7],
+            "maximum": [2.0, 3.0, 1.2],
+        },
+    }
+
+
+def test_rigid_scoring_environment_joins_native_safety_and_support_readback():
+    base = _RigidEpisodeEnvironment()
+    environment = NativeRigidScoringEnvironment(
+        environment=base,
+        task_readback=_RigidNativeReadback(),
+        task_spec=_rigid_scoring_task_spec(),
+    )
+
+    sample = environment.read_object_sample()
+
+    assert sample["task_object_pose_world"] == [
+        1.1,
+        2.1,
+        0.8,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    assert sample["task_contact_active"] is False
+    assert sample["support_contact_active"] is True
+    assert sample["robot_collision_failure"] is False
+    assert sample["forbidden_robot_task_collision_failure"] is False
+    assert sample["scene_collision_failure"] is False
+    assert sample["containment_violation"] is False
+    assert sample["locked_joint_containment_violation"] is False
+    assert sample["collision_failure_minimum_force_n"] == 5.0
+    assert environment.reset() is None
+
+
+def test_rigid_scoring_environment_retains_measured_contact_pair_identity():
+    pairs = [
+        {
+            "robot_link_id": "panda_link7",
+            "task_link_id": "mug_body",
+            "sensor_instance_id": "forbidden__panda_link7__mug_body",
+        }
+    ]
+    environment = NativeRigidScoringEnvironment(
+        environment=_RigidEpisodeEnvironment(),
+        task_readback=_RigidNativeReadback(
+            robot_task_forbidden_contact_pairs=pairs
+        ),
+        task_spec=_rigid_scoring_task_spec(),
+    )
+
+    sample = environment.read_object_sample()
+
+    assert sample["robot_task_forbidden_contact_pairs"] == pairs
+
+
+def test_rigid_scoring_environment_refuses_missing_native_safety_channel():
+    environment = NativeRigidScoringEnvironment(
+        environment=_RigidEpisodeEnvironment(),
+        task_readback=_RigidNativeReadback(
+            robot_task_forbidden_collision_peak_force_n=None
+        ),
+        task_spec=_rigid_scoring_task_spec(),
+    )
+
+    with pytest.raises(
+        NativeTaskEpisodeEnvironmentError,
+        match="native_task_rigid_scoring_sample_invalid",
+    ):
+        environment.read_object_sample()
+
+
+def _initial_support_environment():
+    spec = _rigid_scoring_task_spec()
+    spec.update(start_pose_world=[1.1, 2.1, 0.8, 0., 0., 0., 1.],
+        minimum_lift_m=0.05, reset_translation_tolerance_m=0.002,
+        maximum_task_contact_force_n=10., initial_source_support={
+            "scene_prim_paths": ["/Scene/cabinet"],
+            "support_plane_digest": "sha256:" + "a" * 64,
+            "contact_permission": "initial_pickup_until_first_separation_or_lift"})
+    readback = _RigidNativeReadback(task_initial_support_contact_peak_force_n=0.,
+                                   task_support_contact_peak_force_n=0.)
+    return NativeRigidScoringEnvironment(environment=_RigidEpisodeEnvironment(),
+        task_readback=readback, task_spec=spec), readback
+
+
+def test_initial_source_support_allows_pickup_but_not_return_after_separation():
+    environment, readback = _initial_support_environment()
+    # An initialized zero-force reset sample does not consume pickup permission.
+    assert environment.read_object_sample()["initial_source_support_contact_permitted"]
+    readback.overrides["task_initial_support_contact_peak_force_n"] = 6.
+    initial = environment.read_object_sample()
+    assert initial["initial_source_support_contact_active"]
+    assert not initial["scene_collision_failure"]
+    assert not initial["support_contact_active"]  # Destination remains tray-only.
+    assert initial["task_initial_support_contact_peak_force_n"] == 6.
+    readback.overrides["task_initial_support_contact_peak_force_n"] = 0.
+    assert not environment.read_object_sample()["initial_source_support_contact_permitted"]
+    readback.overrides["task_initial_support_contact_peak_force_n"] = 6.
+    returned = environment.read_object_sample()
+    assert returned["initial_source_support_collision_failure"]
+    assert returned["scene_collision_failure"]
+    assert returned["task_scene_collision_peak_force_n"] == 6.
+    assert returned["task_non_support_scene_collision_peak_force_n"] == 0.
+    environment.reset()
+    assert not environment.read_object_sample()["scene_collision_failure"]
+
+
+@pytest.mark.parametrize("mutation", ["other_background", "excess_force", "lift", "missing", "nan"])
+def test_initial_support_never_hides_forbidden_or_unmeasured_contacts(mutation):
+    environment, readback = _initial_support_environment()
+    readback.overrides["task_initial_support_contact_peak_force_n"] = 6.
+    if mutation == "other_background":
+        readback.overrides["task_scene_collision_peak_force_n"] = 6.
+    elif mutation == "excess_force":
+        readback.overrides["task_initial_support_contact_peak_force_n"] = 11.
+    elif mutation == "lift":
+        readback.overrides["task_scoring_pose_world"] = [1.1, 2.1, .86, 0., 0., 0., 1.]
+    else:
+        readback.overrides["task_initial_support_contact_peak_force_n"] = None if mutation == "missing" else float("nan")
+        with pytest.raises(NativeTaskEpisodeEnvironmentError, match="initial_support_readback"):
+            environment.read_object_sample()
+        return
+    assert environment.read_object_sample()["scene_collision_failure"]
 
 
 class _Servo:
     def __init__(self):
         self.reset_count = 0
         self.calls = []
+        self.body_pose = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+        self.grasp_frame_pose = [1.0, 2.0, 3.1, 0.0, 0.0, 0.0, 1.0]
 
     def current_body_pose_world(self):
-        return [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+        return list(self.body_pose)
 
     def current_grasp_frame_pose_world(self):
-        return [1.0, 2.0, 3.1, 0.0, 0.0, 0.0, 1.0]
+        return list(self.grasp_frame_pose)
 
     def current_gripper_pad_readback(self):
         return {
@@ -100,10 +271,19 @@ class _WritableArticulation:
 
 
 def _built(task_kind: str):
+    camera = lambda position: SimpleNamespace(  # noqa: E731
+        data=SimpleNamespace(
+            pos_w=[list(position)],
+            quat_w_opengl=[[0.0, 0.0, 0.0, 1.0]],
+        )
+    )
     scene = {
         "robot": object(),
         "bound_task_asset": object(),
         "robot_joint_wrench": object(),
+        "arena_external_sensor": camera([4.0, 5.0, 6.0]),
+        "robot_wrist_sensor": camera([1.2, 2.0, 3.2]),
+        "review_sensor": camera([7.0, 8.0, 9.0]),
     }
     env = SimpleNamespace(
         unwrapped=SimpleNamespace(
@@ -112,13 +292,23 @@ def _built(task_kind: str):
         ),
         reset=lambda *, seed: None,
     )
+    plan = {
+        "task_kind": task_kind,
+        "scenario": {"seed": 17},
+        "cadence": {"control_frequency_hz": 15.0},
+    }
+    if task_kind == "rigid_pick_place":
+        plan["task_spec"] = {
+            "interaction_affordance": {
+                "asset_root_from_scoring_frame": {
+                    "position_m": [0.0, 0.0, 0.06400000303983688],
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                }
+            }
+        }
     return SimpleNamespace(
         env=env,
-        plan={
-            "task_kind": task_kind,
-            "scenario": {"seed": 17},
-            "cadence": {"control_frequency_hz": 15.0},
-        },
+        plan=plan,
         scene_asset_names={"task_object": "bound_task_asset"},
         camera_scene_names={
             "external": "arena_external_sensor",
@@ -166,6 +356,62 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
     assert receipt["task_state_source"] == expected_source
     assert receipt["camera_scene_names"] == built.camera_scene_names
     assert adapter.kwargs["camera_scene_names"] == receipt["camera_scene_names"]
+    if task_kind == "rigid_pick_place":
+        expected_offset = {
+            "position_m": [0.0, 0.0, 0.06400000303983688],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        }
+        assert adapter.kwargs["rigid_task_scoring_frame_offset"] == expected_offset
+        assert receipt["rigid_task_pose_binding"] == {
+            "asset_root_pose_retained": True,
+            "task_object_pose_world_source": (
+                "asset_root_pose_world_composed_with_interaction_affordance_"
+                "asset_root_from_scoring_frame"
+            ),
+            "scoring_frame_offset": expected_offset,
+        }
+    else:
+        assert adapter.kwargs["rigid_task_scoring_frame_offset"] is None
+        assert receipt["rigid_task_pose_binding"] is None
+    camera_pose = adapter.kwargs["camera_pose_callback"]
+    assert camera_pose("arena_external_sensor") is None
+    reset_camera_position, reset_camera_quaternion = camera_pose(
+        "robot_wrist_sensor"
+    )
+    assert reset_camera_position == pytest.approx([1.2, 2.0, 3.2])
+    assert reset_camera_quaternion == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    servo.body_pose = [2.0, 2.5, 3.0, 0.0, 0.0, 0.0, 1.0]
+    servo.grasp_frame_pose = [2.0, 2.5, 3.1, 0.0, 0.0, 0.0, 1.0]
+    moved_position, moved_quaternion = camera_pose("robot_wrist_sensor")
+    assert moved_position == pytest.approx([2.2, 2.5, 3.2])
+    assert moved_quaternion == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    half_sqrt = 2**-0.5
+    servo.body_pose = [
+        2.0,
+        2.5,
+        3.0,
+        0.0,
+        0.0,
+        half_sqrt,
+        half_sqrt,
+    ]
+    rotated_position, rotated_quaternion = camera_pose("robot_wrist_sensor")
+    assert rotated_position == pytest.approx([2.0, 2.7, 3.2])
+    assert rotated_quaternion == pytest.approx(
+        [0.0, 0.0, half_sqrt, half_sqrt]
+    )
+    assert receipt["camera_world_pose_bindings"]["wrist"] == {
+        "scene_name": "robot_wrist_sensor",
+        "source": (
+            "live_controlled_body_plus_reset_measured_rigid_mount_offset"
+        ),
+        "recomputed_each_observation": True,
+        "sensor_buffer_static_pose_workaround": True,
+        "mount_offset_position_controlled_body_m": pytest.approx([0.2, 0.0, 0.2]),
+        "mount_offset_quaternion_controlled_body_xyzw": pytest.approx(
+            [0.0, 0.0, 0.0, 1.0]
+        ),
+    }
     assert (adapter.kwargs["rigid_task_object"] is None) == (
         task_kind == "articulated_open_close"
     )
@@ -236,6 +482,34 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
     assert servo.calls[-1]["preferred_posture_joint_positions_rad"] == [
         0.1
     ] * 7
+
+
+def test_rigid_factory_refuses_a_missing_scoring_frame_transform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    built = _built("rigid_pick_place")
+    del built.plan["task_spec"]["interaction_affordance"][
+        "asset_root_from_scoring_frame"
+    ]
+
+    with pytest.raises(
+        NativeTaskEpisodeEnvironmentError,
+        match="native_task_episode_rigid_scoring_frame_transform_invalid",
+    ):
+        build_native_task_episode_environment(
+            built=built,
+            gripper_convention={
+                "closed_command": 1.0,
+                "open_command": 0.0,
+                "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+            },
+            servo=_Servo(),
+            task_readback=None,
+            to_tensor=lambda value: value,
+        )
 
 
 def test_articulated_factory_requires_native_task_readback() -> None:
@@ -546,3 +820,60 @@ def test_factory_rejects_an_ambiguous_gripper_probe() -> None:
             task_readback=None,
             to_tensor=lambda value: value,
         )
+
+
+def _uncapped_permitted_initial_support():
+    spec = _rigid_scoring_task_spec()
+    spec.update(collision_failure_minimum_force_n=1., start_pose_world=[1.1,2.1,.8,0.,0.,0.,1.],
+        minimum_lift_m=.1, reset_translation_tolerance_m=.002,
+        initial_source_support={'scene_prim_paths':['/Scene/cabinet'],
+            'contact_permission':'initial_pickup_until_first_separation_or_lift'},
+        task_success_contract={'criteria':{'temporal_invariants':{'maximum_task_contact_force_n':20.,
+            'forbidden_contact_classes':['robot_background','object_background']}}})
+    native = _RigidNativeReadback(task_initial_support_contact_peak_force_n=0.,task_support_contact_peak_force_n=0.)
+    environment = NativeRigidScoringEnvironment(environment=_RigidEpisodeEnvironment(),task_readback=native,task_spec=spec)
+    return environment,native
+
+
+def test_exact_permitted_initial_support_does_not_inherit_forbidden_contact_threshold():
+    environment,native = _uncapped_permitted_initial_support()
+    assert not environment.read_object_sample()['scene_collision_failure']
+    # Retained V27 book weight: first settling contact is11.732N, while the
+    # separately authored forbidden-contact threshold remains1N.
+    native.overrides.update(task_initial_support_contact_peak_force_n=11.732293128967285,
+                            task_scoring_pose_world=[1.1,2.1,.7980001,0.,0.,0.,1.])
+    sample = environment.read_object_sample()
+    assert sample['initial_source_support_contact_permitted']
+    assert not sample['initial_source_support_collision_failure']
+    assert not sample['scene_collision_failure']
+    assert sample['task_initial_support_contact_peak_force_n']==11.732293128967285
+    assert sample['task_scene_collision_peak_force_n']==0.
+    assert sample['collision_failure_minimum_force_n']==1.
+    assert 'object_background' not in sample['contact_classes_active']
+
+
+@pytest.mark.parametrize('channel,flag', [('task_scene_collision_peak_force_n','scene_collision_failure'),
+                                        ('robot_scene_contact_peak_force_n','robot_collision_failure')])
+def test_permitted_support_never_hides_a_two_newton_forbidden_collision(channel,flag):
+    environment,native = _uncapped_permitted_initial_support()
+    native.overrides.update(task_initial_support_contact_peak_force_n=11.732293128967285,**{channel:2.})
+    sample=environment.read_object_sample()
+    assert sample[flag] is True
+    assert sample['collision_failure_minimum_force_n']==1.
+
+
+@pytest.mark.parametrize('close_permission', ['separation','lift'])
+def test_uncapped_initial_support_becomes_forbidden_after_pickup(close_permission):
+    environment,native = _uncapped_permitted_initial_support()
+    native.overrides['task_initial_support_contact_peak_force_n']=11.732293128967285
+    assert not environment.read_object_sample()['scene_collision_failure']
+    if close_permission=='separation':
+        native.overrides['task_initial_support_contact_peak_force_n']=0.
+    else:
+        native.overrides['task_scoring_pose_world']=[1.1,2.1,.91,0.,0.,0.,1.]
+    assert not environment.read_object_sample()['initial_source_support_contact_permitted']
+    native.overrides.update(task_initial_support_contact_peak_force_n=11.732293128967285,
+                            task_scoring_pose_world=[1.1,2.1,.8,0.,0.,0.,1.])
+    returned=environment.read_object_sample()
+    assert returned['scene_collision_failure']
+    assert returned['task_scene_collision_peak_force_n']==11.732293128967285

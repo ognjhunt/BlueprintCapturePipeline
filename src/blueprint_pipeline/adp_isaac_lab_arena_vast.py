@@ -12,7 +12,7 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Sequence
-from typing import Any, Mapping
+from typing import Any, Mapping, Callable
 
 from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
 from .adp_isaac_lab_arena_request import build_arena_worker_request
@@ -37,6 +37,7 @@ from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
 )
+from .vast_create_failure_diagnosis import definite_create_refusal_without_instance
 from .vast_provider_adapter import (
     DEFAULT_VAST_API_KEY_FILE,
     VAST_API_KEY_FILE_ENV,
@@ -391,6 +392,7 @@ def run_arena_native_control_vast(
     job_dir: str | Path,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
+    pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
     prepared_bundle: Mapping[str, Any] | None = None,
     machine_avoidlist_path: str | Path | None = None,
     max_hourly_rate_usd: float = 1.00,
@@ -428,6 +430,10 @@ def run_arena_native_control_vast(
     retain_warm_instance: bool = False,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    provider_runtime_environment: Mapping[str, str] | None = None,
+    runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
+    paired_witness_binding: Mapping[str, Any] | None = None,
+    allowed_geolocation_country_codes: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog."""
 
@@ -596,6 +602,7 @@ def run_arena_native_control_vast(
         key_prefix=os.getenv("BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", object_store_key_prefix),
         expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
         generated_at=generated,
+        **({"paired_witness_binding": paired_witness_binding} if paired_witness_binding is not None else {}),
     )
     if staging.get("status") != "completed":
         result = {
@@ -609,6 +616,16 @@ def run_arena_native_control_vast(
         }
         _write_run_result(job, attempt_root, result)
         return result
+
+    paired_secret_paths = {}
+    if paired_witness_binding is not None:
+        from .native_task_arena_paired_witness_staging import paired_witness_secret_paths
+        paired_secret_paths = paired_witness_secret_paths(staging_dir, staging, paired_witness_binding)
+    provider_secret_paths = dict(runtime_secret_file_paths or {})
+    if set(provider_secret_paths) & set(paired_secret_paths):
+        cleanup_staged_wam_provider_objects(staging_dir)
+        raise ValueError("adp_arena_runtime_secret_name_collision")
+    provider_secret_paths.update(paired_secret_paths)
 
     runtime_dependency_dir = attempt_root / "runtime_dependency_cache"
     runtime_source_value = bundle.get("runtime_source_packet")
@@ -698,6 +715,7 @@ def run_arena_native_control_vast(
             gated_backbone_authorized=forward_hf_token
         ):
             adapter = run_vast_provider_adapter(
+                pre_provider_mutation_hook=pre_provider_mutation_hook,
                 job_dir=provider_run,
                 mode="live-startup-probe",
                 allow_vast_api_call=True,
@@ -711,6 +729,7 @@ def run_arena_native_control_vast(
                 isaac_image=container_image,
                 ngc_image_login_mode="always",
                 provider_bundle=str(bundle_path),
+                expected_provider_bundle_sha256=str(bundle["bundle_sha256"]),
                 provider_bundle_url=bundle_url,
                 provider_output_put_url=output_put_url,
                 provider_output_get_url=output_get_url,
@@ -760,6 +779,11 @@ def run_arena_native_control_vast(
                 expected_provider_upload_bytes=expected_provider_upload_bytes,
                 retain_native_task_arena_warm_session=retain_warm_instance,
                 stale_offer_create_retry_limit=stale_offer_create_retry_limit,
+                provider_runtime_environment=provider_runtime_environment,
+                **({"runtime_secret_file_paths": provider_secret_paths} if provider_secret_paths else {}),
+                allowed_geolocation_country_codes=(
+                    allowed_geolocation_country_codes
+                ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
@@ -791,6 +815,7 @@ def run_arena_native_control_vast(
                     ),
                     provider_allocation_impossible=(
                         adapter.get("provider_create_attempted") is False
+                        or definite_create_refusal_without_instance(adapter)
                     ),
                 )
         finally:
@@ -902,6 +927,7 @@ def run_arena_native_control_vast(
             "runtime_dependency_cache_ready": warm_evidence.get(
                 "runtime_dependency_cache_ready"
             ),
+            "remote_work_dir": warm_evidence.get("remote_work_dir"),
             "ssh_host": warm_evidence.get("ssh_host"),
             "ssh_port": warm_evidence.get("ssh_port"),
             "watchdog_pid": retention.get("watchdog_pid"),
@@ -964,6 +990,13 @@ def run_arena_native_control_vast(
         "protocol_digest": bundle.get("protocol_digest"),
         "bundle_sha256": bundle.get("bundle_sha256"),
         "native_control_result_path": extracted.get("result_path"),
+        # The launch receipt digests this wrapper, so bind the self-sealed
+        # native result into it before a progression worker can follow the
+        # local path.  A self-digest on the target alone is replaceable.
+        "native_control_result_digest": (
+            (extracted.get("execution") or {}).get("result_digest")
+            or (extracted.get("execution") or {}).get("observation_digest")
+        ),
         "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
         "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),
         "artifact_manifest_path": str(artifact_manifest_path),

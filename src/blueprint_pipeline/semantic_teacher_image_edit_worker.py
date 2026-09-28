@@ -256,8 +256,9 @@ def _multipart(
     *,
     fields: Mapping[str, Any],
     image_bytes: bytes,
-    mask_bytes: bytes,
+    mask_bytes: bytes | None,
     boundary: str,
+    reference_images: Sequence[bytes] = (),
 ) -> bytes:
     chunks: list[bytes] = []
     for name, raw_value in sorted(fields.items()):
@@ -270,10 +271,13 @@ def _multipart(
                 b"\r\n",
             )
         )
-    for field_name, filename, payload in (
-        ("image", "input.png", image_bytes),
-        ("mask", "mask.png", mask_bytes),
-    ):
+    media = [("image[]" if reference_images else "image", "input.png", image_bytes)]
+    media.extend(("image[]", f"reference-{i}.png", data) for i, data in enumerate(reference_images))
+    # Without a mask the editor may change the whole first image; the caller's
+    # prompt names what to remove.
+    if mask_bytes is not None:
+        media.append(("mask", "mask.png", mask_bytes))
+    for field_name, filename, payload in media:
         chunks.extend(
             (
                 f"--{boundary}\r\n".encode(),
@@ -374,13 +378,17 @@ def _execute_frame_request(
     prompt: str,
     request_digest: str,
     image_bytes: bytes,
-    mask_bytes: bytes,
+    mask_bytes: bytes | None,
     expected_size: tuple[int, int],
     token: str,
     opener: Callable[..., Any],
+    reference_images: Sequence[bytes] = (),
 ) -> dict[str, Any]:
     """Make one no-retry provider request and return only bounded result data."""
 
+    if len(reference_images) > 7 or any(not isinstance(data, bytes) or len(data) > MAX_INPUT_PNG_BYTES
+                                      for data in reference_images):
+        raise SemanticTeacherImageEditWorkerError("semantic_teacher_reference_images_invalid")
     fields = {
         **dict(execution["default_options"]),
         "model": execution["model_snapshot"],
@@ -393,6 +401,7 @@ def _execute_frame_request(
         image_bytes=image_bytes,
         mask_bytes=mask_bytes,
         boundary=boundary,
+        reference_images=reference_images,
     )
     http_request = Request(
         str(execution["endpoint"]),
@@ -507,6 +516,10 @@ def execute_semantic_teacher_image_edits(
     max_parallel_requests = request.get(
         "max_parallel_requests", LEGACY_DEFAULT_PARALLEL_REQUESTS
     )
+    # Optional, like max_parallel_requests above, so every already-sealed
+    # request keeps its digest. When absent the loop behaves exactly as before.
+    maximum_cost_usd = request.get("maximum_cost_usd")
+    expected_request_cost_usd = request.get("expected_request_cost_usd")
     options_valid = _valid_default_options(default_options)
     pricing = execution.get("pricing_binding") if isinstance(execution, Mapping) else None
     rates = pricing.get("usd_per_million_tokens") if isinstance(pricing, Mapping) else None
@@ -557,6 +570,24 @@ def execute_semantic_teacher_image_edits(
         or isinstance(max_parallel_requests, bool)
         or not isinstance(max_parallel_requests, int)
         or not 1 <= max_parallel_requests <= MAX_PARALLEL_REQUESTS
+        or (
+            maximum_cost_usd is not None
+            and (
+                isinstance(maximum_cost_usd, bool)
+                or not isinstance(maximum_cost_usd, (int, float))
+                or not math.isfinite(float(maximum_cost_usd))
+                or float(maximum_cost_usd) <= 0
+            )
+        )
+        or (
+            expected_request_cost_usd is not None
+            and (
+                isinstance(expected_request_cost_usd, bool)
+                or not isinstance(expected_request_cost_usd, (int, float))
+                or not math.isfinite(float(expected_request_cost_usd))
+                or float(expected_request_cost_usd) <= 0
+            )
+        )
     ):
         raise SemanticTeacherImageEditWorkerError(
             "semantic_teacher_runtime_request_invalid"
@@ -630,19 +661,50 @@ def execute_semantic_teacher_image_edits(
                 raise SemanticTeacherImageEditWorkerError(
                     "semantic_teacher_runtime_frame_media_invalid"
                 ) from exc
+            frame_role = frame.get("frame_role", "semantic_edit")
+            with Image.open(BytesIO(mask_bytes)) as mask_image:
+                encoding = execution.get("mask_encoding", "rgba_alpha_zero_edit_region_png")
+                if encoding == "rgba_alpha_zero_edit_region_png":
+                    histogram = mask_image.convert("RGBA").getchannel("A").histogram()
+                    edit_pixels = histogram[0]
+                elif encoding in {"binary_white_edit_region_png", "binary_black_edit_region_png"}:
+                    histogram = mask_image.convert("L").histogram()
+                    edit_pixels = histogram[255 if encoding == "binary_white_edit_region_png" else 0]
+                else:
+                    raise SemanticTeacherImageEditWorkerError("semantic_teacher_runtime_frame_media_invalid")
             if (
                 image_format != "PNG"
                 or mask_format != "PNG"
                 or mask_size != expected_size
                 or expected_size[0] * expected_size[1] > MAX_IMAGE_PIXELS
-                or f"{expected_size[0]}x{expected_size[1]}"
-                not in execution["supported_output_sizes"]
+                or frame_role not in {"semantic_edit", "source_preservation"}
+                or any(histogram[1:255])
+                or bool(edit_pixels) != (frame_role == "semantic_edit")
+                or (frame_role == "semantic_edit" and f"{expected_size[0]}x{expected_size[1]}"
+                    not in execution["supported_output_sizes"])
             ):
                 raise SemanticTeacherImageEditWorkerError(
                     "semantic_teacher_runtime_frame_media_invalid"
                 )
             prepared_frames.append((frame, image_bytes, mask_bytes, expected_size))
         prepared_tasks.append((task_id, prepared_frames))
+    if any(not any(frame.get("frame_role", "semantic_edit") == "semantic_edit"
+                   for frame, *_rest in frames) for _task_id, frames in prepared_tasks):
+        raise SemanticTeacherImageEditWorkerError("semantic_teacher_runtime_edit_support_missing")
+    from .semantic_teacher_candidate_reuse import load_retained_candidates
+    try:
+        retained_candidates = load_retained_candidates(request=request, request_root=root)
+        for _task_id, frames in prepared_tasks:
+            for frame, _image, _mask, size in frames:
+                retained = retained_candidates.get((_task_id, frame["camera_id"]))
+                if retained is not None:
+                    with Image.open(retained["path"]) as image:
+                        if image.format != "PNG" or image.size != size:
+                            raise ValueError("semantic_teacher_retained_candidate_shape_invalid")
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise SemanticTeacherImageEditWorkerError(
+            "semantic_teacher_retained_candidate_invalid"
+        ) from exc
     output = Path(output_root).expanduser().resolve()
     if output.is_symlink() or (output.exists() and any(output.iterdir())):
         raise SemanticTeacherImageEditWorkerError(
@@ -651,11 +713,24 @@ def execute_semantic_teacher_image_edits(
     output.mkdir(parents=True, exist_ok=True)
     writer = progress_writer or (lambda line: print(line, flush=True))
     frame_jobs: list[dict[str, Any]] = []
+    preserved_frames: dict[tuple[int, int], Path] = {}
+    reused_frames: dict[tuple[int, int], tuple[Path, Mapping[str, Any]]] = {}
     for task_index, (task_id, frames) in enumerate(prepared_tasks):
         (output / "tasks" / task_id).mkdir(parents=True)
         for frame_index, (frame, image_bytes, mask_bytes, expected_size) in enumerate(
             frames
         ):
+            if frame.get("frame_role", "semantic_edit") == "source_preservation":
+                destination = output / "tasks" / task_id / f"preserved-{frame_index:05d}.png"
+                destination.write_bytes(image_bytes)
+                preserved_frames[(task_index, frame_index)] = destination
+                continue
+            retained = retained_candidates.get((task_id, frame["camera_id"]))
+            if retained is not None:
+                destination = output / "tasks" / task_id / f"retained-{frame_index:05d}.png"
+                destination.write_bytes(retained["path"].read_bytes())
+                reused_frames[(task_index, frame_index)] = (destination, retained["lineage"])
+                continue
             frame_jobs.append(
                 {
                     "global_frame_index": len(frame_jobs),
@@ -669,11 +744,34 @@ def execute_semantic_teacher_image_edits(
                 }
             )
 
+    # A partial pass is worth nothing: five of eight edited frames cannot feed
+    # the appearance path, so money spent up to a mid-pass ceiling is simply
+    # lost (run ...-163900Z burned $1.10 on five frames before its $1.00 cap
+    # fired). When the caller knows the expected per-request cost, a cap that
+    # cannot cover every frame refuses here, before the first paid request.
+    if (
+        maximum_cost_usd is not None
+        and expected_request_cost_usd is not None
+        and float(maximum_cost_usd)
+        < float(expected_request_cost_usd) * len(frame_jobs)
+    ):
+        raise SemanticTeacherImageEditWorkerError(
+            "semantic_teacher_cost_ceiling_below_projected_pass"
+        )
+
     outcomes: dict[int, dict[str, Any]] = {}
     submitted: set[int] = set()
     in_flight: dict[Future[dict[str, Any]], dict[str, Any]] = {}
     next_job_index = 0
     failure_observed = False
+    # Observed spend so far and the largest single request seen. The provider
+    # gives no price before a call, so the guard is "do not start another
+    # request that could carry us past the cap", using the worst request
+    # observed so far as the estimate. That bounds the overshoot to the
+    # requests already in flight instead of the whole frame set.
+    observed_cost_usd = 0.0
+    largest_request_cost_usd = 0.0
+    cost_ceiling_reached = False
     successful_terminal_count = 0
     failed_terminal_count = 0
     terminal_frame_count = 0
@@ -745,6 +843,22 @@ def execute_semantic_teacher_image_edits(
                     else:
                         outcome["destination"] = destination
                 outcomes[job["global_frame_index"]] = outcome
+                frame_usage = outcome.get("usage")
+                if isinstance(frame_usage, Mapping):
+                    try:
+                        frame_cost = _usage_cost(frame_usage, pricing)
+                    except (KeyError, TypeError, ValueError):
+                        frame_cost = None
+                    if frame_cost is not None:
+                        observed_cost_usd += frame_cost
+                        largest_request_cost_usd = max(
+                            largest_request_cost_usd, frame_cost
+                        )
+                if maximum_cost_usd is not None and (
+                    observed_cost_usd + largest_request_cost_usd
+                    > float(maximum_cost_usd)
+                ):
+                    cost_ceiling_reached = True
                 terminal_frame_count += 1
                 if outcome["succeeded"]:
                     successful_terminal_count += 1
@@ -770,6 +884,7 @@ def execute_semantic_teacher_image_edits(
                 )
             while (
                 not failure_observed
+                and not cost_ceiling_reached
                 and next_job_index < len(frame_jobs)
                 and len(in_flight) < max_parallel_requests
             ):
@@ -805,15 +920,40 @@ def execute_semantic_teacher_image_edits(
     for task_index, (task_id, frames) in enumerate(prepared_tasks):
         frame_rows: list[dict[str, Any]] = []
         for frame_index, (frame, _image, _mask, _size) in enumerate(frames):
-            global_frame_index = job_by_key[(task_index, frame_index)][
-                "global_frame_index"
-            ]
             common = {
                 "frame_index": frame_index,
                 "camera_id": str(frame.get("camera_id") or ""),
                 "source_rgb_sha256": frame["input_rgb"]["sha256"],
                 "edit_mask_sha256": frame["edit_mask"]["sha256"],
+                "frame_role": frame.get("frame_role", "semantic_edit"),
             }
+            preserved = preserved_frames.get((task_index, frame_index))
+            if preserved is not None:
+                frame_rows.append({
+                    **common, "terminal_state": "preserved_source", "provider_call_performed": False,
+                    "semantic_teacher_frame": {
+                        "relative_path": preserved.relative_to(output).as_posix(),
+                        "size_bytes": preserved.stat().st_size, "sha256": _sha256(preserved),
+                    },
+                    "source_pixels_preserved": True, "provider_usage": None,
+                    "computed_editor_cost_usd": 0.0, "visual_reviewed": False,
+                })
+                continue
+            reused = reused_frames.get((task_index, frame_index))
+            if reused is not None:
+                destination, lineage = reused
+                frame_rows.append({
+                    **common, "terminal_state": "completed_unreviewed_candidate",
+                    "provider_call_performed": False, "retained_candidate_lineage": lineage,
+                    "semantic_teacher_frame": {
+                        "relative_path": destination.relative_to(output).as_posix(),
+                        "size_bytes": destination.stat().st_size, "sha256": _sha256(destination),
+                    },
+                    "provider_usage": None, "computed_editor_cost_usd": 0.0,
+                    "visual_reviewed": False, "multiview_consistency_qualified": False,
+                })
+                continue
+            global_frame_index = job_by_key[(task_index, frame_index)]["global_frame_index"]
             outcome = outcomes.get(global_frame_index)
             if outcome is None:
                 frame_rows.append(
@@ -878,8 +1018,20 @@ def execute_semantic_teacher_image_edits(
         for frame in task["frames"]
         if isinstance((record := frame.get("semantic_teacher_frame")), Mapping)
     ]
-    if failed_rows:
-        blockers = list(dict.fromkeys(row["failure_code"] for row in failed_rows))
+    # A ceiling stop leaves frames unattempted, and an unattempted frame carries
+    # no failure_code, so it never reaches failed_rows. Without this the success
+    # path below would report the partial set as a completed candidate set --
+    # request_count is len(submitted), not the frame count. Route it through the
+    # retained-partial-inventory path instead: it fails closed and still keeps
+    # the frames the run already paid for.
+    if failed_rows or cost_ceiling_reached:
+        blockers = list(
+            dict.fromkeys(
+                row["failure_code"] for row in failed_rows if row["failure_code"]
+            )
+        )
+        if cost_ceiling_reached:
+            blockers.insert(0, "semantic_teacher_cost_ceiling_reached")
         failed: dict[str, Any] = {
             "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
             "status": "failed_with_retained_partial_inventory",
@@ -894,9 +1046,16 @@ def execute_semantic_teacher_image_edits(
             "successful_request_count": len(partial_frames),
             "failed_request_count": len(failed_rows),
             "maximum_parallel_requests": max_parallel_requests,
+            "maximum_cost_usd": (
+                None if maximum_cost_usd is None else float(maximum_cost_usd)
+            ),
+            "observed_cost_usd": round(observed_cost_usd, 9),
+            "cost_ceiling_reached": cost_ceiling_reached,
             "retry_count": 0,
             "blockers": blockers,
-            "terminal_provider_failure": failed_rows[0]["provider_failure"],
+            "terminal_provider_failure": (
+                failed_rows[0]["provider_failure"] if failed_rows else None
+            ),
             "tasks": task_rows,
             "partial_png_inventory": partial_frames,
             "provider_usage_totals": {
@@ -931,11 +1090,19 @@ def execute_semantic_teacher_image_edits(
         "adapter_id": execution["adapter_id"],
         "model_snapshot": execution["model_snapshot"],
         "task_count": len(task_rows),
+        "source_frame_count": sum(len(frames) for _task_id, frames in prepared_tasks),
+        "preserved_source_frame_count": len(preserved_frames),
+        "retained_candidate_frame_count": len(reused_frames),
         "request_count": request_count,
         "attempted_request_count": request_count,
         "successful_request_count": request_count,
         "failed_request_count": 0,
         "maximum_parallel_requests": max_parallel_requests,
+        "maximum_cost_usd": (
+            None if maximum_cost_usd is None else float(maximum_cost_usd)
+        ),
+        "observed_cost_usd": round(observed_cost_usd, 9),
+        "cost_ceiling_reached": cost_ceiling_reached,
         "provider_usage_totals": {
             field: sum(row[field] for row in usage_rows) for field in USAGE_TOKEN_FIELDS
         },

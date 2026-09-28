@@ -41,8 +41,13 @@ _WEB_PROFILES = {
     "camera_360_native",
     "monocular_video",
     "precomputed_external_reconstruction",
+    "provided_scene_mesh",
+    "provided_scene_splat",
 }
 _MEDIA_TYPES = {
+    "provided_scene_splat": {"application/octet-stream", "application/ply"},
+    "provided_scene_mesh": {"application/octet-stream", "model/gltf-binary", "application/ply",
+                            "model/vnd.usd", "text/plain"},
     "camera_360_equirectangular": {"video/mp4", "video/quicktime"},
     "camera_360_native": {"application/octet-stream", "video/x-insta360"},
     "monocular_video": {"video/mp4", "video/quicktime"},
@@ -193,8 +198,14 @@ def _media_shape_valid(path: Path, *, profile: str, media_type: str) -> bool:
         return False
     with path.open("rb") as stream:
         prefix = stream.read(32)
-    if profile == "precomputed_external_reconstruction":
+    if profile in {"precomputed_external_reconstruction", "provided_scene_splat"}:
         return prefix.startswith((b"ply\n", b"ply\r\n"))
+    if profile == "provided_scene_mesh":
+        suffix = path.suffix.lower()
+        return ((suffix == ".ply" and prefix.startswith((b"ply\n", b"ply\r\n")))
+                or (suffix in {".usd", ".usda"} and prefix.startswith(b"#usda 1.0"))
+                or (suffix in {".usd", ".usdc"} and prefix.startswith(b"PXR-USDC"))
+                or (suffix == ".glb" and prefix[:8] == b"glTF\x02\x00\x00\x00"))
     return len(prefix) >= 12 and prefix[4:8] == b"ftyp"
 
 
@@ -321,6 +332,10 @@ def _build_envelope(
     streams = []
     for row_value in request["available_sensor_streams"]:
         row = _mapping(row_value)
+        if row.get("stream_type") == "provided_geometry":
+            aliases = {"provided_scene_mesh": "scene_mesh", "provided_scene_splat": "scene_splat"}
+            if request["capture_authority_profile"] in aliases:
+                row["stream_type"] = aliases[request["capture_authority_profile"]]
         if row.get("status") in {"available", "diagnostic"}:
             row["source_relative_path"] = filename
         streams.append(row)

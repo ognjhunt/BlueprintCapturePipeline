@@ -12,6 +12,8 @@ from blueprint_pipeline.sam31_gpu_admission import (
     OFFICIAL_CODE_REVISION,
     PREFLIGHT_SCHEMA_VERSION,
     REQUEST_SCHEMA_VERSION,
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
     build_sam31_gpu_canary_admission,
     collect_sam31_vast_preflight,
     prepare_sam31_gpu_canary,
@@ -64,6 +66,10 @@ def _request() -> dict:
         "hard_ttl_seconds": 600,
         "retry_cap": 0,
         "authority_id": "design-partner-beta-authorization",
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "proof_effect": "none",
         "comparative_policy_ranking_verdict": "thesis_not_supported",
     }
@@ -86,7 +92,13 @@ def _preflight(*, live_resources: int = 0) -> dict:
         "gpu_memory_bytes": 48 * 1024**3,
         "container_disk_bytes": 80 * 1024**3,
         "on_demand_price_usd_per_hour": 0.50,
-        "selected_offer": {"gpu_name": "L40S"},
+        "selected_offer": {"gpu_name": "L40S", "geolocation": "California, US"},
+        "capacity_request": {
+            "allowed_geolocation_country_codes": list(
+                SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+            ),
+            "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
+        },
         "blockers": [] if live_resources == 0 else ["sam31_gpu_provider_inventory_not_zero"],
         "provider_mutations_performed": 0,
         "raw_secret_values_recorded": False,
@@ -231,6 +243,17 @@ def test_processed_only_profile_and_oversized_bundle_fail_closed() -> None:
     assert "sam31_gpu_input_bundle_size_invalid" in admission["blockers"]
 
 
+def test_render_derived_method_inputs_have_an_explicit_non_capture_profile() -> None:
+    request = _request()
+    request["source_profile"] = "render_derived_synthetic_method_inputs"
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    admission, bound = _build(request=request, execute=False, qualified=True)
+    assert admission["status"] == "dry_run_ready"
+    assert bound["source_profile"] == "render_derived_synthetic_method_inputs"
+    assert bound["metric_claim_upgrade_forbidden"] is True
+    assert bound["physical_claim_upgrade_forbidden"] is True
+
+
 def test_preflight_collects_provider_zero_without_mutation() -> None:
     prefixes: list[str] = []
 
@@ -249,6 +272,7 @@ def test_preflight_collects_provider_zero_without_mutation() -> None:
                 "gpu_name": "L40S",
                 "gpu_ram_mb": 48_000,
                 "hourly_rate_usd": 0.50,
+                "geolocation": "California, US",
             },
         },
         inventory_probe=inventory,
@@ -257,7 +281,40 @@ def test_preflight_collects_provider_zero_without_mutation() -> None:
     )
     assert result["status"] == "verified"
     assert result["provider_mutations_performed"] == 0
+    assert result["capacity_request"]["require_direct_port"] is True
+    assert result["capacity_request"]["allowed_geolocation_country_codes"] == ["US"]
+    assert (
+        result["capacity_request"]["preferred_geolocation_regex"]
+        == SAM31_PREFERRED_GEOLOCATION_REGEX
+    )
     assert prefixes == ["blueprint-sam31-", ""]
+
+
+def test_preflight_rejects_non_us_selected_offer() -> None:
+    result = collect_sam31_vast_preflight(
+        name_prefix="blueprint-sam31-",
+        container_disk_bytes=80 * 1024**3,
+        watchdog={"status": "armed", "independent_process": True},
+        conflicting_owner_present=False,
+        capacity_probe=lambda _request: {
+            "status": "available",
+            "selected_offer": {
+                "gpu_name": "L40S",
+                "gpu_ram_mb": 48_000,
+                "hourly_rate_usd": 0.50,
+                "geolocation": "Quebec, CA",
+            },
+        },
+        inventory_probe=lambda _prefix: {
+            "api_confirmed": True,
+            "live_resource_count": 0,
+        },
+        max_hourly_rate_usd=1.0,
+        clock=lambda: 100.0,
+    )
+
+    assert result["status"] == "blocked"
+    assert "sam31_gpu_selected_offer_outside_us" in result["blockers"]
 
 
 def test_prepare_writes_fail_closed_artifacts(tmp_path: Path) -> None:
@@ -291,3 +348,55 @@ def test_prepare_writes_fail_closed_artifacts(tmp_path: Path) -> None:
     assert json.loads(admission_path.read_text())["status"] == "dry_run_ready"
     assert json.loads(bound_path.read_text())["provider_mutation_authorized"] is False
     assert json.loads(adapter_path.read_text())["paid_execution_started"] is False
+
+
+def _probe_sequence(outcomes):
+    calls = []
+
+    def probe(request):
+        calls.append(dict(request))
+        outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+        if outcome == "available":
+            return {"status": "available", "offer_count": 3, "selected_offer": {
+                "gpu_name": "RTX 3090", "gpu_ram_mb": 25770, "hourly_rate_usd": 0.2, "geolocation": "Illinois, US"}}
+        return {"status": "blocked", "offer_count": 1, "selected_offer": None,
+                "blockers": ["vast_offer_capacity_unavailable"]}
+    return probe, calls
+
+
+def _collect(probe, sleeper, **kwargs):
+    return collect_sam31_vast_preflight(name_prefix="fixture", container_disk_bytes=80 * 1024**3,
+        watchdog={"status": "armed", "independent_process": True}, conflicting_owner_present=False,
+        capacity_probe=probe, inventory_probe=lambda _: {"api_confirmed": True, "live_resource_count": 0},
+        max_hourly_rate_usd=.5, clock=lambda: 1000, sleeper=sleeper, **kwargs)
+
+
+def test_preflight_reprobes_a_thin_marketplace_before_sealing_capacity_unavailable(monkeypatch):
+    """2026-09-13 00:14: one probe saw a single non-viable offer and the intent parked for $0."""
+    monkeypatch.delenv("BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_ATTEMPTS", raising=False)
+    monkeypatch.delenv("BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS", raising=False)
+    sleeps = []
+    probe, calls = _probe_sequence(["blocked", "blocked", "available"])
+    result = _collect(probe, sleeps.append)
+    assert result["status"] == "verified" and len(calls) == 3
+    assert sleeps == [60.0, 60.0]
+    assert [row["attempt"] for row in result["capacity_probe_attempts"]] == [0, 1]
+    assert all(row["wait_seconds"] == 60.0 and row["provider_mutation_performed"] is False
+               and row["blockers"] == ["vast_offer_capacity_unavailable"] for row in result["capacity_probe_attempts"])
+    # Exhausted: the default six re-probes, then the blocked preflight is sealed with its evidence.
+    sleeps.clear()
+    probe, calls = _probe_sequence(["blocked"])
+    result = _collect(probe, sleeps.append)
+    assert result["status"] == "blocked" and "sam31_gpu_single_gpu_unavailable" in result["blockers"]
+    assert len(calls) == 7 and sleeps == [60.0] * 6 and len(result["capacity_probe_attempts"]) == 6
+    # Explicit bounds and the environment override.
+    sleeps.clear()
+    probe, calls = _probe_sequence(["blocked"])
+    result = _collect(probe, sleeps.append, capacity_retry_attempts=0)
+    assert len(calls) == 1 and sleeps == [] and result["capacity_probe_attempts"] == []
+    monkeypatch.setenv("BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_ATTEMPTS", "2")
+    monkeypatch.setenv("BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS", "7.5")
+    sleeps.clear()
+    probe, calls = _probe_sequence(["blocked"])
+    result = _collect(probe, sleeps.append)
+    assert len(calls) == 3 and sleeps == [7.5, 7.5]

@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""Publish the exact scene-configuration stage toolchain for one release.
+
+This command performs no network access and allocates no paid resource.  It is
+intended to run from the canonical deployer as root, then read every installed
+byte back as the unprivileged production service account before the immutable
+tree becomes eligible for a Website-started configuration run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import tempfile
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
+
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
+from blueprint_pipeline.immutable_directory_publication import (
+    publish_staged_immutable_directory,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
+    TOOLCHAIN_SCHEMA_VERSION,
+    validate_scene_configuration_toolchain,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
+    SCHEMA_VERSION as COMPONENT_PACKAGE_SCHEMA_VERSION,
+    validate_scene_configuration_component_package,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
+    ADMITTED_PRODUCER_IDENTITIES,
+)
+
+
+RECEIPT_SCHEMA_VERSION = "task_evaluation_scene_configuration_toolchain_publication.v1"
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+Readback = Callable[[Path], bytes]
+
+
+def _link_or_copy_immutable(source: str, destination: str) -> str:
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.copy2(source, destination, follow_symlinks=False)
+    return destination
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _reuse_published_package_file(
+    source: str, destination: str, *, package_source: Path,
+    package_relative: Path, previous_roots: list[Path], shared: dict[str, int],
+) -> str:
+    """Share identical immutable payloads with a recent published release."""
+    original = Path(source)
+    metadata = original.lstat()
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        # Reads can change atime; data, permissions and inode identity may not.
+        return (value.st_dev, value.st_ino, value.st_size, value.st_mode,
+                value.st_uid, value.st_gid, value.st_mtime_ns, value.st_ctime_ns)
+    if (stat.S_ISREG(metadata.st_mode) and not metadata.st_mode & 0o222
+            and metadata.st_size >= 64 * 1024):
+        relative = original.relative_to(package_source)
+        original_digest = None
+        for root in previous_roots:
+            previous = root / package_relative / relative
+            try:
+                prior = previous.lstat()
+                if (prior.st_mode, prior.st_size, prior.st_uid, prior.st_gid) != (
+                    metadata.st_mode, metadata.st_size, metadata.st_uid, metadata.st_gid
+                ):
+                    continue
+                if (prior.st_dev, prior.st_ino) == (metadata.st_dev, metadata.st_ino):
+                    break  # Already shared by the existing immutable copy path.
+                original_digest = original_digest or _sha256(original)
+                if _sha256(previous) != original_digest:
+                    continue
+                if (identity(previous.lstat()) != identity(prior)
+                        or identity(original.lstat()) != identity(metadata)):
+                    continue
+                os.link(previous, destination, follow_symlinks=False)
+            except OSError:
+                # An old release can be retired concurrently; the verified new
+                # package remains the fallback, without altering either source.
+                continue
+            shared["file_count"] += 1
+            shared["bytes"] += metadata.st_size
+            return destination
+    return _link_or_copy_immutable(source, destination)
+
+
+def _entrypoint(adapter_id: str) -> bytes:
+    return (
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "PYTHON_BIN=/isaac-sim/python.sh\n"
+        "if [ ! -x \"$PYTHON_BIN\" ]; then PYTHON_BIN=$(command -v python3); fi\n"
+        "exec \"$PYTHON_BIN\" -m "
+        "blueprint_pipeline.task_evaluation_scene_configuration_stage_tool "
+        f"--adapter-id {adapter_id}\n"
+    ).encode("utf-8")
+
+
+def build_published_scene_configuration_toolchain(
+    *,
+    source_commit: str,
+    output_root: str | Path,
+    readback: Readback,
+    readback_actor: str,
+    component_packages: Mapping[str, str | Path],
+) -> dict[str, Any]:
+    """Install one exclusive read-only toolchain and prove full-byte readback."""
+
+    if _COMMIT.fullmatch(source_commit) is None or not readback_actor.strip():
+        raise ValueError("scene_configuration_toolchain_publication_input_invalid")
+    admitted_ids = {identity.adapter_id for identity in ADMITTED_PRODUCER_IDENTITIES}
+    if set(component_packages) != admitted_ids:
+        raise ValueError("scene_configuration_toolchain_component_set_invalid")
+    validated_packages = {
+        adapter_id: (
+            Path(root).expanduser().resolve(),
+            validate_scene_configuration_component_package(
+                root=root,
+                expected_adapter_id=adapter_id,
+            ),
+        )
+        for adapter_id, root in component_packages.items()
+    }
+    destination = Path(output_root).expanduser().absolute()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    previous_roots = sorted(
+        (path for path in destination.parent.iterdir()
+         if _COMMIT.fullmatch(path.name) and path != destination
+         and not path.is_symlink() and path.is_dir()),
+        key=lambda path: path.stat().st_mtime_ns, reverse=True,
+    )[:3]
+    shared = {"file_count": 0, "bytes": 0}
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}.",
+            dir=destination.parent,
+        )
+    )
+    installed = False
+    try:
+        stages: dict[str, dict[str, Any]] = {}
+        files: list[dict[str, Any]] = []
+        for identity in ADMITTED_PRODUCER_IDENTITIES:
+            relative = Path("stages") / identity.adapter_id
+            executable = staging / relative
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_bytes(_entrypoint(identity.adapter_id))
+            executable.chmod(0o555)
+            files.append(
+                {
+                    "relative_path": relative.as_posix(),
+                    "sha256": _sha256(executable),
+                    "size_bytes": executable.stat().st_size,
+                    "executable": True,
+                }
+            )
+            package_source, package_manifest = validated_packages[
+                identity.adapter_id
+            ]
+            package_relative = Path("components") / identity.adapter_id / "package"
+            package_destination = staging / package_relative
+            shutil.copytree(
+                package_source,
+                package_destination,
+                symlinks=False,
+                copy_function=lambda source, target: _reuse_published_package_file(
+                    source, target, package_source=package_source,
+                    package_relative=package_relative, previous_roots=previous_roots,
+                    shared=shared,
+                ),
+            )
+            for component_file in sorted(
+                path for path in package_destination.rglob("*") if path.is_file()
+            ):
+                relative_component_file = component_file.relative_to(staging)
+                files.append(
+                    {
+                        "relative_path": relative_component_file.as_posix(),
+                        "sha256": _sha256(component_file),
+                        "size_bytes": component_file.stat().st_size,
+                        "executable": bool(component_file.stat().st_mode & 0o111),
+                    }
+                )
+            component_relative = package_relative / package_manifest["driver_entrypoint"]
+            stages[identity.adapter_id] = {
+                "entrypoint": relative.as_posix(),
+                "component_entrypoint": component_relative.as_posix(),
+                "component_package_manifest": (
+                    package_relative
+                    / f"{COMPONENT_PACKAGE_SCHEMA_VERSION}.json"
+                ).as_posix(),
+                "component_package_digest": package_manifest["package_digest"],
+                "network_policy": package_manifest["network_policy"],
+                "secrets_via_files_only": True,
+                "raw_secret_values_in_argv_or_logs": False,
+            }
+        (staging / "stages").chmod(0o555)
+        for path in sorted(
+            (item for item in (staging / "components").rglob("*") if item.is_dir()),
+            key=lambda item: len(item.parts),
+            reverse=True,
+        ):
+            path.chmod(0o555)
+        (staging / "components").chmod(0o555)
+        # The deployer runs as root, while readback runs as ``blueprint``.
+        # ``mkdtemp`` creates 0700; make only this non-secret staged tree
+        # traversable before claiming service-account readback.
+        staging.chmod(0o755)
+        for row in files:
+            path = staging / row["relative_path"]
+            observed = readback(path)
+            if (
+                len(observed) != row["size_bytes"]
+                or _sha256_bytes(observed) != row["sha256"]
+            ):
+                raise ValueError("scene_configuration_toolchain_service_readback_failed")
+        manifest: dict[str, Any] = {
+            "schema_version": TOOLCHAIN_SCHEMA_VERSION,
+            "status": "published_full_byte_readback_passed",
+            "source_commit": source_commit,
+            "full_byte_service_account_readback_passed": True,
+            "readback_actor": readback_actor,
+            "stages": stages,
+            "files": files,
+            "toolchain_digest": "",
+        }
+        manifest["toolchain_digest"] = canonical_digest(
+            manifest, digest_field="toolchain_digest"
+        )
+        manifest_path = staging / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
+        manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+        manifest_path.chmod(0o444)
+        staging.chmod(0o555)
+        publish_staged_immutable_directory(
+            staging=staging,
+            destination=destination,
+            manifest_name=manifest_path.name,
+            output_exists_code="scene_configuration_toolchain_publication_output_exists",
+        )
+        installed = True
+        installed_manifest = destination / manifest_path.name
+        manifest_bytes = readback(installed_manifest)
+        if manifest_bytes != installed_manifest.read_bytes():
+            raise ValueError("scene_configuration_toolchain_service_readback_failed")
+        validate_scene_configuration_toolchain(
+            root=destination,
+            expected_source_commit=source_commit,
+        )
+        receipt: dict[str, Any] = {
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+            "status": "published_and_read_back",
+            "source_commit": source_commit,
+            "toolchain_root": str(destination),
+            "toolchain_digest": manifest["toolchain_digest"],
+            "file_count": len(files),
+            "shared_immutable_file_count": shared["file_count"],
+            "shared_immutable_file_bytes": shared["bytes"],
+            "readback_actor": readback_actor,
+            "full_byte_service_account_readback_passed": True,
+            "provider_mutation_performed": False,
+            "paid_resource_allocated": False,
+            "receipt_digest": "",
+        }
+        receipt["receipt_digest"] = canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+        receipt_path = destination.parent / f"{destination.name}.publication.v1.json"
+        descriptor = os.open(
+            receipt_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o444,
+        )
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write((canonical_json(receipt) + "\n").encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        return receipt
+    except Exception:
+        owned = destination if installed else staging
+        if owned.exists() and not owned.is_symlink():
+            for path in sorted(owned.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+                if path.is_dir():
+                    path.chmod(0o700)
+            owned.chmod(0o700)
+            shutil.rmtree(owned)
+        raise
+
+
+def _service_account_readback(user: str) -> Readback:
+    def read(path: Path) -> bytes:
+        completed = subprocess.run(
+            ["sudo", "-n", "-u", user, "--", "dd", f"if={path}", "status=none"],
+            check=True,
+            capture_output=True,
+        )
+        return completed.stdout
+
+    return read
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--output-root", required=True)
+    parser.add_argument("--readback-user", required=True)
+    parser.add_argument(
+        "--component-package",
+        action="append",
+        default=[],
+        metavar="ADAPTER_ID=PATH",
+        help="Exact immutable component package; repeat once per admitted GPU adapter.",
+    )
+    args = parser.parse_args(argv)
+    component_packages: dict[str, str] = {}
+    for raw in args.component_package:
+        adapter_id, separator, path = raw.partition("=")
+        if not separator or not adapter_id or not path or adapter_id in component_packages:
+            parser.error("--component-package must be unique ADAPTER_ID=PATH")
+        component_packages[adapter_id] = path
+    receipt = build_published_scene_configuration_toolchain(
+        source_commit=args.source_commit,
+        output_root=args.output_root,
+        readback=_service_account_readback(args.readback_user),
+        readback_actor=f"service-account:{args.readback_user}",
+        component_packages=component_packages,
+    )
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

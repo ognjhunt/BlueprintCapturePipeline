@@ -19,7 +19,9 @@ from typing import Any
 from PIL import Image, ImageChops
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .dual_task_rehearsal_contract import validate_task_freeze
+from .public_scene_removal_selection import (
+    validate_source_preparation_task_selection as validate_task_freeze,
+)
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 from .openai_official_cost_gate import (
     RUN_COMPLETION_SCHEMA_VERSION,
@@ -41,10 +43,10 @@ AI_RIGHTS_SCHEMA_VERSION = "public_scene_sam31_ai_visual_review_rights.v1"
 AI_REVIEW_METHOD = "exact_overlay_visual_inspection"
 AI_REVIEWER_ID = "blueprint-openai-agents-sdk-sam31-visual-reviewer"
 AI_REVIEW_CAPABILITY = "public_scene_sam31_track_selection_visual_review"
-AI_REVIEW_MODEL = "gpt-5.6-terra"
+AI_REVIEW_MODEL = "gpt-6-sol"
 AI_REVIEW_FRAME_COUNT = 16
 AI_REVIEW_INPUT_TOKEN_CEILING = 250_000
-AI_REVIEW_MAX_COST_USD = 1.0
+AI_REVIEW_MAX_COST_USD = 1.25
 AI_REVIEW_DECLARED_USE = "noncommercial_internal_adp_visual_review"
 AI_REVIEW_ACCEPTED_BY = "nijelhunt_1"
 MASK_OBSERVATION_ABOVE_THRESHOLD = "above_threshold_selected_mask"
@@ -202,11 +204,14 @@ def _validate_candidate_file(candidate_path: Path, candidate: Mapping[str, Any])
         raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
     for binding in bindings:
         _verify_record(binding.get("task_freeze"), root=root)
-        _verify_record(binding.get("source_track_result"), root=root)
+        source_tracks_path = _verify_record(binding.get("source_track_result"), root=root)
         _verify_record(binding.get("camera_contract"), root=root)
         if "task_input_packet" in binding or "calibrated_view_receipt" in binding:
-            _verify_record(binding.get("task_input_packet"), root=root)
+            packet_path = _verify_record(binding.get("task_input_packet"), root=root)
             _verify_record(binding.get("calibrated_view_receipt"), root=root)
+            from .public_scene_calibrated_object_masks import _frame_map
+            _frame_map(_read(source_tracks_path, code="sam31_review_source_tracks_invalid")[1],
+                       task_input_packet_path=packet_path)
     if [str(row.get("task_id") or "") for row in review_media] != task_ids:
         raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
     for task in review_media:
@@ -349,6 +354,12 @@ def validate_sam31_ai_visual_review_rights(
         code="sam31_ai_review_rights_attestation_invalid",
     )
     overlay_sha256 = sorted(str(row["overlay_sha256"]) for row in frame_inventory)
+    scene_owner = rights.get("scene_owner_authority") is not None
+    if scene_owner:
+        from .task_evaluation_sam31_preparation_review_authority import validate_scene_review_binding
+        validate_scene_review_binding(rights["scene_owner_authority"], candidate_path=candidate_file,
+            accepted_by=rights.get("accepted_by"), accepted_on=rights.get("accepted_on"),
+            human_authority_reference=rights.get("human_authority_reference"))
     if (
         rights.get("schema_version") != AI_RIGHTS_SCHEMA_VERSION
         or rights.get("status") != "accepted_for_private_derived_visual_review"
@@ -386,7 +397,7 @@ def validate_sam31_ai_visual_review_rights(
         or rights.get("max_inference_spend_usd") != AI_REVIEW_MAX_COST_USD
         or rights.get("agent_accepted_terms") is not False
         or rights.get("issued_by_agent") is not False
-        or rights.get("accepted_by") != AI_REVIEW_ACCEPTED_BY
+        or (not scene_owner and rights.get("accepted_by") != AI_REVIEW_ACCEPTED_BY)
         or not str(rights.get("accepted_on") or "").strip()
         or not str(rights.get("human_authority_reference") or "").strip()
     ):
@@ -401,6 +412,7 @@ def materialize_sam31_ai_visual_review_rights(
     accepted_on: str,
     human_authority_reference: str,
     output_path: str | Path,
+    scene_owner_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Retain an exact human authorization after the 16 overlays exist."""
 
@@ -411,8 +423,13 @@ def materialize_sam31_ai_visual_review_rights(
         candidate_path=candidate_file
     )
     overlay_sha256 = sorted(str(row["overlay_sha256"]) for row in frame_inventory)
+    if scene_owner_authority is not None:
+        from .task_evaluation_sam31_preparation_review_authority import validate_scene_review_binding
+        validate_scene_review_binding(scene_owner_authority, candidate_path=candidate_file,
+            accepted_by=accepted_by, accepted_on=accepted_on,
+            human_authority_reference=human_authority_reference)
     if (
-        accepted_by != AI_REVIEW_ACCEPTED_BY
+        (scene_owner_authority is None and accepted_by != AI_REVIEW_ACCEPTED_BY)
         or not str(accepted_on).strip()
         or not str(human_authority_reference).strip()
         or len(overlay_sha256) != AI_REVIEW_FRAME_COUNT
@@ -455,6 +472,8 @@ def materialize_sam31_ai_visual_review_rights(
         "human_authority_reference": str(human_authority_reference).strip(),
         "attestation_digest": "",
     }
+    if scene_owner_authority is not None:
+        rights["scene_owner_authority"] = dict(scene_owner_authority)
     rights["attestation_digest"] = canonical_digest(
         rights, digest_field="attestation_digest"
     )
@@ -537,6 +556,42 @@ def _contained_evidence_path(*, execution_root: Path, relative_path: object) -> 
     if path.is_symlink() or not path.is_file():
         raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
     return path
+
+
+def _validate_completed_reservation_manifest(manifest: Mapping[str, Any], *, run_id: str) -> None:
+    """One completed reservation, nothing in flight, and the ledger's own reserved total.
+
+    The reservation ledger (``task_evaluation_supervisor.inference_reservations``,
+    hardened 2026-08-31) keeps a completed call's reconciled cost in
+    ``reserved_max_cost_usd`` until official billing posts.  This seal demanded
+    ``0.0`` and on 2026-09-05 refused attempt R16 after the reviewer had accepted;
+    nothing had exercised the two documents together since the hardening.  The
+    seal now asks the ledger's question: every reservation completed, the reserved
+    total equal to the reconciled cost, and both under the review cost cap.
+    """
+
+    rows = manifest.get("reservations")
+    row = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], Mapping) else None
+    reserved = manifest.get("reserved_max_cost_usd")
+    projected_total = manifest.get("projected_max_cost_usd_total")
+    reconciled = row.get("reconciled_actual_cost_usd") if row is not None else None
+    numbers = (reserved, projected_total, reconciled)
+    if (
+        manifest.get("schema_version") != INFERENCE_RESERVATION_MANIFEST_SCHEMA_VERSION
+        or manifest.get("inference_reservation_manifest_digest")
+        != canonical_digest(manifest, digest_field="inference_reservation_manifest_digest")
+        or manifest.get("run_id") != run_id
+        or manifest.get("reservation_count") != 1
+        or manifest.get("in_flight_unknown_count") != 0
+        or row is None
+        or len(rows) != 1
+        or row.get("status") != "completed"
+        or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in numbers)
+        or not 0 < float(projected_total) <= AI_REVIEW_MAX_COST_USD
+        or not 0.0 <= float(reserved) <= float(projected_total) + 1.0e-9
+        or abs(float(reserved) - float(reconciled)) > 1.0e-9
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
 
 
 def _validate_ai_execution_receipt(
@@ -721,25 +776,10 @@ def _validate_ai_execution_receipt(
     _manifest_path, reopened_manifest = _read(
         manifest_path, code="sam31_review_execution_receipt_invalid"
     )
-    rows = reopened_manifest.get("reservations")
-    if (
-        reopened_manifest != manifest
-        or manifest.get("schema_version") != INFERENCE_RESERVATION_MANIFEST_SCHEMA_VERSION
-        or manifest.get("inference_reservation_manifest_digest")
-        != canonical_digest(
-            manifest, digest_field="inference_reservation_manifest_digest"
-        )
-        or manifest.get("run_id") != execution["run_id"]
-        or manifest.get("reservation_count") != 1
-        or manifest.get("in_flight_unknown_count") != 0
-        or not isinstance(manifest.get("reserved_max_cost_usd"), (int, float))
-        or not 0 < float(manifest["reserved_max_cost_usd"]) <= AI_REVIEW_MAX_COST_USD
-        or not isinstance(rows, list)
-        or len(rows) != 1
-        or rows[0].get("status") != "completed"
-    ):
+    if reopened_manifest != manifest:
         raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
-    row = rows[0]
+    _validate_completed_reservation_manifest(manifest, run_id=execution["run_id"])
+    row = manifest["reservations"][0]
     reservation_path = _contained_evidence_path(
         execution_root=execution_root,
         relative_path=row.get("reservation_path"),
@@ -754,16 +794,21 @@ def _validate_ai_execution_receipt(
     _completion_path, completion = _read(
         completion_path, code="sam31_review_execution_receipt_invalid"
     )
-    expected_reservation_id = canonical_digest(
-        {
-            "run_id": execution["run_id"],
-            "capability": AI_REVIEW_CAPABILITY,
-            "model": reviewer["model"],
-            "input_digest": execution["input_digest"],
-            "max_turns": reservation.get("max_turns"),
-            "max_output_tokens": reservation.get("max_output_tokens"),
-        }
-    )
+    reservation_identity = {
+        "run_id": execution["run_id"],
+        "capability": AI_REVIEW_CAPABILITY,
+        "model": reviewer["model"],
+        "input_digest": execution["input_digest"],
+        "max_turns": reservation.get("max_turns"),
+        "max_output_tokens": reservation.get("max_output_tokens"),
+    }
+    for optional_identity_field in ("reasoning_effort", "cache_policy_digest"):
+        if optional_identity_field in reservation:
+            reservation_identity[optional_identity_field] = reservation.get(
+                optional_identity_field
+            )
+    expected_reservation_id = canonical_digest(reservation_identity)
+    cache_policy = reservation.get("cache_policy")
     if (
         reservation.get("schema_version") != INFERENCE_RESERVATION_SCHEMA_VERSION
         or reservation.get("reservation_id") != expected_reservation_id
@@ -773,6 +818,9 @@ def _validate_ai_execution_receipt(
         or reservation.get("input_digest") != execution["input_digest"]
         or reservation.get("input_kind") != "multimodal"
         or reservation.get("input_token_ceiling") != AI_REVIEW_INPUT_TOKEN_CEILING
+        or not isinstance(cache_policy, Mapping)
+        or cache_policy.get("policy_digest")
+        != reservation.get("cache_policy_digest")
         or not isinstance(reservation.get("projected_max_cost_usd"), (int, float))
         or not 0 < float(reservation["projected_max_cost_usd"]) <= AI_REVIEW_MAX_COST_USD
         or reservation.get("inference_reservation_digest")
@@ -787,6 +835,9 @@ def _validate_ai_execution_receipt(
         or completion.get("provider") != "openai"
         or completion.get("model") != reviewer["model"]
         or completion.get("agents_sdk_version") != reviewer["sdk_version"]
+        or completion.get("cache_policy") != cache_policy
+        or completion.get("breakpoint_digests")
+        != reservation.get("breakpoint_digests")
         or completion.get("structured_output_digest")
         != execution["structured_output_digest"]
         or completion.get("inference_completion_digest")
@@ -1208,7 +1259,7 @@ def materialize_sam31_track_selection_review_candidate(
         image_root = Path(str(task_input["source_image_root"])).expanduser().resolve()
         source_tracks = _verified_source_tracks(tracks_path)
         tracks = _track_map(source_tracks)
-        frames = _frame_map(source_tracks)
+        frames = _frame_map(source_tracks, task_input_packet_path=task_input.get("task_input_packet_path"))
         cameras = _camera_rows(cameras_path)
         camera_frame_map = {
             str(camera_id): str(frame_id)

@@ -1,0 +1,42 @@
+[Unit]
+Description=Blueprint operator door runner (revalidates and executes spooled requests)
+ConditionPathExists=/opt/blueprint/operator-door/operator_door/__main__.py
+# A burst of requests must not trip the start limit and leave the path unit dead.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+UMask=0022
+Environment=PYTHONPATH=/opt/blueprint/operator-door
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m operator_door run-spool
+# Only reads the spool, runs systemctl --no-block, or starts a fixed transient
+# unit through PID 1; the transient deploy/upgrade units carry their own
+# privileges. It owns every spool directory it writes, so it needs no capability.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/blueprint-operator-door/requests
+TasksMax=32
+MemoryMax=256M
+TimeoutStartSec=5min

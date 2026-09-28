@@ -10,19 +10,24 @@ import sys
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.paid_attempt_authority import (
-    bind_lane_prior_spend,
-    validate_same_goal_spend_reconciliation,
+from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
+from blueprint_pipeline.project_spend_reconciliation import (
+    materialize_project_spend_reconciliation,
+    validate_project_spend_reconciliation,
 )
 from blueprint_pipeline.same_goal_spend_reconciliation import (
+    DIAGNOSTIC_SCENE_CONFIGURATION_LANE,
+    PRODUCTION_SCENE_CONFIGURATION_LANE,
     SUPPORTED_LANES,
     _attempt_id,
+    main as same_goal_main,
     materialize_same_goal_spend_reconciliation,
 )
 from blueprint_pipeline.semantic_teacher_image_edit_paid_authority import (
     _validate_prior_spend_reconciliation,
 )
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
+from blueprint_pipeline.vast_evidence_contracts import VAST_PROVIDER_ZERO_API_CALL
 from blueprint_pipeline.task_evaluation_live_profile import (
     expand_prior_spend_immutable_inputs,
 )
@@ -37,6 +42,26 @@ def _write(path: Path, value: dict[str, object]) -> Path:
 def _digest_bound(value: dict[str, object], field: str = "receipt_digest") -> dict[str, object]:
     value[field] = canonical_digest(value, digest_field=field)
     return value
+
+
+def _project_baseline_authority(path: Path, *, total: float) -> Path:
+    value: dict[str, object] = {
+        "schema_version": "native_task_arena_paid_attempt_authority.v1",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "maximum_paid_attempts": 1,
+        "maximum_provider_allocations": 1,
+        "maximum_automatic_retries": 0,
+        "automatic_paid_retry_authorized": False,
+        "hard_attempt_spend_cap_usd": 0.75,
+        "aggregate_goal_spend_before_attempt_usd": total,
+        "authorized_on": "2026-08-25T14:30:00+00:00",
+        "authorization_digest": "",
+    }
+    value["authorization_digest"] = canonical_digest(
+        value, digest_field="authorization_digest"
+    )
+    return _write(path, value)
 
 
 @pytest.mark.parametrize(
@@ -93,7 +118,17 @@ def _fixture(root: Path, *, instance_id: int = 47593142, amount: float = 0.025) 
         root / "billing.json",
         {
             "results": [
-                {"source": f"instance-{instance_id}", "amount": amount},
+                {
+                    "source": f"instance-{instance_id}",
+                    "amount": amount,
+                    "items": [
+                        {
+                            "type": "gpu",
+                            "description": "0.05 hours at $0.500/hour",
+                            "amount": amount,
+                        }
+                    ],
+                },
                 {"source": "instance-999", "amount": 0.5},
             ]
         },
@@ -182,6 +217,88 @@ def _materialize(root: Path, lane: str, fixture: dict[str, Path]) -> tuple[Path,
     return output, value
 
 
+def test_materializer_binds_production_scene_configuration_adapter_estimate(
+    tmp_path: Path,
+) -> None:
+    """Production closeout derives the estimate from the allocator-owned adapter.
+
+    The production scene-configuration terminal intentionally carries the
+    authority and bundle identity, while its exact Vast adapter sibling carries
+    the provider estimate and instance inventory.  The ledger must bind both
+    records and use the posted instance charge as actual spend.
+    """
+
+    launch_id = (
+        "adp-new-scene-simple-relocation-839873-2deff449-r1-web-"
+        "20260830T021051Z"
+    )
+    root = tmp_path
+    fixture = _fixture(root, instance_id=49206605, amount=0.945)
+    (root / "launch").rename(root / launch_id)
+    fixture["result"] = root / launch_id / "allocator" / "result.json"
+    result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+    result.update(
+        {
+            "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+            "status": "blocked",
+            "run_id": (
+                "adp-new-scene-simple-relocation-839873-2deff449-"
+                "20260830t020241z-scene-configuration"
+            ),
+            "source_commit": "2deff449b5bfe4a777ecf052f1f88e0b9f7a13c6",
+        }
+    )
+    result.pop("launch_id")
+    result.pop("estimated_cost_usd")
+    result.pop("receipt_digest")
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+
+    adapter = _write(
+        fixture["result"].parent
+        / "scene-configuration-job"
+        / "vast_provider_run"
+        / "vast_provider_adapter_result.json",
+        {
+            "schema_version": "vast_provider_adapter_result.v1",
+            "status": "completed",
+            "estimated_cost_usd": 1.019205,
+            "continuing_spend_from_this_run": False,
+            "vast_instance_ids": [49206605],
+            "provider_bundle_sha256": result["bundle_sha256"],
+            "blockers": [],
+        },
+    )
+    zero = json.loads(fixture["zero"].read_text(encoding="utf-8"))
+    zero["schema_version"] = "task_evaluation_post_teardown_provider_zero.v1"
+    zero.pop("receipt_digest")
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    fixture["zero"].write_text(json.dumps(zero), encoding="utf-8")
+
+    output, value = _materialize(
+        root, PRODUCTION_SCENE_CONFIGURATION_LANE, fixture
+    )
+
+    entry = value["entries"][0]
+    assert entry["attempt_id"] == launch_id
+    assert entry["cost_usd"] == 0.945
+    assert entry["evidence_kind"] == "fully_bound_official_billing"
+    assert next(
+        source
+        for source in entry["source_receipts"]
+        if source["role"] == "provider_adapter_result"
+    )["record"]["path"] == str(adapter.resolve())
+    bound = bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane=PRODUCTION_SCENE_CONFIGURATION_LANE,
+    )
+    assert bound["prior_terminal_attempts"][0]["estimated_cost_usd"] == 1.019205
+    assert bound["prior_terminal_attempts"][0]["actual_provider_charge_usd"] == 0.945
+
+
 @pytest.mark.parametrize("lane", sorted(SUPPORTED_LANES))
 def test_materializer_produces_each_issuer_lane_ledger(tmp_path: Path, lane: str) -> None:
     fixture = _fixture(tmp_path / lane)
@@ -203,6 +320,85 @@ def test_materializer_produces_each_issuer_lane_ledger(tmp_path: Path, lane: str
         expected_total_cost_usd=0.025,
     )
     assert reopened["receipt_digest"] == record["receipt_digest"]
+
+
+def test_native_materializer_accepts_canonical_adp_paid_provider_zero(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "native-adp-zero")
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": "2026-08-29T10:47:52+00:00",
+        "api_command": list(VAST_PROVIDER_ZERO_API_CALL),
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "stderr_present": False,
+        "raw_secret_values_recorded": False,
+        "provider_zero_digest": "",
+    }
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+    _write(fixture["zero"], zero)
+
+    output, value = _materialize(
+        tmp_path / "native-adp-zero",
+        "native_task_arena",
+        fixture,
+    )
+
+    assert output.is_file()
+    assert value["total_cost_usd"] == 0.025
+    provider_zero_binding = next(
+        binding
+        for binding in value["entries"][0]["bindings"]
+        if binding["kind"] == "provider_zero"
+    )
+    assert provider_zero_binding["json_path"] == ["api_confirmed"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("api_confirmed", False),
+        ("provider_zero", False),
+        ("global_live_resource_count", 1),
+        ("inventory", [{"instance_id": 49117581}]),
+        ("stderr_present", "false"),
+        ("raw_secret_values_recorded", True),
+        ("api_command", ["GET", "/api/v0/instances"]),
+        ("provider_zero_digest", "sha256:" + "f" * 64),
+    ],
+)
+def test_native_materializer_rejects_invalid_adp_paid_provider_zero(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    fixture = _fixture(tmp_path / field)
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": "2026-08-29T10:47:52+00:00",
+        "api_command": list(VAST_PROVIDER_ZERO_API_CALL),
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "stderr_present": False,
+        "raw_secret_values_recorded": False,
+        "provider_zero_digest": "",
+    }
+    zero[field] = value
+    if field != "provider_zero_digest":
+        zero["provider_zero_digest"] = canonical_digest(
+            zero, digest_field="provider_zero_digest"
+        )
+    _write(fixture["zero"], zero)
+
+    with pytest.raises(ValueError, match="same_goal_spend_terminal_or_zero_invalid"):
+        _materialize(tmp_path / field, "native_task_arena", fixture)
 
 
 def _zero_charge_absence_fixture(root: Path) -> dict[str, Path]:
@@ -631,15 +827,38 @@ def test_live_profile_expands_new_lane_project_spend_genesis(tmp_path: Path) -> 
     output, reconciliation = _materialize(
         tmp_path / "fixture", "gaussian_excision", fixture
     )
-    _, record = validate_same_goal_spend_reconciliation(output)
+    baseline = _project_baseline_authority(
+        tmp_path / "baseline-authority.json", total=39.791914
+    )
+    project_output = tmp_path / "project-spend.json"
+    project = materialize_project_spend_reconciliation(
+        baseline_authority_path=baseline,
+        posted_reconciliation_paths=[output],
+        expected_coverage_ids=[str(reconciliation["entries"][0]["attempt_id"])],
+        completeness_reference="retained queue and billing inventory",
+        authorized_by="user",
+        authorized_on="2026-08-25T15:15:00+00:00",
+        output_path=project_output,
+    )
+    assert project["posted_billing_maturity"] == [
+        {
+            "attempt_id": "fixture-attempt-1",
+            "provider_instance_id": 47593142,
+            "official_billing_response_sha256": (
+                "sha256:" + hashlib.sha256(fixture["billing"].read_bytes()).hexdigest()
+            ),
+            "cost_usd": 0.025,
+            "gpu_hours": 0.05,
+            "status": "mature_nonzero_gpu_time",
+        }
+    ]
+    _, record = validate_project_spend_reconciliation(project_output)
     authority = _write(
         tmp_path / "authority.json",
         {
             "lineage_kind": "project_spend_genesis",
             "project_spend_reconciliation": record,
-            "aggregate_goal_spend_before_attempt_usd": reconciliation[
-                "total_cost_usd"
-            ],
+            "aggregate_goal_spend_before_attempt_usd": project["total_cost_usd"],
         },
     )
 
@@ -656,9 +875,127 @@ def test_live_profile_expands_new_lane_project_spend_genesis(tmp_path: Path) -> 
     observed = {Path(row["path"]) for row in inputs}
     assert observed == {
         authority.resolve(),
+        baseline.resolve(),
+        project_output.resolve(),
         output.resolve(),
         *(path.resolve() for path in fixture.values()),
     }
+
+
+def test_live_profile_expands_terminal_and_project_spend_together(
+    tmp_path: Path,
+) -> None:
+    """A continuing policy lane must publish both spend proof closures."""
+
+    fixture = _fixture(tmp_path / "fixture")
+    output, reconciliation = _materialize(
+        tmp_path / "fixture", "gaussian_excision", fixture
+    )
+    binding = bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="gaussian_excision",
+    )
+    baseline = _project_baseline_authority(
+        tmp_path / "baseline-authority.json", total=43.172914
+    )
+    project_output = tmp_path / "project-spend.json"
+    project = materialize_project_spend_reconciliation(
+        baseline_authority_path=baseline,
+        posted_reconciliation_paths=[output],
+        expected_coverage_ids=[str(reconciliation["entries"][0]["attempt_id"])],
+        completeness_reference="human-authorized complete project coverage",
+        authorized_by="user",
+        authorized_on="2026-08-25T20:41:55Z",
+        output_path=project_output,
+    )
+    _, project_record = validate_project_spend_reconciliation(project_output)
+    authority = _write(
+        tmp_path / "authority.json",
+        {
+            "lineage_kind": "terminal_predecessor",
+            "prior_terminal_attempts": binding["prior_terminal_attempts"],
+            "prior_spend_reconciliation": binding["reconciliation"],
+            "prior_actual_provider_spend_usd": binding["actual_total_usd"],
+            "project_spend_reconciliation": project_record,
+            "aggregate_goal_spend_before_attempt_usd": project["total_cost_usd"],
+        },
+    )
+
+    inputs = expand_prior_spend_immutable_inputs(
+        [
+            {
+                "name": "native_task_arena_attempt_authority",
+                "path": str(authority),
+                "digest": "sha256:" + "0" * 64,
+            }
+        ]
+    )
+
+    assert {Path(row["path"]) for row in inputs} == {
+        authority.resolve(),
+        baseline.resolve(),
+        project_output.resolve(),
+        output.resolve(),
+        *(path.resolve() for path in fixture.values()),
+    }
+
+
+def test_project_spend_retains_full_cap_for_preliminary_disk_only_billing(
+    tmp_path: Path,
+) -> None:
+    """A posted row with zero GPU time cannot replace an allocated-run reserve."""
+
+    fixture = _fixture(tmp_path / "fixture")
+    billing = json.loads(fixture["billing"].read_text(encoding="utf-8"))
+    billing["results"][0]["items"] = [
+        {
+            "type": "gpu",
+            "description": "0.0 hours at $0.500/hour",
+            "amount": 0.0,
+        },
+        {
+            "type": "disk",
+            "description": "0.1 hours at $0.069/hour",
+            "amount": 0.007,
+        },
+    ]
+    billing["results"][0]["amount"] = 0.007
+    fixture["billing"].write_text(json.dumps(billing), encoding="utf-8")
+    billing_source = json.loads(fixture["billing_source"].read_text(encoding="utf-8"))
+    billing_source["sources"][0]["response_digest"] = (
+        "sha256:" + hashlib.sha256(fixture["billing"].read_bytes()).hexdigest()
+    )
+    billing_source["sources"][0]["response_size_bytes"] = fixture[
+        "billing"
+    ].stat().st_size
+    billing_source["receipt_digest"] = canonical_digest(
+        billing_source, digest_field="receipt_digest"
+    )
+    fixture["billing_source"].write_text(
+        json.dumps(billing_source), encoding="utf-8"
+    )
+    output, reconciliation = _materialize(
+        tmp_path / "fixture", "native_task_arena", fixture
+    )
+    baseline = _project_baseline_authority(
+        tmp_path / "baseline-authority.json", total=41.549914
+    )
+
+    with pytest.raises(
+        ValueError, match="project_spend_official_billing_immature"
+    ):
+        materialize_project_spend_reconciliation(
+            baseline_authority_path=baseline,
+            posted_reconciliation_paths=[output],
+            expected_coverage_ids=[
+                str(reconciliation["entries"][0]["attempt_id"])
+            ],
+            completeness_reference="retained queue and billing inventory",
+            authorized_by="user",
+            authorized_on="2026-08-25T16:15:00+00:00",
+            output_path=tmp_path / "project-spend.json",
+        )
 
 
 def test_live_profile_rejects_changed_nested_prior_spend_bytes(tmp_path: Path) -> None:
@@ -779,6 +1116,52 @@ def test_cli_derives_cost_and_digests_without_handwritten_ledger(tmp_path: Path)
     assert summary["status"] == "materialized"
     assert summary["total_cost_usd"] == 0.025
     assert output.is_file()
+
+
+@pytest.mark.parametrize(
+    "lane", sorted(SUPPORTED_LANES | {DIAGNOSTIC_SCENE_CONFIGURATION_LANE})
+)
+def test_cli_accepts_every_materializer_lane_choice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    lane: str,
+) -> None:
+    observed: list[str] = []
+
+    def materialize(**kwargs):
+        observed.append(str(kwargs["lane"]))
+        return {
+            "receipt_digest": "sha256:" + "a" * 64,
+            "entry_count": 1,
+            "total_cost_usd": 0.0,
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.same_goal_spend_reconciliation."
+        "materialize_same_goal_spend_reconciliation",
+        materialize,
+    )
+    placeholder = str(tmp_path / "placeholder.json")
+
+    assert same_goal_main(
+        [
+            "--lane",
+            lane,
+            "--terminal-result",
+            placeholder,
+            "--teardown-manifest",
+            placeholder,
+            "--provider-zero",
+            placeholder,
+            "--official-billing-response",
+            placeholder,
+            "--provider-billing-source-receipt",
+            placeholder,
+            "--output",
+            str(tmp_path / f"{lane}.json"),
+        ]
+    ) == 0
+    assert observed == [lane]
 
 
 def test_materializer_prefers_provider_zero_schema_digest(tmp_path: Path) -> None:

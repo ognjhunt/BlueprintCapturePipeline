@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 from collections.abc import Callable
 from typing import Any, Mapping, Sequence
 
@@ -18,26 +19,65 @@ class NativeTaskArenaReadbackError(ValueError):
         super().__init__(";".join(self.errors))
 
 
-def _native_list(value: Any, *, error: str) -> Any:
+def _read_marker_pose_world(scene: Any) -> list[float]:
+    """Read the static rendered marker from live USD, never the requested pose."""
+    import omni.usd
+    from pxr import Usd, UsdGeom
+
+    paths = scene.env_prim_paths
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(paths[0] + "/policy_target_marker")
+    if not prim.IsValid():
+        raise NativeTaskArenaReadbackError(["native_task_arena_target_marker_missing"])
+    matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    position = matrix.ExtractTranslation()
+    rotation = matrix.ExtractRotationQuat()
+    pose = [*position, *rotation.GetImaginary(), rotation.GetReal()]
+    if not all(math.isfinite(float(value)) for value in pose):
+        raise NativeTaskArenaReadbackError(["native_task_arena_target_marker_pose_invalid"])
+    return [float(value) for value in pose]
+
+
+def _native_list_with_storage(value: Any, *, error: str) -> tuple[Any, dict[str, str]]:
+    """Keep the real scalar storage dtype through Warp's tensor conversion."""
     if value is None:
         raise NativeTaskArenaReadbackError([error])
     module = type(value).__module__
+    source_dtype = str(getattr(value, "dtype", ""))
+    conversion = "none"
     if module == "warp" or module.startswith("warp."):
         import warp as wp
 
         value = wp.to_torch(value)
+        conversion = "warp_to_torch"
     if hasattr(value, "detach"):
         value = value.detach().cpu()
+        conversion = "detach_cpu" if conversion == "none" else conversion + "_detach_cpu"
+    # Isaac Lab ProxyArray forwards detach() to its Torch view, whereas its
+    # dtype attribute belongs to the Warp transform container. Capture the
+    # scalar dtype after conversion, before tolist() erases it.
+    storage_dtype = str(getattr(value, "dtype", ""))
+    storage = {"source_backend": module, "source_dtype": source_dtype,
+               "conversion": conversion, "storage_dtype": storage_dtype,
+               "canonical_scalar_dtype": storage_dtype.removeprefix("torch.")}
     if hasattr(value, "tolist"):
         value = value.tolist()
-    return value
+    return value, storage
+
+
+def _native_list(value: Any, *, error: str) -> Any:
+    return _native_list_with_storage(value, error=error)[0]
+
+
+def _first_environment_with_storage(value: Any, *, error: str) -> tuple[list[Any], dict[str, str]]:
+    rows, storage = _native_list_with_storage(value, error=error)
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
+        raise NativeTaskArenaReadbackError([error])
+    return rows[0], storage
 
 
 def _first_environment(value: Any, *, error: str) -> list[Any]:
-    rows = _native_list(value, error=error)
-    if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
-        raise NativeTaskArenaReadbackError([error])
-    return rows[0]
+    return _first_environment_with_storage(value, error=error)[0]
 
 
 def _force_vectors(value: Any, *, sensor_id: str) -> list[list[float]]:
@@ -246,8 +286,15 @@ def _quaternion_angle_xyzw(a: Sequence[float], b: Sequence[float]) -> float:
         raise NativeTaskArenaReadbackError(
             ["native_task_arena_quaternion_invalid"]
         )
-    dot = abs(sum(x * y for x, y in zip(qa, qb, strict=True)) / (norm_a * norm_b))
-    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+    qa = [value / norm_a for value in qa]
+    qb = [value / norm_b for value in qb]
+    if sum(x * y for x, y in zip(qa, qb, strict=True)) < 0:
+        qb = [-value for value in qb]
+    # The chord formulation retains precision near equality, where acos(dot)
+    # can report zero for distinct orientations or nonzero for identical ones.
+    difference = math.sqrt(sum((x - y) ** 2 for x, y in zip(qa, qb, strict=True)))
+    combined = math.sqrt(sum((x + y) ** 2 for x, y in zip(qa, qb, strict=True)))
+    return 4.0 * math.atan2(difference, combined)
 
 
 def read_native_task_arena_task_link_frame_equivalence(
@@ -465,7 +512,7 @@ def read_native_task_arena_object_reset_state(
     *,
     joint_tolerance_rad: float = 1.0e-4,
 ) -> dict[str, Any]:
-    """Read and qualify every replacement root/joint reset from native state.
+    """Read and qualify every replacement/support root and joint reset.
 
     The active task subject and every inactive replacement are intentionally
     treated alike.  This prevents an inactive asset from drifting across task
@@ -498,7 +545,8 @@ def read_native_task_arena_object_reset_state(
     for planned in built.plan["objects"]:
         if not (
             planned.get("task_subject") is True
-            or planned.get("semantic_role") in {"task_object", "replacement"}
+            or planned.get("semantic_role")
+            in {"task_object", "replacement", "task_support"}
         ):
             continue
         runtime_name = str(planned.get("name") or "")
@@ -628,6 +676,8 @@ def read_native_task_arena_scenario_parameters(
         kind = application["readback_kind"]
         tolerance = float(application["application_tolerance"])
         expected = application["expected_native_value"]
+        storage_comparison = None
+        native_storage = None
         if kind.startswith("task_subject_root_"):
             if scene is None:
                 raise NativeTaskArenaReadbackError(
@@ -640,17 +690,47 @@ def read_native_task_arena_scenario_parameters(
                 raise NativeTaskArenaReadbackError(
                     [f"native_task_arena_scenario_asset_missing:{runtime_name}"]
                 ) from exc
-            pose = _first_environment(
-                getattr(getattr(asset, "data", None), "root_pose_w", None),
+            native_pose = getattr(getattr(asset, "data", None), "root_pose_w", None)
+            pose, native_storage = _first_environment_with_storage(
+                native_pose,
                 error=f"native_task_arena_scenario_root_pose_missing:{runtime_name}",
             )
+            dtype = native_storage["canonical_scalar_dtype"]
             if kind == "task_subject_root_position_y_m":
                 observed: Any = float(pose[1])
                 error = abs(observed - float(expected))
+                if tolerance == 0.0 and dtype in {"float32", "torch.float32"}:
+                    # Compare an exact reset with the exact value its native
+                    # storage can hold. Keep the unrounded request/error below;
+                    # this introduces no distance tolerance and even one native
+                    # ULP of observed drift still refuses.
+                    stored_expected = struct.unpack("!f", struct.pack("!f", float(expected)))[0]
+                    storage_comparison = {
+                        "schema_version": "native_float_storage_comparison.v1",
+                        "mode": "exact_expected_native_storage_value",
+                        "native_dtype": dtype,
+                        "expected_stored_value": stored_expected,
+                        "absolute_error_stored_value": abs(observed - stored_expected),
+                        "unit": "m",
+                        "physical_tolerance_changed": False,
+                    }
             else:
                 observed = _native_xyzw_to_contract_xyzw(pose[3:7])
                 error = _quaternion_angle_xyzw(observed, expected)
                 tolerance = math.radians(tolerance)
+                if tolerance == 0.0 and dtype in {"float32", "torch.float32"}:
+                    stored_expected = [struct.unpack("!f", struct.pack("!f", float(value)))[0]
+                                       for value in expected]
+                    storage_comparison = {
+                        "schema_version": "native_float_storage_comparison.v1",
+                        "mode": "exact_expected_native_storage_value",
+                        "native_dtype": dtype,
+                        "expected_stored_value": stored_expected,
+                        # Use both raw orientations so each is normalized once.
+                        "absolute_error_stored_value": _quaternion_angle_xyzw(pose[3:7], stored_expected),
+                        "unit": "rad",
+                        "physical_tolerance_changed": False,
+                    }
         elif kind == "camera_offset_position_x_m":
             role = application["camera_role"]
             try:
@@ -663,6 +743,7 @@ def read_native_task_arena_scenario_parameters(
         elif kind in {
             "task_light_intensity_scale",
             "task_subject_link_dynamic_friction",
+            "task_subject_rigid_dynamic_friction",
         }:
             parameter_id = application["parameter_id"]
             try:
@@ -670,8 +751,10 @@ def read_native_task_arena_scenario_parameters(
                 if kind == "task_light_intensity_scale":
                     observed = float(native["observed_intensity_scale"])
                 else:
-                    if native["task_link_id"] != application["task_link_id"]:
+                    if kind == "task_subject_link_dynamic_friction" and native["task_link_id"] != application["task_link_id"]:
                         raise KeyError("task_link_id")
+                    if kind == "task_subject_rigid_dynamic_friction" and native["source"] != "physx_material_properties":
+                        raise KeyError("physx_material_properties")
                     observed = float(native["observed_dynamic_friction"])
             except (KeyError, TypeError, ValueError) as exc:
                 raise NativeTaskArenaReadbackError(
@@ -695,7 +778,10 @@ def read_native_task_arena_scenario_parameters(
                 "observed_native_value": observed,
                 "absolute_error_native_unit": error,
                 "application_tolerance_native_unit": tolerance,
-                "passed": error <= tolerance,
+                "passed": (storage_comparison["absolute_error_stored_value"]
+                           if storage_comparison is not None else error) <= tolerance,
+                **({"native_storage_comparison": storage_comparison} if storage_comparison is not None else {}),
+                **({"native_storage_provenance": native_storage} if native_storage is not None else {}),
             }
         )
     return {
@@ -939,12 +1025,35 @@ class NativeArticulatedTaskArenaReadback:
 class NativeRigidTaskArenaReadback:
     """Read rigid root pose and exact contact channels from one Arena build."""
 
-    def __init__(self, built: NativeTaskArenaEnvironment):
+    def __init__(
+        self,
+        built: NativeTaskArenaEnvironment,
+        *,
+        gripper_pad_readback_callback: Callable[[], Mapping[str, Any]] | None = None,
+    ):
         self._built = built
+        self._gripper_pad_readback_callback = gripper_pad_readback_callback
         if built.plan.get("task_kind") != "rigid_pick_place":
             raise NativeTaskArenaReadbackError(
                 ["native_task_arena_readback_task_kind_invalid"]
             )
+        robot = built.plan.get("robot") or {}
+        if robot.get("robot_id") == "unitree_g1" and gripper_pad_readback_callback is None:
+            grasp = robot.get("grasp_frame") or {}
+            names = grasp.get("body_names")
+            contacts = robot.get("task_contact_body_paths")
+            if (
+                grasp.get("kind") != "body_midpoint"
+                or not isinstance(names, (list, tuple))
+                or len(names) != 2
+                or any(not isinstance(name, str) or not name for name in names)
+                or len(set(names)) != 2
+                or not isinstance(contacts, (list, tuple))
+                or any(f"{{ENV_REGEX_NS}}/Robot/{name}" not in contacts for name in names)
+            ):
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_g1_grasp_frame_invalid"]
+                )
 
     def read_task_sample(self) -> dict[str, Any]:
         env = getattr(self._built.env, "unwrapped", self._built.env)
@@ -968,15 +1077,57 @@ class NativeRigidTaskArenaReadback:
             raise NativeTaskArenaReadbackError(
                 ["native_task_arena_task_root_pose_missing"]
             )
+        destination_pose = None
+        task_support_name = self._built.scene_asset_names.get("task_support")
+        if task_support_name is not None:
+            try:
+                task_support = scene[task_support_name]
+            except (KeyError, TypeError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_task_support_readback_missing"]
+                ) from exc
+            native_destination_pose = _first_environment(
+                getattr(getattr(task_support, "data", None), "root_pose_w", None),
+                error="native_task_arena_task_support_pose_missing",
+            )
+            if len(native_destination_pose) < 7:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_task_support_pose_missing"]
+                )
+            destination_pose = [
+                *[float(value) for value in native_destination_pose[:3]],
+                *_native_xyzw_to_contract_xyzw(native_destination_pose[3:7]),
+            ]
+        elif (self._built.plan.get("task_spec") or {}).get("visible_target_marker") is not None:
+            destination_pose = _read_marker_pose_world(scene)
         contact_peaks: dict[str, float] = {}
         for logical_sensor_id in (
             "task_robot_contact",
             "task_support_contact",
+            "task_initial_support_contact",
             "task_scene_collision",
             "robot_task_forbidden_collision",
             "robot_scene_contact",
+            "destination_scene_support_contact",
+            "destination_scene_forbidden_contact",
         ):
             scene_names = self._built.contact_sensor_names.get(logical_sensor_id)
+            if (logical_sensor_id == "task_initial_support_contact" and not scene_names
+                    and not self._built.plan["articulation"].get("initial_support_contact_body_paths")):
+                contact_peaks[logical_sensor_id] = 0.0
+                continue
+            if logical_sensor_id.startswith("destination_scene_") and not scene_names:
+                empty_forbidden_partition = (
+                    logical_sensor_id == "destination_scene_forbidden_contact"
+                    and self._built.plan["articulation"].get("destination_placement_forbidden_body_paths") == []
+                    and bool(self._built.plan["articulation"].get("destination_placement_support_body_paths"))
+                )
+                if task_support_name is not None and not empty_forbidden_partition:
+                    raise NativeTaskArenaReadbackError(
+                        [f"native_task_arena_contact_sensor_missing:{logical_sensor_id}"]
+                    )
+                contact_peaks[logical_sensor_id] = 0.0
+                continue
             if (
                 logical_sensor_id == "task_scene_collision"
                 and not scene_names
@@ -1022,18 +1173,52 @@ class NativeRigidTaskArenaReadback:
                 math.sqrt(sum(component * component for component in vector))
                 for vector in vectors
             )
-        grasp_frame = self._built.plan["robot"]["grasp_frame"]
-        finger_positions = [
-            _body_position(
-                robot,
-                body_name=body_name,
-                error="native_task_arena_grasp_body_missing",
-            )[0]
-            for body_name in grasp_frame.get("body_names") or []
-        ]
-        if len(finger_positions) != 2:
-            raise NativeTaskArenaReadbackError(
-                ["native_task_arena_grasp_frame_invalid"]
+        if self._gripper_pad_readback_callback is not None:
+            try:
+                pad_readback = self._gripper_pad_readback_callback()
+                pad_centers = pad_readback["measured"]["pad_centers_world_m"]
+                finger_positions = [
+                    [float(value) for value in pad_centers[side]]
+                    for side in ("left", "right")
+                ]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_measured_gripper_pads_invalid"]
+                ) from exc
+            if (
+                any(len(position) != 3 for position in finger_positions)
+                or not all(
+                    math.isfinite(value)
+                    for position in finger_positions
+                    for value in position
+                )
+            ):
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_measured_gripper_pads_invalid"]
+                )
+            grasp_position_source = (
+                "native_g1_measured_pad_centers"
+                if self._built.plan["robot"].get("robot_id") == "unitree_g1"
+                else "native_franka_pose_servo.live_physical_pad_centers"
+            )
+        else:
+            grasp_frame = self._built.plan["robot"]["grasp_frame"]
+            finger_positions = [
+                _body_position(
+                    robot,
+                    body_name=body_name,
+                    error="native_task_arena_grasp_body_missing",
+                )[0]
+                for body_name in grasp_frame.get("body_names") or []
+            ]
+            if len(finger_positions) != 2:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_grasp_frame_invalid"]
+                )
+            grasp_position_source = (
+                "native_g1_dex3_body_origin_midpoint"
+                if self._built.plan["robot"].get("robot_id") == "unitree_g1"
+                else "native_inner_finger_body_origin_midpoint"
             )
         asset_root_pose = [
                 *[float(value) for value in native_pose[:3]],
@@ -1066,7 +1251,7 @@ class NativeRigidTaskArenaReadback:
             sample_binding=self._built.plan.get("task_sample_binding") or {},
             task_spec=self._built.plan.get("task_spec") or {},
         )
-        return {
+        sample = {
             "asset_root_pose_world": asset_root_pose,
             "task_scoring_pose_world": scoring_pose,
             # The shared rigid scorer consumes this compatibility key.  It is
@@ -1085,13 +1270,24 @@ class NativeRigidTaskArenaReadback:
             "task_scene_collision_peak_force_n": contact_peaks[
                 "task_scene_collision"
             ],
+            "task_initial_support_contact_peak_force_n": contact_peaks["task_initial_support_contact"],
             "robot_scene_contact_peak_force_n": contact_peaks["robot_scene_contact"],
             "robot_task_forbidden_collision_peak_force_n": contact_peaks[
                 "robot_task_forbidden_collision"
             ],
+            "destination_scene_support_contact_peak_force_n": contact_peaks[
+                "destination_scene_support_contact"
+            ],
+            "destination_scene_forbidden_contact_peak_force_n": contact_peaks[
+                "destination_scene_forbidden_contact"
+            ],
             **joint_state,
             "measurement_authority": "native_rigid_root_pose_and_filtered_contact_sensors",
         }
+        if destination_pose is not None:
+            sample["destination_pose_world"] = destination_pose
+        sample["grasp_frame_position_source"] = grasp_position_source
+        return sample
 
 
 __all__ = [

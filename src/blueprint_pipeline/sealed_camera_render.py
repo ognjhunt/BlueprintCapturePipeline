@@ -18,9 +18,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -28,6 +31,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
+from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 
 
@@ -54,6 +58,8 @@ QUALIFIED_AUTHORIZATION_CLASSES = frozenset(
 SUPPORTED_COLOR_SPACE = "srgb"
 SUPPORTED_ALPHA_MODE = "opaque_rgb"
 SUPPORTED_EXPOSURE_MODE = "renderer_default_unmodified"
+DEFAULT_CALIBRATED_NEAR_M = 0.01
+DEFAULT_CALIBRATED_FAR_M = 100_000.0
 DEFAULT_RENDER_INITIAL_PROGRESS_TIMEOUT_SECONDS = 300.0
 DEFAULT_RENDER_PROGRESS_TIMEOUT_SECONDS = 120.0
 _RENDER_PROGRESS_POLL_SECONDS = 1.0
@@ -90,6 +96,56 @@ def _render_harness_failure_codes(
     return codes
 
 
+#: Retained tail per captured stream, matching the scene-configuration stage
+#: tool's bound so a renderer looping on output cannot bury the stage log.
+_RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES = 20_000
+
+
+def _render_harness_stream_tail(value: object) -> str:
+    text = redacted_failure_text("" if value is None else value)
+    if len(text) <= _RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES:
+        return text
+    dropped = len(text) - _RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES
+    return f"<{dropped} earlier bytes dropped>\n{text[-_RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES:]}"
+
+
+def _emit_render_harness_diagnostics(
+    *,
+    returncode: int | None,
+    stderr: str,
+    stdout: str,
+    harness_output: Mapping[str, Any],
+) -> None:
+    """Print the harness's own redacted output before classifying it away.
+
+    ``_render_harness_failure_codes`` matches a fixed set of substrings and
+    discards everything else, so a cause it does not recognise reaches the
+    caller as bare ``render_harness_failed``. The harness had already written
+    the answer: a failed render carries ``page_errors`` naming the exact
+    console error and an ``error`` with the JavaScript stack. Dropping them
+    means a render that dies on a rented GPU can only be diagnosed by renting
+    another one. The classifier is unchanged -- this only stops the evidence
+    being thrown away on the way past.
+    """
+
+    lines = [
+        "render_harness_failed",
+        f"returncode={returncode}",
+        f"harness_status={harness_output.get('status')!r}",
+        f"graphics_backend={harness_output.get('graphics_backend')!r}",
+    ]
+    for page_error in harness_output.get("page_errors") or []:
+        lines.append(f"page_error: {_render_harness_stream_tail(page_error)}")
+    error = harness_output.get("error")
+    if error:
+        lines.append(f"harness_error: {_render_harness_stream_tail(error)}")
+    for name, value in (("stdout", stdout), ("stderr", stderr)):
+        tail = _render_harness_stream_tail(value)
+        lines.append(f"--- renderer {name} ---")
+        lines.append(tail if tail.strip() else "<empty>")
+    print("\n".join(lines), file=sys.stderr, flush=True)
+
+
 def _nonempty_expected_frame_count(expected_paths: Sequence[Path]) -> int:
     """Count complete-looking output frames without interpreting their pixels."""
 
@@ -118,6 +174,7 @@ def _wait_for_renderer_with_progress_watchdog(
     render_timeout_seconds: float,
     initial_progress_timeout_seconds: float,
     progress_timeout_seconds: float,
+    diagnostics_path: Path | None = None,
 ) -> tuple[str, str]:
     """Wait for a renderer while failing closed on no output-frame progress.
 
@@ -132,12 +189,48 @@ def _wait_for_renderer_with_progress_watchdog(
     last_progress_at = started_at
     completed_count = 0
     expected_count = len(expected_frame_paths)
+    def fail(blocker: str, elapsed: float) -> None:
+        stdout, stderr = _stop_renderer_process(process)
+        progress = ""
+        if expected_frame_paths:
+            path = expected_frame_paths[0].parent / "renderer_progress.jsonl"
+            if path.is_file() and not path.is_symlink():
+                with path.open("rb") as stream:
+                    stream.seek(max(0, path.stat().st_size - _RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES))
+                    progress = _render_harness_stream_tail(stream.read().decode("utf-8", errors="replace"))
+        diagnostic = {
+            "schema_version": "render_harness_timeout_diagnostics.v1", "status": "failed",
+            "blocker": blocker, "elapsed_seconds": elapsed,
+            "completed_frame_count": _nonempty_expected_frame_count(expected_frame_paths),
+            "expected_frame_count": len(expected_frame_paths),
+            "render_timeout_seconds": render_timeout_seconds,
+            "initial_progress_timeout_seconds": initial_progress_timeout_seconds,
+            "progress_timeout_seconds": progress_timeout_seconds,
+            "stdout_tail": _render_harness_stream_tail(stdout),
+            "stderr_tail": _render_harness_stream_tail(stderr),
+            "renderer_progress_tail": progress, "returncode": process.returncode,
+            "render_qualification_claimed": False, "diagnostic_digest": "",
+        }
+        diagnostic["diagnostic_digest"] = canonical_digest(diagnostic, digest_field="diagnostic_digest")
+        if diagnostics_path is not None:
+            try:
+                with diagnostics_path.open("x", encoding="utf-8") as stream:
+                    stream.write(canonical_json(diagnostic) + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except OSError as exc:
+                print("render_timeout_diagnostics_write_failed:" + type(exc).__name__, file=sys.stderr)
+        _emit_render_harness_diagnostics(returncode=process.returncode, stdout=stdout,
+                                        stderr=stderr, harness_output={"status": blocker})
+        if progress:
+            print("--- renderer progress ---\n" + progress, file=sys.stderr, flush=True)
+        raise SealedCameraRenderError([blocker])
+
     while True:
         now = time.monotonic()
         remaining = render_timeout_seconds - (now - started_at)
         if remaining <= 0.0:
-            _stop_renderer_process(process)
-            raise SealedCameraRenderError(["render_harness_timeout"])
+            fail("render_harness_timeout", now - started_at)
         try:
             stdout, stderr = process.communicate(
                 timeout=min(_RENDER_PROGRESS_POLL_SECONDS, remaining)
@@ -161,8 +254,7 @@ def _wait_for_renderer_with_progress_watchdog(
             )
             blocker = "render_harness_frame_progress_timeout"
         if stalled:
-            _stop_renderer_process(process)
-            raise SealedCameraRenderError([blocker])
+            fail(blocker, now - started_at)
 
 
 def _sha256_file(path: Path) -> str:
@@ -245,6 +337,19 @@ def _renderer_source_identity(root: Path, *, node_version: str) -> dict[str, Any
     }
 
 
+def calibrated_clip_planes(intrinsics: Mapping[str, Any]) -> dict[str, float]:
+    """Fixed metric defaults, independent of the splat's global/outlier bounds."""
+    values = {}
+    for key, default in (("near", DEFAULT_CALIBRATED_NEAR_M), ("far", DEFAULT_CALIBRATED_FAR_M)):
+        raw = intrinsics.get(key)
+        if isinstance(raw, bool):
+            raise ValueError("calibrated_camera_clipping_invalid")
+        values[key] = float(default if raw is None else raw)
+    if not all(math.isfinite(value) for value in values.values()) or not 0 < values["near"] < values["far"]:
+        raise ValueError("calibrated_camera_clipping_invalid")
+    return values
+
+
 def _camera_specs_from_calibration_file(path: Path) -> list[dict[str, Any]]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -278,9 +383,7 @@ def _camera_specs_from_calibration_file(path: Path) -> list[dict[str, Any]]:
                 "width": int(intrinsics["width"]),
                 "height": int(intrinsics["height"]),
             }
-            for key in ("near", "far"):
-                if intrinsics.get(key) is not None:
-                    normalized_intrinsics[key] = float(intrinsics[key])
+            normalized_intrinsics.update(calibrated_clip_planes(intrinsics))
             pose_matrix = np.asarray(matrix, dtype=np.float64)
         except (KeyError, TypeError, ValueError) as exc:
             raise SealedCameraRenderError(["render_calibrated_camera_file_invalid"]) from exc
@@ -327,6 +430,119 @@ def transform_camera_into_provider_frame(
     return [[float(value) for value in row] for row in provider]
 
 
+def _default_playwright_browser_cache(
+    environment: Mapping[str, str],
+) -> Path | None:
+    """Resolve Playwright's cache before replacing ``HOME`` for Chromium."""
+
+    home = environment.get("HOME")
+    if sys.platform == "darwin":
+        return Path(home) / "Library" / "Caches" / "ms-playwright" if home else None
+    if os.name == "nt":
+        local_app_data = environment.get("LOCALAPPDATA")
+        return Path(local_app_data) / "ms-playwright" if local_app_data else None
+    cache_home = environment.get("XDG_CACHE_HOME")
+    if cache_home:
+        return Path(cache_home) / "ms-playwright"
+    return Path(home) / ".cache" / "ms-playwright" if home else None
+
+
+def _browser_process_environment(
+    browser_home: Path, *, browser_executable: Path | None = None
+) -> dict[str, str]:
+    """Give the headless browser a writable home of its own.
+
+    The control-plane services run as a system account whose home is
+    ``/nonexistent`` under ``ProtectHome``. Chromium derives its crashpad
+    database and profile paths from ``HOME``; when that path does not exist the
+    crashpad handler refuses (``--database is required``) and the browser aborts
+    on an ``int3`` CHECK before rendering a single frame -- the harness only
+    ever saw a non-zero exit. Point HOME and the XDG roots at a directory this
+    render owns so the browser starts regardless of the service account's home.
+    """
+
+    inherited = dict(os.environ)
+    playwright_cache = _default_playwright_browser_cache(inherited)
+    for child in ("config", "cache", "data", "state"):
+        (browser_home / child).mkdir(parents=True, exist_ok=True)
+    environment = {
+        **inherited,
+        "HOME": str(browser_home),
+        "XDG_CONFIG_HOME": str(browser_home / "config"),
+        "XDG_CACHE_HOME": str(browser_home / "cache"),
+        "XDG_DATA_HOME": str(browser_home / "data"),
+        "XDG_STATE_HOME": str(browser_home / "state"),
+    }
+    if (
+        browser_executable is None
+        and "PLAYWRIGHT_BROWSERS_PATH" not in environment
+        and playwright_cache is not None
+    ):
+        # Playwright normally derives this location from HOME/XDG_CACHE_HOME.
+        # Chromium needs the temporary HOME, but Node must still find the
+        # browser installed for the calling runtime.
+        environment["PLAYWRIGHT_BROWSERS_PATH"] = str(playwright_cache)
+    return environment
+
+
+def _checkout_renderer_identity_complete(identity: Mapping[str, Any]) -> bool:
+    """Whether the git probe pinned the renderer to a clean, named revision."""
+
+    return bool(
+        identity["repository_revision"]
+        and identity["repository_renderer_files_clean"]
+        and identity["package_version"]
+        and identity["package_lock_digest"]
+        and identity["dependency_versions"].get("@sparkjsdev/spark")
+    )
+
+
+def _digest_bound_renderer_identity(identity: Mapping[str, Any] | None) -> bool:
+    """Whether the renderer was reopened full-byte against a sealed digest.
+
+    The git probe above is the repository answer, and it is the only answer a
+    checkout can give. A rented provider has no checkout: the bundle extracts
+    the renderer into a plain directory, so ``git rev-parse`` returns nothing
+    and that probe can never pass there no matter how well pinned the bytes
+    are. Run
+    ``adp-new-scene-simple-relocation-839873-6e9b81ed-r2-web-20260827T041233Z``
+    hit exactly that -- the render completed and wrote its eight frames on the
+    GPU, and the stage was refused afterwards for provenance the provider path
+    is structurally unable to produce.
+
+    What the provider does have is a stronger binding, not a weaker one: every
+    renderer file reopened byte for byte and matched against a digest sealed at
+    an exact source commit, which is what
+    ``validate_provider_bundle_splat_renderer`` returns. Accepting that form
+    keeps the gate closed -- an absent, malformed, or non-digest-bound identity
+    still fails, and so does a checkout whose renderer files are dirty.
+    """
+
+    if not isinstance(identity, Mapping):
+        return False
+    file_count = identity.get("file_count")
+    return bool(
+        identity.get("mode") == "digest_bound_provider_bundle_renderer"
+        and identity.get("schema_version")
+        == "task_evaluation_scene_configuration_provider_renderer.v1"
+        and identity.get("platform") == "linux-x86_64"
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(identity.get("renderer_digest") or "")
+        )
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(identity.get("source_runtime_digest") or ""),
+        )
+        and re.fullmatch(
+            r"[0-9a-f]{40}", str(identity.get("source_commit") or "")
+        )
+        and isinstance(file_count, int)
+        and not isinstance(file_count, bool)
+        and file_count > 0
+        and identity.get("provider_full_byte_inventory_reopened") is True
+    )
+
+
 def render_splat_at_exact_cameras(
     *,
     splat_path: str | Path,
@@ -346,6 +562,9 @@ def render_splat_at_exact_cameras(
     exposure_mode: str = SUPPORTED_EXPOSURE_MODE,
     repo_root: str | Path | None = None,
     node: str = "node",
+    renderer_runtime_root: str | Path | None = None,
+    browser_executable: str | Path | None = None,
+    renderer_runtime_identity: Mapping[str, Any] | None = None,
     graphics_backend: str = "swiftshader",
     background_rgb: int = 0x0B0B10,
     warmup_ms: int = 2500,
@@ -367,8 +586,13 @@ def render_splat_at_exact_cameras(
     """
 
     root = Path(repo_root) if repo_root else Path(__file__).resolve().parents[2]
-    harness = root / RENDER_HARNESS_REL
-    entry = root / RENDER_ENTRY_REL
+    execution_root = (
+        Path(renderer_runtime_root).resolve()
+        if renderer_runtime_root is not None
+        else root
+    )
+    harness = execution_root / RENDER_HARNESS_REL
+    entry = execution_root / RENDER_ENTRY_REL
     splat = Path(splat_path)
     output = Path(output_dir)
     errors: list[str] = []
@@ -427,6 +651,39 @@ def render_splat_at_exact_cameras(
         errors.append("render_node_runtime_unavailable")
     if not harness.is_file() or not entry.is_file():
         errors.append("render_harness_unavailable")
+    if execution_root != root:
+        for relative in (
+            RENDER_HARNESS_REL,
+            RENDER_ENTRY_REL,
+            "tools/splat_render/package.json",
+            "tools/splat_render/package-lock.json",
+        ):
+            source_file = root / relative
+            runtime_file = execution_root / relative
+            if (
+                source_file.is_symlink()
+                or runtime_file.is_symlink()
+                or not source_file.is_file()
+                or not runtime_file.is_file()
+                or _sha256_file(source_file) != _sha256_file(runtime_file)
+            ):
+                errors.append(f"render_runtime_source_mismatch:{relative}")
+    browser_path = (
+        Path(browser_executable).resolve()
+        if browser_executable is not None
+        else None
+    )
+    if browser_path is not None and (
+        browser_path.is_symlink()
+        or not browser_path.is_file()
+        or not browser_path.stat().st_mode & 0o111
+    ):
+        errors.append("render_browser_executable_invalid")
+    if renderer_runtime_identity is not None:
+        try:
+            canonical_json(dict(renderer_runtime_identity))
+        except (TypeError, ValueError):
+            errors.append("render_runtime_identity_invalid")
     if splat.is_symlink() or not splat.is_file():
         errors.append("render_splat_missing_or_symlink")
     if not cameras:
@@ -461,9 +718,7 @@ def render_splat_at_exact_cameras(
                 "width": width,
                 "height": height,
             }
-            for key in ("near", "far"):
-                if intrinsics.get(key) is not None:
-                    spec_intrinsics[key] = float(intrinsics[key])
+            spec_intrinsics.update(calibrated_clip_planes(intrinsics))
         except (KeyError, TypeError, ValueError):
             errors.append("render_camera_intrinsics_invalid")
             continue
@@ -531,19 +786,28 @@ def render_splat_at_exact_cameras(
         "--bg",
         f"0x{background_rgb:06x}",
     ]
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    stdout, stderr = _wait_for_renderer_with_progress_watchdog(
-        process=process,
-        expected_frame_paths=[frames_dir / f"{spec['id']}.png" for spec in camera_specs],
-        render_timeout_seconds=float(render_timeout),
-        initial_progress_timeout_seconds=float(initial_progress_timeout_seconds),
-        progress_timeout_seconds=float(progress_timeout_seconds),
-    )
+    if browser_path is not None:
+        command.extend(["--browser-executable", str(browser_path)])
+    with tempfile.TemporaryDirectory(prefix="blueprint-browser-home-") as browser_home:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_browser_process_environment(
+                Path(browser_home), browser_executable=browser_path
+            ),
+        )
+        stdout, stderr = _wait_for_renderer_with_progress_watchdog(
+            process=process,
+            expected_frame_paths=[
+                frames_dir / f"{spec['id']}.png" for spec in camera_specs
+            ],
+            render_timeout_seconds=float(render_timeout),
+            initial_progress_timeout_seconds=float(initial_progress_timeout_seconds),
+            progress_timeout_seconds=float(progress_timeout_seconds),
+            diagnostics_path=output / "render_harness_timeout_diagnostics.v1.json",
+        )
     harness_output: dict[str, Any] = {}
     stdout = stdout.strip()
     if stdout:
@@ -552,6 +816,12 @@ def render_splat_at_exact_cameras(
         except (ValueError, json.JSONDecodeError):
             harness_output = {}
     if process.returncode != 0 or harness_output.get("status") != "completed":
+        _emit_render_harness_diagnostics(
+            returncode=process.returncode,
+            stderr=stderr,
+            stdout=stdout,
+            harness_output=harness_output,
+        )
         raise SealedCameraRenderError(
             _render_harness_failure_codes(
                 stderr=stderr,
@@ -563,12 +833,9 @@ def render_splat_at_exact_cameras(
         [node, "--version"], capture_output=True, text=True
     ).stdout.strip()
     renderer_source_identity = _renderer_source_identity(root, node_version=node_version)
-    if authorization_class in QUALIFIED_AUTHORIZATION_CLASSES and (
-        not renderer_source_identity["repository_revision"]
-        or not renderer_source_identity["repository_renderer_files_clean"]
-        or not renderer_source_identity["package_version"]
-        or not renderer_source_identity["package_lock_digest"]
-        or not renderer_source_identity["dependency_versions"].get("@sparkjsdev/spark")
+    if authorization_class in QUALIFIED_AUTHORIZATION_CLASSES and not (
+        _digest_bound_renderer_identity(renderer_runtime_identity)
+        or _checkout_renderer_identity_complete(renderer_source_identity)
     ):
         raise SealedCameraRenderError(["render_evaluation_renderer_identity_incomplete"])
     rendered_rows = []
@@ -650,6 +917,14 @@ def render_splat_at_exact_cameras(
                 initial_progress_timeout_seconds
             ),
             "progress_timeout_seconds": float(progress_timeout_seconds),
+            "execution_runtime": (
+                dict(renderer_runtime_identity)
+                if renderer_runtime_identity is not None
+                else {
+                    "mode": "checkout_local_runtime",
+                    "qualified_external_runtime": False,
+                }
+            ),
         },
         "renders": rendered_rows,
         "render_count": len(rendered_rows),

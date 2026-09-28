@@ -10,10 +10,241 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from blueprint_pipeline.native_task_nurec_render_setup import (
+    camera_site_appearance_required,
+    setup_and_warm_native_nurec_renderer as _official_nurec_render_setup_and_warmup,
+)
+
 
 RESULT_FILENAME = "native_task_arena_runtime_preflight.v1.json"
 RESULT_SCHEMA_VERSION = "native_task_arena_runtime_preflight.v1"
-OFFICIAL_NUREC_WARMUP_STEPS = 800
+
+
+def _bind_measured_gripper_servo(
+    *,
+    env: Any,
+    robot: Any,
+    seed: int,
+    torch: Any,
+    gripper_probe: Any,
+    servo_factory: Any,
+) -> tuple[dict[str, Any], Any | None]:
+    """Mirror the construction/policy gripper binding before live pad reads."""
+
+    gripper = gripper_probe(env=env, robot=robot, seed=seed, torch=torch)
+    if gripper.get("status") != "measured":
+        return gripper, None
+    env.reset(seed=seed)
+    return gripper, servo_factory(
+        env=env,
+        robot=robot,
+        gripper_convention=gripper,
+    )
+
+
+def _prepolicy_visual_gate_from_snapshot(
+    *, snapshot: dict[str, Any], output_root: Path
+) -> dict[str, Any]:
+    """Measure the exact retained reset PNGs before any candidate can load."""
+
+    import numpy as np
+    from PIL import Image
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        measure_native_task_prepolicy_visual_frames,
+    )
+
+    frames: dict[str, Any] = {}
+    root = output_root.resolve()
+    for row in snapshot.get("cameras") or []:
+        role = str(row.get("role") or "")
+        relative = str((row.get("rgb_png") or {}).get("path") or "")
+        frame_path = (root / relative).resolve()
+        if not relative or not frame_path.is_relative_to(root):
+            raise RuntimeError(
+                f"native_task_arena_preflight_camera_path_invalid:{role}"
+            )
+        with Image.open(frame_path) as image:
+            frames[role] = np.asarray(image.convert("RGB"))
+    # A render-only probe never constructs a policy client.
+    return measure_native_task_prepolicy_visual_frames(
+        frames, candidate_policy_loaded=False
+    )
+
+
+def _run_wrist_camera_mount_sweep(
+    *,
+    simulation_app: Any,
+    env: Any,
+    built: Any,
+    packet_request: dict[str, Any],
+    plan: dict[str, Any],
+    output_root: Path,
+    torch: Any,
+    body_pose_reader: Any,
+    camera_snapshot: Any,
+) -> dict[str, Any] | None:
+    """Render every registry mount through Isaac's own look-at convention."""
+
+    registry = packet_request.get("wrist_camera_mount_registry")
+    if registry is None:
+        return None
+    from PIL import Image
+
+    from blueprint_pipeline.native_task_wrist_camera_mount_sweep import (
+        resolve_wrist_camera_mount_eyes,
+        select_wrist_camera_mount_candidate,
+        validate_wrist_camera_mount_registry,
+    )
+
+    registry = validate_wrist_camera_mount_registry(registry)
+    wrist_rows = [
+        row
+        for row in packet_request.get("cameras") or []
+        if isinstance(row, dict) and row.get("role") == "wrist"
+    ]
+    if len(wrist_rows) != 1:
+        raise RuntimeError("native_task_wrist_camera_mount_role_invalid")
+    body_name = str(wrist_rows[0].get("parent_prim_path") or "").rsplit("/", 1)[-1]
+    robot = env.unwrapped.scene["robot"]
+    body_pose = body_pose_reader(robot, body_name=body_name, torch=torch)
+    target = [float(value) for value in plan["task_spec"]["start_pose_world"][:3]]
+    resolved = resolve_wrist_camera_mount_eyes(
+        registry=registry,
+        controlled_body_position_world_m=body_pose[:3],
+        task_target_position_world_m=target,
+    )
+    camera = env.unwrapped.scene[built.camera_scene_names["wrist"]]
+    observations: list[dict[str, Any]] = []
+    contact_frames: list[Path] = []
+
+    def apply(row: dict[str, Any]) -> None:
+        camera.set_world_poses_from_view(
+            eyes=[row["eye_position_world_m"]],
+            targets=[row["target_position_world_m"]],
+        )
+        for _ in range(6):
+            simulation_app.update()
+        camera.update(0.0, force_recompute=True)
+
+    for row in resolved:
+        apply(row)
+        candidate_root = output_root / "wrist_mount_sweep" / row["candidate_id"]
+        snapshot = camera_snapshot(
+            env=env,
+            camera_scene_names={"wrist": built.camera_scene_names["wrist"]},
+            output_root=candidate_root,
+            snapshot_id="candidate",
+            site_appearance_render_expected=camera_site_appearance_required(plan),
+        )
+        measured = snapshot["cameras"][0]
+        frame = candidate_root / measured["rgb_png"]["path"]
+        contact_frames.append(frame)
+        observations.append(
+            {
+                **row,
+                "frame_png": {
+                    "path": str(frame.relative_to(output_root)),
+                    "sha256": measured["rgb_png"]["sha256"],
+                },
+                "task_object": measured["semantic_label_pixels"]["task_object"],
+                "robot": measured["semantic_label_pixels"]["robot"],
+                "frame_structure_passed": bool(
+                    measured["observability"]["render_passed"]
+                ),
+            }
+        )
+    selection = select_wrist_camera_mount_candidate(
+        registry=registry, observations=observations
+    )
+    columns = 3
+    opened = [Image.open(path).convert("RGB") for path in contact_frames]
+    width = max(image.width for image in opened)
+    height = max(image.height for image in opened)
+    sheet = Image.new(
+        "RGB",
+        (columns * width, math.ceil(len(opened) / columns) * height),
+        color=(0, 0, 0),
+    )
+    for index, image in enumerate(opened):
+        sheet.paste(image, ((index % columns) * width, (index // columns) * height))
+        image.close()
+    contact_path = output_root / "wrist_mount_sweep" / "contact_sheet.png"
+    contact_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(contact_path, format="PNG", compress_level=9)
+    sheet.close()
+    import hashlib
+
+    selection["contact_sheet"] = {
+        "path": str(contact_path.relative_to(output_root)),
+        "sha256": "sha256:" + hashlib.sha256(contact_path.read_bytes()).hexdigest(),
+        "candidate_order": [row["candidate_id"] for row in resolved],
+    }
+    selection["selection_digest"] = ""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    selection["selection_digest"] = canonical_digest(
+        selection, digest_field="selection_digest"
+    )
+    (output_root / "wrist_camera_mount_selection.v1.json").write_text(
+        json.dumps(selection, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    selected = selection.get("selected_candidate")
+    if not isinstance(selected, dict):
+        return selection
+    apply(selected)
+    return selection
+
+
+def _observed_contact_position_world(
+    *, plan: dict[str, Any], object_reset_readback: dict[str, Any]
+) -> tuple[list[float], str]:
+    """Resolve the live contact frame for articulated and rigid task plans."""
+
+    task_kind = str(plan.get("task_kind") or "")
+    if task_kind == "articulated_open_close":
+        link = object_reset_readback["task_link_frame_equivalence"]
+        return (
+            [float(value) for value in link["observed_contact_position_world_m"]],
+            "native_articulated_contact_link_readback",
+        )
+    if task_kind != "rigid_pick_place":
+        raise ValueError("unsupported task kind")
+
+    subjects = [
+        row
+        for row in object_reset_readback.get("objects") or []
+        if row.get("task_subject") is True
+    ]
+    if len(subjects) != 1:
+        raise ValueError("rigid task subject")
+    observed = subjects[0]["observed_root_pose_world"]
+    root_position = [float(value) for value in observed["position_world_m"]]
+    root_orientation = [float(value) for value in observed["orientation_xyzw"]]
+    affordance = plan["task_spec"]["interaction_affordance"]
+    transform = affordance["asset_root_from_scoring_frame"]
+    from blueprint_pipeline.rigid_frame_transforms import (
+        apply_rigid_offset,
+        rotate_vector_xyzw,
+    )
+
+    scoring_position, scoring_orientation = apply_rigid_offset(
+        body_position_world=root_position,
+        body_quaternion_world_xyzw=root_orientation,
+        offset_position_body=[float(value) for value in transform["position_m"]],
+        offset_quaternion_body_xyzw=[
+            float(value) for value in transform["orientation_xyzw"]
+        ],
+    )
+    contact_offset = rotate_vector_xyzw(
+        scoring_orientation,
+        [float(value) for value in affordance["contact_point_scoring_frame_m"]],
+    )
+    return (
+        [scoring_position[index] + contact_offset[index] for index in range(3)],
+        "native_rigid_subject_root_plus_scoring_and_contact_offsets",
+    )
 
 
 def _robot_reset_task_space_readback(
@@ -38,12 +269,10 @@ def _robot_reset_task_space_readback(
                 "finger_midpoint_world_m"
             ]
         ]
-        contact = [
-            float(value)
-            for value in object_reset_readback["task_link_frame_equivalence"][
-                "observed_contact_position_world_m"
-            ]
-        ]
+        contact, contact_source = _observed_contact_position_world(
+            plan=plan,
+            object_reset_readback=object_reset_readback,
+        )
         if not all(len(row) == 3 for row in (base, midpoint, contact)):
             raise ValueError("vector length")
         forward = rotate_vector_xyzw(base_quaternion, [1.0, 0.0, 0.0])
@@ -121,6 +350,7 @@ def _robot_reset_task_space_readback(
         "robot_forward_unit_world": forward,
         "finger_midpoint_world_m": midpoint,
         "observed_contact_position_world_m": contact,
+        "observed_contact_position_source": contact_source,
         "approach_standoff_position_world_m": approach,
         "approach_standoff_m": 0.12,
         "finger_height_above_base_m": clearance_m,
@@ -215,7 +445,9 @@ def _gripper_pad_geometry_axis_readback(
     }
 
 
-def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
+def _particlefield_stage_readback(
+    stage: Any, *, authoring_implementation: str | None = None
+) -> dict[str, Any]:
     """Measure whether one conforming ParticleField actually composed live."""
 
     from pxr import UsdGeom
@@ -286,6 +518,12 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             "sh_element_size": sh_primvar.GetElementSize(),
             "sh_interpolation": str(sh_primvar.GetInterpolation()),
             "expected_sh_element_size": expected_element_size,
+            "expected_sh_interpolation": (
+                "constant"
+                if authoring_implementation
+                == "nvidia_3dgrut_direct_nurec_transcode"
+                else "vertex"
+            ),
             "extent": extent,
             "material_binding_targets": material_targets,
             "material_prim_valid": bool(material),
@@ -300,7 +538,57 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
                 if shader
                 else None
             ),
+            "projection_mode_hint": prim.GetAttribute(
+                "projectionModeHint"
+            ).Get(),
+            "projection_mode_hint_authored": prim.GetAttribute(
+                "projectionModeHint"
+            ).HasAuthoredValueOpinion(),
+            "sorting_mode_hint": prim.GetAttribute("sortingModeHint").Get(),
+            "sorting_mode_hint_authored": prim.GetAttribute(
+                "sortingModeHint"
+            ).HasAuthoredValueOpinion(),
+            "color_space": prim.GetAttribute("colorSpace:name").Get(),
+            "color_space_authored": prim.GetAttribute(
+                "colorSpace:name"
+            ).HasAuthoredValueOpinion(),
+            "display_color_authored": prim.GetAttribute(
+                "primvars:displayColor"
+            ).HasAuthoredValueOpinion(),
         }
+        upstream_native_material = (
+            not material_targets
+            and not row["material_prim_valid"]
+            and not row["material_shader_valid"]
+        )
+        legacy_emissive_material = (
+            len(material_targets) == 1
+            and row["material_prim_valid"]
+            and row["material_shader_valid"]
+            and row["material_shader_source_asset"] == "ParticleFieldEmissive.mdl"
+            and row["material_shader_sub_identifier"] == "ParticleFieldEmissive"
+        )
+        row["material_contract"] = (
+            "upstream_native_unbound"
+            if upstream_native_material
+            else "legacy_particlefield_emissive"
+            if legacy_emissive_material
+            else "invalid"
+        )
+        direct_3dgrut_contract = (
+            authoring_implementation
+            == "nvidia_3dgrut_direct_nurec_transcode"
+            and row["projection_mode_hint_authored"]
+            and row["projection_mode_hint"] == "perspective"
+            and row["sorting_mode_hint_authored"]
+            and row["sorting_mode_hint"] == "cameraDistance"
+            and row["color_space_authored"]
+            and row["color_space"] == "srgb_rec709_display"
+            and not row["display_color_authored"]
+        )
+        legacy_or_generic_contract = authoring_implementation != (
+            "nvidia_3dgrut_direct_nurec_transcode"
+        )
         row["passed"] = bool(
             row["active"]
             and row["defined"]
@@ -312,18 +600,14 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             and row["opacity_count"] == position_count
             and expected_element_size is not None
             and row["sh_element_size"] == expected_element_size
-            and row["sh_interpolation"] == "vertex"
+            and row["sh_interpolation"]
+            == row["expected_sh_interpolation"]
             and row["sh_coefficient_count"]
             == position_count * expected_element_size
             and isinstance(row["extent"], list)
             and len(row["extent"]) == 2
-            and len(material_targets) == 1
-            and row["material_prim_valid"]
-            and row["material_shader_valid"]
-            and row["material_shader_source_asset"]
-            == "ParticleFieldEmissive.mdl"
-            and row["material_shader_sub_identifier"]
-            == "ParticleFieldEmissive"
+            and (upstream_native_material or legacy_emissive_material)
+            and (direct_3dgrut_contract or legacy_or_generic_contract)
         )
         rows.append(row)
     if len(rows) != 1:
@@ -336,116 +620,6 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
         "particlefields": rows,
         "blockers": blockers,
         "passed": not blockers,
-    }
-
-
-def _official_nurec_render_setup_and_warmup(
-    simulation_app: Any,
-    stage: Any,
-    *,
-    warmup_steps: int = OFFICIAL_NUREC_WARMUP_STEPS,
-    setup_for_rendering_factory: Any = None,
-    progress_callback: Any = None,
-) -> dict[str, Any]:
-    """Apply NVIDIA's shipped NuRec setup and accumulation procedure."""
-
-    if (
-        isinstance(warmup_steps, bool)
-        or int(warmup_steps) < 40
-        or int(warmup_steps) > 2_000
-    ):
-        return {
-            "schema_version": "native_task_arena_nurec_warmup.v1",
-            "passed": False,
-            "blockers": ["native_task_arena_nurec_warmup_steps_invalid"],
-        }
-    try:
-        if setup_for_rendering_factory is None:
-            from isaacsim.replicator.nurec_utils.rendering_setup import (
-                setup_for_rendering,
-            )
-
-            setup_for_rendering_factory = setup_for_rendering
-        success, nurec, spg, problems = setup_for_rendering_factory(stage)
-    except Exception as exc:  # noqa: BLE001 - retained diagnostic boundary
-        return {
-            "schema_version": "native_task_arena_nurec_warmup.v1",
-            "passed": False,
-            "blockers": [
-                "native_task_arena_nurec_official_setup_failed:"
-                f"{type(exc).__name__}"
-            ],
-        }
-    if not success or not nurec:
-        return {
-            "schema_version": "native_task_arena_nurec_warmup.v1",
-            "official_setup_success": bool(success),
-            "stage_classified_nurec": bool(nurec),
-            "stage_classified_spg": bool(spg),
-            "official_setup_problems": list(problems or []),
-            "passed": False,
-            "blockers": ["native_task_arena_nurec_official_setup_not_qualified"],
-        }
-
-    attempts = 8
-    updates_per_attempt = max(int(warmup_steps) // attempts, 5)
-    warmup_update_count = 0
-    prime_update_count = 0
-    # The standalone nurec_render CameraRenderer creates its own Replicator
-    # annotator and therefore calls orchestrator.step(). This lane already has
-    # Isaac Lab CameraCfg render products and annotators. NVIDIA's exact pinned
-    # Isaac Lab Gaussian camera test advances that path with simulation/app
-    # ticks only; invoking Replicator's orchestrator here blocks indefinitely
-    # because this process owns no Replicator trigger graph.
-    for _ in range(5):
-        simulation_app.update()
-        prime_update_count += 1
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "round": 0,
-                "prime_updates_completed": prime_update_count,
-                "warmup_updates_completed": warmup_update_count,
-            }
-        )
-    for attempt in range(attempts):
-        for _ in range(updates_per_attempt):
-            simulation_app.update()
-            warmup_update_count += 1
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "round": attempt + 1,
-                    "prime_updates_completed": prime_update_count,
-                    "warmup_updates_completed": warmup_update_count,
-                }
-            )
-    return {
-        "schema_version": "native_task_arena_nurec_warmup.v1",
-        "official_setup_success": True,
-        "stage_classified_nurec": True,
-        "stage_classified_spg": bool(spg),
-        "official_setup_problems": [],
-        "requested_warmup_steps": int(warmup_steps),
-        "orchestrator_attempts": 0,
-        "orchestrator_error_types": [],
-        "prime_app_update_count": prime_update_count,
-        "warmup_app_update_count": warmup_update_count,
-        "app_update_count": prime_update_count + warmup_update_count,
-        "procedure_sources": [
-            (
-                "isaac-sim/IsaacSim:source/standalone_examples/nurec/"
-                "nurec_render.py@987015050efebfd0cd5d3736ae47fffe5adee308"
-            ),
-            (
-                "isaac-sim/IsaacLab:source/isaaclab/test/sensors/"
-                "test_camera_ppisp_gaussian.py@"
-                "ffff603eafc6b74264a5261cc0183d6a65390d78"
-            ),
-        ],
-        "camera_warmup_method": "isaaclab_camera_app_updates_without_replicator_orchestrator",
-        "passed": warmup_update_count >= int(warmup_steps),
-        "blockers": [],
     }
 
 
@@ -471,6 +645,13 @@ def _plain_nurec_volume_contract(packet: Path, plan: dict[str, Any]) -> dict[str
     if asset != packet and packet not in asset.parents:
         blockers.append("native_task_arena_nurec_appearance_path_escape")
     alignment = plan.get("appearance_frame_alignment") or {}
+    if (not blockers and alignment.get("status") == "aligned"
+            and alignment.get("representation") == "usd_geometry"
+            and alignment.get("measurement_authority") == "usd_composed_geometry_bounds"):
+        return {"render_path": "usd_geometry", "asset_relative_path": relative,
+                "nurec_volume_signals_present": False, "spg_source_asset_authored": False,
+                "spg_graph_execution_required": False, "renderer_extension_activation_expected": False,
+                "passed": True, "blockers": []}
     particlefield = (
         alignment.get("status") == "aligned"
         and alignment.get("representation")
@@ -567,7 +748,9 @@ def main() -> int:
     try:
         from blueprint_pipeline.native_task_arena_construction_worker import (
             _articulation_device_binding,
+            _body_pose_world,
             _camera_snapshot,
+            _gripper_convention_probe,
             _load_and_verify_manifest,
             preflight_native_dependency_matrix,
         )
@@ -579,6 +762,11 @@ def main() -> int:
         packet = runtime / "native_task_packet"
         plan = json.loads(
             (packet / "native_task_arena_scene_plan.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        packet_request = json.loads(
+            (packet / "native_task_arena_packet_request.v1.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -633,6 +821,7 @@ def main() -> int:
         )
         from blueprint_pipeline.native_task_arena_readback import (
             read_native_task_arena_object_reset_state,
+            read_native_task_arena_scenario_parameters,
         )
 
         _announce("environment_build")
@@ -659,6 +848,10 @@ def main() -> int:
         env = built.env
         seed = int(plan["scenario"]["seed"])
         env.reset(seed=seed)
+        result["scenario_parameter_readback"] = read_native_task_arena_scenario_parameters(built)
+        if not result["scenario_parameter_readback"]["passed"]:
+            result["blockers"].append("native_task_arena_preflight_scenario_application_failed")
+            raise RuntimeError("native_task_arena_preflight_scenario_application_failed")
         result["object_reset_readback"] = (
             read_native_task_arena_object_reset_state(built)
         )
@@ -669,14 +862,19 @@ def main() -> int:
             raise RuntimeError(
                 "native_task_arena_preflight_object_reset_failed"
             )
-        if result["appearance_render_path"]["render_path"] == (
-            "particlefield_3d_gaussian_splat"
-        ):
+        render_path = result["appearance_render_path"]["render_path"]
+        if render_path == "particlefield_3d_gaussian_splat":
             import omni.usd
 
             result["particlefield_stage_readback"] = (
                 _particlefield_stage_readback(
-                    omni.usd.get_context().get_stage()
+                    omni.usd.get_context().get_stage(),
+                    authoring_implementation=str(
+                        (packet_request.get("appearance_variant") or {}).get(
+                            "particlefield_authoring_implementation"
+                        )
+                        or ""
+                    ),
                 )
             )
             if not result["particlefield_stage_readback"]["passed"]:
@@ -686,12 +884,21 @@ def main() -> int:
                 raise RuntimeError(
                     "native_task_arena_preflight_particlefield_composition_failed"
                 )
+        if render_path in {
+            "particlefield_3d_gaussian_splat",
+            "plain_nurec_volume",
+        }:
+            import omni.usd
+
             result["official_nurec_render_setup"] = (
                 _official_nurec_render_setup_and_warmup(
                     simulation_app,
                     omni.usd.get_context().get_stage(),
                     progress_callback=lambda row: _announce(
                         f"nurec_warmup_round_{row['round']}", "completed"
+                    ),
+                    require_display_referred_particlefield=(
+                        render_path == "particlefield_3d_gaussian_splat"
                     ),
                 )
             )
@@ -721,12 +928,89 @@ def main() -> int:
 
         import torch
 
+        result["wrist_camera_mount_selection"] = (
+            _run_wrist_camera_mount_sweep(
+                simulation_app=simulation_app,
+                env=env,
+                built=built,
+                packet_request=packet_request,
+                plan=plan,
+                output_root=output_root,
+                torch=torch,
+                body_pose_reader=_body_pose_world,
+                camera_snapshot=_camera_snapshot,
+            )
+        )
+        if (
+            result["wrist_camera_mount_selection"] is not None
+            and result["wrist_camera_mount_selection"].get("status")
+            != "selected"
+        ):
+            result["blockers"].extend(
+                result["wrist_camera_mount_selection"].get("blockers") or []
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_wrist_camera_mount_sweep_failed"
+            )
+
+        # Capture the exact future policy views before any robot/readback
+        # diagnostic can hide the renderer evidence.  The strict RGB gate is
+        # evaluated before semantic target visibility for the same reason: a
+        # missing label remains important, but it must not erase the images
+        # needed to diagnose appearance fidelity.
+        result["camera_snapshot"] = _camera_snapshot(
+            env=env,
+            camera_scene_names=built.camera_scene_names,
+            output_root=output_root,
+            snapshot_id="runtime_preflight",
+            site_appearance_render_expected=camera_site_appearance_required(plan),
+            framing_expectations=(
+                (plan.get("task_object_observability") or {}).get("cameras")
+                or {}
+            ),
+        )
+        result["prepolicy_visual_gate"] = _prepolicy_visual_gate_from_snapshot(
+            snapshot=result["camera_snapshot"],
+            output_root=output_root,
+        )
+        if not result["prepolicy_visual_gate"]["passed"]:
+            result["blockers"].extend(
+                result["prepolicy_visual_gate"]["blockers"]
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_prepolicy_visual_gate_failed"
+            )
+        camera_rows = result["camera_snapshot"]["cameras"]
+        if not camera_rows or not all(
+            row["observability"]["passed"] for row in camera_rows
+        ):
+            result["blockers"].append(
+                "native_task_arena_preflight_camera_observability_failed"
+            )
+            raise RuntimeError("native_task_arena_preflight_camera_failed")
+
         from blueprint_pipeline.native_franka_pose_servo import (
             NativeFrankaDifferentialIkServo,
         )
 
         robot = env.unwrapped.scene["robot"]
-        servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
+        _announce("gripper_convention")
+        gripper, servo = _bind_measured_gripper_servo(
+            env=env,
+            robot=robot,
+            seed=seed,
+            torch=torch,
+            gripper_probe=_gripper_convention_probe,
+            servo_factory=NativeFrankaDifferentialIkServo,
+        )
+        result["gripper_convention"] = gripper
+        result["blockers"].extend(gripper.get("blockers") or [])
+        if servo is None:
+            raise RuntimeError(
+                "native_task_arena_preflight_gripper_convention_unresolved"
+            )
+        result["phase_reached"] = "gripper_convention_measured"
+        _announce("gripper_convention", "completed")
         result["gripper_body_origin_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )
@@ -756,11 +1040,8 @@ def main() -> int:
             )
         )
         if not result["robot_reset_task_space_readback"]["passed"]:
-            result["blockers"].extend(
+            result.setdefault("diagnostic_findings", []).extend(
                 result["robot_reset_task_space_readback"]["blockers"]
-            )
-            raise RuntimeError(
-                "native_task_arena_preflight_robot_reset_task_space_failed"
             )
         for _ in range(8):
             current = servo.read_arm_joint_positions()
@@ -771,20 +1052,6 @@ def main() -> int:
                     dtype=torch.float32,
                 )
             )
-        result["camera_snapshot"] = _camera_snapshot(
-            env=env,
-            camera_scene_names=built.camera_scene_names,
-            output_root=output_root,
-            snapshot_id="runtime_preflight",
-        )
-        camera_rows = result["camera_snapshot"]["cameras"]
-        if not camera_rows or not all(
-            row["observability"]["passed"] for row in camera_rows
-        ):
-            result["blockers"].append(
-                "native_task_arena_preflight_camera_observability_failed"
-            )
-            raise RuntimeError("native_task_arena_preflight_camera_failed")
         result["torch_runtime"] = {
             "version": torch.__version__,
             "cuda_version": torch.version.cuda,

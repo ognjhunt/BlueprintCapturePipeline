@@ -1,0 +1,64 @@
+{
+  "fixture_only": true,
+  "website_commit": "29bf82389a751c94e401959c47105a442e7fc9a9",
+  "source_sha256": "db0c250bc23e877abb1b46860fa773601de880c31c26e7932ab52bf9354c5cd4",
+  "verified": [
+    "asymmetric_missingness",
+    "candidate_and_episode_order",
+    "no_shared_pairs"
+  ],
+  "comparison": {
+    "candidates": [
+      {
+        "candidate_id": "pi05_droid",
+        "display_name": "pi05_droid",
+        "success_count": 2,
+        "interpretable_count": 6,
+        "delivered_count": 10,
+        "excluded_count": 4,
+        "success_rate": 0.3333333333333333,
+        "wilson": {
+          "lower": 0.09677141110578041,
+          "upper": 0.700006684861608
+        }
+      },
+      {
+        "candidate_id": "groot_n17_droid",
+        "display_name": "groot_n17_droid",
+        "success_count": 4,
+        "interpretable_count": 6,
+        "delivered_count": 10,
+        "excluded_count": 4,
+        "success_rate": 0.6666666666666666,
+        "wilson": {
+          "lower": 0.299993315138392,
+          "upper": 0.9032285888942195
+        }
+      }
+    ],
+    "leader": {
+      "candidate_id": "pi05_droid",
+      "display_name": "pi05_droid",
+      "success_count": 2,
+      "interpretable_count": 6,
+      "delivered_count": 10,
+      "excluded_count": 4,
+      "success_rate": 0.3333333333333333,
+      "wilson": {
+        "lower": 0.09677141110578041,
+        "upper": 0.700006684861608
+      }
+    },
+    "deltaPoints": 100,
+    "comparablePairs": 2,
+    "bothSucceeded": 0,
+    "bothFailed": 0,
+    "leaderOnlyWins": 2,
+    "laggardOnlyWins": 0,
+    "discordantPairs": 2,
+    "pValue": 0.5,
+    "distinguishable": false,
+    "headline": "pi05_droid: 100 pp higher observed paired success",
+    "verdict": "On 2 mutually scorable cell/seed pairs, the paired difference is not statistically distinguishable (two-sided exact sign test p ≈ 0.50). No winner, ranking, selection, or readiness claim is authorized by this diagnostic comparison."
+  }
+}

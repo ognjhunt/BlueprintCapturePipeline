@@ -38,6 +38,10 @@ from .host_resident_launch_inputs import (
     resolve_host_resident_bundle_receipt,
 )
 from .paid_attempt_authority import validate_same_goal_spend_reconciliation
+from .project_spend_reconciliation import (
+    project_spend_dependency_records,
+    validate_project_spend_reconciliation,
+)
 from .robot_eval_provider_input_setup import LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS
 from .task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
@@ -101,97 +105,120 @@ def expand_prior_spend_immutable_inputs(
             raise TaskEvaluationLaunchError(
                 f"live_profile_authority_input_invalid:{name}"
             )
-        reconciliation_kind = "prior_spend"
-        reconciliation_record = authority.get("prior_spend_reconciliation")
-        if reconciliation_record is None:
-            reconciliation_kind = "project_spend"
-            reconciliation_record = authority.get("project_spend_reconciliation")
-        if reconciliation_record is None:
-            continue
-        if not isinstance(reconciliation_record, Mapping):
-            raise TaskEvaluationLaunchError(
-                f"live_profile_prior_spend_dependency_invalid:{name}"
-            )
-        reconciliation_path = Path(
-            str(reconciliation_record.get("path") or "")
-        ).expanduser().resolve()
-        uses_shared_lane_reconciliation = (
-            reconciliation_kind == "project_spend"
-            or (
-                "prior_terminal_attempts" in authority
-                and "prior_actual_provider_spend_usd" in authority
-            )
+        reconciliation_records = (
+            ("prior_spend", authority.get("prior_spend_reconciliation")),
+            ("project_spend", authority.get("project_spend_reconciliation")),
         )
-        try:
-            if uses_shared_lane_reconciliation:
-                reconciliation, observed_record = (
-                    validate_same_goal_spend_reconciliation(
-                        reconciliation_path,
-                        expected_total_cost_usd=(
-                            authority.get("aggregate_goal_spend_before_attempt_usd")
-                            if reconciliation_kind == "project_spend"
-                            else authority.get("prior_actual_provider_spend_usd")
-                        ),
-                    )
-                )
-                if observed_record != dict(reconciliation_record):
-                    raise ValueError("prior_spend_reconciliation_record_mismatch")
-            else:
-                # The semantic-teacher issuer predates the shared five-lane
-                # reconciliation contract. Its lane validator has already
-                # reopened and validated that schema above; retain support for
-                # it while still exposing any nested receipt paths to profile
-                # publication and its service-account readability check.
-                reconciliation = json.loads(
-                    reconciliation_path.read_text(encoding="utf-8")
-                )
-                if (
-                    reconciliation_path.is_symlink()
-                    or not isinstance(reconciliation, Mapping)
-                    or reconciliation_path.stat().st_size
-                    != reconciliation_record.get("size_bytes")
-                    or file_digest(reconciliation_path)
-                    != reconciliation_record.get("sha256")
-                ):
-                    raise ValueError("prior_spend_reconciliation_record_mismatch")
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            raise TaskEvaluationLaunchError(
-                f"live_profile_prior_spend_dependency_invalid:{name}"
-            ) from exc
-
-        dependencies: list[tuple[str, Mapping[str, Any]]] = [
-            ("reconciliation", reconciliation_record)
-        ]
-        for entry_index, entry in enumerate(reconciliation.get("entries") or []):
-            if not isinstance(entry, Mapping):
+        uses_shared_lane_reconciliation = (
+            "prior_terminal_attempts" in authority
+            and "prior_actual_provider_spend_usd" in authority
+        )
+        for reconciliation_kind, reconciliation_record in reconciliation_records:
+            if reconciliation_record is None:
+                continue
+            if not isinstance(reconciliation_record, Mapping):
                 raise TaskEvaluationLaunchError(
                     f"live_profile_prior_spend_dependency_invalid:{name}"
                 )
-            for source in entry.get("source_receipts") or []:
-                if not isinstance(source, Mapping) or not isinstance(
-                    source.get("record"), Mapping
-                ):
+            reconciliation_path = Path(
+                str(reconciliation_record.get("path") or "")
+            ).expanduser().resolve()
+            try:
+                if reconciliation_kind == "project_spend":
+                    reconciliation, observed_record = (
+                        validate_project_spend_reconciliation(
+                            reconciliation_path,
+                            expected_total_cost_usd=authority.get(
+                                "aggregate_goal_spend_before_attempt_usd"
+                            ),
+                        )
+                    )
+                    if observed_record != dict(reconciliation_record):
+                        raise ValueError(
+                            "project_spend_reconciliation_record_mismatch"
+                        )
+                elif uses_shared_lane_reconciliation:
+                    reconciliation, observed_record = (
+                        validate_same_goal_spend_reconciliation(
+                            reconciliation_path,
+                            expected_total_cost_usd=authority.get(
+                                "prior_actual_provider_spend_usd"
+                            ),
+                        )
+                    )
+                    if observed_record != dict(reconciliation_record):
+                        raise ValueError(
+                            "prior_spend_reconciliation_record_mismatch"
+                        )
+                else:
+                    # The semantic-teacher issuer predates the shared five-lane
+                    # reconciliation contract. Its lane validator has already
+                    # reopened and validated that schema above; retain support
+                    # while exposing its nested dependencies.
+                    reconciliation = json.loads(
+                        reconciliation_path.read_text(encoding="utf-8")
+                    )
+                    if (
+                        reconciliation_path.is_symlink()
+                        or not isinstance(reconciliation, Mapping)
+                        or reconciliation_path.stat().st_size
+                        != reconciliation_record.get("size_bytes")
+                        or file_digest(reconciliation_path)
+                        != reconciliation_record.get("sha256")
+                    ):
+                        raise ValueError(
+                            "prior_spend_reconciliation_record_mismatch"
+                        )
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                raise TaskEvaluationLaunchError(
+                    f"live_profile_prior_spend_dependency_invalid:{name}"
+                ) from exc
+
+            dependencies: list[tuple[str, Mapping[str, Any]]] = [
+                ("reconciliation", reconciliation_record)
+            ]
+            if reconciliation_kind == "project_spend":
+                try:
+                    dependencies.extend(
+                        project_spend_dependency_records(reconciliation)
+                    )
+                except ValueError as exc:
                     raise TaskEvaluationLaunchError(
                         f"live_profile_prior_spend_dependency_invalid:{name}"
-                    )
-                role = str(source.get("role") or "source")
-                dependencies.append(
-                    (f"entry_{entry_index}_{role}", source["record"])
-                )
+                    ) from exc
+            else:
+                for entry_index, entry in enumerate(
+                    reconciliation.get("entries") or []
+                ):
+                    if not isinstance(entry, Mapping):
+                        raise TaskEvaluationLaunchError(
+                            f"live_profile_prior_spend_dependency_invalid:{name}"
+                        )
+                    for source in entry.get("source_receipts") or []:
+                        if not isinstance(source, Mapping) or not isinstance(
+                            source.get("record"), Mapping
+                        ):
+                            raise TaskEvaluationLaunchError(
+                                f"live_profile_prior_spend_dependency_invalid:{name}"
+                            )
+                        role = str(source.get("role") or "source")
+                        dependencies.append(
+                            (f"entry_{entry_index}_{role}", source["record"])
+                        )
 
-        for suffix, record in dependencies:
-            path = Path(str(record.get("path") or "")).expanduser().resolve()
-            resolved = str(path)
-            if resolved in observed_paths:
-                continue
-            expanded.append(
-                {
-                    "name": f"{name}_{reconciliation_kind}_{suffix}",
-                    "path": resolved,
-                    "digest": str(record.get("sha256") or ""),
-                }
-            )
-            observed_paths.add(resolved)
+            for suffix, record in dependencies:
+                path = Path(str(record.get("path") or "")).expanduser().resolve()
+                resolved = str(path)
+                if resolved in observed_paths:
+                    continue
+                expanded.append(
+                    {
+                        "name": f"{name}_{reconciliation_kind}_{suffix}",
+                        "path": resolved,
+                        "digest": str(record.get("sha256") or ""),
+                    }
+                )
+                observed_paths.add(resolved)
     return expanded
 
 
@@ -326,11 +353,17 @@ class LaneLiveProfileSpec:
     subcommand: str = "gpu-canary"
     provider: str = "vast"
     extra_path_names: Sequence[str] = field(default_factory=tuple)
+    #: Inputs this lane binds only when the run supplies them. A name here
+    #: is resolved and bound exactly like a required one when present, and
+    #: is simply absent from the profile when not -- it never becomes an
+    #: empty path or an unbound placeholder.
+    optional_extra_path_names: Sequence[str] = field(default_factory=tuple)
     #: Require the website standing authorization to be a single-use launch
     #: capability.  The dispatcher consumes it atomically before invoking the
     #: allocator, so an explicit launch-id scope cannot bypass this lane's
     #: exactly-once paid boundary.
     one_use_standing_authority_required: bool = False
+    additional_terminal_path_fields: Sequence[str] = field(default_factory=tuple)
 
 
 def bind_live_profile_manifest_publication(
@@ -459,6 +492,8 @@ def build_lane_live_profile(
     hard_ttl_seconds: int,
     revision: str | None = None,
     max_spend_usd: float | None = None,
+    pod_name: str | None = None,
+    profile_binding_identity: str | None = None,
     extra_paths: Mapping[str, str | Path] | None = None,
     extra_values: Mapping[str, Any] | None = None,
     runtime_environment: Mapping[str, str] | None = None,
@@ -491,6 +526,11 @@ def build_lane_live_profile(
             blockers.append(f"lane_input_missing:{name}")
             continue
         resolved_extras[name] = Path(raw).expanduser().resolve()
+    for name in spec.optional_extra_path_names:
+        raw = (extra_paths or {}).get(name)
+        if raw is None or str(raw) == "":
+            continue
+        resolved_extras[name] = Path(raw).expanduser().resolve()
 
     profile_id = f"{spec.profile_id_prefix}-{source_commit}"
     if revision:
@@ -501,7 +541,20 @@ def build_lane_live_profile(
         # collision surfaces as an immutable-input digest mismatch on the next
         # launch rather than at publish time.
         profile_id = f"{profile_id}-{revision}"
-
+    if profile_binding_identity:
+        if re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", profile_binding_identity
+        ) is None:
+            blockers.append("profile_binding_identity_invalid")
+        else:
+            binding_digest = hashlib.sha256(
+                profile_binding_identity.encode("utf-8")
+            ).hexdigest()[:12]
+            profile_id = f"{profile_id}-binding-{binding_digest}"
+    # Website scene/task/revision IDs can exceed the dispatcher's 192 characters.
+    # Preserve existing short IDs and bind every byte of longer valid identities.
+    if len(profile_id) > 192 and all(c.isalnum() or c in "._-" for c in profile_id):
+        profile_id = profile_id[:127] + "-" + hashlib.sha256(profile_id.encode()).hexdigest()
     worst_case = max_hourly_rate_usd * hard_ttl_seconds / 3600.0
     context = LaneLiveProfileContext(
         receipt_path=receipt_path,
@@ -561,6 +614,7 @@ def build_lane_live_profile(
         "schema_version": PROFILE_SCHEMA_VERSION,
         "profile_id": profile_id,
         "program_id": PROGRAM_ID,
+        "source_commit": source_commit,
         "claim_ceiling": spec.claim_ceiling,
         "allocator": {
             "entrypoint": CANONICAL_ALLOCATOR_ENTRYPOINT,
@@ -569,7 +623,7 @@ def build_lane_live_profile(
                 "--admission-out", f"{RUN_ROOT}/allocator/admission.json",
                 "--bound-request-out", f"{RUN_ROOT}/allocator/bound-request.json",
                 "--adapter-output", f"{RUN_ROOT}/allocator/result.json",
-                "--pod-name", profile_id,
+                "--pod-name", pod_name or profile_id,
                 "--expected-source-commit", source_commit,
                 "--provider", spec.provider,
                 "--probe-kind", spec.probe_kind,
@@ -593,7 +647,10 @@ def build_lane_live_profile(
         },
         "immutable_inputs": immutable_inputs,
         "runtime_environment": dict(runtime_environment or {}),
-        **shared_control_surface(required_providers=spec.required_providers),
+        **shared_control_surface(
+            required_providers=spec.required_providers,
+            additional_required_path_fields=spec.additional_terminal_path_fields,
+        ),
     }
     lane_profile_fields = spec.profile_fields(context)
     if not isinstance(lane_profile_fields, Mapping) or set(profile).intersection(

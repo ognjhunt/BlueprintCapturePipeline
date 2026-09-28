@@ -1,0 +1,13 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-launch-activation.path.json
+Description=Watch the authority-gated Blueprint Task Evaluation activation queue
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/pending/*.json
+Unit=blueprint-task-evaluation-launch-activation.service
+
+[Install]
+WantedBy=multi-user.target

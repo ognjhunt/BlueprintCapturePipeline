@@ -27,6 +27,27 @@ from blueprint_pipeline.native_franka_action_math import (
 from blueprint_pipeline.native_franka_grasp_geometry import (
     measure_live_robotiq_grasp_geometry,
 )
+from blueprint_pipeline.native_task_arena_dependency_contract import (
+    G1_ONLY_DEPENDENCY_IMPORTS,
+    NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS as DEPENDENCY_IMPORTS,
+)
+from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
+    feedback_bootstrap_result,
+    verified_construction_phase_plan_path,
+)
+from blueprint_pipeline.native_task_curobo_path_execution import (
+    advance_solver_waypoint,
+    solver_command_target,
+    solver_path_result_fields,
+    validated_solver_joint_sequence,
+)
+from blueprint_pipeline.native_task_nurec_render_setup import (
+    camera_site_appearance_required,
+    prepare_site_appearance_renderer as _prepare_site_appearance_renderer,
+)
+from blueprint_pipeline.native_task_servo_command_limits import (
+    servo_command_limits as _servo_command_limits,
+)
 from blueprint_pipeline.rigid_frame_transforms import (
     quaternion_conjugate_xyzw,
     rotate_vector_xyzw,
@@ -37,107 +58,15 @@ from typing import Any
 
 RESULT_SCHEMA_VERSION = "native_task_arena_construction_result.v1"
 RESULT_FILENAME = "native_task_arena_construction_result.v1.json"
-DEPENDENCY_IMPORTS = (
-    "warp",
-    "torch",
-    "triton",
-    "cuda",
-    "filelock",
-    "fsspec",
-    "jinja2",
-    "markupsafe",
-    "mpmath",
-    "networkx",
-    "setuptools",
-    "sympy",
-    "numpy",
-    "PIL.Image",
-    "gymnasium",
-    "lazy_loader",
-    "cloudpickle",
-    "farama_notifications",
-    "packaging",
-    "prettytable",
-    "typing_extensions",
-    "wcwidth",
-    "h5py",
-    "yaml",
-    "toml",
-    "antlr4",
-    "omegaconf",
-    "hydra",
-    "hydra.core",
-    "msgpack",
-    "zmq",
-    "tensordict",
-    "importlib_metadata",
-    "zipp",
-    "orjson",
-    "pyvers",
-    "git",
-    "gitdb",
-    "smmap",
-    "lightwheel_sdk",
-    "lightwheel_sdk.loader",
-    "requests",
-    "charset_normalizer",
-    "idna",
-    "urllib3",
-    "certifi",
-    "tqdm",
-    "termcolor",
-    "click",
-    "rsl_rl",
-    "rsl_rl.runners",
-    "pxr.Usd",
-    "pxr.UsdPhysics",
-    "pxr.UsdVol",
-    "isaaclab",
-    "isaaclab.controllers",
-    "isaaclab.utils.math",
-    "isaaclab_assets",
-    "isaaclab_contrib",
-    "isaaclab_experimental",
-    "isaaclab_mimic",
-    "isaaclab_newton",
-    "isaaclab_ov",
-    "isaaclab_physx",
-    "isaaclab_physx.physics",
-    "isaaclab_rl",
-    "isaaclab_tasks",
-    "isaaclab_tasks_experimental",
-    "isaaclab_teleop",
-    "isaaclab_visualizers",
-    "isaaclab_arena",
-    "isaaclab_arena.environments.arena_env_builder",
-    "isaacsim.robot_motion.experimental.motion_generation",
-    "isaacsim.robot_motion.pink",
-    "pinocchio",
-    "pink",
-    "qpsolvers",
-    "osqp",
-)
 CAMERA_THRESHOLDS = {
     "external": {"minimum_pixels": 200, "minimum_pixel_fraction": 0.003},
     "wrist": {"minimum_pixels": 120, "minimum_pixel_fraction": 0.002},
     "overview": {"minimum_pixels": 200, "minimum_pixel_fraction": 0.003},
 }
 
-# Whether this runtime can render the captured-site appearance volume at all.
-#
-# The Arena bundle is pinned separately to Isaac Sim 6.0.1. The sealed site is
-# a plain NuRec volume (no authored ``info:spg:sourceAsset``), so it does not
-# execute an SPG/PPISP graph. Live 6.0.1 evidence showed the plain volume remained
-# void without the image's ``omni.rtx.spg`` renderer component loaded at Kit launch.
-# Loading it is the remaining explicit hypothesis; only the pixel gate below may
-# say whether that made the site render. The preflight keeps the claims separate:
-# it verifies the asset classification and refuses unless the launch-time renderer extension,
-# plain-volume settings, and renderer hints read back as qualified, while the packet gate
-# verifies the authored ``OmniNuRecFieldAsset`` type-name signal. NVIDIA's own
-# 6.0.1 NuRec utilities define and detect that raw type name without requiring
-# a concrete ``Usd.SchemaRegistry`` entry. The camera gate remains the independent
-# content-level check: an available renderer cannot vouch that this exact
-# captured site contributed pixels.
+# Captured scenes require rendered site evidence. Authored development geometry
+# uses the explicit scene-plan scope instead. NuRec runtime availability alone
+# does not prove the captured site contributed pixels; the camera gate does.
 SITE_APPEARANCE_RENDER_EXPECTED = True
 
 
@@ -296,14 +225,11 @@ def _jsonable(value: Any) -> Any:
 
 def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
     """Probe all worker imports and media tools in one retained receipt."""
-
-    imports = []
-    blockers = []
+    imports, blockers = [], []
     try:
         from blueprint_pipeline.native_task_arena_import_scope import (
             install_scoped_arena_embodiment,
         )
-
         embodiment_scope = install_scoped_arena_embodiment(robot_id)
     except Exception as exc:  # noqa: BLE001 - exact scope failure is evidence
         embodiment_scope = {
@@ -315,6 +241,8 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
         }
         blockers.append(f"native_task_arena_embodiment_scope_failed:{robot_id}")
     for name in DEPENDENCY_IMPORTS:
+        if name in G1_ONLY_DEPENDENCY_IMPORTS and robot_id != "unitree_g1":
+            continue
         try:
             module = importlib.import_module(name)
             imports.append(
@@ -415,27 +343,6 @@ def _load_and_verify_manifest(
     return manifest
 
 
-def _verified_construction_phase_plan_path(
-    runtime: Path, manifest: Mapping[str, Any]
-) -> Path:
-    rows = manifest.get("bound_runtime_inputs")
-    if not isinstance(rows, list) or len(rows) != 1:
-        raise RuntimeError("native_task_construction_runtime_inputs_invalid")
-    row = rows[0]
-    if not isinstance(row, Mapping):
-        raise RuntimeError("native_task_construction_runtime_inputs_invalid")
-    relative = str(row.get("relative_path") or "")
-    path = runtime / relative
-    if (
-        relative != "runtime_inputs/native_task_construction_phase_plan.v1.json"
-        or not path.is_file()
-        or path.stat().st_size != row.get("size_bytes")
-        or _sha256(path) != row.get("sha256")
-    ):
-        raise RuntimeError("native_task_construction_phase_plan_identity_mismatch")
-    return path
-
-
 def _body_pose_world(
     robot: Any, *, body_name: str, torch: Any
 ) -> list[float]:
@@ -464,6 +371,36 @@ def _pad_centers_from_finger_body_offsets(
     return centers
 
 
+def _pad_offsets_from_relative_geometry(
+    geometry: Mapping[str, Any],
+) -> dict[str, list[float]] | None:
+    """Prefer collider-to-finger offsets measured in one coherent USD frame."""
+
+    selected = geometry.get("selected_pad_colliders")
+    if not isinstance(selected, Mapping):
+        return None
+    offsets: dict[str, list[float]] = {}
+    for side in ("left", "right"):
+        row = selected.get(side)
+        if not isinstance(row, Mapping):
+            return None
+        raw = row.get("center_inner_finger_body_m")
+        if raw is None:
+            return None
+        try:
+            offset = [float(value) for value in raw]
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"native_task_gripper_pad_relative_offset_invalid:{side}"
+            ) from exc
+        if len(offset) != 3 or not all(math.isfinite(value) for value in offset):
+            raise RuntimeError(
+                f"native_task_gripper_pad_relative_offset_invalid:{side}"
+            )
+        offsets[side] = offset
+    return offsets
+
+
 def _physical_pad_binding(
     *, robot: Any, torch: Any
 ) -> tuple[dict[str, Any], dict[str, list[float]]]:
@@ -487,6 +424,9 @@ def _physical_pad_binding(
         controlled_body_position_world_m=body_pose[:3],
         controlled_body_quaternion_world_xyzw=body_pose[3:7],
     )
+    relative_offsets = _pad_offsets_from_relative_geometry(geometry)
+    if relative_offsets is not None:
+        return geometry, relative_offsets
     offsets: dict[str, list[float]] = {}
     xforms = UsdGeom.XformCache(Usd.TimeCode.Default())
     for side in ("left", "right"):
@@ -564,50 +504,6 @@ def _phase_target_orientation(
     if is_unauthored_identity_quaternion_xyzw(orientation):
         return [float(value) for value in reset_body_orientation_xyzw]
     return [float(value) for value in orientation]
-
-
-def _servo_command_limits(
-    execution_parameters: Mapping[str, Any],
-) -> dict[str, float]:
-    """Resolve the joint-command bounds this construction run must execute.
-
-    These two numbers decide how much torque the position actuators can ever
-    develop: the command is clamped to ``max_joint_setpoint_lead_rad`` of the
-    *measured* joint state, so the position error - and therefore the stiffness
-    torque - can never exceed that bound.  They are sealed into the phase plan,
-    so they are read from it rather than defaulted here; a construction run that
-    silently substitutes the servo's own defaults produces travel that is
-    invariant to the sealed configuration and cannot be interpreted.
-    """
-
-    limits: dict[str, float] = {}
-    for field in (
-        "max_joint_delta_rad",
-        "max_joint_setpoint_lead_rad",
-        "velocity_feedforward_scale",
-    ):
-        try:
-            value = float(execution_parameters[field])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"native_task_construction_servo_command_limit_missing:{field}"
-            ) from exc
-        floor = 0.0 if field == "velocity_feedforward_scale" else None
-        if (
-            not math.isfinite(value)
-            or (floor is None and value <= 0.0)
-            or (floor is not None and not 0.0 <= value <= 1.0)
-        ):
-            raise RuntimeError(
-                f"native_task_construction_servo_command_limit_invalid:{field}"
-            )
-        limits[field] = value
-    if limits["max_joint_setpoint_lead_rad"] < limits["max_joint_delta_rad"]:
-        raise RuntimeError(
-            "native_task_construction_servo_command_limit_invalid:"
-            "max_joint_setpoint_lead_rad"
-        )
-    return limits
 
 
 # What the pinned Arena embodiment actually applies to the 7 arm joints, read
@@ -930,12 +826,19 @@ def _camera_snapshot(
     camera_scene_names: Mapping[str, str],
     output_root: Path,
     snapshot_id: str,
+    framing_expectations: Mapping[str, Any] | None = None,
+    site_appearance_render_expected: bool = SITE_APPEARANCE_RENDER_EXPECTED,
 ) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
 
     from blueprint_pipeline.native_task_camera_observability import (
         measure_native_task_camera_observability,
+        measure_native_task_semantic_label_pixels,
+        retain_native_robot_semantic_mask,
+    )
+    from blueprint_pipeline.native_task_frame_display_encoding import (
+        display_encode_hdr,
     )
 
     rows = []
@@ -961,6 +864,7 @@ def _camera_snapshot(
         if rgb_array.shape[-1] == 4:
             rgb_array = rgb_array[..., :3]
         rgb_array = np.clip(rgb_array, 0, 255).astype(np.uint8)
+        rgb_source = "isaac_ldr_annotator"
         hdr_raw = None
         hdr_array = None
         if "rgb_hdr" in outputs:
@@ -971,6 +875,13 @@ def _camera_snapshot(
                 else hdr_raw
             )
             hdr_array = np.asarray(hdr_array, dtype=np.float32)[..., :3]
+            # Prefer our own display encoding of the linear buffer over the
+            # annotator's per-channel clip: the retained frames from this
+            # lane's attempt 001 carried a 17% over-white tail that clipped
+            # to white blobs with chromatic fringes. The retained PNG is the
+            # frame the camera gates measure and the one a human reviews.
+            rgb_array = display_encode_hdr(hdr_array)
+            rgb_source = "rgb_hdr_display_encoded"
         semantic_raw = _explicit_array(outputs["semantic_segmentation"])
         semantic = np.squeeze(semantic_raw)
         expected_hw = tuple(int(value) for value in rgb_array.shape[:2])
@@ -1006,6 +917,7 @@ def _camera_snapshot(
             {
                 "role": role,
                 "scene_name": scene_name,
+                "rgb_source": rgb_source,
                 "rgb_raw_shape": list(rgb_raw.shape),
                 "rgb_image_shape": list(rgb_array.shape),
                 "rgb_hdr_raw_shape": (
@@ -1031,11 +943,23 @@ def _camera_snapshot(
             semantic_ids=semantic,
             id_to_labels=labels,
             rgb=rgb_array,
-            site_appearance_render_expected=SITE_APPEARANCE_RENDER_EXPECTED,
+            site_appearance_render_expected=site_appearance_render_expected,
             target_label="task_object",
             minimum_pixels=thresholds["minimum_pixels"],
             minimum_pixel_fraction=thresholds["minimum_pixel_fraction"],
+            # Sealed at plan time for static world-frame cameras: scales the
+            # configured minimums down to what this scene's geometry can
+            # project, never up.  Robot-parented cameras have no row here and
+            # keep the configured constants.
+            framing_expectation=(
+                (framing_expectations or {}).get(role) or None
+            ),
         )
+        robot_mask_record = (retain_native_robot_semantic_mask(
+            semantic_ids=semantic, id_to_labels=labels,
+            output_path=frame_dir / f"{snapshot_id}.robot_semantic_mask.png",
+            relative_to=output_root,
+        ) if role == "wrist" else None)
         rows.append(
             {
                 "role": role,
@@ -1045,6 +969,7 @@ def _camera_snapshot(
                     "path": str(frame_path.relative_to(output_root)),
                     "sha256": _sha256(frame_path),
                 },
+                "rgb_source": rgb_source,
                 "rgb_min": int(rgb_array.min()),
                 "rgb_max": int(rgb_array.max()),
                 "rgb_mean": float(rgb_array.mean()),
@@ -1055,6 +980,15 @@ def _camera_snapshot(
                     camera.data.quat_w_opengl
                 )[0],
                 "observability": observability,
+                "robot_semantic_mask": robot_mask_record,
+                "semantic_label_pixels": {
+                    label: measure_native_task_semantic_label_pixels(
+                        semantic_ids=semantic,
+                        id_to_labels=labels,
+                        target_label=label,
+                    )
+                    for label in ("task_object", "task_support", "task_target_marker", "robot")
+                },
                 "semantic_id_to_labels": labels,
                 "raw_shapes": diagnostics["cameras"][-1],
                 "native_sensor_timestamp": _jsonable(
@@ -1325,11 +1259,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["packet_receipt_digest"] = receipt["receipt_digest"]
         result["scene_plan_digest"] = plan["plan_digest"]
         result["scenario"] = plan["scenario"]
+        result["camera_scene_scope"] = plan.get("camera_scene_scope", "captured_site")
         from blueprint_pipeline.native_task_construction_plan import (
             materialize_native_task_construction_phase_plan,
         )
 
-        frozen_phase_path = _verified_construction_phase_plan_path(runtime, manifest)
+        frozen_phase_path = verified_construction_phase_plan_path(runtime, manifest)
         frozen_phase_plan = json.loads(
             frozen_phase_path.read_text(encoding="utf-8")
         )
@@ -1338,6 +1273,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("native_task_construction_phase_plan_binding_mismatch")
         phase_plan = frozen_phase_plan
         result["construction_phase_plan"] = phase_plan
+        bootstrap = feedback_bootstrap_result(
+            runtime=runtime, manifest=manifest, packet=packet
+        )
+        if bootstrap is not None:
+            result.update(bootstrap)
+            _announce("feedback_bootstrap", "completed")
+            return 1
         result["phase_reached"] = "packet_verified"
         _announce("packet_verification", "completed")
 
@@ -1346,10 +1288,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_DEVICE,
             launch_native_task_isaaclab,
         )
+        from blueprint_pipeline.native_task_nurec_render_setup import (
+            appearance_render_path_from_plan,
+        )
 
         simulation_app, launch_receipt = launch_native_task_isaaclab(
             output_root / "native_task_runtime_source_provisioning.v1.json",
             device=NATIVE_TASK_ARENA_DEVICE,
+            appearance_render_path=appearance_render_path_from_plan(plan),
         )
         result["isaaclab_launch"] = launch_receipt
         _announce("simulation_app", "completed")
@@ -1444,6 +1390,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "articulation_device_binding": result["articulation_device_binding"],
             }
             raise
+        _announce("site_appearance_renderer")
+        result["site_appearance_renderer"] = _prepare_site_appearance_renderer(
+            simulation_app=simulation_app,
+            plan=plan,
+            progress_callback=lambda row: _announce(
+                f"nurec_warmup_round_{row['round']}", "completed"
+            ),
+        )
+        if not result["site_appearance_renderer"]["passed"]:
+            result["blockers"].extend(
+                result["site_appearance_renderer"]["blockers"]
+            )
+            raise RuntimeError("native_task_arena_nurec_setup_failed")
+        _announce("site_appearance_renderer", "completed")
         scene = env.unwrapped.scene
         robot = scene["robot"]
         task_object = scene[built.scene_asset_names["task_object"]]
@@ -1513,6 +1473,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 built,
                 grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
             )
+        else:
+            # The Robotiq inner-finger body origins nearly coincide throughout
+            # travel.  Release evidence must use the physical fingertip pad
+            # centers sealed by the native convention probe, not those origins.
+            readback = NativeRigidTaskArenaReadback(
+                built,
+                gripper_pad_readback_callback=servo.current_gripper_pad_readback,
+            )
         result["franka_pose_binding"] = servo.binding
         result["arm_actuator_readback"] = read_native_arm_actuator_readback(
             robot, joint_ids=servo.binding["arm_joint_ids"]
@@ -1540,18 +1508,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                     dtype=torch.float32,
                 )
             )
+        camera_framing_expectations = (
+            plan.get("task_object_observability") or {}
+        ).get("cameras") or {}
         snapshots.append(
             _camera_snapshot(
                 env=env,
                 camera_scene_names=built.camera_scene_names,
                 output_root=output_root,
                 snapshot_id="reset",
+                framing_expectations=camera_framing_expectations,
+                site_appearance_render_expected=camera_site_appearance_required(plan),
             )
         )
 
         phase_results = []
         total_steps = 0
-        max_total_steps = int(plan["cadence"]["maximum_action_steps"])
+        # Reserve the settle window out of the episode budget: the qualifying
+        # controls episode replays every qualified phase at its exact step
+        # count and then appends this settle window inside the same
+        # ``maximum_action_steps`` cap, so a construction that consumed the
+        # full cap would qualify here and be refused there
+        # (``native_rigid_control_action_budget_exceeded``) after the paid run.
+        # Phase plans sealed by the current materializers carry the reserved
+        # budget; legacy plans without it keep their historical cap.
+        max_total_steps = min(
+            int(
+                phase_plan["execution_parameters"].get(
+                    "maximum_construction_total_steps"
+                )
+                or plan["cadence"]["maximum_action_steps"]
+            ),
+            int(plan["cadence"]["maximum_action_steps"]),
+        )
         execution_parameters = phase_plan["execution_parameters"]
         arrival_tolerance = float(execution_parameters["arrival_tolerance_m"])
         default_orientation_tolerance = execution_parameters.get(
@@ -1661,12 +1650,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ]
             )
             task_samples = []
+            solver_sequence = validated_solver_joint_sequence(
+                phase, arm_joint_names=servo.binding["arm_joint_names"]
+            )
+            solver_waypoint_index = 0
             while (
                 total_steps < max_total_steps
                 and len(diagnostics) < maximum_steps_per_phase
             ):
-                global_target = global_ik_solutions.get(
-                    str(phase["phase_id"])
+                global_target = solver_command_target(
+                    solver_sequence,
+                    waypoint_index=solver_waypoint_index,
+                    fallback=global_ik_solutions.get(str(phase["phase_id"])),
                 )
                 if global_target is not None:
                     action, diagnostic = servo.action_for_joint_target(
@@ -1682,7 +1677,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "velocity_feedforward_scale"
                         ],
                     )
-                    diagnostic["pink_global_ik_phase_solution_used"] = True
+                    diagnostic["pink_global_ik_phase_solution_used"] = not bool(
+                        solver_sequence
+                    )
+                    diagnostic["curobo_solver_path_waypoint_used"] = bool(
+                        solver_sequence
+                    )
                 else:
                     action, diagnostic = servo.action_for_grasp_target(
                         target_position_world_m=phase["position_world_m"],
@@ -1701,6 +1701,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ],
                     )
                     diagnostic["pink_global_ik_phase_solution_used"] = False
+                    diagnostic["curobo_solver_path_waypoint_used"] = False
                 env.step(
                     torch.tensor(
                         [action],
@@ -1725,7 +1726,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                 )
                 orientation_error = arrival["orientation_error_rad"]
-                stable = stable + 1 if arrival["reached"] else 0
+                solver_waypoint_index = advance_solver_waypoint(
+                    solver_sequence,
+                    waypoint_index=solver_waypoint_index,
+                    measured_joint_positions_rad=servo.read_arm_joint_positions(),
+                    tolerance_rad=servo_command_limits["max_joint_delta_rad"],
+                    diagnostic=diagnostic,
+                )
+                stable = (
+                    stable + 1
+                    if solver_waypoint_index >= len(solver_sequence)
+                    and arrival["reached"]
+                    else 0
+                )
                 diagnostic["step_index"] = total_steps
                 diagnostic["position_error_m"] = error
                 diagnostic["orientation_error_rad"] = orientation_error
@@ -1797,6 +1810,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "gripper_command": gripper_command,
                 "gate_ids": list(phase.get("gate_ids") or []),
                 "steps": len(diagnostics),
+                **solver_path_result_fields(
+                    solver_sequence, waypoint_index=solver_waypoint_index
+                ),
                 "diagnostics": diagnostics[:4] + diagnostics[-2:],
                 "task_sample": sample,
                 "task_samples": task_samples,
@@ -1808,6 +1824,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     camera_scene_names=built.camera_scene_names,
                     output_root=output_root,
                     snapshot_id=phase["phase_id"],
+                    framing_expectations=camera_framing_expectations,
+                    site_appearance_render_expected=camera_site_appearance_required(plan),
                 )
             )
             _announce(

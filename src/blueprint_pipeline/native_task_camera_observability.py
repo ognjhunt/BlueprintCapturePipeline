@@ -46,7 +46,9 @@ declaration visible instead of silently changing the claim.
 from __future__ import annotations
 
 import ast
+import hashlib
 import math
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -110,27 +112,53 @@ MINIMUM_LUMINANCE_STD = 1.0
 # receipt before it crosses anything.
 NEAR_BLACK_LUMINANCE_MAX = 2.0
 
+# --- policy-input saturation ----------------------------------------------
+#
+# A ParticleField splat is display-referred sRGB and Omniverse RTX composites
+# it as-is.  When the lane instead forced the splat through the HDR pipeline
+# (``/rtx/rtpt/gaussian/skipTonemapping/enabled=false``), the ``rgb``
+# annotator became a per-channel clamp of radiance up to 60x display white.
+# The scene-839873 r13 construction reset frames carried 22.5 percent
+# (external) and 24.0 percent (overview) of pixels with a channel above 1.0,
+# against 2.7 percent on the wrist camera that mostly framed the robot and
+# the table.  Under the clamp those pixels are white blobs with chromatic
+# fringes, and that exact frame was handed to both candidates as their
+# observation while every retained review PNG had been display-encoded from
+# the HDR buffer, so no upstream gate could see it.
+#
+# This gate reads the exact policy-input arrays, never a review encode, and
+# refuses the episode before any candidate query.  A ceiling of 0.10 sits
+# well above the 2.7 percent a robot-and-table frame measured and well below
+# the 22-24 percent the defect produced.
+MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION = 0.10
+SATURATED_CHANNEL_LEVEL = 255
+
+POLICY_INPUT_SATURATION_SCHEMA_VERSION = "native_task_policy_input_frame_saturation.v1"
+REFUSAL_POLICY_INPUT_FRAME_SATURATED = "native_task_policy_input_frame_saturated"
+REFUSAL_POLICY_INPUT_FRAMES_INVALID = "native_task_policy_input_frames_invalid"
+PREPOLICY_VISUAL_REQUIRED_VIEWS = frozenset({"external", "wrist", "overview"})
+MAXIMUM_PREPOLICY_NEAR_BLACK_PIXEL_FRACTION = 0.50
+REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK = (
+    "native_task_prepolicy_visual_frame_near_black_fraction_above_ceiling"
+)
+REFUSAL_PREPOLICY_VISUAL_FRAME_INVALID = "native_task_prepolicy_visual_frame_invalid"
+REFUSAL_PREPOLICY_VISUAL_FRAME_DUPLICATE = "native_task_prepolicy_visual_frame_duplicate"
+
 BLOCKER_FRAME_VOID = "native_task_camera_rgb_frame_void"
 BLOCKER_FRAME_UNIFORM = "native_task_camera_rgb_frame_uniform"
 BLOCKER_FRAME_TONAL_RANGE = "native_task_camera_rgb_frame_tonal_range_below_floor"
 BLOCKER_TARGET_VOID = "native_task_camera_rgb_target_region_void"
 BLOCKER_TARGET_UNIFORM = "native_task_camera_rgb_target_region_uniform"
-BLOCKER_TARGET_TONAL_RANGE = (
-    "native_task_camera_rgb_target_region_tonal_range_below_floor"
-)
+BLOCKER_TARGET_TONAL_RANGE = "native_task_camera_rgb_target_region_tonal_range_below_floor"
 BLOCKER_SITE_VOID = "native_task_camera_rgb_site_void_fraction_above_ceiling"
-BLOCKER_SITE_DOMINANT_COLOR = (
-    "native_task_camera_rgb_site_dominant_color_fraction_above_ceiling"
-)
+BLOCKER_SITE_DOMINANT_COLOR = "native_task_camera_rgb_site_dominant_color_fraction_above_ceiling"
 BLOCKER_SEMANTIC_FRAMING = "native_task_camera_semantic_framing_below_threshold"
 
 # Not a blocker: the caller declared the runtime cannot render the captured
 # site, and it rendered anyway.  That is not a defect -- it means the image
 # changed and the declaration is stale, which is exactly the thing that would
 # otherwise slip past unnoticed.
-NOTICE_SITE_RENDERED_WHILE_UNCLAIMED = (
-    "native_task_camera_site_rendered_while_unclaimed"
-)
+NOTICE_SITE_RENDERED_WHILE_UNCLAIMED = "native_task_camera_site_rendered_while_unclaimed"
 
 REFUSAL_RGB_MISSING = "native_task_camera_rgb_frame_missing"
 REFUSAL_RGB_SHAPE = "native_task_camera_rgb_shape_invalid"
@@ -140,6 +168,20 @@ REFUSAL_RGB_SEMANTIC_MISMATCH = "native_task_camera_rgb_semantic_shape_mismatch"
 CLAIM_WITH_SITE = "camera_observes_task_object_in_rendered_site"
 CLAIM_WITHOUT_SITE = "camera_observes_task_object_without_site_appearance"
 
+POLICY_START_OBSERVABILITY_SCHEMA_VERSION = "native_task_policy_start_camera_observability.v1"
+POLICY_START_SNAPSHOT_ID = "reset"
+POLICY_INPUT_CAMERA_ROLES = ("external", "wrist")
+POLICY_START_TARGET_VISIBLE_ROLES = ("external",)
+
+REFUSAL_POLICY_START_SNAPSHOTS_INVALID = "native_task_policy_start_camera_snapshots_invalid"
+REFUSAL_POLICY_START_SNAPSHOT_MISSING = "native_task_policy_start_camera_snapshot_missing"
+REFUSAL_POLICY_START_SNAPSHOT_DUPLICATE = "native_task_policy_start_camera_snapshot_duplicate"
+REFUSAL_POLICY_START_CAMERAS_INVALID = "native_task_policy_start_cameras_invalid"
+REFUSAL_POLICY_START_ROLE_MISSING = "native_task_policy_start_camera_role_missing"
+REFUSAL_POLICY_START_ROLE_DUPLICATE = "native_task_policy_start_camera_role_duplicate"
+REFUSAL_POLICY_START_ROLE_NOT_OBSERVABLE = "native_task_policy_start_camera_role_not_observable"
+REFUSAL_POLICY_START_ROLE_NOT_RENDERED = "native_task_policy_start_camera_role_not_rendered"
+
 
 class NativeTaskCameraObservabilityError(ValueError):
     """Stable semantic/framing/render-evidence failures."""
@@ -147,6 +189,170 @@ class NativeTaskCameraObservabilityError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def validate_native_task_policy_start_camera_observability(
+    construction_result: Mapping[str, Any],
+    *,
+    snapshot_id: str = POLICY_START_SNAPSHOT_ID,
+    required_roles: Sequence[str] = POLICY_INPUT_CAMERA_ROLES,
+    target_visible_roles: Sequence[str] = POLICY_START_TARGET_VISIBLE_ROLES,
+    site_appearance_render_expected: bool = True,
+) -> dict[str, Any]:
+    """Prove the actual policy-start views, never a later scripted best view.
+
+    Construction records several camera snapshots while its scripted controller
+    approaches and contacts the task object.  A camera becoming useful *after*
+    that controller has moved the robot cannot prove what a learned policy saw
+    at reset.  The external view must frame the task object at policy start.  A
+    wrist camera may legitimately point at the floor until the arm approaches,
+    so it must be a valid rendered site frame but need not contain the target.
+    This distinction is observed evidence: pi0.5 approached the washer from the
+    exact same target-absent wrist frame on which GR00T later failed.
+
+    The returned summary is deliberately small and serialisable; the complete
+    radiance and semantic evidence remains transitively bound by the immutable
+    construction-result digest.
+    """
+
+    requested_snapshot = str(snapshot_id or "").strip()
+    if not isinstance(site_appearance_render_expected, bool):
+        raise NativeTaskCameraObservabilityError(["native_task_camera_site_expectation_invalid"])
+    roles = tuple(str(role or "").strip() for role in required_roles)
+    semantic_roles = tuple(str(role or "").strip() for role in target_visible_roles)
+    errors: list[str] = []
+    if (
+        not requested_snapshot
+        or not roles
+        or any(not role for role in roles)
+        or any(not role for role in semantic_roles)
+        or not set(semantic_roles).issubset(roles)
+        or len(set(semantic_roles)) != len(semantic_roles)
+    ):
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_START_SNAPSHOTS_INVALID])
+    if len(set(roles)) != len(roles):
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_START_ROLE_DUPLICATE])
+
+    raw_snapshots = construction_result.get("camera_snapshots")
+    if not isinstance(raw_snapshots, list):
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_START_SNAPSHOTS_INVALID])
+    matches = [
+        row
+        for row in raw_snapshots
+        if isinstance(row, Mapping) and str(row.get("snapshot_id") or "") == requested_snapshot
+    ]
+    if not matches:
+        raise NativeTaskCameraObservabilityError(
+            [f"{REFUSAL_POLICY_START_SNAPSHOT_MISSING}:{requested_snapshot}"]
+        )
+    if len(matches) != 1:
+        raise NativeTaskCameraObservabilityError(
+            [f"{REFUSAL_POLICY_START_SNAPSHOT_DUPLICATE}:{requested_snapshot}"]
+        )
+
+    cameras = matches[0].get("cameras")
+    if not isinstance(cameras, list):
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_START_CAMERAS_INVALID])
+
+    summaries: list[dict[str, Any]] = []
+    for role in roles:
+        role_rows = [
+            row
+            for row in cameras
+            if isinstance(row, Mapping) and str(row.get("role") or "") == role
+        ]
+        if not role_rows:
+            errors.append(f"{REFUSAL_POLICY_START_ROLE_MISSING}:{role}")
+            continue
+        if len(role_rows) != 1:
+            errors.append(f"{REFUSAL_POLICY_START_ROLE_DUPLICATE}:{role}")
+            continue
+        row = role_rows[0]
+        observability = row.get("observability")
+        thresholds = observability.get("thresholds") if isinstance(observability, Mapping) else None
+        render = (
+            observability.get("render_evidence") if isinstance(observability, Mapping) else None
+        )
+        try:
+            pixel_count = int(observability["pixel_count"])
+            pixel_fraction = float(observability["pixel_fraction"])
+            minimum_pixels = int(thresholds["minimum_pixels"])
+            minimum_fraction = float(thresholds["minimum_pixel_fraction"])
+        except (KeyError, TypeError, ValueError):
+            pixel_count = -1
+            pixel_fraction = -1.0
+            minimum_pixels = 0
+            minimum_fraction = 0.0
+        try:
+            bbox_values = [int(value) for value in observability["bbox_xyxy"]]
+        except (KeyError, TypeError, ValueError):
+            bbox_values = []
+        blockers = observability.get("blockers") if isinstance(observability, Mapping) else None
+        bbox = observability.get("bbox_xyxy") if isinstance(observability, Mapping) else None
+        rgb_png = row.get("rgb_png")
+        rgb_png_sha256 = str(rgb_png.get("sha256") or "") if isinstance(rgb_png, Mapping) else ""
+        rendered = (
+            isinstance(observability, Mapping)
+            and observability.get("schema_version") == SCHEMA_VERSION
+            and observability.get("render_passed") is True
+            and observability.get("site_appearance_claimed") is site_appearance_render_expected
+            and isinstance(render, Mapping)
+            and (site_appearance_render_expected or render.get("site_appearance_render_expected") is False)
+            and render.get("passed") is True
+            and render.get("frame_rendered") is True
+            and (not site_appearance_render_expected or render.get("site_rendered") is True)
+            and render.get("blockers") == []
+            and str(row.get("scene_name") or "")
+            and str(row.get("snapshot_id") or "") == requested_snapshot
+            and rgb_png_sha256.startswith("sha256:")
+            and len(rgb_png_sha256) == 71
+            and all(character in "0123456789abcdef" for character in rgb_png_sha256[7:])
+        )
+        if not rendered:
+            errors.append(f"{REFUSAL_POLICY_START_ROLE_NOT_RENDERED}:{role}")
+            continue
+        target_observable = (
+            observability.get("passed") is True
+            and observability.get("semantic_passed") is True
+            and observability.get("centroid_within_margin") is True
+            and observability.get("claim") == (CLAIM_WITH_SITE if site_appearance_render_expected else CLAIM_WITHOUT_SITE)
+            and blockers == []
+            and isinstance(bbox, list)
+            and len(bbox) == 4
+            and len(bbox_values) == 4
+            and pixel_count >= max(1, minimum_pixels)
+            and math.isfinite(pixel_fraction)
+            and pixel_fraction >= max(0.0, minimum_fraction)
+            and render.get("target_rendered") is True
+        )
+        if role in semantic_roles and not target_observable:
+            errors.append(f"{REFUSAL_POLICY_START_ROLE_NOT_OBSERVABLE}:{role}")
+            continue
+        summaries.append(
+            {
+                "role": role,
+                "scene_name": str(row.get("scene_name") or ""),
+                "pixel_count": pixel_count,
+                "pixel_fraction": pixel_fraction,
+                "bbox_xyxy": bbox_values,
+                "rgb_png_sha256": rgb_png_sha256,
+                "target_visibility_required": role in semantic_roles,
+                "target_visible": target_observable,
+            }
+        )
+    if errors:
+        raise NativeTaskCameraObservabilityError(errors)
+    return {
+        "schema_version": POLICY_START_OBSERVABILITY_SCHEMA_VERSION,
+        "snapshot_id": requested_snapshot,
+        "required_policy_input_roles": list(roles),
+        "target_visible_roles": list(semantic_roles),
+        "cameras": summaries,
+        "passed": True,
+        "blockers": [],
+        "authority": "construction_result_exact_policy_initial_state_snapshot",
+        "site_appearance_claimed": site_appearance_render_expected,
+    }
 
 
 def _semantic_identifier_candidates(identifier: Any) -> list[int]:
@@ -170,6 +376,73 @@ def _semantic_identifier_candidates(identifier: Any) -> list[int]:
     packed = sum(int(value) << (8 * index) for index, value in enumerate(rgba))
     signed = packed - 2**32 if packed >= 2**31 else packed
     return sorted({packed, signed})
+
+
+def measure_native_task_semantic_label_pixels(
+    *, semantic_ids: Any, id_to_labels: Mapping[str, Any], target_label: str
+) -> dict[str, Any]:
+    """Count one exact semantic class without applying a visibility verdict."""
+
+    import numpy as np
+
+    semantic = np.asarray(semantic_ids)
+    if semantic.ndim == 3 and semantic.shape[-1] == 1:
+        semantic = semantic[..., 0]
+    if semantic.ndim != 2 or not semantic.size or not str(target_label or "").strip():
+        raise NativeTaskCameraObservabilityError(
+            ["native_task_camera_semantic_shape_invalid"]
+        )
+    target_ids: list[int] = []
+    for identifier, entry in id_to_labels.items():
+        label = entry.get("class") if isinstance(entry, Mapping) else entry
+        if label != target_label:
+            continue
+        candidates = _semantic_identifier_candidates(identifier)
+        if not candidates:
+            raise NativeTaskCameraObservabilityError(
+                ["native_task_camera_semantic_identifier_invalid"]
+            )
+        target_ids.extend(candidates)
+    target_ids = sorted(set(target_ids))
+    mask = np.isin(semantic.astype(np.int64), target_ids)
+    count = int(mask.sum())
+    height, width = (int(value) for value in mask.shape)
+    bbox = None
+    if count:
+        ys, xs = np.nonzero(mask)
+        bbox = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+    return {
+        "target_label": target_label,
+        "target_semantic_ids": target_ids,
+        "pixel_count": count,
+        "pixel_fraction": count / float(height * width),
+        "bbox_xyxy": bbox,
+        "frame_resolution_hw": [height, width],
+        "measurement_authority": "native_semantic_segmentation_aov",
+    }
+
+
+def retain_native_robot_semantic_mask(
+    *, semantic_ids: Any, id_to_labels: Mapping[str, Any],
+    output_path: Path, relative_to: Path,
+) -> dict[str, Any]:
+    """Retain exact native robot pixels for a later body-occlusion check."""
+    import numpy as np
+    from PIL import Image
+
+    robot = measure_native_task_semantic_label_pixels(
+        semantic_ids=semantic_ids, id_to_labels=id_to_labels, target_label="robot"
+    )
+    mask = np.isin(np.asarray(semantic_ids).astype(np.int64), robot["target_semantic_ids"])
+    Image.fromarray((mask * 255).astype(np.uint8), mode="L").save(
+        output_path, format="PNG", compress_level=9
+    )
+    return {
+        "path": str(output_path.relative_to(relative_to)),
+        "sha256": "sha256:" + hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        "pixel_count": int(mask.sum()),
+        "measurement_authority": "native_semantic_segmentation_aov",
+    }
 
 
 def _as_uint8_rgb(rgb: Any) -> Any:
@@ -204,9 +477,7 @@ def _as_uint8_rgb(rgb: Any) -> Any:
     return np.clip(values, 0.0, 255.0).astype(np.uint8)
 
 
-def _region_statistics(
-    luminance: Any, void: Any, selector: Any, *, rgb: Any
-) -> dict[str, Any]:
+def _region_statistics(luminance: Any, void: Any, selector: Any, *, rgb: Any) -> dict[str, Any]:
     """Void fraction and tonal structure over one region of a frame."""
 
     import numpy as np
@@ -226,9 +497,7 @@ def _region_statistics(
     return {
         "pixel_count": int(values.size),
         "void_pixel_fraction": float(void[selector].mean()),
-        "distinct_luminance_levels": int(
-            np.unique(np.rint(values).astype(np.uint8)).size
-        ),
+        "distinct_luminance_levels": int(np.unique(np.rint(values).astype(np.uint8)).size),
         "luminance_mean": float(values.mean()),
         "luminance_std": float(values.std()),
         "dominant_rgb_pixel_fraction": float(color_counts.max() / values.size),
@@ -284,9 +553,7 @@ def measure_native_task_frame_render_evidence(
     import numpy as np
 
     if not isinstance(site_appearance_render_expected, bool):
-        raise NativeTaskCameraObservabilityError(
-            ["native_task_camera_site_expectation_invalid"]
-        )
+        raise NativeTaskCameraObservabilityError(["native_task_camera_site_expectation_invalid"])
     frame = _as_uint8_rgb(rgb)
     height, width = (int(value) for value in frame.shape[:2])
     if expected_resolution_hw is not None:
@@ -297,14 +564,17 @@ def measure_native_task_frame_render_evidence(
     void = frame.max(axis=-1) == 0
     luminance = frame.astype(np.float64).mean(axis=-1)
     everywhere = np.ones_like(void, dtype=bool)
-    frame_statistics = _region_statistics(
-        luminance, void, everywhere, rgb=frame
-    )
+    frame_statistics = _region_statistics(luminance, void, everywhere, rgb=frame)
     frame_statistics["near_black_pixel_fraction"] = float(
         (luminance <= NEAR_BLACK_LUMINANCE_MAX).mean()
     )
     frame_statistics["luminance_min"] = float(luminance.min())
     frame_statistics["luminance_max"] = float(luminance.max())
+    # Reported here, gated on the exact policy-input frames: the fraction of
+    # pixels the LDR encode clipped in at least one channel.
+    frame_statistics["saturated_channel_pixel_fraction"] = float(
+        (frame >= SATURATED_CHANNEL_LEVEL).any(axis=-1).mean()
+    )
 
     mask = None
     if target_mask is not None:
@@ -346,10 +616,7 @@ def measure_native_task_frame_render_evidence(
     notices: list[str] = []
     if site_statistics is not None:
         site_blockers: list[str] = []
-        if (
-            float(site_statistics["void_pixel_fraction"])
-            > MAXIMUM_SITE_VOID_PIXEL_FRACTION
-        ):
+        if float(site_statistics["void_pixel_fraction"]) > MAXIMUM_SITE_VOID_PIXEL_FRACTION:
             site_blockers.append(BLOCKER_SITE_VOID)
         if (
             float(site_statistics["dominant_rgb_pixel_fraction"])
@@ -372,14 +639,18 @@ def measure_native_task_frame_render_evidence(
         "target_rendered": target_rendered,
         "site_rendered": site_rendered,
         "site_appearance_render_expected": site_appearance_render_expected,
-        "site_appearance_claimed": bool(
-            site_appearance_render_expected and site_rendered
-        ),
+        "site_appearance_claimed": bool(site_appearance_render_expected and site_rendered),
+        "site_appearance_presence_claimed": bool(site_appearance_render_expected and site_rendered),
+        # RGB statistics establish that non-void site radiance is present. They
+        # cannot establish reconstruction fidelity, Gaussian geometry quality,
+        # or sharpness without an independently bound reference. Those gates
+        # live at producer, representation, and packet boundaries.
+        "appearance_quality_claimed": False,
+        "appearance_fidelity_qualified": False,
+        "quality_boundary": "render_presence_only_not_appearance_quality",
         "thresholds": {
             "maximum_site_void_pixel_fraction": MAXIMUM_SITE_VOID_PIXEL_FRACTION,
-            "maximum_site_dominant_rgb_pixel_fraction": (
-                MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION
-            ),
+            "maximum_site_dominant_rgb_pixel_fraction": (MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION),
             "minimum_distinct_luminance_levels": MINIMUM_DISTINCT_LUMINANCE_LEVELS,
             "minimum_luminance_std": MINIMUM_LUMINANCE_STD,
             "near_black_luminance_max": NEAR_BLACK_LUMINANCE_MAX,
@@ -401,11 +672,20 @@ def measure_native_task_camera_observability(
     minimum_pixels: int,
     minimum_pixel_fraction: float,
     centroid_margin_fraction: float = 0.05,
+    framing_expectation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate exact target-class pixels AND the radiance of the pixels they name.
 
     ``rgb`` has no default on purpose.  A caller that cannot supply the frame
     must fail at the call rather than receive a verdict drawn from the mask.
+
+    ``framing_expectation`` optionally carries the sealed geometric projection
+    of the task object through this camera
+    (:mod:`blueprint_pipeline.native_task_camera_framing_expectation`).  When
+    present, the configured pixel minimums are scaled down -- never up -- to a
+    fraction of what the geometry can produce, so a small object at distance
+    is gated against its own physics instead of a constant calibrated on a
+    larger scene.  When absent, the configured constants apply unchanged.
     """
 
     import numpy as np
@@ -414,9 +694,7 @@ def measure_native_task_camera_observability(
     if semantic.ndim == 3 and semantic.shape[-1] == 1:
         semantic = semantic[..., 0]
     if semantic.ndim != 2 or not semantic.size:
-        raise NativeTaskCameraObservabilityError(
-            ["native_task_camera_semantic_shape_invalid"]
-        )
+        raise NativeTaskCameraObservabilityError(["native_task_camera_semantic_shape_invalid"])
     if (
         isinstance(minimum_pixels, bool)
         or int(minimum_pixels) < 1
@@ -426,9 +704,7 @@ def measure_native_task_camera_observability(
         or float(centroid_margin_fraction) < 0.0
         or float(centroid_margin_fraction) >= 0.5
     ):
-        raise NativeTaskCameraObservabilityError(
-            ["native_task_camera_threshold_invalid"]
-        )
+        raise NativeTaskCameraObservabilityError(["native_task_camera_threshold_invalid"])
     target_ids: list[int] = []
     for identifier, entry in id_to_labels.items():
         label = entry.get("class") if isinstance(entry, Mapping) else entry
@@ -457,9 +733,26 @@ def measure_native_task_camera_observability(
         ]
         margin = float(centroid_margin_fraction)
         centroid_framed = all(margin <= value <= 1.0 - margin for value in centroid)
+    framing_thresholds: dict[str, Any] | None = None
+    effective_minimum_pixels = int(minimum_pixels)
+    effective_minimum_fraction = float(minimum_pixel_fraction)
+    if framing_expectation is not None:
+        from blueprint_pipeline.native_task_camera_framing_expectation import (
+            effective_framing_minimums,
+        )
+
+        framing_thresholds = effective_framing_minimums(
+            minimum_pixels=int(minimum_pixels),
+            minimum_pixel_fraction=float(minimum_pixel_fraction),
+            frame_width=width,
+            frame_height=height,
+            expected_bbox_area_px=framing_expectation["expected_bbox_area_px"],
+        )
+        effective_minimum_pixels = framing_thresholds["effective_minimum_pixels"]
+        effective_minimum_fraction = framing_thresholds["effective_minimum_pixel_fraction"]
     semantic_passed = (
-        count >= int(minimum_pixels)
-        and fraction >= float(minimum_pixel_fraction)
+        count >= effective_minimum_pixels
+        and fraction >= effective_minimum_fraction
         and centroid_framed
     )
     render = measure_native_task_frame_render_evidence(
@@ -486,15 +779,19 @@ def measure_native_task_camera_observability(
             "minimum_pixels": int(minimum_pixels),
             "minimum_pixel_fraction": float(minimum_pixel_fraction),
             "centroid_margin_fraction": float(centroid_margin_fraction),
+            "effective_minimum_pixels": effective_minimum_pixels,
+            "effective_minimum_pixel_fraction": effective_minimum_fraction,
         },
+        "framing_expectation": (
+            dict(framing_expectation) if framing_expectation is not None else None
+        ),
+        "framing_thresholds": framing_thresholds,
         "semantic_passed": semantic_passed,
         "render_passed": bool(render["passed"]),
         "render_evidence": render,
         "site_appearance_claimed": bool(render["site_appearance_claimed"]),
         "claim": (
-            CLAIM_WITH_SITE
-            if passed and render["site_appearance_claimed"]
-            else CLAIM_WITHOUT_SITE
+            CLAIM_WITH_SITE if passed and render["site_appearance_claimed"] else CLAIM_WITHOUT_SITE
         ),
         "blockers": sorted(set(blockers)),
         "notices": list(render["notices"]),
@@ -505,16 +802,416 @@ def measure_native_task_camera_observability(
     }
 
 
+def measure_native_task_frame_saturation(*, rgb: Any) -> dict[str, Any]:
+    """Fraction of pixels the LDR encode clipped, in any and in every channel."""
+
+    import numpy as np
+
+    frame = _as_uint8_rgb(rgb)
+    saturated = frame >= SATURATED_CHANNEL_LEVEL
+    any_channel = saturated.any(axis=-1)
+    all_channels = saturated.all(axis=-1)
+    fraction = float(any_channel.mean())
+    return {
+        "schema_version": POLICY_INPUT_SATURATION_SCHEMA_VERSION,
+        "pixel_count": int(any_channel.size),
+        "saturated_channel_pixel_fraction": fraction,
+        "saturated_white_pixel_fraction": float(all_channels.mean()),
+        "chromatic_clip_pixel_fraction": float(
+            np.logical_and(any_channel, np.logical_not(all_channels)).mean()
+        ),
+        "maximum_saturated_channel_pixel_fraction": (
+            MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION
+        ),
+        "passed": fraction <= MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION,
+    }
+
+
+def validate_native_task_policy_input_frames(
+    frames: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Refuse policy-input frames the LDR encode has clipped into saturation.
+
+    ``frames`` maps a policy view name to the exact array the observation is
+    built from.  An unreadable frame is a refusal, not a pass.
+    """
+
+    if not isinstance(frames, Mapping) or not frames:
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
+    errors: list[str] = []
+    views: dict[str, dict[str, Any]] = {}
+    for view, frame in frames.items():
+        name = str(view or "").strip()
+        if not name or name in views:
+            raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
+        evidence = measure_native_task_frame_saturation(rgb=frame)
+        views[name] = evidence
+        if not evidence["passed"]:
+            errors.append(f"{REFUSAL_POLICY_INPUT_FRAME_SATURATED}:{name}")
+    if errors:
+        raise NativeTaskCameraObservabilityError(errors)
+    return {
+        "schema_version": POLICY_INPUT_SATURATION_SCHEMA_VERSION,
+        "maximum_saturated_channel_pixel_fraction": (
+            MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION
+        ),
+        "views": views,
+        "passed": True,
+    }
+
+
+POLICY_OBSERVATION_INTEGRITY_AUTHORITY_SCHEMA_VERSION = (
+    "policy_observation_integrity_authority.v1"
+)
+PREPOLICY_VISUAL_GATE_SCHEMA_VERSION = "native_task_prepolicy_visual_gate.v2"
+HUMAN_VISUAL_REVIEW_STATUSES = frozenset({"approved", "failed", "pending"})
+#: Diagnostic-only chromatic descriptors.  Scene 839873's three failing frames
+#: measured 5.16 / 5.10 / 2.14 percent of pixels with an RGB channel spread
+#: above 64 levels; the values are reported so a calibration set can be built
+#: from known-good and known-bad scenes.  They gate nothing until that set and
+#: its thresholds are preregistered.
+CHROMATIC_SPREAD_LEVEL = 64
+LOCAL_CHROMA_WINDOW = 3
+LOCAL_CHROMA_OUTLIER_LEVEL = 48
+REFUSAL_OBSERVATION_INTEGRITY_AUTHORITY_INVALID = (
+    "native_task_policy_observation_integrity_authority_invalid"
+)
+BLOCKER_APPEARANCE_REFERENCE_PARITY_MISSING = (
+    "native_task_appearance_reference_parity_missing"
+)
+BLOCKER_APPEARANCE_REFERENCE_PARITY_FAILED = (
+    "native_task_appearance_reference_parity_failed"
+)
+BLOCKER_APPEARANCE_REFERENCE_PARITY_BACKEND_MISMATCH = (
+    "native_task_appearance_reference_parity_backend_mismatch"
+)
+BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED = (
+    "native_task_human_visual_review_not_approved"
+)
+BLOCKER_FRAME_STRUCTURE_FAILED = "native_task_prepolicy_frame_structure_failed"
+
+
+def measure_native_task_frame_chromatic_diagnostics(rgb: Any) -> dict[str, Any]:
+    """Diagnostic chromatic descriptors of one uint8 RGB frame (never a gate).
+
+    ``rgb_spread_pixel_fraction`` is the share of pixels whose max-min channel
+    difference exceeds :data:`CHROMATIC_SPREAD_LEVEL`.  ``local_chroma_outlier_fraction``
+    is the share of pixels whose chroma (max-min) differs from the mean chroma
+    of their 3x3 neighbourhood by more than :data:`LOCAL_CHROMA_OUTLIER_LEVEL`,
+    which is what isolated saturated splats look like against a coherent
+    surface.  ``mean_channel_value`` is retained for exposure comparison with
+    the audited frames.
+    """
+
+    import numpy as np
+
+    frame = _as_uint8_rgb(rgb).astype(np.int16)
+    chroma = frame.max(axis=-1) - frame.min(axis=-1)
+    spread_fraction = float((chroma > CHROMATIC_SPREAD_LEVEL).mean())
+    pad = LOCAL_CHROMA_WINDOW // 2
+    padded = np.pad(chroma.astype(np.float64), pad, mode="edge")
+    height, width = chroma.shape
+    neighbourhood = np.zeros((height, width), dtype=np.float64)
+    for dy in range(LOCAL_CHROMA_WINDOW):
+        for dx in range(LOCAL_CHROMA_WINDOW):
+            neighbourhood += padded[dy : dy + height, dx : dx + width]
+    neighbourhood = (neighbourhood - chroma) / (LOCAL_CHROMA_WINDOW**2 - 1)
+    outlier_fraction = float(
+        (np.abs(chroma - neighbourhood) > LOCAL_CHROMA_OUTLIER_LEVEL).mean()
+    )
+    return {
+        "rgb_spread_level": CHROMATIC_SPREAD_LEVEL,
+        "rgb_spread_pixel_fraction": spread_fraction,
+        "local_chroma_outlier_level": LOCAL_CHROMA_OUTLIER_LEVEL,
+        "local_chroma_outlier_fraction": outlier_fraction,
+        "mean_channel_value": float(frame.mean()),
+        "gating": "diagnostic_only_until_calibration_set_preregistered",
+    }
+
+
+def validate_policy_observation_integrity_authority(value: Any) -> dict[str, Any]:
+    """Validate a sealed same-pose parity plus human-review authority.
+
+    The authority binds the backend it was measured against by receipt digest,
+    the reference renderer identity, per-view reference/candidate PNG digests,
+    and an explicit human review state.  A structurally valid authority is not
+    yet a pass: :func:`measure_native_task_prepolicy_visual_frames` still
+    checks that its backend digest equals the live session's.
+    """
+
+    if not isinstance(value, Mapping):
+        raise NativeTaskCameraObservabilityError(
+            [REFUSAL_OBSERVATION_INTEGRITY_AUTHORITY_INVALID]
+        )
+    authority = dict(value)
+    errors: list[str] = []
+    if (
+        authority.get("schema_version")
+        != POLICY_OBSERVATION_INTEGRITY_AUTHORITY_SCHEMA_VERSION
+    ):
+        errors.append("schema_version")
+    backend_digest = str(authority.get("appearance_render_backend_receipt_digest") or "")
+    if not backend_digest.startswith("sha256:") or len(backend_digest) != 71:
+        errors.append("appearance_render_backend_receipt_digest")
+    parity = authority.get("appearance_reference_parity")
+    if not isinstance(parity, Mapping) or not isinstance(parity.get("passed"), bool):
+        errors.append("appearance_reference_parity")
+    else:
+        reference = str(parity.get("reference_renderer_identity") or "")
+        source = str(parity.get("reference_source_sha256") or "")
+        views = parity.get("views")
+        if not reference or not source.startswith("sha256:"):
+            errors.append("appearance_reference_parity.reference")
+        if not isinstance(views, Mapping) or set(views) != PREPOLICY_VISUAL_REQUIRED_VIEWS:
+            errors.append("appearance_reference_parity.views")
+        else:
+            for view, row in views.items():
+                if not isinstance(row, Mapping) or not all(
+                    str(row.get(key) or "").startswith("sha256:")
+                    for key in ("reference_png_sha256", "candidate_png_sha256")
+                ):
+                    errors.append(f"appearance_reference_parity.views.{view}")
+    review = authority.get("human_visual_review")
+    if (
+        not isinstance(review, Mapping)
+        or review.get("status") not in HUMAN_VISUAL_REVIEW_STATUSES
+        or not str(review.get("reviewer") or "").strip()
+        or not str(review.get("contact_sheet_sha256") or "").startswith("sha256:")
+    ):
+        errors.append("human_visual_review")
+    if errors:
+        raise NativeTaskCameraObservabilityError(
+            [f"{REFUSAL_OBSERVATION_INTEGRITY_AUTHORITY_INVALID}:{field}" for field in errors]
+        )
+    return authority
+
+
+def build_policy_observation_integrity_authority(
+    *,
+    appearance_render_backend_receipt_digest: str,
+    reference_renderer_identity: str,
+    reference_source_sha256: str,
+    views: Mapping[str, Mapping[str, Any]],
+    parity_passed: bool,
+    parity_metrics: Mapping[str, Any] | None = None,
+    human_review_status: str,
+    reviewer: str,
+    contact_sheet_sha256: str,
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    """Seal a same-pose parity plus human-review authority for one backend.
+
+    This is authored by the render-comparison step (native NRE reference
+    versus the candidate backend at the exact policy poses) and by a named
+    human reviewer of the three-frame contact sheet.  No policy participates.
+    """
+
+    from .decision_evidence_contracts import canonical_digest
+
+    authority = {
+        "schema_version": POLICY_OBSERVATION_INTEGRITY_AUTHORITY_SCHEMA_VERSION,
+        "appearance_render_backend_receipt_digest": appearance_render_backend_receipt_digest,
+        "appearance_reference_parity": {
+            "passed": bool(parity_passed),
+            "reference_renderer_identity": reference_renderer_identity,
+            "reference_source_sha256": reference_source_sha256,
+            "views": {view: dict(row) for view, row in views.items()},
+            "metrics": dict(parity_metrics or {}),
+        },
+        "human_visual_review": {
+            "status": human_review_status,
+            "reviewer": reviewer,
+            "contact_sheet_sha256": contact_sheet_sha256,
+            "reviewed_at": reviewed_at,
+        },
+    }
+    authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
+    return validate_policy_observation_integrity_authority(authority)
+
+
+def measure_native_task_prepolicy_visual_frames(
+    frames: Mapping[str, Any],
+    *,
+    candidate_policy_loaded: bool,
+    candidate_policy_queried: bool = False,
+    observation_integrity_authority: Mapping[str, Any] | None = None,
+    appearance_render_backend_receipt_digest: str | None = None,
+) -> dict[str, Any]:
+    """Gate all reset cameras before either learned policy may be queried.
+
+    Scene 839873 (2026-09-02): three frames passed the structural checks
+    (nonblank, unclipped, not near-black, distinct) and were visibly unusable,
+    with severe chromatic splat breakup.  A structural pass is therefore
+    reported as ``frame_structure_passed`` and nothing more.  The field that
+    may unlock a policy query, ``policy_observation_integrity_passed``, is the
+    conjunction of the structural pass, a sealed same-pose reference parity
+    bound to this session's exact appearance backend, and an explicit human
+    approval of the three-frame contact sheet.
+
+    ``candidate_policy_loaded`` is required because the receipt used to
+    hard-code ``False`` while the real session loads each policy before its
+    first episode; the value must come from the caller that knows.
+    """
+
+    import numpy as np
+
+    if not isinstance(candidate_policy_loaded, bool) or not isinstance(
+        candidate_policy_queried, bool
+    ):
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
+    if not isinstance(frames, Mapping) or set(frames) != PREPOLICY_VISUAL_REQUIRED_VIEWS:
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
+    blockers: list[str] = []
+    views: dict[str, dict[str, Any]] = {}
+    digests: dict[str, str] = {}
+    for view in sorted(PREPOLICY_VISUAL_REQUIRED_VIEWS):
+        frame = _as_uint8_rgb(frames[view])
+        saturation = measure_native_task_frame_saturation(rgb=frame)
+        render = measure_native_task_frame_render_evidence(
+            rgb=frame,
+            site_appearance_render_expected=True,
+        )
+        near_black_fraction = float(
+            (frame.astype(np.float64).mean(axis=-1) <= NEAR_BLACK_LUMINANCE_MAX).mean()
+        )
+        digest = "sha256:" + hashlib.sha256(np.ascontiguousarray(frame).tobytes()).hexdigest()
+        digests[view] = digest
+        view_blockers: list[str] = []
+        if not saturation["passed"]:
+            view_blockers.append(REFUSAL_POLICY_INPUT_FRAME_SATURATED)
+        view_blockers.extend(
+            f"{REFUSAL_PREPOLICY_VISUAL_FRAME_INVALID}:{blocker}"
+            for blocker in render["blockers"]
+        )
+        if near_black_fraction > MAXIMUM_PREPOLICY_NEAR_BLACK_PIXEL_FRACTION:
+            view_blockers.append(REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK)
+        blockers.extend(f"{blocker}:{view}" for blocker in view_blockers)
+        views[view] = {
+            "frame_digest": digest,
+            "saturation": saturation,
+            "render_presence": render,
+            "near_black_pixel_fraction": near_black_fraction,
+            "maximum_near_black_pixel_fraction": (
+                MAXIMUM_PREPOLICY_NEAR_BLACK_PIXEL_FRACTION
+            ),
+            "chromatic_diagnostics": measure_native_task_frame_chromatic_diagnostics(frame),
+            "blockers": view_blockers,
+            "passed": not view_blockers,
+        }
+    by_digest: dict[str, list[str]] = {}
+    for view, digest in digests.items():
+        by_digest.setdefault(digest, []).append(view)
+    for duplicate_views in by_digest.values():
+        if len(duplicate_views) > 1:
+            blockers.append(
+                f"{REFUSAL_PREPOLICY_VISUAL_FRAME_DUPLICATE}:"
+                + ",".join(sorted(duplicate_views))
+            )
+    frame_structure_passed = not blockers
+
+    integrity_blockers: list[str] = []
+    if not frame_structure_passed:
+        integrity_blockers.append(BLOCKER_FRAME_STRUCTURE_FAILED)
+    parity_passed = False
+    parity_binding: dict[str, Any] = {
+        "authority_present": observation_integrity_authority is not None,
+        "session_backend_receipt_digest": appearance_render_backend_receipt_digest,
+        "authority_backend_receipt_digest": None,
+        "backend_bound": False,
+    }
+    review_status = "pending"
+    review: dict[str, Any] = {"status": review_status, "reviewer": None}
+    if observation_integrity_authority is None:
+        integrity_blockers.append(BLOCKER_APPEARANCE_REFERENCE_PARITY_MISSING)
+        integrity_blockers.append(BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED)
+    else:
+        authority = validate_policy_observation_integrity_authority(
+            observation_integrity_authority
+        )
+        authority_digest = authority["appearance_render_backend_receipt_digest"]
+        parity_binding["authority_backend_receipt_digest"] = authority_digest
+        bound = (
+            appearance_render_backend_receipt_digest is not None
+            and authority_digest == appearance_render_backend_receipt_digest
+        )
+        parity_binding["backend_bound"] = bound
+        parity_row = dict(authority["appearance_reference_parity"])
+        if not bound:
+            integrity_blockers.append(BLOCKER_APPEARANCE_REFERENCE_PARITY_BACKEND_MISMATCH)
+        elif parity_row.get("passed") is not True:
+            integrity_blockers.append(BLOCKER_APPEARANCE_REFERENCE_PARITY_FAILED)
+        else:
+            parity_passed = True
+        review = dict(authority["human_visual_review"])
+        review_status = str(review["status"])
+        if review_status != "approved":
+            integrity_blockers.append(BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED)
+    integrity_passed = (
+        frame_structure_passed and parity_passed and review_status == "approved"
+    )
+    return {
+        "schema_version": PREPOLICY_VISUAL_GATE_SCHEMA_VERSION,
+        "required_views": sorted(PREPOLICY_VISUAL_REQUIRED_VIEWS),
+        "views": views,
+        "candidate_policy_loaded": candidate_policy_loaded,
+        "candidate_policy_queried": candidate_policy_queried,
+        "blockers": sorted(set(blockers)),
+        # ``passed`` is the structural verdict only.  It is kept under this
+        # name for the render-only preflight probe, which never loads a policy.
+        "passed": frame_structure_passed,
+        "frame_structure_passed": frame_structure_passed,
+        # Measured by the semantic camera-observability gate, not here.
+        "target_semantic_visibility_passed": None,
+        "appearance_reference_parity_passed": parity_passed,
+        "appearance_reference_parity_binding": parity_binding,
+        "human_visual_review_status": review_status,
+        "human_visual_review": review,
+        "policy_observation_integrity_passed": integrity_passed,
+        "policy_observation_integrity_blockers": sorted(set(integrity_blockers)),
+        "measurement_authority": "exact_reset_policy_and_review_rgb_frames",
+        "quality_boundary": (
+            "frame_structure_passed is structural and exposure only; "
+            "policy_observation_integrity_passed additionally requires sealed "
+            "same-pose reference parity bound to this session's appearance "
+            "backend and an approved human contact-sheet review"
+        ),
+    }
+
+
 __all__ = [
     "CLAIM_WITHOUT_SITE",
     "CLAIM_WITH_SITE",
     "MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION",
     "MAXIMUM_SITE_VOID_PIXEL_FRACTION",
     "MINIMUM_DISTINCT_LUMINANCE_LEVELS",
+    "MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION",
     "MINIMUM_LUMINANCE_STD",
+    "POLICY_INPUT_SATURATION_SCHEMA_VERSION",
+    "REFUSAL_POLICY_INPUT_FRAMES_INVALID",
+    "REFUSAL_POLICY_INPUT_FRAME_SATURATED",
+    "SATURATED_CHANNEL_LEVEL",
+    "BLOCKER_APPEARANCE_REFERENCE_PARITY_BACKEND_MISMATCH",
+    "BLOCKER_APPEARANCE_REFERENCE_PARITY_FAILED",
+    "BLOCKER_APPEARANCE_REFERENCE_PARITY_MISSING",
+    "BLOCKER_FRAME_STRUCTURE_FAILED",
+    "BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED",
+    "POLICY_OBSERVATION_INTEGRITY_AUTHORITY_SCHEMA_VERSION",
+    "PREPOLICY_VISUAL_GATE_SCHEMA_VERSION",
+    "build_policy_observation_integrity_authority",
+    "measure_native_task_frame_chromatic_diagnostics",
+    "measure_native_task_frame_saturation",
+    "measure_native_task_prepolicy_visual_frames",
+    "validate_policy_observation_integrity_authority",
+    "validate_native_task_policy_input_frames",
     "NativeTaskCameraObservabilityError",
+    "POLICY_INPUT_CAMERA_ROLES",
+    "POLICY_START_OBSERVABILITY_SCHEMA_VERSION",
+    "POLICY_START_SNAPSHOT_ID",
+    "POLICY_START_TARGET_VISIBLE_ROLES",
     "RENDER_EVIDENCE_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "measure_native_task_camera_observability",
+    "measure_native_task_semantic_label_pixels",
     "measure_native_task_frame_render_evidence",
+    "validate_native_task_policy_start_camera_observability",
 ]

@@ -1,0 +1,413 @@
+"""Typed, scene-neutral intake contract for production launch preparation.
+
+This boundary accepts only immutable customer/team references and bounded
+runtime requirements.  Production-owned paths, credentials, catalog files,
+commands, and provider resources are intentionally absent and are resolved by
+the production preparation service after admission.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from functools import lru_cache
+import math
+from pathlib import Path
+from typing import Any
+
+from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_configuration_runtime_budget import (
+    MAX_EXTERNAL_SERVICE_SPEND_USD as MAX_EXTERNAL_SERVICE_SPEND_USD,
+    MAX_ATTEMPT_SPEND_USD as MAX_ATTEMPT_SPEND_USD,
+    MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+    MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+    MIN_CONTENT_AGENTS_SPEND_USD as MIN_CONTENT_AGENTS_SPEND_USD,
+    REQUIRED_PARENT_TTL_SECONDS,
+    scene_configuration_budget_profile,
+)
+from .task_evaluation_configured_scene_public_projection import (
+    ConfiguredScenePublicProjectionError,
+    validate_public_display_authorization,
+)
+from .task_evaluation_scene_configuration_appearance_review import (
+    AppearanceReviewContractError,
+    appearance_review_mode,
+)
+from .task_evaluation_policy_run_contract import (
+    TaskEvaluationPolicyRunContractError,
+    compile_policy_run_configuration,
+    policy_run_configuration_schema,
+    policy_run_selection_schema,
+    policy_run_setup_schema,
+    validate_policy_run_configuration,
+    validate_policy_run_selection,
+    validate_policy_run_setup,
+)
+
+
+SCHEMA_VERSION = "task_evaluation_launch_preparation_request.v1"
+SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "schemas"
+    / "task_evaluation_launch_preparation_request.v1.schema.json"
+)
+EXECUTION_ADAPTER_PROVIDER_CAPABILITIES = {
+    ("native_task_arena", "v1"): frozenset({"vast"}),
+    ("scene_configuration_pipeline", "v1"): frozenset({"vast"}),
+}
+
+
+class TaskEvaluationLaunchPreparationContractError(ValueError):
+    """The external preparation request is unsafe or incomplete."""
+
+
+@lru_cache(maxsize=1)
+def preparation_request_schema() -> dict[str, Any]:
+    try:
+        value = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_schema_unavailable"
+        ) from exc
+    if not isinstance(value, Mapping):
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_schema_invalid"
+        )
+    # Imported here, not at module scope. The scene-configuration provider
+    # bundle copies this package into an Isaac Sim container that ships no
+    # ``jsonschema``, and reaches this module only transitively: the provider's
+    # stage adapters import the orchestrator for one string constant and never
+    # validate anything against a JSON Schema. A module-scope import therefore
+    # killed the provider runner with ``ModuleNotFoundError: No module named
+    # 'jsonschema'`` before its first stage, on a GPU that was already rented.
+    # Same reason ``rfc8785`` is imported inside ``cross_runtime_canonical_json``.
+    import jsonschema
+
+    # Keep the policy-run schema independently consumable by the WebApp while
+    # embedding the same exact resource at this existing intake boundary.
+    value["properties"]["policy_run_configuration"] = (
+        policy_run_configuration_schema()
+    )
+    value["properties"]["policy_run_selection"] = policy_run_selection_schema()
+    value["properties"]["policy_run_setup"] = policy_run_setup_schema()
+
+    jsonschema.Draft202012Validator.check_schema(value)
+    return dict(value)
+
+
+def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a request for NEW execution under the current budget contract."""
+    from .task_evaluation_retained_preparation_contract import ScenePreparationBudget
+    try:
+        profile = scene_configuration_budget_profile(value.get("replacement_authoring_backend", "content_agents"))
+    except (AttributeError, ValueError) as exc:
+        raise TaskEvaluationLaunchPreparationContractError("launch_preparation_scene_configuration_backend_invalid") from exc
+    budget = ScenePreparationBudget('current_execution', REQUIRED_PARENT_TTL_SECONDS,
+        MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD, MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+        profile.content_agents_minimum, profile.external_maximum, profile.attempt_maximum, '')
+    return _validate_launch_preparation_request(value, scene_budget=budget)
+
+
+def validate_retained_preparation_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Interpret an enumerated historical contract; never admit new execution.
+
+    Schema and administrative policy are frozen independently of current intake.
+    Every scientific/rights check and the immutable parent join remains required.
+    """
+    from .task_evaluation_retained_preparation_contract import retained_schema
+    return _validate_launch_preparation_request(value, schema=retained_schema(value))
+
+
+
+def _validate_launch_preparation_request(
+    value: Mapping[str, Any], *, scene_budget=None, schema=None
+) -> dict[str, Any]:
+    """Validate and copy one customer-facing preparation request.
+
+    JSON Schema closes the external surface.  These semantic checks protect
+    the provider-neutral invariants that are awkward to express structurally.
+    No file or network operation occurs here.
+    """
+
+    import jsonschema
+
+    request = dict(value)
+    validator = jsonschema.Draft202012Validator(
+        preparation_request_schema() if schema is None else schema,
+        format_checker=jsonschema.FormatChecker(),
+    )
+    errors = sorted(validator.iter_errors(request), key=lambda row: list(row.path))
+    if errors:
+        path = ".".join(str(part) for part in errors[0].path) or "$"
+        raise TaskEvaluationLaunchPreparationContractError(
+            f"launch_preparation_request_invalid:{path}"
+        )
+
+    if scene_budget is None:
+        from .task_evaluation_retained_preparation_contract import retained_budget
+        scene_budget = retained_budget(request)
+    scene_rights = request["scene"].get("rights")
+    if isinstance(scene_rights, Mapping) and (
+        scene_rights["source_bytes_redistributable"] is False
+        and scene_rights["provider_disclosure_scope"] == "source_and_derived"
+    ):
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_scene_disclosure_conflicts_with_rights"
+        )
+    if isinstance(scene_rights, Mapping):
+        try:
+            validate_public_display_authorization(request)
+        except ConfiguredScenePublicProjectionError as exc:
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_public_display_authorization_invalid"
+            ) from exc
+    if request["runtime"]["requirements"]["gpu_count"] < 1:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_gpu_requirement_missing"
+        )
+    task = request["task"]
+    strategy_by_kind = {
+        "rigid_relocation": {"planar_push", "pick_and_place"},
+        "articulated_manipulation": {"articulated_open_close"},
+    }
+    if task["strategy"] not in strategy_by_kind[task["kind"]]:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_task_strategy_kind_mismatch"
+        )
+    destination = task.get("destination")
+    if "surface_target" in task:
+        from .task_evaluation_surface_target import validate_surface_target
+        validate_surface_target(task["surface_target"])
+        if destination is not None or task["strategy"] != "pick_and_place":
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_surface_target_invalid")
+    elif task["strategy"] == "pick_and_place":
+        pose = destination.get("pose_world") if isinstance(destination, Mapping) else None
+        orientation = (
+            pose.get("orientation_xyzw") if isinstance(pose, Mapping) else None
+        )
+        if (
+            not isinstance(destination, Mapping)
+            or destination.get("identity") == task["subject"]["identity"]
+            or not isinstance(orientation, list)
+            or len(orientation) != 4
+            or not math.isclose(
+                sum(float(value) * float(value) for value in orientation),
+                1.0,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_pick_place_destination_invalid"
+            )
+        # A supplemental destination has no source object, so the scene
+        # configuration run itself must produce its Isaac-native import
+        # qualification and task geometry.  Later modes consume the published
+        # references and may not omit them.
+        run_produced = ("native_import_qualification", "geometry")
+        if request["run_mode"] == "scene_configuration":
+            if any(field in destination for field in run_produced):
+                raise TaskEvaluationLaunchPreparationContractError(
+                    "launch_preparation_scene_configuration_destination_"
+                    "prequalified_reference_forbidden"
+                )
+        elif any(field not in destination for field in run_produced):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_destination_qualification_reference_missing"
+            )
+    construction = request["construction"]
+    subject = task["subject"]
+    expected_subject_mode = {
+        "reuse_configured_scene": "configured_scene_object",
+        "production_recipe": "construct_from_scene_object",
+    }[construction["mode"]]
+    if subject["mode"] != expected_subject_mode:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_construction_subject_mode_mismatch"
+        )
+    if (
+        construction["mode"] == "production_recipe"
+        and (
+            not isinstance(scene_rights, Mapping)
+            or scene_rights["provider_disclosure_scope"] != "derived_only"
+        )
+    ):
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_production_recipe_disclosure_scope_invalid"
+        )
+    adapter = request["execution_adapter"]
+    expected_adapter = {
+        "scene_configuration": ("scene_configuration_pipeline", "v1"),
+        "destination_qualification": ("native_task_arena", "v1"),
+        "episode_evaluation": ("native_task_arena", "v1"),
+    }[request["run_mode"]]
+    capability = EXECUTION_ADAPTER_PROVIDER_CAPABILITIES.get(
+        (adapter["kind"], adapter["version"])
+    )
+    if capability is None:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_execution_adapter_unavailable"
+        )
+    if (adapter["kind"], adapter["version"]) != expected_adapter:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_run_mode_adapter_mismatch"
+        )
+    selected_provider = request["spend"]["selected_provider"]
+    if selected_provider not in request["spend"]["provider_allowlist"]:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_selected_provider_not_allowed"
+        )
+    if selected_provider not in capability:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_execution_adapter_provider_unavailable"
+        )
+    spend = request["spend"]
+    if request["run_mode"] == "scene_configuration":
+        try:
+            appearance_review_mode(request)
+        except AppearanceReviewContractError as exc:
+            raise TaskEvaluationLaunchPreparationContractError(str(exc)) from exc
+        openai = spend["external_service_caps"]["openai"]
+        anthropic_selected = request.get("replacement_authoring_model_provider") == "anthropic"
+        anthropic = spend["external_service_caps"].get("anthropic")
+        if anthropic_selected != (anthropic is not None):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_anthropic_authority_mismatch")
+        stage_caps = openai["stage_max_cost_usd"]
+        openai_cap = float(openai["maximum_cost_usd"])
+        request_count = int(openai["maximum_requests"])
+        # Website backgrounds are already prepared before reconstruction.
+        # The construction consumer verifies this declaration against the
+        # sealed recipe and native-input evidence before paid authority.
+        prepared_website = request["scene"].get("website_native_inputs") is not None
+        agents_api_selected = request.get("replacement_authoring_agent_runtime") == "openai_agents_api"
+        if (agents_api_selected != (request.get("replacement_authoring_model") == "gpt-6-sol")
+                or (agents_api_selected and (anthropic_selected or not prepared_website
+                    or request.get("replacement_authoring_backend") != "astra_cad_blender_v1"
+                    or request["runtime"]["network"]["allowlist"] != ["api.openai.com"]
+                    or request["runtime"]["secret_refs"] != ["secret-file:openai_api_key"]))):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_agents_api_authoring_scope_invalid")
+        if anthropic_selected and (not prepared_website
+                or request.get("replacement_authoring_backend") != "astra_cad_blender_v1"
+                or request["runtime"]["network"]["allowlist"] != ["api.anthropic.com"]
+                or request["runtime"]["secret_refs"] != ["secret-file:anthropic_api_key"]):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_anthropic_authoring_scope_invalid")
+        anthropic_cap = float(anthropic["maximum_cost_usd"]) if anthropic_selected else 0.0
+        minimum_stage_caps = {
+            "artifixer_semantic_teacher": (
+                0.0 if prepared_website else scene_budget.semantic_teacher_minimum
+            ),
+            "artifixer_visual_review": 0.0 if prepared_website else scene_budget.visual_review_minimum,
+            "content_agents": 0.0 if anthropic_selected else scene_budget.content_agents_minimum,
+        }
+        if spend["hard_ttl_seconds"] != scene_budget.parent_ttl_seconds:
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_scene_configuration_parent_runtime_budget_invalid"
+            )
+        if (
+            float(spend["provider_compute_spend_cap_usd"]) + openai_cap + anthropic_cap
+            > float(spend["hard_cap_usd"]) + 1e-9
+            or float(spend["provider_compute_spend_cap_usd"]) + 1e-9
+            < float(spend["maximum_hourly_rate_usd"])
+            * scene_budget.parent_ttl_seconds
+            / 3_600
+            or openai_cap + anthropic_cap > scene_budget.external_maximum
+            or float(spend["hard_cap_usd"]) > scene_budget.attempt_maximum
+            or sum(float(value) for value in stage_caps.values())
+            > openai_cap + 1e-9
+            or any(
+                float(stage_caps[stage]) + 1e-9 < minimum
+                for stage, minimum in minimum_stage_caps.items()
+            )
+            or (openai_cap == 0) != (request_count == 0)
+            or (anthropic_selected and (anthropic_cap < scene_budget.content_agents_minimum
+                or stage_caps["content_agents"] != 0
+                or stage_caps["artifixer_semantic_teacher"] != 0
+                or stage_caps["artifixer_visual_review"] != 0))
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_scene_configuration_external_spend_invalid"
+            )
+    else:
+        if "replacement_authoring_backend" in request:
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_backend_forbidden")
+        if "replacement_authoring_model_provider" in request:
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_provider_forbidden")
+        if "replacement_authoring_agent_runtime" in request or "replacement_authoring_model" in request:
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_runtime_forbidden")
+        if request.get("appearance_review_override") is not None:
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_episode_appearance_review_override_forbidden"
+            )
+        if (
+            float(spend["hard_cap_usd"]) > 5.0
+            or int(spend["hard_ttl_seconds"]) > 9_000
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_episode_spend_invalid"
+            )
+    policy_run = request.get("policy_run_configuration")
+    policy_setup = request.get("policy_run_setup")
+    policy_selection = request.get("policy_run_selection")
+    if any(value is not None for value in (policy_run, policy_setup, policy_selection)):
+        if not all(
+            isinstance(value, Mapping)
+            for value in (policy_run, policy_setup, policy_selection)
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_policy_run_contract_incomplete"
+            )
+        try:
+            setup = validate_policy_run_setup(policy_setup)
+            selection = validate_policy_run_selection(policy_selection)
+            configuration = validate_policy_run_configuration(
+                policy_run, setup=setup
+            )
+            if configuration != compile_policy_run_configuration(
+                selection, setup=setup
+            ):
+                raise TaskEvaluationPolicyRunContractError(
+                    "policy_run_configuration_selection_mismatch"
+                )
+        except TaskEvaluationPolicyRunContractError as exc:
+            raise TaskEvaluationLaunchPreparationContractError(str(exc)) from exc
+        if (
+            request["run_mode"] != "episode_evaluation"
+            or request["controller"]["kind"] != "policy_container"
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_policy_run_mode_invalid"
+            )
+    output_mounts = [
+        mount for mount in request["runtime"]["mounts"] if mount["mode"] == "output"
+    ]
+    if len(output_mounts) != 1:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_output_mount_count_invalid"
+        )
+    mount_paths = [mount["container_path"] for mount in request["runtime"]["mounts"]]
+    if len(mount_paths) != len(set(mount_paths)):
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_mount_path_duplicate"
+        )
+    return request
+
+
+def launch_preparation_request_digest(value: Mapping[str, Any]) -> str:
+    """Return the immutable identity used across WebApp, worker, and receipts."""
+
+    return canonical_digest(validate_launch_preparation_request(value))
+
+
+__all__ = [
+    "SCHEMA_PATH",
+    "SCHEMA_VERSION",
+    "EXECUTION_ADAPTER_PROVIDER_CAPABILITIES",
+    "TaskEvaluationLaunchPreparationContractError",
+    "launch_preparation_request_digest",
+    "preparation_request_schema",
+    "validate_launch_preparation_request",
+]

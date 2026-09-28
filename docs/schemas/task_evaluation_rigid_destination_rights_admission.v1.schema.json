@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_rigid_destination_rights_admission.v1.schema.json",
+  "title": "Task Evaluation rigid destination rights admission v1",
+  "description": "Human-authorized provider-processing and redistribution rights for one passive rigid destination asset.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "destination_identity",
+    "private_provider_processing_allowed",
+    "provider_training_allowed",
+    "public_redistribution_allowed",
+    "license_identifier",
+    "rights_admission_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_rigid_destination_rights_admission.v1"},
+    "status": {"const": "admitted"},
+    "destination_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "private_provider_processing_allowed": {"const": true},
+    "provider_training_allowed": {"type": "boolean"},
+    "public_redistribution_allowed": {"type": "boolean"},
+    "license_identifier": {"type": "string", "minLength": 1, "maxLength": 256},
+    "rights_admission_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 192,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "versionedIdentity": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"}
+      }
+    }
+  }
+}

@@ -140,6 +140,25 @@ def _write_provider_evidence(attempt_root: Path) -> None:
     )
 
 
+def lane_seals_terminal_field(module: str, field: str) -> bool:
+    """Does this lane's own source write ``field`` into its terminal result?
+
+    The shared seal supplies the two conventional manifest paths; a lane may
+    declare more -- the scene-configuration lane names its own
+    ``execution_result_path``. The rehearsal cannot invent those, but it must
+    not refuse a lane that genuinely writes one either, so it asks the lane
+    source the same way it asks about the provider-run root. A field no lane
+    writes still blocks, which is the contract-is-wrong case this tool exists
+    to catch.
+    """
+
+    try:
+        source = (SOURCE_ROOT / module).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return f'"{field}":' in source
+
+
 def rehearse_lane_terminal_contract(
     *,
     profile_path: str | Path,
@@ -173,6 +192,17 @@ def rehearse_lane_terminal_contract(
             lane=lane or lane_module.removesuffix(".py"),
             binding={"provider": "vast", "rehearsal": True},
         )
+
+        for field in terminal.get("required_path_fields") or []:
+            name = str(field)
+            if sealed.get(name) or not lane_seals_terminal_field(lane_module, name):
+                continue
+            rehearsed = attempt_root / f"rehearsed_{name}.json"
+            rehearsed.write_text(
+                json.dumps({"status": "completed", "rehearsal": True}, sort_keys=True),
+                encoding="utf-8",
+            )
+            sealed[name] = str(rehearsed)
 
         # The dispatcher reads the result from the path the profile names, so
         # the rehearsal has to put it exactly there.

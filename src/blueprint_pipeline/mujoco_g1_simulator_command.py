@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 
 from .artifact_storage import default_artifact_cache_root
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .mujoco_gl_environment import import_mujoco_with_scoped_gl_default as _import_mujoco
 from .object_index_artifacts import resolve_current_object_index_artifacts
 
 
@@ -88,6 +89,8 @@ MANIPULATION_READY_ARM_JOINT_DELTAS = {
         "right_wrist_pitch_joint": -0.15,
     },
 }
+
+
 ROBOT_POV_VISIBLE_SELF_BODY_PARTS = ("shoulder", "elbow", "wrist", "hand")
 
 
@@ -4240,10 +4243,6 @@ def run_mujoco_g1_simulator_command(
     manipulation_reach_arm: str = "both",
     collision_proxy_mode: str = "aabb",
 ) -> dict[str, Any]:
-    if platform.system().lower() == "linux":
-        # EGL is only needed when frames are rendered; forcing it on GL-less hosts
-        # (CI runners, --skip-render-frames runs) crashes `import mujoco` at EGL load.
-        os.environ.setdefault("MUJOCO_GL", "egl" if render_frames else "disable")
     root = Path(capture_root).resolve()
     output_root = (
         Path(output_dir).resolve()
@@ -4320,7 +4319,7 @@ def run_mujoco_g1_simulator_command(
     )
 
     try:
-        import mujoco  # type: ignore[import-not-found]
+        mujoco, render_backend = _import_mujoco(default="egl" if render_frames else "disable", platform_name=platform.system())
     except Exception as exc:  # pragma: no cover - runtime dependency check.
         raise RuntimeError("mujoco is required for the Unitree G1 simulator command") from exc
 
@@ -5426,7 +5425,7 @@ def run_mujoco_g1_simulator_command(
         "generated_mjcf": str(wrapper_xml),
         "generated_g1_mjcf": str(generated_g1_xml),
         "mesh_info": mesh_info,
-        "render_backend": os.environ.get("MUJOCO_GL"),
+        "render_backend": render_backend,
         "mujoco_version": _string(getattr(mujoco, "__version__", "")),
         "collision_summary": collision_summary,
         "collision_proxy_summary": mesh_info.get("collision_proxy_summary"),

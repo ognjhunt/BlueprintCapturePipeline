@@ -1,0 +1,734 @@
+"""Run two G1 policies on one sealed task/site as a development comparison.
+
+The existing single-candidate worker still owns Isaac, policy inference,
+scoring, media, and teardown. This wrapper binds two requests to one scene and
+objective, then preserves each terminal receipt. It cannot qualify a ranking.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import stat
+import subprocess
+import sys
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+from .control_plane_lane_scratch import create_lane_scratch
+from .control_plane_leased_scratch import LeasedScratchDirectory
+from .decision_evidence_contracts import canonical_digest
+from .native_g1_development_worker import (
+    PATH_FIELDS,
+    PRECLOSE_FILENAME,
+    PRECLOSE_SCHEMA,
+    RESULT_FILENAME,
+    RESULT_SCHEMA,
+    _request,
+    run_g1_development_worker,
+)
+from .native_g1_navigation_goal import validate_g1_navigation_goal_authority
+from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES, G1_NAVIGATION_CANDIDATES
+
+
+SCHEMA = "native_g1_development_pair.v1"
+EPISODE_FILENAME = "native_g1_built_scene_policy_episode.v1.json"
+TRACE_FILENAME = "native_g1_shared_scene_episode_trace.v1.json"
+PAIR_ORDER = (
+    "humanoidarena_dp_g1_dex3_sonic",
+    "humanoidarena_pi05_g1_dex3_sonic",
+    "humanoidarena_dp_g1_dex3_sonic_vision_navi",
+    "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
+)
+# Scene 841757's first native G1 episode reached all 3,000 steps after about
+# 40 minutes, then timed out during final scoring/Isaac close at 45 minutes.
+# Leave a bounded close window while the independent provider watchdog and
+# campaign hard cap remain authoritative for paid spend.
+SUBPROCESS_EPISODE_TIMEOUT_SECONDS = 55 * 60
+LANE_SCRATCH_ROOTS = (
+    Path("/mnt/blueprint-work/lanes"),
+    Path("/var/lib/blueprint/task-evaluation-inputs/lanes"),
+)
+WORK_VOLUME_ROOT = Path("/mnt/blueprint-work")
+INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
+CONTROL_PLANE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane")
+_PROVIDER_PREFLIGHT_FILE = "native_g1_runtime_import_preflight.v1.json"
+CANDIDATE_FIELDS = frozenset({
+    "candidate_id", "rights_review", "request_digest",
+})
+
+
+def _verified_provider_run_output(output: Path, provider_run_root: Path | None) -> bool:
+    """Accept a pair child only after its parent sealed the provider preflight."""
+
+    if provider_run_root is None:
+        return False
+    parent = Path(provider_run_root)
+    if (not parent.is_absolute() or parent != output.parent or parent.is_symlink()
+            or parent.resolve() != parent or not parent.is_dir()):
+        return False
+    path = parent / _PROVIDER_PREFLIGHT_FILE
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(65537)
+        finally:
+            os.close(fd)
+        if len(raw) > 65536:
+            return False
+        receipt = json.loads(raw)
+        return (
+            isinstance(receipt, dict)
+            and receipt.get("schema_version") == "native_g1_runtime_import_preflight.v1"
+            and receipt.get("status") == "passed"
+            and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest")
+        )
+    except (OSError, ValueError, TypeError, OverflowError):
+        return False
+
+
+def _sealed_json(path: Path) -> dict[str, Any]:
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ValueError("g1_pair_request_path_invalid")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    return _request(value)
+
+
+def validate_g1_development_pair(request_paths: Sequence[Path]) -> dict[str, Any]:
+    """Check the shared scene and objective without touching a GPU or output."""
+
+    if len(request_paths) != 2:
+        raise ValueError("g1_pair_exactly_two_requests_required")
+    requests = [_sealed_json(path) for path in request_paths]
+    by_candidate = {request["candidate_id"]: request for request in requests}
+    candidate_ids = tuple(candidate for candidate in PAIR_ORDER if candidate in by_candidate)
+    if (
+        len(by_candidate) != 2
+        or len(candidate_ids) != 2
+        or not (
+            set(candidate_ids) == G1_BOX_CANDIDATES
+            or set(candidate_ids) == G1_NAVIGATION_CANDIDATES
+        )
+    ):
+        raise ValueError("g1_pair_objective_or_candidates_mismatch")
+    reference = {key: value for key, value in requests[0].items() if key not in CANDIDATE_FIELDS}
+    if any(
+        {key: value for key, value in request.items() if key not in CANDIDATE_FIELDS} != reference
+        for request in requests[1:]
+    ):
+        raise ValueError("g1_pair_shared_runtime_or_scene_mismatch")
+    bundle_root = Path(reference["bundle_root"])
+    scene_path = bundle_root / "native_task_arena_scene_plan.v1.json"
+    if (
+        not bundle_root.is_absolute() or bundle_root.is_symlink()
+        or bundle_root.resolve() != bundle_root
+        or not bundle_root.is_dir() or scene_path.is_symlink() or not scene_path.is_file()
+    ):
+        raise ValueError("g1_pair_scene_packet_missing")
+    plan = json.loads(scene_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(plan, dict)
+        or plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
+        or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
+        or plan.get("task_kind") != "rigid_pick_place"
+        or not isinstance(plan.get("scene_id"), str) or not plan["scene_id"].strip()
+        or not isinstance(plan.get("task_id"), str) or not plan["task_id"].strip()
+    ):
+        raise ValueError("g1_pair_scene_plan_invalid")
+    for request in requests:
+        rights = request.get("rights_review")
+        if (
+            not isinstance(rights, dict)
+            or rights.get("candidate_id") != request["candidate_id"]
+            or rights.get("scene_plan_digest") != plan["plan_digest"]
+            or rights.get("rights_review_digest")
+            != canonical_digest(rights, digest_field="rights_review_digest")
+        ):
+            raise ValueError("g1_pair_rights_review_invalid")
+    objective = "g1_navigation_goal" if set(candidate_ids) == G1_NAVIGATION_CANDIDATES else "task_success"
+    goal_authority_digest = None
+    if objective == "g1_navigation_goal":
+        authorities = [
+            validate_g1_navigation_goal_authority(
+                request.get("navigation_goal_authority"), plan=plan
+            )
+            for request in requests
+        ]
+        if authorities[0] != authorities[1]:
+            raise ValueError("g1_pair_navigation_authority_mismatch")
+        goal_authority_digest = authorities[0]["authority_digest"]
+    return {
+        "schema_version": SCHEMA,
+        "status": "validated_not_executed",
+        "scene_id": plan["scene_id"],
+        "task_id": plan["task_id"],
+        "scene_plan_digest": plan["plan_digest"],
+        "objective_id": objective,
+        "candidate_ids": list(candidate_ids),
+        "request_digests": [by_candidate[candidate]["request_digest"] for candidate in candidate_ids],
+        "navigation_goal_authority_digest": goal_authority_digest,
+        "ranking_eligible": False,
+        "physical_outcome_claimed": False,
+    }
+
+
+def _read_result(
+    path: Path, *, candidate_id: str, scene_plan_digest: str, request_digest: str
+) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        value.get("candidate_id") != candidate_id
+        or value.get("request_digest") != request_digest
+        or value.get("status") not in {"completed_development_only", "blocked"}
+        or value.get("scene_plan_digest") not in {scene_plan_digest, None}
+        or (value.get("status") == "completed_development_only"
+            and value.get("scene_plan_digest") != scene_plan_digest)
+        or value.get("ranking_eligible") is not False
+        or value.get("physical_outcome_claimed") is not False
+        or value.get("result_digest") != canonical_digest(value, digest_field="result_digest")
+    ):
+        raise ValueError("g1_pair_worker_receipt_invalid")
+    return value
+
+
+def _recover_worker_result_from_preclose(
+    *, path: Path, result_path: Path, candidate_id: str,
+    scene_plan_digest: str, request_digest: str, returncode: int,
+) -> bool:
+    """Seal a child's pre-close evidence if Isaac exits the interpreter in close()."""
+
+    if not path.is_file() or path.is_symlink():
+        return False
+    preclose = json.loads(path.read_text(encoding="utf-8"))
+    teardown = preclose.get("teardown") or {}
+    if (
+        preclose.get("schema_version") != PRECLOSE_SCHEMA
+        or preclose.get("status") != "awaiting_simulator_close"
+        or preclose.get("preclose_digest")
+        != canonical_digest(preclose, digest_field="preclose_digest")
+        or preclose.get("candidate_id") != candidate_id
+        or preclose.get("request_digest") != request_digest
+        or preclose.get("scene_plan_digest") != scene_plan_digest
+        or preclose.get("ranking_eligible") is not False
+        or preclose.get("physical_outcome_claimed") is not False
+        or not isinstance(teardown, Mapping)
+        or teardown.get("simulator") != "close_requested"
+        or not isinstance(returncode, int)
+    ):
+        raise ValueError("g1_pair_worker_preclose_invalid")
+    supervised = preclose.get("supervised_episode") or {}
+    completed = (
+        returncode == 0
+        and preclose.get("blocker") is None
+        and teardown.get("environment") == "closed"
+        and isinstance(supervised, Mapping)
+        and supervised.get("status") == "completed_development_only"
+    )
+    result = {
+        **{key: value for key, value in preclose.items() if key != "preclose_digest"},
+        "schema_version": RESULT_SCHEMA,
+        "status": "completed_development_only" if completed else "blocked",
+        "teardown": {
+            **teardown,
+            "simulator": (
+                "process_exited_after_close_request"
+                if returncode == 0 else "process_failed_after_close_request"
+            ),
+        },
+        "blocker": preclose.get("blocker") or (
+            None if completed else {
+                "type": "RuntimeError",
+                "message": f"g1_worker_process_exited_during_simulator_close:{returncode}",
+            }
+        ),
+        "process_exit_evidence": {
+            "returncode": returncode,
+            "preclose_digest": preclose["preclose_digest"],
+        },
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    result_path.write_text(
+        json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
+def _score_from_episode(
+    path: Path, *, worker: Mapping[str, Any], objective_id: str
+) -> dict[str, Any]:
+    episode = json.loads(path.read_text(encoding="utf-8"))
+    score = episode.get("score")
+    score_schema = (
+        "native_g1_navigation_goal_score.v1"
+        if objective_id == "g1_navigation_goal"
+        else "adp_rigid_task_scoring.v2"
+    )
+    score_digest_field = (
+        "score_digest" if objective_id == "g1_navigation_goal" else "report_digest"
+    )
+    if (
+        episode.get("result_digest") != canonical_digest(episode, digest_field="result_digest")
+        or episode.get("result_digest") != (worker.get("supervised_episode") or {}).get("episode_result_digest")
+        or episode.get("candidate_id") != worker.get("candidate_id")
+        or episode.get("scene_plan_digest") != worker.get("scene_plan_digest")
+        or episode.get("status") != "development_only_scored_episode"
+        or episode.get("evaluation_task_kind") != (
+            "g1_navigation_goal" if objective_id == "g1_navigation_goal" else "rigid_pick_place"
+        )
+        or episode.get("ranking_eligible") is not False
+        or episode.get("physical_outcome_claimed") is not False
+        or not isinstance(score, Mapping)
+        or score.get("status") != "scored"
+        or score.get("schema_version") != score_schema
+        or not isinstance(score.get("outcome"), str)
+        or not score["outcome"]
+        or score.get(score_digest_field) != canonical_digest(
+            score, digest_field=score_digest_field
+        )
+    ):
+        raise ValueError("g1_pair_episode_or_score_receipt_invalid")
+    return {
+        "episode_result_digest": episode["result_digest"],
+        "score_digest": score[score_digest_field],
+        "outcome": score.get("outcome"),
+    }
+
+
+def _verified_review_media(
+    episode_path: Path, *, episode: Mapping[str, Any], pair_root: Path
+) -> dict[str, Any]:
+    """Index exact derived videos for review, without promoting their claim."""
+
+    episode_root = episode_path.parent
+    if episode.get("trace_relative_path") != TRACE_FILENAME:
+        raise ValueError("g1_pair_trace_path_invalid")
+    trace_path = episode_root / TRACE_FILENAME
+    if trace_path.is_symlink() or not trace_path.is_file():
+        raise ValueError("g1_pair_trace_missing")
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    visual = trace.get("visual_evidence")
+    artifacts = trace.get("media_artifacts")
+    if (
+        trace.get("trace_digest") != episode.get("trace_digest")
+        or trace.get("trace_digest") != canonical_digest(trace, digest_field="trace_digest")
+        or trace.get("status") != "development_trace_recorded"
+        or trace.get("candidate_id") != episode.get("candidate_id")
+        or trace.get("scene_plan_digest") != episode.get("scene_plan_digest")
+        or trace.get("claim_ceiling") != "simulator_only_unscored"
+        or not isinstance(visual, Mapping)
+        or visual.get("status") != "complete"
+        or set(visual.get("videos") or {}) != {"head", "overview"}
+        or set(visual.get("required_camera_ids") or []) != {"head", "overview"}
+        or not isinstance(artifacts, list)
+    ):
+        raise ValueError("g1_pair_trace_or_media_invalid")
+
+    def artifact_file(row: Mapping[str, Any]) -> dict[str, Any]:
+        relative = row.get("relative_path")
+        if not isinstance(relative, str):
+            raise ValueError("g1_pair_media_path_invalid")
+        path_part = PurePosixPath(relative)
+        if (
+            path_part.is_absolute() or ".." in path_part.parts
+            or not path_part.parts or path_part.parts[0] != "media"
+        ):
+            raise ValueError("g1_pair_media_path_invalid")
+        path = episode_root.joinpath(*path_part.parts)
+        if (
+            path.is_symlink() or path.resolve() != path or not path.is_file()
+            or isinstance(row.get("size_bytes"), bool)
+            or not isinstance(row.get("size_bytes"), int)
+            or row["size_bytes"] <= 0
+            or path.stat().st_size != row.get("size_bytes")
+        ):
+            raise ValueError("g1_pair_media_file_invalid")
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        if row.get("sha256") != "sha256:" + digest.hexdigest():
+            raise ValueError("g1_pair_media_digest_mismatch")
+        return {
+            "relative_path": path.relative_to(pair_root).as_posix(),
+            "sha256": row["sha256"],
+            "size_bytes": row["size_bytes"],
+        }
+
+    manifests = [row for row in artifacts if isinstance(row, Mapping)
+                 and row.get("role") == "multicamera_observation_frame_manifest"]
+    videos = [row for row in artifacts if isinstance(row, Mapping)
+              and row.get("role") == "camera_review_video"]
+    if len(manifests) != 1 or len(videos) != 2:
+        raise ValueError("g1_pair_media_artifacts_incomplete")
+    manifest_ref = artifact_file(manifests[0])
+    manifest = json.loads((pair_root / manifest_ref["relative_path"]).read_text(encoding="utf-8"))
+    identity = manifest.get("identity")
+    if (
+        manifest.get("frame_manifest_digest") != visual.get("frame_manifest_digest")
+        or manifest.get("frame_manifest_digest")
+        != canonical_digest(manifest, digest_field="frame_manifest_digest")
+        or not isinstance(identity, Mapping)
+        or identity.get("candidate_id") != episode.get("candidate_id")
+        or identity.get("scene_plan_digest") != episode.get("scene_plan_digest")
+    ):
+        raise ValueError("g1_pair_frame_manifest_invalid")
+    by_camera = {row.get("camera_id"): row for row in videos}
+    if set(by_camera) != {"head", "overview"}:
+        raise ValueError("g1_pair_review_cameras_invalid")
+    review_videos = {}
+    for camera_id in ("head", "overview"):
+        row = by_camera[camera_id]
+        video = visual["videos"][camera_id]
+        if (
+            row.get("media_type") != "video/mp4"
+            or row.get("relative_path") != video.get("relative_path")
+            or row.get("sha256") != video.get("sha256")
+            or row.get("size_bytes") != video.get("size_bytes")
+            or video.get("derived_from_frame_manifest_digest") != manifest["frame_manifest_digest"]
+        ):
+            raise ValueError("g1_pair_review_video_binding_invalid")
+        review_videos[camera_id] = artifact_file(row)
+    return {
+        "trace_digest": trace["trace_digest"],
+        "frame_manifest_digest": manifest["frame_manifest_digest"],
+        "frame_manifest": manifest_ref,
+        "review_videos": review_videos,
+        "derived_videos_are_human_review_convenience": True,
+        "public_redistribution_authorized": False,
+    }
+
+
+def _run_g1_development_pair(
+    *,
+    request_paths: Sequence[Path],
+    output_dir: Path,
+    mode: str = "local",
+    source_receipt_path: Path | None = None,
+    source_packet_path: Path | None = None,
+    policy_runtime_root: Path | None = None,
+    worker_launcher: Path | None = None,
+    local_runner: Callable[..., dict[str, Any]] = run_g1_development_worker,
+    scratch_owner: str | None = None,
+    scratch_run_ref: str | None = None,
+    scratch_ttl_seconds: int | None = None,
+    provider_run_root: Path | None = None,
+    cooperating_lifetime: bool = False,
+    lifetime_stack: ExitStack,
+) -> dict[str, Any]:
+    """Execute in catalog order; stop on an infrastructure block to limit spend."""
+
+    pair = validate_g1_development_pair(request_paths)
+    if type(cooperating_lifetime) is not bool:
+        raise ValueError("g1_pair_lifetime_option_invalid")
+    if cooperating_lifetime and (mode == "container" or mode == "local" and local_runner is not run_g1_development_worker
+                                or mode == "subprocess" and worker_launcher != Path(sys.executable).resolve()):
+        raise ValueError("g1_pair_consumer_participation_unproven")
+    if mode not in {"local", "container", "subprocess"} or (mode == "container" and (
+        sys.platform != "linux" or source_receipt_path is None
+        or source_packet_path is None or policy_runtime_root is None
+    )) or (mode == "subprocess" and (
+        sys.platform != "linux" or worker_launcher is None
+        or not worker_launcher.is_absolute() or worker_launcher.is_symlink()
+        or not worker_launcher.is_file()
+    )):
+        raise ValueError("g1_pair_execution_mode_invalid")
+    output = Path(output_dir).expanduser()
+    requests = [_sealed_json(path) for path in request_paths]
+    protected = [
+        *(Path(path) for path in request_paths),
+        *(Path(request[field]).expanduser() for request in requests for field in PATH_FIELDS),
+    ]
+    if (
+        not output.is_absolute() or output.exists() or output.is_symlink()
+        or output.resolve() != output
+        or any(
+            output.resolve().is_relative_to(path.resolve())
+            or path.resolve().is_relative_to(output.resolve())
+            for path in protected
+        )
+        or any(char in str(output) for char in ",\n\r")
+    ):
+        raise ValueError("g1_pair_output_directory_invalid")
+    provider_run_proved = _verified_provider_run_output(output, provider_run_root)
+    if provider_run_root is not None and not provider_run_proved:
+        raise ValueError("g1_pair_provider_run_proof_invalid")
+    lane_root = next((root for root in LANE_SCRATCH_ROOTS if output.is_relative_to(root)), None)
+    scratch_metadata = (scratch_owner, scratch_run_ref, scratch_ttl_seconds)
+    lifetime = None
+    if lane_root is not None:
+        relative = output.relative_to(lane_root)
+        if len(relative.parts) != 2 or relative.parts[0] != "g1":
+            raise ValueError("g1_pair_lane_scratch_output_invalid")
+        if any(value is None for value in scratch_metadata):
+            raise ValueError("g1_pair_lane_scratch_metadata_required")
+        if cooperating_lifetime:
+            from .control_plane_scratch_lifetime import LeasedScratchUse
+            lifetime = lifetime_stack.enter_context(LeasedScratchUse.create(
+                root=lane_root, lane="g1", name=relative.parts[1], owner=scratch_owner,
+                run_ref=scratch_run_ref, ttl_seconds=scratch_ttl_seconds))
+        else:
+            create_lane_scratch(
+                "g1", relative.parts[1], root=lane_root, owner=scratch_owner,
+                run_ref=scratch_run_ref, ttl_seconds=scratch_ttl_seconds,
+                reason="g1_development_pair", class_intent="evidence", cleanup="owner_review",
+            )
+    elif any(value is not None for value in scratch_metadata):
+        raise ValueError("g1_pair_lane_scratch_output_invalid")
+    else:
+        if cooperating_lifetime:
+            raise ValueError("g1_pair_lane_scratch_output_invalid")
+        # A storage class or self-sealed provider preflight is not proof that
+        # this exact host run owns a new child. Host scratch uses a lane lease.
+        if any(output.is_relative_to(root) for root in (
+            WORK_VOLUME_ROOT, INPUTS_ROOT, CONTROL_PLANE_ROOT,
+        )):
+            raise ValueError("g1_pair_unbound_work_volume_output")
+        output.mkdir(parents=True)
+    diagnostics = output / "_worker_diagnostics"
+    if mode == "subprocess":
+        if lifetime is not None:
+            lifetime.mkdir("_worker_diagnostics")
+        elif lane_root is not None:
+            with LeasedScratchDirectory.open(root=lane_root, lane="g1", name=relative.parts[1],
+                                             owner=scratch_owner, run_ref=scratch_run_ref) as scratch:
+                scratch.mkdir("_worker_diagnostics")
+        else:
+            diagnostics.mkdir()
+    by_candidate = {request["candidate_id"]: (path, request)
+                    for path, request in zip(request_paths, requests, strict=True)}
+    attempts: list[dict[str, Any]] = []
+    for candidate_id in pair["candidate_ids"]:
+        request_path, request = by_candidate[candidate_id]
+        worker_request_digest = request["request_digest"]
+        attempt_root = output / candidate_id
+        verified: dict[str, Any] | None = None
+        result_path: Path | None = None
+        score: dict[str, Any] | None = None
+        review_media: dict[str, Any] | None = None
+        try:
+            if mode == "local":
+                worker = local_runner(request=request, output_dir=attempt_root,
+                                      **({"scratch_lifetime": lifetime} if lifetime is not None else {}))
+                result_path = attempt_root / RESULT_FILENAME
+                episode_path = attempt_root / "episode" / EPISODE_FILENAME
+            elif mode == "subprocess":
+                # Isaac/Kit may terminate its interpreter outside Python's
+                # exception handling. Keep the campaign alive so it can retain
+                # the child's actual exit status and a terminal pair receipt.
+                exit_path = diagnostics / (candidate_id + ".exit.json")
+                with (diagnostics / (candidate_id + ".log")).open("x", encoding="utf-8") as stream:
+                    try:
+                        if lifetime is not None:
+                            from .control_plane_g1_lifetime_adapter import controlled_worker_run
+                            process = controlled_worker_run(executable=worker_launcher, request=request_path,
+                                                            output=attempt_root, request_digest=worker_request_digest,
+                                                            use=lifetime, stdout=stream, timeout=SUBPROCESS_EPISODE_TIMEOUT_SECONDS)
+                        else:
+                            process = subprocess.run(
+                                [str(worker_launcher), "-m", "blueprint_pipeline.native_g1_development_worker",
+                                 "--request", str(request_path), "--output-dir", str(attempt_root)],
+                                stdout=stream, stderr=subprocess.STDOUT, check=False,
+                                timeout=SUBPROCESS_EPISODE_TIMEOUT_SECONDS,
+                            )
+                    except subprocess.TimeoutExpired as exc:
+                        exit_path.write_text(
+                            json.dumps({"status": "timed_out", "timeout_seconds":
+                                        SUBPROCESS_EPISODE_TIMEOUT_SECONDS}, sort_keys=True) + "\n",
+                            encoding="utf-8",
+                        )
+                        raise ValueError("g1_pair_worker_timeout") from exc
+                    except OSError as exc:
+                        exit_path.write_text(
+                            json.dumps({"status": "launch_failed", "error_type": type(exc).__name__},
+                                       sort_keys=True) + "\n",
+                            encoding="utf-8",
+                        )
+                        raise ValueError("g1_pair_worker_launch_failed") from exc
+                exit_path.write_text(
+                    json.dumps({"status": "exited", "returncode": process.returncode},
+                               sort_keys=True) + "\n", encoding="utf-8",
+                )
+                result_path = attempt_root / RESULT_FILENAME
+                episode_path = attempt_root / "episode" / EPISODE_FILENAME
+                recovered = False
+                if not result_path.is_file():
+                    recovered = _recover_worker_result_from_preclose(
+                        path=attempt_root / PRECLOSE_FILENAME,
+                        result_path=result_path,
+                        candidate_id=candidate_id,
+                        scene_plan_digest=pair["scene_plan_digest"],
+                        request_digest=worker_request_digest,
+                        returncode=process.returncode,
+                    )
+                if not result_path.is_file():
+                    raise ValueError(f"g1_pair_worker_exited_without_receipt:{process.returncode}")
+                worker = _read_result(
+                    result_path, candidate_id=candidate_id,
+                    scene_plan_digest=pair["scene_plan_digest"],
+                    request_digest=worker_request_digest,
+                )
+                if process.returncode != (0 if worker["status"] == "completed_development_only" else 1) and not (
+                    recovered and worker["status"] == "blocked" and process.returncode == 0
+                ):
+                    raise ValueError(f"g1_pair_worker_exit_or_receipt_mismatch:{process.returncode}")
+            else:
+                from .native_g1_container_run import prepare_g1_container_run
+                from .native_g1_container_host import record_g1_container_host
+
+                plan = prepare_g1_container_run(
+                    request_path=request_path,
+                    source_receipt_path=source_receipt_path,
+                    source_packet_path=source_packet_path,
+                    policy_runtime_root=policy_runtime_root,
+                    output_dir=attempt_root,
+                    repo_root=Path(__file__).resolve().parents[2],
+                )
+                worker_request_digest = plan["container_request_digest"]
+                record_g1_container_host(output_dir=attempt_root)
+                with (attempt_root / "container.log").open("x", encoding="utf-8") as stream:
+                    process = subprocess.run(
+                        plan["command"], stdout=stream, stderr=subprocess.STDOUT,
+                        check=False,
+                    )
+                result_path = attempt_root / "results/episode" / RESULT_FILENAME
+                episode_path = attempt_root / "results/episode/episode" / EPISODE_FILENAME
+                worker = _read_result(
+                    result_path, candidate_id=candidate_id,
+                    scene_plan_digest=pair["scene_plan_digest"],
+                    request_digest=worker_request_digest,
+                )
+                if process.returncode != (0 if worker["status"] == "completed_development_only" else 1):
+                    raise ValueError("g1_pair_container_exit_or_worker_mismatch")
+            verified = _read_result(
+                result_path, candidate_id=candidate_id,
+                scene_plan_digest=pair["scene_plan_digest"],
+                request_digest=worker_request_digest,
+            )
+            if verified != worker:
+                raise ValueError("g1_pair_worker_return_or_receipt_mismatch")
+            if (verified["status"] == "completed_development_only"
+                and pair["objective_id"] == "g1_navigation_goal") and (
+                verified.get("navigation_goal_authority_digest")
+                != pair["navigation_goal_authority_digest"]
+            ):
+                raise ValueError("g1_pair_navigation_authority_receipt_mismatch")
+            score = (
+                _score_from_episode(
+                    episode_path, worker=verified, objective_id=pair["objective_id"]
+                )
+                if verified.get("status") == "completed_development_only" else None
+            )
+            review_media = (
+                _verified_review_media(
+                    episode_path, episode=json.loads(episode_path.read_text(encoding="utf-8")),
+                    pair_root=output,
+                )
+                if score is not None else None
+            )
+            attempts.append({
+                "candidate_id": candidate_id,
+                "status": verified["status"],
+                "worker_status": verified["status"],
+                "worker_result_digest": verified["result_digest"],
+                "worker_result_path": str(result_path),
+                "score": score,
+                "review_media": review_media,
+                "blocker": verified.get("blocker"),
+            })
+        except Exception as exc:
+            attempts.append({
+                "candidate_id": candidate_id,
+                "status": "blocked",
+                "worker_result_digest": verified.get("result_digest") if verified else None,
+                "worker_result_path": str(result_path) if verified and result_path else None,
+                "worker_status": verified.get("status") if verified else None,
+                "score": score,
+                "review_media": review_media,
+                "blocker": {"type": type(exc).__name__, "message": str(exc)},
+            })
+        if attempts[-1]["status"] != "completed_development_only":
+            break
+    result = {
+        **pair,
+        "status": "completed_development_only" if len(attempts) == 2 and all(
+            attempt["status"] == "completed_development_only" for attempt in attempts
+        ) else "blocked",
+        "mode": mode,
+        "attempts": attempts,
+        "not_attempted_candidate_ids": pair["candidate_ids"][len(attempts):],
+        **({"consumer_lifetime_scope": "coordinator_and_direct_worker_only",
+            "consumer_lifetime_omissions": ["child_consumer_participation_unproven", "external_input_consumers_unproven"]}
+           if lifetime is not None else {}),
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    (output / (SCHEMA + ".json")).write_text(
+        json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
+def run_g1_development_pair(
+    *, request_paths: Sequence[Path], output_dir: Path, mode: str = "local",
+    source_receipt_path: Path | None = None, source_packet_path: Path | None = None,
+    policy_runtime_root: Path | None = None, worker_launcher: Path | None = None,
+    local_runner: Callable[..., dict[str, Any]] = run_g1_development_worker,
+    scratch_owner: str | None = None, scratch_run_ref: str | None = None,
+    scratch_ttl_seconds: int | None = None, provider_run_root: Path | None = None,
+    cooperating_lifetime: bool = False,
+) -> dict[str, Any]:
+    """Hold an explicitly enrolled target through every coordinator output access."""
+    with ExitStack() as lifetime_stack:
+        return _run_g1_development_pair(
+            request_paths=request_paths, output_dir=output_dir, mode=mode, source_receipt_path=source_receipt_path,
+            source_packet_path=source_packet_path, policy_runtime_root=policy_runtime_root,
+            worker_launcher=worker_launcher, local_runner=local_runner, scratch_owner=scratch_owner,
+            scratch_run_ref=scratch_run_ref, scratch_ttl_seconds=scratch_ttl_seconds,
+            provider_run_root=provider_run_root, cooperating_lifetime=cooperating_lifetime, lifetime_stack=lifetime_stack)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--request", type=Path, action="append", required=True)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--mode", choices=("local", "container"), default="local")
+    parser.add_argument("--source-receipt", type=Path)
+    parser.add_argument("--source-packet", type=Path)
+    parser.add_argument("--policy-runtime-root", type=Path)
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--scratch-owner")
+    parser.add_argument("--scratch-run-ref")
+    parser.add_argument("--scratch-ttl-seconds", type=int)
+    parser.add_argument("--cooperating-lifetime", action="store_true")
+    args = parser.parse_args(argv)
+    if not args.execute:
+        print(json.dumps(validate_g1_development_pair(args.request), indent=2, sort_keys=True))
+        return 0
+    if args.output_dir is None:
+        parser.error("--execute requires --output-dir")
+    result = run_g1_development_pair(
+        request_paths=args.request,
+        output_dir=args.output_dir,
+        mode=args.mode,
+        source_receipt_path=args.source_receipt,
+        source_packet_path=args.source_packet,
+        policy_runtime_root=args.policy_runtime_root,
+        scratch_owner=args.scratch_owner,
+        scratch_run_ref=args.scratch_run_ref,
+        scratch_ttl_seconds=args.scratch_ttl_seconds,
+        cooperating_lifetime=args.cooperating_lifetime,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result["status"] == "completed_development_only" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -344,9 +344,12 @@ def run_sam31_paid_resource_allocator_lane(
     canary_root = adapter_path.parent / "sam31_vast_source_track_canary"
     prelaunch_inventory_receipt_path = canary_root / PRELAUNCH_INVENTORY_RECEIPT_NAME
     provider_zero_receipt_path = canary_root / "provider_zero_verification.json"
+    prelaunch_inventory_receipt = {}
+    bound_request = {}
     try:
+        bound_request = _load_object(args.bound_request_out)
         result = execute_canary(
-            bound_request=_load_object(args.bound_request_out),
+            bound_request=bound_request,
             preflight=_load_object(preflight_path),
             job_dir=canary_root,
             input_bundle_get_url=(staging_dir / "provider_bundle_url.txt").read_text().strip(),
@@ -468,6 +471,16 @@ def run_sam31_paid_resource_allocator_lane(
     if watchdog.get("status") != "provider_terminal" and not no_allocation_terminal:
         result["status"] = "failed"
         result.setdefault("blockers", []).append("sam31_watchdog_not_terminal")
+    from .sam31_prelaunch_recovery import proven_prelaunch_inventory_throttle
+    launch_evidence_present = (handle.started_instance_id_path.exists() or runtime_artifact_path.exists()
+        or (canary_root / "provider_launch_outcome.json").exists()
+        or any(any((canary_root / name).glob("*")) for name in ("leases", "pending_teardowns")))
+    if proven_prelaunch_inventory_throttle(receipt=prelaunch_inventory_receipt, bound_request=bound_request,
+            result=result, cleanup=cleanup, watchdog=watchdog, launch_evidence_present=launch_evidence_present):
+        # Existing controller recovery recognizes this proof; it still debits
+        # a distinct retry and reopens current zero/ownership/spend authority.
+        result.update(allocation_created=False, provider_mutation_outcome_ambiguous=False,
+                      allocation_failure_phase="prelaunch_inventory_read")
     result["blockers"] = sorted(set(result.get("blockers") or []))
     extra_artifact_roots = {
         "sam31_runtime_result": runtime_artifact_path,

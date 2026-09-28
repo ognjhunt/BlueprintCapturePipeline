@@ -31,6 +31,7 @@ EXPECTED_CHECKPOINT_BYTES = 6_914_267_987
 EXPECTED_PUBLISHER_INVENTORY_SHA256 = (
     "5d1d83ab34215da2dcaa049d70e93ccec18687591ad5760c5183fc1fd6e035fd"
 )
+EXPECTED_PROCESSOR_VIDEO_DELTA_INDICES = (0,)
 EXPECTED_CHECKPOINT_FILE_MANIFEST = (
     (".gitattributes", 1_578, "git_blob_sha1", "b63a0b1fdee3ac1542c4003322bdeefa02728f98"),
     ("README.md", 9_845, "git_blob_sha1", "2c1ba4777ef56afe180480aa9cf16e36fc6303ce"),
@@ -77,6 +78,25 @@ EXPECTED_CHECKPOINT_FILE_MANIFEST = (
         "8d636db8bb639e87538810ab7d76176a6a334d903728dd0bd0b3d2358f668e1b",
     ),
 )
+
+
+def expected_checkpoint_interface_binding() -> dict[str, Any]:
+    """Return the video history declared by the exact loaded processor config."""
+
+    processor_config = next(
+        {
+            "path": path,
+            "size_bytes": size_bytes,
+            "digest_algorithm": algorithm,
+            "digest": digest,
+        }
+        for path, size_bytes, algorithm, digest in EXPECTED_CHECKPOINT_FILE_MANIFEST
+        if path == "processor_config.json"
+    )
+    return {
+        "processor_config": processor_config,
+        "video_delta_indices": list(EXPECTED_PROCESSOR_VIDEO_DELTA_INDICES),
+    }
 
 
 def expected_checkpoint_content_binding() -> dict[str, Any]:

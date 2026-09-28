@@ -19,7 +19,9 @@ import stat
 import subprocess
 from typing import Any, Mapping, Sequence
 import zipfile
+import re
 
+from .semantic_target_training_selection import effective_training_record_count
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .image_editor_backend_registry import (
     ARTIFIXER_DIRECT_CAPABILITY,
@@ -41,9 +43,30 @@ RUNTIME_RESULT_SCHEMA_VERSION = "public_scene_artifixer3d_runtime_result.v1"
 ENTRYPOINT = "provider_runtime/run_public_scene_artifixer3d.sh"
 RUNNER = "provider_runtime/public_scene_artifixer3d_runner.py"
 RUNTIME_PACKAGE_INIT = "provider_runtime/blueprint_pipeline/__init__.py"
-RUNTIME_EDITOR_REGISTRY = (
-    "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
+RUNTIME_EDITOR_REGISTRY = "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
+RUNTIME_CUDA_PACKAGE_PATHS = "provider_runtime/blueprint_pipeline/artifixer_cuda_package_paths.py"
+RUNTIME_BLUEPRINT_MODULES = (
+    "__init__.py",
+    "image_editor_backend_registry.py",
+    "artifixer_cuda_package_paths.py",
+    "decision_evidence_contracts.py",
+    "semantic_target_training_selection.py",
+    "gaussian_field_quality.py",
+    "artifixer_source_geometry_admission.py",
+    "artifixer_training_recovery.py",
+    "artifixer_appearance_freeze.py",
+    "artifixer_metric_state.py",
+    "gaussian_splat_decode.py",
+    "nurec_usdz_layer_transform.py",
+    "aura_nurec_usdz.py",
+    "native_task_appearance_frame_alignment.py",
+    "nurec_volume_codec.py",
 )
+VGG16_WEIGHTS_FILENAME = "vgg16-397923af.pth"
+VGG16_WEIGHTS_SOURCE_URL = "https://download.pytorch.org/models/vgg16-397923af.pth"
+VGG16_WEIGHTS_SHA256 = "sha256:397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0"
+VGG16_WEIGHTS_SIZE_BYTES = 553_433_881
+RUNTIME_VGG16_WEIGHTS = f"torch_home/hub/checkpoints/{VGG16_WEIGHTS_FILENAME}"
 RUNTIME_EDITOR_REGISTRY_MANIFEST = (
     "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
 )
@@ -58,6 +81,16 @@ DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
 DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE = "dual_target_artifixer3d_render_only"
 CHECKPOINT_REUSE_SCHEMA_VERSION = "public_scene_artifixer3d_checkpoint_reuse.v1"
 DEFAULT_REMOVAL_PIPELINE_POLICY = "candidate_schema_resolved.v1"
+RETAINED_GEOMETRY_POLICY = {
+    "mode": "freeze_retained_source_geometry",
+    "optimize_position": False,
+    "optimize_rotation": False,
+    "optimize_scale": False,
+    "mcmc_relocation_permitted": False,
+    "mcmc_addition_permitted": False,
+    "mcmc_perturbation_permitted": False,
+    "post_training_exact_tensor_match_required": True,
+}
 
 ARTIFIXER_REPOSITORY = "https://github.com/nv-tlabs/ArtiFixer.git"
 ARTIFIXER_COMMIT = "a392c4dfe17459ef9952407accdb9fcdcdddba98"
@@ -83,7 +116,35 @@ VIBE_SOURCE_LICENSE_SHA256 = (
 # release. The registry records each backend's terms alongside its name, so the
 # seam stays open for the next model without opening it for a model nobody
 # checked the license on. See `image_editor_backend_registry`.
-DIRECT_EDITOR_BACKENDS = registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY)
+# Resolved on first use, not at import. The registry lives in the repository's
+# ``docs/`` tree, which the scene-configuration provider bundle does not carry:
+# it copies this package to ``provider_runtime/blueprint_pipeline`` on a rented
+# GPU, so the registry's ``parents[2]`` default resolves to a path that has
+# never existed there. Evaluating this at module scope therefore killed the
+# ArtiFixer stage on *import*, before its first instruction, with
+# ``image_editor_registry_unreadable``. Every reader below is repo-layout code,
+# so deferring costs nothing and the registry still fails closed when one of
+# them actually asks.
+_DIRECT_EDITOR_BACKENDS: frozenset[str] | None = None
+
+
+def direct_editor_backends() -> frozenset[str]:
+    """Admitted direct image-editor backends, read once from the registry."""
+
+    global _DIRECT_EDITOR_BACKENDS
+    if _DIRECT_EDITOR_BACKENDS is None:
+        _DIRECT_EDITOR_BACKENDS = registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY)
+    return _DIRECT_EDITOR_BACKENDS
+
+
+def __getattr__(name: str) -> Any:
+    """Keep ``DIRECT_EDITOR_BACKENDS`` readable without importing the registry."""
+
+    if name == "DIRECT_EDITOR_BACKENDS":
+        return direct_editor_backends()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 NO_DIRECT_EDITOR = REGISTRY_NO_DIRECT_EDITOR
 
 
@@ -163,6 +224,9 @@ VIBE_IMAGE_EDIT_LARGE_FILES = (
 MAX_MEMBER_BYTES = 2 * 1024**3
 MAX_TOTAL_BYTES = 4 * 1024**3
 MAX_MEMBER_COUNT = 20_000
+COMPONENT_SOURCE_SCHEMA_VERSION = "task_evaluation_artifixer3d_component_source.v1"
+_GIT_OBJECT = re.compile(r"[0-9a-f]{40}\Z")
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class ArtiFixer3DBundleError(ValueError):
@@ -249,6 +313,11 @@ def _candidate_receipt(path: Path) -> dict[str, Any]:
         ):
             raise ArtiFixer3DBundleError(["artifixer3d_bundle_dual_target_transition_invalid"])
         for task in tasks:
+            from .semantic_target_training_selection import validate_training_partition
+            try:
+                expected_anchors, expected_teachers = validate_training_partition(task)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ArtiFixer3DBundleError(["artifixer3d_bundle_training_selection_invalid"]) from exc
             physical = task.get("physical_camera_count") if isinstance(task, Mapping) else None
             training = task.get("training_record_count") if isinstance(task, Mapping) else None
             frames = task.get("frames") if isinstance(task, Mapping) else None
@@ -262,8 +331,8 @@ def _candidate_receipt(path: Path) -> dict[str, Any]:
                 or training != 2 * physical
                 or not isinstance(frames, list)
                 or len(frames) != physical
-                or anchors != list(range(0, training, 2))
-                or teachers != list(range(1, training, 2))
+                or anchors != expected_anchors
+                or teachers != expected_teachers
                 or set(anchors) & set(teachers)
                 or task.get("loss_contract", {}).get("same_pose_and_intrinsics_per_pair")
                 is not True
@@ -477,6 +546,69 @@ def _copy_source_release(source: Path, destination: Path) -> list[dict[str, Any]
     return records
 
 
+def _copy_preverified_source_release(
+    source: Path, destination: Path, receipt_path: Path
+) -> list[dict[str, Any]]:
+    """Copy an exact release archive already verified by the component builder."""
+
+    receipt = _read(receipt_path, code="artifixer3d_source_receipt_invalid")
+    files = receipt.get("files")
+    if (
+        receipt.get("schema_version") != COMPONENT_SOURCE_SCHEMA_VERSION
+        or receipt.get("repository") != ARTIFIXER_REPOSITORY
+        or receipt.get("commit") != ARTIFIXER_COMMIT
+        or receipt.get("tree") != ARTIFIXER_TREE
+        or receipt.get("license") != "Apache-2.0"
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
+        or not isinstance(files, list)
+        or not files
+    ):
+        raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_invalid"])
+    expected_names: set[str] = set()
+    records: list[dict[str, Any]] = []
+    for row in files:
+        if not isinstance(row, Mapping):
+            raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_invalid"])
+        relative = _portable(str(row.get("relative_path") or ""))
+        name = relative.as_posix()
+        if name in expected_names or name == "thirdparty/3DGRUT-ArtiFixer":
+            raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_invalid"])
+        expected_names.add(name)
+        item = source.joinpath(*relative.parts)
+        if (
+            item.is_symlink()
+            or not item.is_file()
+            or item.stat().st_size != row.get("size_bytes")
+            or _sha256(item) != row.get("sha256")
+        ):
+            raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_member_invalid"])
+        target = destination.joinpath(*relative.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(item, target)
+        records.append(_record(target, root=destination))
+    observed_names = {
+        item.relative_to(source).as_posix()
+        for item in source.rglob("*")
+        if item.is_file() and not item.is_symlink()
+    }
+    if observed_names != expected_names:
+        raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_inventory_mismatch"])
+    return records
+
+
+def _preverified_repository_identity(value: Mapping[str, Any]) -> dict[str, Any]:
+    identity = dict(value)
+    if (
+        _GIT_OBJECT.fullmatch(str(identity.get("commit") or "")) is None
+        or _GIT_OBJECT.fullmatch(str(identity.get("tree") or "")) is None
+        or identity.get("tracked_files_clean") is not True
+        or identity.get("full_byte_component_package_verified") is not True
+        or _SHA256.fullmatch(str(identity.get("component_package_digest") or "")) is None
+    ):
+        raise ArtiFixer3DBundleError(["artifixer3d_repository_identity_invalid"])
+    return identity
+
+
 def _copy_candidate_tree(source: Path, destination: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for item in sorted(source.rglob("*")):
@@ -517,9 +649,31 @@ def _zip_tree(source: Path, destination: Path) -> None:
             info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
-            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            # Carry the executable bit. Every member was stored 0o644, so the
+            # bundle's own entrypoint extracted non-executable and the stage
+            # died the moment it tried to run it:
+            # `PermissionError: [Errno 13] Permission denied:
+            # .../artifixer_execution/provider_runtime/run_public_scene_artifixer3d.sh`
+            # (run ...4dfc5f8e-r3-web-20260827T050053Z, after the render, the
+            # cutout, the masks and the semantic-teacher packet had all been
+            # produced on a rented GPU). Derived from the source bit rather
+            # than the source mode, so the archive stays byte-reproducible --
+            # this is what the scene-configuration builder's own _zip_tree
+            # already does.
+            executable = bool(item.stat().st_mode & 0o111)
+            info.external_attr = (stat.S_IFREG | (0o755 if executable else 0o644)) << 16
             with item.open("rb") as input_stream, archive.open(info, "w") as output:
                 shutil.copyfileobj(input_stream, output, length=1024 * 1024)
+
+
+def _require_executable_archive_entrypoint(bundle_path: Path) -> None:
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            archived_mode = stat.S_IMODE(archive.getinfo(ENTRYPOINT).external_attr >> 16)
+    except (KeyError, OSError, zipfile.BadZipFile) as exc:
+        raise ArtiFixer3DBundleError(["artifixer3d_provider_entrypoint_archive_invalid"]) from exc
+    if archived_mode & 0o111 == 0:
+        raise ArtiFixer3DBundleError(["artifixer3d_provider_entrypoint_not_executable"])
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -663,13 +817,25 @@ def _checkpoint_reuse_source(
                         ["artifixer3d_checkpoint_reuse_checkpoint_invalid"]
                     )
                 checkpoint = task.get("artifixer3d_checkpoint")
+                geometry_protection = (
+                    task.get("native_appearance", {}).get("geometry_protection")
+                    if isinstance(task.get("native_appearance"), Mapping)
+                    else None
+                )
                 provider_path = str(
                     checkpoint.get("path") if isinstance(checkpoint, Mapping) else ""
                 ).replace("\\", "/")
                 marker = "/runtime_output/"
+                from .public_scene_artifixer3d_native_exports import geometry_protection_is_qualified
+                expected_geometry_mode = ("freeze_declared_appearance_initialization"
+                    if candidate.get("appearance_initialization") else RETAINED_GEOMETRY_POLICY["mode"])
                 if (
                     task.get("task_id") != task_id
                     or task.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+                    or not isinstance(geometry_protection, Mapping)
+                    or geometry_protection.get("mode")
+                    != expected_geometry_mode
+                    or not geometry_protection_is_qualified(geometry_protection)
                     or marker not in provider_path
                     or not isinstance(checkpoint, Mapping)
                 ):
@@ -736,6 +902,8 @@ def build_artifixer3d_bundle(
     pipeline_mode: str | None = None,
     reused_checkpoint_provider_output_zip_path: str | Path | None = None,
     reused_checkpoint_source_provider_zero_path: str | Path | None = None,
+    artifixer_source_receipt_path: str | Path | None = None,
+    blueprint_source_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build and locally rehearse one immutable no-upload provider bundle."""
 
@@ -764,6 +932,7 @@ def build_artifixer3d_bundle(
     attestation = _validated_use_attestation(attestation_path, candidate=candidate)
     source = Path(artifixer_source_directory).expanduser().resolve()
     repo = Path(repository_root).expanduser().resolve()
+    vgg16_weights = repo / RUNTIME_VGG16_WEIGHTS
     render_only = pipeline_mode == DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE
     reuse_inputs_present = (
         reused_checkpoint_provider_output_zip_path is not None,
@@ -775,10 +944,14 @@ def build_artifixer3d_bundle(
         or repo.is_symlink()
         or not (repo / "scripts" / "run_public_scene_artifixer3d.sh").is_file()
         or not (repo / "scripts" / "public_scene_artifixer3d_runner.py").is_file()
-        or not (repo / "src" / "blueprint_pipeline" / "__init__.py").is_file()
-        or not (
-            repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py"
-        ).is_file()
+        or any(
+            not (repo / "src" / "blueprint_pipeline" / name).is_file()
+            for name in RUNTIME_BLUEPRINT_MODULES
+        )
+        or vgg16_weights.is_symlink()
+        or not vgg16_weights.is_file()
+        or vgg16_weights.stat().st_size != VGG16_WEIGHTS_SIZE_BYTES
+        or _sha256(vgg16_weights) != VGG16_WEIGHTS_SHA256
         or not (repo / RUNTIME_EDITOR_REGISTRY_MANIFEST).is_file()
         or not isinstance(artifixer3d_steps, int)
         or isinstance(artifixer3d_steps, bool)
@@ -793,7 +966,7 @@ def build_artifixer3d_bundle(
         }
         or (
             pipeline_mode == FULL_PIPELINE_MODE
-            and direct_editor_backend not in DIRECT_EDITOR_BACKENDS
+            and direct_editor_backend not in direct_editor_backends()
         )
         or (
             pipeline_mode in {DUAL_TARGET_PIPELINE_MODE, DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE}
@@ -843,7 +1016,11 @@ def build_artifixer3d_bundle(
         if render_only
         else None
     )
-    repository_identity = _repository_identity(repo)
+    repository_identity = (
+        _preverified_repository_identity(blueprint_source_identity)
+        if blueprint_source_identity is not None
+        else _repository_identity(repo)
+    )
     output = Path(output_root).expanduser().resolve()
     if output.exists() and any(output.iterdir()):
         raise ArtiFixer3DBundleError(["artifixer3d_bundle_output_not_empty"])
@@ -854,19 +1031,34 @@ def build_artifixer3d_bundle(
     source_root = runtime / "ArtiFixer_official"
     runtime.mkdir(parents=True)
     candidate_files = _copy_candidate_tree(receipt_path.parent, input_root)
-    source_files = _copy_source_release(source, source_root)
-    shutil.copyfile(repo / "scripts" / Path(ENTRYPOINT).name, runtime / Path(ENTRYPOINT).name)
+    source_files = (
+        _copy_preverified_source_release(
+            source,
+            source_root,
+            _file(
+                artifixer_source_receipt_path,
+                code="artifixer3d_source_receipt_missing",
+            ),
+        )
+        if artifixer_source_receipt_path is not None
+        else _copy_source_release(source, source_root)
+    )
+    entrypoint_path = runtime / Path(ENTRYPOINT).name
+    shutil.copyfile(repo / "scripts" / Path(ENTRYPOINT).name, entrypoint_path)
+    entrypoint_path.chmod(0o755)
+    if stat.S_IMODE(entrypoint_path.stat().st_mode) != 0o755:
+        raise ArtiFixer3DBundleError(["artifixer3d_provider_entrypoint_permission_install_failed"])
     shutil.copyfile(repo / "scripts" / Path(RUNNER).name, runtime / Path(RUNNER).name)
     runtime_package = runtime / "blueprint_pipeline"
     runtime_package.mkdir()
-    shutil.copyfile(
-        repo / "src" / "blueprint_pipeline" / "__init__.py",
-        runtime_package / "__init__.py",
-    )
-    shutil.copyfile(
-        repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py",
-        runtime_package / "image_editor_backend_registry.py",
-    )
+    for name in RUNTIME_BLUEPRINT_MODULES:
+        shutil.copyfile(
+            repo / "src" / "blueprint_pipeline" / name,
+            runtime_package / name,
+        )
+    runtime_vgg16_weights = runtime / RUNTIME_VGG16_WEIGHTS
+    runtime_vgg16_weights.parent.mkdir(parents=True)
+    shutil.copyfile(vgg16_weights, runtime_vgg16_weights)
     registry_manifest = stage / RUNTIME_EDITOR_REGISTRY_MANIFEST
     registry_manifest.parent.mkdir(parents=True)
     shutil.copyfile(repo / RUNTIME_EDITOR_REGISTRY_MANIFEST, registry_manifest)
@@ -997,6 +1189,14 @@ def build_artifixer3d_bundle(
             "steps": artifixer3d_steps,
             "config_name": "apps/colmap_3dgut_sparse_mcmc_lpips",
             "use_wandb": False,
+            "lpips_vgg16_imagenet1k_v1": {
+                "filename": VGG16_WEIGHTS_FILENAME,
+                "source_url": VGG16_WEIGHTS_SOURCE_URL,
+                "size_bytes": VGG16_WEIGHTS_SIZE_BYTES,
+                "sha256": VGG16_WEIGHTS_SHA256,
+                "torch_home_relative_path": (f"hub/checkpoints/{VGG16_WEIGHTS_FILENAME}"),
+                "network_retrieval_during_method_execution_required": False,
+            },
         },
         "random_seed": random_seed,
         "pipeline_mode": pipeline_mode,
@@ -1055,6 +1255,7 @@ def build_artifixer3d_bundle(
                     "loss.lambda_lpips_override": 0.1,
                     "loss.lambda_reconlosses_override": 0.0,
                 },
+                "geometry_policy": RETAINED_GEOMETRY_POLICY,
                 "whole_semantic_teacher_unmasked": True,
                 "anchor_mask_reduction": "full_frame_mean",
                 "direct_artifixer_bypassed": True,
@@ -1062,6 +1263,18 @@ def build_artifixer3d_bundle(
                 "artifixer3d_plus_bypassed": True,
             }
         )
+        if candidate.get("appearance_initialization") is not None:
+            from .artifixer_appearance_freeze import GEOMETRY_MODE
+            runtime_request["artifixer3d"]["geometry_policy"] = {
+                **RETAINED_GEOMETRY_POLICY, "mode": GEOMETRY_MODE}
+            runtime_request["artifixer3d"]["appearance_initialization"] = candidate["appearance_initialization"]
+            partition = candidate["appearance_initialization"]["parameter_partition"]
+            if partition.get("local_appearance_policy") is not None:
+                runtime_request["artifixer3d"]["training_supervision"] = "corrected_only"
+                from .artifixer_appearance_freeze import CORRECTED_ONLY_LOSS_OVERRIDES
+                runtime_request["artifixer3d"]["loss_overrides"] = dict(CORRECTED_ONLY_LOSS_OVERRIDES)
+                runtime_request["repair_target"] = "approved_corrected_images_with_local_3d_appearance_repair"
+
         if render_only:
             runtime_request.update(
                 {
@@ -1176,6 +1389,7 @@ def build_artifixer3d_bundle(
     _write_json(runtime / Path(MANIFEST).name, manifest)
     bundle_path = output / "public_scene_artifixer3d_provider_bundle.zip"
     _zip_tree(stage, bundle_path)
+    _require_executable_archive_entrypoint(bundle_path)
     rehearsal = rehearse_provider_bundle_entrypoint(
         bundle_path=bundle_path,
         entrypoint_relative_path=ENTRYPOINT,
@@ -1197,7 +1411,8 @@ def build_artifixer3d_bundle(
             for task in candidate["tasks"]
         },
         "task_training_record_counts": {
-            str(task["task_id"]): int(task.get("training_record_count") or task.get("camera_count"))
+            str(task["task_id"]): effective_training_record_count(
+                task, runtime_request["artifixer3d"].get("training_supervision"))
             for task in candidate["tasks"]
         },
         "direct_editor_backend": direct_editor_backend,
@@ -1228,12 +1443,16 @@ __all__ = [
     "ARTIFIXER_SUBMODULE_TREE",
     "ARTIFIXER_TREE",
     "ArtiFixer3DBundleError",
+    "COMPONENT_SOURCE_SCHEMA_VERSION",
     "DEFAULT_IMAGE",
     "DUAL_TARGET_INPUT_RECEIPT",
     "DUAL_TARGET_PIPELINE_MODE",
     "DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE",
     "CHECKPOINT_REUSE_SCHEMA_VERSION",
-    "DIRECT_EDITOR_BACKENDS",
+    # Served by the module __getattr__ above so importing this module does not
+    # read the registry; ruff cannot see PEP 562 names.
+    "DIRECT_EDITOR_BACKENDS",  # noqa: F822
+    "direct_editor_backends",
     "FULL_PIPELINE_MODE",
     "NO_DIRECT_EDITOR",
     "SCHEMA_VERSION",
@@ -1249,6 +1468,7 @@ __all__ = [
     "materialize_artifixer3d_use_attestation",
     "resolve_default_removal_pipeline",
 ]
+
 
 def main(argv: list[str] | None = None) -> int:
     """Build the immutable paired ArtiFixer3D provider bundle.
@@ -1273,7 +1493,9 @@ def main(argv: list[str] | None = None) -> int:
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="Build the immutable paired ArtiFixer3D provider bundle.")
+    parser = argparse.ArgumentParser(
+        description="Build the immutable paired ArtiFixer3D provider bundle."
+    )
     parser.add_argument("--candidate-inputs-receipt", required=True)
     parser.add_argument("--use-attestation", required=True)
     parser.add_argument("--artifixer-source", required=True)
@@ -1284,7 +1506,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pipeline-mode")
     parser.add_argument(
         "--direct-editor-backend",
-        choices=sorted(DIRECT_EDITOR_BACKENDS | {NO_DIRECT_EDITOR}),
+        choices=sorted(direct_editor_backends() | {NO_DIRECT_EDITOR}),
         help="Defaults to whatever the candidate input schema implies.",
     )
     parser.add_argument(
@@ -1296,6 +1518,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reused-checkpoint-provider-output-zip")
     parser.add_argument("--reused-checkpoint-source-provider-zero")
     parser.add_argument(
+        "--artifixer-source-receipt",
+        help="Digest-bound component-source receipt for a preverified source tree.",
+    )
+    parser.add_argument(
+        "--blueprint-source-identity",
+        help="JSON identity for a preverified Blueprint component package.",
+    )
+    parser.add_argument(
         "--allow-active-instance",
         action="append",
         type=int,
@@ -1303,16 +1533,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Repeatable. Instances that may already be running.",
     )
     args = parser.parse_args(argv)
-    optional = {
-        "artifixer3d_steps": args.artifixer3d_steps,
-        "random_seed": args.random_seed,
-        "pipeline_mode": args.pipeline_mode,
-        "direct_editor_backend": args.direct_editor_backend,
-        "semantic_editor_only": args.semantic_editor_only,
-        "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
-        "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
-    }
     try:
+        optional = {
+            "artifixer3d_steps": args.artifixer3d_steps,
+            "random_seed": args.random_seed,
+            "pipeline_mode": args.pipeline_mode,
+            "direct_editor_backend": args.direct_editor_backend,
+            "semantic_editor_only": args.semantic_editor_only,
+            "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
+            "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
+            "artifixer_source_receipt_path": args.artifixer_source_receipt,
+            "blueprint_source_identity": (
+                _read(
+                    _file(
+                        args.blueprint_source_identity,
+                        code="artifixer3d_blueprint_source_identity_missing",
+                    ),
+                    code="artifixer3d_blueprint_source_identity_invalid",
+                )
+                if args.blueprint_source_identity is not None
+                else None
+            ),
+        }
         receipt = build_artifixer3d_bundle(
             candidate_inputs_receipt_path=args.candidate_inputs_receipt,
             use_attestation_path=args.use_attestation,

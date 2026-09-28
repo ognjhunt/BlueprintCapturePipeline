@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
@@ -16,6 +17,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.semantic_teacher_image_edit_worker import (
     MAX_PROVIDER_RESPONSE_BYTES,
     RUNTIME_REQUEST_SCHEMA_VERSION,
+    RUNTIME_RESULT_SCHEMA_VERSION,
     SemanticTeacherImageEditWorkerError,
     execute_semantic_teacher_image_edits,
     main,
@@ -132,6 +134,44 @@ def _set_parallelism(request_path: Path, value: object) -> None:
         request, digest_field="request_digest"
     )
     request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("invalid_preservation", [False, True])
+def test_source_preservation_never_calls_editor_and_requires_empty_support(
+    tmp_path: Path, invalid_preservation: bool
+) -> None:
+    request_path, sources = _runtime_request(tmp_path)
+    request = json.loads(request_path.read_text())
+    frame = request["tasks"][0]["frames"][0]
+    frame["frame_role"] = "source_preservation"
+    mask = request_path.parent / frame["edit_mask"]["relative_path"]
+    if not invalid_preservation:
+        mask.write_bytes(_png_bytes(size=(6, 4), color=(255, 255, 255, 255), mode="RGBA"))
+        frame["edit_mask"] = _record(mask, root=request_path.parent)
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    calls = []
+
+    def opener(http_request, *, timeout):
+        calls.append(http_request)
+        assert sources[0].read_bytes() not in http_request.data
+        return _Response(_inline_response(sources[1].read_bytes()))
+
+    if invalid_preservation:
+        with pytest.raises(SemanticTeacherImageEditWorkerError, match="frame_media_invalid"):
+            execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+                output_root=tmp_path / "output", token="fixture-token", opener=opener)
+        assert not calls
+    else:
+        result = execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+            output_root=tmp_path / "output", token="fixture-token", opener=opener)
+        assert len(calls) == result["request_count"] == 1
+        assert result["source_frame_count"] == 2
+        assert result["preserved_source_frame_count"] == 1
+        preserved = result["tasks"][0]["frames"][0]
+        assert preserved["terminal_state"] == "preserved_source"
+        assert preserved["provider_call_performed"] is False
+        assert (tmp_path / "output" / preserved["semantic_teacher_frame"]["relative_path"]).read_bytes() == sources[0].read_bytes()
 
 
 def _split_runtime_tasks(request_path: Path, *, split_at: int) -> None:
@@ -1041,3 +1081,334 @@ def test_rejects_unsafe_task_ids_before_network(tmp_path: Path, task_id: str) ->
             opener=lambda *args, **kwargs: calls.append((args, kwargs)),
         )
     assert calls == []
+
+
+def _set_cost_ceiling(request_path: Path, *, maximum_cost_usd, rate: float) -> None:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["maximum_cost_usd"] = maximum_cost_usd
+    pricing = request["backend"]["execution"]["pricing_binding"]
+    pricing["usage_required"] = True
+    pricing["usd_per_million_tokens"] = {"input_image_tokens": rate}
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_cost_ceiling_stops_issuing_requests_and_fails_closed(tmp_path: Path) -> None:
+    """A stage must stop paying once observed spend would pass its own cap.
+
+    The cap used to be checked only at settlement, which runs two days after
+    the call: run adp-new-scene-simple-relocation-839873-4dfc5f8e-r3-web-
+    20260827T050053Z billed $0.877128 against a $0.40 reservation and nothing
+    refused it. The provider quotes no price before a call, so the guard is
+    "do not start another request that could carry us past the cap", using the
+    worst request seen so far as the estimate.
+    """
+
+    request_path, _sources = _runtime_request(tmp_path, frame_count=6)
+    _set_parallelism(request_path, 1)
+    # 1,000,000 input-image tokens at $1.00 per million == $1.00 per request.
+    _set_cost_ceiling(request_path, maximum_cost_usd=2.5, rate=1.0)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+    calls = []
+
+    def opener(request, *, timeout: int):
+        calls.append(request)
+        return _Response(
+            _inline_response(
+                generated,
+                usage={
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 0,
+                    "total_tokens": 1_000_000,
+                    "input_tokens_details": {
+                        "text_tokens": 0,
+                        "image_tokens": 1_000_000,
+                    },
+                    "output_tokens_details": {"text_tokens": 0, "image_tokens": 0},
+                },
+            )
+        )
+
+    with pytest.raises(SemanticTeacherImageEditWorkerError) as caught:
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=tmp_path / "output",
+            token="fixture-secret-token",
+            opener=opener,
+        )
+    assert "semantic_teacher_cost_ceiling_reached" in str(caught.value)
+
+    # $1.00 each: after the 2nd, spent 2.0 and one more could reach 3.0 > 2.5,
+    # so the 3rd is never issued. Without the guard all six would be.
+    assert len(calls) == 2, f"issued {len(calls)} requests, expected 2"
+
+    sealed = json.loads(
+        (tmp_path / "output" / f"{RUNTIME_RESULT_SCHEMA_VERSION}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sealed["status"] == "failed_with_retained_partial_inventory"
+    assert sealed["cost_ceiling_reached"] is True
+    assert sealed["maximum_cost_usd"] == 2.5
+    assert sealed["observed_cost_usd"] == 2.0
+    assert "semantic_teacher_cost_ceiling_reached" in sealed["blockers"]
+    # The frames already paid for are retained, not discarded.
+    assert len(sealed["partial_png_inventory"]) == 2
+
+
+def test_absent_cost_ceiling_keeps_the_previous_behaviour(tmp_path: Path) -> None:
+    """The field is optional so already-sealed requests keep their digests."""
+
+    request_path, _sources = _runtime_request(tmp_path, frame_count=3)
+    _set_parallelism(request_path, 1)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+    calls = []
+
+    def opener(request, *, timeout: int):
+        calls.append(request)
+        return _Response(_inline_response(generated))
+
+    result = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "output",
+        token="fixture-secret-token",
+        opener=opener,
+    )
+
+    assert result["status"] == "completed_unreviewed_semantic_teacher_candidates"
+    assert len(calls) == 3
+    assert result["cost_ceiling_reached"] is False
+    assert result["maximum_cost_usd"] is None
+
+
+def _set_expected_request_cost(request_path: Path, value) -> None:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["expected_request_cost_usd"] = value
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_cap_below_projected_pass_refuses_before_any_paid_request(
+    tmp_path: Path,
+) -> None:
+    """A partial pass is worth nothing, so a doomed pass must cost nothing.
+
+    Run ...-163900Z had a $1.00 cap against 8 frames at an observed $0.219282
+    each: the mid-flight ceiling fired after five frames, $1.10 was spent, and
+    the stage still failed. With the expected per-request cost declared, the
+    same shape now refuses upfront with zero requests issued.
+    """
+
+    request_path, _sources = _runtime_request(tmp_path, frame_count=6)
+    _set_cost_ceiling(request_path, maximum_cost_usd=1.0, rate=1.0)
+    _set_expected_request_cost(request_path, 0.22)
+    calls = []
+
+    with pytest.raises(SemanticTeacherImageEditWorkerError) as excinfo:
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=tmp_path / "output",
+            token="fixture-token",
+            opener=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+    assert "semantic_teacher_cost_ceiling_below_projected_pass" in str(excinfo.value)
+    assert calls == []
+
+
+def test_cap_covering_the_full_pass_proceeds(tmp_path: Path) -> None:
+    request_path, _sources = _runtime_request(tmp_path, frame_count=2)
+    _set_parallelism(request_path, 1)
+    _set_cost_ceiling(request_path, maximum_cost_usd=2.5, rate=1.0)
+    _set_expected_request_cost(request_path, 0.5)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+
+    def opener(request, *, timeout: int):
+        return _Response(_inline_response(generated))
+
+    result = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "output",
+        token="fixture-token",
+        opener=opener,
+    )
+
+    assert result["successful_request_count"] == 2
+    assert result["cost_ceiling_reached"] is False
+
+
+def test_expected_request_cost_without_a_cap_is_accepted(tmp_path: Path) -> None:
+    """Projection needs a cap to compare against; alone it must not refuse."""
+
+    request_path, _sources = _runtime_request(tmp_path, frame_count=1)
+    _set_parallelism(request_path, 1)
+    _set_expected_request_cost(request_path, 0.22)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+
+    def opener(request, *, timeout: int):
+        return _Response(_inline_response(generated))
+
+    result = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "output",
+        token="fixture-token",
+        opener=opener,
+    )
+
+    assert result["successful_request_count"] == 1
+
+
+def _request_with_retained_candidate(tmp_path):
+    request_path, sources = _runtime_request(tmp_path)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+    original = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path, output_root=tmp_path / "old-output",
+        token="fixture-secret", opener=lambda *_args, **_kwargs: _Response(_inline_response(generated)))
+    root = request_path.parent
+    old_request = root / "original-request.json"
+    old_request.write_bytes(request_path.read_bytes())
+    old_result = root / "original-result.json"
+    old_result.write_text(json.dumps(original))
+    candidate = root / "retained-candidate.png"
+    candidate.write_bytes(generated)
+    request = json.loads(request_path.read_text())
+    request["retained_candidates"] = [{
+        "task_id": request["tasks"][0]["task_id"], "camera_id": "camera_0",
+        "source_runtime_request": _record(old_request, root=root),
+        "source_runtime_result": _record(old_result, root=root),
+        "candidate": _record(candidate, root=root),
+    }]
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    return request_path, original, generated, candidate
+
+
+def test_reuse_retains_original_mask_lineage_and_bills_only_new_calls(tmp_path):
+    request_path, original, generated, _ = _request_with_retained_candidate(tmp_path)
+    calls = []
+    def opener(*args, **kwargs):
+        calls.append(args)
+        return _Response(_inline_response(generated))
+    result = execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+        output_root=tmp_path / "new-output", token="fixture-secret", opener=opener)
+    assert len(calls) == result["request_count"] == 1
+    assert result["retained_candidate_frame_count"] == 1
+    assert result["source_frame_count"] == 2
+    reused = result["tasks"][0]["frames"][0]
+    assert reused["provider_call_performed"] is False
+    assert reused["provider_usage"] is None
+    assert reused["computed_editor_cost_usd"] == 0
+    assert reused["retained_candidate_lineage"]["source_runtime_result_digest"] == original["result_digest"]
+    assert reused["retained_candidate_lineage"]["original_edit_mask_sha256"] == reused["edit_mask_sha256"]
+    assert reused["retained_candidate_lineage"]["current_repair_support_sha256"] == reused["edit_mask_sha256"]
+    assert result["computed_editor_cost_usd"] == pytest.approx(original["computed_editor_cost_usd"] / 2)
+
+
+def test_corrupt_retained_candidate_refuses_before_any_new_call(tmp_path):
+    request_path, _, _, candidate = _request_with_retained_candidate(tmp_path)
+    candidate.write_bytes(b"changed")
+    with pytest.raises(SemanticTeacherImageEditWorkerError, match="retained_candidate_invalid"):
+        execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+            output_root=tmp_path / "new-output", token="fixture-secret",
+            opener=lambda *_args, **_kwargs: pytest.fail("called provider before reuse admission"))
+    assert not (tmp_path / "new-output").exists()
+
+
+def test_all_reused_candidates_make_zero_requests_and_record_zero_new_cost(tmp_path):
+    request_path, _, _, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    request["retained_candidates"].append({**request["retained_candidates"][0], "camera_id": "camera_1"})
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    result = execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+        output_root=tmp_path / "all-reused", token="fixture-secret",
+        opener=lambda *_args, **_kwargs: pytest.fail("all candidates were retained"))
+    assert result["request_count"] == result["computed_editor_cost_usd"] == 0
+    assert result["retained_candidate_frame_count"] == result["source_frame_count"] == 2
+    assert result["billing_qualified"] is True
+
+
+def test_attach_retained_candidates_preserves_signed_original_evidence(tmp_path):
+    from blueprint_pipeline.semantic_teacher_candidate_reuse import attach_retained_candidates, load_retained_candidates
+    request_path, original, _, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    candidates = request.pop("retained_candidates")
+    for row in candidates:
+        for field in ("source_runtime_request", "source_runtime_result", "candidate"):
+            row[field]["path"] = str(request_path.parent / row[field].pop("relative_path"))
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    attach_retained_candidates(runtime_request_path=request_path, candidates=candidates)
+    updated = json.loads(request_path.read_text())
+    assert updated["request_digest"] == canonical_digest(updated, digest_field="request_digest")
+    reused = load_retained_candidates(request=updated, request_root=request_path.parent)
+    assert next(iter(reused.values()))["lineage"]["source_runtime_result_digest"] == original["result_digest"]
+
+
+@pytest.mark.parametrize("source_changed", [False, True])
+def test_selection_matches_exact_current_render_before_bundle_admission(tmp_path, source_changed):
+    from blueprint_pipeline.semantic_teacher_candidate_reuse import load_retained_selection
+    request_path, _, _, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    selection = {"schema_version": "semantic_teacher_retained_candidate_selection.v1",
+        "candidates": request["retained_candidates"]}
+    selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    selection_path = request_path.parent / "selection.json"
+    selection_path.write_text(json.dumps(selection))
+    digest = request["tasks"][0]["frames"][0]["input_rgb"]["sha256"]
+    render = {"derived_frames": [{"camera_id": "camera_0", "digest": "sha256:" + "0" * 64 if source_changed else digest}]}
+    if source_changed:
+        with pytest.raises(ValueError, match="source_changed"):
+            load_retained_selection(selection_path=selection_path, render=render)
+    else:
+        selected = load_retained_selection(selection_path=selection_path, render=render)
+        assert len(selected) == 1
+        assert Path(selected[0]["candidate"]["path"]).is_file()
+
+
+@pytest.mark.parametrize("change", ["none", "pixels", "unbound_bytes"])
+def test_retained_selection_reproduces_rgb_staging_after_source_verification(tmp_path, change):
+    from blueprint_pipeline.semantic_teacher_candidate_reuse import load_retained_selection
+    request_path, _, _, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    selection = {"schema_version": "semantic_teacher_retained_candidate_selection.v1",
+        "candidates": request["retained_candidates"]}
+    selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    selection_path = request_path.parent / "selection.json"
+    selection_path.write_text(json.dumps(selection))
+    staged = request["tasks"][0]["frames"][0]["input_rgb"]
+    with Image.open(request_path.parent / staged["relative_path"]) as image:
+        source = image.convert("RGBA")
+    if change == "pixels":
+        source.putpixel((0, 0), (123, 45, 67, 255))
+    path = tmp_path / "original-render.png"
+    source.save(path, compress_level=0)
+    record = {"camera_id": "camera_0", "path": str(path), "size_bytes": path.stat().st_size,
+        "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+    assert record["digest"] != staged["sha256"]
+    if change == "unbound_bytes":
+        path.write_bytes(path.read_bytes() + b"tampered")
+    if change == "none":
+        assert len(load_retained_selection(selection_path=selection_path,
+            render={"derived_frames": [record]})) == 1
+    else:
+        with pytest.raises(ValueError, match="source_changed"):
+            load_retained_selection(selection_path=selection_path, render={"derived_frames": [record]})
+
+
+def test_changed_mask_requires_a_new_edit_instead_of_reusing_old_polygon_output(tmp_path):
+    request_path, _, generated, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    mask = request_path.parent / request["tasks"][0]["frames"][0]["edit_mask"]["relative_path"]
+    mask.write_bytes(_png_bytes(size=(6, 4), color=(0, 0, 0, 0), mode="RGBA"))
+    request["tasks"][0]["frames"][0]["edit_mask"] = _record(mask, root=request_path.parent)
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    calls = []
+    def opener(*args, **kwargs):
+        calls.append(1)
+        return _Response(_inline_response(generated))
+    result = execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+        output_root=tmp_path / "new-output", token="fixture-token", opener=opener)
+    assert result["retained_candidate_frame_count"] == 0
+    assert result["request_count"] == len(calls) == result["source_frame_count"]

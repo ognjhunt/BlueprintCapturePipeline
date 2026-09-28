@@ -76,6 +76,14 @@ def _safe_inspect(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _provider_zero_guard(*, output_path: Path) -> dict[str, Any]:
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        return {
+            "exit_code": None,
+            "report": {},
+            "raw_process_output_recorded": False,
+        }
     root = Path(__file__).resolve().parents[2]
     argv = [
         sys.executable,
@@ -88,6 +96,10 @@ def _provider_zero_guard(*, output_path: Path) -> dict[str, Any]:
         argv.extend(("--require-provider", provider))
     completed = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=90)
     try:
+        if output_path.is_symlink():
+            raise TerminalResourceReleaseError(
+                "terminal_resource_release_provider_zero_symlink_forbidden"
+            )
         report = _read_json(output_path)
     except (OSError, ValueError, json.JSONDecodeError, TerminalResourceReleaseError):
         report = {}
@@ -96,6 +108,48 @@ def _provider_zero_guard(*, output_path: Path) -> dict[str, Any]:
         "report": report,
         "raw_process_output_recorded": False,
     }
+
+
+def _provider_zero_report_verified(report: Mapping[str, Any]) -> bool:
+    provider_zero = _mapping(report.get("provider_zero"))
+    rows = report.get("inventory_results")
+    required_ids = provider_zero.get("required_provider_ids")
+    if (
+        not isinstance(rows, list)
+        or not isinstance(required_ids, list)
+        or any(not isinstance(value, str) for value in required_ids)
+    ):
+        return False
+    inventories = {
+        _string(row.get("provider")): row
+        for row in rows
+        if isinstance(row, Mapping)
+    }
+    required_rows = [
+        row
+        for row in rows
+        if isinstance(row, Mapping)
+        and _string(row.get("provider")) in _REQUIRED_PROVIDERS
+    ]
+    return bool(
+        report.get("schema_version") == "gpu_spend_guard.v1"
+        and report.get("provider_zero_verified") is True
+        and report.get("live_instance_count") == 0
+        and report.get("total_burn_per_hour_usd") in (0, 0.0)
+        and provider_zero.get("status") == "verified"
+        and set(required_ids) == set(_REQUIRED_PROVIDERS)
+        and len(required_rows) == len(_REQUIRED_PROVIDERS)
+        and provider_zero.get("global_live_instance_count") == 0
+        and provider_zero.get("global_total_burn_per_hour_usd") in (0, 0.0)
+        and provider_zero.get("blockers") == []
+        and all(
+            isinstance(inventory := inventories.get(provider), Mapping)
+            and inventory.get("status") == "succeeded"
+            and inventory.get("row_count") == 0
+            and inventory.get("required") is True
+            for provider in _REQUIRED_PROVIDERS
+        )
+    )
 
 
 def dispatch_terminal_resource_release(
@@ -162,7 +216,7 @@ def dispatch_terminal_resource_release(
                     blockers.append("terminal_resource_release_exact_absence_unverified")
     guard = (provider_zero_guard or (lambda path: _provider_zero_guard(output_path=path)))(zero_path)
     report = _mapping(_mapping(guard).get("report"))
-    provider_zero_verified = report.get("provider_zero_verified") is True
+    provider_zero_verified = _provider_zero_report_verified(report)
     if not provider_zero_verified:
         blockers.append("terminal_resource_release_global_provider_zero_unverified")
     receipt: dict[str, Any] = {

@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/native_task_arena_launch_preparation_context.v2.schema.json",
+  "title": "Native Task Arena launch preparation context v2",
+  "type": "object",
+  "required": ["schema_version", "lane", "team_namespace", "references", "operations"],
+  "properties": {
+    "schema_version": {
+      "const": "native_task_arena_launch_preparation_context.v2"
+    },
+    "lane": {
+      "enum": [
+        "native_task_arena_construction",
+        "native_task_arena_controls",
+        "native_task_arena_zero_action",
+        "native_task_arena_scripted_positive",
+        "native_task_arena_policy_evaluation",
+        "native_task_arena_destination_qualification",
+        "native_task_arena_construction_after_destination",
+        "native_task_arena_construction_recovery"
+      ]
+    },
+    "team_namespace": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "references": {
+      "type": "object",
+      "required": ["scene", "task", "robot", "runtime"],
+      "additionalProperties": false,
+      "properties": {
+        "scene": {
+          "type": "object",
+          "required": [
+            "scene_id",
+            "packet_dir",
+            "packet_receipt_digest",
+            "source_manifest",
+            "source_manifest_digest",
+            "rights_admission",
+            "rights_admission_digest",
+            "rights_evidence"
+          ],
+          "dependentRequired": {
+            "configured_scene_revision": ["configured_scene_revision_digest"],
+            "configured_scene_revision_digest": ["configured_scene_revision"]
+          },
+          "additionalProperties": false,
+          "properties": {
+            "scene_id": {"type": "string", "minLength": 1},
+            "packet_dir": {"type": "string", "minLength": 1},
+            "packet_receipt_digest": {"$ref": "#/$defs/digest"},
+            "source_manifest": {"type": "string", "minLength": 1},
+            "source_manifest_digest": {"$ref": "#/$defs/digest"},
+            "rights_admission": {"type": "string", "minLength": 1},
+            "rights_admission_digest": {"$ref": "#/$defs/digest"},
+            "configured_scene_revision": {"type": "string", "minLength": 1},
+            "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
+            "destination": {
+              "type": "object", "additionalProperties": false,
+              "required": ["identity", "asset", "rights_admission", "rights_admission_digest"],
+              "properties": {
+                "identity": {"type": "object", "required": ["id", "version"], "properties": {"id": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1}}, "additionalProperties": false},
+                "asset": {"type": "object", "required": ["digest", "size_bytes"], "properties": {"digest": {"$ref": "#/$defs/digest"}, "size_bytes": {"type": "integer", "minimum": 1}, "uri": {"type": "string"}}, "additionalProperties": false},
+                "rights_admission": {"type": "string", "minLength": 1},
+                "rights_admission_digest": {"$ref": "#/$defs/digest"}
+              }
+            },
+            "rights_evidence": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "object",
+                "required": ["role", "path", "sha256"],
+                "additionalProperties": false,
+                "properties": {
+                  "role": {
+                    "enum": [
+                      "publisher_terms",
+                      "publisher_readme",
+                      "upstream_license",
+                      "human_authority_record"
+                    ]
+                  },
+                  "path": {"type": "string", "minLength": 1},
+                  "sha256": {"$ref": "#/$defs/digest"}
+                }
+              },
+              "allOf": [
+                {
+                  "contains": {
+                    "type": "object",
+                    "properties": {"role": {"const": "publisher_terms"}},
+                    "required": ["role"]
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "properties": {"role": {"const": "human_authority_record"}},
+                    "required": ["role"]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "task": {
+          "type": "object",
+          "required": ["task_id", "task_spec_digest"],
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {"type": "string", "minLength": 1},
+            "task_spec_digest": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "robot": {
+          "type": "object",
+          "required": ["robot_id", "configuration_digest"],
+          "additionalProperties": false,
+          "properties": {
+            "robot_id": {"type": "string", "minLength": 1},
+            "configuration_digest": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "required": ["source_packet", "source_packet_receipt_digest", "container_image"],
+          "additionalProperties": false,
+          "properties": {
+            "source_packet": {"type": "string", "minLength": 1},
+            "source_packet_receipt_digest": {"$ref": "#/$defs/digest"},
+            "container_image": {
+              "type": "string",
+              "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "policy_run": {
+          "type": "object",
+          "required": ["configuration_digest", "plan_digest", "setup_digest", "source_launch_id", "offering_digest", "candidate_ids"],
+          "additionalProperties": false,
+          "properties": {
+            "configuration_digest": {"$ref": "#/$defs/digest"},
+            "plan_digest": {"$ref": "#/$defs/digest"},
+            "setup_digest": {"$ref": "#/$defs/digest"},
+            "source_launch_id": {"type": "string", "minLength": 1},
+            "offering_digest": {"$ref": "#/$defs/digest"},
+            "candidate_ids": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "required": [
+        "set_root",
+        "repository_root",
+        "source_commit",
+        "destination_prefix",
+        "profile_dir",
+        "webapp_catalog_out",
+        "standing_authorization_dir",
+        "standing_authorization_expires_at",
+        "pod_name",
+        "revision",
+        "authorization_reference",
+        "authorized_by",
+        "authorized_on",
+        "maximum_hourly_rate_usd",
+        "hard_total_spend_cap_usd",
+        "hard_ttl_seconds",
+        "provider"
+      ],
+      "properties": {
+        "set_root": {"type": "string", "minLength": 1},
+        "repository_root": {"type": "string", "minLength": 1},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "destination_prefix": {"type": "string", "minLength": 1},
+        "profile_dir": {"type": "string", "minLength": 1},
+        "webapp_catalog_out": {"type": "string", "minLength": 1},
+        "standing_authorization_dir": {"type": "string", "minLength": 1},
+        "standing_authorization_expires_at": {"type": "string", "format": "date-time"},
+        "pod_name": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "authorization_reference": {"type": "string", "minLength": 1},
+        "authorized_by": {"type": "string", "minLength": 1},
+        "authorization_recorded_on": {"type": "string", "format": "date-time"},
+        "authorized_on": {"type": "string", "format": "date-time"},
+        "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
+        "hard_total_spend_cap_usd": {"type": "number", "exclusiveMinimum": 0},
+        "hard_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 9000},
+        "provider": {"enum": ["runpod", "vast", "digitalocean", "aws"]},
+        "project_spend_reconciliation": {"type": "string", "minLength": 1},
+        "initial_provider_zero": {"type": "string", "minLength": 1},
+        "prior_authority": {"type": "string", "minLength": 1},
+        "prior_result": {"type": "string", "minLength": 1},
+        "prior_launch_receipt": {"type": "string", "minLength": 1},
+        "prior_webapp_sync": {"type": "string", "minLength": 1},
+        "prior_provider_zero": {"type": "string", "minLength": 1},
+        "prior_spend_reconciliation": {"type": "string", "minLength": 1},
+        "construction_result": {"type": "string", "minLength": 1},
+        "terminal_feedback_adoption": {"type": "string", "minLength": 1},
+        "terminal_feedback_adoption_digest": {"$ref": "#/$defs/digest"},
+        "retain_warm_control_search": {"type": "boolean", "const": true},
+        "zero_action_result": {"type": "string", "minLength": 1},
+        "controls_qualification_manifest": {"type": "string", "minLength": 1},
+        "destination_probe_request": {"type": "string", "minLength": 1},
+        "configured_scene_support_plane": {"type": "string", "minLength": 1},
+        "destination_static_qualification": {"type": "string", "minLength": 1},
+        "destination_native_import_qualification": {"type": "string", "minLength": 1},
+        "destination_geometry": {"type": "string", "minLength": 1},
+        "destination_qualification_result": {"type": "string", "minLength": 1},
+        "machine_avoidlist": {"type": "string"},
+        "scene_owner_attempt": {"type": "string", "minLength": 1},
+        "python": {"type": "string", "minLength": 1},
+        "service_account": {"type": "string", "minLength": 1},
+        "service_group": {"type": "string", "minLength": 1}
+      },
+      "dependentRequired": {
+        "terminal_feedback_adoption": ["terminal_feedback_adoption_digest"],
+        "terminal_feedback_adoption_digest": ["terminal_feedback_adoption"]
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"lane": {"enum": ["native_task_arena_construction", "native_task_arena_destination_qualification"]}}},
+      "then": {
+        "properties": {
+          "operations": {
+            "required": ["project_spend_reconciliation", "initial_provider_zero"]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "operations": {
+            "required": [
+              "prior_authority",
+              "prior_result",
+              "prior_launch_receipt",
+              "prior_webapp_sync",
+              "prior_provider_zero",
+              "prior_spend_reconciliation"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "properties": {"lane": {"const": "native_task_arena_construction"}},
+          "required": ["lane"]
+        }
+      },
+      "then": {
+        "properties": {
+          "operations": {
+            "not": {
+              "anyOf": [
+                {"required": ["terminal_feedback_adoption"]},
+                {"required": ["terminal_feedback_adoption_digest"]}
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"not": {"properties": {"lane": {"enum": ["native_task_arena_construction", "native_task_arena_construction_recovery"]}}, "required": ["lane"]}},
+      "then": {"properties": {"operations": {"not": {"required": ["retain_warm_control_search"]}}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "lane": {"const": "native_task_arena_scripted_positive"}
+        }
+      },
+      "then": {
+        "properties": {
+          "operations": {"required": ["zero_action_result"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}
+      },
+      "then": {
+        "properties": {
+          "references": {"required": ["policy_run"]},
+          "operations": {
+            "required": [
+              "controls_qualification_manifest"
+            ]
+          }
+        }
+      }
+    },
+    {"if": {"properties": {"lane": {"const": "native_task_arena_destination_qualification"}}}, "then": {"properties": {"operations": {"required": ["destination_probe_request", "configured_scene_support_plane", "destination_static_qualification", "destination_native_import_qualification", "destination_geometry"]}}}},
+    {"if": {"properties": {"lane": {"const": "native_task_arena_construction_after_destination"}}}, "then": {"properties": {"operations": {"required": ["destination_qualification_result"]}}}},
+    {"if": {"not": {"properties": {"lane": {"enum": ["native_task_arena_construction", "native_task_arena_destination_qualification", "native_task_arena_construction_after_destination", "native_task_arena_construction_recovery"]}}}}, "then": {"properties": {"operations": {"required": ["construction_result"]}}}}
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

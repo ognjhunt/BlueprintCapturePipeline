@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import itertools
 import urllib.error
 from pathlib import Path
 
@@ -12,7 +14,13 @@ from blueprint_pipeline.paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
-from blueprint_pipeline.sam31_gpu_admission import CHECKPOINT_DIGEST, OPERATION
+from blueprint_pipeline.sam31_gpu_admission import (
+    CHECKPOINT_DIGEST,
+    OPERATION,
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
+    sam31_capacity_request,
+)
 from blueprint_pipeline.sam31_source_track_canary_worker import RUNTIME_RESULT_SCHEMA_VERSION
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     canonical_json_digest,
@@ -40,6 +48,14 @@ PUT_URL = "https://objects.example/output?signature=put-secret"
 GET_URL = "https://objects.example/output?signature=get-secret"
 
 
+@pytest.fixture(autouse=True)
+def recovery_identity(tmp_path, monkeypatch):
+    identity = tmp_path / "fixture-ssh-identity"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(identity)],
+                   check=True, capture_output=True)
+    monkeypatch.setenv("BLUEPRINT_VAST_SSH_IDENTITY_FILE", str(identity))
+
+
 def _grant():
     return require_paid_resource_admission(
         build_paid_lane_admission(resource_class="gpu_render"),
@@ -60,9 +76,13 @@ def _bound_request() -> dict:
         "hard_ttl_seconds": 60,
         "retry_cap": 0,
         "authority_id": "fixture-authority",
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "request_digest": D1,
         "bound_provider": "vast",
-        "bound_preflight_digest": D1,
+        "bound_preflight_digest": canonical_digest(_preflight()),
         "bound_checkout_source_commit": SHA,
         "bound_checkout_clean": True,
         "provider_mutation_authorized": True,
@@ -74,6 +94,7 @@ def _bound_request() -> dict:
 def _preflight() -> dict:
     return {
         "provider": "vast",
+        "capacity_request": sam31_capacity_request(container_disk_bytes=80 * 1024**3, max_hourly_rate_usd=0.5),
         "watchdog": {
             "status": "armed",
             "independent_process": True,
@@ -82,9 +103,9 @@ def _preflight() -> dict:
             "deadline_epoch": 2000,
             "name_prefix": "blueprint-sam31-source-tracks-",
         },
-        "gpu_memory_bytes": 48 * 1024**3,
+        "gpu_memory_bytes": 65_536_000_000,
         "container_disk_bytes": 80 * 1024**3,
-        "on_demand_price_usd_per_hour": 0.5,
+        "on_demand_price_usd_per_hour": 0.4022222222222222,
     }
 
 
@@ -212,6 +233,11 @@ class _Provider:
         assert spec.name.startswith("blueprint-sam31-source-tracks-")
         assert spec.image == IMAGE
         assert spec.requires_rtx is False
+        assert spec.min_gpu_ram_mb == 25_770
+        assert spec.max_hourly_rate_usd == 0.5
+        assert spec.container_disk_gb == 80
+        assert spec.allowed_geolocation_country_codes == ("US",)
+        assert spec.preferred_geolocation_regex == SAM31_PREFERRED_GEOLOCATION_REGEX
         assert spec.env["HF_TOKEN"] == TOKEN
         assert spec.env["BLUEPRINT_SAM31_INPUT_BUNDLE_GET_URL"] == INPUT_URL
         assert spec.env["BLUEPRINT_SAM31_RUNTIME_DIGEST"] == "sha256:" + "b" * 64
@@ -222,10 +248,72 @@ class _Provider:
         self.launched = True
         return {"status": "launched", "instance_id": "42"}
 
+    def inspect(self, instance_id):
+        return {"provider":"vast", "instance_id":instance_id, "api_confirmed":False}
+
     def terminate(self, instance_id):
         if self.terminate_status == "stopped":
             self.launched = False
         return {"status": self.terminate_status, "instance_id": instance_id}
+
+
+@pytest.mark.parametrize("other_instance_present", [False, True])
+def test_inventory_rate_limit_retries_read_before_single_or_refused_launch(tmp_path, monkeypatch, other_instance_present):
+    from types import SimpleNamespace
+    from blueprint_pipeline import safe_outbound_http, vast_inventory_read_retry
+    from blueprint_pipeline.gpu_render_providers import VastRenderProvider
+
+    actual_inventory = VastRenderProvider()
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda self: "vast-fixture-secret")
+    calls, sleeps = [], []
+    monkeypatch.setattr(vast_inventory_read_retry.time, "sleep", sleeps.append)
+
+    class Provider(_Provider):
+        def billable_inventory(self, *, name_prefix):
+            return actual_inventory.billable_inventory(name_prefix=name_prefix)
+    provider = Provider()
+
+    def read(request, **kwargs):
+        calls.append(request.get_method())
+        if len(calls) == 2:  # The real failure was the initial global inventory GET.
+            raise urllib.error.HTTPError(request.full_url, 429, "fixture rate limit", {}, None)
+        rows = []
+        if other_instance_present:
+            rows.append({"id": 999, "label": "another-owner", "actual_status": "running"})
+        if provider.launched:
+            rows.append({"id": 42, "label": "blueprint-sam31-source-tracks-fixture", "actual_status": "running"})
+        return SimpleNamespace(status=200, body=json.dumps({"instances": rows}).encode())
+    monkeypatch.setattr(safe_outbound_http, "open_request", read)
+    kwargs = dict(bound_request=_bound_request(), preflight=_preflight(), job_dir=tmp_path,
+        input_bundle_get_url=INPUT_URL, output_put_url=PUT_URL, output_get_url=GET_URL,
+        hf_token=TOKEN, provider=provider, paid_resource_admission_grant=_grant(),
+        result_fetcher=lambda _: _runtime_result(), sleeper=lambda _: None,
+        clock=lambda: 1000., watchdog_validator=lambda *args: True)
+    if other_instance_present:
+        with pytest.raises(Sam31VastCanaryError, match="provider_not_zero_before_launch"):
+            run_sam31_vast_source_track_canary(**kwargs)
+        assert provider.requests == []
+    else:
+        result = run_sam31_vast_source_track_canary(**kwargs)
+        assert result["status"] == "completed" and result["provider_zero_verified"] is True
+        assert len(provider.requests) == 1 and provider.launched is False
+    assert sleeps and set(calls) == {"GET"}
+    assert _bound_request()["retry_cap"] == 0
+
+
+def test_inventory_delay_cannot_launch_after_watchdog_expires(tmp_path):
+    provider = _Provider()
+    observations = []
+    def watchdog(*args):
+        observations.append(args)
+        return len(observations) == 1
+    with pytest.raises(Sam31VastCanaryError, match="independent_watchdog_not_live"):
+        run_sam31_vast_source_track_canary(bound_request=_bound_request(), preflight=_preflight(),
+            job_dir=tmp_path, input_bundle_get_url=INPUT_URL, output_put_url=PUT_URL,
+            output_get_url=GET_URL, hf_token=TOKEN, provider=provider,
+            paid_resource_admission_grant=_grant(), clock=lambda: 1000., watchdog_validator=watchdog)
+    assert len(observations) == 2 and provider.requests == []
+    assert list((tmp_path / "pending_teardowns").glob("*.json")) == []
 
 
 def test_bootstrap_fetches_exact_checkpoint_then_unsets_token() -> None:
@@ -258,7 +346,7 @@ def test_runtime_result_validation_preserves_claim_ceiling() -> None:
 
 def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) -> None:
     provider = _Provider()
-    times = iter([1000.0, 1001.0, 1002.0])
+    times = itertools.count(1000.0)
     result = run_sam31_vast_source_track_canary(
         bound_request=_bound_request(),
         preflight=_preflight(),
@@ -284,6 +372,12 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
         == _runtime_result()["normalized_source_tracks"]["result_digest"]
     )
     assert provider.requests[0]["create_payload"]["env"]
+    assert provider.requests[0]["require_avx"] is True
+    assert provider.requests[0]["min_reliability"] == .98
+    assert provider.requests[0]["required_provider_disk_gb"] == 80
+    teardown = json.loads((tmp_path / "teardown_receipt.json").read_text())
+    assert teardown["allowed_geolocation_country_codes"] == ["US"]
+    assert teardown["preferred_geolocation_regex"] == SAM31_PREFERRED_GEOLOCATION_REGEX
     persisted = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in tmp_path.rglob("*")
@@ -292,6 +386,32 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
     for secret in (TOKEN, INPUT_URL, PUT_URL, GET_URL):
         assert secret not in persisted
     assert not list((tmp_path / "leases").glob("*.lease.json"))
+
+
+def test_canary_rejects_tampered_country_policy_before_provider_access(
+    tmp_path: Path,
+) -> None:
+    request = _bound_request()
+    request["allowed_geolocation_country_codes"] = ["US", "CA"]
+    request["bound_request_digest"] = canonical_digest(
+        request, digest_field="bound_request_digest"
+    )
+    provider = _Provider()
+
+    with pytest.raises(Sam31VastCanaryError, match="bound_request_not_executable"):
+        run_sam31_vast_source_track_canary(
+            bound_request=request,
+            preflight=_preflight(),
+            job_dir=tmp_path,
+            input_bundle_get_url=INPUT_URL,
+            output_put_url=PUT_URL,
+            output_get_url=GET_URL,
+            hf_token=TOKEN,
+            provider=provider,
+            paid_resource_admission_grant=_grant(),
+        )
+
+    assert provider.requests == []
 
 
 def test_output_404_polls_until_worker_upload_is_available(tmp_path: Path, monkeypatch) -> None:

@@ -5,6 +5,8 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline.provider_runtime_bundle_contract import (
+    PROVIDER_RUNTIME_BUNDLE_KINDS,
+    provider_runtime_contract_blockers,
     wam_registered_alternative_inputs_present,
 )
 
@@ -77,3 +79,52 @@ def test_wam_registered_alternative_validates_powered_layout(tmp_path: Path) -> 
     assert not wam_registered_alternative_inputs_present(
         bundle_path=invalid_path, zip_entries=invalid_entries
     )
+
+
+def test_scene_configuration_runtime_contract_is_closed_and_fail_closed() -> None:
+    root = Path(__file__).resolve().parents[1]
+    entrypoint = (
+        root / "scripts/run_task_evaluation_scene_configuration_provider.sh"
+    ).read_text(encoding="utf-8")
+    runner = (
+        root / "scripts/task_evaluation_scene_configuration_provider_runner.py"
+    ).read_text(encoding="utf-8")
+
+    assert "task_evaluation_scene_configuration" in PROVIDER_RUNTIME_BUNDLE_KINDS
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        entrypoint_text="#!/bin/sh\nexit 0\n",
+        runner_text=runner,
+    ) == ["provider_entrypoint_missing_runtime_result_crash_fallback"]
+
+
+def test_policy_canary_reuses_the_closed_native_arena_runtime_contract() -> None:
+    entrypoint = "\n".join(
+        (
+            "native_task_arena_policy_canary_session_result.v1.json",
+            "policy_canary_worker_failed_without_result",
+            "adp009d_policy_server_worker.py",
+        )
+    )
+    runner = "\n".join(
+        (
+            "execute_paired_session",
+            "validate_runtime_input_manifest",
+            "build_native_task_arena_environment",
+            "launch_native_task_isaaclab",
+            "candidate_policy_queried",
+            "policy_canary_telemetry",
+        )
+    )
+
+    assert "native_task_arena_policy_canary_session" in PROVIDER_RUNTIME_BUNDLE_KINDS
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="native_task_arena_policy_canary_session",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []

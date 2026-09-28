@@ -44,6 +44,12 @@ def test_committed_scene_policy_readiness_waits_only_for_controls() -> None:
         and candidate["candidate_can_grade_itself"] is False
         for candidate in report["candidates"]
     )
+    groot = next(
+        candidate
+        for candidate in report["candidates"]
+        if candidate["candidate_id"] == "groot_n17_droid"
+    )
+    assert groot["policy_input_schema"]["frame_history"] == [0]
 
 
 def test_readiness_rejects_floating_checkpoint_or_controls_bypass() -> None:
@@ -94,6 +100,21 @@ def test_readiness_rejects_unavailable_checkpoint_or_unrehearsed_terminal() -> N
         excinfo.value.errors
     )
     assert "scene_policy_readiness_groot_n17_droid_terminal_rehearsal_invalid" in (
+        excinfo.value.errors
+    )
+
+
+def test_readiness_rejects_groot_history_not_loaded_by_exact_processor() -> None:
+    report, scenario = _values()
+    report["candidates"][1]["policy_input_schema"]["frame_history"] = [-15, 0]
+    report["readiness_digest"] = canonical_digest(
+        report, digest_field="readiness_digest"
+    )
+
+    with pytest.raises(ScenePolicyReadinessError) as excinfo:
+        validate_scene_policy_readiness(report, scenario_suite=scenario)
+
+    assert "scene_policy_readiness_groot_checkpoint_interface_invalid" in (
         excinfo.value.errors
     )
 

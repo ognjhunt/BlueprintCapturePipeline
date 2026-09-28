@@ -341,6 +341,9 @@ def test_supervisor_snapshot_exposes_bound_website_trigger_receipt(
         "request_digest": receipt["request_digest"],
         "receipt_digest": receipt["receipt_digest"],
         "response": {
+            "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "status": receipt["status"],
+            "already_exists": False,
             "launch_id": receipt["launch_id"],
             "run_id": receipt["run_id"],
             "request_digest": receipt["request_digest"],
@@ -375,6 +378,9 @@ def test_supervisor_snapshot_exposes_bound_website_trigger_receipt(
         "run_id": receipt["run_id"],
         "request_digest": receipt["request_digest"],
         "receipt_digest": receipt["receipt_digest"],
+        "response_schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+        "terminal_status": receipt["status"],
+        "already_exists": False,
     }
 
 

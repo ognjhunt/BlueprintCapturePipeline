@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
+from blueprint_pipeline.task_evaluation_result_delivery import (
+    POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES,
+    TaskEvaluationResultDeliveryError,
+    compact_policy_canary_website_delivery,
+    materialize_policy_canary_result_delivery,
+    materialize_policy_canary_website_delivery,
+    resolve_task_evaluation_result_artifact,
+)
+from blueprint_pipeline.task_evaluation_policy_canary_result_projection import (
+    build_policy_canary_result_projection,
+)
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
+
+
+def _sha(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _closure(path: Path, *, flag: str) -> dict[str, object]:
+    path.write_text(json.dumps({"status": "completed"}) + "\n", encoding="utf-8")
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha(path),
+        flag: True,
+    }
+
+
+def _result(evidence: Path) -> dict[str, object]:
+    setup = public_setup()
+    telemetry = evidence / "policy_canary_telemetry.jsonl"
+    telemetry.write_text('{"episode":"one"}\n', encoding="utf-8")
+    artifacts: dict[str, dict[str, object]] = {}
+    inventory = [
+        {
+            "role": "indexed_episode_telemetry",
+            "relative_path": telemetry.name,
+            "media_type": "application/x-ndjson",
+            "size_bytes": telemetry.stat().st_size,
+            "sha256": _sha(telemetry),
+        }
+    ]
+    for role, suffix, payload in (
+        ("reset_state", ".json", {"reset": "exact"}),
+        ("lossless_frame_manifest", ".json", {"frames": ["external", "wrist"]}),
+        ("policy_query_receipt", ".json", {"candidate_policy_queried": True}),
+        ("action_sequence", ".json", [{"step_index": 1, "target": [0.1] * 7}]),
+        ("action_delivery_readback", ".json", {"actions_reached_robot": True}),
+        (
+            "state_trace",
+            ".json",
+            {
+                "joint_states": [
+                    {"step_index": 0, "joint_positions_rad": [0.0] * 7},
+                    {"step_index": 1, "joint_positions_rad": [0.1] * 7},
+                ],
+                "task_state_samples": [],
+            },
+        ),
+        (
+            "contact_force_trace",
+            ".json",
+            {"samples": [{"step_index": 1, "finger_contact_forces_n": [1.0, 1.1]}]},
+        ),
+        (
+            "task_object_trajectory",
+            ".json",
+            {"samples": [{"step_index": 1, "task_object_pose_world": [0.1] * 7}]},
+        ),
+        ("score_receipt", ".json", {"task_succeeded": True}),
+    ):
+        path = evidence / f"episode-one.{role}{suffix}"
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        record = {
+            "role": role,
+            "relative_path": path.name,
+            "media_type": "application/json",
+            "size_bytes": path.stat().st_size,
+            "sha256": _sha(path),
+        }
+        artifacts["frame_manifest" if role == "lossless_frame_manifest" else role] = record
+        inventory.append(record)
+    review_video = evidence / "episode-one.external.mp4"
+    review_video.write_bytes(b"review-video")
+    review_record = {
+        "role": "review_video",
+        "relative_path": review_video.name,
+        "media_type": "video/mp4",
+        "size_bytes": review_video.stat().st_size,
+        "sha256": _sha(review_video),
+    }
+    inventory.append(review_record)
+    value: dict[str, object] = {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1",
+        "status": "completed_unqualified",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
+        "episodes": [
+            {
+                "candidate_id": "pi05_droid",
+                "cell_id": "quick-cell-0",
+                "seed": 3100,
+                "status": "completed",
+                "candidate_policy_queried": True,
+                "actions_reached_robot": True,
+                "arm_moved": True,
+                "policy_outcome_interpretable": True,
+                "checkpoint_digest": "sha256:" + "1" * 64,
+                "runtime_identity_digest": "sha256:" + "2" * 64,
+                "reset_state_digest": artifacts["reset_state"]["sha256"],
+                "scene_revision_digest": "sha256:" + "3" * 64,
+                "container_identity_digest": "sha256:" + "4" * 64,
+                "scoring_version_digest": "sha256:" + "5" * 64,
+                "family": "canonical_anchor",
+                "evidence_artifacts": artifacts,
+                "telemetry": {
+                    "started_at_unix_ns": 1_700_000_000_000_000_000,
+                    "completed_at_unix_ns": 1_700_000_001_000_000_000,
+                    "wall_time_ns": 1_000_000_000,
+                },
+                "episode": {
+                    "episode_id": "episode-one",
+                    "observation_adapter_schema_version": "droid_two_camera_robot_state_v1",
+                    "action_space": "droid_absolute_joint_position_v1",
+                    "commanded_actions": [
+                        {"step_index": 1, "target_joint_positions_rad": [0.1] * 7}
+                    ],
+                    "state_trace": json.loads(
+                        (evidence / "episode-one.state_trace.json").read_text()
+                    ),
+                    "contact_force_evidence": json.loads(
+                        (evidence / "episode-one.contact_force_trace.json").read_text()
+                    ),
+                    "task_object_trajectory": json.loads(
+                        (evidence / "episode-one.task_object_trajectory.json").read_text()
+                    ),
+                    "score": {
+                        "status": "scored",
+                        "task_succeeded": True,
+                        "outcome": "placed",
+                        "outcome_rank": 5,
+                        "measurements": {"final_horizontal_distance_to_destination_m": 0.01},
+                    },
+                    "visual_evidence": {
+                        "videos": {
+                            "external": {
+                                "sha256": review_record["sha256"],
+                                "size_bytes": review_record["size_bytes"],
+                            }
+                        }
+                    },
+                },
+            }
+        ],
+        "matrix_digest": "sha256:" + "6" * 64,
+        "scene_revision_digest": "sha256:" + "7" * 64,
+        "runtime_container_digest": "sha256:" + "8" * 64,
+        "official_total_usd": 0.379,
+        "started_at_iso": "2026-09-02T04:03:45+00:00",
+        "completed_at_iso": "2026-09-02T04:49:54+00:00",
+        "duration_seconds": 2769.0,
+        "provider": "vast",
+        "provider_instance_ids": [49_609_705],
+        "artifact_inventory": inventory,
+        "result_digest": "",
+    }
+    value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+    return value
+
+
+def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    closure = {
+        "billing": _closure(tmp_path / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(tmp_path / "provider-zero.json", flag="provider_zero_verified"),
+    }
+
+    delivery = materialize_policy_canary_result_delivery(
+        run_root=tmp_path,
+        run_id="scene-839873-canary-1",
+        result_status="completed_unqualified",
+        session_result=result,
+        evidence_root=evidence,
+        closure_records=closure,
+    )
+
+    assert delivery["schema_version"] == "task_evaluation_result_delivery.v2"
+    assert delivery["summary"]["learned_policy_rollout_count"] == 20
+    assert delivery["summary"]["successful_episode_count"] == 1
+    assert delivery["candidate_results"][0]["success_rate"] == 1.0
+    assert delivery["matrix_digest"] == "sha256:" + "6" * 64
+    assert delivery["task_success_contract"] == result["task_success_contract"]
+    assert delivery["task_success_contract_digest"] == result[
+        "task_success_contract_digest"
+    ]
+    assert delivery["reproducibility"]["scene_revision_digest"] == (
+        "sha256:" + "7" * 64
+    )
+    assert delivery["reproducibility"]["runtime_container_digest"] == (
+        "sha256:" + "8" * 64
+    )
+    assert delivery["reproducibility"]["official_total_usd"] == 0.379
+    assert delivery["reproducibility"]["duration_seconds"] == 2769.0
+    assert delivery["reproducibility"]["provider_instance_ids"] == [49_609_705]
+    assert delivery["closure"]["provider_zero"]["provider_zero_verified"] is True
+    assert delivery["delivery_digest"] == cross_runtime_canonical_digest(
+        delivery, digest_field="delivery_digest"
+    )
+    assert delivery["delivery_digest"] != canonical_digest(delivery, digest_field="delivery_digest")
+    episode = delivery["episodes"][0]
+    assert episode["episode_kind"] == "learned_candidate"
+    assert episode["evidence"]["lossless_policy_inputs"]["access_mode"] == ("authenticated_ticket")
+    assert episode["evidence"]["videos"]["external"]["content_type"] == "video/mp4"
+    assert episode["traces"]["state"]["role"] == "state_trace"
+    assert episode["timeline"][-1]["scoring_state"] == "placed"
+    assert {artifact["role"] for artifact in delivery["artifacts"]}.issuperset(
+        {
+            "summary_csv",
+            "episode_csv",
+            "full_json_report",
+            "evidence_manifest",
+            "lossless_policy_inputs",
+            "review_video",
+            "returned_action_sequence",
+            "state_trace",
+            "contact_force_trace",
+            "task_object_trajectory",
+        }
+    )
+    report = delivery["report"]["machine_readable_report"]
+    path, record = resolve_task_evaluation_result_artifact(
+        run_root=tmp_path,
+        run_id="scene-839873-canary-1",
+        artifact_id=report["artifact_id"],
+    )
+    assert path.name == "policy_canary_full_report.json"
+    assert record["sha256"] == report["digest"]
+
+
+def test_canary_delivery_projects_non_authoritative_episode_interpretation(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    result["episodes"][0]["evidence_artifacts"]["review_video"] = next(
+        artifact
+        for artifact in result["artifact_inventory"]
+        if artifact["role"] == "review_video"
+    )
+    receipt = {
+        "schema_version": "episode_interpretation_receipt.v1",
+        "status": "completed",
+        "abstention_reason": None,
+        "episode_id": "scene-839873-canary-interpretation--quick-cell-0--pi05_droid",
+        "candidate_policy_id": "pi05_droid",
+        "learned_interpretation": {
+            "episode_outcome": "appears_incomplete",
+            "summary": "The cup appears to remain held at the terminal frame.",
+            "events": [],
+            "possible_missed_events": [],
+            "contract_considerations": ["Release remains independently scored."],
+            "confidence": 0.8,
+        },
+        "deterministic_agreement": "disagrees",
+        "proof_boundary": {
+            "learned_interpretation_only": True,
+            "authoritative_task_success_unchanged": True,
+            "ranking_or_promotion_effect": "none",
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = evidence / "episode-one.interpretation.json"
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    record = {
+        "role": "episode_interpretation_receipt",
+        "relative_path": receipt_path.name,
+        "media_type": "application/json",
+        "size_bytes": receipt_path.stat().st_size,
+        "sha256": _sha(receipt_path),
+    }
+    result["artifact_inventory"].append(record)
+    result["episodes"][0]["evidence_artifacts"]["episode_interpretation"] = record
+    result["episode_interpretation"] = {
+        "schema_version": "policy_canary_episode_interpretation_closeout.v1",
+        "status": "completed",
+        "episode_count": 1,
+        "receipt_count": 1,
+        "completed_count": 1,
+        "abstained_count": 0,
+        "disagreement_count": 1,
+        "reused_receipt_count": 0,
+        "provider_call_count": 0,
+        "input_bundle_unavailable_count": 0,
+        "interpreter": None,
+        "interpreter_profile_digest": None,
+        "authoritative_deterministic_result_unchanged": True,
+        "score_overwrite_performed": False,
+        "ranking_or_promotion_effect": "none",
+        "summary_digest": "sha256:" + "a" * 64,
+    }
+    result["run_id"] = "scene-839873-canary-interpretation"
+    result["episodes"][0]["episode"]["episode_id"] = (
+        "scene-839873-canary-interpretation--quick-cell-0--pi05_droid"
+    )
+    result["configuration_digest"] = "sha256:" + "9" * 64
+    result["status"] = "blocked"
+    result["blockers"] = ["remaining_cells_incomplete"]
+    result["artifact_inventory_digest"] = canonical_digest(
+        {"value": result["artifact_inventory"]}
+    )
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    closure = {
+        "billing": _closure(tmp_path / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(
+            tmp_path / "provider-zero.json", flag="provider_zero_verified"
+        ),
+    }
+
+    delivery = materialize_policy_canary_result_delivery(
+        run_root=tmp_path,
+        run_id=result["run_id"],
+        result_status="blocked",
+        session_result=result,
+        evidence_root=evidence,
+        closure_records=closure,
+    )
+
+    interpreted = delivery["episodes"][0]["interpretation"]
+    assert interpreted["deterministic_agreement"] == "disagrees"
+    assert interpreted["ranking_or_promotion_effect"] == "none"
+    assert interpreted["receipt"]["artifact_id"]
+    assert delivery["episode_interpretation"]["disagreement_count"] == 1
+    projection = build_policy_canary_result_projection(
+        setup={
+            "scene_id": "839873",
+            "request_digest": "sha256:" + "8" * 64,
+            "scene_revision_digest": result["scene_revision_digest"],
+            "task_success_contract": result["task_success_contract"],
+            "task_success_contract_digest": result[
+                "task_success_contract_digest"
+            ],
+        },
+        result=result,
+        delivery=delivery,
+    )
+    assert projection["episode_interpretation"]["disagreement_count"] == 1
+    assert projection["episodes"][0]["interpretation"]["receipt"]["artifact_id"]
+
+
+@pytest.mark.parametrize("runtime_gaps", [None, [], ["unapplied_scenario:bounded_physics"]])
+def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
+    tmp_path: Path, runtime_gaps,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    first = result["episodes"][0]
+    first["evidence_artifacts"]["review_video"] = next(
+        artifact
+        for artifact in result["artifact_inventory"]
+        if artifact["role"] == "review_video"
+    )
+    second = deepcopy(first)
+    second["candidate_id"] = "groot_n17_droid"
+    second["cell_id"] = "quick-cell-1"
+    second["seed"] = 3101
+    second["episode"]["episode_id"] = "episode-two"
+    if runtime_gaps is not None:
+        first["scientific_reset"] = {"gaps": runtime_gaps}
+
+    ambiguous_roles = ("reset_state", "score_receipt", "task_object_trajectory")
+    for role in ambiguous_roles:
+        original = first["evidence_artifacts"][role]
+        source = evidence / original["relative_path"]
+        result["artifact_inventory"].remove(original)
+        for cell_index, row in enumerate((first, second)):
+            path = (
+                evidence
+                / "cell_runs"
+                / f"{cell_index:02d}"
+                / "episodes"
+                / f"episode-{cell_index + 1}.{role}.json"
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(source.read_bytes())
+            record = {
+                "role": role,
+                "relative_path": path.relative_to(evidence).as_posix(),
+                "media_type": "application/json",
+                "size_bytes": path.stat().st_size,
+                "sha256": _sha(path),
+            }
+            row["evidence_artifacts"][role] = record
+            result["artifact_inventory"].append(record)
+
+    result["run_id"] = "scene-839873-provider-shaped"
+    result["configuration_digest"] = "sha256:" + "9" * 64
+    result["status"] = "blocked"
+    result["blockers"] = ["remaining_cells_incomplete"]
+    result["episodes"] = [first, second]
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    closure = {
+        "billing": _closure(tmp_path / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(tmp_path / "provider-zero.json", flag="provider_zero_verified"),
+    }
+
+    delivery = materialize_policy_canary_result_delivery(
+        run_root=tmp_path,
+        run_id=result["run_id"],
+        result_status="blocked",
+        session_result=result,
+        evidence_root=evidence,
+        closure_records=closure,
+    )
+    projection = build_policy_canary_result_projection(
+        setup={
+            "scene_id": "839873",
+            "request_digest": "sha256:" + "a" * 64,
+            "scene_revision_digest": result["scene_revision_digest"],
+            "task_success_contract": result["task_success_contract"],
+            "task_success_contract_digest": result[
+                "task_success_contract_digest"
+            ],
+        },
+        result=result,
+        delivery=delivery,
+    )
+    assert projection["task_success_contract"] == result[
+        "task_success_contract"
+    ]
+    assert projection["task_success_contract_digest"] == result[
+        "task_success_contract_digest"
+    ]
+
+    # An absent optional interpretation must stay absent on the wire. The
+    # Website validates any present summary against its complete schema.
+    assert "episode_interpretation" not in projection
+    if runtime_gaps is None:
+        assert "runtime_coverage_gaps" not in projection["episodes"][0]
+    else:
+        assert projection["episodes"][0]["runtime_coverage_gaps"] == runtime_gaps
+    assert "runtime_coverage_gaps" not in projection["episodes"][1]
+
+    for role in ambiguous_roles:
+        delivered = [
+            next(
+                artifact
+                for artifact in delivery["artifacts"]
+                if artifact["artifact_id"] == episode["evidence"][role]["artifact_id"]
+            )
+            for episode in projection["episodes"]
+        ]
+        assert [artifact["relative_path"] for artifact in delivered] == [
+            first["evidence_artifacts"][role]["relative_path"],
+            second["evidence_artifacts"][role]["relative_path"],
+        ]
+        assert delivered[0]["digest"] == delivered[1]["digest"]
+        assert delivered[0]["artifact_id"] != delivered[1]["artifact_id"]
+
+
+def test_canary_website_delivery_compacts_only_inline_bulk_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    closure = {
+        "billing": _closure(tmp_path / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(tmp_path / "provider-zero.json", flag="provider_zero_verified"),
+    }
+    full = materialize_policy_canary_result_delivery(
+        run_root=tmp_path,
+        run_id="scene-839873-canary-compact",
+        result_status="completed_unqualified",
+        session_result=result,
+        evidence_root=evidence,
+        closure_records=closure,
+    )
+    full = deepcopy(full)
+    full["artifacts"].extend(
+        {
+            "artifact_id": f"frame-{index}",
+            "role": "episode_evidence",
+            "digest": "sha256:" + f"{index:064x}",
+            "size_bytes": 10,
+        }
+        for index in range(100)
+    )
+    full["episodes"][0]["timeline"] = [
+        {
+            "time_seconds": index / 15,
+            "action": "action" if 0 < index < 199 else None,
+            "force_newtons": None,
+            "scoring_state": "placed" if index == 137 else None,
+        }
+        for index in range(200)
+    ]
+    full["delivery_digest"] = cross_runtime_canonical_digest(
+        full, digest_field="delivery_digest"
+    )
+    source = deepcopy(full)
+
+    compact = materialize_policy_canary_website_delivery(
+        run_root=tmp_path,
+        delivery=full,
+    )
+
+    assert full == source
+    assert all(row["role"] != "episode_evidence" for row in compact["artifacts"])
+    assert len(compact["artifacts"]) == len(full["artifacts"]) - 100
+    timeline = compact["episodes"][0]["timeline"]
+    assert len(timeline) == POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES
+    assert timeline[0] == full["episodes"][0]["timeline"][0]
+    assert timeline[-1] == full["episodes"][0]["timeline"][-1]
+    assert any(row["scoring_state"] == "placed" for row in timeline)
+    assert compact["inline_compaction"] == {
+        "schema_version": "task_evaluation_policy_canary_inline_compaction.v1",
+        "source_delivery_digest": full["delivery_digest"],
+        "omitted_artifact_roles": ["episode_evidence"],
+        "source_artifact_count": len(full["artifacts"]),
+        "inline_artifact_count": len(compact["artifacts"]),
+        "omitted_artifact_count": 100,
+        "source_timeline_sample_count": 200,
+        "inline_timeline_sample_count": 64,
+        "full_artifact_inventory": "report.evidence_manifest",
+        "full_artifact_registry": "artifact_registry.json",
+    }
+    assert compact["delivery_digest"] == cross_runtime_canonical_digest(
+        compact, digest_field="delivery_digest"
+    )
+    assert compact_policy_canary_website_delivery(compact) == compact
+    assert json.loads(
+        (tmp_path / "artifacts/result_delivery/website_delivery.json").read_text()
+    ) == compact
+    assert (tmp_path / "artifacts/result_delivery/delivery.json").is_file()
+    assert (tmp_path / "artifacts/result_delivery/artifact_registry.json").is_file()
+
+
+def test_canary_delivery_refuses_estimated_cost_as_official_billing(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    billing = _closure(tmp_path / "billing.json", flag="estimated_cost_only")
+
+    with pytest.raises(
+        TaskEvaluationResultDeliveryError,
+        match="policy_canary_billing_receipt_missing",
+    ):
+        materialize_policy_canary_result_delivery(
+            run_root=tmp_path,
+            run_id="scene-839873-canary-1",
+            result_status="completed_unqualified",
+            session_result=result,
+            evidence_root=evidence,
+            closure_records={
+                "billing": billing,
+                "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+                "provider_zero": _closure(
+                    tmp_path / "provider-zero.json",
+                    flag="provider_zero_verified",
+                ),
+            },
+        )

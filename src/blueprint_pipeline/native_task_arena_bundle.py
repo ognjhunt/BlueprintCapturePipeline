@@ -20,11 +20,12 @@ import re
 import shutil
 import stat
 import zipfile
+import zlib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .adp_isaac_lab_arena_vast import DEFAULT_IMAGE
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE as DEFAULT_IMAGE
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import RECEIPT_SCHEMA_VERSION
@@ -40,6 +41,9 @@ def digest_pinned_container_image(value: Any) -> bool:
     return re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", str(value or "")) is not None
 DEFAULT_EXPECTED_OUTPUT_FILENAME = "native_task_arena_construction_result.v1.json"
 RESULT_SCHEMA_BY_MODE = {
+    "destination_qualification": (
+        "task_evaluation_rigid_destination_native_observation.v1"
+    ),
     "runtime_preflight": "native_task_arena_runtime_preflight.v1",
     "construction_canary": "native_task_arena_construction_result.v1",
     "controls": "native_task_arena_control_result.v1",
@@ -53,6 +57,7 @@ POLICY_EXECUTION_AUTHORITY_BY_MODE = {
     ),
 }
 POLICY_RUNTIME_ROOT_MODULE_NAMES = (
+    "policy_request_evidence.py",
     "adp009d_checkpoint_fetch_worker.py",
     "adp009d_gated_backbone.py",
     "adp009d_groot_wire_wheels.py",
@@ -84,6 +89,55 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+#: Container and media formats that are already entropy-coded.  Deflating them
+#: costs ~30 MB/s of CPU for no size reduction; the packet's splat, geometry,
+#: and checkpoint payloads dominate every per-run archive.
+_ALREADY_COMPRESSED_SUFFIXES = frozenset(
+    {
+        ".zip",
+        ".usdz",
+        ".whl",
+        ".gz",
+        ".xz",
+        ".zst",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".mp4",
+        ".webm",
+        ".spz",
+        ".ksplat",
+    }
+)
+_COMPRESSION_PROBE_BYTES = 1024 * 1024
+_COMPRESSION_PROBE_MINIMUM_GAIN = 0.05
+
+
+def zip_member_compression(source: Path) -> int:
+    """Choose ``ZIP_STORED`` or ``ZIP_DEFLATED`` for one archive member.
+
+    Binary splat, mesh, and checkpoint payloads are effectively incompressible,
+    and deflating gigabytes of them was the dominant CPU cost of compiling one
+    no-spend episode packet (about four minutes per run on the control plane).
+    Known entropy-coded containers are stored outright; everything else is
+    probed on its first mebibyte and stored when deflate would save less than
+    five percent.  The decision is a pure function of the bytes, so archives
+    stay deterministic for one sealed source tree.
+    """
+
+    if source.suffix.lower() in _ALREADY_COMPRESSED_SUFFIXES:
+        return zipfile.ZIP_STORED
+    with source.open("rb") as stream:
+        probe = stream.read(_COMPRESSION_PROBE_BYTES)
+    if not probe:
+        return zipfile.ZIP_DEFLATED
+    compressed = len(zlib.compress(probe, 6))
+    if compressed >= len(probe) * (1.0 - _COMPRESSION_PROBE_MINIMUM_GAIN):
+        return zipfile.ZIP_STORED
+    return zipfile.ZIP_DEFLATED
+
+
 def _write_zip_file(
     archive: zipfile.ZipFile, *, source: Path, archive_path: str
 ) -> None:
@@ -92,11 +146,8 @@ def _write_zip_file(
     info = zipfile.ZipInfo(archive_path, date_time=(1980, 1, 1, 0, 0, 0))
     info.create_system = 3
     info.external_attr = (source.stat().st_mode & 0xFFFF) << 16
-    already_compressed = source.suffix.lower() in {".zip", ".usdz", ".whl"}
-    info.compress_type = (
-        zipfile.ZIP_STORED if already_compressed else zipfile.ZIP_DEFLATED
-    )
-    if not already_compressed:
+    info.compress_type = zip_member_compression(source)
+    if info.compress_type == zipfile.ZIP_DEFLATED:
         info._compresslevel = 6
     with source.open("rb") as input_stream, archive.open(
         info, "w", force_zip64=True
@@ -259,6 +310,14 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
     return root, receipt, rows
 
 
+def verify_native_task_arena_packet(
+    packet_dir: str | Path,
+) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+    """Public read-only verifier for a previously materialized packet."""
+
+    return _verified_packet(packet_dir)
+
+
 def _entrypoint(
     *,
     expected_output_filename: str,
@@ -316,7 +375,7 @@ out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 name = {quoted}
 (out / name).write_text(json.dumps({{
-    "schema_version": "native_task_arena_construction_result.v1",
+    "schema_version": {result_schema},
     "status": "blocked",
     "blockers": ["native_task_runtime_source_provisioning_failed"],
     "candidate_policy_queried": False,
@@ -413,7 +472,7 @@ runner_rc = int(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 name = {quoted}
 (out / name).write_text(json.dumps({{
-    "schema_version": "native_task_arena_construction_result.v1",
+    "schema_version": {result_schema},
     "status": "blocked",
     "blockers": [
         "native_task_arena_worker_failed_without_runtime_result",
@@ -454,6 +513,7 @@ def build_native_task_arena_bundle(
             ["native_task_arena_bundle_implementation_commit_invalid"]
         )
     if execution_mode not in {
+        "destination_qualification",
         "runtime_preflight",
         "construction_canary",
         "controls",
@@ -483,6 +543,37 @@ def build_native_task_arena_bundle(
         )
 
     packet_root, packet_receipt, packet_rows = _verified_packet(packet_dir)
+    try:
+        packet_request = json.loads(
+            (packet_root / "native_task_arena_packet_request.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_packet_request_invalid"]
+        ) from exc
+    feedback = packet_request.get("native_construction_feedback")
+    control_search = (
+        feedback.get("control_search") if isinstance(feedback, Mapping) else None
+    )
+    control_search_digest = (
+        control_search.get("authority_digest")
+        if isinstance(control_search, Mapping)
+        else None
+    )
+    if control_search is not None and (
+        control_search.get("enabled") is not True
+        or control_search.get("claim_ceiling")
+        != "development_only_control_search"
+        or control_search.get("provider_allocations_performed") != 0
+        or control_search.get("full_fidelity_replay_required") is not True
+        or control_search_digest
+        != canonical_digest(control_search, digest_field="authority_digest")
+    ):
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_control_search_invalid"]
+        )
     runtime_source_receipt: dict[str, Any] | None = None
     if runtime_source_packet_receipt is not None:
         runtime_source_receipt = verify_native_task_runtime_source_packet(
@@ -695,6 +786,11 @@ def build_native_task_arena_bundle(
         "arena_scene_plan_digest": packet_receipt["arena_scene_plan_digest"],
         "runtime_contract_digest": packet_receipt["runtime_contract_digest"],
         "scenario_instance_digest": packet_receipt["scenario_instance_digest"],
+        "control_search_authority_digest": control_search_digest,
+        "warm_control_search_continuation_requested": (
+            execution_mode == "construction_canary"
+            and control_search_digest is not None
+        ),
         "packet_files": packet_rows,
         "packet_file_count": len(packet_rows),
         "worker_source_sha256": _sha256(worker),
@@ -797,4 +893,5 @@ __all__ = [
     "SCHEMA_VERSION",
     "build_native_task_arena_bundle",
     "digest_pinned_container_image",
+    "verify_native_task_arena_packet",
 ]

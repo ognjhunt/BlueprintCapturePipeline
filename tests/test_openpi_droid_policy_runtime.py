@@ -118,6 +118,8 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
     evidence = client.last_inference_evidence()
     assert evidence == {
         "server_response_received": True,
+        "transport_connection_generation": 1,
+        "server_identity_sha256": _runtime_metadata(spec)["identity_sha256"],
         "wire_response_type": "dict",
         "wire_response_keys": ["actions", "policy_timing", "server_timing"],
         "raw_vendor_action_response": {
@@ -125,9 +127,7 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
             "policy_timing": {"infer_ms": 30.0},
             "server_timing": {"infer_ms": 31.25},
         },
-        "raw_vendor_action_response_digest": evidence[
-            "raw_vendor_action_response_digest"
-        ],
+        "raw_vendor_action_response_digest": evidence["raw_vendor_action_response_digest"],
         "raw_vendor_action_response_role": (
             "genuine_decoded_vendor_wire_response_before_candidate_normalization"
         ),
@@ -149,12 +149,216 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
     assert client.evidence_summary()["identity_verified"] is True
 
 
+def test_openpi_preflight_reconfirms_identity_without_inference(tmp_path: Path) -> None:
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    clients = []
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.metadata_reads = 0
+            self.inference_calls = 0
+            self.closed = False
+            clients.append(self)
+
+        def get_server_metadata(self):
+            self.metadata_reads += 1
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            self.inference_calls += 1
+            raise AssertionError("preflight_must_not_infer")
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+
+    readiness = client.preflight_readiness()
+
+    assert readiness["identity_verified"] is True
+    assert readiness["candidate_policy_queried"] is False
+    assert readiness["candidate_inference_performed"] is False
+    assert readiness["connection_generation"] == 1
+    assert len(clients) == 1
+    assert clients[0].metadata_reads == 1
+    assert clients[0].inference_calls == 0
+    assert clients[0].closed is True
+    assert client._client is None
+
+
+def test_openpi_first_query_uses_fresh_connection_after_isaac_camera_idle(
+    tmp_path: Path,
+) -> None:
+    """Do not reuse a websocket opened before slow Isaac/camera initialization."""
+
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    stage = {"value": "isaac_initializing"}
+    clients = []
+
+    class ConnectionClosedError(RuntimeError):
+        pass
+
+    class _Wire:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.opened_during = stage["value"]
+            # The pinned upstream OpenPI client has no public close method; its
+            # websocket is retained on this exact private attribute.
+            self._ws = _Wire()
+            clients.append(self)
+
+        def get_server_metadata(self):
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            if self.opened_during != "policy_query":
+                raise ConnectionClosedError(
+                    "sent 1011 (internal error) keepalive ping timeout; "
+                    "no close frame received"
+                )
+            return {"actions": np.zeros((10, 8))}
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+    assert clients == []
+
+    stage["value"] = "prestart_readiness"
+    readiness = client.preflight_readiness()
+    stage["value"] = "camera_evidence_persisting"
+    assert readiness["identity_verified"] is True
+    assert clients[0]._ws.closed is True
+
+    stage["value"] = "policy_query"
+    actions = client.infer({"prompt": "pick"})
+
+    assert actions.shape == (10, 8)
+    assert [item.opened_during for item in clients] == [
+        "prestart_readiness",
+        "policy_query",
+    ]
+    assert all(item._ws.closed for item in clients)
+    assert client.candidate_policy_queried is True
+    assert client.last_inference_evidence()["server_response_received"] is True
+
+
+def test_openpi_does_not_retry_an_ambiguous_failed_inference(tmp_path: Path) -> None:
+    """A transport failure after send may have reached the policy; never duplicate it."""
+
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    clients = []
+
+    class ConnectionClosedError(RuntimeError):
+        pass
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.closed = False
+            clients.append(self)
+
+        def get_server_metadata(self):
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            raise ConnectionClosedError(
+                "sent 1011 (internal error) keepalive ping timeout; "
+                "no close frame received"
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+
+    with pytest.raises(ConnectionClosedError, match="keepalive ping timeout"):
+        client.infer({"prompt": "pick"})
+
+    assert len(clients) == 1
+    assert clients[0].closed is True
+    assert client.candidate_policy_queried is False
+    with pytest.raises(ValueError, match="openpi_policy_inference_evidence_missing"):
+        client.last_inference_evidence()
+
+
+def test_openpi_preflight_reconfirms_identity_after_prior_episode(
+    tmp_path: Path,
+) -> None:
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    clients = []
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.metadata_reads = 0
+            self.inference_calls = 0
+            self.closed = False
+            clients.append(self)
+
+        def get_server_metadata(self):
+            self.metadata_reads += 1
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            self.inference_calls += 1
+            return {"actions": np.zeros((10, 8))}
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+    client.infer({"prompt": "pick"})
+
+    readiness = client.preflight_readiness()
+
+    assert readiness["identity_verified"] is True
+    assert readiness["candidate_policy_queried"] is False
+    assert readiness["candidate_inference_performed"] is False
+    assert readiness["prior_candidate_policy_query_observed"] is True
+    assert readiness["last_inference_evidence"] is None
+    assert readiness["connection_generation"] == 2
+    assert client.candidate_policy_queried is False  # next episode; prior fact is retained above
+    assert len(clients) == 2
+    assert [item.inference_calls for item in clients] == [1, 0]
+    assert [item.metadata_reads for item in clients] == [1, 1]
+    assert all(item.closed for item in clients)
+    assert client._client is None
+
+
 def test_websocket_client_records_completed_query_before_response_refusal(
     tmp_path: Path,
 ) -> None:
-    spec = load_policy_spec(
-        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
-    )
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
 
     class FakeClient:
         def __init__(self, **kwargs) -> None:
@@ -174,20 +378,18 @@ def test_websocket_client_records_completed_query_before_response_refusal(
         client_factory=FakeClient,
     )
 
-    with pytest.raises(
-        ValueError, match="openpi_inference_response_unexpected_keys:action"
-    ):
+    with pytest.raises(ValueError, match="openpi_inference_response_unexpected_keys:action"):
         client.infer({"prompt": "pick"})
     assert client.candidate_policy_queried is True
     evidence = client.last_inference_evidence()
     assert evidence == {
         "server_response_received": True,
+        "transport_connection_generation": 1,
+        "server_identity_sha256": _runtime_metadata(spec)["identity_sha256"],
         "wire_response_type": "dict",
         "wire_response_keys": ["action"],
         "raw_vendor_action_response": {"action": [[0.0] * 8] * 10},
-        "raw_vendor_action_response_digest": evidence[
-            "raw_vendor_action_response_digest"
-        ],
+        "raw_vendor_action_response_digest": evidence["raw_vendor_action_response_digest"],
         "raw_vendor_action_response_role": (
             "genuine_decoded_vendor_wire_response_before_candidate_normalization"
         ),
@@ -199,9 +401,7 @@ def test_websocket_client_records_completed_query_before_response_refusal(
 def test_websocket_client_retains_malformed_nonfinite_ndarray_envelope(
     tmp_path: Path,
 ) -> None:
-    spec = load_policy_spec(
-        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
-    )
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
     malformed = np.zeros((10, 8), dtype=float)
     malformed[0, 0] = np.nan
 
@@ -228,9 +428,7 @@ def test_websocket_client_retains_malformed_nonfinite_ndarray_envelope(
     evidence = client.last_inference_evidence()
     assert evidence["action_payload_returned"] is True
     assert evidence["actions_extracted"] is False
-    assert evidence["raw_vendor_action_response"][0][0] == {
-        "nonfinite_float": "nan"
-    }
+    assert evidence["raw_vendor_action_response"][0][0] == {"nonfinite_float": "nan"}
     assert json.loads(json.dumps(evidence, allow_nan=False)) == evidence
 
 
@@ -359,9 +557,7 @@ def test_unknown_policy_and_bad_checkpoint_identity_fail(tmp_path: Path) -> None
 def test_policy_server_rejects_non_loopback_bind_before_checkpoint_io(
     tmp_path: Path,
 ) -> None:
-    spec = load_policy_spec(
-        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
-    )
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
     with pytest.raises(ValueError, match="openpi_policy_server_must_be_loopback_only"):
         serve_identity_bound_policy(
             spec=spec,
@@ -397,9 +593,7 @@ def test_identity_bound_server_uses_verified_local_assets(
 
     checkpoint = tmp_path / "checkpoint"
     (checkpoint / "assets" / "droid").mkdir(parents=True)
-    spec = load_policy_spec(
-        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
-    )
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
     captured: dict[str, object] = {}
     policy_config = types.ModuleType("openpi.policies.policy_config")
 
@@ -473,17 +667,13 @@ def _arena_execution_spec(
 ) -> Path:
     """The sealed artifact the arena policy bundle stages as a runtime input."""
 
-    spec = load_policy_spec(
-        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
-    )
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
     policy_spec = {
         "policy_id": policy_id,
         "config_name": policy_id,
         "checkpoint_uri": spec.checkpoint_uri,
         "checkpoint_object_manifest_sha256": spec.checkpoint_object_manifest_sha256,
-        "checkpoint_generation_manifest_sha256": (
-            spec.checkpoint_generation_manifest_sha256
-        ),
+        "checkpoint_generation_manifest_sha256": (spec.checkpoint_generation_manifest_sha256),
         "checkpoint_inventory_sha256": spec.checkpoint_inventory_sha256,
         "checkpoint_object_count": spec.checkpoint_object_count,
         "checkpoint_size_bytes": spec.checkpoint_size_bytes,
@@ -532,6 +722,66 @@ def test_server_identity_comes_from_the_spec_the_client_validates(
         "local_checkpoint_size_bytes": served.checkpoint_size_bytes,
     }
     assert validate_server_metadata(metadata, expected=served) == metadata
+
+
+def test_server_accepts_typed_unqualified_policy_canary_spec(tmp_path: Path) -> None:
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        load_policy_spec_from_execution_spec,
+    )
+
+    path = _arena_execution_spec(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "schema_version": "native_task_arena_policy_canary_execution_spec.v1",
+            "execution_authority": "internal_policy_canary_unqualified",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "ranking_permitted": False,
+            "qualification_permitted": False,
+            "scene_promotion_permitted": False,
+        }
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    served = load_policy_spec_from_execution_spec(path)
+
+    assert served.policy_id == "pi05_droid_jointpos_polaris"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("execution_authority", "qualified_evaluation"),
+        ("claim_ceiling", "official_policy_ranking"),
+        ("ranking_permitted", True),
+        ("qualification_permitted", True),
+        ("scene_promotion_permitted", True),
+    ],
+)
+def test_server_refuses_policy_canary_spec_with_raised_claim_boundary(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        load_policy_spec_from_execution_spec,
+    )
+
+    path = _arena_execution_spec(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "schema_version": "native_task_arena_policy_canary_execution_spec.v1",
+            "execution_authority": "internal_policy_canary_unqualified",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "ranking_permitted": False,
+            "qualification_permitted": False,
+            "scene_promotion_permitted": False,
+            field: value,
+        }
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="policy_canary_execution_spec_boundary_invalid"):
+        load_policy_spec_from_execution_spec(path)
 
 
 def test_execution_spec_candidate_and_policy_id_must_agree(tmp_path: Path) -> None:

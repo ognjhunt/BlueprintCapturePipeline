@@ -401,6 +401,40 @@ def test_real_producers_satisfy_every_policy_admission_relation(tmp_path) -> Non
     assert _admission_binding_mismatches(**_bundled_policy_inputs(tmp_path)) == []
 
 
+def test_runtime_admission_refuses_target_absent_exact_external_camera(
+    tmp_path,
+) -> None:
+    """Defense in depth catches a hand-crafted spec or altered bundle input."""
+
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _admission_binding_mismatches,
+    )
+
+    inputs = _bundled_policy_inputs(tmp_path)
+    external = next(
+        camera
+        for camera in inputs["construction"]["camera_snapshots"][0]["cameras"]
+        if camera["role"] == "external"
+    )
+    external["observability"].update(
+        {
+            "passed": False,
+            "semantic_passed": False,
+            "pixel_count": 0,
+            "pixel_fraction": 0.0,
+            "bbox_xyxy": None,
+            "centroid_within_margin": False,
+            "claim": "camera_observes_task_object_without_site_appearance",
+            "blockers": ["native_task_camera_semantic_framing_below_threshold"],
+        }
+    )
+
+    assert (
+        "native_task_policy_start_camera_role_not_observable:external"
+        in _admission_binding_mismatches(**inputs)
+    )
+
+
 def test_pi05_worker_accepts_the_checkpoint_inventory_required_by_its_bundle(
     tmp_path,
 ) -> None:
@@ -574,6 +608,7 @@ def test_policy_admission_refuses_two_absent_digests() -> None:
         "control_pair_digest_vs_execution_spec",
         "scene_plan_digest_vs_execution_spec",
         "construction_gate_qualified",
+        "native_task_policy_start_camera_snapshots_invalid",
         "controls_qualified",
         "qualified_execution_authority",
         "control_pair_cell_admitted_for_policy_execution",

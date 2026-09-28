@@ -1,0 +1,397 @@
+"""Real website compiler to publisher inventory; no provider or model calls."""
+import copy
+import json
+import time
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline.common import write_json
+from blueprint_pipeline.task_evaluation_public_scene_attempt_factory import record
+from blueprint_pipeline.task_evaluation_scene_intake import stage_scene_intent
+from blueprint_pipeline.task_evaluation_scene_configuration_submission_publication import _validated_inventory
+from blueprint_pipeline.website_native_submission import (
+    _validate_development_opening_criterion, materialize_website_submission,
+)
+from blueprint_pipeline.website_scene_runtime_inputs import prepare_website_runtime_inputs
+from blueprint_pipeline.website_task_preparation import compile_website_scene_preparation
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from tests.test_website_native_appearance import inputs
+from tests.test_task_evaluation_scene_configuration_submission import production_fixture, SHA
+
+
+def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
+          max_total_spend_usd=None):
+    capture = tmp_path / "capture"
+    capture.mkdir()
+    args, _, _ = inputs(capture)
+    if articulated:
+        from tests.test_website_task_preparation import _assembly_inputs
+        args.update(_assembly_inputs(capture))
+    now = time.time()
+    args["now"] = now
+    args["spend"] = copy.deepcopy(args["spend"])
+    args["spend"]["expires_at_epoch"] = now + 3600
+    args["spend"]["consent"]["accepted_at_epoch"] = now - 1
+    if max_total_spend_usd is not None:
+        args["spend"]["max_total_spend_usd"] = max_total_spend_usd
+    if anthropic:
+        terms = "sha256:" + "a" * 64
+        args["spend"]["authoring_provider"] = "anthropic"
+        args["spend"]["anthropic_provider_terms_reference"] = terms
+    if agents_api:
+        assert not anthropic
+        args["spend"].update(authoring_provider="openai",
+            authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6-sol",
+            agents_api_policy={"schema_version": "scene_configuration_agents_api_policy.v1",
+                "disclosure_scope": "task_asset_source_frames_and_metric_envelope",
+                "session_retention": "until_deleted", "trace_retention": "provider_default",
+                "region": "us", "budget_policy": "project_guard_accepted_uncertainty",
+                "project_guard_receipt_digest": "sha256:" + "f" * 64,
+                "ttl_seconds": 900, "maximum_review_cycles": 3},
+            scene_id=args["task_context"]["scene_id"],
+            capture_id=args["task_context"]["capture_id"],
+            task_context_digest=args["task_context"]["context_digest"])
+        args["spend"]["authority_digest"] = canonical_digest(args["spend"], digest_field="authority_digest")
+    preparation = compile_website_scene_preparation(**args)
+    if development:
+        from blueprint_pipeline.website_development_test import prepare_development_test, ENV
+        monkeypatch.setenv(ENV, json.dumps([args["task_context"]["context_digest"]]))
+        preparation["status"] = "needs_input"
+        preparation["blockers"] = ["support_surface_not_found_under_subject"]
+        preparation["support"] = None
+        preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+        preparation, _ = prepare_development_test(preparation=preparation,
+            source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=capture / "native")
+        args["output_root"] = capture / "native"
+    else:
+        prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
+            source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=capture / "native")
+    write_json(capture / "context.json", args["task_context"])
+    intake_root = tmp_path / "intents"
+    accepted = stage_scene_intent(value=preparation["intake_request"], queue_root=intake_root,
+        authenticated_client="blueprint-webapp", trusted_clients={"blueprint-webapp"}, now=now)
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(intake_root))
+    task = {"scene_intent_authority": record(intake_root / accepted["intent_id"] / "intent.json"),
+            "preparation": record(args["output_root"] / "preparation.json"),
+            "runtime_inputs": record(capture / "native/runtime_inputs.json"),
+            "task_context": record(capture / "context.json")}
+    fixture = production_fixture(tmp_path / "release")
+    kwargs = {"task": task, "expected_production_commit": SHA, "namespace_timestamp": "20260919T120000Z",
+              "release_admission_mode": "promoted", "staging_root": tmp_path / "submission",
+              "runtime_publication_root": fixture["runtime_publication_root"],
+              **{key + "_path": fixture[key] for key in ("deploy_receipt", "release_provenance", "release_environment")}}
+    return kwargs, accepted
+
+
+def test_prepared_capture_materializes_a_publishable_native_request_without_raw_video(tmp_path, monkeypatch):
+    kwargs, accepted = setup(tmp_path, monkeypatch)
+    preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
+    assert "collision_mesh" not in preparation["intake_request"]["source"]
+    assert preparation["binding"]["collision_mesh_digest"]
+    first = materialize_website_submission(**kwargs)
+    assert materialize_website_submission(**kwargs) == first
+    root = kwargs["staging_root"]
+    manifest, rows = _validated_inventory(root, SHA)
+    assert manifest["source"] == "website_capture_derivatives"
+    assert all(row["publication_allowed"] for row in rows)
+    assert not any(Path(row["relative_path"]).suffix in {".mov", ".mp4"} for row in rows)
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["scene_intent_digest"] == accepted["intent_digest"]
+    caps = request["spend"]["external_service_caps"]["openai"]
+    assert caps["stage_max_cost_usd"] == {"artifixer_semantic_teacher": 0,
+        "artifixer_visual_review": 0, "content_agents": 5}
+    assert caps["maximum_cost_usd"] == 5
+    assert request["spend"]["hard_cap_usd"] == 11
+    assert request["scene"]["geometry"]["kind"] == "other_derived"
+    assert request["scene"]["rights"]["provider_disclosure_scope"] == "derived_only"
+    # Project the website permission fields for compatible consumers. Full
+    # authoring-request validation is covered by test_website_native_inputs.
+    rights = json.loads((root / "rights/admission.json").read_text())
+    assert rights["schema_version"] == "website_native_rights_admission.v1"
+    assert rights["status"] == "admitted_for_internal_development"
+    assert rights["private_provider_processing_allowed"] is True
+    assert rights["provider_training_allowed"] is False and rights["public_redistribution_allowed"] is False
+    assert request["scene"]["website_native_inputs"]["frames"]
+    assert request["task"]["surface_target"]["non_colliding"] is True
+    recipe = json.loads((root / "configuration/recipe.json").read_text())
+    assert [s["adapter"]["id"] for s in recipe["stage_sequence"][:2]] == [
+        "website_prepared_appearance", "website_prepared_collision"]
+    # Estimated physics and placement uncertainty ride with the task, so the
+    # result can abstain rather than claim feasibility the estimate cannot carry.
+    task = json.loads((root / "configuration/task.json").read_text())
+    subject = json.loads((root / "configuration/subject.json").read_text())
+    assert subject["status"] == "frozen_before_scene_configuration_run"
+    assert subject["center_xyz_m"] == task["start_center_xyz_m"]
+    assert subject["source_object_is_physics_authority"] is False
+    screen = task["physical_property_screen"]
+    assert screen["basis"] == "estimated" and screen["bounds"]["mass_kg"][0] < screen["bounds"]["mass_kg"][1]
+    assert screen["sensitivity"] == "awaiting_robot_team_selection"
+    assert screen["feasibility_claim_allowed"] == (screen["sensitivity"] == "robust_within_range")
+    assert screen["reference_gripper"] is None
+    assert screen["feasibility_claim_allowed"] is False
+    assert task["scale_authority"] in {"registration_estimate", "provider_declared_estimate"}
+    assert "placement_uncertainty_m" in task and task["physical_world_truth_claimed"] is False
+
+
+def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_path, monkeypatch):
+    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True)
+    preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
+    assert preparation["intake_request"]["task"]["strategy"] == "articulated_open_close"
+    first = materialize_website_submission(**kwargs)
+    assert materialize_website_submission(**kwargs) == first
+    root = kwargs["staging_root"]
+    manifest, rows = _validated_inventory(root, SHA)
+    assert all(row["publication_allowed"] for row in rows)
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["scene_intent_digest"] == accepted["intent_digest"]
+    task = request["task"]
+    assert task["kind"] == "articulated_manipulation" and task["strategy"] == "articulated_open_close"
+    # The whole CAD/Blender stage is quoted as one shared $25 pool for every part.
+    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"] == {
+        "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0, "content_agents": 25.0}
+    assert request["spend"]["hard_cap_usd"] == 31.0
+    assert "surface_target" not in task and "destination" not in task
+    template = json.loads((root / "configuration/task.json").read_text())
+    assert template["schema_version"] == "task_evaluation_articulated_open_close_template.v1"
+    assert template["mechanism"]["target_joint_id"] == "task_part_joint"
+    assert template["mechanism"]["joint_limits"][0] == 0.0 and template["mechanism"]["joint_limits"][1] > 0
+    assert template["visible_target_label"] == "middle drawer"
+    assert template["success"]["task_joint_drive_forbidden"] is True
+    assert template["success"]["threshold_binding"] == "frozen_from_qualified_asset_joint_limit_before_any_episode"
+    success = json.loads((root / "configuration/success.json").read_text())
+    assert success["minimum_opening_fraction_of_usable_travel"] == 0.6 and success["minimum_hold_seconds"] == 1.0
+    camera = json.loads((root / "configuration/camera.json").read_text())
+    assert "handle_grasp" in camera["target_visibility_required"]
+    stages = [json.loads((root / f"configuration/stage_{i}.json").read_text()) for i in range(3, 6)]
+    assert stages[0]["schema_version"] == "articulated_replacement_authoring_configuration.v1"
+    assert stages[1]["asset_kind"] == stages[2]["asset_kind"] == "articulated_assembly"
+    assert stages[1]["required_checks"]["non_target_joints_fixed"] is True
+    assert stages[2]["required_checks"]["task_joint_drive_forbidden"] is True
+    assembly = json.loads((root / "configuration/stage_6.json").read_text())
+    assert assembly["replacement"]["asset_kind"] == "articulated_assembly"
+    assert assembly["replacement"]["task_joint_reset"] == "closed"
+
+
+def test_new_signed_website_drawer_can_quote_anthropic_authoring_without_spend(tmp_path, monkeypatch):
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, anthropic=True)
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["replacement_authoring_model_provider"] == "anthropic"
+    assert request["runtime"]["network"]["allowlist"] == ["api.anthropic.com"]
+    assert request["runtime"]["secret_refs"] == ["secret-file:anthropic_api_key"]
+    assert request["spend"]["external_service_caps"] == {
+        "openai": {"maximum_cost_usd": 0, "maximum_requests": 0,
+                   "stage_max_cost_usd": {"artifixer_semantic_teacher": 0,
+                                           "artifixer_visual_review": 0, "content_agents": 0}},
+        "anthropic": {"maximum_cost_usd": 7, "maximum_requests": 32}}
+    assert request["spend"]["hard_cap_usd"] == 13
+    rights = json.loads((root / "rights/admission.json").read_text())
+    assert "anthropic" in rights["execution_authority"]["allowed_providers"]
+    preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
+    assert rights["consent"]["provider_terms_reference"] == preparation["intake_request"]["consent"]["provider_terms_reference"]
+    assert rights["anthropic_provider_terms_reference"] == "sha256:" + "a" * 64
+    assert json.loads((root / "rights/terms.json").read_text())["anthropic_provider_terms_reference"] == rights["anthropic_provider_terms_reference"]
+
+
+def test_new_signed_website_drawer_selects_sol_managed_runtime_without_spend(tmp_path, monkeypatch):
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, agents_api=True)
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    authoring = json.loads((root / "configuration/stage_3.json").read_text())
+    assert request["replacement_authoring_agent_runtime"] == "openai_agents_api"
+    assert request["replacement_authoring_model"] == "gpt-6-sol"
+    assert authoring["authoring_agent_runtime"] == "openai_agents_api"
+    assert authoring["agents_api_policy"]["project_guard_receipt_digest"] == "sha256:" + "f" * 64
+    assert request["runtime"]["network"]["allowlist"] == ["api.openai.com"]
+    assert request["spend"]["external_service_caps"]["openai"] == {
+        "maximum_cost_usd": 25.0, "maximum_requests": 32,
+        "stage_max_cost_usd": {"artifixer_semantic_teacher": 0.0,
+                               "artifixer_visual_review": 0.0, "content_agents": 25.0}}
+    assert request["spend"]["hard_cap_usd"] == 31.0
+
+
+@pytest.mark.parametrize("ceiling,admitted", [(20, False), (30.99, False), (31, True)])
+def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_covers_it(
+        tmp_path, monkeypatch, ceiling, admitted):
+    """Provider compute ($6) plus the shared $25 authoring pool; nothing lower admits it."""
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+        MAX_ASTRA_AUTHORING_SPEND_USD, MAX_PROVIDER_COMPUTE_SPEND_USD,
+    )
+    assert MAX_ASTRA_AUTHORING_SPEND_USD == 25.0
+    assert MAX_PROVIDER_COMPUTE_SPEND_USD + MAX_ASTRA_AUTHORING_SPEND_USD == 31.0
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=ceiling)
+    if not admitted:
+        with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
+            materialize_website_submission(**kwargs)
+        assert not (kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").exists()
+        return
+    materialize_website_submission(**kwargs)
+    request = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["spend"]["hard_cap_usd"] == 31.0
+
+
+def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_development_test import DRAWER_LABEL
+    kwargs, _ = setup(tmp_path, monkeypatch, development=True, articulated=True)
+    materialize_website_submission(**kwargs)
+    root = kwargs['staging_root']
+    request = json.loads((root / 'scene_configuration_preparation_request.v1.json').read_text())
+    task = json.loads((root / 'configuration/task.json').read_text())
+    assert request['scene']['identity']['id'].endswith('-development')
+    assert task['instruction'].startswith(DRAWER_LABEL)
+    assert task['test_environment']['captured_scene_evaluation_allowed'] is False
+    assert task['strategy'] == 'articulated_open_close'
+    assert task['visible_target_label'] == 'middle drawer'
+    assert 'surface_target' not in task and 'destination' not in task
+    assert task['success']['task_joint_drive_forbidden'] is True
+
+
+def test_development_opening_criterion_accepts_float_rounding_but_rejects_changed_threshold():
+    # Retained drawer inputs: 0.4125 m stroke, 60% opening. The compiler's
+    # multiplication is 0.24749999999999997; the sealed prior rounds to 0.2475.
+    hypothesis = {"estimated_usable_stroke_m": 0.4125, "estimated_minimum_opening_m": 0.2475}
+    success = {"estimated_usable_travel": 0.4125,
+               "estimated_minimum_opening": 0.4125 * 0.6}
+    _validate_development_opening_criterion(success, hypothesis)
+    with pytest.raises(ValueError, match="website_articulated_depth_opening_criterion_mismatch"):
+        _validate_development_opening_criterion({**success, "estimated_minimum_opening": 0.25}, hypothesis)
+    with pytest.raises(ValueError, match="website_articulated_depth_opening_criterion_mismatch"):
+        _validate_development_opening_criterion({**success, "estimated_usable_travel": 0.40}, hypothesis)
+
+
+def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):
+    kwargs, _ = setup(tmp_path, monkeypatch)
+    materialize_website_submission(**kwargs)
+    intent_path = Path(kwargs["task"]["scene_intent_authority"]["path"])
+    write_json(intent_path.parent / "revoked.json", {"revoked": True})
+    with pytest.raises(ValueError, match="revoked"):
+        _validated_inventory(kwargs["staging_root"], SHA)
+
+
+def prepare_website_construction(tmp_path, monkeypatch, development):
+    import os
+    import pwd
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as publication
+    from blueprint_pipeline import public_scene_host_input_intake
+    from blueprint_pipeline.task_evaluation_public_scene_attempt_factory import RELEASE_SCHEMA
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import ensure_launch_preparation_queue_root
+    from blueprint_pipeline.website_scene_dispatch import register_website_preparation
+    from tests.test_task_evaluation_scene_configuration_submission_publication import Store
+    kwargs, accepted = setup(tmp_path, monkeypatch, development=development)
+    task = kwargs["task"]
+    root = tmp_path / "bindings"
+    register_website_preparation(preparation_path=task["preparation"]["path"],
+        runtime_inputs_path=task["runtime_inputs"]["path"], task_context_path=task["task_context"]["path"],
+        root=root, now=time.time())
+    # The WebApp forwards ECMAScript JSON: whole-number floats become integers.
+    # Its accepted intent must still find the original Python source registration.
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_json
+    intent_path = Path(task["scene_intent_authority"]["path"])
+    intent = json.loads(intent_path.read_text())
+    intent["request"] = json.loads(cross_runtime_canonical_json(intent["request"]))
+    write_json(intent_path, intent)
+    def sealed(name, value, field):
+        value[field] = canonical_digest(value, digest_field=field)
+        path = tmp_path / name
+        write_json(path, value)
+        return path
+    machinery_path = sealed("machinery.json", {"schema_version": "task_evaluation_website_scene_machinery.v1",
+        "maximum_preparation_spend_usd": 0, "provider": "vast"}, "machinery_digest")
+    release_path = sealed("release.json", {"schema_version": RELEASE_SCHEMA, "source_commit": SHA,
+        "runtime_digest": "sha256:" + "f" * 64, "repo_root": str(tmp_path / "repo"),
+        "runtime_publication_root": str(kwargs["runtime_publication_root"]),
+        "namespace_timestamp": kwargs["namespace_timestamp"], "release_admission_mode": "promoted",
+        **{key: record(kwargs[key + "_path"]) for key in ("deploy_receipt", "release_provenance", "release_environment")}},
+        "release_digest")
+    queue = tmp_path / "preparations"
+    ensure_launch_preparation_queue_root(queue)
+    config_path = sealed("config.json", {"schema_version": engine.CONFIG_SCHEMA,
+        "intent_root": str(tmp_path / "intents"), "public_source_binding_root": str(tmp_path / "unused"),
+        "website_source_binding_root": str(root), "website_source_machinery_path": str(machinery_path),
+        "release_binding_path": str(release_path), "factory_output_root": str(tmp_path / "factories"),
+        "trusted_clients": ["blueprint-webapp"], "submission_enabled": True,
+        "submission_transport": "local_owned_queue", "preparation_queue_root": str(queue),
+        "service_account": pwd.getpwuid(os.geteuid()).pw_name,
+        "publication_lock_root": str(tmp_path / "locks")}, "config_digest")
+    monkeypatch.setattr(public_scene_host_input_intake, "_verified_checkout_head", lambda: SHA)
+    monkeypatch.setattr(publication, "_verified_checkout_head", lambda: SHA)
+    store = Store()
+    def publish(**kw):
+        return publication.publish_scene_configuration_submission(**kw, client=store)
+    result = engine.process_scene_intents(config_path=config_path, publisher=publish)
+    assert result["results"][0]["status"] == "running", result
+    rows = list((queue / "pending").glob("*.json"))
+    assert len(rows) == 1
+    queued = json.loads(rows[0].read_text())
+    assert queued["request"]["scene_intent_digest"] == accepted["intent_digest"]
+    assert queued["request"]["scene"]["website_native_inputs"]["frames"]
+    assert store.puts
+    assert not any(key.endswith((".mov", ".mp4")) for key in store.puts)
+    intent_dir = tmp_path / "intents" / accepted["intent_id"]
+    assert not list((intent_dir / "attempts").glob("*.json"))
+    attempts = list((intent_dir / "preparation-attempts").glob("*.json"))
+    assert len(attempts) == 1
+    assert json.loads(attempts[0].read_text())["maximum_spend_usd"] == 0
+    engine.process_scene_intents(config_path=config_path, publisher=publish)
+    assert list((queue / "pending").glob("*.json")) == rows
+    from urllib.parse import urlsplit
+    from blueprint_pipeline.task_evaluation_launch_preparation_worker import process_launch_preparation_queue
+    def fetch(uri, destination, maximum_bytes):
+        data = store.objects[urlsplit(uri).path.lstrip("/")]
+        assert len(data) <= maximum_bytes
+        destination.write_bytes(data)
+    consumed = process_launch_preparation_queue(queue_root=queue, input_root=tmp_path / "worker-inputs",
+        allowed_uri_prefixes=["s3://blueprint/task-evaluation/production-inputs/"],
+        service_account=pwd.getpwuid(os.geteuid()).pw_name, source_commit=SHA, fetcher=fetch,
+        construction_queue_root=tmp_path / "construction")
+    assert consumed["results"][0]["status"] == "queued_for_production_scene_configuration", consumed["results"][0].get("blockers")
+    assert len(list((tmp_path / "construction/pending").glob("*.json"))) == 1
+
+    return json.loads(next((tmp_path / "construction/pending").glob("*.json")).read_text())
+
+
+@pytest.mark.parametrize("development", [False, True])
+def test_existing_progression_publishes_and_queues_website_source_without_manual_step(tmp_path, monkeypatch, development):
+    prepare_website_construction(tmp_path, monkeypatch, development)
+
+
+def test_collected_website_world_registers_the_source_for_progression(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_scene_handoff import prepare_website_scene_handoff
+    pipeline = tmp_path / "pipeline"
+    pipeline.mkdir()
+    args, _, _ = inputs(pipeline)
+    # This seam consumes World Labs' Y-down exports, whereas the reusable
+    # fixture is Y-up. Rotate the actual collider bytes into the provider frame.
+    import numpy as np
+    import trimesh
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    collider = Path(args["base_scene"]["collision_mesh_path"])
+    mesh = trimesh.load(collider, force="mesh")
+    mesh.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
+    mesh.export(collider)
+    args["base_scene"]["collision_mesh_digest"] = _sha256_file(collider)
+    context = args["task_context"]
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(tmp_path / "intents"))
+    assets = pipeline / "assets.json"
+    write_json(assets, {"world_id": "world-1", "downloads": [
+        {"kind": kind, "local_path": args["base_scene"][key + "_path"],
+         "sha256": args["base_scene"][key + "_digest"][7:]}
+        for kind, key in (("splat_ply", "splat"), ("collider_mesh_glb", "collision_mesh"))]})
+    removal = pipeline / "removal.json"
+    write_json(removal, args["removal_manifest"])
+    result = prepare_website_scene_handoff(descriptor={"capture_id": context["capture_id"],
+        "scene_id": context["scene_id"], "metadata": {"site_task_context": context,
+            "website_scene_execution_authority": args["spend"]}},
+        clean_plate={"privacy_verified": True, "status": "objects_removed", "task_masks": args["task_masks"],
+            "source_geometry": args["source_geometry"], "removal_manifest_path": str(removal)},
+        provider_run={"status": "ready", "world_id": "world-1", "provider_run_id": "op-1",
+            "worldlabs_asset_materialization": {"manifest_path": str(assets)}}, capture_root=tmp_path, now=args["now"])
+    assert result.get("source_registration"), result
+    registration = json.loads(Path(result["source_registration"]["path"]).read_text())
+    assert registration["execution_authority_granted"] is False
+    assert Path(registration["references"]["runtime_inputs"]["path"]).is_file()
+    assert result["simulator_ready"] is False

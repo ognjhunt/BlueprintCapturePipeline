@@ -24,19 +24,55 @@ LANGUAGE_KEY = "annotation.language.language_instruction"
 VIDEO_KEYS = ("exterior_image_1_left", "wrist_image_left")
 STATE_KEYS = ("eef_9d", "gripper_position", "joint_position")
 ACTION_KEYS = ("gripper_position", "joint_position")
-HISTORICAL_EXTERIOR_KEY = (
-    "observation_history/exterior_image_1_left_t_minus_15"
-)
-HISTORICAL_WRIST_KEY = "observation_history/wrist_image_left_t_minus_15"
 # The released DROID bridge executes eight rows from every policy chunk.  Keep
 # this module flat-bundle safe: it is copied beside the worker scripts rather
 # than imported as part of ``blueprint_pipeline`` on the rented host.
 DROID_OPEN_LOOP_HORIZON = 8
 DROID_ACTION_CHUNK_ROWS = 40
-FROZEN_VIDEO_DELTA_INDICES = (-15, 0)
+# The exact checkpoint root ``processor_config.json`` is what
+# ``AutoProcessor.from_pretrained(model_dir)`` loads.  At frozen revision
+# 05e7cc97... that 2,833-byte Git blob (55b4d74b...) declares one current
+# video frame.  The older ``experiment_cfg/config.yaml`` retained beside the
+# checkpoint says ``[-15, 0]``, but the server never loads that training
+# artifact.  Requiring its two-frame history makes the identity handshake
+# deterministically refuse the genuine checkpoint before the first query.
+FROZEN_VIDEO_DELTA_INDICES = (0,)
 FROZEN_STATE_DELTA_INDICES = (0,)
 FROZEN_ACTION_DELTA_INDICES = tuple(range(DROID_ACTION_CHUNK_ROWS))
 FROZEN_LANGUAGE_DELTA_INDICES = (0,)
+# The checkpoint's exact root statistics file is content-bound by the worker
+# identity receipt.  Its DROID state statistics are base-frame Cartesian
+# coordinates, not scene/world coordinates.  Enforce the observed translation
+# support before a query so a future frame regression cannot spend an episode
+# asking the frozen checkpoint to act from an impossible state.
+CHECKPOINT_STATISTICS_SOURCE = (
+    "nvidia/GR00T-N1.7-DROID@05e7cc97e40dbd33b0890c35cc0214fcb0547ab5:"
+    "statistics.json:oxe_droid_relative_eef_relative_joint.state.eef_9d"
+)
+CHECKPOINT_STATISTICS_SHA256 = (
+    "127832f7df25cda15da4ba6be81737f96b65673d0f892f9fc1bce1bc062fa858"
+)
+CHECKPOINT_STATISTICS_GIT_BLOB_SHA1 = "03e76c7666bafe2e31fcc2320ee5ffcdddc6d675"
+DROID_EEF_POSITION_OBSERVED_MIN_M = (
+    -0.1557805985212326,
+    -0.8236568570137024,
+    -0.24001094698905945,
+)
+DROID_EEF_POSITION_OBSERVED_MAX_M = (
+    0.8575563430786133,
+    0.8196876049041748,
+    1.0066224336624146,
+)
+EEF_FRAME_PROVENANCE_SCHEMA_VERSION = "droid_eef_frame_provenance.v1"
+EEF_FRAME_PROVENANCE_KEY = "observation/eef_9d_frame_provenance"
+EEF_FRAME_BODY_NAME = "panda_link8"
+EEF_FRAME_BODY_SOURCE = (
+    "droid-dataset/droid@ba46d4af805bce44e6a40cff10ed094ee5090ab8:"
+    "config/panda/franka_panda.yaml:ee_link_name"
+)
+EEF_FRAME_STATE_SOURCE = (
+    "live_panda_link8_pose_world_transformed_by_live_robot_root_pose"
+)
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
@@ -115,6 +151,77 @@ def droid_eef_9d(*, position_m: Sequence[float], rotation_row_major: Sequence[fl
     )
     corrected = rotation @ correction
     return np.concatenate((position, corrected[:2, :].reshape(6))).astype(np.float32)
+
+
+def _validated_eef_frame_provenance(
+    value: Any, *, eef_position_m: Any
+) -> dict[str, Any]:
+    """Require explicit frame proof instead of guessing it from coordinate size."""
+
+    import numpy as np
+
+    if not isinstance(value, Mapping):
+        raise ValueError("groot_droid_eef_frame_provenance_invalid")
+    try:
+        provenance = json.loads(json.dumps(dict(value), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("groot_droid_eef_frame_provenance_invalid") from exc
+    position = np.asarray(provenance.get("position_robot_root_m"), dtype=np.float64)
+    if (
+        provenance.get("schema_version") != EEF_FRAME_PROVENANCE_SCHEMA_VERSION
+        or provenance.get("state_frame") != "robot_root"
+        or provenance.get("body_name") != EEF_FRAME_BODY_NAME
+        or provenance.get("body_source") != EEF_FRAME_BODY_SOURCE
+        or provenance.get("state_source") != EEF_FRAME_STATE_SOURCE
+        or position.shape != (3,)
+        or not np.isfinite(position).all()
+        or not np.allclose(position, eef_position_m, rtol=0.0, atol=1.0e-6)
+        or provenance.get("provenance_digest")
+        != "sha256:"
+        + _canonical_sha256(
+            {
+                key: item
+                for key, item in provenance.items()
+                if key != "provenance_digest"
+            }
+        )
+    ):
+        raise ValueError("groot_droid_eef_frame_provenance_invalid")
+    return provenance
+
+
+def _eef_position_support_evidence(position_m: Any) -> dict[str, Any]:
+    """Describe checkpoint-range clipping without mislabeling it as incompatibility."""
+
+    import numpy as np
+
+    position = np.asarray(position_m, dtype=np.float64)
+    minimum = np.asarray(DROID_EEF_POSITION_OBSERVED_MIN_M, dtype=np.float64)
+    maximum = np.asarray(DROID_EEF_POSITION_OBSERVED_MAX_M, dtype=np.float64)
+    below = np.maximum(minimum - position, 0.0)
+    above = np.maximum(position - maximum, 0.0)
+    return {
+        "position_m": position.tolist(),
+        "minimum_m": minimum.tolist(),
+        "maximum_m": maximum.tolist(),
+        "inside_checkpoint_observed_extrema": bool(
+            np.all(below == 0.0) and np.all(above == 0.0)
+        ),
+        "below_minimum_by_m": below.tolist(),
+        "above_maximum_by_m": above.tolist(),
+        "maximum_excess_m": float(max(np.max(below), np.max(above))),
+        "source": CHECKPOINT_STATISTICS_SOURCE,
+        "source_sha256": CHECKPOINT_STATISTICS_SHA256,
+        "source_git_blob_sha1": CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
+        "frozen_processor_use_percentiles": True,
+        "frozen_processor_clip_outliers": True,
+        "query_blocking": False,
+        "interpretation": (
+            "inside_checkpoint_observed_extrema"
+            if np.all(below == 0.0) and np.all(above == 0.0)
+            else "outside_checkpoint_observed_extrema_clipped_by_frozen_processor"
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -227,6 +334,7 @@ class GrootN17DroidPolicyClient:
         port: int = 5555,
         api_token: str | None = None,
         timeout_ms: int = 15000,
+        require_observed_eef_support: bool = False,
         client_factory: Callable[..., Any] | None = None,
     ) -> None:
         spec.validate()
@@ -242,6 +350,7 @@ class GrootN17DroidPolicyClient:
         self._worker_receipt = validate_worker_identity_receipt(
             worker_identity_receipt, expected=spec
         )
+        self._require_observed_eef_support = bool(require_observed_eef_support)
         client = client_factory(
             host=str(host),
             port=int(port),
@@ -307,23 +416,82 @@ class GrootN17DroidPolicyClient:
                     pass
             raise
         self._client = client
+        self._modality_signature = {name: {"keys": list(_modality_keys(modality[name])),
+            "indices": list(_delta_indices(modality[name]))} for name in ("video", "state", "action", "language")}
         self._last_inference_evidence: dict[str, Any] | None = None
+        self._request_evidence: dict[str, Any] | None = None
+        self._request_evidence_sink = None
+        self.candidate_policy_queried = False
+        self._reset_evidence = None
+
+    def _verify_live_modality(self) -> None:
+        modality = self._client.get_modality_config()
+        if not isinstance(modality, Mapping) or any(name not in modality for name in self._modality_signature):
+            raise ValueError("groot_live_modality_identity_changed")
+        actual = {name: {"keys": list(_modality_keys(modality[name])), "indices": list(_delta_indices(modality[name]))}
+                  for name in self._modality_signature}
+        if actual != self._modality_signature:
+            raise ValueError("groot_live_modality_identity_changed")
+
+    def bind_request_evidence_sink(self, sink) -> None:
+        self._request_evidence_sink = sink
+
+    def _retain_request(self, evidence: Mapping[str, Any]) -> None:
+        self._request_evidence = dict(evidence)
+        if self._request_evidence_sink is not None:
+            self._request_evidence_sink(evidence)
+
+    def last_request_evidence(self) -> dict[str, Any]:
+        if self._request_evidence is None:
+            raise ValueError("groot_policy_request_evidence_missing")
+        return json.loads(json.dumps(self._request_evidence))
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
         import numpy as np
 
+        # Never let a refused observation inherit a prior episode's successful
+        # response receipt when the warm client is reused.
+        self._last_inference_evidence = None
+        self._request_evidence = None
+        self._verify_live_modality()
         exterior = _resize_with_pad(observation.get("observation/exterior_image_1_left"))
         wrist = _resize_with_pad(observation.get("observation/wrist_image_left"))
-        historical_exterior = _resize_with_pad(observation.get(HISTORICAL_EXTERIOR_KEY))
-        historical_wrist = _resize_with_pad(observation.get(HISTORICAL_WRIST_KEY))
         joints = np.asarray(observation.get("observation/joint_position"), dtype=np.float32)
         gripper = np.asarray(observation.get("observation/gripper_position"), dtype=np.float32)
         eef = np.asarray(observation.get("observation/eef_9d"), dtype=np.float32)
         prompt = str(observation.get("prompt") or "").strip()
         if joints.shape != (7,) or gripper.shape != (1,) or eef.shape != (9,) or not prompt:
             raise ValueError("groot_droid_observation_state_invalid")
-        exterior_video = np.stack((historical_exterior, exterior))[None, ...]
-        wrist_video = np.stack((historical_wrist, wrist))[None, ...]
+        if not (
+            np.isfinite(joints).all()
+            and np.isfinite(gripper).all()
+            and np.isfinite(eef).all()
+        ):
+            raise ValueError("groot_droid_observation_state_nonfinite")
+        frame_provenance = _validated_eef_frame_provenance(
+            observation.get(EEF_FRAME_PROVENANCE_KEY), eef_position_m=eef[:3]
+        )
+        support_evidence = _eef_position_support_evidence(eef[:3])
+        # The frozen processor uses percentile normalization and clips outliers.
+        # Its statistics are empirical normalization data, not a declared API
+        # support boundary.  Preserve an excursion as unqualified diagnostic
+        # evidence, while the explicit frame provenance above remains the
+        # fail-closed protection against accidentally sending scene/world XYZ.
+        self._last_inference_evidence = {
+            "server_response_received": False,
+            "action_payload_returned": False,
+            "actions_extracted": False,
+            "eef_frame_provenance": frame_provenance,
+            "eef_position_observed_support": support_evidence,
+        }
+        support_evidence["query_blocking"] = self._require_observed_eef_support
+        if (
+            self._require_observed_eef_support
+            and support_evidence["inside_checkpoint_observed_extrema"] is not True
+        ):
+            raise ValueError("groot_droid_eef_outside_checkpoint_observed_support")
+        exterior_video = exterior[None, None, ...]
+        wrist_video = wrist[None, None, ...]
         request = {
             "video": {
                 VIDEO_KEYS[0]: exterior_video,
@@ -336,9 +504,18 @@ class GrootN17DroidPolicyClient:
             },
             "language": {LANGUAGE_KEY: [[prompt]]},
         }
+        try:
+            from policy_request_evidence import capture_request
+        except ModuleNotFoundError:
+            from .policy_request_evidence import capture_request
+        bind_wire_sink = getattr(self._client, "bind_request_evidence_sink", None)
+        if callable(bind_wire_sink):
+            bind_wire_sink(self._retain_request)
+        else:
+            self._retain_request(capture_request(request, transport="groot_injected_transport"))
         response = self._client.get_action(request)
         retained_response = _json_safe_vendor_response(response)
-        self._last_inference_evidence = {
+        self._last_inference_evidence.update({
             "server_response_received": True,
             "wire_response_type": type(response).__name__,
             "raw_vendor_action_response": retained_response,
@@ -353,7 +530,8 @@ class GrootN17DroidPolicyClient:
             ),
             "action_payload_returned": True,
             "actions_extracted": False,
-        }
+        })
+        self.candidate_policy_queried = True
         if not isinstance(response, Sequence) or len(response) != 2:
             raise ValueError("groot_policy_response_invalid")
         actions = response[0]
@@ -411,11 +589,42 @@ class GrootN17DroidPolicyClient:
         return json.loads(json.dumps(self._last_inference_evidence, allow_nan=False))
 
     def reset(self) -> None:
-        """Clear cross-episode image history and reset the remote policy."""
+        """Reset the remote policy without carrying state across episodes."""
 
         response = self._client.reset()
-        if not isinstance(response, Mapping):
+        if not isinstance(response, Mapping) or response.get("error") or response.get("status") in {"failed", "error", "blocked"}:
             raise ValueError("groot_policy_reset_response_invalid")
+        self._reset_evidence = {"response": dict(response), "response_digest": "sha256:" + _canonical_sha256(response),
+            "reset_endpoint_called": True, "remote_internal_cache_readback": "not_exposed_by_frozen_interface"}
+
+    def preflight_readiness(self) -> dict[str, Any]:
+        """Reconfirm live transport/identity for the next warm-session episode."""
+
+        prior_query_observed = bool(
+            self.candidate_policy_queried or self._last_inference_evidence is not None
+        )
+        if self._client.ping() is not True:
+            raise ValueError("groot_policy_server_unreachable")
+        self.reset()
+        self._verify_live_modality()
+        self.candidate_policy_queried = False
+        self._last_inference_evidence = None
+        self._request_evidence = None
+        return {
+            "identity_verified": True,
+            "transport": "nvidia_groot_zmq_msgpack",
+            "readiness_method": "live_ping_and_reset_without_inference",
+            "candidate_policy_queried": False,
+            "candidate_inference_performed": False,
+            "policy_state_advanced": False,
+            "last_inference_evidence": None,
+            "prior_candidate_policy_query_observed": prior_query_observed,
+            "policy_identity": self._spec.identity(),
+            "worker_identity_receipt_digest": self._worker_receipt.get(
+                "receipt_digest"
+            ),
+            "policy_reset_evidence": self._reset_evidence,
+        }
 
     def close(self) -> None:
         closer = getattr(self._client, "close", None)
@@ -432,7 +641,18 @@ class GrootN17DroidPolicyClient:
             "state_delta_indices": list(self._state_delta_indices),
             "action_delta_indices": list(self._action_delta_indices),
             "language_delta_indices": list(self._language_delta_indices),
-            "video_history_source": "caller_supplied_exact_simulator_control_steps",
+            "video_history_source": "current_policy_query_observation_only",
+            "eef_position_observed_support": {
+                "minimum_m": list(DROID_EEF_POSITION_OBSERVED_MIN_M),
+                "maximum_m": list(DROID_EEF_POSITION_OBSERVED_MAX_M),
+                "source": CHECKPOINT_STATISTICS_SOURCE,
+                "source_sha256": CHECKPOINT_STATISTICS_SHA256,
+                "source_git_blob_sha1": CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
+                "enforced_before_policy_query": False,
+                "frame_provenance_enforced_before_policy_query": True,
+                "frozen_processor_use_percentiles": True,
+                "frozen_processor_clip_outliers": True,
+            },
             "action_chunk_rows": self.action_chunk_rows,
             "last_inference_evidence": (
                 self.last_inference_evidence()
@@ -450,5 +670,12 @@ __all__ = [
     "GrootN17DroidPolicySpec",
     "MODEL_ID",
     "droid_eef_9d",
+    "CHECKPOINT_STATISTICS_SHA256",
+    "CHECKPOINT_STATISTICS_GIT_BLOB_SHA1",
+    "CHECKPOINT_STATISTICS_SOURCE",
+    "DROID_EEF_POSITION_OBSERVED_MAX_M",
+    "DROID_EEF_POSITION_OBSERVED_MIN_M",
+    "EEF_FRAME_PROVENANCE_KEY",
+    "EEF_FRAME_PROVENANCE_SCHEMA_VERSION",
     "validate_worker_identity_receipt",
 ]

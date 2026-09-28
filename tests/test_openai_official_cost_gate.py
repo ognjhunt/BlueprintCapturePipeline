@@ -101,8 +101,10 @@ def _gate(
     wall_clock,
     attestation_path: Path | None = None,
     admin_key_path: Path | None = None,
+    require_zero_baseline: bool = True,
 ):
     return build_openai_official_cost_run_gate(
+        require_zero_baseline=require_zero_baseline,
         scope_attestation_path=attestation_path or _attestation(tmp_path),
         admin_api_key_file=admin_key_path or _admin_key(tmp_path),
         project_id=PROJECT,
@@ -152,18 +154,66 @@ def test_run_gate_binds_reservation_completion_and_terminal_settlement(
     assert settlement["strict_official_billing_satisfied"] is True
 
 
-def test_nonzero_baseline_refuses_before_reservation_file(tmp_path: Path) -> None:
+def test_nonzero_baseline_is_recorded_and_subtracted_not_refused(
+    tmp_path: Path,
+) -> None:
+    """A scope that already spent today can still be measured exactly.
+
+    Demanding a zero same-day baseline made each (project, api_key) scope
+    usable once per UTC day. Scene 839873's artifixer semantic-teacher stage
+    hit that on 2026-08-27: one run billed $0.877128, and every later run that
+    day was refused before it could reserve, even though the delta between the
+    reservation snapshot and the settlement snapshot still names that run's own
+    cost precisely. The completion path already subtracted the baseline; only
+    the precondition disagreed.
+    """
+
+    clock = [NOW]
     gate = _gate(
         tmp_path,
-        transport=_transport([0.01]),
-        wall_clock=lambda: NOW,
+        # Scope already spent $0.30 today; this run then adds $0.12.
+        transport=_transport([0.30, 0.42, 0.42]),
+        wall_clock=lambda: clock[0],
+        require_zero_baseline=False,
     )
-    with pytest.raises(
-        OpenAIOfficialCostGateError,
-        match="openai_cost_scope_baseline_not_zero",
-    ):
-        gate.reserve()
-    assert not gate.reservation_path.exists()
+    reservation = gate.reserve()
+    assert gate.reservation_path.exists()
+    assert reservation["zero_cost_baseline_confirmed"] is False
+    assert reservation["provider_reservation"]["baseline_cost_usd"] == pytest.approx(
+        0.30
+    )
+
+    completion = gate.complete(
+        provider_call_performed=True,
+        runtime_result_digest=f"sha256:{'f' * 64}",
+        runtime_exception_type=None,
+    )
+    # The run is charged its own $0.12, not the scope's $0.42.
+    assert completion["provider_observed_cost_usd"] == pytest.approx(0.12)
+
+    clock[0] = NOW + timedelta(days=4)
+    settlement = gate.settle()
+    assert settlement["status"] == "reconciled"
+    assert settlement["actual_cost_usd"] == pytest.approx(0.12)
+
+
+def test_settlement_refuses_a_snapshot_below_its_own_baseline(tmp_path: Path) -> None:
+    """Subtracting a baseline must not be able to invent a negative cost."""
+
+    clock = [NOW]
+    gate = _gate(
+        tmp_path,
+        transport=_transport([0.30, 0.10, 0.10]),
+        wall_clock=lambda: clock[0],
+        require_zero_baseline=False,
+    )
+    gate.reserve()
+    with pytest.raises(OpenAIOfficialCostGateError):
+        gate.complete(
+            provider_call_performed=True,
+            runtime_result_digest=f"sha256:{'f' * 64}",
+            runtime_exception_type=None,
+        )
 
 
 @pytest.mark.parametrize(

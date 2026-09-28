@@ -13,15 +13,17 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
+from .native_rigid_episode_telemetry import NativeRigidEpisodeTelemetry
 from .native_franka_pose_servo import (
     DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
     PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN,
     PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD,
     PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
 )
+from .rigid_frame_transforms import apply_rigid_offset, rigid_offset_in_body_frame
 
 
-SCHEMA_VERSION = "native_task_episode_environment.v2"
+SCHEMA_VERSION = "native_task_episode_environment.v4"
 
 # A globally solved endpoint proves that the pose is reachable, but replaying
 # that endpoint as a bounded joint-space setpoint does not preserve the path of
@@ -47,6 +49,235 @@ class NativeTaskEpisodeEnvironmentError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+class NativeRigidScoringEnvironment:
+    """Overlay exact rigid pose/contact/safety readback on an episode seam.
+
+    Learned-policy and scripted-control episodes must be scored from the same
+    native Isaac signals.  The underlying episode adapter owns observations,
+    actions, and reset behavior; ``task_readback`` owns the configured task's
+    filtered contact sensors and scoring-frame pose.  Keeping the join here
+    prevents either execution lane from silently omitting fields that make a
+    deterministic task outcome interpretable.
+    """
+
+    def __init__(
+        self,
+        *,
+        environment: Any,
+        task_readback: Any,
+        task_spec: Mapping[str, Any],
+    ) -> None:
+        if not callable(getattr(task_readback, "read_task_sample", None)):
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_rigid_scoring_readback_missing"]
+            )
+        try:
+            contact_threshold = float(task_spec["task_contact_minimum_force_n"])
+            collision_threshold = float(
+                task_spec["collision_failure_minimum_force_n"]
+            )
+            bounds = task_spec["workspace_position_bounds_world_m"]
+            lower = [float(value) for value in bounds["minimum"]]
+            upper = [float(value) for value in bounds["maximum"]]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_rigid_scoring_contract_invalid"]
+            ) from exc
+        if (
+            not all(
+                math.isfinite(value)
+                for value in [
+                    contact_threshold,
+                    collision_threshold,
+                    *lower,
+                    *upper,
+                ]
+            )
+            or contact_threshold <= 0.0
+            or collision_threshold <= 0.0
+            or len(lower) != 3
+            or len(upper) != 3
+            or any(low >= high for low, high in zip(lower, upper, strict=True))
+        ):
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_rigid_scoring_contract_invalid"]
+            )
+        self._telemetry = NativeRigidEpisodeTelemetry(task_spec)
+        self._environment = environment
+        self._task_readback = task_readback
+        self._contact_threshold = contact_threshold
+        self._collision_threshold = collision_threshold
+        self._workspace_lower = lower
+        self._workspace_upper = upper
+        self._initial_support = task_spec.get("initial_source_support")
+        self._initial_support_seen = False
+        self._initial_support_closed = False
+        if self._initial_support is not None:
+            try:
+                self._initial_position = [float(v) for v in task_spec["start_pose_world"][:3]]
+                self._initial_tolerance = float(task_spec["reset_translation_tolerance_m"])
+                self._initial_lift = max(float(task_spec["minimum_lift_m"]), self._initial_tolerance)
+                # The exact initial support channel is explicitly permitted.
+                # A forbidden-contact threshold is not its force cap, and the
+                # task-robot force criterion remains independently scored.
+                declared_cap = task_spec.get('maximum_task_contact_force_n')
+                self._initial_max_force = float(declared_cap) if declared_cap is not None else None
+                valid = (isinstance(self._initial_support, Mapping)
+                    and self._initial_support.get("contact_permission") == "initial_pickup_until_first_separation_or_lift"
+                    and bool(self._initial_support.get("scene_prim_paths"))
+                    and len(self._initial_position) == 3
+                    and all(math.isfinite(v) for v in self._initial_position)
+                    and all(math.isfinite(v) and v > 0 for v in (
+                        self._initial_tolerance, self._initial_lift))
+                    and (self._initial_max_force is None or
+                         math.isfinite(self._initial_max_force) and self._initial_max_force > 0))
+            except (KeyError, TypeError, ValueError):
+                valid = False
+            if not valid:
+                raise NativeTaskEpisodeEnvironmentError(["native_task_initial_support_contract_invalid"])
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._environment, name)
+
+    def begin_episode(self) -> None:
+        self._telemetry.begin_episode()
+        self._initial_support_seen = False
+        self._initial_support_closed = False
+
+    def reset(self) -> Any:
+        result = self._environment.reset()
+        self._telemetry.reset_executed()
+        self._initial_support_seen = False
+        self._initial_support_closed = False
+        return result
+
+    def read_object_sample(
+        self,
+        *,
+        base_sample: Mapping[str, Any] | None = None,
+        native_sample: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        base = base_sample if base_sample is not None else self._environment.read_object_sample()
+        native = native_sample if native_sample is not None else self._task_readback.read_task_sample()
+        if not isinstance(base, Mapping) or not isinstance(native, Mapping):
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_rigid_scoring_sample_invalid"]
+            )
+        try:
+            pose = [float(value) for value in native["task_scoring_pose_world"]]
+            task_force = float(native["task_robot_contact_peak_force_n"])
+            support_force = float(native["task_support_contact_peak_force_n"])
+            scene_force = float(native["task_scene_collision_peak_force_n"])
+            robot_force = float(native["robot_scene_contact_peak_force_n"])
+            forbidden_robot_force = float(
+                native["robot_task_forbidden_collision_peak_force_n"]
+            )
+            locked_joint_violation = native[
+                "locked_joint_containment_violation"
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_rigid_scoring_sample_invalid"]
+            ) from exc
+        if (
+            len(pose) != 7
+            or not all(
+                math.isfinite(value)
+                for value in [
+                    *pose,
+                    task_force,
+                    support_force,
+                    scene_force,
+                    robot_force,
+                    forbidden_robot_force,
+                ]
+            )
+            or not isinstance(locked_joint_violation, bool)
+        ):
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_rigid_scoring_sample_invalid"]
+            )
+        sample = dict(base)
+        # ``native`` is copied wholesale so future native contact reporters can
+        # retain robot/task link or contact-pair identities without this
+        # overlay inventing them for older samples that never measured them.
+        sample.update(native)
+        initial_support_failure = False
+        if self._initial_support is not None:
+            try:
+                initial_force = float(native["task_initial_support_contact_peak_force_n"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise NativeTaskEpisodeEnvironmentError(["native_task_initial_support_readback_missing"]) from exc
+            if not math.isfinite(initial_force) or initial_force < 0:
+                raise NativeTaskEpisodeEnvironmentError(["native_task_initial_support_readback_invalid"])
+            initial_contact = initial_force >= self._contact_threshold
+            # Permission cannot reopen after pickup, including a drop back onto
+            # the original support. Before the first contact, only the reset
+            # neighborhood can enter this bounded pickup interval.
+            if ((self._initial_support_seen and not initial_contact)
+                    or pose[2] - self._initial_position[2] >= self._initial_lift
+                    or (not self._initial_support_seen and
+                        math.dist(pose[:3], self._initial_position) > self._initial_tolerance)):
+                self._initial_support_closed = True
+            self._initial_support_seen |= initial_contact
+            initial_support_failure = (
+                (self._initial_max_force is not None and initial_force > self._initial_max_force)
+                or (self._initial_support_closed and initial_force >= self._collision_threshold))
+            sample.update(
+                initial_source_support_contact_active=initial_contact,
+                initial_source_support_contact_permitted=not self._initial_support_closed,
+                initial_source_support_collision_failure=initial_support_failure,
+                task_non_support_scene_collision_peak_force_n=scene_force,
+                task_scene_collision_peak_force_n=max(scene_force,
+                    initial_force if self._initial_support_closed or initial_support_failure else 0.),
+            )
+        # Preserve both readbacks, but score the calibrated physical grasp frame.
+        # The generic native sampler may report raw body origins 46 mm away.
+        if "grasp_frame_position_world_m" in native:
+            sample["native_grasp_frame_position_world_m"] = native["grasp_frame_position_world_m"]
+        if native.get("grasp_frame_position_source") == "native_franka_pose_servo.live_physical_pad_centers":
+            pass  # Exact measured pads already own this field.
+        elif "grasp_frame_position_world_m" in base:
+            sample["grasp_frame_position_world_m"] = base["grasp_frame_position_world_m"]
+            sample["grasp_frame_position_source"] = "isaac_episode_adapter.calibrated_native_finger_tool_midpoint"
+        elif native.get("grasp_frame_position_source") == "native_inner_finger_body_origin_midpoint":
+            sample.pop("grasp_frame_position_world_m", None)
+        sample.update(
+            {
+                "task_object_pose_world": pose,
+                "task_contact_active": task_force >= self._contact_threshold,
+                "support_contact_active": support_force
+                >= self._contact_threshold,
+                "robot_collision_failure": max(
+                    robot_force, forbidden_robot_force
+                )
+                >= self._collision_threshold,
+                "forbidden_robot_task_collision_failure": (
+                    forbidden_robot_force >= self._collision_threshold
+                ),
+                "collision_failure_minimum_force_n": self._collision_threshold,
+                "locked_joint_containment_violation": locked_joint_violation,
+                "scene_collision_failure": initial_support_failure or scene_force
+                >= self._collision_threshold,
+                "containment_violation": any(
+                    value < low or value > high
+                    for low, value, high in zip(
+                        self._workspace_lower,
+                        pose[:3],
+                        self._workspace_upper,
+                        strict=True,
+                    )
+                ),
+                "controls_measurement_authority": (
+                    "native_scoring_frame_pose_filtered_contacts_and_shared_"
+                    "gripper_calibration"
+                ),
+            }
+        )
+        self._telemetry.observe(sample)
+        return sample
 
 
 def _gripper_endpoint(
@@ -116,6 +347,40 @@ def build_native_task_episode_environment(
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_action_or_cadence_invalid"]
         )
+    rigid_task_scoring_frame_offset = None
+    if task_kind == "rigid_pick_place":
+        task_spec = plan.get("task_spec")
+        affordance = (
+            task_spec.get("interaction_affordance")
+            if isinstance(task_spec, Mapping)
+            else None
+        )
+        raw_offset = (
+            affordance.get("asset_root_from_scoring_frame")
+            if isinstance(affordance, Mapping)
+            else None
+        )
+        try:
+            if not isinstance(raw_offset, Mapping):
+                raise KeyError("asset_root_from_scoring_frame")
+            rigid_task_scoring_frame_offset = {
+                "position_m": [float(value) for value in raw_offset["position_m"]],
+                "orientation_xyzw": [
+                    float(value) for value in raw_offset["orientation_xyzw"]
+                ],
+            }
+            apply_rigid_offset(
+                body_position_world=[0.0, 0.0, 0.0],
+                body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+                offset_position_body=rigid_task_scoring_frame_offset["position_m"],
+                offset_quaternion_body_xyzw=rigid_task_scoring_frame_offset[
+                    "orientation_xyzw"
+                ],
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_episode_rigid_scoring_frame_transform_invalid"]
+            ) from exc
     closed_command, closed_separation = _gripper_endpoint(
         gripper_convention, command_field="closed_command"
     )
@@ -150,18 +415,94 @@ def build_native_task_episode_environment(
             ["native_task_episode_pose_servo_invalid"]
         )
     try:
-        reset_orientation = [
-            float(value) for value in servo.current_grasp_frame_pose_world()[3:7]
+        reset_controlled_body_pose = [
+            float(value) for value in servo.current_body_pose_world()
+        ]
+        reset_grasp_frame_pose = [
+            float(value) for value in servo.current_grasp_frame_pose_world()
         ]
     except (AttributeError, TypeError, ValueError) as exc:
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_controlled_body_pose_missing"]
         ) from exc
-    if len(reset_orientation) != 4 or not all(
-        math.isfinite(value) for value in reset_orientation
+    if any(
+        len(pose) != 7 or not all(math.isfinite(value) for value in pose)
+        for pose in (reset_controlled_body_pose, reset_grasp_frame_pose)
     ):
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_controlled_body_pose_missing"]
+        )
+    reset_orientation = reset_grasp_frame_pose[3:7]
+
+    # Isaac's rendered wrist camera follows the articulation through Fabric,
+    # while its sensor-buffer world pose can remain frozen at initialization.
+    # That exact mismatch appeared in the retained GR00T episode: RGB changed
+    # substantially while every wrist calibration digest stayed byte-identical.
+    # Measure the rigid camera-to-controlled-body mount once at reset, then
+    # rebuild the evidence pose from that live body on every observation.
+    try:
+        wrist_camera_scene_name = str(camera_scene_names["wrist"])
+        wrist_camera = scene[wrist_camera_scene_name]
+        reset_wrist_position = [
+            float(value) for value in to_tensor(wrist_camera.data.pos_w)[0]
+        ]
+        reset_wrist_quaternion = [
+            float(value)
+            for value in to_tensor(wrist_camera.data.quat_w_opengl)[0]
+        ]
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise NativeTaskEpisodeEnvironmentError(
+            ["native_task_episode_wrist_camera_binding_missing"]
+        ) from exc
+    quaternion_norm = math.sqrt(
+        sum(value * value for value in reset_wrist_quaternion)
+    )
+    if (
+        not wrist_camera_scene_name
+        or len(reset_wrist_position) != 3
+        or len(reset_wrist_quaternion) != 4
+        or not all(
+            math.isfinite(value)
+            for value in [*reset_wrist_position, *reset_wrist_quaternion]
+        )
+        or abs(quaternion_norm - 1.0) > 1.0e-5
+    ):
+        raise NativeTaskEpisodeEnvironmentError(
+            ["native_task_episode_wrist_camera_pose_invalid"]
+        )
+    wrist_mount_position_controlled_body, wrist_mount_quaternion_controlled_body = (
+        rigid_offset_in_body_frame(
+            body_position_world=reset_controlled_body_pose[:3],
+            body_quaternion_world_xyzw=reset_controlled_body_pose[3:7],
+            child_position_world=reset_wrist_position,
+            child_quaternion_world_xyzw=reset_wrist_quaternion,
+        )
+    )
+
+    def live_camera_pose(
+        camera_name: str,
+    ) -> tuple[list[float], list[float]] | None:
+        if str(camera_name) != wrist_camera_scene_name:
+            return None
+        try:
+            live_controlled_body_pose = [
+                float(value) for value in servo.current_body_pose_world()
+            ]
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_episode_live_wrist_camera_pose_missing"]
+            ) from exc
+        if len(live_controlled_body_pose) != 7 or not all(
+            math.isfinite(value) for value in live_controlled_body_pose
+        ):
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_episode_live_wrist_camera_pose_missing"]
+            )
+        return apply_rigid_offset(
+            body_position_world=live_controlled_body_pose[:3],
+            body_quaternion_world_xyzw=live_controlled_body_pose[3:7],
+            offset_position_body=wrist_mount_position_controlled_body,
+            offset_quaternion_body_xyzw=wrist_mount_quaternion_controlled_body,
         )
 
     joint_target_rows: list[dict[str, Any]] = []
@@ -521,7 +862,9 @@ def build_native_task_episode_environment(
             else None
         ),
         camera_scene_names=camera_scene_names,
+        camera_pose_callback=live_camera_pose,
         joint_wrench_sensor=joint_wrench_sensor,
+        rigid_task_scoring_frame_offset=rigid_task_scoring_frame_offset,
     )
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -530,10 +873,49 @@ def build_native_task_episode_environment(
         "reset_seed": seed,
         "control_frequency_hz": control_frequency_hz,
         "camera_scene_names": dict(camera_scene_names),
+        "camera_world_pose_bindings": {
+            "external": {
+                "scene_name": str(camera_scene_names.get("external") or ""),
+                "source": "isaac_sensor_buffer_static_camera",
+                "recomputed_each_observation": False,
+            },
+            "wrist": {
+                "scene_name": wrist_camera_scene_name,
+                "source": (
+                    "live_controlled_body_plus_reset_measured_rigid_mount_offset"
+                ),
+                "recomputed_each_observation": True,
+                "sensor_buffer_static_pose_workaround": True,
+                "mount_offset_position_controlled_body_m": (
+                    wrist_mount_position_controlled_body
+                ),
+                "mount_offset_quaternion_controlled_body_xyzw": (
+                    wrist_mount_quaternion_controlled_body
+                ),
+            },
+            "overview": {
+                "scene_name": str(camera_scene_names.get("overview") or ""),
+                "source": "isaac_sensor_buffer_static_camera",
+                "recomputed_each_observation": False,
+                "policy_input": False,
+            },
+        },
         "task_state_source": (
             "native_articulated_task_readback"
             if task_kind == "articulated_open_close"
             else "native_rigid_body_readback"
+        ),
+        "rigid_task_pose_binding": (
+            {
+                "asset_root_pose_retained": True,
+                "task_object_pose_world_source": (
+                    "asset_root_pose_world_composed_with_interaction_affordance_"
+                    "asset_root_from_scoring_frame"
+                ),
+                "scoring_frame_offset": rigid_task_scoring_frame_offset,
+            }
+            if rigid_task_scoring_frame_offset is not None
+            else None
         ),
         "diagnostic_checkpoint_reset": {
             "available": True,
@@ -639,10 +1021,22 @@ def build_native_task_episode_environment(
             "open_finger_separation_m": open_separation,
         },
     }
+    def scientific_reset_readback(subject_id: str):
+        from .decision_evidence_contracts import canonical_digest
+        from .policy_scientific_reset import read_native_reset_channels, seal_reset_readback
+        scenario = plan["scenario"]
+        return seal_reset_readback(binding={"candidate_id": subject_id, "cell_id": scenario["cell_id"],
+            "seed": seed, "task_spec_digest": canonical_digest(plan["task_spec"]),
+            "resolved_scenario_digest": scenario.get("resolved_scenario_digest") or canonical_digest(scenario),
+            "matrix_cell_digest": scenario.get("cell_digest") or scenario.get("condition_digest"),
+            "matrix_reset_digest": scenario.get("reset_digest")},
+            **read_native_reset_channels(built, adapter))
+    adapter.scientific_reset_readback = scientific_reset_readback
     return adapter, receipt
 
 
 __all__ = [
+    "NativeRigidScoringEnvironment",
     "NativeTaskEpisodeEnvironmentError",
     "SCHEMA_VERSION",
     "build_native_task_episode_environment",

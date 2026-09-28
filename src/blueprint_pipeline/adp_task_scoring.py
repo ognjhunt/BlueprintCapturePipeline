@@ -7,18 +7,25 @@ joint-state scorer without copying or weakening that legacy path.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal, NotRequired, TypedDict
 
 try:  # flat provider-bundle layout
     from adp009d_task_scoring import TaskScoringError, score_task_episode
 except ModuleNotFoundError:  # repository package
     from .adp009d_task_scoring import TaskScoringError, score_task_episode
 try:  # flat provider-bundle layout
-    from decision_evidence_contracts import canonical_digest
+    from decision_evidence_contracts import (
+        canonical_digest,
+        cross_runtime_canonical_digest,
+    )
 except ModuleNotFoundError:  # repository package
-    from .decision_evidence_contracts import canonical_digest
+    from .decision_evidence_contracts import (
+        canonical_digest,
+        cross_runtime_canonical_digest,
+    )
 try:  # flat provider-bundle layout
     from articulation_graph_contract import (
         ArticulationGraphContractError,
@@ -37,6 +44,66 @@ ARTICULATED_REPORT_SCHEMA_VERSION = "adp_articulated_task_scoring.v1"
 RIGID_REPORT_SCHEMA_VERSION = "adp_rigid_task_scoring.v2"
 TASK_KIND_RIGID_PICK_PLACE = "rigid_pick_place"
 TASK_KIND_ARTICULATED_OPEN_CLOSE = "articulated_open_close"
+RIGID_MANIPULATION_STRATEGIES = {"pick_and_place", "planar_push"}
+RIGID_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION = "rigid_task_success_contract.v1"
+
+
+class RigidTaskSuccessContractScope(TypedDict):
+    """Immutable identity boundary for one task/site success definition."""
+
+    site_id: str
+    task_id: str
+
+
+class RigidTaskSuccessContractProvenance(TypedDict):
+    """Authorship and confirmation facts; agents can only originate proposals."""
+
+    author_source: Literal[
+        "compatibility_default", "site_robot_team", "task_owner", "agent_proposal"
+    ]
+    author_id: str
+    confirmation_status: Literal["proposal_only", "confirmed"]
+    confirmed_by_team_id: str | None
+    proposal_digest: str | None
+
+
+class RigidTaskEventLedgerExpectation(TypedDict):
+    """Whole-episode event limits, disabled only through explicit null/ignore."""
+
+    schema_version: Literal["rigid_task_event_ledger_expectation.v1"]
+    no_drop: dict[str, Any]
+    maximum_task_contact_force_n: float | None
+    forbidden_contact_classes: list[str]
+    containment_excursions: Literal["forbidden", "ignored"]
+    workspace_excursions: Literal["forbidden", "ignored"]
+    maximum_retries: int | None
+    maximum_regrasps: int | None
+
+
+class RigidTaskSuccessContractCriteria(TypedDict):
+    """JSON-shaped deterministic predicates consumed by the rigid scorer."""
+
+    destination_containment: dict[str, Any]
+    orientation: dict[str, Any]
+    support: dict[str, Any]
+    terminal_task_contact: dict[str, Any]
+    gripper_state: dict[str, Any]
+    settling: dict[str, Any]
+    safety: dict[str, Any]
+    motion: dict[str, Any]
+    temporal_invariants: RigidTaskEventLedgerExpectation
+    retreat: NotRequired[dict[str, Any]]
+    controls: NotRequired[dict[str, Any]]
+
+
+class RigidTaskSuccessContract(TypedDict):
+    """Digest-sealed success definition; confirmation creates a new document."""
+
+    schema_version: Literal["rigid_task_success_contract.v1"]
+    scope: RigidTaskSuccessContractScope
+    provenance: RigidTaskSuccessContractProvenance
+    criteria: RigidTaskSuccessContractCriteria
+    contract_digest: str
 
 # How far past a sealed hard limit a joint may read before this recomputation
 # calls it a violation.  This is a solver-residual allowance, not a task
@@ -53,14 +120,17 @@ OUTCOME_OPENED_THEN_REBOUNDED = "opened_then_rebounded"
 OUTCOME_NON_TASK_JOINT_MOVED = "non_task_joint_moved"
 OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION = "joint_limit_or_containment_violation"
 OUTCOME_COLLISION_FAILURE = "robot_or_scene_collision_failure"
+OUTCOME_CONTACT_NOT_ESTABLISHED = "task_contact_not_established_before_motion"
 OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE = "release_or_retreat_incomplete"
 OUTCOME_OPENED_AND_SETTLED = "opened_and_settled"
+OUTCOME_PUSHED_AND_SETTLED = "pushed_and_settled"
 
 _ARTICULATED_OUTCOME_RANK = {
     OUTCOME_NEVER_MOVED: 0,
     OUTCOME_NON_TASK_JOINT_MOVED: 0,
     OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION: 0,
     OUTCOME_COLLISION_FAILURE: 0,
+    OUTCOME_CONTACT_NOT_ESTABLISHED: 0,
     OUTCOME_MOVED_BELOW_THRESHOLD: 1,
     OUTCOME_OPENED_THEN_REBOUNDED: 2,
     OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE: 3,
@@ -84,6 +154,574 @@ def _finite(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _compatibility_rigid_success_criteria(
+    task_spec: Mapping[str, Any],
+) -> RigidTaskSuccessContractCriteria:
+    """Translate the historical strategy branch into explicit predicates."""
+
+    strategy = str(task_spec.get("manipulation_strategy") or "pick_and_place")
+    planar_push = strategy == "planar_push"
+    return {
+        "destination_containment": {
+            "mode": "required",
+            "position_bounds_world_m": json.loads(
+                json.dumps(task_spec.get("destination_position_bounds_world_m"))
+            ),
+        },
+        "orientation": {
+            "mode": "ignored" if planar_push else "required",
+            "reference_xyzw": list(task_spec.get("destination_orientation_xyzw") or []),
+            "tolerance_rad": task_spec.get(
+                "destination_orientation_tolerance_rad"
+            ),
+        },
+        "support": {
+            "height_mode": "required",
+            "height_interval_m": list(task_spec.get("support_height_interval_m") or []),
+            "contact_mode": "required",
+        },
+        "terminal_task_contact": {
+            # Historical pick/place release already couples an open gripper to
+            # cleared task contact.  Keeping this separate predicate ignored
+            # preserves that exact behavior while allowing authored tasks to
+            # require cleared, maintained, or irrelevant terminal contact.
+            "mode": "cleared" if planar_push else "ignored",
+        },
+        "gripper_state": {
+            "mode": "ignored" if planar_push else "released",
+            "threshold_m": (
+                None
+                if planar_push
+                else task_spec.get("release_gripper_width_min_m")
+            ),
+        },
+        "settling": {
+            "mode": "required",
+            "window_samples": task_spec.get("settle_window_samples"),
+            "position_tolerance_m": task_spec.get("settle_position_tolerance_m"),
+            "orientation_tolerance_rad": task_spec.get(
+                "settle_orientation_tolerance_rad"
+            ),
+        },
+        # Safety is deliberately not author-overridable.  A task team may
+        # define success, but it may not turn an unsafe rollout into success.
+        "safety": {"mode": "required"},
+        "motion": {
+            "movement_epsilon_m": task_spec.get("movement_epsilon_m"),
+            "minimum_translation_m": task_spec.get("minimum_translation_m"),
+            "minimum_lift_m": (
+                None if planar_push else task_spec.get("minimum_lift_m")
+            ),
+        },
+        "temporal_invariants": {
+            "schema_version": "rigid_task_event_ledger_expectation.v1",
+            # Compatibility defaults preserve the historical eventual-state
+            # result.  A task/site team may explicitly require no-drop, in
+            # which case a later recovery into the target does not erase the
+            # observed drop event.
+            "no_drop": {"mode": "ignored", "minimum_fall_m": 0.02},
+            "maximum_task_contact_force_n": None,
+            "forbidden_contact_classes": [],
+            "containment_excursions": "forbidden",
+            "workspace_excursions": "ignored",
+            "maximum_retries": None,
+            "maximum_regrasps": None,
+        },
+    }
+
+
+def _validate_contract_fields(
+    value: Mapping[str, Any],
+    *,
+    allowed: set[str],
+    label: str,
+    errors: list[str],
+) -> None:
+    for field in sorted(set(value) - allowed):
+        errors.append(f"rigid_task_success_contract_{label}_unknown_field:{field}")
+    for field in sorted(allowed - set(value)):
+        errors.append(f"rigid_task_success_contract_{label}_missing_field:{field}")
+
+
+def validate_rigid_task_success_contract(
+    value: Mapping[str, Any],
+    *,
+    require_confirmed: bool = True,
+    expected_site_id: str | None = None,
+    expected_task_id: str | None = None,
+) -> RigidTaskSuccessContract:
+    """Validate one frozen task/team contract without consulting a model.
+
+    A proposal may be inspected with ``require_confirmed=False``.  Deterministic
+    scoring and pre-execution admission use the default and therefore refuse an
+    unconfirmed proposal.  Confirmation never mutates a proposal in place; it
+    produces a new digest-bound document through
+    :func:`confirm_rigid_task_success_contract`.
+    """
+
+    if not isinstance(value, Mapping):
+        raise TaskNeutralScoringError(["rigid_task_success_contract_invalid"])
+    try:
+        contract = json.loads(json.dumps(dict(value), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise TaskNeutralScoringError(
+            ["rigid_task_success_contract_invalid"]
+        ) from exc
+    errors: list[str] = []
+    _validate_contract_fields(
+        contract,
+        allowed={"schema_version", "scope", "provenance", "criteria", "contract_digest"},
+        label="root",
+        errors=errors,
+    )
+    if contract.get("schema_version") != RIGID_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION:
+        errors.append("rigid_task_success_contract_schema_invalid")
+
+    scope = contract.get("scope")
+    if not isinstance(scope, Mapping):
+        errors.append("rigid_task_success_contract_scope_invalid")
+        scope = {}
+    else:
+        _validate_contract_fields(
+            scope,
+            allowed={"site_id", "task_id"},
+            label="scope",
+            errors=errors,
+        )
+    site_id = str(scope.get("site_id") or "")
+    task_id = str(scope.get("task_id") or "")
+    if not site_id or not task_id:
+        errors.append("rigid_task_success_contract_scope_invalid")
+    if expected_site_id is not None and site_id != str(expected_site_id):
+        errors.append("rigid_task_success_contract_site_binding_mismatch")
+    if expected_task_id is not None and task_id != str(expected_task_id):
+        errors.append("rigid_task_success_contract_task_binding_mismatch")
+
+    provenance = contract.get("provenance")
+    if not isinstance(provenance, Mapping):
+        errors.append("rigid_task_success_contract_provenance_invalid")
+        provenance = {}
+    else:
+        _validate_contract_fields(
+            provenance,
+            allowed={
+                "author_source",
+                "author_id",
+                "confirmation_status",
+                "confirmed_by_team_id",
+                "proposal_digest",
+            },
+            label="provenance",
+            errors=errors,
+        )
+    author_source = str(provenance.get("author_source") or "")
+    author_id = str(provenance.get("author_id") or "")
+    confirmation_status = str(provenance.get("confirmation_status") or "")
+    confirmed_by = provenance.get("confirmed_by_team_id")
+    proposal_digest = provenance.get("proposal_digest")
+    if author_source not in {
+        "compatibility_default",
+        "site_robot_team",
+        "task_owner",
+        "agent_proposal",
+    } or not author_id:
+        errors.append("rigid_task_success_contract_author_invalid")
+    if confirmation_status not in {"proposal_only", "confirmed"}:
+        errors.append("rigid_task_success_contract_confirmation_invalid")
+    elif confirmation_status == "proposal_only":
+        if confirmed_by is not None or proposal_digest is not None:
+            errors.append("rigid_task_success_contract_proposal_state_invalid")
+        if require_confirmed:
+            errors.append("rigid_task_success_contract_unconfirmed")
+    else:
+        if author_source == "compatibility_default":
+            if confirmed_by is not None or proposal_digest is not None:
+                errors.append("rigid_task_success_contract_default_provenance_invalid")
+        elif not isinstance(confirmed_by, str) or not confirmed_by.strip():
+            errors.append("rigid_task_success_contract_team_confirmation_missing")
+        if author_source == "agent_proposal" and (
+            not isinstance(proposal_digest, str)
+            or not proposal_digest.startswith("sha256:")
+            or len(proposal_digest) != 71
+        ):
+            errors.append("rigid_task_success_contract_agent_proposal_digest_missing")
+
+    criteria = contract.get("criteria")
+    if not isinstance(criteria, Mapping):
+        errors.append("rigid_task_success_contract_criteria_invalid")
+        criteria = {}
+    else:
+        _validate_contract_fields(
+            criteria,
+            allowed={
+                "destination_containment",
+                "orientation",
+                "support",
+                "terminal_task_contact",
+                "gripper_state",
+                "settling",
+                "safety",
+                "motion",
+                "temporal_invariants",
+                *({"retreat"} if "retreat" in criteria else set()),
+                *({"controls"} if "controls" in criteria else set()),
+                *({"surface_target"} if "surface_target" in criteria else set()),
+            },
+            label="criteria",
+            errors=errors,
+        )
+
+    if "controls" in criteria and criteria["controls"] != {
+        "mode": "required_per_cell", "control_ids": ["zero_action_negative", "deterministic_scripted_positive"]
+    }:
+        errors.append("rigid_task_success_contract_controls_invalid")
+
+    if "retreat" in criteria:
+        from .adp_rigid_retreat_scoring import validate_retreat_criterion
+
+        errors.extend(validate_retreat_criterion(criteria["retreat"]))
+
+    if "surface_target" in criteria:
+        from .task_evaluation_surface_target import validate_surface_target
+        try:
+            validate_surface_target(criteria["surface_target"])
+        except (ValueError, TypeError, KeyError):
+            errors.append("rigid_task_success_contract_surface_target_invalid")
+
+    destination = criteria.get("destination_containment")
+    if not isinstance(destination, Mapping):
+        errors.append("rigid_task_success_contract_destination_invalid")
+        destination = {}
+    else:
+        _validate_contract_fields(
+            destination,
+            allowed={"mode", "position_bounds_world_m"},
+            label="destination",
+            errors=errors,
+        )
+    if destination.get("mode") not in {"required", "ignored"}:
+        errors.append("rigid_task_success_contract_destination_mode_invalid")
+    bounds = destination.get("position_bounds_world_m")
+    try:
+        lower = _vector(bounds["minimum"], 3, error="destination")
+        upper = _vector(bounds["maximum"], 3, error="destination")
+        if any(low >= high for low, high in zip(lower, upper, strict=True)):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, TaskNeutralScoringError):
+        errors.append("rigid_task_success_contract_destination_invalid")
+
+    orientation = criteria.get("orientation")
+    if not isinstance(orientation, Mapping):
+        errors.append("rigid_task_success_contract_orientation_invalid")
+        orientation = {}
+    else:
+        _validate_contract_fields(
+            orientation,
+            allowed={"mode", "reference_xyzw", "tolerance_rad"},
+            label="orientation",
+            errors=errors,
+        )
+    if orientation.get("mode") not in {"required", "ignored"}:
+        errors.append("rigid_task_success_contract_orientation_mode_invalid")
+    try:
+        reference = _vector(
+            orientation.get("reference_xyzw"), 4, error="orientation"
+        )
+        tolerance = _finite(orientation.get("tolerance_rad"))
+        if (
+            abs(sum(item * item for item in reference) - 1.0) > 1.0e-6
+            or tolerance is None
+            or tolerance < 0.0
+        ):
+            raise ValueError
+    except (ValueError, TaskNeutralScoringError):
+        errors.append("rigid_task_success_contract_orientation_invalid")
+
+    support = criteria.get("support")
+    if not isinstance(support, Mapping):
+        errors.append("rigid_task_success_contract_support_invalid")
+        support = {}
+    else:
+        _validate_contract_fields(
+            support,
+            allowed={"height_mode", "height_interval_m", "contact_mode"},
+            label="support",
+            errors=errors,
+        )
+    if support.get("height_mode") not in {"required", "ignored"}:
+        errors.append("rigid_task_success_contract_support_height_mode_invalid")
+    if support.get("contact_mode") not in {"required", "ignored"}:
+        errors.append("rigid_task_success_contract_support_contact_mode_invalid")
+    try:
+        support_interval = _vector(
+            support.get("height_interval_m"), 2, error="support"
+        )
+        if support_interval[0] >= support_interval[1]:
+            raise ValueError
+    except (ValueError, TaskNeutralScoringError):
+        errors.append("rigid_task_success_contract_support_invalid")
+
+    task_contact = criteria.get("terminal_task_contact")
+    if not isinstance(task_contact, Mapping) or set(task_contact) != {"mode"}:
+        errors.append("rigid_task_success_contract_task_contact_invalid")
+        task_contact = {}
+    if task_contact.get("mode") not in {"cleared", "maintained", "ignored"}:
+        errors.append("rigid_task_success_contract_task_contact_mode_invalid")
+
+    gripper = criteria.get("gripper_state")
+    if not isinstance(gripper, Mapping):
+        errors.append("rigid_task_success_contract_gripper_invalid")
+        gripper = {}
+    else:
+        _validate_contract_fields(
+            gripper,
+            allowed={"mode", "threshold_m"},
+            label="gripper",
+            errors=errors,
+        )
+    gripper_mode = gripper.get("mode")
+    threshold = _finite(gripper.get("threshold_m"))
+    if gripper_mode not in {"released", "closed_at_most", "ignored"}:
+        errors.append("rigid_task_success_contract_gripper_mode_invalid")
+    elif gripper_mode == "ignored":
+        if gripper.get("threshold_m") is not None:
+            errors.append("rigid_task_success_contract_gripper_threshold_invalid")
+    elif threshold is None or threshold < 0.0:
+        errors.append("rigid_task_success_contract_gripper_threshold_invalid")
+
+    settling = criteria.get("settling")
+    if not isinstance(settling, Mapping):
+        errors.append("rigid_task_success_contract_settling_invalid")
+        settling = {}
+    else:
+        _validate_contract_fields(
+            settling,
+            allowed={
+                "mode",
+                "window_samples",
+                "position_tolerance_m",
+                "orientation_tolerance_rad",
+            },
+            label="settling",
+            errors=errors,
+        )
+    window = settling.get("window_samples")
+    if settling.get("mode") not in {"required", "ignored"}:
+        errors.append("rigid_task_success_contract_settling_mode_invalid")
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        errors.append("rigid_task_success_contract_settling_window_invalid")
+    for field in ("position_tolerance_m", "orientation_tolerance_rad"):
+        number = _finite(settling.get(field))
+        if number is None or number < 0.0:
+            errors.append(f"rigid_task_success_contract_settling_{field}_invalid")
+
+    safety = criteria.get("safety")
+    if not isinstance(safety, Mapping) or safety != {"mode": "required"}:
+        errors.append("rigid_task_success_contract_safety_invalid")
+
+    motion = criteria.get("motion")
+    if not isinstance(motion, Mapping):
+        errors.append("rigid_task_success_contract_motion_invalid")
+        motion = {}
+    else:
+        _validate_contract_fields(
+            motion,
+            allowed={
+                "movement_epsilon_m",
+                "minimum_translation_m",
+                "minimum_lift_m",
+            },
+            label="motion",
+            errors=errors,
+        )
+    epsilon = _finite(motion.get("movement_epsilon_m"))
+    if epsilon is None or epsilon <= 0.0:
+        errors.append("rigid_task_success_contract_movement_epsilon_invalid")
+    for field in ("minimum_translation_m", "minimum_lift_m"):
+        raw = motion.get(field)
+        if raw is not None and (_finite(raw) is None or float(raw) < 0.0):
+            errors.append(f"rigid_task_success_contract_{field}_invalid")
+
+    temporal = criteria.get("temporal_invariants")
+    if not isinstance(temporal, Mapping):
+        errors.append("rigid_task_success_contract_temporal_invariants_invalid")
+        temporal = {}
+    else:
+        _validate_contract_fields(
+            temporal,
+            allowed={
+                "schema_version",
+                "no_drop",
+                "maximum_task_contact_force_n",
+                "forbidden_contact_classes",
+                "containment_excursions",
+                "workspace_excursions",
+                "maximum_retries",
+                "maximum_regrasps",
+            },
+            label="temporal_invariants",
+            errors=errors,
+        )
+    if temporal.get("schema_version") != "rigid_task_event_ledger_expectation.v1":
+        errors.append("rigid_task_success_contract_event_ledger_schema_invalid")
+    no_drop = temporal.get("no_drop")
+    if not isinstance(no_drop, Mapping) or set(no_drop) != {
+        "mode",
+        "minimum_fall_m",
+    }:
+        errors.append("rigid_task_success_contract_no_drop_invalid")
+        no_drop = {}
+    if no_drop.get("mode") not in {"required", "ignored"}:
+        errors.append("rigid_task_success_contract_no_drop_mode_invalid")
+    minimum_fall = _finite(no_drop.get("minimum_fall_m"))
+    if minimum_fall is None or minimum_fall <= 0.0:
+        errors.append("rigid_task_success_contract_no_drop_threshold_invalid")
+    maximum_force = temporal.get("maximum_task_contact_force_n")
+    if maximum_force is not None and (
+        _finite(maximum_force) is None or float(maximum_force) <= 0.0
+    ):
+        errors.append("rigid_task_success_contract_maximum_force_invalid")
+    forbidden_classes = temporal.get("forbidden_contact_classes")
+    if (
+        not isinstance(forbidden_classes, list)
+        or any(not isinstance(item, str) or not item.strip() for item in forbidden_classes)
+        or len(forbidden_classes) != len(set(forbidden_classes))
+    ):
+        errors.append("rigid_task_success_contract_forbidden_contacts_invalid")
+    for field in ("containment_excursions", "workspace_excursions"):
+        if temporal.get(field) not in {"forbidden", "ignored"}:
+            errors.append(f"rigid_task_success_contract_{field}_invalid")
+    for field in ("maximum_retries", "maximum_regrasps"):
+        raw = temporal.get(field)
+        if raw is not None and (
+            isinstance(raw, bool) or not isinstance(raw, int) or raw < 0
+        ):
+            errors.append(f"rigid_task_success_contract_{field}_invalid")
+
+    if contract.get("contract_digest") != cross_runtime_canonical_digest(
+        contract, digest_field="contract_digest"
+    ):
+        errors.append("rigid_task_success_contract_digest_mismatch")
+    if errors:
+        raise TaskNeutralScoringError(errors)
+    return contract
+
+
+def seal_rigid_task_success_contract(
+    *,
+    task_spec: Mapping[str, Any],
+    site_id: str,
+    task_id: str,
+    author_source: Literal[
+        "compatibility_default", "site_robot_team", "task_owner", "agent_proposal"
+    ],
+    author_id: str,
+    confirmation_status: Literal["proposal_only", "confirmed"],
+    confirmed_by_team_id: str | None = None,
+    criteria: Mapping[str, Any] | None = None,
+) -> RigidTaskSuccessContract:
+    """Seal human/team criteria or an explicitly proposal-only agent draft."""
+
+    if author_source == "agent_proposal" and confirmation_status != "proposal_only":
+        raise TaskNeutralScoringError(
+            ["rigid_task_success_contract_agent_must_originate_proposal"]
+        )
+    document: dict[str, Any] = {
+        "schema_version": RIGID_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION,
+        "scope": {"site_id": str(site_id), "task_id": str(task_id)},
+        "provenance": {
+            "author_source": author_source,
+            "author_id": str(author_id),
+            "confirmation_status": confirmation_status,
+            "confirmed_by_team_id": confirmed_by_team_id,
+            "proposal_digest": None,
+        },
+        "criteria": json.loads(
+            json.dumps(
+                dict(criteria)
+                if criteria is not None
+                else _compatibility_rigid_success_criteria(task_spec),
+                allow_nan=False,
+            )
+        ),
+        "contract_digest": "",
+    }
+    document["contract_digest"] = cross_runtime_canonical_digest(
+        document, digest_field="contract_digest"
+    )
+    return validate_rigid_task_success_contract(
+        document,
+        require_confirmed=False,
+        expected_site_id=site_id,
+        expected_task_id=task_id,
+    )
+
+
+def confirm_rigid_task_success_contract(
+    proposal: Mapping[str, Any], *, confirmed_by_team_id: str
+) -> RigidTaskSuccessContract:
+    """Create a confirmed immutable successor to a proposal-only document."""
+
+    validated = validate_rigid_task_success_contract(
+        proposal, require_confirmed=False
+    )
+    if validated["provenance"]["confirmation_status"] != "proposal_only":
+        raise TaskNeutralScoringError(
+            ["rigid_task_success_contract_not_a_proposal"]
+        )
+    confirmed = json.loads(json.dumps(validated))
+    confirmed["provenance"]["confirmation_status"] = "confirmed"
+    confirmed["provenance"]["confirmed_by_team_id"] = str(confirmed_by_team_id)
+    if confirmed["provenance"]["author_source"] == "agent_proposal":
+        confirmed["provenance"]["proposal_digest"] = validated["contract_digest"]
+    confirmed["contract_digest"] = cross_runtime_canonical_digest(
+        confirmed, digest_field="contract_digest"
+    )
+    return validate_rigid_task_success_contract(confirmed)
+
+
+def confirmed_rigid_task_success_contract_matches_published(
+    *, published: Mapping[str, Any], selected: Mapping[str, Any]
+) -> bool:
+    """Match an exact published contract or its one team-confirmed successor."""
+
+    try:
+        public_contract = validate_rigid_task_success_contract(
+            published, require_confirmed=False
+        )
+        confirmed_contract = validate_rigid_task_success_contract(selected)
+    except TaskNeutralScoringError:
+        return False
+    if public_contract["scope"] != confirmed_contract["scope"]:
+        return False
+    if public_contract["provenance"]["confirmation_status"] == "confirmed":
+        return public_contract["contract_digest"] == confirmed_contract["contract_digest"]
+    team_id = confirmed_contract["provenance"]["confirmed_by_team_id"]
+    if not isinstance(team_id, str) or not team_id:
+        return False
+    try:
+        expected = confirm_rigid_task_success_contract(
+            public_contract, confirmed_by_team_id=team_id
+        )
+    except TaskNeutralScoringError:
+        return False
+    return expected["contract_digest"] == confirmed_contract["contract_digest"]
+
+
+def _default_rigid_task_success_contract(
+    task_spec: Mapping[str, Any],
+) -> RigidTaskSuccessContract:
+    subject = str(task_spec.get("subject_asset_id") or "legacy_rigid_task")
+    return seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=str(task_spec.get("site_id") or "compatibility_unspecified_site"),
+        task_id=str(task_spec.get("task_id") or subject),
+        author_source="compatibility_default",
+        author_id="blueprint:manipulation_strategy_defaults.v1",
+        confirmation_status="confirmed",
+    )
 
 
 def _normalize_legacy_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -485,11 +1123,11 @@ def score_articulated_task_episode(
     hard_limit_excursion_rad = 0.0
     for sample in normalized:
         for joint_id, position in sample["joint_positions_rad"].items():
-            lower, upper = spec["joint_hard_limits_rad"][joint_id]
+            hard_lower, hard_upper = spec["joint_hard_limits_rad"][joint_id]
             hard_limit_excursion_rad = max(
                 hard_limit_excursion_rad,
-                float(lower) - float(position),
-                float(position) - float(upper),
+                float(hard_lower) - float(position),
+                float(position) - float(hard_upper),
             )
     hard_limit_violation = any(
         sample["joint_limit_violation"] for sample in normalized
@@ -499,6 +1137,15 @@ def score_articulated_task_episode(
         sample["robot_collision_failure"] or sample["scene_collision_failure"]
         for sample in normalized
     )
+    # Current graph-backed prismatic tasks represent pulling a handle. Legacy
+    # scalar-angle receipts and revolute doors keep their frozen scoring rules.
+    contact_required = (spec["schema_version"] == TASK_SPEC_GRAPH_SCHEMA_VERSION
+                        and any(row["joint_id"] == target and row["joint_type"] == "prismatic"
+                                for row in spec["articulation_graph"]["joints"]))
+    first_motion_index = next((index for index, position in enumerate(target_positions)
+                               if abs(position - resets[target]) > float(spec["movement_epsilon_rad"])), None)
+    contact_before_motion = (not contact_required or first_motion_index is None or any(
+        sample["task_contact_active"] for sample in normalized[:first_motion_index + 1]))
     released_in_settle = settle_available and all(
         not sample["task_contact_active"] for sample in settle
     )
@@ -510,6 +1157,7 @@ def score_articulated_task_episode(
         and not hard_limit_violation
         and not containment_violation
         and not collision_failure
+        and contact_before_motion
         and released_in_settle
         and retreat_completed
     )
@@ -521,6 +1169,8 @@ def score_articulated_task_episode(
         outcome = OUTCOME_COLLISION_FAILURE
     elif not non_task_locked:
         outcome = OUTCOME_NON_TASK_JOINT_MOVED
+    elif not contact_before_motion:
+        outcome = OUTCOME_CONTACT_NOT_ESTABLISHED
     elif settle_in_interval and settle_speed_ok and (
         not released_in_settle or not retreat_completed
     ):
@@ -575,6 +1225,9 @@ def score_articulated_task_episode(
             ),
             "released_in_settle": released_in_settle,
             "retreat_completed": retreat_completed,
+            "first_motion_step_index": (normalized[first_motion_index]["step_index"]
+                                        if first_motion_index is not None else None),
+            "contact_established_before_motion": contact_before_motion,
         },
         "predicates": {
             "settle_in_success_interval": settle_in_interval,
@@ -585,6 +1238,7 @@ def score_articulated_task_episode(
             "joint_hard_limits_respected": not hard_limit_violation,
             "containment_respected": not containment_violation,
             "collision_failure_absent": not collision_failure,
+            "task_contact_established_before_motion": contact_before_motion,
             "task_contact_released": released_in_settle,
             "retreat_completed": retreat_completed,
         },
@@ -626,299 +1280,13 @@ def _vector(value: Any, length: int, *, error: str) -> list[float]:
     return [float(item) for item in result]
 
 
-def _quaternion_angle(a: Sequence[float], b: Sequence[float]) -> float:
-    qa = _vector(a, 4, error="rigid_task_quaternion_invalid")
-    qb = _vector(b, 4, error="rigid_task_quaternion_invalid")
-    na = math.sqrt(sum(item * item for item in qa))
-    nb = math.sqrt(sum(item * item for item in qb))
-    if min(na, nb) <= 0.0:
-        raise TaskNeutralScoringError(["rigid_task_quaternion_invalid"])
-    dot = abs(sum(x * y for x, y in zip(qa, qb, strict=True)) / (na * nb))
-    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
-
-
-def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
-    errors: list[str] = []
-    if (
-        spec.get("schema_version") != TASK_SPEC_GRAPH_SCHEMA_VERSION
-        or spec.get("task_kind") != TASK_KIND_RIGID_PICK_PLACE
-    ):
-        errors.append("rigid_task_spec_schema_invalid")
-    subject = str(spec.get("subject_asset_id") or "")
-    if not subject:
-        errors.append("rigid_task_subject_asset_id_missing")
-    try:
-        start_pose = _vector(
-            spec.get("start_pose_world"), 7, error="rigid_task_start_pose_invalid"
-        )
-        orientation_reference = _vector(
-            spec.get("destination_orientation_xyzw"),
-            4,
-            error="rigid_task_destination_orientation_invalid",
-        )
-        raw_bounds = spec["destination_position_bounds_world_m"]
-        lower = _vector(raw_bounds["minimum"], 3, error="rigid_task_destination_invalid")
-        upper = _vector(raw_bounds["maximum"], 3, error="rigid_task_destination_invalid")
-        support_interval = _vector(
-            spec["support_height_interval_m"],
-            2,
-            error="rigid_task_support_interval_invalid",
-        )
-    except (KeyError, TypeError, TaskNeutralScoringError) as exc:
-        if isinstance(exc, TaskNeutralScoringError):
-            errors.extend(exc.errors)
-        else:
-            errors.append("rigid_task_spec_invalid")
-        start_pose = [0.0] * 7
-        orientation_reference = [0.0, 0.0, 0.0, 1.0]
-        lower = [0.0] * 3
-        upper = [0.0] * 3
-        support_interval = [0.0, 0.0]
-    numeric_fields = (
-        "destination_orientation_tolerance_rad",
-        "minimum_translation_m",
-        "minimum_lift_m",
-        "movement_epsilon_m",
-        "reset_translation_tolerance_m",
-        "reset_orientation_tolerance_rad",
-        "settle_position_tolerance_m",
-        "settle_orientation_tolerance_rad",
-        "release_gripper_width_min_m",
-        "task_contact_minimum_force_n",
-    )
-    numbers: dict[str, float] = {}
-    for field in numeric_fields:
-        value = _finite(spec.get(field))
-        if value is None or value < 0.0 or (
-            value == 0.0 and field not in {"minimum_lift_m"}
-        ):
-            errors.append(f"rigid_task_{field}_invalid")
-        else:
-            numbers[field] = value
-    settle = spec.get("settle_window_samples")
-    if isinstance(settle, bool) or not isinstance(settle, int) or settle <= 0:
-        errors.append("rigid_task_settle_window_samples_invalid")
-    if spec.get("release_required") is not True:
-        errors.append("rigid_task_release_contract_invalid")
-    if any(low >= high for low, high in zip(lower, upper, strict=True)):
-        errors.append("rigid_task_destination_invalid")
-    if support_interval[0] >= support_interval[1]:
-        errors.append("rigid_task_support_interval_invalid")
-    for quaternion, error in (
-        (start_pose[3:], "rigid_task_start_pose_invalid"),
-        (orientation_reference, "rigid_task_destination_orientation_invalid"),
-    ):
-        if abs(sum(item * item for item in quaternion) - 1.0) > 1.0e-6:
-            errors.append(error)
-    if errors:
-        raise TaskNeutralScoringError(errors)
-    return {
-        "subject_asset_id": subject,
-        "start_pose_world": start_pose,
-        "destination_position_bounds_world_m": {"minimum": lower, "maximum": upper},
-        "destination_orientation_xyzw": orientation_reference,
-        "support_height_interval_m": support_interval,
-        "settle_window_samples": settle,
-        "release_required": True,
-        **numbers,
-    }
-
 
 def score_rigid_task_episode(
     *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
-    """Score a scene-neutral rigid relocation from deterministic native state."""
+    from .adp_rigid_task_scoring import score_rigid_task_episode as score
 
-    spec = _normalize_rigid_task_spec(task_spec)
-    if not isinstance(samples, Sequence) or isinstance(samples, (str, bytes)) or not samples:
-        raise TaskNeutralScoringError(["rigid_task_samples_invalid"])
-    normalized: list[dict[str, Any]] = []
-    previous_step: int | None = None
-    for index, sample in enumerate(samples):
-        if not isinstance(sample, Mapping):
-            raise TaskNeutralScoringError([f"rigid_task_sample_invalid:{index}"])
-        step = sample.get("step_index")
-        if (
-            isinstance(step, bool)
-            or not isinstance(step, int)
-            or (previous_step is not None and step <= previous_step)
-        ):
-            raise TaskNeutralScoringError([f"rigid_task_sample_step_invalid:{index}"])
-        previous_step = step
-        pose = _vector(
-            sample.get("task_object_pose_world"),
-            7,
-            error=f"rigid_task_sample_pose_invalid:{index}",
-        )
-        if abs(sum(item * item for item in pose[3:]) - 1.0) > 1.0e-3:
-            raise TaskNeutralScoringError([f"rigid_task_sample_pose_invalid:{index}"])
-        normalized.append(
-            {
-                "step_index": step,
-                "pose": pose,
-                "gripper_width_m": _finite(sample.get("gripper_width_m")),
-                "task_contact_active": sample.get("task_contact_active"),
-                "support_contact_active": sample.get("support_contact_active"),
-                "robot_collision_failure": sample.get("robot_collision_failure"),
-                "scene_collision_failure": sample.get("scene_collision_failure"),
-                "containment_violation": sample.get("containment_violation"),
-                "forbidden_robot_task_collision_failure": sample.get(
-                    "forbidden_robot_task_collision_failure"
-                ),
-                "locked_joint_containment_violation": sample.get(
-                    "locked_joint_containment_violation"
-                ),
-            }
-        )
-
-    start = normalized[0]["pose"]
-    reset_translation_error = math.dist(start[:3], spec["start_pose_world"][:3])
-    reset_orientation_error = _quaternion_angle(
-        start[3:], spec["start_pose_world"][3:]
-    )
-    if (
-        reset_translation_error > spec["reset_translation_tolerance_m"]
-        or reset_orientation_error > spec["reset_orientation_tolerance_rad"]
-    ):
-        raise TaskNeutralScoringError(["rigid_task_reset_readback_mismatch"])
-    positions = [row["pose"][:3] for row in normalized]
-    translation = [math.dist(position[:2], start[:2]) for position in positions]
-    lift = [position[2] - start[2] for position in positions]
-    settle = normalized[-spec["settle_window_samples"] :]
-    settle_available = len(normalized) >= spec["settle_window_samples"]
-    lower = spec["destination_position_bounds_world_m"]["minimum"]
-    upper = spec["destination_position_bounds_world_m"]["maximum"]
-    destination_inside = settle_available and all(
-        all(low <= value <= high for low, value, high in zip(lower, row["pose"][:3], upper, strict=True))
-        for row in settle
-    )
-    orientation_errors = [
-        _quaternion_angle(row["pose"][3:], spec["destination_orientation_xyzw"])
-        for row in settle
-    ]
-    orientation_ok = settle_available and all(
-        error <= spec["destination_orientation_tolerance_rad"]
-        for error in orientation_errors
-    )
-    support_ok = settle_available and all(
-        spec["support_height_interval_m"][0]
-        <= row["pose"][2]
-        <= spec["support_height_interval_m"][1]
-        for row in settle
-    )
-    support_contact_complete = settle_available and all(
-        isinstance(row["support_contact_active"], bool) for row in settle
-    )
-    support_contact_ok = support_contact_complete and all(
-        row["support_contact_active"] is True for row in settle
-    )
-    anchor = settle[-1]["pose"] if settle else start
-    settled = settle_available and all(
-        math.dist(row["pose"][:3], anchor[:3])
-        <= spec["settle_position_tolerance_m"]
-        and _quaternion_angle(row["pose"][3:], anchor[3:])
-        <= spec["settle_orientation_tolerance_rad"]
-        for row in settle
-    )
-    released = settle_available and all(
-        row["gripper_width_m"] is not None
-        and row["gripper_width_m"] >= spec["release_gripper_width_min_m"]
-        and row["task_contact_active"] is False
-        for row in settle
-    )
-    safety_fields = (
-        "robot_collision_failure",
-        "scene_collision_failure",
-        "containment_violation",
-        "forbidden_robot_task_collision_failure",
-        "locked_joint_containment_violation",
-    )
-    safety_complete = all(
-        isinstance(row[field], bool) for row in normalized for field in safety_fields
-    )
-    safety_ok = safety_complete and not any(
-        row[field] for row in normalized for field in safety_fields
-    )
-    moved = max(translation) > spec["movement_epsilon_m"]
-    # Simulator state is floating-point readback. Treat a value that differs
-    # from an exact preregistered boundary only by round-off as on the
-    # boundary; this is not a task tolerance and must remain far below any
-    # physical/scoring tolerance in the task contract.
-    translated = max(translation) >= spec["minimum_translation_m"] or math.isclose(
-        max(translation),
-        spec["minimum_translation_m"],
-        rel_tol=0.0,
-        abs_tol=1.0e-12,
-    )
-    lifted = max(lift) >= spec["minimum_lift_m"] or math.isclose(
-        max(lift),
-        spec["minimum_lift_m"],
-        rel_tol=0.0,
-        abs_tol=1.0e-12,
-    )
-    succeeded = (
-        destination_inside
-        and orientation_ok
-        and support_ok
-        and support_contact_ok
-        and settled
-        and released
-        and safety_ok
-        and translated
-        and lifted
-    )
-    if not safety_complete or not support_contact_complete:
-        status = "undetermined"
-        outcome = (
-            "native_safety_readback_missing"
-            if not safety_complete
-            else "native_support_contact_readback_missing"
-        )
-    elif not safety_ok:
-        status = "scored"
-        outcome = "collision_or_containment_failure"
-    elif succeeded:
-        status = "scored"
-        outcome = "placed_and_settled"
-    elif not moved:
-        status = "scored"
-        outcome = OUTCOME_NEVER_MOVED
-    elif destination_inside and not released:
-        status = "scored"
-        outcome = "release_incomplete"
-    else:
-        status = "scored" if settle_available else "undetermined"
-        outcome = "moved_below_success_contract"
-    report: dict[str, Any] = {
-        "schema_version": RIGID_REPORT_SCHEMA_VERSION,
-        "status": status,
-        "task_kind": TASK_KIND_RIGID_PICK_PLACE,
-        "subject_asset_id": spec["subject_asset_id"],
-        "task_succeeded": succeeded,
-        "outcome": outcome,
-        "measurements": {
-            "sample_count": len(normalized),
-            "reset_translation_error_m": reset_translation_error,
-            "reset_orientation_error_rad": reset_orientation_error,
-            "maximum_translation_m": max(translation),
-            "maximum_lift_m": max(lift),
-            "settle_window_available": settle_available,
-            "settle_destination_inside": destination_inside,
-            "settle_orientation_ok": orientation_ok,
-            "settle_support_height_ok": support_ok,
-            "settle_support_contact_readback_complete": support_contact_complete,
-            "settle_support_contact_ok": support_contact_ok,
-            "settled": settled,
-            "released": released,
-            "native_safety_readback_complete": safety_complete,
-            "native_safety_ok": safety_ok,
-        },
-        "learned_judge_consulted": False,
-        "candidate_policy_queried_by_scorer": False,
-        "report_digest": "",
-    }
-    report["report_digest"] = canonical_digest(report, digest_field="report_digest")
-    return report
+    return score(task_spec=task_spec, samples=samples)
 
 
 def score_task_episode_from_spec(
@@ -952,21 +1320,30 @@ def score_task_episode_from_spec(
 __all__ = [
     "ARTICULATED_REPORT_SCHEMA_VERSION",
     "RIGID_REPORT_SCHEMA_VERSION",
+    "RIGID_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION",
+    "RigidTaskEventLedgerExpectation",
+    "RigidTaskSuccessContract",
     "OUTCOME_COLLISION_FAILURE",
+    "OUTCOME_CONTACT_NOT_ESTABLISHED",
     "OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION",
     "OUTCOME_MOVED_BELOW_THRESHOLD",
     "OUTCOME_NEVER_MOVED",
     "OUTCOME_NON_TASK_JOINT_MOVED",
     "OUTCOME_OPENED_AND_SETTLED",
     "OUTCOME_OPENED_THEN_REBOUNDED",
+    "OUTCOME_PUSHED_AND_SETTLED",
     "OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE",
     "TASK_KIND_ARTICULATED_OPEN_CLOSE",
     "TASK_KIND_RIGID_PICK_PLACE",
     "TASK_SPEC_SCHEMA_VERSION",
     "TASK_SPEC_GRAPH_SCHEMA_VERSION",
     "TaskNeutralScoringError",
+    "confirm_rigid_task_success_contract",
+    "confirmed_rigid_task_success_contract_matches_published",
     "score_articulated_task_episode",
     "score_rigid_task_episode",
     "score_task_episode_from_spec",
+    "seal_rigid_task_success_contract",
     "validate_articulated_task_spec",
+    "validate_rigid_task_success_contract",
 ]

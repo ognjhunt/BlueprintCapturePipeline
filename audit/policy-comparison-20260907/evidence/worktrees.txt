@@ -1,0 +1,819 @@
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline
+HEAD b7c0249b5cfbe48bd14a00b6b4ca6e2169a50eba
+branch refs/heads/main
+
+worktree /private/tmp/bcp-activation-restart-review-20260905
+HEAD f7c2baa4ea3166244f13c187f041116287777573
+branch refs/heads/codex/activation-restart-review-20260905
+
+worktree /private/tmp/bcp-active-deployed-checkout-admission-20260905
+HEAD 4fb8a11ad44f1a97ce5e24035cc85f405a370aa5
+branch refs/heads/codex/active-deployed-checkout-admission-20260905
+
+worktree /private/tmp/bcp-artifixer-empty-support-20260907
+HEAD e31b1c6ebdb85ebcfb88505293c4b6434e9faf2b
+branch refs/heads/fix/artifixer-empty-support-views-20260907
+
+worktree /private/tmp/bcp-artifixer-required-55hW9V
+HEAD a19c2fd36d81ec5e011b0f26006fce3e2a8c2618
+branch refs/heads/codex/require-artifixer-grading
+
+worktree /private/tmp/bcp-autonomous-scene-intake-20260906
+HEAD 8b2468c5a0add7f4736b7962dae4ffc216117318
+branch refs/heads/codex/verified-evidence-eviction-20260906
+
+worktree /private/tmp/bcp-autonomy-audit-20260906-1415
+HEAD 0db894c5baf81490ecfa4f982a7c0475ff5f5aa6
+detached
+
+worktree /private/tmp/bcp-autonomy-completion-20260906
+HEAD 832b09cefd33aee7b2d61772ead94326f39f1f9b
+branch refs/heads/codex/prefix-observation-credential-20260907
+
+worktree /private/tmp/bcp-baseline-30d42
+HEAD 30d42e7cb4e7218bbb7b1e242c5b0b30aabef371
+detached
+
+worktree /private/tmp/bcp-batch-runtime-service-readback-20260905
+HEAD 205f1c733e739fa5efed62d684f4161d51f32910
+branch refs/heads/codex/batch-runtime-service-readback-20260905
+
+worktree /private/tmp/bcp-billing-frozen-object-retention-20260905
+HEAD 17e54194d2bfb269d4222321d5ec42559eac5f8d
+branch refs/heads/codex/billing-frozen-object-retention-20260905
+
+worktree /private/tmp/bcp-c1-mixed-store-reader-20260905
+HEAD 22ace55865a26fc2972e876927e745b0e8e25297
+branch refs/heads/codex/c1-mixed-store-reader-20260905
+
+worktree /private/tmp/bcp-calibrated-clipping-20260905
+HEAD 241e4afdfb564d234f9fb2f99e5d0b0e60fd4b90
+branch refs/heads/codex/calibrated-clipping-20260905
+
+worktree /private/tmp/bcp-claude-1615-fixes
+HEAD 24a28f7015fb1cf3b52cbbef24b4899fdd4618b9
+branch refs/heads/claude/1615-ci-fixes
+
+worktree /private/tmp/bcp-claude-841757-quick10-20260904
+HEAD 0313ac9ccd7b4d1f19a342ca3a33d63fb8999637
+branch refs/heads/claude/scene841757-quick10-closure
+
+worktree /private/tmp/bcp-claude-actgate-20260905
+HEAD 15a5dbe8454dca7d8f0fe843fcef20e59dde3252
+branch refs/heads/claude/activation-waits-for-controls-intent
+
+worktree /private/tmp/bcp-claude-activation-20260904
+HEAD bc8031107b6fafa1c77edefeba8d6d1464a4f936
+branch refs/heads/claude/controls-continuation-deferred-inputs
+
+worktree /private/tmp/bcp-claude-actscan-20260905
+HEAD 08dba74bdf3143bfa4c72d87606128008ac28960
+branch refs/heads/claude/intent-reprovision-supersedes
+
+worktree /private/tmp/bcp-claude-bundle-closure-20260905
+HEAD 9b48414ccccd4b991191d2a46ce0214a4c4f0583
+branch refs/heads/claude/ship-retreat-scoring-in-construction-bundle
+
+worktree /private/tmp/bcp-claude-cad-sources-20260904
+HEAD 3f2cc4ca070fa39183fb8f76c982c1e240df2f62
+branch refs/heads/claude/cad-sources-service-readable
+
+worktree /private/tmp/bcp-claude-canary-handoff-20260905
+HEAD 616d92bfd66ffb02606e838b1bd1072e8daa1b08
+branch refs/heads/claude/policy-canary-handoff
+
+worktree /private/tmp/bcp-claude-canary-scan-20260905
+HEAD 9a8f43e814f6d07a19066153028f41561f84891a
+branch refs/heads/claude/canary-scan-superseded-releases
+
+worktree /private/tmp/bcp-claude-deploy-150003f0
+HEAD 150003f01719bc603f25d1191506d893ab19cd07
+detached
+
+worktree /private/tmp/bcp-claude-destination-support-20260904
+HEAD 990072727bdfaed07c0fb6d3823efdb7c4dd8489
+branch refs/heads/claude/destination-support-rigid-body-paths
+
+worktree /private/tmp/bcp-claude-placement-proposal-20260904
+HEAD cb1c4fa672334309b210c754d44c61d14d1bfef7
+branch refs/heads/claude/passive-destination-placement-proposal
+
+worktree /private/tmp/bcp-claude-plan-scan-20260905
+HEAD 7a47635620a9e2d8d09c3d88c728cc1a47549fe6
+branch refs/heads/claude/plan-scan-superseded-releases
+
+worktree /private/tmp/bcp-claude-prep-rw-20260905
+HEAD 619db0c93fb1fbee6caf3ad20da28ae22d044544
+branch refs/heads/claude/preparation-unit-sam-child-queue-write-path
+
+worktree /private/tmp/bcp-claude-promote-92ea154937146b939f2b45e9cf5db6c5d3c1adb9
+HEAD 92ea154937146b939f2b45e9cf5db6c5d3c1adb9
+detached
+
+worktree /private/tmp/bcp-claude-promote-b64350f1d6dc9bd46699e6b17e9e85d14474dce3
+HEAD b64350f1d6dc9bd46699e6b17e9e85d14474dce3
+detached
+
+worktree /private/tmp/bcp-claude-promote-cc1aa124f1e6228884df528e4c6bee433a6d7e72
+HEAD cc1aa124f1e6228884df528e4c6bee433a6d7e72
+detached
+
+worktree /private/tmp/bcp-claude-pubscoring-20260904
+HEAD 8ea8b32a6b38464180ffdeb3814c09787d4df496
+branch refs/heads/claude/publication-scoring-transform-from-static
+
+worktree /private/tmp/bcp-claude-submission-20260904
+HEAD 5031be4b3e6262e3b38178b6dce924d322a39c49
+branch refs/heads/claude/scene-configuration-submission
+
+worktree /private/tmp/bcp-claude-uri-allowlist-20260905
+HEAD 619db0c93fb1fbee6caf3ad20da28ae22d044544
+branch refs/heads/claude/allow-publisher-pinned-sources
+
+worktree /private/tmp/bcp-contribution-avoidlist-binding-20260905
+HEAD 32be15f6c014cff6931e9379b607309b5f3eb5f1
+branch refs/heads/codex/contribution-avoidlist-binding-20260905
+
+worktree /private/tmp/bcp-controls-result-projection-20260905
+HEAD 9bf0ccedcdd5b40a61e508e9b47891e7b0d65e4e
+branch refs/heads/codex/quick10-controls-result-projection-20260905
+
+worktree /private/tmp/bcp-dependency-export-fix.Nsja8x
+HEAD a526d3cedc768044cbcc90fb29016c691764b430
+branch refs/heads/codex/dependency-export-drift
+
+worktree /private/tmp/bcp-episode-interpretation-closeout-Uu3v8p
+HEAD 264a78220e68ca79d435d0df3079027d9707d17b
+branch refs/heads/codex/episode-interpretation-closeout
+
+worktree /private/tmp/bcp-host-rights-consumer-20260905
+HEAD 9b19123467eb70357a5f11e0802503be65589b76
+branch refs/heads/codex/host-rights-consumer-20260905
+
+worktree /private/tmp/bcp-intake-finish-20260906
+HEAD 1553844f92511942a9c7a31167b302391b6dca0f
+branch refs/heads/codex/scene-release-history-readback-20260906
+
+worktree /private/tmp/bcp-interpretation-backfill.6u4ACm
+HEAD f45ba6eca5dd65e68bb7d7d9191ea8e228f8ff14
+branch refs/heads/codex/rebind-promotion-workflow-ledger
+
+worktree /private/tmp/bcp-late-result-20260906
+HEAD 64ce3d2b1fd98fcac35430d7a3abf42dd1182dbf
+branch refs/heads/codex/late-result-delivery-20260906
+
+worktree /private/tmp/bcp-lifecycle-merge-20260907
+HEAD 6ca0efccd02e8eb012753ca7c6d9b954f20a1d23
+branch refs/heads/codex/merge-offline-lifecycle-fault-fixes-20260907
+
+worktree /private/tmp/bcp-main-green-verify-20260905
+HEAD 3d824708f462be3bd0ff704b41b80b4226a2f295
+branch refs/heads/codex/main-green-remaining-key-20260905
+
+worktree /private/tmp/bcp-new-scene-e2e.oDqL2f
+HEAD 8669948e763f120ca0bbc39330abcd54c27cd3fe
+branch refs/heads/codex/fix-interpretation-backfill-hmac
+
+worktree /private/tmp/bcp-offline-lifecycle-fault-audit-20260907-a7f2
+HEAD 5909be04d8e7471786507235fd468f922c04983c
+branch refs/heads/codex/offline-lifecycle-fault-audit-20260907-a7f2
+
+worktree /private/tmp/bcp-owned-activation-20260907
+HEAD 1e5678680e0eda841a541087b8a28734b9383b20
+branch refs/heads/fix/owned-activation-preparation-route-20260907
+
+worktree /private/tmp/bcp-owned-lookahead-20260907
+HEAD c2fb8fe110d27ce15d24a307d4b145b0ae9912a3
+branch refs/heads/fix/owned-lookahead-input-root-20260907
+
+worktree /private/tmp/bcp-paired-witness-staging-20260905
+HEAD f488f956504c33be7b7eb00609e4e2d415a69fba
+branch refs/heads/codex/paired-witness-staging-20260905
+
+worktree /private/tmp/bcp-partition-scene-20260907
+HEAD 631eaa74cc6d1f59c67d82e0336b70481d691622
+branch refs/heads/fix/partition-disclosure-scene-identity-20260907
+
+worktree /private/tmp/bcp-policy-canary-rescore-20260903
+HEAD 33e793a74aaacf2d218ae28426e1f5dd8d38c0a9
+branch refs/heads/codex/policy-canary-rescore-20260903
+
+worktree /private/tmp/bcp-policy-comparison-audit-20260907-e524
+HEAD c217cf39659d5c8c4988dd463d02b7450b5c6345
+branch refs/heads/codex/policy-comparison-audit-20260907-e524
+
+worktree /private/tmp/bcp-policy-rescore-safe-directory-20260903
+HEAD 99e52df4c0a37f70552513a80a002cd36f95248f
+branch refs/heads/codex/policy-rescore-safe-directory-20260903
+
+worktree /private/tmp/bcp-pr1618-review-20260905
+HEAD da3122bc1b526fa5eb646d3c4aecd48ae2dea9c5
+branch refs/heads/codex/pr1618-destination-parity-20260905
+
+worktree /private/tmp/bcp-pr1644-release-fixtures-20260905
+HEAD bb69911329474957a086edf84323b2e406f3a3dd
+branch refs/heads/codex/pr1644-release-fixtures-20260905
+
+worktree /private/tmp/bcp-prefix-validation-cache-20260907
+HEAD a38d1524c0e2bfcaca211f2ac1e7c033bd67665f
+branch refs/heads/fix/prefix-validation-cache-20260907
+
+worktree /private/tmp/bcp-production-passive-destination-cad-agent-20260904
+HEAD 309d9b30c525a2a09a9899859fd1641045c916b3
+branch refs/heads/codex/production-passive-destination-cad-agent-20260904
+
+worktree /private/tmp/bcp-production-passive-destination-simready-20260904
+HEAD 15013d0739ed8d592472bf98a29df8660af9805a
+branch refs/heads/codex/scene841757-production-construction-integration
+
+worktree /private/tmp/bcp-production-url-lint-20260905
+HEAD 8996f3cde87301f75879515f0ca928e1b50a8070
+branch refs/heads/codex/production-url-lint-20260905
+
+worktree /private/tmp/bcp-public-scene-robot-binding-20260907
+HEAD e0b94a897a11b0b5d90d62a736d5980d87462e06
+branch refs/heads/codex/sam-approved-evidence-handoff-20260907
+
+worktree /private/tmp/bcp-reconstruction-release-524fe54b
+HEAD 524fe54ba8d6add3990deba2b46d00b03ddfb0b2
+detached
+
+worktree /private/tmp/bcp-reconstruction-release-98a288a5
+HEAD 205f1c733e739fa5efed62d684f4161d51f32910
+detached
+
+worktree /private/tmp/bcp-reconstruction-release-9ae62694
+HEAD 9ae62694166fc4c7e54d318d5e2922108ec389d2
+detached
+
+worktree /private/tmp/bcp-render-timeout-evidence-20260905
+HEAD 0c169bdb6929f7a5040408b11ccf2087f9af03d3
+branch refs/heads/codex/render-timeout-evidence-20260905
+
+worktree /private/tmp/bcp-reselection-review-20260905
+HEAD bb3756a193b0be9104728717d6dda519064afb24
+branch refs/heads/codex/vast-refusal-reselection-guard-20260905
+
+worktree /private/tmp/bcp-restart-compatibility-audit-20260907-01a07da6
+HEAD 882ebdb7ac4f195676ea146d7b9dec6510d2ac3b
+branch refs/heads/codex/restart-compatibility-audit-20260907-01a07da6
+
+worktree /private/tmp/bcp-rigid-retreat-clearance-20260905
+HEAD d702ffbec8b38176d630dccb6495784cd2ba0dc1
+branch refs/heads/codex/rigid-retreat-collision-clearance
+
+worktree /private/tmp/bcp-sam-completed-prefix-adoption-20260905
+HEAD f31e76da5de39f1c4b28009ef8d384467bbbf74d
+branch refs/heads/codex/sam-completed-prefix-adoption-20260905
+
+worktree /private/tmp/bcp-sam-disclosure-guard-20260905
+HEAD 5d6ae28bcc2ce49db26c510565f6e7f396742154
+branch refs/heads/codex/sam-disclosure-guard-20260905
+
+worktree /private/tmp/bcp-sam-idle-cleanup-root-20260905
+HEAD 15b95f6fd1825ec2cc6db78954fe18cc50355280
+branch refs/heads/codex/sam-idle-cleanup-root-20260905
+
+worktree /private/tmp/bcp-sam-image-dependency-cache-20260905
+HEAD 92ea154937146b939f2b45e9cf5db6c5d3c1adb9
+branch refs/heads/codex/sam-image-dependency-cache-20260905
+
+worktree /private/tmp/bcp-sam-parent-enqueue-sandbox-20260905
+HEAD f56c22278be068af9628cbc5dcbb7d9cec67069a
+branch refs/heads/codex/sam-parent-enqueue-sandbox-20260905
+
+worktree /private/tmp/bcp-sam-prefix-cli-path-types-20260905
+HEAD 42757e3313a73a2818986499135be7f79f2e7443
+branch refs/heads/codex/sam-prefix-cli-path-types-20260905
+
+worktree /private/tmp/bcp-sam-prefix-release-retention-20260905
+HEAD ac38ba0318881dfb3bdd29f98a14b77940fc98a8
+branch refs/heads/codex/sam-prefix-release-retention-20260905
+
+worktree /private/tmp/bcp-sam-prefix-scoped-git-trust-20260905
+HEAD 441dc84a046a79a672f3bae9b719ebec4ca633df
+branch refs/heads/codex/sam-prefix-scoped-git-trust-20260905
+
+worktree /private/tmp/bcp-sam-profile-early-binding-20260905
+HEAD 90b31355713c589a18b1771a3ab31ad24d7a19da
+branch refs/heads/codex/sam-profile-early-binding-20260905
+
+worktree /private/tmp/bcp-sam-review-adopted-authority-20260905
+HEAD 6e471a1b09c0fc2cf1b2bfb1b48a174dabe62f83
+branch refs/heads/codex/sam-review-adopted-authority-20260905
+
+worktree /private/tmp/bcp-sam-review-completed-cost-20260905
+HEAD 010f76548e7e634c021447d736b925482a0967ed
+branch refs/heads/codex/sam-complete-prefix-evidence-root-20260905
+
+worktree /private/tmp/bcp-sam-review-retained-input-fix-20260905
+HEAD 1f62003ca71f4939b207bda48a75fe262413db88
+branch refs/heads/codex/sam-review-retained-input-fix-20260905
+
+worktree /private/tmp/bcp-sam-service-provision-20260905
+HEAD 74962b398982502e1f871d18d5200b25dc9db5eb
+branch refs/heads/codex/sam-service-provision-20260905
+
+worktree /private/tmp/bcp-sam-single-create-limit-20260905
+HEAD 793b28ce08cdc1d5163e3d11439ec4fd3123ad21
+branch refs/heads/codex/sam-single-create-limit-20260905
+
+worktree /private/tmp/bcp-sam-spend-ledger-sandbox-20260905
+HEAD 17a0eb056b8bdb7ac146d8b701d24ba2daeafd9b
+branch refs/heads/codex/sam-spend-ledger-sandbox-20260905
+
+worktree /private/tmp/bcp-sam-tracking-pinned-recovery-20260905
+HEAD be4b130a1e3ef18f0fdc44aac196d51dc9c6688a
+branch refs/heads/codex/sam-tracking-pinned-recovery-20260905
+
+worktree /private/tmp/bcp-sam31-cpu-image-packet-20260905
+HEAD 92ea154937146b939f2b45e9cf5db6c5d3c1adb9
+branch refs/heads/codex/sam31-cpu-image-packet-20260905
+
+worktree /private/tmp/bcp-sam31-room-aware-cameras-20260905
+HEAD 8e08f0e45950c8b9b74e15be93f39f28c56bc191
+branch refs/heads/codex/sam31-room-aware-cameras-20260905
+
+worktree /private/tmp/bcp-scene-dry-run-20260907
+HEAD e28651ccf4e062b31b9133e11c9fb2f1a0cd418c
+branch refs/heads/fix/scene-dry-run-read-only-20260907
+
+worktree /private/tmp/bcp-scene841757-core-ci-20260905
+HEAD 73930ab9162801cb617c0703ececc3b51f36c346
+branch refs/heads/codex/scene841757-production-e2e-20260904
+
+worktree /private/tmp/bcp-scene841757-native-destination-20260904
+HEAD 13d8955ed8d05ad496bdec38edb744278d5a4a94
+branch refs/heads/codex/scene841757-native-destination-observation-20260904
+
+worktree /private/tmp/bcp-scene841757-production-e2e-20260904
+HEAD 62add309c678548fb23ea4689c0626d83c03548b
+branch refs/heads/codex/scene841757-task-parameter-authoring-20260905
+
+worktree /private/tmp/bcp-semantic-native-1280-20260907
+HEAD cebd41452b3a09e1a11762c0458ffc96678694fd
+branch refs/heads/fix/semantic-native-1280-20260907
+
+worktree /private/tmp/bcp-source-calibration-gpu-20260905
+HEAD 6d221b230a01aa5698f1abb732fc6f96056206b9
+branch refs/heads/codex/source-calibration-gpu-20260905
+
+worktree /private/tmp/bcp-source-calibration-lifecycle-20260905
+HEAD 18866c5b58f717128e9bc6caf41d2807b8a6e231
+branch refs/heads/codex/source-calibration-lifecycle-regression
+
+worktree /private/tmp/bcp-source-calibration-result-discovery-20260905
+HEAD 9cfee241c563f3ce8e01c59f7b528751719b528c
+branch refs/heads/codex/source-calibration-result-discovery-20260905
+
+worktree /private/tmp/bcp-source-calibration-vast-inventory-20260905
+HEAD d19d991ae86d4a67e1ee0811fcf1757d6cf648b8
+branch refs/heads/codex/source-calibration-vast-inventory-20260905
+
+worktree /private/tmp/bcp-source-camera-bounded-recovery-20260905
+HEAD b4c0e2613bda5f01b23e3b1c2a9065a4d0481172
+branch refs/heads/codex/source-camera-bounded-recovery-20260905
+
+worktree /private/tmp/bcp-source-camera-recovery-worker-20260905
+HEAD ff8bbe986fec868c9b79bcb24ada91d213ff4fa5
+branch refs/heads/codex/source-camera-recovery-worker-20260905
+
+worktree /private/tmp/bcp-strict-controls-integration-20260905
+HEAD 9fe1dfe4259941ccfc70f7afc1f97d334a8284a5
+branch refs/heads/codex/scene841757-controls-integration
+
+worktree /private/tmp/bcp-strict-task-contract-20260904
+HEAD b2097580d0b629e43ea291c114bdf9237f9a0f55
+branch refs/heads/codex/scene841757-strict-task-contract
+
+worktree /private/tmp/bcp-strict-terminal-retreat-20260905
+HEAD ed87af81c303b60d36d21277c536d1c800e51468
+branch refs/heads/codex/strict-controls-preserve-terminal-retreat
+
+worktree /private/tmp/bcp-supervisor-ledger-readonly-20260907
+HEAD 0bc956f5aed08fb17e2c4db373bc1779fdccfb2e
+branch refs/heads/fix/supervisor-ledger-readonly-20260907
+
+worktree /private/tmp/bcp-task-owner-contact-invariants-20260905
+HEAD 953d8e501afe931d76d0f4719f10c745b2a4df8b
+branch refs/heads/codex/task-authoring-owner-contact-invariants
+
+worktree /private/tmp/bcp-vast-bootstrap-tls-evidence-20260905
+HEAD e86df8d50777c8d006a8dadd822fa2dfa5725f0b
+branch refs/heads/codex/vast-bootstrap-tls-evidence-20260905
+
+worktree /private/tmp/bcp-vast-scoped-zero-20260907
+HEAD 679937609ff9ee716b6e4707e32134ca1dbb317f
+branch refs/heads/fix/vast-scoped-terminal-zero-20260907
+
+worktree /private/tmp/bcp-visible-target-mask-coverage-20260907
+HEAD 792584eed0b60783db53b43d01da730127c9ebea
+branch refs/heads/fix/task-evaluation-gpu-owner-recognition-20260907
+
+worktree /private/tmp/blueprint-configuration-disclosure-20260905
+HEAD 8df876fb8e7a3c06033a3346b4a78897e077983b
+branch refs/heads/codex/configuration-partition-disclosure-20260905
+
+worktree /private/tmp/blueprint-episode-cli-budget-fix-20260903
+HEAD 4a557c37a8a945850701cc388538b4d802355a34
+branch refs/heads/codex/episode-interpretation-cli-budget-fix
+
+worktree /private/tmp/blueprint-episode-interpretation-20260903
+HEAD 69686fddf253e12fcbd052ecd5c11663fbb52d2a
+branch refs/heads/codex/episode-interpretation-agent
+
+worktree /private/tmp/blueprint-intent-registry-safe-20260905
+HEAD 168993a7f01f2c75cf91a417f27aff33947b545a
+branch refs/heads/codex/intent-registry-atomic-supersession-20260905
+
+worktree /private/tmp/blueprint-iteration-submission-20260905
+HEAD cccec93eb45be5d8982bd390da459e23cc708add
+branch refs/heads/codex/development-iteration-submission-20260905
+
+worktree /private/tmp/blueprint-nonpolicy-owner-authority-20260906
+HEAD 37712fa5ae96750333b417f5099741a4ca9e45fd
+branch refs/heads/codex/nonpolicy-owner-authority-20260906
+
+worktree /private/tmp/blueprint-persistent-policy-pair-20260906
+HEAD 184dbd09326b52dcd0d516f09174c527880ef351
+branch refs/heads/codex/persistent-policy-pair-20260906
+
+worktree /private/tmp/blueprint-planar-push-scoring.ds72bk
+HEAD b6dd2fbf58c953a3932bf77caf71322194da76a6
+branch refs/heads/codex/planar-push-strategy-scoring-20260903
+
+worktree /private/tmp/blueprint-policy-handoff-safe-20260905
+HEAD be21fb01ca01359d647d597e4ce1b84467aa221e
+branch refs/heads/codex/policy-handoff-durable-ack-20260905
+
+worktree /private/tmp/blueprint-public-scene-factory-20260905
+HEAD bbbb38e60005913bbb7c0eb9e9bbdfa521ddfc79
+branch refs/heads/codex/public-scene-attempt-factory
+
+worktree /private/tmp/blueprint-r12-r13-20260906
+HEAD beccd09d7e5198666efdc68e91f0bcc07f6555c9
+branch refs/heads/codex/r12-r13-terminal-capability-20260906
+
+worktree /private/tmp/blueprint-r5-prefix-20260906
+HEAD 7852ade47fc69828fa8f8c2f25064c18ab87eea7
+branch refs/heads/codex/r5-prefix-observation-20260906
+
+worktree /private/tmp/blueprint-rescore-legacy-contract-compat
+HEAD 91c5db197b73ee29977f5f5b8f4d33a5874f3af0
+branch refs/heads/codex/rescore-legacy-contract-compat
+
+worktree /private/tmp/blueprint-sam-render-handoff-20260905
+HEAD d941534df27993fd46ee2d07261b534597489da8
+branch refs/heads/codex/sam-render-handoff-origin-20260905
+
+worktree /private/tmp/blueprint-scene-progression-20260906
+HEAD 17ea7851222828446bce703d804b35f1f84c3ea6
+branch refs/heads/codex/persistent-scene-progression
+
+worktree /private/tmp/blueprint-scene-view-split-20260905
+HEAD fbd31b4a71becc7fb4ec3c4c05253d9754efc44b
+branch refs/heads/codex/scene-view-prepare-finalize-20260905
+
+worktree /private/tmp/blueprint-scene841757-e2e-20260904
+HEAD b1660e5d65b71a9d7d4bbc00476f315aaa6dec1b
+branch refs/heads/codex/scene-submission-assembly-20260904
+
+worktree /private/tmp/blueprint-source-finalization-reentry-20260905
+HEAD 57f91d9e49ed906e8f8e1978f7983254092f3354
+branch refs/heads/codex/source-calibration-finalization-reentry-20260905
+
+worktree /private/tmp/blueprint-source-support-contact-20260905
+HEAD a531fb0ddb5169fd1cb15314d8b3441366d64d3b
+branch refs/heads/codex/source-support-contact-20260905
+
+worktree /private/tmp/blueprint-submission-physics-20260905
+HEAD 04834eabd10061b6885f5878c2ffce309d501b63
+branch refs/heads/codex/submission-physics-preflight-20260905
+
+worktree /private/tmp/blueprint-task-proposal-scope-20260905
+HEAD 770eb569cd5121a0715f652dc19665d23ff97670
+branch refs/heads/codex/task-proposal-cost-scope-preflight-20260905
+
+worktree /private/tmp/blueprint-task-success-binding.RSGiav
+HEAD d57951aec6fe1d83c63a4ac760824c304d9c0b82
+branch refs/heads/codex/task-success-contract-binding
+
+worktree /private/tmp/blueprint-task-success-contract.qLurDE
+HEAD ce986b39024c72acec03a569f4e469ecaf94fe55
+branch refs/heads/codex/task-success-contract
+
+worktree /private/tmp/claude-502/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/e85fedec-0703-49e6-820e-a1fc0843f64c/scratchpad/adp-spec-e-wt
+HEAD a8005e7d119083f9ede8857fc17db6d1cb6e2dec
+branch refs/heads/claude/spec-e-terminal-reconciler
+
+worktree /private/tmp/claude-502/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/e85fedec-0703-49e6-820e-a1fc0843f64c/scratchpad/spec-a-worktree
+HEAD 5fa9ec894ef90077031dfeb3fe32b7043513eff0
+branch refs/heads/claude/spec-a-public-scene-intent-provisioner
+
+worktree /private/tmp/claude-502/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/e85fedec-0703-49e6-820e-a1fc0843f64c/scratchpad/wt-specBC
+HEAD bee8ca9ef45d142c71747d5b2a7daa8305d7b666
+branch refs/heads/claude/specs-bc-autoprovision-owner-scope
+
+worktree /private/tmp/claude-502/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/e85fedec-0703-49e6-820e-a1fc0843f64c/scratchpad/wt-specF
+HEAD bc391d59e55790325e75ea60b64c2d686b2bdbf6
+branch refs/heads/claude/specF-preflight-optval
+
+worktree /private/tmp/claude-502/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/e85fedec-0703-49e6-820e-a1fc0843f64c/scratchpad/wt-verify-a
+HEAD b5c1517f766f93f9451f7ff2e6d6872813a693cb
+detached
+
+worktree /private/tmp/claude-502/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/e85fedec-0703-49e6-820e-a1fc0843f64c/scratchpad/wt-verify-bc
+HEAD cf23a145f9ca5246590a27e88e13fe82b4e0aad6
+detached
+
+worktree /private/tmp/claude-502/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/e85fedec-0703-49e6-820e-a1fc0843f64c/scratchpad/wt-verify-e
+HEAD 1e95c27b7d230dd2b72d732bc3036f028ae17e1b
+detached
+
+worktree /private/tmp/claude-502/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/e85fedec-0703-49e6-820e-a1fc0843f64c/scratchpad/wt-verify-f
+HEAD bc391d59e55790325e75ea60b64c2d686b2bdbf6
+detached
+
+worktree /private/tmp/phase2-wt
+HEAD bd20ccab551735d0b1ec0cbe03c87c955c094494
+branch refs/heads/claude/completed-asset-construction
+
+worktree /private/tmp/probe-1712
+HEAD 17ea7851222828446bce703d804b35f1f84c3ea6
+detached
+
+worktree /private/tmp/r11-pipeline-20260906
+HEAD 30d42e7cb4e7218bbb7b1e242c5b0b30aabef371
+branch refs/heads/codex/r11-late-closeout-20260906
+
+worktree /Users/nijelhunt_1/.claude-worktrees/BlueprintCapturePipeline-push-standoff
+HEAD 79ab01bec41b659a392c5c1a5aa6e467684c34ae
+branch refs/heads/claude/rigid-push-fingertip-standoff-20260901
+
+worktree /Users/nijelhunt_1/.codex/worktrees/0324/BlueprintCapturePipeline
+HEAD 426f9508000f705fac75a1fdd47f4ba3a9d71356
+detached
+
+worktree /Users/nijelhunt_1/.codex/worktrees/1e36/BlueprintCapturePipeline
+HEAD ea296fd7ce59a123d53eb3016f5215741cb5b0c8
+detached
+
+worktree /Users/nijelhunt_1/paperclip-clean-exec
+HEAD fc595e90794c4e62ad0f30b046c8f11e47ac56aa
+branch refs/heads/paperclip-clean-exec
+
+worktree /Users/nijelhunt_1/workspace/bcp-clean-9f006c81
+HEAD c107af2a158fd16beb9174bd87e276286c2c9faa
+branch refs/heads/codex/groot-oscar-runtime-user-exec-fix
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-arkitscenes-40958756-20260803
+HEAD 16fb3c8a279ef351823daa5296eb5e66a47299ff
+branch refs/heads/codex/arkitscenes-40958756-task-eval-20260803
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-build-on-top-upstream-20260802
+HEAD abdeed2a774fe7a10d8b8c239497e2c2e8af6ec8
+branch refs/heads/codex/build-on-top-upstream-lanes-20260802
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-claude-abstention-lab
+HEAD af1663f227d72a1168c0de0f6aaa58c32e1ed1e6
+branch refs/heads/claude/abstention-lab-20260728
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-cosmos-edge-final-canary-20260729
+HEAD e6dc7dc42c438f8f4ee6359923b3cf0b4339aea1
+branch refs/heads/codex/cosmos-edge-final-canary-20260729
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-cosmos-edge-guardrail-canary-20260729
+HEAD 83bbb4b0468e26b45aef2a03d051929b3d0b3379
+branch refs/heads/codex/cosmos-edge-guardrail-canary-20260729
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-cosmos3-successor-followup-20260728
+HEAD d7409aa5a91b748cf2e24ee18982786cda33bbfd
+branch refs/heads/codex/cosmos3-successor-terminal-evidence
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-design-partner-beta-20260729
+HEAD a2ec18c3573e9df25eb75004a951000082aff3ea
+branch refs/heads/codex/design-partner-beta-20260729
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-design-partner-beta-publication-ledger-20260730
+HEAD dc7d7c0c4d8d65f35bdd067fc976409ba159a5ad
+branch refs/heads/codex/design-partner-beta-publication-ledger-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-design-partner-beta-staging-topology-20260730
+HEAD 160378fe59f605c7ed7f1b0afb91416666687770
+branch refs/heads/codex/design-partner-beta-staging-topology-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-droid-reference-confirmation-20260729
+HEAD 9e02d038028140edce25797d05771b345ac44754
+branch refs/heads/codex/cosmos-droid-powered-confirmation-20260729
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-external-reconstruction-import-20260730
+HEAD 8954a567a19e1d4b0bc26a0b07d42dabac8a1892
+branch refs/heads/codex/external-reconstruction-import-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-fable-live-fixes
+HEAD b99f8be28a4bd3f209bd18ef72dd52c78780f0b4
+branch refs/heads/codex/general-evaluation-run
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-gpu-live-progress
+HEAD 01396d33f316ad3427ec6b0ea75cd3afebffc9e1
+branch refs/heads/codex/gpu-live-progress-overlay-20260725
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-hardening-20260714
+HEAD 8a9d0590298a8bdd406d7956d094f30df06f1ed5
+branch refs/heads/codex/gpu-reliability-hardening-20260714
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-integrated-20260714
+HEAD 95e81a10def469e106d41e24c4f396810299db79
+branch refs/heads/codex/integrated-gpu-reliability-20260714
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-interiorgs-normalization-20260730
+HEAD 5b212dbab8199484dffc88e5db3a2a3582353449
+branch refs/heads/codex/interiorgs-normalization-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-main-build-9309f28a
+HEAD 3c2a0ec524d481453c278bb897af65b056655ccd
+branch refs/heads/codex/fix-thin-build-evidence-script
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-main-build-9cba1c2e
+HEAD 0a262f301ef9aaf048e15f6ab3359ec7a2c53f9e
+branch refs/heads/codex/fix-thin-builder-probe
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-new-site-full-harness-integration-v1
+HEAD 439a74670449eef72625843d7595ed36b4fbff5f
+branch refs/heads/codex/new-site-full-harness-integration-v1
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-new-site-native-live-v2
+HEAD c24fe721827c7c593fd1a88b49b7507f98e4c669
+branch refs/heads/codex/new-site-native-live-v2
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-new-site-oscar-cli-v27
+HEAD 0235e595664d60d21888636fa4ca3a398b0d656d
+branch refs/heads/codex/new-site-oscar-cli-v27
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-new-site-policy-runtime-v45
+HEAD 95987b775f589ffab497226cf1421f5a7a7e11b6
+detached
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-new-site-remaining-arms-v1
+HEAD 344f48fcd8c160300f638cf724e0f7bec56a2b96
+branch refs/heads/codex/new-site-remaining-arms-v1
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-new-site-run-preparation-20260803
+HEAD 2a5c345853a51124e51a61b9670461acf12f8ef4
+branch refs/heads/codex/new-site-run-preparation-20260803
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-new-site-smoke-20260729
+HEAD deacbada129b238d5126c2f6565887f5620794c3
+branch refs/heads/codex/new-site-native-camera-v22
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-niantic-nurec-harness-proof
+HEAD ef50001f618cb727d46ba1d6601bdc0f7d49a825
+branch refs/heads/codex/506-five-controller-isaac
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-oscar-closed-loop-20260728
+HEAD ddcf61c900954435524790501b02d86ac4c82a93
+branch refs/heads/codex/oscar-matched-closed-loop-20260728
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-phaseb-session-reliability-20260728
+HEAD df5dbadde9437ff04abb81f8dac68306a65b6e8f
+branch refs/heads/codex/phaseb-session-reliability-20260728
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-experiment-2
+HEAD 2ca47426c0359c2aaea3bf71d6c4a95b2c16871f
+branch refs/heads/codex/policy-ranking-thesis-experiment-2-20260727
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-real-policy-closed-loop-confirmation-20260730
+HEAD b6be73440bf723c530325fcb2dcd4b46ca81dae9
+branch refs/heads/codex/policy-ranking-real-policy-closed-loop-confirmation-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-real-policy-closed-loop-confirmation-ctrl-world-runtime-20260730
+HEAD 8e8440a8188f102ffffdcaccd8e8a9f80845fb6a
+branch refs/heads/codex/policy-ranking-real-policy-closed-loop-confirmation-ctrl-world-runtime-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-real-policy-query2-runtime-2e46cb6b-20260801
+HEAD 3bec4b6acaffff7cf7d9df7274471cdf654a4342
+branch refs/heads/codex/policy-ranking-real-policy-query2-runtime-2e46cb6b-20260801
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor
+HEAD 1b560ec762bc1549f6a4f0acbf53cb14ab80342f
+branch refs/heads/codex/policy-ranking-successor-precreate-budget-20260727
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-exact-main
+HEAD f788b8da70cee64e6f5d99a344134423463f1a66
+branch refs/heads/codex/policy-ranking-successor-pre-mutation-auth
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-launch
+HEAD ddd8d8c53aa20e5ec5d38a99c02695892354daf4
+branch refs/heads/codex/policy-ranking-successor-runtime-retry-20260727
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-thesis
+HEAD eedd672100bf37389175077f081ef96934038c19
+branch refs/heads/codex/policy-ranking-final-verdict-retry-20260726
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-wam-exact-binding-v1
+HEAD daecf6b5f382feb3eb5c3cd16e59efd884177988
+branch refs/heads/codex/new-site-policy-wam-exact-binding-v1
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-polycam-source-profile-20260803
+HEAD 1b0148303a0ab1c396021ac6406a56c71a082d3f
+branch refs/heads/codex/polycam-developer-source-profile
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-pr148-full-072290ac
+HEAD 072290acd19b1302fed92dc63f7ba50d5f01b07a
+detached
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-pr148-full-e62dbdcb
+HEAD e62dbdcbe03eeb8c4dfa09cb811a8853137b4c70
+detached
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-provenance-identities
+HEAD 48797629e179b32282c5b9b388b18bef09739033
+branch refs/heads/codex/provenance-runtime-identities
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-provider-neutral-task-eval-20260803
+HEAD 4254be330b5e5302ab80306dfa88bf21d91616ca
+branch refs/heads/codex/provider-neutral-task-eval-harness-20260803
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-qualified-object-fusion-20260730
+HEAD 20c01d92f5faaaf903619df9b1874eefeb78df1c
+branch refs/heads/codex/qualified-object-fusion-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-roboarena-calibration-20260728
+HEAD 9a839750c51c8b0628c4d808921ee074cc03f9c3
+branch refs/heads/codex/roboarena-full-stack-calibration-20260728
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-roboarena-reasoner-canary-evidence-20260728
+HEAD 7b47af6d97886e3c1e8ff461757195936efe3db2
+branch refs/heads/codex/causal-screen-dynamic-id-20260728
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-roboarena-successor-v2-20260728
+HEAD 52a3dd2e8fdf23dbfe7e9bae18edb111ce9ce068
+branch refs/heads/codex/roboarena-disjoint-reasoner-successor-20260728
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-root-lifecycle
+HEAD d53417635eed3ab0222be4f66008aa75899e8ed5
+branch refs/heads/codex/gpu-lifecycle-closure
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-sam31-gpu-canary-20260801
+HEAD a48e81c79c92397e1267a82e31a4ffe698550040
+branch refs/heads/codex/sam31-worker-image-build-20260801
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-sam31-source-track-runner-20260801
+HEAD 5f5e0f44660f2b4f3872a74a9b38532b7225013c
+branch refs/heads/codex/sam31-source-track-runner-20260801
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-scene839873-postcpu-20260830
+HEAD 490532b1757944d9c37fcacf9d43e13a14b4fdb6
+branch refs/heads/codex/scene839873-post-construction-cpu
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-semantic-benchmark-20260730
+HEAD 0cf1d87c7e77ddc496b8d32e726f1c83f25072e9
+branch refs/heads/codex/semantic-benchmark-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-semantic-collision-validation-20260730
+HEAD e9437c82a13120763e91a5566d3cbfa9dea5d7a0
+branch refs/heads/codex/semantic-collision-validation-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-semantic-contribution-runner-20260801
+HEAD eead4d801180ed969ce3aa5139ba306b6763a351
+branch refs/heads/codex/semantic-contribution-runner-20260801
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-semantic-gaussian-lifting-20260730
+HEAD 445146095e8b15fa98ade955b51d6daa129454c4
+branch refs/heads/codex/semantic-gaussian-lifting-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-semantic-obb-20260730
+HEAD b0c888fa93a57249bd3f0556b5bbab7acd549332
+branch refs/heads/codex/semantic-obb-20260730
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-semantic-source-track-import-20260801
+HEAD 250dd3b3a4d1e4c2a6c4cf63bf8c6c71db0b5b3f
+branch refs/heads/codex/pipeline-staging-installer-owner-fix-20260801
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-wt-bindings
+HEAD 97f77a7ccf408568c2f866a41ca45d4e1fb5c59a
+branch refs/heads/claude/preflight-content-identity-bindings
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-wt-bundle
+HEAD 98ec90ed6ec5aeba7dc0048e85f30a72631cde44
+branch refs/heads/claude/source-calibration-bundle-entries
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-wt-capacity
+HEAD cbd24377e31d2870b8bd089e056cfcd2c3b9b44f
+branch refs/heads/claude/preflight-timer
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-wt-green
+HEAD 0db894c5baf81490ecfa4f982a7c0475ff5f5aa6
+detached
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-wt-preflight
+HEAD 2d6de42d5b431dd02e856219f5a02ce58da5b97b
+branch refs/heads/claude/preflight-probe-import-path
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline-wt-storage
+HEAD 31bfcfdb4f8401f0107589055ac343c27305e06d
+branch refs/heads/claude/lookahead-polish
+
+worktree /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.claude/worktrees/laughing-curran-aa6a13
+HEAD 0db894c5baf81490ecfa4f982a7c0475ff5f5aa6
+branch refs/heads/claude/laughing-curran-aa6a13

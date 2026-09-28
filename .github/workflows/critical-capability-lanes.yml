@@ -82,7 +82,7 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/critical-lanes/pubsub_emulator_integration.json
             ${{ runner.temp }}/blueprint-ci/critical-lanes/pubsub_emulator_round_trip_source.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
   native-lerobot-export:
     if: inputs.lane == 'native_lerobot_export'
@@ -122,7 +122,7 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/critical-lanes/native_lerobot_export.json
             ${{ runner.temp }}/blueprint-ci/critical-lanes/native_lerobot_export_source_manifest.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
   gpu-provider-canary:
     if: inputs.lane == 'gpu_provider_canary'
@@ -222,4 +222,4 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-provider-canary-preflight.json
             ${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-canary-evidence
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7

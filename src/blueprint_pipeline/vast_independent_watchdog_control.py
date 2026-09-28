@@ -16,6 +16,7 @@ from typing import Any
 from collections.abc import Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .vast_inventory_evidence import _inventory_is_confirmed_zero as _inventory_is_confirmed_zero
 from .watchdog_owner_teardown_contract import (
     OWNER_TEARDOWN_CANCEL_NAME,
     WATCHDOG_EVIDENCE_NAME,
@@ -65,6 +66,13 @@ def _caller_exit_survival_contract() -> str:
     return "detached_posix_session"
 
 
+def _caller_exit_survival_proven(contract: str) -> bool:
+    return contract in {
+        "detached_posix_session",
+        SYSTEMD_KILL_MODE_PROCESS_SURVIVAL,
+    }
+
+
 def _stop_terminal_watchdog_process(
     process: subprocess.Popen[str], *, wait_seconds: float = 5.0
 ) -> int | None:
@@ -88,10 +96,9 @@ def _retained_watchdog_result(
     instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     alive = _process_alive(handle.process)
-    survival_proven = handle.caller_exit_survival_contract in {
-        "detached_posix_session",
-        SYSTEMD_KILL_MODE_PROCESS_SURVIVAL,
-    }
+    survival_proven = _caller_exit_survival_proven(
+        handle.caller_exit_survival_contract
+    )
     retained = alive and survival_proven
     return {
         "schema_version": HANDOFF_SCHEMA,
@@ -176,6 +183,21 @@ def _terminal_evidence_matches_handle(
     )
     allowed_ids = {str(value) for value in handle.allowed_active_instance_ids}
     allowed_names = set(handle.allowed_active_resource_names)
+    # The watchdog scopes its absence claim to the recorded instance plus the lane
+    # prefix and marks the account-wide inventory informational when no exact name
+    # or sibling is bound (groot_oscar_runpod_watchdog). Scene 840938, 2026-09-12
+    # 22:27: its final global read hit an HTTPError, it still sealed provider_terminal
+    # after two direct absence inspections, and this closer refused the evidence as
+    # "not exactly bound", stranding a completed $0.012 render. An honest failed read
+    # is admitted only under that informational scope. An observed foreign
+    # instance is also informational: another paid lane may run concurrently,
+    # but its resources cannot establish or defeat this lane's absence claim.
+    global_read_informational = bool(
+        evidence.get("global_inventory_informational_only") is True
+        and handle.resource_name_exact is None
+        and not allowed_names
+        and not allowed_ids
+    )
     try:
         observed_deadline = float(evidence.get("deadline_epoch") or 0)
     except (TypeError, ValueError):
@@ -205,8 +227,20 @@ def _terminal_evidence_matches_handle(
         )
         and all(
             isinstance(row, Mapping)
-            and _global_inventory_contains_only_allowed(
-                row, allowed_ids=allowed_ids, allowed_names=allowed_names
+            and (
+                _global_inventory_contains_only_allowed(
+                    row, allowed_ids=allowed_ids, allowed_names=allowed_names
+                )
+                or (
+                    global_read_informational
+                    and (
+                        _global_inventory_read_blocked(row)
+                        or _global_inventory_contains_only_foreign(
+                            row, instance_id=instance_id,
+                            pod_name_prefix=handle.pod_name_prefix,
+                        )
+                    )
+                )
             )
             for row in global_inventories
         )
@@ -225,6 +259,57 @@ def _terminal_evidence_matches_handle(
             for row in inspect_attempts
         )
     )
+
+
+def _global_inventory_read_blocked(value: Mapping[str, Any]) -> bool:
+    """An honestly failed account-wide read: no observation claimed, nothing listed."""
+
+    return bool(
+        value.get("status") == "blocked"
+        and value.get("provider") == "vast"
+        and value.get("name_prefix") == ""
+        and value.get("api_confirmed") is False
+        and value.get("live_resource_count") is None
+        and value.get("resources") == []
+        and isinstance(value.get("blockers"), list)
+        and bool(value.get("blockers"))
+    )
+
+
+def _global_inventory_contains_only_foreign(
+    value: Mapping[str, Any], *, instance_id: str, pod_name_prefix: str
+) -> bool:
+    """Accept an observed account inventory only when every resource is foreign to this lane."""
+
+    resources = value.get("resources")
+    count = value.get("live_resource_count")
+    if (
+        value.get("status") != "observed"
+        or value.get("provider") != "vast"
+        or value.get("name_prefix") != ""
+        or value.get("api_confirmed") is not True
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or not isinstance(resources, list)
+        or len(resources) != count
+    ):
+        return False
+    observed: set[str] = set()
+    for row in resources:
+        if not isinstance(row, Mapping):
+            return False
+        resource_id = str(row.get("instance_id") or "")
+        resource_name = str(row.get("name") or "")
+        if (
+            not resource_id
+            or not resource_name
+            or resource_id == instance_id
+            or resource_name.startswith(pod_name_prefix)
+            or resource_id in observed
+        ):
+            return False
+        observed.add(resource_id)
+    return True
 
 
 def _global_inventory_contains_only_allowed(
@@ -253,6 +338,8 @@ def _global_inventory_contains_only_allowed(
             return False
         observed.add(instance_id)
     return len(observed) == count
+
+
 
 
 def _safe_suffix(value: str) -> str:
@@ -287,6 +374,24 @@ def _exact_vast_instance_live(value: Mapping[str, Any], instance_id: int) -> boo
     )
 
 
+def validate_independent_vast_watchdog_names(
+    *, pod_name_prefix: str, resource_name_exact: str | None = None
+) -> tuple[str, str]:
+    """Share the exact launch/watchdog identity check with allocation preflight."""
+    prefix_base = str(pod_name_prefix or "").strip()
+    exact_name = str(resource_name_exact or "").strip()
+    if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
+        raise ValueError("independent_vast_watchdog_prefix_invalid")
+    if exact_name and not re.fullmatch(
+        r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", exact_name
+    ):
+        raise ValueError("independent_vast_watchdog_exact_resource_name_invalid")
+    from .groot_oscar_runpod_watchdog import CANARY_NAME_PREFIXES
+    if not (exact_name or prefix_base).startswith(CANARY_NAME_PREFIXES):
+        raise ValueError("watchdog_pod_name_prefix_not_canary_scoped")
+    return prefix_base, exact_name
+
+
 def arm_independent_vast_watchdog(
     *,
     job_dir: Path,
@@ -301,15 +406,10 @@ def arm_independent_vast_watchdog(
     """Start a detached name-bound watchdog and prove it is armed before create."""
 
     out_dir = job_dir / WATCHDOG_DIR_NAME
+    prefix_base, exact_name = validate_independent_vast_watchdog_names(
+        pod_name_prefix=pod_name_prefix, resource_name_exact=resource_name_exact
+    )
     ensure_dir(out_dir)
-    prefix_base = str(pod_name_prefix or "").strip()
-    exact_name = str(resource_name_exact or "").strip()
-    if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
-        raise ValueError("independent_vast_watchdog_prefix_invalid")
-    if exact_name and not re.fullmatch(
-        r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", exact_name
-    ):
-        raise ValueError("independent_vast_watchdog_exact_resource_name_invalid")
     prefix = exact_name or f"{prefix_base}{_safe_suffix(generated_at)}-"
     if int(max_live_minutes) < 2:
         blocked = {
@@ -331,6 +431,31 @@ def arm_independent_vast_watchdog(
     started_epoch = time.time()
     caller_exit_survival = _caller_exit_survival_contract()
     deadline = started_epoch + max(1, int(max_live_minutes)) * 60
+    if not _caller_exit_survival_proven(caller_exit_survival):
+        blocked = {
+            "schema_version": HANDOFF_SCHEMA,
+            "generated_at": generated_at,
+            "status": "blocked",
+            "independent_process": False,
+            "watchdog_armed_before_allocation": False,
+            "watchdog_started_epoch": started_epoch,
+            "watchdog_deadline_epoch": deadline,
+            "caller_exit_survival_contract": caller_exit_survival,
+            "systemd_dispatcher_kill_mode_required": "process",
+            "pod_name_prefix": prefix,
+            "watchdog_out_dir": str(out_dir),
+            "started_instance_id_path": str(
+                out_dir / "started_vast_instance_id.txt"
+            ),
+            "provider_mutations_performed": 0,
+            "blockers": [
+                "independent_vast_watchdog_caller_exit_survival_unproven"
+            ],
+            "raw_secret_values_recorded": False,
+        }
+        write_json(out_dir / EVIDENCE_NAME, blocked)
+        write_json(job_dir / HANDOFF_NAME, blocked)
+        return blocked, None
     log_path = out_dir / "watchdog.log"
     log_handle = log_path.open("a", encoding="utf-8")
     command = [
@@ -670,6 +795,13 @@ def close_independent_vast_watchdog(
     """Ask the watchdog to close only after owner teardown, or leave it armed."""
 
     if not instance_ids:
+        if handle.started_instance_id_path.exists():
+            result = _retained_watchdog_result(
+                handle=handle,
+                reason="provider_allocation_identity_present",
+            )
+            write_json(job_dir / HANDOFF_NAME, result)
+            return result
         if not provider_allocation_impossible:
             result = _retained_watchdog_result(
                 handle=handle,
@@ -755,6 +887,10 @@ def close_independent_vast_watchdog(
         "watchdog_armed_before_allocation": True,
         "instance_ids": instance_ids,
         "provider_absence_confirmed": terminal.get("provider_absence_confirmed") is True,
+        "global_inventory_read_blocked": any(
+            isinstance(row, Mapping) and _global_inventory_read_blocked(row)
+            for row in (terminal.get("initial_global_inventory"), terminal.get("final_global_inventory"))
+        ),
         "watchdog_process_exit_code": process_exit_code,
         "watchdog_retention_liveness_confirmed": False,
         "provider_mutations_performed": terminal.get("provider_mutations_performed", 0),
@@ -775,8 +911,10 @@ def close_independent_vast_watchdog_without_allocation(
     This is intentionally stronger than terminating the process locally.  The
     independent watchdog performs the same double lane-prefix/global API
     inventory used after an owned teardown and retains those facts in its
-    normal evidence file.  It is only valid when the provider adapter never
-    attempted create and no started-instance id was published.
+    normal evidence file.  It is valid only when no started-instance id was
+    published and the caller has positive evidence that create was never
+    attempted or that the rejected create produced no provider side effect.
+    The watchdog stays live unless the double inventory proves provider-zero.
     """
 
     if handle.started_instance_id_path.exists():
@@ -789,11 +927,6 @@ def close_independent_vast_watchdog_without_allocation(
             "provider_mutations_performed": 0,
             "raw_secret_values_recorded": False,
         }
-    handle.process.terminate()
-    try:
-        handle.process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        handle.process.kill()
     try:
         from .gpu_render_providers import get_render_provider
 
@@ -803,34 +936,57 @@ def close_independent_vast_watchdog_without_allocation(
         second_lane = provider.billable_inventory(name_prefix=handle.pod_name_prefix)
         second_global = provider.billable_inventory(name_prefix="")
     except Exception as exc:  # noqa: BLE001 - retain typed API uncertainty
-        result = {
-            "schema_version": HANDOFF_SCHEMA,
-            "generated_at": utc_now_iso(),
-            "status": "provider_zero_unverified_no_allocation",
-            "watchdog_armed_before_allocation": True,
-            "provider_absence_confirmed": False,
-            "error_type": type(exc).__name__,
-            "provider_mutations_performed": 0,
-            "raw_secret_values_recorded": False,
-        }
+        result = _retained_watchdog_result(
+            handle=handle,
+            reason="provider_zero_unverified_no_allocation",
+        )
+        result.update(
+            {
+                "provider_absence_confirmed": False,
+                "error_type": type(exc).__name__,
+            }
+        )
     else:
         zero = all(
-            row.get("api_confirmed") is True and row.get("live_resource_count") == 0
-            for row in (first_lane, second_lane, first_global, second_global)
+            _inventory_is_confirmed_zero(row, name_prefix=expected_prefix)
+            for row, expected_prefix in (
+                (first_lane, handle.pod_name_prefix),
+                (second_lane, handle.pod_name_prefix),
+                (first_global, ""),
+                (second_global, ""),
+            )
         )
-        result = {
-            "schema_version": HANDOFF_SCHEMA,
-            "generated_at": utc_now_iso(),
-            "status": "provider_terminal" if zero else "provider_zero_unverified_no_allocation",
-            "watchdog_armed_before_allocation": True,
-            "provider_absence_confirmed": zero,
-            "initial_inventory": first_lane,
-            "initial_global_inventory": first_global,
-            "final_inventory": second_lane,
-            "final_global_inventory": second_global,
-            "provider_mutations_performed": 0,
-            "raw_secret_values_recorded": False,
-        }
+        if zero:
+            handle.process.terminate()
+            try:
+                handle.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                handle.process.kill()
+            result = {
+                "schema_version": HANDOFF_SCHEMA,
+                "generated_at": utc_now_iso(),
+                "status": "provider_terminal",
+                "watchdog_armed_before_allocation": True,
+                "provider_absence_confirmed": True,
+                "watchdog_process_exit_code": handle.process.poll(),
+                "watchdog_retention_liveness_confirmed": False,
+                "provider_mutations_performed": 0,
+                "raw_secret_values_recorded": False,
+            }
+        else:
+            result = _retained_watchdog_result(
+                handle=handle,
+                reason="provider_zero_unverified_no_allocation",
+            )
+            result["provider_absence_confirmed"] = False
+        result.update(
+            {
+                "initial_inventory": first_lane,
+                "initial_global_inventory": first_global,
+                "final_inventory": second_lane,
+                "final_global_inventory": second_global,
+            }
+        )
     write_json(handle.out_dir / EVIDENCE_NAME, result)
     write_json(job_dir / HANDOFF_NAME, result)
     return result

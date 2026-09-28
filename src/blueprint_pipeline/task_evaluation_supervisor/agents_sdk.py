@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 import json
+import os
 import time
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from importlib import metadata
 import math
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Literal, Mapping, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
 from ..common import read_json, write_json
 from ..decision_evidence_contracts import canonical_digest
+from ..openai_prompt_cache import (
+    PROMPT_CACHE_CONTRACT_VERSION,
+    PromptCachePolicy,
+    cache_policy_evidence,
+    create_prompt_cache_policy,
+    explicit_cache_input,
+    explicit_cache_request_kwargs,
+    pricing_for_model,
+    usage_and_cost_receipt,
+    worst_case_reservation_usd,
+)
 from .contracts import ActionProposal, CapabilityKind, CapabilityResult, ProposalDisposition
 from .inference_reservations import (
     INFERENCE_COMPLETION_SCHEMA_VERSION,
@@ -28,9 +40,10 @@ from .tools import (
 )
 
 
-DEFAULT_SUPERVISOR_AGENT_MODEL = "gpt-5.6-terra"
+DEFAULT_SUPERVISOR_AGENT_MODEL = "gpt-6-sol"
 DEFAULT_AGENT_MODEL = DEFAULT_SUPERVISOR_AGENT_MODEL
 AGENTS_SDK_HARNESS_ID = "blueprint_task_evaluation_supervisor"
+OPENAI_API_KEY_FILE_ENV = "OPENAI_API_KEY_FILE"
 
 
 class AgentsSDKHarnessError(RuntimeError):
@@ -39,6 +52,22 @@ class AgentsSDKHarnessError(RuntimeError):
 
 class AgentsSDKInvocationBlocked(AgentsSDKHarnessError):
     """Raised when a live SDK invocation is not explicitly authorized."""
+
+
+def _file_based_openai_api_key() -> str | None:
+    configured = str(os.environ.get(OPENAI_API_KEY_FILE_ENV) or "").strip()
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    if not path.is_absolute() or not path.is_file():
+        raise AgentsSDKInvocationBlocked("openai_api_key_file_missing")
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise AgentsSDKInvocationBlocked("openai_api_key_file_unreadable") from exc
+    if not value:
+        raise AgentsSDKInvocationBlocked("openai_api_key_file_empty")
+    return value
 
 
 class AgentEvidenceReference(BaseModel):
@@ -84,8 +113,36 @@ class AgentsSDKAgentSpec:
     max_turns: int
     max_output_tokens: int
     max_input_tokens: int | None = None
+    max_tool_output_bytes: int = 0
+    # Opt-in typed image tools with a separately enforced cumulative token bound.
+    max_tool_context_tokens: int = 0
+    # A conservative ceiling for an initial multimodal payload. Image
+    # tokenization is provider dependent, so a multimodal caller that wants
+    # more than one turn must declare what its images cost before the call;
+    # without it the growth bound below has no floor to add to and multi-turn
+    # stays refused.
+    max_initial_multimodal_input_tokens: int = 0
+    reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
+    # Provider-hosted tools (for example ``agents.WebSearchTool``) carry a
+    # per-call fee that token usage does not report. Calls are capped per
+    # response (Responses API ``max_tool_calls``), reserved up front at the cap,
+    # and reconciled from the calls the run actually made.
+    hosted_tools: tuple[Any, ...] = ()
+    max_hosted_tool_calls_per_turn: int = 0
+    hosted_tool_call_usd: float = 0.0
     output_type: type[BaseModel] = AgentsSDKCapabilityOutput
+    cache_policy: PromptCachePolicy | None = None
+    stable_developer_prefix: str | None = None
+    scene_static_prefix: str | None = None
+    cache_scene_static_prefix: bool = False
+    prompt_contract_version: str = PROMPT_CACHE_CONTRACT_VERSION
+    stable_prefix_tokens: int = 0
+    expected_reuse_count: int = 0
+    expected_reuse_probability: float = 0.0
+    privacy_scope: str = "blueprint_internal"
+    processing_region: str = "default"
+    dynamic_suffix_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,6 +172,8 @@ class OpenAIAgentsSDKConfig:
     model: str = DEFAULT_SUPERVISOR_AGENT_MODEL
     max_turns: int = 4
     max_output_tokens: int = 4_000
+    max_input_tokens: int = 120_000
+    max_tool_output_bytes: int = 20_000
     allow_live_invocation: bool = False
     tracing_disabled: bool = False
     max_inference_cost_usd: float = 0.0
@@ -128,20 +187,176 @@ class OpenAIAgentsSDKConfig:
             raise ValueError("agents_sdk_max_turns_out_of_range")
         if self.max_output_tokens < 256 or self.max_output_tokens > 32_000:
             raise ValueError("agents_sdk_max_output_tokens_out_of_range")
+        if self.max_input_tokens < 1 or self.max_input_tokens > 1_000_000:
+            raise ValueError("agents_sdk_max_input_tokens_out_of_range")
+        if self.max_tool_output_bytes < 0 or self.max_tool_output_bytes > 1_000_000:
+            raise ValueError("agents_sdk_max_tool_output_bytes_out_of_range")
         if self.max_inference_cost_usd < 0:
             raise ValueError("agents_sdk_inference_budget_negative")
         if self.allow_live_invocation and self.max_inference_cost_usd <= 0:
             raise ValueError("live_agents_sdk_inference_budget_missing")
 
 
+def _cache_family(capability: str) -> str:
+    normalized = "".join(
+        character if character.isalnum() else "_" for character in capability.lower()
+    ).strip("_")
+    if not normalized or not normalized[0].isalpha():
+        normalized = f"agent_{normalized}"
+    return normalized[:80]
+
+
+def _resolve_cache_policy(spec: AgentsSDKAgentSpec) -> PromptCachePolicy:
+    if spec.cache_policy is not None:
+        return spec.cache_policy
+    stable_prefix = spec.stable_developer_prefix or (
+        "Prompt caching is disabled for this one-off request. No content block carries a "
+        "breakpoint, so GPT-6 explicit-only mode cannot create a cache write."
+    )
+    tool_schema = [
+        {
+            "name": binding.tool_id,
+            "description": binding.description,
+            "schema": dict(binding.input_schema),
+        }
+        for binding in spec.tool_bindings
+    ]
+    return create_prompt_cache_policy(
+        model=spec.model,
+        family=_cache_family(str(getattr(spec.capability, "value", spec.capability))),
+        contract_version=spec.prompt_contract_version,
+        stable_prefix=stable_prefix,
+        stable_prefix_tokens=spec.stable_prefix_tokens,
+        tool_schema=tool_schema,
+        output_schema=spec.output_type.model_json_schema(),
+        reasoning_effort=spec.reasoning_effort or "default",
+        verbosity="low",
+        privacy_scope=spec.privacy_scope,
+        processing_region=spec.processing_region,
+        expected_reuse_count=spec.expected_reuse_count,
+        expected_reuse_probability=spec.expected_reuse_probability,
+        explicit_breakpoint_available=spec.stable_developer_prefix is not None,
+        explicit_breakpoints=(
+            ("stable_developer_prefix", "scene_static_prefix")
+            if spec.scene_static_prefix is not None
+            and spec.cache_scene_static_prefix
+            else ("stable_developer_prefix",)
+        ),
+        dynamic_suffix_fields=spec.dynamic_suffix_fields,
+    )
+
+
+def _usage_mapping(usage_value: Any) -> dict[str, Any]:
+    if usage_value is None:
+        return {}
+    if hasattr(usage_value, "model_dump"):
+        return dict(usage_value.model_dump(mode="json"))
+    serializer = getattr(usage_value, "__pydantic_serializer__", None)
+    if serializer is not None:
+        value = serializer.to_python(usage_value, mode="json")
+        return dict(value) if isinstance(value, Mapping) else {}
+    return dict(usage_value) if isinstance(usage_value, Mapping) else {}
+
+
+
+def _invalid_output_completion(
+    run_data: Any, exc: Exception, reservation: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Account only SDK-observed completed responses; never serialize run input/errors.
+
+    A missing token partition holds the reservation as an explicit upper bound.
+    This cannot reconstruct historical calls whose SDK run data was lost.
+    """
+    raw = list(getattr(run_data, "raw_responses", ()) or ())
+    usage_value = getattr(getattr(run_data, "context_wrapper", None), "usage", None)
+    if not raw or usage_value is None:
+        return None
+    responses = [_usage_mapping(response) for response in raw]
+    if any(not response.get("response_id") for response in responses):
+        return None
+    usage = asdict(usage_value) if is_dataclass(usage_value) else _usage_mapping(usage_value)
+    counts = [usage.get(key) for key in ("input_tokens", "output_tokens", "total_tokens", "requests")]
+    known = all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in counts)
+    known = known and counts[0] + counts[1] == counts[2] and counts[2] > 0 and counts[3] == len(raw)
+    # Partial aggregate usage must not release reservation for unaccounted calls.
+    known = known and all(
+        all(isinstance(response.get("usage", {}).get(key), int) for response in responses)
+        and sum(response["usage"][key] for response in responses) == usage[key]
+        for key in ("input_tokens", "output_tokens")
+    )
+    usage_receipt: dict[str, Any] = {"cost_status": "usage_unavailable_or_invalid"}
+    if known:
+        try:
+            usage_receipt = usage_and_cost_receipt(usage_value, model=str(reservation["model"]))
+        except (ValueError, TypeError, OverflowError):
+            known = False
+    estimated = usage_receipt.get("estimated_total_cost_usd") if known else None
+    known = (isinstance(estimated, (int, float)) and not isinstance(estimated, bool)
+             and math.isfinite(float(estimated)) and float(estimated) > 0)
+    projected = float(reservation["projected_max_cost_usd"])
+    reconciled = float(estimated) if known else projected
+    usage_receipt.update(
+        provider_response_id=responses[-1]["response_id"],
+        provider_request_id=responses[-1].get("request_id"),
+        cost_basis="actual_token_usage" if known else "reserved_upper_bound",
+        cost_is_actual=known,
+    )
+    usage_receipt["usage_receipt_digest"] = canonical_digest(usage_receipt, digest_field="usage_receipt_digest")
+    completion = {
+        "schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
+        **{key: reservation[key] for key in ("reservation_id", "run_id", "capability", "model")},
+        "provider": "openai", "agents_sdk_version": metadata.version("openai-agents"),
+        "status": "invalid_structured_output", "provider_outcome": "invalid_structured_output",
+        "cache_policy": reservation["cache_policy"], "breakpoint_digests": reservation["breakpoint_digests"],
+        "usage": usage_receipt, "cost_basis": usage_receipt["cost_basis"],
+        # Legacy ledger field stores the held amount; cost_basis disambiguates unknown usage.
+        "reconciled_actual_cost_usd": reconciled, "observed_actual_cost_usd": estimated if known else None,
+        "projected_max_cost_usd": projected, "released_reservation_usd": max(0.0, projected - reconciled),
+        "actual_cost_exceeded_reservation": reconciled > projected + 1.0e-12,
+        "error_metadata": {"type": type(exc).__name__, "message_digest": canonical_digest({"message": str(exc)})},
+        "raw_response_metadata": [{
+            "response_id": response["response_id"], "request_id": response.get("request_id"),
+            "raw_response_digest": canonical_digest(response),
+            "output_item_count": len(response.get("output", [])),
+        } for response in responses],
+        "proof_effect": "none",
+    }
+    completion["inference_completion_digest"] = canonical_digest(completion, digest_field="inference_completion_digest")
+    return completion
+
+
+def _breakpoint_digests(
+    spec: AgentsSDKAgentSpec,
+    policy: PromptCachePolicy,
+) -> list[str]:
+    if policy.status != "enabled":
+        return []
+    digests = [policy.stable_prefix_digest]
+    if (
+        spec.scene_static_prefix is not None
+        and "scene_static_prefix" in policy.explicit_breakpoints
+    ):
+        digests.append(
+            canonical_digest({"input_text": spec.scene_static_prefix})
+        )
+    return digests
+
+
 class OpenAIAgentsSDKInvoker:
     """Production adapter around ``agents.Agent`` and ``agents.Runner``."""
 
-    def __init__(self, config: OpenAIAgentsSDKConfig | None = None) -> None:
+    def __init__(
+        self, config: OpenAIAgentsSDKConfig | None = None, *,
+        model_provider: Any = None, run_agent: Callable[..., Any] | None = None,
+        strict_context_accounting: bool = False,
+    ) -> None:
         self.config = config or OpenAIAgentsSDKConfig()
         self._reserved_cost_usd = 0.0
         self._record_reservation: Callable[[Mapping[str, Any]], None] | None = None
         self._record_completion: Callable[[Mapping[str, Any]], None] | None = None
+        self._model_provider = model_provider
+        self._run_agent = run_agent
+        self._strict_context_accounting = strict_context_accounting
 
     def configure_reservation_audit(
         self,
@@ -170,12 +385,31 @@ class OpenAIAgentsSDKInvoker:
             raise AgentsSDKInvocationBlocked("live_agents_sdk_invocation_not_authorized")
         if not env_truthy(LIVE_AGENTS_SDK_ENV):
             raise AgentsSDKInvocationBlocked(f"missing_env_{LIVE_AGENTS_SDK_ENV}")
+        file_api_key = _file_based_openai_api_key() if self._model_provider is None else None
+        capability_id = (
+            spec.capability.value
+            if isinstance(spec.capability, CapabilityKind)
+            else str(spec.capability)
+        )
+        cache_policy = _resolve_cache_policy(spec)
+        breakpoint_digests = _breakpoint_digests(spec, cache_policy)
+        pricing = pricing_for_model(spec.model)
+        expected_model_family = (
+            pricing.model_family if pricing is not None else spec.model.strip().lower()
+        )
+        if cache_policy.model_family != expected_model_family:
+            raise AgentsSDKInvocationBlocked("agents_sdk_cache_policy_model_mismatch")
         # One UTF-8 byte per token is deliberately conservative for text. Image
         # tokenization is provider/model dependent, so multimodal callers must
         # declare an explicit conservative ceiling rather than treating base64
         # transport bytes as tokens or silently under-reserving the call.
         if isinstance(input_value, str):
-            input_token_ceiling = len(input_value.encode("utf-8"))
+            initial_input_token_ceiling = len(input_value.encode("utf-8")) + (
+                cache_policy.economics.stable_prefix_tokens
+                if cache_policy.status == "enabled"
+                else 0
+            )
+            input_token_ceiling = initial_input_token_ceiling
             input_kind = "text"
             input_digest = canonical_digest({"input_text": input_value})
         elif isinstance(input_value, list) and input_value:
@@ -184,31 +418,96 @@ class OpenAIAgentsSDKInvoker:
                     "agents_sdk_multimodal_input_token_ceiling_missing"
                 )
             input_token_ceiling = spec.max_input_tokens
+            initial_input_token_ceiling = spec.max_initial_multimodal_input_tokens
             input_kind = "multimodal"
             input_digest = canonical_digest({"input": input_value})
         else:
             raise AgentsSDKInvocationBlocked("agents_sdk_input_invalid")
-        projected_max_cost = (
-            input_token_ceiling * self.config.input_cost_per_million_tokens_usd
-            + spec.max_output_tokens * self.config.output_cost_per_million_tokens_usd
-        ) / 1_000_000
-        if self._reserved_cost_usd + projected_max_cost > self.config.max_inference_cost_usd:
+        if self._strict_context_accounting:
+            if pricing is None:
+                raise AgentsSDKInvocationBlocked("agents_sdk_model_pricing_not_registered")
+            fixed_context_ceiling = len(json.dumps({
+                "instructions": spec.instructions,
+                "output_schema": spec.output_type.model_json_schema(),
+                "tools": [{"name": binding.tool_id, "description": binding.description,
+                           "parameters": dict(binding.input_schema)} for binding in spec.tool_bindings],
+            }, ensure_ascii=True).encode()) + 4096
+            if input_kind == "text":
+                initial_input_token_ceiling += fixed_context_ceiling
+                input_token_ceiling = initial_input_token_ceiling
+            elif fixed_context_ceiling >= input_token_ceiling:
+                raise AgentsSDKInvocationBlocked("agents_sdk_multimodal_fixed_context_exceeds_ceiling")
+            else:
+                initial_input_token_ceiling += fixed_context_ceiling
+            if spec.max_input_tokens is None or input_token_ceiling > spec.max_input_tokens:
+                raise AgentsSDKInvocationBlocked("agents_sdk_input_context_exceeds_declared_ceiling")
+        if spec.max_turns > 1:
+            if input_kind == "multimodal" and not (
+                0 < spec.max_initial_multimodal_input_tokens <= (spec.max_input_tokens or 0)
+            ):
+                # An undeclared image payload cannot be added to the growth
+                # bound, so the later turns' reservation would be unprovable.
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multimodal_multi_turn_context_bound_unavailable"
+                )
+            if spec.max_input_tokens is None or not 1 <= spec.max_input_tokens <= 1_000_000:
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multi_turn_input_token_ceiling_missing"
+                )
+            if spec.tool_bindings and spec.max_tool_output_bytes <= 0:
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multi_turn_tool_output_ceiling_missing"
+                )
+            maximum_growth_tokens = (spec.max_turns - 1) * (
+                spec.max_output_tokens + spec.max_tool_output_bytes
+                + (4096 if self._strict_context_accounting else 0)
+            )
+            if spec.max_tool_context_tokens:
+                if not self._strict_context_accounting or not 0 < spec.max_tool_context_tokens <= spec.max_input_tokens:
+                    raise AgentsSDKInvocationBlocked("agents_sdk_tool_context_bound_invalid")
+                maximum_growth_tokens = spec.max_tool_context_tokens + (spec.max_turns - 1) * (spec.max_output_tokens + 4096)
+            if initial_input_token_ceiling + maximum_growth_tokens > spec.max_input_tokens:
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multi_turn_context_growth_exceeds_declared_ceiling"
+                )
+            # Every provider turn is reserved at the caller-declared ceiling. The
+            # initial payload plus the bounded model/tool growth above proves that
+            # later turns cannot exceed this amount without failing locally.
+            input_token_ceiling = spec.max_input_tokens
+        projected_per_request_cost = worst_case_reservation_usd(
+            model=spec.model,
+            input_token_ceiling=input_token_ceiling,
+            max_output_tokens=spec.max_output_tokens,
+            cache_policy=cache_policy,
+        )
+        if projected_per_request_cost is None:
+            projected_per_request_cost = (
+                input_token_ceiling * self.config.input_cost_per_million_tokens_usd
+                + spec.max_output_tokens * self.config.output_cost_per_million_tokens_usd
+            ) / 1_000_000
+        projected_max_cost = projected_per_request_cost * spec.max_turns
+        hosted_call_ceiling = 0
+        if spec.hosted_tools:
+            if not (0 < spec.max_hosted_tool_calls_per_turn <= 8 and math.isfinite(spec.hosted_tool_call_usd)
+                    and spec.hosted_tool_call_usd > 0):
+                raise AgentsSDKInvocationBlocked("agents_sdk_hosted_tool_budget_missing")
+            hosted_call_ceiling = spec.max_hosted_tool_calls_per_turn * spec.max_turns
+            projected_max_cost += hosted_call_ceiling * spec.hosted_tool_call_usd
+        reserved_before_call = self._reserved_cost_usd
+        if reserved_before_call + projected_max_cost > self.config.max_inference_cost_usd:
             raise AgentsSDKInvocationBlocked("agents_sdk_inference_budget_ceiling_exceeded")
-        capability_id = (
-            spec.capability.value
-            if isinstance(spec.capability, CapabilityKind)
-            else str(spec.capability)
-        )
-        reservation_id = canonical_digest(
-            {
-                "run_id": spec.run_id,
-                "capability": capability_id,
-                "model": spec.model,
-                "input_digest": input_digest,
-                "max_turns": spec.max_turns,
-                "max_output_tokens": spec.max_output_tokens,
-            }
-        )
+        reservation_identity = {
+            "run_id": spec.run_id,
+            "capability": capability_id,
+            "model": spec.model,
+            "input_digest": input_digest,
+            "max_turns": spec.max_turns,
+            "max_output_tokens": spec.max_output_tokens,
+            "cache_policy_digest": cache_policy.policy_digest,
+        }
+        if spec.reasoning_effort is not None:
+            reservation_identity["reasoning_effort"] = spec.reasoning_effort
+        reservation_id = canonical_digest(reservation_identity)
         reservation: dict[str, Any] = {
             "schema_version": INFERENCE_RESERVATION_SCHEMA_VERSION,
             "reservation_id": reservation_id,
@@ -221,22 +520,42 @@ class OpenAIAgentsSDKInvoker:
             "max_turns": spec.max_turns,
             "max_output_tokens": spec.max_output_tokens,
             "projected_max_cost_usd": projected_max_cost,
+            "projected_max_cost_per_request_usd": projected_per_request_cost,
+            "cache_policy_digest": cache_policy.policy_digest,
+            "cache_policy": cache_policy_evidence(cache_policy),
+            "breakpoint_digests": breakpoint_digests,
             "billing_status": "worst_case_reserved_before_provider_call",
             "proof_effect": "none",
         }
+        if spec.reasoning_effort is not None:
+            reservation["reasoning_effort"] = spec.reasoning_effort
+        if hosted_call_ceiling:
+            reservation.update(hosted_tool_call_ceiling=hosted_call_ceiling,
+                               hosted_tool_call_usd=spec.hosted_tool_call_usd)
         reservation["inference_reservation_digest"] = canonical_digest(
             reservation,
             digest_field="inference_reservation_digest",
         )
         if self._record_reservation is not None:
             self._record_reservation(reservation)
-        self._reserved_cost_usd += projected_max_cost
+        self._reserved_cost_usd = reserved_before_call + projected_max_cost
         try:
-            from agents import Agent, FunctionTool, ModelSettings, RunConfig, Runner
+            from agents import (
+                Agent,
+                FunctionTool,
+                ModelSettings,
+                RunConfig,
+                Runner,
+                set_default_openai_key,
+            )
         except ImportError as exc:  # pragma: no cover - core dependency installation failure
             raise AgentsSDKInvocationBlocked("openai_agents_sdk_not_installed") from exc
+        if file_api_key is not None:
+            set_default_openai_key(file_api_key, use_for_tracing=False)
 
         tool_observations: list[Mapping[str, Any]] = []
+        cumulative_tool_output_bytes = 0
+        cumulative_tool_context_tokens = 0
         sdk_tools: list[Any] = []
         for binding in spec.tool_bindings:
 
@@ -245,16 +564,40 @@ class OpenAIAgentsSDKInvoker:
                 input_json: str,
                 *,
                 selected: RegisteredToolBinding = binding,
-            ) -> str:
+            ) -> Any:
                 try:
                     arguments = json.loads(input_json)
                 except json.JSONDecodeError as exc:
                     raise ValueError("agents_sdk_tool_input_invalid_json") from exc
                 if not isinstance(arguments, Mapping):
                     raise ValueError("agents_sdk_tool_input_must_be_object")
-                observation = dict(selected.invoke(arguments))
+                import inspect
+
+                observed = selected.invoke(arguments)
+                if inspect.isawaitable(observed):
+                    observed = await observed
+                structured_output = None
+                nonlocal cumulative_tool_context_tokens
+                if spec.max_tool_context_tokens:
+                    from .sdk_image_tools import encode_tool_output
+                    structured_output, context_tokens = encode_tool_output(observed, model=spec.model)
+                    cumulative_tool_context_tokens += context_tokens
+                    if cumulative_tool_context_tokens > spec.max_tool_context_tokens:
+                        raise ValueError("agents_sdk_tool_context_ceiling_exceeded")
+                observation = {"content": observed} if isinstance(observed, list) else dict(observed)
+                serialized_observation = json.dumps(observation, sort_keys=True)
+                nonlocal cumulative_tool_output_bytes
+                cumulative_tool_output_bytes += len(serialized_observation.encode("utf-8"))
+                maximum_tool_output_bytes = spec.max_tool_output_bytes * max(
+                    1, spec.max_turns - 1
+                )
+                if (
+                    spec.max_tool_output_bytes > 0
+                    and cumulative_tool_output_bytes > maximum_tool_output_bytes
+                ):
+                    raise ValueError("agents_sdk_tool_output_ceiling_exceeded")
                 tool_observations.append(observation)
-                return json.dumps(observation, sort_keys=True)
+                return structured_output if structured_output is not None else serialized_observation
 
             sdk_tools.append(
                 FunctionTool(
@@ -269,42 +612,103 @@ class OpenAIAgentsSDKInvoker:
                 )
             )
 
+        cache_request_kwargs = explicit_cache_request_kwargs(cache_policy)
         agent = Agent(
             name=spec.name,
             instructions=spec.instructions,
             model=spec.model,
             model_settings=ModelSettings(
                 max_tokens=spec.max_output_tokens,
+                reasoning=(
+                    {"effort": spec.reasoning_effort}
+                    if spec.reasoning_effort is not None
+                    else None
+                ),
                 store=False,
                 include_usage=True,
                 verbosity="low",
+                prompt_cache_options=cache_request_kwargs.get("prompt_cache_options"),
+                extra_args=({
+                    **({"prompt_cache_key": cache_request_kwargs["prompt_cache_key"]}
+                       if "prompt_cache_key" in cache_request_kwargs else {}),
+                    **({"max_tool_calls": spec.max_hosted_tool_calls_per_turn} if hosted_call_ceiling else {}),
+                } or None),
             ),
             output_type=spec.output_type,
-            tools=sdk_tools,
+            tools=[*sdk_tools, *spec.hosted_tools],
         )
         trace_id = canonical_digest(
             {"run_id": spec.run_id, "capability": capability_id, "model": spec.model}
         ).removeprefix("sha256:")
         started = time.monotonic()
-        result = Runner.run_sync(
-            agent,
-            input_value,
-            max_turns=spec.max_turns,
-            run_config=RunConfig(
-                workflow_name="Blueprint Task Evaluation Supervisor",
-                group_id=spec.run_id,
-                trace_id=f"trace_{trace_id[:32]}",
-                trace_include_sensitive_data=False,
-                tracing_disabled=self.config.tracing_disabled,
-                trace_metadata={
-                    "harness_id": AGENTS_SDK_HARNESS_ID,
-                    "capability": capability_id,
-                },
-            ),
+        rendered_input = explicit_cache_input(
+            policy=cache_policy,
+            stable_developer_prefix=spec.stable_developer_prefix or "",
+            scene_static_prefix=spec.scene_static_prefix,
+            dynamic_input=input_value,
         )
-        latency = max(0.0, time.monotonic() - started)
-        output = spec.output_type.model_validate(result.final_output)
+        from agents.exceptions import ModelBehaviorError
+
+        result = None
+        try:
+            result = (self._run_agent or Runner.run_sync)(
+                agent,
+                rendered_input,
+                max_turns=spec.max_turns,
+                run_config=RunConfig(
+                    **({"model_provider": self._model_provider} if self._model_provider is not None else {}),
+                    workflow_name="Blueprint Task Evaluation Supervisor",
+                    group_id=spec.run_id,
+                    trace_id=f"trace_{trace_id[:32]}",
+                    trace_include_sensitive_data=False,
+                    tracing_disabled=self.config.tracing_disabled,
+                    trace_metadata={
+                        "harness_id": AGENTS_SDK_HARNESS_ID,
+                        "capability": capability_id,
+                    },
+                ),
+            )
+            latency = max(0.0, time.monotonic() - started)
+            output = spec.output_type.model_validate(result.final_output)
+        except (ModelBehaviorError, ValidationError) as exc:
+            completed_run = result if result is not None else getattr(exc, "run_data", None)
+            completion = _invalid_output_completion(completed_run, exc, reservation)
+            if completion is not None:
+                self._reserved_cost_usd = reserved_before_call + completion["reconciled_actual_cost_usd"]
+                if self._record_completion is not None:
+                    self._record_completion(completion)
+                if completion["actual_cost_exceeded_reservation"]:
+                    raise AgentsSDKInvocationBlocked("agents_sdk_actual_cost_exceeds_reserved_maximum") from exc
+            raise
         sdk_version = metadata.version("openai-agents")
+        usage_value = getattr(getattr(result, "context_wrapper", None), "usage", None)
+        usage = _usage_mapping(usage_value)
+        raw_responses = list(getattr(result, "raw_responses", ()) or ())
+        last_raw_response = raw_responses[-1] if raw_responses else None
+        usage_receipt = usage_and_cost_receipt(usage_value or {}, model=spec.model)
+        usage_receipt["provider_response_id"] = (
+            str(getattr(last_raw_response, "response_id", "") or "") or None
+        )
+        usage_receipt["provider_request_id"] = (
+            str(getattr(last_raw_response, "request_id", "") or "") or None
+        )
+        usage_receipt["usage_receipt_digest"] = canonical_digest(
+            usage_receipt,
+            digest_field="usage_receipt_digest",
+        )
+        estimated_cost = usage_receipt.get("estimated_total_cost_usd")
+        hosted_calls = 0
+        if hosted_call_ceiling:
+            hosted_calls = sum(1 for item in (getattr(result, "new_items", None) or ())
+                               if _raw_item_type(item) in _HOSTED_TOOL_CALL_TYPES)
+            if estimated_cost is not None:
+                estimated_cost = float(estimated_cost) + hosted_calls * spec.hosted_tool_call_usd
+        reconciled_cost = (
+            float(estimated_cost) if estimated_cost is not None else projected_max_cost
+        )
+        cost_overrun = (reconciled_cost > projected_max_cost + 1.0e-12
+                        or hosted_calls > hosted_call_ceiling)
+        hosted_usage = {"hosted_tool_calls": hosted_calls} if hosted_call_ceiling else {}
         if self._record_completion is not None:
             completion: dict[str, Any] = {
                 "schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
@@ -315,19 +719,28 @@ class OpenAIAgentsSDKInvoker:
                 "model": spec.model,
                 "agents_sdk_version": sdk_version,
                 "structured_output_digest": canonical_digest(output.model_dump(mode="json")),
+                "cache_policy": cache_policy_evidence(cache_policy),
+                "breakpoint_digests": breakpoint_digests,
+                "usage": usage_receipt,
+                "projected_max_cost_usd": projected_max_cost,
+                "reconciled_actual_cost_usd": reconciled_cost,
+                "released_reservation_usd": max(
+                    0.0, projected_max_cost - reconciled_cost
+                ),
+                "actual_cost_exceeded_reservation": cost_overrun,
                 "proof_effect": "none",
+                **hosted_usage,
             }
             completion["inference_completion_digest"] = canonical_digest(
                 completion,
                 digest_field="inference_completion_digest",
             )
             self._record_completion(completion)
-        usage_value = getattr(getattr(result, "context_wrapper", None), "usage", None)
-        usage = (
-            usage_value.model_dump(mode="json")
-            if usage_value is not None and hasattr(usage_value, "model_dump")
-            else {}
-        )
+        self._reserved_cost_usd = reserved_before_call + reconciled_cost
+        if cost_overrun:
+            raise AgentsSDKInvocationBlocked(
+                "agents_sdk_actual_cost_exceeds_reserved_maximum"
+            )
         return AgentsSDKInvocationResult(
             output=output,
             provider="openai",
@@ -336,14 +749,28 @@ class OpenAIAgentsSDKInvoker:
             latency_seconds=latency,
             usage={
                 **usage,
+                **usage_receipt,
+                "cache_policy": cache_policy_evidence(cache_policy),
+                "breakpoint_digests": breakpoint_digests,
+                "projected_max_cost_per_request_usd": projected_per_request_cost,
                 "projected_max_cost_usd": projected_max_cost,
                 "cumulative_reserved_cost_usd": self._reserved_cost_usd,
+                **hosted_usage,
             },
-            cost_usd=None,
-            cost_status="provider_billing_not_available_at_response_time",
+            cost_usd=(float(estimated_cost) if estimated_cost is not None else None),
+            cost_status=str(usage_receipt["cost_status"]),
             trace_id=None if self.config.tracing_disabled else f"trace_{trace_id[:32]}",
             tool_observations=tuple(tool_observations),
         )
+
+
+_HOSTED_TOOL_CALL_TYPES = frozenset({"web_search_call", "file_search_call", "code_interpreter_call",
+                                     "image_generation_call", "mcp_call"})
+
+
+def _raw_item_type(item: Any) -> str | None:
+    raw = getattr(item, "raw_item", None)
+    return raw.get("type") if isinstance(raw, Mapping) else getattr(raw, "type", None)
 
 
 _FALSE_ONLY_AGENT_KEYS = {
@@ -408,7 +835,14 @@ _SPECIALIST_INSTRUCTIONS: dict[CapabilityKind, str] = {
         "a profile-specific reconstruction route. Use plan_capture_reconstruction_route when it "
         "is available; never guess a missing profile or treat 360, monocular video, and ARKit/LiDAR "
         "as interchangeable inputs. A 3DGS is an appearance layer until metric, semantic, collision, "
-        "and physics layers are independently validated. When a site evidence profile exists, "
+        "and physics layers are independently validated. For website scene preparation, use the "
+        "confirmed task before proposing any object removal. Physical movability is not a "
+        "reason to remove an unrelated object. Keep task supports and static obstacles visible "
+        "and request collision geometry only where the task requires it. Replace an object "
+        "only when the task requires independent motion or articulation, binding the proposal "
+        "to source observations and the relevant task text. Resolve ambiguous task-object "
+        "identity with available source evidence or the smallest clarification before editing; "
+        "never authorize broad decluttering. When a site evidence profile exists, "
         "surface the deterministic capture-evidence audit gaps with their smallest next actions "
         "(metric-scale check, registration, collider validation, articulation measurement, "
         "material identification, sensor calibration, force/tactile collection, targeted "
@@ -592,6 +1026,8 @@ class OpenAIAgentsSDKCapability:
             model=self.config.model,
             max_turns=self.config.max_turns,
             max_output_tokens=self.config.max_output_tokens,
+            max_input_tokens=self.config.max_input_tokens,
+            max_tool_output_bytes=self.config.max_tool_output_bytes,
             tool_bindings=bindings,
         )
         try:

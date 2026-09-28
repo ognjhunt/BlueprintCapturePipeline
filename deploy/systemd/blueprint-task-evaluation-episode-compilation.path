@@ -1,0 +1,13 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-episode-compilation.path.json
+Description=Watch the Blueprint Task Evaluation episode compilation queue
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending/*.json
+Unit=blueprint-task-evaluation-episode-compilation.service
+
+[Install]
+WantedBy=multi-user.target

@@ -8,9 +8,11 @@ import struct
 from types import ModuleType, SimpleNamespace
 import zipfile
 
+import numpy
 import pytest
 from PIL import Image
 
+from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.native_task_appearance_frame_alignment import (
     measure_native_task_appearance_frame,
 )
@@ -53,6 +55,7 @@ def _request(runner) -> dict[str, object]:
             "steps": 10,
             "config_name": "apps/colmap_3dgut_sparse_mcmc_lpips",
             "loss_overrides": runner.DUAL_TARGET_LOSS_OVERRIDES,
+            "geometry_policy": runner.RETAINED_GEOMETRY_POLICY,
             "anchor_mask_reduction": "full_frame_mean",
         },
     }
@@ -102,6 +105,77 @@ def test_actual_materialized_dual_target_contract_and_masks_are_accepted(
     ]
     assert not (images / "frame_00001_mask.png").exists()
     assert not (images / "frame_00003_mask.png").exists()
+
+
+def test_retained_geometry_policy_disables_optimizer_and_mcmc_mutation() -> None:
+    runner = _runner_module()
+
+    assert runner._retained_geometry_training_overrides(
+        steps=30_000,
+        geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
+    ) == [
+        "initialization.method=point_cloud",
+        "model.optimize_position=false",
+        "model.optimize_rotation=false",
+        "model.optimize_scale=false",
+        "strategy.relocate.start_iteration=30001",
+        "strategy.relocate.end_iteration=30001",
+        "strategy.add.start_iteration=30001",
+        "strategy.add.end_iteration=30001",
+        "strategy.perturb.start_iteration=30001",
+        "strategy.perturb.end_iteration=30001",
+        "strategy.perturb.noise_lr=0.0",
+    ]
+
+    with pytest.raises(ValueError, match="artifixer3d_geometry_policy_invalid"):
+        runner._retained_geometry_training_overrides(
+            steps=30_000,
+            geometry_policy={"mode": "source_relative_limits_only"},
+        )
+
+
+def test_full_retained_ply_is_staged_for_3dgrut_geometry_initialization(
+    tmp_path: Path,
+) -> None:
+    runner = _runner_module()
+    input_root = tmp_path / "input"
+    shared = input_root / "shared_initialization"
+    shared.mkdir(parents=True)
+    source = write_standard_3dgs_ply(
+        SplatData(
+            count=2,
+            xyz=numpy.asarray(
+                [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=numpy.float32
+            ),
+            opacity=numpy.zeros(2, dtype=numpy.float32),
+            f_dc=numpy.zeros((2, 3), dtype=numpy.float32),
+            scales=numpy.asarray(
+                [[-2.0, -3.0, -4.0], [-5.0, -6.0, -7.0]],
+                dtype=numpy.float32,
+            ),
+            quats=numpy.asarray(
+                [[0.9, 0.1, 0.2, 0.3], [0.8, -0.2, 0.4, -0.1]],
+                dtype=numpy.float32,
+            ),
+            properties=(),
+        ),
+        shared / "retained_scene.ply",
+    )
+    distillation = tmp_path / "distillation"
+    distillation.mkdir()
+
+    receipt = runner._stage_retained_geometry_initialization(
+        input_root=input_root,
+        distillation_input_dir=distillation,
+    )
+
+    staged = distillation / "point_cloud.ply"
+    assert staged.read_bytes() == Path(source).read_bytes()
+    assert receipt["initialization_method"] == "point_cloud"
+    assert receipt["complete_standard_3dgs_ply_used"] is True
+    assert receipt["colmap_points3d_used_for_gaussian_geometry"] is False
+    assert receipt["byte_exact"] is True
+    assert receipt["source"]["sha256"] == receipt["staged"]["sha256"]
 
 
 def test_native_review_layout_is_byte_copied_to_provider_retained_directory(
@@ -317,10 +391,13 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
         "_prepare_dual_target_distillation_replay",
         prepared_replay,
     )
+    native = {"status": "test-native-appearance"}
+    for key, name in (("standard_gaussian_ply", "native.ply"), ("isaac_nurec_usdz", "native.usdz")):
+        path = tmp_path / name
+        path.write_bytes(b"bound-native-export")
+        native[key] = runner._file_record(path)
     monkeypatch.setattr(
-        runner,
-        "_export_checkpoint_native_appearance",
-        lambda **_kwargs: {"status": "test-native-appearance"},
+        runner, "_export_checkpoint_native_appearance", lambda **_kwargs: native,
     )
     request = {
         "artifixer3d": {
@@ -330,8 +407,14 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
             },
             "anchor_mask_reduction": "full_frame_mean",
             "loss_overrides": runner.DUAL_TARGET_LOSS_OVERRIDES,
+            "geometry_policy": runner.RETAINED_GEOMETRY_POLICY,
         }
     }
+    shared = tmp_path / "input/shared_initialization"
+    shared.mkdir(parents=True)
+    (shared / "retained_scene_gaussians_without_source_object.ply").write_bytes(
+        b"mocked-export-reference"
+    )
     result = runner._dual_target_render_only_task_runtime(
         task={
             "task_id": task_id,
@@ -351,7 +434,7 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
     assert result["artifixer3d_plus_executed"] is False
     assert result["checkpoint_reused"] is True
     assert result["artifixer3d_checkpoint"]["sha256"] == checkpoint_record["sha256"]
-    assert result["native_appearance"] == {"status": "test-native-appearance"}
+    assert result["native_appearance"] == native
     assert [row["camera_id"] for row in result["artifixer3d_review_frames"]] == [
         frame["camera_id"] for frame in frames
     ]
@@ -367,11 +450,23 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
     runner = _runner_module()
 
     class Tensor:
+        """Carries values: the export adapter measures position range."""
+
         def __init__(self, shape: tuple[int, ...]) -> None:
             self.shape = shape
+            self._array = numpy.zeros(shape, dtype=numpy.float32)
 
         def detach(self):
             return self
+
+        def __array__(self, dtype=None):
+            return self._array.astype(dtype) if dtype is not None else self._array
+
+        def __getitem__(self, key):
+            selected = self._array[key]
+            tensor = Tensor(tuple(selected.shape))
+            tensor._array = selected
+            return tensor
 
     config = SimpleNamespace(export_usdz=SimpleNamespace(apply_normalizing_transform=True))
     checkpoint_value = {
@@ -385,6 +480,7 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
         "n_active_features": 3,
         "config": config,
     }
+    checkpoint_value["rotation"]._array[:, 0] = 1.0
     checkpoint = tmp_path / "ckpt_30000.pt"
     checkpoint.write_bytes(b"bound-checkpoint")
 
@@ -443,8 +539,26 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
     monkeypatch.setitem(sys.modules, "threedgrut.export.ply_exporter", ply_module)
     monkeypatch.setitem(sys.modules, "threedgrut.export.usdz_exporter", usdz_module)
 
+    reference = write_standard_3dgs_ply(
+        SplatData(
+            count=2,
+            xyz=numpy.zeros((2, 3), dtype=numpy.float32),
+            opacity=numpy.zeros(2, dtype=numpy.float32),
+            f_dc=numpy.zeros((2, 3), dtype=numpy.float32),
+            scales=numpy.zeros((2, 3), dtype=numpy.float32),
+            quats=numpy.asarray(
+                [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+                dtype=numpy.float32,
+            ),
+            properties=(),
+        ),
+        tmp_path / "reference.ply",
+    )
     result = runner._export_checkpoint_native_appearance(
-        checkpoint=checkpoint, task_output=tmp_path / "task"
+        checkpoint=checkpoint,
+        task_output=tmp_path / "task",
+        reference_gaussian_ply=reference,
+        geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
     )
 
     assert result["gaussian_count"] == 2
@@ -496,6 +610,33 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
         assert nurec[4:8] == b"\0" * 4
         assert gaussian_arrays(decode_nurec_bytes(nurec))["positions"].shape == (512, 3)
     assert result["native_import_qualified"] is False
+    assert result["geometry_protection"] == {
+        "mode": "freeze_retained_source_geometry",
+        "status": "qualified",
+        "reference_gaussian_count": 2,
+        "checkpoint_gaussian_count": 2,
+        "exact_position_tensor_match": True,
+        "exact_rotation_tensor_match": True,
+        "exact_scale_tensor_match": True,
+        "maximum_absolute_drift": {
+            "positions": 0.0,
+            "rotation": 0.0,
+            "scale": 0.0,
+        },
+        "blockers": [],
+    }
+
+    checkpoint_value["positions"]._array[0, 0] = 0.001
+    with pytest.raises(
+        ValueError,
+        match="artifixer3d_native_export_retained_geometry_mismatch:positions",
+    ):
+        runner._export_checkpoint_native_appearance(
+            checkpoint=checkpoint,
+            task_output=tmp_path / "task-with-drift",
+            reference_gaussian_ply=reference,
+            geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
+        )
 
 
 def test_render_only_execute_skips_training_direct_and_3d_plus(

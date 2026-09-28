@@ -171,7 +171,6 @@
         ],
         "image_dtype_format": "uint8_HWC_RGB_lossless_source_retained",
         "frame_history": [
-          -15,
           0
         ],
         "eef_state": "float32[9]_DROID_TFG_position_plus_rotation6d",
@@ -336,5 +335,5 @@
     "policy bundles and unpublished development-only launch profiles bind that receipt and its admitted control-pair digest"
   ],
   "verdict": "READY_WAITING_ONLY_FOR_CONTROLS",
-  "readiness_digest": "sha256:d21ea0c32dafe03478ef3119fc45bf12a2ec1c9c9ed3cf0f90d25c2010db705b"
+  "readiness_digest": "sha256:c3f76892f80514ef81ddbb48b14ebf3c9e39cbbfaf82d516dbcb70f4d8989ffc"
 }

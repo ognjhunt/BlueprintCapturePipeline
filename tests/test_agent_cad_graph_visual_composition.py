@@ -117,7 +117,7 @@ def _backend(tmp_path: Path, backend_id: str = "earthtojake_text_to_cad") -> dic
         "source_archive": _record(archive),
         "license": "MIT",
         "model_id": (
-            "codex_gpt_5_6_luna" if backend_id == "earthtojake_text_to_cad" else "gpt-5.6"
+            "codex_gpt_6_luna" if backend_id == "earthtojake_text_to_cad" else "gpt-6-sol"
         ),
     }
 

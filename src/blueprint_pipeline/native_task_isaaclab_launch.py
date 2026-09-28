@@ -33,6 +33,7 @@ from .native_task_runtime_source_packet import (
 # it here means the three workers cannot drift apart, and the launcher, the
 # preconstruction probe and the post-build readback all name the same string.
 NATIVE_TASK_ARENA_DEVICE = "cuda:0"
+NATIVE_TASK_ARENA_MINIMUM_DRIVER_VERSION = "580.65.06"
 NATIVE_TASK_ARENA_IMAGE = (
     "nvcr.io/nvidia/isaac-sim:6.0.1@"
     "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
@@ -42,14 +43,45 @@ NATIVE_TASK_ARENA_NUREC_UTILS_EXTENSION = "isaacsim.replicator.nurec_utils"
 NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
 NATIVE_TASK_ARENA_NUREC_RENDER_PATH = "plain_nurec_volume"
 NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH = "particlefield_3d_gaussian_splat"
+#: Every appearance backend the arena launcher may be told to expect.  The
+#: launcher records the caller's choice; it never picks one.  Scene 839873's
+#: render-only probe was launched with the ParticleField path while the policy
+#: canary worker launched with no path at all and inherited the legacy NuRec
+#: default, so the two receipts disagreed about which renderer a Website run
+#: would use.  A default argument must not select the scientific representation.
+#: A lane that composes no site appearance at all (control sweeps run with
+#: ``appearance_mode: omitted`` and cameras disabled) says so explicitly.
+NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH = "no_site_appearance"
+NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS = frozenset(
+    {
+        NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+        NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
+        NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH,
+        "usd_geometry",
+    }
+)
 NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING = "/UJITSO/geometry"
+# Omniverse RTX composites ParticleField prims "as-is": their light fields are
+# display-referred sRGB and the tonemapping pipeline is skipped for them
+# (Omniverse Materials and Rendering, "Gaussian Splats (Particle Fields)").
+# NVIDIA's shipped ``nurec_config.yaml`` forces this flag off only for PPISP
+# (``info:spg:sourceAsset``) stages and leaves plain gaussians at the engine
+# default.  This lane forced it off at launch from 2026-08-20, and every world
+# camera then rendered the sealed splat as linear radiance up to 60x display
+# white (scene-839873 r13 construction receipt: 22-24 percent of world-camera
+# pixels above 1.0, p99 = 20).  The LDR annotator clamps those per channel
+# into white blobs with chromatic fringes, and that clamp is the exact frame
+# the policies were fed.  The flag is therefore never forced here, and the
+# launch receipt refuses a runtime that reports it forced off.
+NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING = (
+    "/rtx/rtpt/gaussian/skipTonemapping/enabled"
+)
 NATIVE_TASK_ARENA_KIT_ARGS = (
     "--enable isaacsim.replicator.nurec_utils "
     "--enable omni.rtx.spg "
     "--enable isaacsim.robot_motion.pink "
     "--/UJITSO/geometry=true "
-    "--/renderer/multiGpu/enabled=false "
-    "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false"
+    "--/renderer/multiGpu/enabled=false"
 )
 
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
@@ -273,12 +305,19 @@ def launch_native_task_isaaclab(
     provisioning_receipt_path: str | Path,
     *,
     device: str,
+    appearance_render_path: str,
     enable_cameras: bool = True,
-    appearance_render_path: str = NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
     app_launcher_factory: Callable[..., Any] | None = None,
     nurec_renderer_probe_factory: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Launch Isaac Lab on ``device`` with the verified compatibility experience.
+
+    ``appearance_render_path`` is required and must name the backend the scene
+    plan actually composes (see
+    :func:`blueprint_pipeline.native_task_nurec_render_setup.appearance_render_path_from_plan`).
+    The launcher only records it; it does not switch renderers, so a wrong
+    value here is a false receipt rather than a different picture, and that
+    is exactly why it cannot default.
 
     The launch must go through Isaac Lab's ``AppLauncher``, not a bare
     ``SimulationApp``. ``AppLauncher`` is what resolves the requested device and
@@ -296,6 +335,14 @@ def launch_native_task_isaaclab(
     a bare ``SimulationApp``.
     """
 
+    if (
+        not isinstance(appearance_render_path, str)
+        or appearance_render_path not in NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS
+    ):
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_appearance_render_path_invalid"],
+            diagnostics={"appearance_render_path": appearance_render_path},
+        )
     receipt = verify_native_task_isaaclab_launch_contract(
         provisioning_receipt_path
     )
@@ -351,6 +398,9 @@ def launch_native_task_isaaclab(
                 "multi_gpu_enabled": settings.get(
                     "/renderer/multiGpu/enabled"
                 ),
+                "gaussian_skip_tonemapping_enabled": settings.get(
+                    NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING
+                ),
                 "schema_registered": (
                     Usd.SchemaRegistry().FindConcretePrimDefinition(
                         NATIVE_TASK_ARENA_NUREC_SCHEMA
@@ -391,6 +441,14 @@ def launch_native_task_isaaclab(
         "ujitso_geometry_enabled": raw_nurec.get("ujitso_geometry_enabled")
         is True,
         "multi_gpu_enabled": raw_nurec.get("multi_gpu_enabled"),
+        "gaussian_skip_tonemapping_setting": (
+            NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING
+        ),
+        # ``None`` is the engine default, which skips tonemapping for
+        # ParticleField prims; only an explicit ``False`` is a forced-off flag.
+        "gaussian_skip_tonemapping_enabled": raw_nurec.get(
+            "gaussian_skip_tonemapping_enabled"
+        ),
         "schema_type_name": NATIVE_TASK_ARENA_NUREC_SCHEMA,
         "schema_registration_required": raw_nurec.get(
             "schema_registration_required"
@@ -410,6 +468,10 @@ def launch_native_task_isaaclab(
         nurec_errors.append("native_task_isaaclab_ujitso_geometry_not_enabled")
     if nurec["multi_gpu_enabled"] is not False:
         nurec_errors.append("native_task_isaaclab_nurec_multi_gpu_not_disabled")
+    if nurec["gaussian_skip_tonemapping_enabled"] is False:
+        nurec_errors.append(
+            "native_task_isaaclab_gaussian_tonemapping_forced_off"
+        )
     if nurec["schema_registration_required"] and not nurec["schema_registered"]:
         nurec_errors.append("native_task_isaaclab_nurec_schema_not_registered")
     if nurec_errors:
@@ -431,9 +493,12 @@ def launch_native_task_isaaclab(
 
 
 __all__ = [
+    "NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS",
     "NATIVE_TASK_ARENA_DEVICE",
+    "NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING",
     "NATIVE_TASK_ARENA_IMAGE",
     "NATIVE_TASK_ARENA_KIT_ARGS",
+    "NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH",
     "NATIVE_TASK_ARENA_NUREC_EXTENSION",
     "NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH",
     "NATIVE_TASK_ARENA_NUREC_SCHEMA",

@@ -1826,15 +1826,14 @@ def _runtime_eligibility_payload(runtime_status: Mapping[str, Any]) -> Dict[str,
     }
 
 
-# Privacy pipeline statuses that mean people are provably not present or fully
-# removed. Fallback redaction statuses intentionally do not appear here because
-# build_rights_provenance_review marks them needs_review, not cleared. A capture
-# whose raw privacy pipeline status is not in this set has NOT been privacy-cleared
-# and must never reach a buyer-facing "launchable" artifact.
+# Privacy pipeline statuses accepted by the rights review. Website admission
+# uses the site's recorded capture authority and may retain people in footage.
+# Fallback redaction statuses remain review inputs, not cleared results.
 _PRIVACY_CLEARED_STATUSES = frozenset(
     {
         "no_people_detected",
         "person_removed",
+        "website_capture_admitted",
     }
 )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .openai_api_geography import vast_geolocation_country_code
 from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 
 
@@ -28,18 +30,37 @@ CHECKPOINT_REPOSITORY_REVISION = "daa63191845a41281374e725f4c9e51c7a824460"
 CHECKPOINT_DIGEST = "sha256:0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6"
 LICENSE_TERMS_DIGEST = "sha256:4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be"
 MIN_GPU_MEMORY_BYTES = 24 * 1024**3
+#: Ampere (sm_80) or newer. The SAM 3.1 worker runs its prompt execution in bf16 on
+#: tensor cores; a Volta/Turing offer (Tesla V100 32 GB, 2026-09-12 scene 840938,
+#: instance 50799864, $0.21) has no bf16 path and died with OutOfMemoryError in the
+#: fp32 fallback, while the same worker image passed on an sm_80 CMP 170HX.
+MIN_COMPUTE_CAP = 800
+#: A thin marketplace refills over minutes. Scene 840938, 2026-09-13 00:14 UTC: one
+#: capacity probe saw a single non-viable offer, the preflight sealed
+#: sam31_gpu_single_gpu_unavailable, and the intent parked. The probe is read-only and
+#: free, so it is repeated a bounded number of times with a wait before giving up.
+CAPACITY_PROBE_RETRY_ATTEMPTS_ENV = "BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_ATTEMPTS"
+CAPACITY_PROBE_RETRY_INTERVAL_SECONDS_ENV = "BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS"
+DEFAULT_CAPACITY_PROBE_RETRY_ATTEMPTS = 6
+DEFAULT_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS = 60.0
 MIN_CONTAINER_DISK_BYTES = 40 * 1024**3
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MAX_TTL_SECONDS = 3_600
 MAX_RETRY_CAP = 0
 MAX_CANARY_FRAMES = 128
 MAX_CANARY_INPUT_BUNDLE_BYTES = 512 * 1024**2
+SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES = ("US",)
+SAM31_PREFERRED_GEOLOCATION_REGEX = (
+    "california|oregon|washington|nevada|arizona|utah|idaho|montana|"
+    "wyoming|colorado|new mexico"
+)
 SOURCE_PROFILES = {
     "iphone_arkit_lidar",
     "iphone_arkit_non_lidar",
     "camera_360_equirectangular",
     "camera_360_native",
     "monocular_video",
+    "render_derived_synthetic_method_inputs",
 }
 
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -67,6 +88,57 @@ def _read(path: str | Path) -> dict[str, Any]:
     return dict(value)
 
 
+def sam31_capacity_request(*, container_disk_bytes: int, max_hourly_rate_usd: float) -> dict[str, Any]:
+    """One resource policy shared by capacity discovery and the actual create."""
+    if (type(container_disk_bytes) is not int or container_disk_bytes < MIN_CONTAINER_DISK_BYTES
+            or not _finite(max_hourly_rate_usd, minimum=0.000001)):
+        raise ValueError("sam31_capacity_bounds_invalid")
+    disk_gb = math.ceil(container_disk_bytes / 1024**3)
+    return {
+        "max_hourly_rate_usd": float(max_hourly_rate_usd),
+        # Provider MB fields use decimal bytes in this admission contract.
+        # Request enough to satisfy the existing byte floor, never an offer's
+        # incidental larger amount of RAM.
+        "min_gpu_ram_mb": math.ceil(MIN_GPU_MEMORY_BYTES / 1_000_000),
+        # Architecture floor, enforced in the provider search payload and again
+        # in local offer selection; an offer that cannot prove it is refused.
+        "min_compute_cap": MIN_COMPUTE_CAP,
+        "container_disk_gb": disk_gb,
+        "required_provider_disk_gb": disk_gb,
+        "min_reliability": 0.98,
+        "require_avx": True,
+        "require_known_supported_isaac_driver": False,
+        "require_direct_port": True,
+        "preferred_gpu_keywords": ["L40S", "L40", "A40", "RTX 6000Ada", "RTX A6000"],
+        "allowed_geolocation_country_codes": list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
+    }
+
+
+_sleep = time.sleep  # module attribute so hermetic tests can neutralize the wait
+
+
+def _env_int(name: str, default: int) -> int:
+    text = str(os.getenv(name) or "").strip()
+    if not text:
+        return default
+    try:
+        return max(0, int(text))
+    except ValueError:
+        return default
+
+
+def _env_seconds(name: str, default: float) -> float:
+    text = str(os.getenv(name) or "").strip()
+    if not text:
+        return default
+    try:
+        value = float(text)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) and value >= 0 else default
+
+
 def collect_sam31_vast_preflight(
     *,
     name_prefix: str,
@@ -77,19 +149,33 @@ def collect_sam31_vast_preflight(
     inventory_probe: Callable[[str], Mapping[str, Any]],
     max_hourly_rate_usd: float,
     clock: Callable[[], float] = time.time,
+    sleeper: Callable[[float], None] | None = None,
+    capacity_retry_attempts: int | None = None,
+    capacity_retry_interval_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Collect mutation-free capacity, watchdog, and provider-zero evidence."""
 
-    capacity_request = {
-        "max_hourly_rate_usd": float(max_hourly_rate_usd),
-        "min_gpu_ram_mb": 24_000,
-        "min_reliability": 0.98,
-        "require_avx": True,
-        "require_known_supported_isaac_driver": False,
-        "require_direct_port": False,
-        "preferred_gpu_keywords": ["L40S", "L40", "A40", "RTX 6000Ada", "RTX A6000"],
-    }
-    capacity = dict(capacity_probe(capacity_request))
+    capacity_request = sam31_capacity_request(container_disk_bytes=container_disk_bytes,
+                                             max_hourly_rate_usd=max_hourly_rate_usd)
+    attempts = (_env_int(CAPACITY_PROBE_RETRY_ATTEMPTS_ENV, DEFAULT_CAPACITY_PROBE_RETRY_ATTEMPTS)
+                if capacity_retry_attempts is None else max(0, int(capacity_retry_attempts)))
+    interval = (_env_seconds(CAPACITY_PROBE_RETRY_INTERVAL_SECONDS_ENV, DEFAULT_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS)
+                if capacity_retry_interval_seconds is None else max(0.0, float(capacity_retry_interval_seconds)))
+    wait = sleeper if sleeper is not None else _sleep
+    probe_attempts: list[dict[str, Any]] = []
+    while True:
+        capacity = dict(capacity_probe(capacity_request))
+        if capacity.get("status") == "available" or len(probe_attempts) >= attempts:
+            break
+        probe_attempts.append({
+            "attempt": len(probe_attempts),
+            "status": str(capacity.get("status") or ""),
+            "offer_count": capacity.get("offer_count"),
+            "blockers": [str(b) for b in (capacity.get("blockers") or [])],
+            "wait_seconds": interval,
+            "provider_mutation_performed": False,
+        })
+        wait(interval)
     scoped_inventory = dict(inventory_probe(name_prefix))
     global_inventory = dict(inventory_probe(""))
     raw_offer = capacity.get("selected_offer")
@@ -126,6 +212,8 @@ def collect_sam31_vast_preflight(
         and 0 < hourly_rate <= float(max_hourly_rate_usd)
     ):
         blockers.append("sam31_gpu_single_gpu_unavailable")
+    if vast_geolocation_country_code(offer.get("geolocation")) != "us":
+        blockers.append("sam31_gpu_selected_offer_outside_us")
     if container_disk_bytes < MIN_CONTAINER_DISK_BYTES:
         blockers.append("sam31_gpu_container_disk_below_floor")
     result = {
@@ -145,6 +233,7 @@ def collect_sam31_vast_preflight(
         "selected_offer": offer or None,
         "capacity_request": capacity_request,
         "capacity_snapshot": capacity,
+        "capacity_probe_attempts": probe_attempts,
         "scoped_billable_inventory": scoped_inventory,
         "global_billable_inventory": global_inventory,
         "blockers": sorted(set(blockers)),
@@ -194,6 +283,10 @@ def build_sam31_gpu_canary_admission(
         "license_terms_digest": LICENSE_TERMS_DIGEST,
         "proof_effect": "none",
         "comparative_policy_ranking_verdict": "thesis_not_supported",
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
     }
     for field, expected in exact_values.items():
         if source.get(field) != expected:
@@ -278,6 +371,23 @@ def build_sam31_gpu_canary_admission(
         blockers.append("sam31_gpu_independent_watchdog_not_armed")
     if provider_snapshot.get("single_gpu_available") is not True:
         blockers.append("sam31_gpu_single_gpu_unavailable")
+    capacity_request = provider_snapshot.get("capacity_request")
+    capacity_request = (
+        capacity_request if isinstance(capacity_request, Mapping) else {}
+    )
+    selected_offer = provider_snapshot.get("selected_offer")
+    selected_offer = selected_offer if isinstance(selected_offer, Mapping) else {}
+    if capacity_request.get("allowed_geolocation_country_codes") != list(
+        SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+    ):
+        blockers.append("sam31_gpu_preflight_country_allowlist_mismatch")
+    if (
+        capacity_request.get("preferred_geolocation_regex")
+        != SAM31_PREFERRED_GEOLOCATION_REGEX
+    ):
+        blockers.append("sam31_gpu_preflight_geolocation_preference_mismatch")
+    if vast_geolocation_country_code(selected_offer.get("geolocation")) != "us":
+        blockers.append("sam31_gpu_preflight_selected_offer_outside_us")
     memory = provider_snapshot.get("gpu_memory_bytes")
     if not isinstance(memory, int) or isinstance(memory, bool) or memory < MIN_GPU_MEMORY_BYTES:
         blockers.append("sam31_gpu_memory_below_floor")
@@ -318,9 +428,13 @@ def build_sam31_gpu_canary_admission(
     ):
         if supplied != source.get(field):
             blockers.append(blocker)
+    rate_ceiling = capacity_request.get("max_hourly_rate_usd", hourly)
+    if (not _finite(rate_ceiling, minimum=0.000001)
+            or (_finite(hourly) and float(hourly) > float(rate_ceiling))):
+        blockers.append("sam31_gpu_capacity_rate_ceiling_invalid")
     worst_case = (
-        float(hourly) * float(hard_ttl_seconds) / 3600.0
-        if _finite(hourly, minimum=0.000001)
+        float(rate_ceiling) * float(hard_ttl_seconds) / 3600.0
+        if _finite(rate_ceiling, minimum=0.000001)
         and isinstance(hard_ttl_seconds, int)
         and not isinstance(hard_ttl_seconds, bool)
         else math.inf
@@ -367,6 +481,10 @@ def build_sam31_gpu_canary_admission(
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": retry_cap,
         "authority_id": authority_id,
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "watchdog_armed": watchdog.get("status") == "armed",
         "provider_zero_verified": provider_snapshot.get("provider_inventory_verified_zero") is True,
         "provider_mutations_performed": 0,
@@ -474,6 +592,8 @@ __all__ = [
     "PREFLIGHT_SCHEMA_VERSION",
     "PROBE_KIND",
     "REQUEST_SCHEMA_VERSION",
+    "SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES",
+    "SAM31_PREFERRED_GEOLOCATION_REGEX",
     "build_sam31_gpu_canary_admission",
     "collect_sam31_vast_preflight",
     "prepare_sam31_gpu_canary",

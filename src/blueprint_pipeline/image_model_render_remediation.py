@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence
 from PIL import Image
 
 from .common import ensure_dir, write_json
+from .openai_successor_models import OPENAI_IMAGE_MODEL
 from .wam_generated_video_review import assess_source_policy_observation_visual_qa
 
 
@@ -26,7 +27,7 @@ REQUEST_SCHEMA_VERSION = "image_model_render_remediation_request.v1"
 MANIFEST_SCHEMA_VERSION = "image_model_render_remediation_manifest.v1"
 CLAIM_BOUNDARY_SCHEMA_VERSION = "image_model_render_remediation_claim_boundary.v1"
 SOURCE_KIND = "image_model_enhanced_3d_render_seed"
-DEFAULT_MODEL = "gpt-image-2"
+DEFAULT_MODEL = OPENAI_IMAGE_MODEL
 ENABLE_ENV = "BLUEPRINT_ALLOW_IMAGE_MODEL_RENDER_REMEDIATION"
 COMMAND_ENV = "BLUEPRINT_IMAGE_MODEL_RENDER_REMEDIATION_COMMAND"
 MODEL_ENV = "BLUEPRINT_IMAGE_MODEL_RENDER_REMEDIATION_MODEL"

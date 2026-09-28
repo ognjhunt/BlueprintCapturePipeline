@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline import safe_outbound_http, vast_compute_capability as vcc
+from .vast_offer_selection_helpers import geolocation_selection_kwargs
 from blueprint_pipeline.paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
@@ -183,6 +184,9 @@ class RenderLaunchSpec:
     # geography-restricted external API. Vast applies this during both the
     # advisory capacity probe and the authoritative live offer selection.
     allowed_geolocation_country_codes: tuple[str, ...] = ()
+    # Soft ranking preference applied only after the hard country allowlist.
+    # Vast retains this in both its capacity and paid-selection manifests.
+    preferred_geolocation_regex: str = ""
 
     @property
     def bootstrap_script(self) -> str:
@@ -1938,6 +1942,7 @@ class VastRenderProvider(GpuRenderProvider):
             "allowed_geolocation_country_codes": list(
                 spec.allowed_geolocation_country_codes
             ),
+            "preferred_geolocation_regex": spec.preferred_geolocation_regex,
             "bootstrap_transport": script_transport,
             "bootstrap_transport_env_keys": sorted(bootstrap_env),
             "entrypoint_override": entrypoint_override,
@@ -1966,10 +1971,11 @@ class VastRenderProvider(GpuRenderProvider):
         from .vast_provider_adapter import (
             _api_json,
             _offers_from_response,
+            _projected_provider_transfer_cost_usd,
             _search_payload,
             _select_offer,
         )
-
+        from . import vast_capacity_budget as vcb
         req = _mapping(request)
         max_rate = _positive_float(req.get("max_hourly_rate_usd")) or 5.0
         min_ram = _positive_int(req.get("min_gpu_ram_mb")) or 0
@@ -1990,6 +1996,17 @@ class VastRenderProvider(GpuRenderProvider):
         required_provider_disk_gb = (
             _positive_int(req.get("required_provider_disk_gb")) or disk_gb
         )
+        expected_download_bytes, expected_upload_bytes, transfer_byte_blockers = (
+            vcb.expected_transfer_bytes(req)
+        )
+        if transfer_byte_blockers:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": transfer_byte_blockers,
+                "reservation_proven": False,
+                "raw_provider_response_recorded": False,
+            }
         allowed_machine_ids = _string_list(req.get("allowed_machine_ids"))
         excluded_machine_ids = _string_list(req.get("excluded_machine_ids"))
         required_search_payload = _search_payload(
@@ -2069,13 +2086,8 @@ class VastRenderProvider(GpuRenderProvider):
             selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
         if allowed_machine_ids:
             selection_kwargs["allowed_machine_ids"] = allowed_machine_ids
-        allowed_geolocation_country_codes = _string_list(
-            req.get("allowed_geolocation_country_codes")
-        )
-        if allowed_geolocation_country_codes:
-            selection_kwargs["allowed_geolocation_country_codes"] = (
-                allowed_geolocation_country_codes
-            )
+        geography = geolocation_selection_kwargs(req)
+        selection_kwargs.update(geography)
         selected = _select_offer(offers, **selection_kwargs)
         viable: list[dict[str, Any]] = []
         for offer in offers:
@@ -2112,30 +2124,16 @@ class VastRenderProvider(GpuRenderProvider):
         retry_cap = req.get("retry_cap")
         if retry_cap is not None and retry_cap != 0:
             blockers.append("vast_capacity_retry_cap_must_be_zero")
-        if hard_ttl_seconds is not None:
-            for row in viable:
-                row["projected_full_ttl_cost_usd"] = (
-                    float(row["hourly_rate_usd"]) * hard_ttl_seconds / 3600.0
-                )
-            if selected:
-                selected = dict(selected)
-                selected["projected_full_ttl_cost_usd"] = (
-                    float(selected["hourly_rate_usd"])
-                    * hard_ttl_seconds
-                    / 3600.0
-                )
-        if hard_cap_usd is not None and hard_ttl_seconds is not None:
-            viable = [
-                row
-                for row in viable
-                if float(row.get("projected_full_ttl_cost_usd") or math.inf)
-                <= hard_cap_usd
-            ]
-            if selected and float(
-                selected.get("projected_full_ttl_cost_usd") or math.inf
-            ) > hard_cap_usd:
-                selected = None
-                blockers.append("vast_capacity_full_ttl_exceeds_hard_cap")
+        viable, budget_blockers = vcb.bind_transfer_aware_budget(
+            viable,
+            hard_ttl_seconds=hard_ttl_seconds,
+            hard_cap_usd=hard_cap_usd,
+            expected_provider_download_bytes=expected_download_bytes,
+            expected_provider_upload_bytes=expected_upload_bytes,
+            projected_transfer_cost=_projected_provider_transfer_cost_usd,
+        )
+        blockers.extend(budget_blockers)
+        selected = viable[0] if viable else None
         global_inventory = None
         if req.get("require_global_inventory_zero") is True:
             global_inventory = self.billable_inventory(name_prefix="")
@@ -2170,8 +2168,10 @@ class VastRenderProvider(GpuRenderProvider):
                 "hard_ttl_seconds": hard_ttl_seconds,
                 "hard_cap_usd": hard_cap_usd,
                 "retry_cap": retry_cap,
+                "expected_provider_download_bytes": expected_download_bytes,
+                "expected_provider_upload_bytes": expected_upload_bytes,
                 "allowed_geolocation_country_codes": sorted(
-                    allowed_geolocation_country_codes
+                    geography.get("allowed_geolocation_country_codes", [])
                 ),
             },
             "global_billable_inventory": global_inventory,
@@ -2210,10 +2210,14 @@ class VastRenderProvider(GpuRenderProvider):
         prelaunch_blockers = _render_prelaunch_guard_blockers(
             request, provider_name="vast"
         )
+        from .provider_credit_admission import render_credit_admission
+        credit_guard = render_credit_admission(request, key)
+        prelaunch_blockers.extend(credit_guard["blockers"])
         if prelaunch_blockers:
             return {
                 "status": "blocked",
                 "blockers": prelaunch_blockers,
+                "provider_credit_admission": credit_guard,
                 "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard")) or None,
                 "allocation_created": False, "spend_occurred": False,
             }
@@ -2244,9 +2248,6 @@ class VastRenderProvider(GpuRenderProvider):
             request.get("excluded_machine_ids")
         )
         allowed_machine_ids = _string_list(request.get("allowed_machine_ids"))
-        allowed_geolocation_country_codes = _string_list(
-            request.get("allowed_geolocation_country_codes")
-        )
         selection_overrides = vcc.capacity_selection_overrides(request)
         minimum_driver_version = str(
             request.get("minimum_driver_version") or ""
@@ -2324,10 +2325,7 @@ class VastRenderProvider(GpuRenderProvider):
                 selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
             if allowed_machine_ids:
                 selection_kwargs["allowed_machine_ids"] = allowed_machine_ids
-            if allowed_geolocation_country_codes:
-                selection_kwargs["allowed_geolocation_country_codes"] = (
-                    allowed_geolocation_country_codes
-                )
+            selection_kwargs.update(geolocation_selection_kwargs(request))
             offer = _select_offer(remaining, **selection_kwargs)
             if not offer:
                 break
@@ -2576,6 +2574,7 @@ class VastRenderProvider(GpuRenderProvider):
             _active_instance_rows_from_payload,
             _api_json,
             _instance_list_rows,
+            _instance_inventory_valid,
         )
 
         try:
@@ -2611,7 +2610,7 @@ class VastRenderProvider(GpuRenderProvider):
                 "error_type": type(exc).__name__,
                 "raw_provider_response_recorded": False,
             }
-        if status != 200:
+        if status != 200 or not _instance_inventory_valid(response):
             return {
                 "status": "blocked",
                 "provider": self.name,

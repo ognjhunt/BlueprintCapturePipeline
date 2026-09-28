@@ -22,8 +22,10 @@ import struct
 import zipfile
 from typing import Any
 
+from .semantic_target_training_selection import effective_training_record_count
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .gaussian_field_quality import gaussian_drift_is_qualified
 from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
@@ -40,7 +42,7 @@ from .paid_repair_spend_chain import (
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .public_scene_artifixer3d_bundle import (
     CHECKPOINT_REUSE_SCHEMA_VERSION,
-    DIRECT_EDITOR_BACKENDS,
+    direct_editor_backends,
     DEFAULT_IMAGE,
     DUAL_TARGET_PIPELINE_MODE,
     DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
@@ -50,6 +52,7 @@ from .public_scene_artifixer3d_bundle import (
     USE_ATTESTATION_SCHEMA_VERSION,
 )
 from .public_scene_artifixer3d_native_exports import (
+    geometry_protection_is_qualified,
     materialize_artifixer3d_native_appearance_exports,
 )
 from .task_evaluation_artifact_manifest import (
@@ -66,6 +69,7 @@ from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
     stage_wam_provider_bundle_object_store,
 )
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _RETRY_ENV, pre_mutation_offer_reselection_attempts
 
 
 PROBE_KIND = "adp-artifixer3d-exact-support"
@@ -89,9 +93,7 @@ GPU_SELECTION_POLICY = {
         "A100 uses the released cuDNN SDPA fallback without Hopper-only kernels"
     ),
 }
-AUTHORIZATION_CONSUMPTION_ROOT_ENV = (
-    "BLUEPRINT_ARTIFIXER3D_AUTHORIZATION_CONSUMPTION_ROOT"
-)
+AUTHORIZATION_CONSUMPTION_ROOT_ENV = "BLUEPRINT_ARTIFIXER3D_AUTHORIZATION_CONSUMPTION_ROOT"
 LAUNCH_STATE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT"
 
 
@@ -119,7 +121,6 @@ def _default_authorization_consumption_root() -> Path:
 
 AUTHORIZATION_CONSUMPTION_ROOT = _default_authorization_consumption_root()
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
-_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 DUAL_TARGET_CANDIDATE_MEMBER = (
     "provider_runtime/input/public_scene_artifixer3d_dual_target_inputs.v1.json"
 )
@@ -597,8 +598,7 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         and request.get("outside_exact_support_changed_pixels_permitted") == 0
         and request.get("repair_target")
         == "plausible_object_free_background_inside_exact_support_only"
-        and request.get("direct_editor_backend")
-        in DIRECT_EDITOR_BACKENDS
+        and request.get("direct_editor_backend") in direct_editor_backends()
     )
     dual_target_request_valid = (
         pipeline_mode == DUAL_TARGET_PIPELINE_MODE
@@ -717,7 +717,8 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
             raise ValueError("artifixer3d_bundle_task_invalid")
         task_ids.append(task_id)
         task_camera_counts[task_id] = camera_count
-        task_training_record_counts[task_id] = training_record_count
+        task_training_record_counts[task_id] = effective_training_record_count(
+            task, request["artifixer3d"].get("training_supervision"))
     if task_ids != receipt.get("task_ids"):
         raise ValueError("artifixer3d_bundle_task_order_invalid")
     reused_checkpoints: dict[str, dict[str, Any]] = {}
@@ -952,9 +953,7 @@ def materialize_artifixer3d_paid_attempt_authority(
         "campaign_spend_anchor_kind": (
             "prior_aura_terminal_attempt" if campaign_start is None else "measured_campaign_start"
         ),
-        "prior_aura_authority": (
-            _record(prior_authority_path) if campaign_start is None else None
-        ),
+        "prior_aura_authority": (_record(prior_authority_path) if campaign_start is None else None),
         "prior_aura_authority_digest": (
             prior_authority["authorization_digest"] if campaign_start is None else None
         ),
@@ -1081,9 +1080,7 @@ def validate_artifixer3d_paid_attempt_authority(
             value.get("prior_terminal_result"),
             code="artifixer3d_authority_terminal_unbound",
         )
-        _, terminal_cost = _validate_prior_terminal_result(
-            terminal_path, prior_authority=prior
-        )
+        _, terminal_cost = _validate_prior_terminal_result(terminal_path, prior_authority=prior)
         anchor_spend = float(prior["prior_goal_spend_usd"]) + terminal_cost
     elif anchor_kind == "measured_campaign_start":
         if any(
@@ -1100,12 +1097,8 @@ def validate_artifixer3d_paid_attempt_authority(
             value.get("campaign_start_receipt"),
             code="artifixer3d_authority_campaign_start_unbound",
         )
-        campaign_start, anchor_spend = validate_campaign_start_receipt(
-            campaign_start_path
-        )
-        if campaign_start.get("receipt_digest") != value.get(
-            "campaign_start_receipt_digest"
-        ):
+        campaign_start, anchor_spend = validate_campaign_start_receipt(campaign_start_path)
+        if campaign_start.get("receipt_digest") != value.get("campaign_start_receipt_digest"):
             raise ValueError("artifixer3d_authority_campaign_start_mismatch")
     else:
         raise ValueError("artifixer3d_authority_spend_anchor_invalid")
@@ -1332,7 +1325,7 @@ def _authority_environment():
     previous = {name: os.environ.get(name) for name in (*_MUTATION_ENV, _RETRY_ENV)}
     for name in _MUTATION_ENV:
         os.environ[name] = "true"
-    os.environ[_RETRY_ENV] = "0"
+    os.environ[_RETRY_ENV] = pre_mutation_offer_reselection_attempts()
     try:
         yield
     finally:
@@ -1542,8 +1535,7 @@ def _materialize_raw_result(
                 )
                 or coordinate.get("usdz_wrapper_transform_role")
                 != "identity_pinned_spawn_pose_is_sole_placement"
-                or coordinate.get("usdz_wrapper_transform_measured_from_packaged_asset")
-                is not True
+                or coordinate.get("usdz_wrapper_transform_measured_from_packaged_asset") is not True
                 or not isinstance(checkpoint_record, Mapping)
                 or not isinstance(source_checkpoint, Mapping)
                 or source_checkpoint.get("size_bytes") != checkpoint_record.get("size_bytes")
@@ -1551,6 +1543,11 @@ def _materialize_raw_result(
                 or native_appearance_record.get("generated_output_is_capture_or_physical_evidence")
                 is not False
                 or native_appearance_record.get("native_import_qualified") is not False
+                or not gaussian_drift_is_qualified(
+                    native_appearance_record.get("gaussian_field_source_relative_drift")
+                )
+                or not geometry_protection_is_qualified(
+                    native_appearance_record.get("geometry_protection"))
             ):
                 raise ValueError("artifixer3d_runtime_native_appearance_invalid")
             exports: dict[str, Any] = {}
@@ -1596,6 +1593,10 @@ def _materialize_raw_result(
                     "sha256": source_checkpoint["sha256"],
                 },
                 "gaussian_count": native_appearance_record.get("gaussian_count"),
+                "gaussian_field_source_relative_drift": dict(
+                    native_appearance_record["gaussian_field_source_relative_drift"]
+                ),
+                "geometry_protection": dict(native_appearance_record["geometry_protection"]),
                 "coordinate_contract": dict(coordinate),
                 **exports,
                 "isaac_nurec_usdz_archive_contract": dict(archive_contract),
@@ -2169,9 +2170,7 @@ def run_artifixer3d_vast(
         # staged URL raises before it. Record the absence of any allocation so
         # the run can close; the sealer declines whenever the evidence does not
         # support that claim.
-        seal_unallocated_provider_teardown(
-            provider_run, reason="artifixer3d_adapter_failed"
-        )
+        seal_unallocated_provider_teardown(provider_run, reason="artifixer3d_adapter_failed")
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     teardown_path = provider_run / "vast_teardown_manifest.json"
@@ -2279,8 +2278,10 @@ def run_artifixer3d_vast(
             blockers.append(
                 f"artifixer3d_raw_result_materialization_failed:{redacted_failure_detail(exc)}"
             )
-    if not blockers and raw_path is not None and "native_appearance_export" in (
-        bundle.get("phases") or []
+    if (
+        not blockers
+        and raw_path is not None
+        and "native_appearance_export" in (bundle.get("phases") or [])
     ):
         try:
             native_exports = materialize_artifixer3d_native_appearance_exports(

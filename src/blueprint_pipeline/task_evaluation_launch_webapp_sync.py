@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+from pathlib import Path
 from typing import Any, Mapping
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .task_evaluation_scene_evaluation_readiness import (
+    CONFIGURATION_COMPLETE_OFFERING_STATUSES,
+)
+from .decision_evidence_contracts import canonical_digest
+from .native_task_arena_direct_execution_closeout import (
+    SCHEMA_VERSION as DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION,
+)
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 
@@ -16,6 +25,86 @@ LAUNCH_SUPERVISION_WEBAPP_URL_ENV = (
     "PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL"
 )
 LAUNCH_PROGRESS_WEBAPP_URL_ENV = "PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL"
+PIPELINE_SYNC_TOKEN_FILE_ENV = "PIPELINE_SYNC_TOKEN_FILE"
+
+
+class PipelineSyncTokenError(RuntimeError):
+    """The canonical file-backed WebApp synchronization token is unavailable."""
+
+
+def load_pipeline_sync_token(
+    *,
+    token: str | None = None,
+    token_file_path: str | Path | None = None,
+    require_file: bool = False,
+) -> str:
+    """Resolve a sync token without exposing its bytes in errors or receipts."""
+
+    if token is not None:
+        resolved = str(token).strip()
+        if not resolved:
+            raise PipelineSyncTokenError("pipeline_sync_token_missing")
+        if require_file:
+            raise PipelineSyncTokenError("pipeline_sync_token_file_required")
+        return resolved
+    raw_path = str(
+        token_file_path or os.getenv(PIPELINE_SYNC_TOKEN_FILE_ENV) or ""
+    ).strip()
+    if raw_path:
+        path = Path(raw_path).expanduser()
+        descriptor = -1
+        try:
+            if path.is_symlink():
+                raise PipelineSyncTokenError("pipeline_sync_token_file_unsafe")
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            metadata = os.fstat(descriptor)
+            mode = stat.S_IMODE(metadata.st_mode)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or mode & ~0o640
+                or not mode & 0o440
+            ):
+                raise PipelineSyncTokenError("pipeline_sync_token_file_unsafe")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                payload = stream.read(4097)
+        except PipelineSyncTokenError:
+            raise
+        except OSError as exc:
+            raise PipelineSyncTokenError(
+                "pipeline_sync_token_file_unavailable"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(payload) > 4096:
+            raise PipelineSyncTokenError("pipeline_sync_token_file_unsafe")
+        try:
+            resolved = payload.decode("utf-8").strip()
+        except UnicodeError as exc:
+            raise PipelineSyncTokenError(
+                "pipeline_sync_token_file_unavailable"
+            ) from exc
+        if not resolved:
+            raise PipelineSyncTokenError("pipeline_sync_token_missing")
+        return resolved
+    if require_file:
+        raise PipelineSyncTokenError("pipeline_sync_token_file_required")
+    resolved = str(os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    if not resolved:
+        raise PipelineSyncTokenError("pipeline_sync_token_missing")
+    return resolved
+
+
+def _optional_pipeline_sync_token(token: str | None) -> str:
+    try:
+        return load_pipeline_sync_token(token=token)
+    except PipelineSyncTokenError:
+        return ""
 
 
 def sync_launch_progress_to_webapp(
@@ -43,7 +132,7 @@ def sync_launch_progress_to_webapp(
     resolved_url = str(
         endpoint_url or os.getenv(LAUNCH_PROGRESS_WEBAPP_URL_ENV) or ""
     ).strip()
-    resolved_token = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    resolved_token = _optional_pipeline_sync_token(token)
     if not resolved_url or not resolved_token:
         return {**common, "status": "skipped", "reason": "progress_sync_not_configured"}
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -100,8 +189,58 @@ def sync_launch_receipt_to_webapp(
         "request_digest": payload.get("request_digest"),
         "receipt_digest": payload.get("receipt_digest"),
     }
+    if payload.get("schema_version") == DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION:
+        projection = payload.get("website_projection")
+        projection = projection if isinstance(projection, Mapping) else {}
+        if (
+            payload.get("status") != "blocked"
+            or payload.get("receipt_digest")
+            != canonical_digest(payload, digest_field="receipt_digest")
+            or projection.get("configured_scene_offering_status")
+            != "configured_controls_pending"
+            or projection.get("native_construction_status") != "blocked"
+            or projection.get("native_construction_blockers")
+            != payload.get("blockers")
+            or projection.get("controls_qualified") is not False
+            or projection.get("evaluation_ready") is not False
+            or projection.get("qualification_upgrade_performed") is not False
+        ):
+            return {
+                **common,
+                "status": "failed",
+                "reason": "direct_execution_adoption_projection_invalid",
+            }
+        common.update(
+            {
+                "configured_scene_offering_status": (
+                    "configured_controls_pending"
+                ),
+                "native_construction_status": "blocked",
+                "native_construction_blockers": list(payload["blockers"]),
+                "qualification_upgrade_performed": False,
+            }
+        )
+    terminal = payload.get("terminal_evidence")
+    terminal = terminal if isinstance(terminal, Mapping) else {}
+    scene_configuration = terminal.get("scene_configuration")
+    scene_configuration = (
+        scene_configuration if isinstance(scene_configuration, Mapping) else {}
+    )
+    offering = scene_configuration.get("configured_scene_offering")
+    if isinstance(offering, Mapping):
+        offering_status = offering.get("status")
+        common["configured_scene_offering_digest"] = offering.get(
+            "offering_digest"
+        )
+        common["configured_scene_offering_status"] = offering_status
+        if offering_status not in CONFIGURATION_COMPLETE_OFFERING_STATUSES:
+            return {
+                **common,
+                "status": "failed",
+                "reason": "configured_scene_offering_status_invalid",
+            }
     resolved_url = str(endpoint_url or os.getenv(LAUNCH_WEBAPP_URL_ENV) or "").strip()
-    resolved_token = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    resolved_token = _optional_pipeline_sync_token(token)
     if not resolved_url or not resolved_token:
         return {**common, "status": "skipped", "reason": "sync_not_configured"}
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -135,6 +274,27 @@ def sync_launch_receipt_to_webapp(
         for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
     ):
         return {**common, "status": "failed", "reason": "response_binding_mismatch"}
+    if response.get("schema_version") != (
+        "task_evaluation_launch_web_sync_receipt.v1"
+    ):
+        return {**common, "status": "failed", "reason": "response_schema_mismatch"}
+    if (
+        response.get("status") != payload.get("status")
+        or not isinstance(response.get("already_exists"), bool)
+    ):
+        return {**common, "status": "failed", "reason": "response_status_mismatch"}
+    if "configured_scene_offering_digest" in common and any(
+        response.get(field) != common[field]
+        for field in (
+            "configured_scene_offering_digest",
+            "configured_scene_offering_status",
+        )
+    ):
+        return {
+            **common,
+            "status": "failed",
+            "reason": "configured_scene_offering_binding_mismatch",
+        }
     return {**common, "status": "succeeded", "response": dict(response)}
 
 
@@ -151,7 +311,7 @@ def sync_launch_supervision_to_webapp(
     resolved_url = str(
         endpoint_url or os.getenv(LAUNCH_SUPERVISION_WEBAPP_URL_ENV) or ""
     ).strip()
-    resolved_token = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    resolved_token = _optional_pipeline_sync_token(token)
     if not resolved_url or not resolved_token:
         return {**common, "status": "skipped", "reason": "sync_not_configured"}
     try:
@@ -192,6 +352,9 @@ __all__ = [
     "LAUNCH_PROGRESS_WEBAPP_URL_ENV",
     "LAUNCH_SUPERVISION_WEBAPP_URL_ENV",
     "LAUNCH_WEBAPP_URL_ENV",
+    "PIPELINE_SYNC_TOKEN_FILE_ENV",
+    "PipelineSyncTokenError",
+    "load_pipeline_sync_token",
     "sync_launch_progress_to_webapp",
     "sync_launch_receipt_to_webapp",
     "sync_launch_supervision_to_webapp",

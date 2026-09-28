@@ -11,6 +11,7 @@ here.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
@@ -78,14 +79,72 @@ _PROFILES: Mapping[str, Mapping[str, Any]] = {
 }
 
 
-def resolve_native_task_robot_contact_topology(robot_id: str) -> dict[str, Any]:
+def _asset_rigid_body_paths(asset_path: Path) -> list[str]:
+    """Read exact contact-sensor body paths from the sealed robot USD."""
+
+    try:
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.Open(str(asset_path))
+        if stage is None or not stage.GetDefaultPrim().IsValid():
+            raise ValueError("default_prim_missing")
+        source_root = str(stage.GetDefaultPrim().GetPath())
+        bodies = [
+            str(prim.GetPath())
+            for prim in stage.Traverse()
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        ]
+    except Exception as exc:  # USD may raise pxr.Tf.ErrorException on bad asset bytes.
+        raise NativeTaskRobotContactTopologyError(
+            ["native_task_robot_contact_asset_unreadable"]
+        ) from exc
+    prefix = f"{ENV_ROOT}/Robot"
+    return sorted(
+        {
+            prefix + path[len(source_root) :]
+            for path in bodies
+            if path == source_root or path.startswith(source_root + "/")
+        }
+    )
+
+
+def resolve_native_task_robot_contact_topology(
+    robot_id: str, robot: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Return a detached, validated exact-body profile for one embodiment."""
 
     profile = _PROFILES.get(str(robot_id))
     if profile is None:
-        raise NativeTaskRobotContactTopologyError(
-            [f"native_task_robot_contact_topology_unavailable:{robot_id}"]
-        )
+        if robot is None or robot.get("robot_id") != robot_id:
+            raise NativeTaskRobotContactTopologyError(
+                [f"native_task_robot_contact_topology_unavailable:{robot_id}"]
+            )
+        from .native_task_robot_registry import validate_native_robot_plan
+
+        try:
+            validate_native_robot_plan(robot)
+            asset_path = Path(str(robot["usd_path"]))
+            requested = robot["task_contact_body_paths"]
+            if not isinstance(requested, (list, tuple)):
+                raise ValueError("task_contact_body_paths")
+            protected = _asset_rigid_body_paths(asset_path)
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            if isinstance(exc, NativeTaskRobotContactTopologyError):
+                raise
+            raise NativeTaskRobotContactTopologyError(
+                [f"native_task_robot_contact_topology_unavailable:{robot_id}"]
+            ) from exc
+        profile = {
+            "schema_version": SCHEMA_VERSION,
+            "robot_id": robot_id,
+            "runtime_asset": {
+                "source": str(asset_path),
+                "sha256": robot["usd_sha256"],
+                "spawn_prim_path": f"{ENV_ROOT}/Robot",
+            },
+            "task_contact_body_paths": requested,
+            "protected_collision_body_paths": protected,
+        }
     value = json.loads(json.dumps(profile))
     task_bodies = list(value["task_contact_body_paths"])
     protected_bodies = list(value["protected_collision_body_paths"])
@@ -97,12 +156,14 @@ def resolve_native_task_robot_contact_topology(robot_id: str) -> dict[str, Any]:
         if not paths or len(paths) != len(set(paths)):
             errors.append(f"native_task_robot_contact_topology_invalid:{field}")
         for path in paths:
-            if not path.startswith(f"{ENV_ROOT}/Robot/") or any(
+            if not isinstance(path, str) or not path.startswith(f"{ENV_ROOT}/Robot/") or any(
                 token in path for token in ("*", ".*", "[", "]")
             ):
                 errors.append(f"native_task_robot_contact_body_not_exact:{field}")
     if not set(task_bodies).issubset(protected_bodies):
         errors.append("native_task_robot_contact_topology_task_bodies_unprotected")
+    if not set(protected_bodies) - set(task_bodies):
+        errors.append("native_task_robot_contact_topology_forbidden_bodies_missing")
     if errors:
         raise NativeTaskRobotContactTopologyError(errors)
     return value

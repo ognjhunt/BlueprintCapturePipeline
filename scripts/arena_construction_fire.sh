@@ -10,7 +10,7 @@ set -euo pipefail
 CP=/opt/blueprint/task-evaluation-control-plane
 PY=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 E=/var/lib/blueprint/task-evaluation-inputs
-A=$E/arena-launch-$CUR
+A=$(sudo -u blueprint env PYTHONPATH=$CP/src $PY -m blueprint_pipeline.control_plane_arena_scratch resolve --tag "$CUR" --writable)
 ENVF=/etc/blueprint/pipeline-control-plane.env
 PROFILE_JSON=$A/arena_construction_live_profile.v1.json
 test -f "$PROFILE_JSON" || { echo "no profile at $PROFILE_JSON -- run arena_construction_launch_chain.sh first"; exit 1; }

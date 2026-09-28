@@ -1,0 +1,321 @@
+"""Canonical parent-runtime and spend policy for scene configuration.
+
+The six-stage provider chain is serialized inside one paid allocation.  Its
+parent lease therefore has to cover the *sum* of the three unchanged GPU-stage
+allowances, not merely the largest individual child timeout.  The additional
+reserves below are explicit product policy: they bound bootstrap, deterministic
+no-spend work, transfers, output sealing, and teardown without presenting those
+values as measured production durations.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+
+GPU_STAGE_TIMEOUT_SECONDS: Mapping[str, int] = {
+    # One first appearance pass plus one bounded selective repair pass. PR #1361
+    # funded the repair round but left this sized for a single pass, so the
+    # first run that actually reached the repair was killed mid-retrain. One
+    # measured execute pass is 3_661s (scene 839873, 16:41:56Z -> 17:42:57Z);
+    # two passes plus the repair edit and two independent reviews need ~8_400s.
+    "artifixer3d_observed_object_removal": 12_000,
+    "content_agents_rigid_replacement": 7_800,
+    "simready_native_import_qualification": 1_800,
+}
+SERIAL_GPU_STAGE_TIMEOUT_SECONDS = sum(GPU_STAGE_TIMEOUT_SECONDS.values())
+
+# Named conservative product-policy reserves.  These are authority limits, not
+# empirical claims about how long a successful provider normally takes.
+# Instance creation through container start measured at ~360s on the same
+# lane. Trimmed from 6_000 to fund the repair pass while keeping the parent TTL
+# inside the compute cap that already exists, so no run may spend more than it
+# could before. Still an order of magnitude over what was observed.
+BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS = 3_600
+OUTPUT_AND_CLOSURE_RESERVE_SECONDS = 1_800
+REQUIRED_PARENT_TTL_SECONDS = (
+    SERIAL_GPU_STAGE_TIMEOUT_SECONDS
+    + BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS
+    + OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+)
+
+MAX_HOURLY_RATE_USD = 0.80
+MAX_PROVIDER_COMPUTE_SPEND_USD = 6.0
+# Sixteen fresh initial frames require $4.80 at the registry's $0.30/request
+# bound. A selective correction uses only the remaining allowance after actual
+# initial usage (or retained-image reuse); it never resets this stage ceiling.
+MAX_EXTERNAL_SERVICE_SPEND_USD = 6.0
+MAX_ATTEMPT_SPEND_USD = 12.0
+MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD = 4.8
+# The fixed visual reviewer declares an 80k-token multimodal input ceiling and
+# an 8k-token output ceiling.  The canonical Agents SDK reservation rates are
+# $2.50/M input and $15/M output, so each round needs $0.32. One bounded
+# target review and one bounded repair review precede strict final review: $0.96 total.
+MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.96
+MIN_CONTENT_AGENTS_SPEND_USD = 0.2
+MIN_EXTERNAL_SERVICE_SPEND_USD = 5.96
+MIN_ASTRA_AUTHORING_SPEND_USD = 5.0
+# One shared pool for the whole CAD/Blender stage, however many task objects or
+# articulated parts it authors; parts draw from it as they need. Owner decision
+# 2026-09-28: a website task's first part cost ~$3 (about ten calls) and the
+# second was refused at the former stage cap before six more parts were tried.
+MAX_ASTRA_AUTHORING_SPEND_USD = 25.0
+
+
+@dataclass(frozen=True)
+class SceneConfigurationBudgetProfile:
+    """Quoting/admission limits, never an owner or project spend authorization."""
+    backend: str
+    content_agents_minimum: float
+    content_agents_maximum: float
+    external_maximum: float
+    attempt_maximum: float
+    default_content_agents_cap: float
+
+    def stage_caps(self, authoring_max_cost_usd: float | None = None) -> dict[str, float]:
+        cap = self.default_content_agents_cap if authoring_max_cost_usd is None else authoring_max_cost_usd
+        if (isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap)
+                or not self.content_agents_minimum <= cap <= self.content_agents_maximum):
+            raise ValueError("scene_configuration_authoring_spend_invalid")
+        values = {"artifixer_semantic_teacher": MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+                  "artifixer_visual_review": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+                  "content_agents": float(cap)}
+        if sum(values.values()) > self.external_maximum + 1e-9:
+            raise ValueError("scene_configuration_external_spend_invalid")
+        return values
+
+
+def scene_configuration_budget_profile(backend: str = "content_agents") -> SceneConfigurationBudgetProfile:
+    """Select only explicit supported backends; absent old declarations stay legacy."""
+    if backend == "content_agents":
+        return SceneConfigurationBudgetProfile(backend, MIN_CONTENT_AGENTS_SPEND_USD, 5.0,
+            MAX_EXTERNAL_SERVICE_SPEND_USD, MAX_ATTEMPT_SPEND_USD,
+            round(MAX_EXTERNAL_SERVICE_SPEND_USD - MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+                  - MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD, 6))
+    if backend != "astra_cad_blender_v1":
+        raise ValueError("scene_configuration_authoring_backend_invalid")
+    maximum_external = round(MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+                             + MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD + MAX_ASTRA_AUTHORING_SPEND_USD, 6)
+    return SceneConfigurationBudgetProfile(backend, MIN_ASTRA_AUTHORING_SPEND_USD,
+        MAX_ASTRA_AUTHORING_SPEND_USD, maximum_external,
+        round(MAX_PROVIDER_COMPUTE_SPEND_USD + maximum_external, 6), MIN_ASTRA_AUTHORING_SPEND_USD)
+
+
+def scene_configuration_budget_profile_contract() -> dict[str, Any]:
+    """Cross-runtime profile data; selecting a profile grants no spend authority."""
+    profiles = {}
+    for backend in ("content_agents", "astra_cad_blender_v1"):
+        profile = scene_configuration_budget_profile(backend)
+        default_external = round(sum(profile.stage_caps().values()), 6)
+        profiles[backend] = {"authoring_minimum": profile.content_agents_minimum,
+            "authoring_maximum": profile.content_agents_maximum, "external_maximum": profile.external_maximum,
+            "attempt_maximum": profile.attempt_maximum, "default_stage_caps": profile.stage_caps(),
+            "default_external_cap": default_external,
+            "default_attempt_cap": round(MAX_PROVIDER_COMPUTE_SPEND_USD + default_external, 6)}
+    return {"schema_version": "task_evaluation_scene_configuration_budget_profiles.v1",
+            "creates_spend_authority": False, "parent_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
+            "provider_compute_cap": MAX_PROVIDER_COMPUTE_SPEND_USD,
+            "semantic_teacher_minimum": MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+            "visual_review_minimum": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD, "profiles": profiles}
+
+PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"
+STAGE_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEADLINE_EPOCH"
+# Leave time inside the existing stage allowance for export, evidence and review.
+ARTIFIXER_TRAINING_CLOSEOUT_RESERVE_SECONDS = 600
+# Stage-3 authoring stops starting new model calls this long before the
+# producer's absolute stage deadline, so part records are sealed and the
+# assembly outcome is written instead of the whole stage being killed.
+ASTRA_AUTHORING_CLOSEOUT_RESERVE_SECONDS = 600
+
+
+def artifixer_training_timeout_seconds(environment: Mapping[str, str], *, now_epoch: float) -> float:
+    """Spend only the remainder of the producer's original stage allowance.
+
+    Older direct callers without a producer deadline retain their 7,000s limit.
+    Production producers always supply the absolute deadline, shared by every
+    training round; a repair cannot reset the stage clock.
+    """
+    raw = environment.get(STAGE_DEADLINE_EPOCH_ENV)
+    if raw is None:
+        return 7_000
+    try:
+        deadline = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("scene_configuration_artifixer_stage_deadline_invalid") from exc
+    if not math.isfinite(deadline) or not math.isfinite(now_epoch):
+        raise ValueError("scene_configuration_artifixer_stage_deadline_invalid")
+    remaining = min(deadline - now_epoch,
+                    GPU_STAGE_TIMEOUT_SECONDS["artifixer3d_observed_object_removal"])
+    allowance = remaining - ARTIFIXER_TRAINING_CLOSEOUT_RESERVE_SECONDS
+    if allowance <= 0:
+        raise ValueError("scene_configuration_artifixer_training_time_exhausted")
+    return allowance
+
+
+OUTPUT_CLOSURE_RESERVE_SECONDS_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_CLOSURE_RESERVE_SECONDS"
+)
+
+
+def ceil_live_minutes(ttl_seconds: int) -> int:
+    """Convert an admitted second budget without shortening its hard lease."""
+
+    if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int):
+        raise ValueError("scene_configuration_parent_runtime_budget_invalid")
+    if ttl_seconds <= 0:
+        raise ValueError("scene_configuration_parent_runtime_budget_invalid")
+    return max(1, math.ceil(ttl_seconds / 60))
+
+
+def required_remaining_stage_seconds(
+    stages: list[Mapping[str, Any]], *, start_index: int
+) -> int:
+    """Return future GPU allowances plus the immutable closure reserve."""
+
+    if not 0 <= start_index <= len(stages):
+        raise ValueError("scene_configuration_parent_runtime_budget_invalid")
+    remaining = OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+    for stage in stages[start_index:]:
+        adapter = stage.get("adapter")
+        adapter_id = (
+            str(adapter.get("id") or "") if isinstance(adapter, Mapping) else ""
+        )
+        remaining += GPU_STAGE_TIMEOUT_SECONDS.get(adapter_id, 0)
+    return remaining
+
+
+def diagnostic_required_parent_ttl_seconds(completed_stage_prefix_count: int) -> int:
+    """Bound one diagnostic lease to only its first incomplete stage onward."""
+
+    if (
+        isinstance(completed_stage_prefix_count, bool)
+        or not isinstance(completed_stage_prefix_count, int)
+        or not 0 <= completed_stage_prefix_count <= 6
+    ):
+        raise ValueError("scene_configuration_diagnostic_runtime_budget_invalid")
+    # GPU stages occupy recipe indexes 0, 2, and 4. A carried stage result is
+    # already sealed and cannot consume its former allowance again.
+    remaining_gpu_seconds = sum(
+        timeout
+        # Derived from the declared table so a stage budget change cannot
+        # leave this duplicate behind.
+        for index, timeout in zip((0, 2, 4), GPU_STAGE_TIMEOUT_SECONDS.values())
+        if index >= completed_stage_prefix_count
+    )
+    return (
+        remaining_gpu_seconds
+        + BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS
+        + OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+    )
+
+
+def diagnostic_parent_runtime_budget_blockers(
+    *,
+    completed_stage_prefix_count: int,
+    ttl_seconds: Any,
+    maximum_hourly_rate_usd: Any,
+    provider_compute_spend_cap_usd: Any,
+) -> list[str]:
+    """Require a diagnostic authority to cover exactly its remaining prefix."""
+
+    try:
+        required_ttl = diagnostic_required_parent_ttl_seconds(
+            completed_stage_prefix_count
+        )
+    except ValueError:
+        return ["scene_configuration_diagnostic_runtime_budget_invalid"]
+    if (
+        isinstance(ttl_seconds, bool)
+        or not isinstance(ttl_seconds, int)
+        or isinstance(maximum_hourly_rate_usd, bool)
+        or not isinstance(maximum_hourly_rate_usd, (int, float))
+        or isinstance(provider_compute_spend_cap_usd, bool)
+        or not isinstance(provider_compute_spend_cap_usd, (int, float))
+    ):
+        return ["scene_configuration_diagnostic_runtime_budget_invalid"]
+    rate = float(maximum_hourly_rate_usd)
+    compute_cap = float(provider_compute_spend_cap_usd)
+    if not math.isfinite(rate) or not math.isfinite(compute_cap):
+        return ["scene_configuration_diagnostic_runtime_budget_invalid"]
+    blockers: list[str] = []
+    if ttl_seconds < required_ttl:
+        blockers.append(
+            "scene_configuration_diagnostic_runtime_budget_insufficient:"
+            f"{required_ttl}:{ttl_seconds}"
+        )
+    required_compute = rate * ttl_seconds / 3600.0
+    if compute_cap + 1e-9 < required_compute:
+        blockers.append(
+            "scene_configuration_diagnostic_provider_compute_budget_insufficient:"
+            f"{required_compute:.6f}:{compute_cap:.6f}"
+        )
+    return blockers
+
+
+def parent_runtime_budget_blockers(
+    *,
+    ttl_seconds: Any,
+    maximum_hourly_rate_usd: Any,
+    provider_compute_spend_cap_usd: Any,
+) -> list[str]:
+    """Validate that one authority can fund the canonical serialized lease."""
+
+    if (
+        isinstance(ttl_seconds, bool)
+        or not isinstance(ttl_seconds, int)
+        or isinstance(maximum_hourly_rate_usd, bool)
+        or not isinstance(maximum_hourly_rate_usd, (int, float))
+        or isinstance(provider_compute_spend_cap_usd, bool)
+        or not isinstance(provider_compute_spend_cap_usd, (int, float))
+    ):
+        return ["scene_configuration_parent_runtime_budget_invalid"]
+    rate = float(maximum_hourly_rate_usd)
+    compute_cap = float(provider_compute_spend_cap_usd)
+    if not math.isfinite(rate) or not math.isfinite(compute_cap):
+        return ["scene_configuration_parent_runtime_budget_invalid"]
+    blockers: list[str] = []
+    if ttl_seconds < REQUIRED_PARENT_TTL_SECONDS:
+        blockers.append(
+            "scene_configuration_parent_runtime_budget_insufficient:"
+            f"{REQUIRED_PARENT_TTL_SECONDS}:{ttl_seconds}"
+        )
+    required_compute = rate * ttl_seconds / 3600.0
+    if compute_cap + 1e-9 < required_compute:
+        blockers.append(
+            "scene_configuration_provider_compute_budget_insufficient:"
+            f"{required_compute:.6f}:{compute_cap:.6f}"
+        )
+    return blockers
+
+
+__all__ = [
+    "ARTIFIXER_TRAINING_CLOSEOUT_RESERVE_SECONDS",
+    "ASTRA_AUTHORING_CLOSEOUT_RESERVE_SECONDS",
+    "BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS",
+    "GPU_STAGE_TIMEOUT_SECONDS",
+    "MAX_ASTRA_AUTHORING_SPEND_USD",
+    "MAX_ATTEMPT_SPEND_USD",
+    "MAX_EXTERNAL_SERVICE_SPEND_USD",
+    "MAX_HOURLY_RATE_USD",
+    "MAX_PROVIDER_COMPUTE_SPEND_USD",
+    "MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD",
+    "MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD",
+    "MIN_ASTRA_AUTHORING_SPEND_USD",
+    "MIN_CONTENT_AGENTS_SPEND_USD",
+    "MIN_EXTERNAL_SERVICE_SPEND_USD",
+    "OUTPUT_AND_CLOSURE_RESERVE_SECONDS",
+    "OUTPUT_CLOSURE_RESERVE_SECONDS_ENV",
+    "PARENT_DEADLINE_EPOCH_ENV",
+    "STAGE_DEADLINE_EPOCH_ENV",
+    "artifixer_training_timeout_seconds",
+    "REQUIRED_PARENT_TTL_SECONDS",
+    "SERIAL_GPU_STAGE_TIMEOUT_SECONDS",
+    "ceil_live_minutes",
+    "diagnostic_parent_runtime_budget_blockers",
+    "diagnostic_required_parent_ttl_seconds",
+    "parent_runtime_budget_blockers",
+    "required_remaining_stage_seconds",
+]

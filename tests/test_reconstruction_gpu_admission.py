@@ -278,21 +278,21 @@ def test_preflight_collector_requires_global_zero_and_independent_watchdog():
         },
         "": {"api_confirmed": True, "live_resource_count": 0},
     }
+    def capacity(request):
+        assert request["container_disk_gb"] == 120
+        assert request["excluded_machine_ids"] == [123]
+        return {"status": "available", "selected_offer": {
+            "gpu_name": "L40S", "gpu_ram_mb": 46_068, "hourly_rate_usd": 0.47}}
+
     result = collect_reconstruction_vast_preflight(
         name_prefix="blueprint-reconstruction-",
         container_disk_bytes=120 * 1024**3,
         watchdog={"status": "armed", "independent_process": True},
         conflicting_owner_present=False,
-        capacity_probe=lambda _request: {
-            "status": "available",
-            "selected_offer": {
-                "gpu_name": "L40S",
-                "gpu_ram_mb": 46_068,
-                "hourly_rate_usd": 0.47,
-            },
-        },
+        capacity_probe=capacity,
         inventory_probe=lambda prefix: inventories[prefix],
         max_hourly_rate_usd=0.75,
+        excluded_machine_ids=(123,),
         clock=lambda: 1000.0,
     )
     assert result["status"] == "verified"

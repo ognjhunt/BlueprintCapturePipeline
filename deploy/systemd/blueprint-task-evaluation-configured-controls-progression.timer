@@ -1,0 +1,16 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-configured-controls-progression.timer.json
+Description=Advance configured scene controls progression periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=20s
+Persistent=true
+Unit=blueprint-task-evaluation-configured-controls-progression.service
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/exact_workcell_variation_matrix.v1.schema.json",
+  "title": "Immutable exact-workcell variation matrix",
+  "type": "object",
+  "required": ["schema_version", "program_id", "matrix_id", "matrix_kind", "implementation_commit", "request_digest", "cell_count", "canonical_anchor_cell_id", "policy_neutral", "dimension_contracts", "required_controls", "cells", "coverage", "agent_role", "claim_boundary", "matrix_digest"],
+  "properties": {
+    "schema_version": {"const": "exact_workcell_variation_matrix.v1"},
+    "program_id": {"const": "arm-decision-proof-v1"},
+    "matrix_id": {"type": "string", "minLength": 1},
+    "matrix_kind": {"const": "exact_workcell_primary"},
+    "implementation_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "cell_count": {"type": "integer", "minimum": 10, "maximum": 1000},
+    "canonical_anchor_cell_id": {"type": "string", "minLength": 1},
+    "policy_neutral": {"const": true},
+    "dimension_contracts": {"type": "array", "minItems": 1},
+    "required_controls": {"const": ["zero_action_negative", "deterministic_scripted_positive"]},
+    "cells": {"type": "array", "minItems": 10, "items": {"$ref": "#/$defs/cell"}},
+    "coverage": {"type": "object"},
+    "agent_role": {"type": "object"},
+    "claim_boundary": {"type": "object", "required": ["exact_workcell_primary", "object_cousins_in_primary"], "properties": {"exact_workcell_primary": {"const": true}, "object_cousins_in_primary": {"const": false}}, "additionalProperties": true},
+    "matrix_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "cell": {
+      "type": "object",
+      "required": ["cell_id", "ordinal", "phase", "partition", "seed", "seed_digest", "exact_workcell_identity", "exact_workcell_identity_digest", "resolved_values", "application_records", "changed_dimension_ids", "object_cousin", "policy_neutral", "required_controls", "reset_digest", "cell_digest"],
+      "properties": {
+        "cell_id": {"type": "string", "minLength": 1},
+        "ordinal": {"type": "integer", "minimum": 0},
+        "phase": {"enum": ["canonical_anchor", "one_factor_low", "one_factor_high", "targeted_interaction", "pairwise_covering_array", "bounded_composed", "held_out_composed"]},
+        "partition": {"enum": ["qualification", "held_out"]},
+        "seed": {"type": "integer", "minimum": 0},
+        "seed_digest": {"$ref": "#/$defs/digest"},
+        "exact_workcell_identity": {"type": "object"},
+        "exact_workcell_identity_digest": {"$ref": "#/$defs/digest"},
+        "resolved_values": {"type": "object"},
+        "application_records": {"type": "array", "minItems": 1},
+        "changed_dimension_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "object_cousin": {"const": false},
+        "policy_neutral": {"const": true},
+        "required_controls": {"const": ["zero_action_negative", "deterministic_scripted_positive"]},
+        "reset_digest": {"$ref": "#/$defs/digest"},
+        "cell_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

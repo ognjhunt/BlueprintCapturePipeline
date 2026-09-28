@@ -1,5 +1,8 @@
 # Arm Decision Proof v1
 
+> Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](LIVE_LANE_REACHABILITY.md).
+
+
 Status: **sole active Blueprint program**
 Approved: 2026-08-04
 Amended: 2026-08-06
@@ -49,6 +52,11 @@ machinery. The bounded ADP-009 construction rehearsal is accepted. The active
 engineering item is **ADP-009D public-scene Franka policy rehearsal**.
 The controls-only PhysX/Newton precursor and its claim ceiling are defined in
 [`ADP_009D_PHYSICS_BACKEND_COMPARISON.md`](ADP_009D_PHYSICS_BACKEND_COMPARISON.md).
+Canonical learned-policy start and terminal semantics are defined in
+[`POLICY_EPISODE_LIFECYCLE.md`](POLICY_EPISODE_LIFECYCLE.md).
+The policy-neutral 100-cell exact-workcell baseline, separate cousin boundary,
+agent proposal role, and EvaluationRun/Isaac integration are defined in
+[`EXACT_WORKCELL_VARIATION_MATRIX.md`](EXACT_WORKCELL_VARIATION_MATRIX.md).
 
 Until the pre-capture Franka rehearsal is complete:
 

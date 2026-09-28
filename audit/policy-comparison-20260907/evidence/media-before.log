@@ -1,0 +1,148 @@
+FFFFFF......                                                             [100%]
+=================================== FAILURES ===================================
+__ test_resealed_manifest_cannot_assert_inconsistent_frame_facts[dimensions] ___
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4829/test_resealed_manifest_cannot_0')
+mutation = 'dimensions'
+
+    @pytest.mark.parametrize("mutation", ["dimensions", "timestamp", "kind", "count", "terminal_kind"])
+    def test_resealed_manifest_cannot_assert_inconsistent_frame_facts(tmp_path, mutation):
+        value = _manifest(tmp_path)
+        frame = value["policy_input_observations"][0]["views"]["external"]
+        if mutation == "dimensions":
+            frame["width"] += 1
+        elif mutation == "timestamp":
+            frame["timestamp_ns"] += 100
+        elif mutation == "kind":
+            frame["kind"] = "review-sample"
+        elif mutation == "count":
+            value["policy_input_frame_count"] = 200
+        else:
+            value["terminal_observation"]["kind"] = "policy-input"
+>       with pytest.raises(ValueError):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_policy_comparison_media_audit.py:57: Failed
+___ test_resealed_manifest_cannot_assert_inconsistent_frame_facts[timestamp] ___
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4829/test_resealed_manifest_cannot_1')
+mutation = 'timestamp'
+
+    @pytest.mark.parametrize("mutation", ["dimensions", "timestamp", "kind", "count", "terminal_kind"])
+    def test_resealed_manifest_cannot_assert_inconsistent_frame_facts(tmp_path, mutation):
+        value = _manifest(tmp_path)
+        frame = value["policy_input_observations"][0]["views"]["external"]
+        if mutation == "dimensions":
+            frame["width"] += 1
+        elif mutation == "timestamp":
+            frame["timestamp_ns"] += 100
+        elif mutation == "kind":
+            frame["kind"] = "review-sample"
+        elif mutation == "count":
+            value["policy_input_frame_count"] = 200
+        else:
+            value["terminal_observation"]["kind"] = "policy-input"
+>       with pytest.raises(ValueError):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_policy_comparison_media_audit.py:57: Failed
+_____ test_resealed_manifest_cannot_assert_inconsistent_frame_facts[kind] ______
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4829/test_resealed_manifest_cannot_2')
+mutation = 'kind'
+
+    @pytest.mark.parametrize("mutation", ["dimensions", "timestamp", "kind", "count", "terminal_kind"])
+    def test_resealed_manifest_cannot_assert_inconsistent_frame_facts(tmp_path, mutation):
+        value = _manifest(tmp_path)
+        frame = value["policy_input_observations"][0]["views"]["external"]
+        if mutation == "dimensions":
+            frame["width"] += 1
+        elif mutation == "timestamp":
+            frame["timestamp_ns"] += 100
+        elif mutation == "kind":
+            frame["kind"] = "review-sample"
+        elif mutation == "count":
+            value["policy_input_frame_count"] = 200
+        else:
+            value["terminal_observation"]["kind"] = "policy-input"
+>       with pytest.raises(ValueError):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_policy_comparison_media_audit.py:57: Failed
+_____ test_resealed_manifest_cannot_assert_inconsistent_frame_facts[count] _____
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4829/test_resealed_manifest_cannot_3')
+mutation = 'count'
+
+    @pytest.mark.parametrize("mutation", ["dimensions", "timestamp", "kind", "count", "terminal_kind"])
+    def test_resealed_manifest_cannot_assert_inconsistent_frame_facts(tmp_path, mutation):
+        value = _manifest(tmp_path)
+        frame = value["policy_input_observations"][0]["views"]["external"]
+        if mutation == "dimensions":
+            frame["width"] += 1
+        elif mutation == "timestamp":
+            frame["timestamp_ns"] += 100
+        elif mutation == "kind":
+            frame["kind"] = "review-sample"
+        elif mutation == "count":
+            value["policy_input_frame_count"] = 200
+        else:
+            value["terminal_observation"]["kind"] = "policy-input"
+>       with pytest.raises(ValueError):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_policy_comparison_media_audit.py:57: Failed
+_ test_resealed_manifest_cannot_assert_inconsistent_frame_facts[terminal_kind] _
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4829/test_resealed_manifest_cannot_4')
+mutation = 'terminal_kind'
+
+    @pytest.mark.parametrize("mutation", ["dimensions", "timestamp", "kind", "count", "terminal_kind"])
+    def test_resealed_manifest_cannot_assert_inconsistent_frame_facts(tmp_path, mutation):
+        value = _manifest(tmp_path)
+        frame = value["policy_input_observations"][0]["views"]["external"]
+        if mutation == "dimensions":
+            frame["width"] += 1
+        elif mutation == "timestamp":
+            frame["timestamp_ns"] += 100
+        elif mutation == "kind":
+            frame["kind"] = "review-sample"
+        elif mutation == "count":
+            value["policy_input_frame_count"] = 200
+        else:
+            value["terminal_observation"]["kind"] = "policy-input"
+>       with pytest.raises(ValueError):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_policy_comparison_media_audit.py:57: Failed
+________ test_jpeg_with_recomputed_hashes_is_not_lossless_policy_input _________
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4829/test_jpeg_with_recomputed_hash0')
+
+    def test_jpeg_with_recomputed_hashes_is_not_lossless_policy_input(tmp_path):
+        frame = persist_observation_frame(np.full((8, 8, 3), 20, dtype=np.uint8),
+            output_dir=tmp_path, episode_id="jpeg", frame_index=0, kind="policy-input")
+        path = tmp_path / frame["relative_path"]
+        Image.fromarray(np.full((8, 8, 3), 20, dtype=np.uint8)).save(path, format="JPEG")
+        frame["png_sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        frame["size_bytes"] = path.stat().st_size
+        with Image.open(path) as decoded:
+            frame["raw_rgb_sha256"] = "sha256:" + hashlib.sha256(np.asarray(decoded).tobytes()).hexdigest()
+>       with pytest.raises(ValueError, match="format"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_policy_comparison_media_audit.py:70: Failed
+=========================== short test summary info ============================
+FAILED tests/test_policy_comparison_media_audit.py::test_resealed_manifest_cannot_assert_inconsistent_frame_facts[dimensions]
+FAILED tests/test_policy_comparison_media_audit.py::test_resealed_manifest_cannot_assert_inconsistent_frame_facts[timestamp]
+FAILED tests/test_policy_comparison_media_audit.py::test_resealed_manifest_cannot_assert_inconsistent_frame_facts[kind]
+FAILED tests/test_policy_comparison_media_audit.py::test_resealed_manifest_cannot_assert_inconsistent_frame_facts[count]
+FAILED tests/test_policy_comparison_media_audit.py::test_resealed_manifest_cannot_assert_inconsistent_frame_facts[terminal_kind]
+FAILED tests/test_policy_comparison_media_audit.py::test_jpeg_with_recomputed_hashes_is_not_lossless_policy_input
+6 failed, 6 passed in 1.06s

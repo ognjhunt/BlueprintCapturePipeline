@@ -8,10 +8,12 @@ import sys
 from types import ModuleType, SimpleNamespace
 import zipfile
 
+import numpy
 import pytest
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.public_scene_artifixer3d_native_exports import (
     ArtiFixerNativeExportError,
     materialize_artifixer3d_native_appearance_exports,
@@ -27,11 +29,29 @@ from tests.test_native_task_appearance_frame_alignment import (
 
 
 class _Tensor:
+    """A checkpoint tensor stub that carries values, not just a shape.
+
+    The export adapter measures position representability before handing the
+    model to the pinned NuRec exporter, so a shape-only fake no longer stands
+    in for a real checkpoint tensor.
+    """
+
     def __init__(self, shape: tuple[int, ...]) -> None:
         self.shape = shape
+        # Origin-centred and finite: representable room-scale coordinates.
+        self._array = numpy.zeros(shape, dtype=numpy.float32)
 
     def detach(self) -> _Tensor:
         return self
+
+    def __array__(self, dtype=None):
+        return self._array.astype(dtype) if dtype is not None else self._array
+
+    def __getitem__(self, key) -> _Tensor:
+        selected = self._array[key]
+        tensor = _Tensor(tuple(selected.shape))
+        tensor._array = selected
+        return tensor
 
 
 def _load_real_provider_runner():
@@ -43,11 +63,29 @@ def _load_real_provider_runner():
     return module
 
 
+def _reference_ply(path: Path, count: int) -> Path:
+    return write_standard_3dgs_ply(
+        SplatData(
+            count=count,
+            xyz=numpy.zeros((count, 3), dtype=numpy.float32),
+            opacity=numpy.zeros(count, dtype=numpy.float32),
+            f_dc=numpy.zeros((count, 3), dtype=numpy.float32),
+            scales=numpy.zeros((count, 3), dtype=numpy.float32),
+            quats=numpy.tile(
+                numpy.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=numpy.float32),
+                (count, 1),
+            ),
+            properties=(),
+        ),
+        path,
+    )
+
+
 def _install_exporter_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     torch = ModuleType("torch")
 
     def load(_path: Path, **_kwargs):
-        return {
+        checkpoint = {
             "config": SimpleNamespace(
                 export_usdz=SimpleNamespace(apply_normalizing_transform=True)
             ),
@@ -60,6 +98,8 @@ def _install_exporter_seam(monkeypatch: pytest.MonkeyPatch) -> None:
             "max_n_features": 0,
             "n_active_features": 0,
         }
+        checkpoint["rotation"]._array[:, 0] = 1.0
+        return checkpoint
 
     torch.load = load  # type: ignore[attr-defined]
 
@@ -100,12 +140,8 @@ def _install_exporter_seam(monkeypatch: pytest.MonkeyPatch) -> None:
         "torch": torch,
         "threedgrut": ModuleType("threedgrut"),
         "threedgrut.export": ModuleType("threedgrut.export"),
-        "threedgrut.export.ply_exporter": ModuleType(
-            "threedgrut.export.ply_exporter"
-        ),
-        "threedgrut.export.usdz_exporter": ModuleType(
-            "threedgrut.export.usdz_exporter"
-        ),
+        "threedgrut.export.ply_exporter": ModuleType("threedgrut.export.ply_exporter"),
+        "threedgrut.export.usdz_exporter": ModuleType("threedgrut.export.usdz_exporter"),
     }
     modules["threedgrut.export.ply_exporter"].PLYExporter = PLYExporter  # type: ignore[attr-defined]
     modules["threedgrut.export.usdz_exporter"].USDZExporter = USDZExporter  # type: ignore[attr-defined]
@@ -126,6 +162,8 @@ def _exact_provider_to_host_raw_result(
     native = runner._export_checkpoint_native_appearance(
         checkpoint=checkpoint,
         task_output=task_root,
+        reference_gaussian_ply=_reference_ply(tmp_path / "reference.ply", 1),
+        geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
     )
     frames = []
     for index in range(8):
@@ -148,9 +186,7 @@ def _exact_provider_to_host_raw_result(
                 "artifixer3d_review_frames": frames,
                 "artifixer3d_checkpoint": runner._file_record(checkpoint),
                 "native_appearance": native,
-                "outside_support_invariance_status": (
-                    "deferred_until_final_soft_composite"
-                ),
+                "outside_support_invariance_status": ("deferred_until_final_soft_composite"),
                 "outside_support_changed_pixels_total": None,
             }
         ]
@@ -181,9 +217,7 @@ def _exact_provider_to_host_raw_result(
 def test_real_provider_export_is_rebased_and_sealed_for_native_consumer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    provider_native, raw, raw_path = _exact_provider_to_host_raw_result(
-        tmp_path, monkeypatch
-    )
+    provider_native, raw, raw_path = _exact_provider_to_host_raw_result(tmp_path, monkeypatch)
 
     host_native = raw["tasks"][0]["native_appearance"]
     assert host_native["source_export_digest"] == provider_native["export_digest"]
@@ -197,9 +231,7 @@ def test_real_provider_export_is_rebased_and_sealed_for_native_consumer(
     assert [row["task_id"] for row in outputs] == ["task_a"]
     receipt = validate_artifixer3d_native_appearance_export(outputs[0]["path"])
     assert receipt["source_export_digest"] == provider_native["export_digest"]
-    assert receipt["export_digest"] == canonical_digest(
-        receipt, digest_field="export_digest"
-    )
+    assert receipt["export_digest"] == canonical_digest(receipt, digest_field="export_digest")
     assert receipt["host_path_rebased_from_provider_runtime_output"] is True
     assert Path(receipt["isaac_nurec_usdz"]["path"]).is_file()
 
@@ -207,9 +239,7 @@ def test_real_provider_export_is_rebased_and_sealed_for_native_consumer(
 def test_native_export_handoff_rejects_mutated_rebased_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _provider_native, raw, raw_path = _exact_provider_to_host_raw_result(
-        tmp_path, monkeypatch
-    )
+    _provider_native, raw, raw_path = _exact_provider_to_host_raw_result(tmp_path, monkeypatch)
     Path(raw["tasks"][0]["native_appearance"]["isaac_nurec_usdz"]["path"]).write_bytes(
         b"mutated-after-host-closeout"
     )

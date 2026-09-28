@@ -52,6 +52,7 @@ EXECUTION_ADAPTER_IDS = {
     CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID,
 }
 CAPTURE_PROFILES = {
+    "website_monocular_video",
     "iphone_arkit_lidar",
     "camera_360_native",
     "camera_360_equirectangular",
@@ -62,6 +63,7 @@ CAPTURE_PROFILES = {
     "external_generated_asset",
 }
 OPERATIONS = {
+    "website_mapanything",
     "worker_smoke",
     "pose_canary",
     "trainer_canary",
@@ -73,6 +75,7 @@ OPERATIONS = {
     "measurement_chrono_dem_canary",
 }
 EXECUTABLE_OPERATIONS = {
+    "website_mapanything",
     "worker_smoke",
     "pose_canary",
     "trainer_canary",
@@ -84,6 +87,7 @@ EXECUTABLE_OPERATIONS = {
     "measurement_chrono_dem_canary",
 }
 EXPECTED_RUNTIME_RESULT_SCHEMAS = {
+    "website_mapanything": "website_mapanything_result.v1",
     "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
@@ -220,6 +224,12 @@ def build_reconstruction_gpu_canary_request(
             }.items():
                 if source.get(key) != expected:
                     errors.append(f"reconstruction_gpu_external_boundary_invalid:{key}")
+    elif operation == "website_mapanything":
+        for key in ("reconstruction_dataset_digest", "frozen_split_digest", "remote_processing_authorization_digest"):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                errors.append(f"reconstruction_gpu_{key}_invalid")
+        if source.get("calibration_digest") is not None or source.get("capture_profile") != "website_monocular_video":
+            errors.append("reconstruction_gpu_website_estimated_geometry_boundary_invalid")
     else:
         for key in (
             "reconstruction_dataset_digest",
@@ -308,6 +318,7 @@ def collect_reconstruction_vast_preflight(
     max_hourly_rate_usd: float,
     minimum_gpu_ram_mb: int = 24_000,
     minimum_reliability: float = 0.98,
+    excluded_machine_ids: tuple[int, ...] = (),
     provider_name: str = "vast",
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
@@ -324,6 +335,10 @@ def collect_reconstruction_vast_preflight(
     capacity_request = {
         "max_hourly_rate_usd": float(max_hourly_rate_usd),
         "min_gpu_ram_mb": int(minimum_gpu_ram_mb),
+        # Match the worker allocation so storage pricing and host capacity are
+        # checked before binding the maximum launch rate.
+        "container_disk_gb": max(100, int(container_disk_bytes) // 1024**3),
+        "excluded_machine_ids": list(excluded_machine_ids),
         "min_reliability": float(minimum_reliability),
         "require_avx": True,
         "require_known_supported_isaac_driver": False,
@@ -552,6 +567,12 @@ def build_reconstruction_gpu_canary_admission(
             }.items():
                 if source.get(key) != expected:
                     blockers.append(f"reconstruction_gpu_external_boundary_invalid:{key}")
+    elif operation == "website_mapanything":
+        for key in ("reconstruction_dataset_digest", "frozen_split_digest", "remote_processing_authorization_digest"):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                blockers.append(f"reconstruction_gpu_{key}_invalid")
+        if source.get("calibration_digest") is not None or source.get("capture_profile") != "website_monocular_video":
+            blockers.append("reconstruction_gpu_website_estimated_geometry_boundary_invalid")
     else:
         for key in (
             "reconstruction_dataset_digest",

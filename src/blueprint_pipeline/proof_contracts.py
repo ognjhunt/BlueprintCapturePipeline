@@ -284,6 +284,7 @@ def build_rights_provenance_review(
         in {
             "no_people_detected",
             "person_removed",
+            "website_capture_admitted",
         }
         and not industrial_redaction_scope_incomplete
         else "blocked"

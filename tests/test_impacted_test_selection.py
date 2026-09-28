@@ -32,14 +32,22 @@ def test_full_lane_workflow_change_executes_the_changed_full_suite() -> None:
     assert "cross_cutting_file:.github/workflows/full-test-lane.yml" in plan["reasons"]
 
 
-def test_source_change_maps_direct_and_importing_tests() -> None:
-    plan = MODULE.build_plan(
-        ROOT,
-        ["src/blueprint_pipeline/paid_resource_admission.py"],
-    )
-
+def test_source_change_maps_direct_and_importing_tests(tmp_path: Path) -> None:
+    source = tmp_path / "src/blueprint_pipeline"
+    source.mkdir(parents=True)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (source / "widget.py").write_text("value = 1\n")
+    (tests / "test_widget.py").write_text("from blueprint_pipeline import widget\n")
+    (tests / "test_widget_consumer.py").write_text("import blueprint_pipeline.widget\n")
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/widget.py"])
     assert plan["requires_full_suite"] is False
-    assert "tests/test_paid_resource_admission.py" in plan["selected_tests"]
+    assert {"tests/test_widget.py", "tests/test_widget_consumer.py"} <= set(plan["selected_tests"])
+    for index in range(MODULE.MAX_IMPACTED_TEST_FILES):
+        (tests / f"test_consumer_{index}.py").write_text("import blueprint_pipeline.widget\n")
+    wide = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/widget.py"])
+    assert wide["requires_full_suite"] is True
+    assert any(reason.startswith("impacted_test_count_exceeds_budget:") for reason in wide["reasons"])
 
 
 def test_unmapped_executable_and_dependency_changes_request_full_suite() -> None:
@@ -54,6 +62,56 @@ def test_unmapped_executable_and_dependency_changes_request_full_suite() -> None
     assert "cross_cutting_file:pyproject.toml" in dependency["reasons"]
 
 
+def test_package_initializer_maps_its_consumers_not_every_initializer(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_own_package.py").write_text("from blueprint_pipeline.owned import widget\n")
+    (tests / "test_own_child.py").write_text("import blueprint_pipeline.owned.child\n")
+    (tests / "test_parent_import.py").write_text("from blueprint_pipeline import owned\n")
+    for index in range(MODULE.MAX_IMPACTED_TEST_FILES + 1):
+        (tests / f"test_unrelated_{index}.py").write_text('filename = "__init__.py"\n')
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/owned/__init__.py"])
+    assert plan["requires_full_suite"] is False
+    assert set(plan["selected_tests"]) == set(MODULE.SENTINEL_TESTS) | {
+        "tests/test_own_package.py", "tests/test_own_child.py", "tests/test_parent_import.py",
+    }
+
+
+def test_initializer_outside_src_maps_only_tests_naming_it(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_door.py").write_text("# deploy/operator-door/operator_door/__init__.py\n")
+    for index in range(MODULE.MAX_IMPACTED_TEST_FILES + 1):
+        (tests / f"test_unrelated_{index}.py").write_text('filename = "__init__.py"\n')
+    plan = MODULE.build_plan(tmp_path, ["deploy/operator-door/operator_door/__init__.py"])
+    assert plan["requires_full_suite"] is False
+    assert set(plan["selected_tests"]) == set(MODULE.SENTINEL_TESTS) | {"tests/test_door.py"}
+
+
+def test_source_basename_is_not_a_dependency_on_a_longer_filename(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_own_service.py").write_text("from blueprint_pipeline.owned.service import Service\n")
+    (tests / "test_file_loader.py").write_text('source = root / "service.py"\n')
+    (tests / "test_other_service.py").write_text('source = root / "live_pipeline_intake_service.py"\n')
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/owned/service.py"])
+    assert plan["requires_full_suite"] is False
+    assert {"tests/test_own_service.py", "tests/test_file_loader.py"} <= set(plan["selected_tests"])
+    assert "tests/test_other_service.py" not in plan["selected_tests"]
+
+
+def test_longer_module_and_package_names_do_not_count_as_coverage(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_longer.py").write_text("import blueprint_pipeline.owned.service_worker\n")
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/owned/service.py"])
+    assert plan["requires_full_suite"] is True
+    assert "tests/test_longer.py" not in plan["selected_tests"]
+    (tests / "test_longer.py").write_text("from blueprint_pipeline import owned_else\n")
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/owned/__init__.py"])
+    assert plan["requires_full_suite"] is True
+
+
 def test_changed_test_is_selected_directly() -> None:
     plan = MODULE.build_plan(ROOT, ["tests/test_capture_qa.py"])
 
@@ -66,6 +124,7 @@ def test_build_loop_default_is_two_minutes() -> None:
 
     assert MODULE.DEFAULT_TIMEOUT_SECONDS == 120
     assert args.timeout_seconds == 120
+    assert MODULE.DEFAULT_WORKER_COUNT == 4
 
 
 def test_timeout_terminates_the_entire_pytest_process_group(monkeypatch) -> None:
@@ -134,3 +193,27 @@ def test_a_bare_stem_inside_a_longer_name_does_not_count_as_coverage(tmp_path: P
 
     assert "tests/test_unrelated.py" not in plan["selected_tests"]
     assert plan["requires_full_suite"] is True
+
+
+def test_policy_canary_hermetic_rehearsals_follow_their_production_modules() -> None:
+    """A worker or bundle change must run the tests that stand in for a paid GPU attempt.
+
+    Five paid Quick-10 attempts failed on defects these suites catch in seconds.
+    The selector maps a changed module to the tests whose source names it, so
+    the suites import their subjects by dotted module path; this pin fails if
+    that import is ever rewritten into a form the selector cannot see.
+    """
+
+    rehearsal = "tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py"
+    closure = "tests/test_provider_runtime_import_closure.py"
+    expectations = {
+        "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": {rehearsal, closure},
+        "src/blueprint_pipeline/native_task_arena_policy_canary_bundle.py": {closure},
+        "src/blueprint_pipeline/native_task_arena_policy_canary_session.py": {rehearsal},
+        "src/blueprint_pipeline/adp009d_policy_episode.py": {rehearsal},
+        "src/blueprint_pipeline/native_task_arena_execution_contract.py": {closure},
+    }
+    for changed, expected in expectations.items():
+        plan = MODULE.build_plan(ROOT, [changed])
+        assert plan["requires_full_suite"] is False, (changed, plan["reasons"])
+        assert expected <= set(plan["selected_tests"]), (changed, plan["selected_tests"])

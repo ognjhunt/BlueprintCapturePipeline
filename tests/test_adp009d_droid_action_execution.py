@@ -13,6 +13,8 @@ from blueprint_pipeline.adp009d_droid_action_execution import (
     DROID_OPEN_LOOP_HORIZON,
     DroidActionExecutionError,
     GripperConvention,
+    SOURCE_GROOT_POSITION,
+    SOURCE_PI05_POSITION,
     build_gripper_convention_probe_request,
     droid_row_to_isaac_action,
     isaac_steps_per_droid_action,
@@ -140,9 +142,7 @@ def test_groot_decoded_absolute_joints_are_not_integrated_as_velocities() -> Non
 
     assert result["joint_position_target_rad"] == pytest.approx(row[:7])
     assert result["joint_velocity_command_rad_s"] == []
-    assert result["source_action_space"] == (
-        "groot_decoded_absolute_joint_position_plus_absolute_gripper"
-    )
+    assert result["source_action_space"] == SOURCE_GROOT_POSITION
     assert result["position_adapter"] == (
         "decoded_absolute_joint_position_direct_within_limits"
     )
@@ -154,6 +154,63 @@ def test_groot_decoded_absolute_joints_are_not_integrated_as_velocities() -> Non
     )
     assert plan["source_action_space"] == result["source_action_space"]
     assert plan["position_adapter_max_joint_delta_rad"] is None
+
+
+def test_pi05_absolute_joints_retain_the_openpi_candidate_representation() -> None:
+    row = np.asarray([0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2, 1.0])
+
+    result = droid_row_to_isaac_action(
+        row,
+        current_joint_position=[0.1] * 7,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+        action_space=ACTION_SPACE_JOINT_POSITION,
+        candidate_id="pi05_droid",
+    )
+    plan = plan_chunk_execution(
+        np.repeat(row[None, :], 10, axis=0),
+        action_space=ACTION_SPACE_JOINT_POSITION,
+        candidate_id="pi05_droid",
+    )
+
+    assert result["joint_position_target_rad"] == pytest.approx(row[:7])
+    assert result["source_action_space"] == SOURCE_PI05_POSITION
+    assert plan["source_action_space"] == SOURCE_PI05_POSITION
+
+
+def test_joint_position_utility_default_remains_groot_compatible() -> None:
+    row = np.asarray([0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2, 1.0])
+
+    result = droid_row_to_isaac_action(
+        row,
+        current_joint_position=[0.1] * 7,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+        action_space=ACTION_SPACE_JOINT_POSITION,
+    )
+
+    assert result["source_action_space"] == SOURCE_GROOT_POSITION
+
+
+@pytest.mark.parametrize(
+    ("candidate_id", "action_space"),
+    [
+        ("unknown_candidate", ACTION_SPACE_JOINT_POSITION),
+        ("groot_n17_droid", ACTION_SPACE_JOINT_VELOCITY),
+    ],
+)
+def test_explicit_candidate_action_space_mismatch_fails_closed(
+    candidate_id: str, action_space: str
+) -> None:
+    with pytest.raises(
+        DroidActionExecutionError,
+        match="candidate_action_space_unsupported",
+    ):
+        plan_chunk_execution(
+            _chunk(rows=10),
+            action_space=action_space,
+            candidate_id=candidate_id,
+        )
 
 
 def test_only_the_open_loop_horizon_executes_and_the_tail_is_reported() -> None:
@@ -290,6 +347,116 @@ def test_raw_candidate_bounds_refuse_instead_of_clipping(
         )
     assert any(
         error.startswith(expected_blocker) for error in row_excinfo.value.errors
+    )
+
+
+def test_live_groot_joint_limit_overshoot_uses_frozen_raw_envelope_and_saturates() -> None:
+    """The exact 3007bc1a live failure was a valid decoded GR00T target.
+
+    Query 42 row 5 asked for panda_joint4=-3.0744188 rad while the native
+    lower limit was -3.0718 rad.  The exact checkpoint's relative-action q01
+    envelope admits that 0.00262-rad overshoot, and the frozen candidate
+    contract requires the adapter to apply and record the native limit.
+    """
+
+    limits = np.asarray(
+        [
+            [-2.8973, 2.8973],
+            [-1.7628, 1.7628],
+            [-2.8973, 2.8973],
+            [-3.0718, -0.0698],
+            [-2.8973, 2.8973],
+            [-0.0175, 3.7525],
+            [-2.8973, 2.8973],
+        ],
+        dtype=float,
+    )
+    chunk = np.zeros((DROID_OPEN_LOOP_HORIZON, 8), dtype=float)
+    chunk[:, :7] = np.mean(limits, axis=1)
+    live_target = -3.074418783187866
+    chunk[5, 3] = live_target
+
+    contract = validate_candidate_action_bounds(
+        chunk,
+        action_space=ACTION_SPACE_JOINT_POSITION,
+        joint_limits=limits,
+        candidate_id="groot_n17_droid",
+    )
+
+    arm = contract["arm_contract"]
+    assert contract["raw_candidate_clipping_permitted"] is True
+    assert arm["raw_envelope_scope"] == (
+        "checkpoint_q01_q99_executable_rows_0_through_7"
+    )
+    assert arm["rows_outside_command_interval"] == 1
+    assert arm["max_command_interval_overshoot_rad"] == pytest.approx(
+        abs(live_target - limits[3, 0])
+    )
+    assert arm["raw_accepted_bounds_by_joint"][3][0] == pytest.approx(
+        limits[3, 0] - 0.45300650000572207
+    )
+
+    executed = droid_row_to_isaac_action(
+        chunk[5],
+        current_joint_position=np.mean(limits, axis=1),
+        joint_limits=limits,
+        gripper=_MEASURED,
+        action_space=ACTION_SPACE_JOINT_POSITION,
+        candidate_id="groot_n17_droid",
+    )
+    assert executed["source_arm_command"][3] == pytest.approx(live_target)
+    assert executed["joint_position_target_rad"][3] == pytest.approx(limits[3, 0])
+    assert executed["clipped_droid_action"][3] == pytest.approx(limits[3, 0])
+    assert executed["joint_limit_clamped"] is True
+    assert executed["position_adapter"] == (
+        "groot_decoded_absolute_joint_position_with_native_limit_saturation"
+    )
+
+
+def test_groot_raw_envelope_still_refuses_wrong_unit_joint_targets() -> None:
+    limits = np.asarray(
+        [
+            [-2.8973, 2.8973],
+            [-1.7628, 1.7628],
+            [-2.8973, 2.8973],
+            [-3.0718, -0.0698],
+            [-2.8973, 2.8973],
+            [-0.0175, 3.7525],
+            [-2.8973, 2.8973],
+        ],
+        dtype=float,
+    )
+    chunk = np.zeros((DROID_OPEN_LOOP_HORIZON, 8), dtype=float)
+    chunk[:, :7] = np.mean(limits, axis=1)
+    chunk[0, 3] = -180.0  # degrees decoded as radians must never be saturated
+
+    with pytest.raises(DroidActionExecutionError) as excinfo:
+        validate_candidate_action_bounds(
+            chunk,
+            action_space=ACTION_SPACE_JOINT_POSITION,
+            joint_limits=limits,
+            candidate_id="groot_n17_droid",
+        )
+    assert any(
+        error.startswith(BLOCKER_JOINT_POSITION_BOUNDS)
+        for error in excinfo.value.errors
+    )
+
+
+def test_pi05_joint_positions_keep_strict_native_limit_validation() -> None:
+    chunk = _chunk(rows=DROID_OPEN_LOOP_HORIZON)
+    chunk[0, 0] = 2.91
+
+    with pytest.raises(DroidActionExecutionError) as excinfo:
+        validate_candidate_action_bounds(
+            chunk,
+            action_space=ACTION_SPACE_JOINT_POSITION,
+            joint_limits=_LIMITS,
+            candidate_id="pi05_droid",
+        )
+    assert any(
+        error.startswith(BLOCKER_JOINT_POSITION_BOUNDS)
+        for error in excinfo.value.errors
     )
 
 

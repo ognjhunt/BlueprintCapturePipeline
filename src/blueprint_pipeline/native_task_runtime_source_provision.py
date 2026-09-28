@@ -83,6 +83,31 @@ TOP_LEVEL_PACKAGES = (
     "isaaclab_visualizers",
     "isaaclab_arena",
 )
+WHEEL_TOP_LEVEL_PACKAGES = {
+    "onnxruntime": "onnxruntime",
+    "onnxruntime-gpu": "onnxruntime",
+    "coloredlogs": "coloredlogs",
+    "humanfriendly": "humanfriendly",
+    "flatbuffers": "flatbuffers",
+}
+
+
+def _required_top_level_packages(verified: dict[str, Any]) -> tuple[str, ...]:
+    """Probe the verified packet's closure, including G1 only for a G1 packet.
+
+    Older base packets predate the optional ONNX closure. Requiring packages
+    absent from their sealed wheel list makes an unchanged retained CPU prefix
+    fail on a rented GPU after an unrelated runtime profile is added.
+    """
+
+    names = list(TOP_LEVEL_PACKAGES)
+    if verified.get("runtime_profile") == "unitree_g1":
+        names.append("isaaclab_arena_g1")
+    packages = {str(row["package"]) for row in verified["runtime_dependency_wheels"]}
+    for package, module in WHEEL_TOP_LEVEL_PACKAGES.items():
+        if package in packages and module not in names:
+            names.append(module)
+    return tuple(names)
 RUNTIME_IMPORT_PROBES = (
     {"module": "warp", "expected_version": "1.13.0"},
     {
@@ -334,6 +359,7 @@ def provision_native_task_runtime_sources(
         "source_receipt_path": str(receipt_path),
         "source_packet_path": str(packet_path),
         "source_packet_sha256": _sha256(packet_path) if packet_path.is_file() else None,
+        "runtime_profile": None,
         "extraction_dir": str(destination),
         "python_executable": runtime_python,
         "python_executable_source": runtime_python_source,
@@ -369,6 +395,7 @@ def provision_native_task_runtime_sources(
             receipt_path, packet_path_override=packet_path
         )
         result["source_receipt_digest"] = verified["receipt_digest"]
+        result["runtime_profile"] = verified.get("runtime_profile")
         result["all_sources_verified_before_install"] = True
         destination.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(packet_path) as archive:
@@ -411,11 +438,12 @@ def provision_native_task_runtime_sources(
         result["isaac_sim_link"] = {"path": str(link), "target": str(simulator)}
         dependency_target = destination / "runtime_python_dependencies"
         detected_python_tag, detected_platform_tags = _runtime_wheel_compatibility()
+        target_python_tag = runtime_python_tag or detected_python_tag
         installed_dependencies = _extract_runtime_dependency_wheels(
             extraction_root=destination,
             wheel_rows=verified["runtime_dependency_wheels"],
             destination=dependency_target,
-            runtime_python_tag=runtime_python_tag or detected_python_tag,
+            runtime_python_tag=target_python_tag,
             runtime_platform_tags=(
                 tuple(runtime_platform_tags)
                 if runtime_platform_tags is not None
@@ -433,16 +461,28 @@ def provision_native_task_runtime_sources(
         # site-packages and can silently resolve a different preinstalled
         # version.  Put the verified closure first so the receipt's wheel
         # identities are the code that actually imports.
-        priority_paths = [str(path) for path in (dependency_target, *install_roots)]
+        priority_roots = [dependency_target, *install_roots]
+        if verified.get("runtime_profile") == "unitree_g1":
+            # CMeel puts Pinocchio and Coal modules below this prefix. A
+            # staged .pth file is not processed by site.py.
+            cmeel_sitelib = (
+                dependency_target / "cmeel.prefix/lib"
+                / f"python{target_python_tag[2]}.{target_python_tag[3:]}"
+                / "site-packages"
+            )
+            priority_roots.insert(0, cmeel_sitelib)
+        priority_paths = [str(path) for path in priority_roots]
         path_file.write_text(
             f"import sys;sys.path[:0]={priority_paths!r}\n",
             encoding="utf-8",
         )
         result["path_file"] = str(path_file)
         result["path_file_sha256"] = _sha256(path_file)
+        package_probe_modules = _required_top_level_packages(verified)
+        result["package_path_probe_modules"] = list(package_probe_modules)
         package_probe = (
             "import importlib.util,json;"
-            f"names={list(TOP_LEVEL_PACKAGES)!r};"
+            f"names={list(package_probe_modules)!r};"
             "found={name:importlib.util.find_spec(name) is not None for name in names};"
             "print(json.dumps(found,sort_keys=True));"
             "raise SystemExit(0 if all(found.values()) else 3)"

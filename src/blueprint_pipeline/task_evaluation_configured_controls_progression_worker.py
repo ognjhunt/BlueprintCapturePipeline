@@ -1,0 +1,2009 @@
+"""Production-owned automatic progression from configured scenes to controls.
+
+The launch reconciler remains observation-only.  This separate timer worker
+consumes an immutable CPU-materialized plan, a qualifying terminal launch, a
+successful WebApp sync, and the reconciler's post-teardown global provider-zero
+receipt.  It advances existing no-spend preparation/activation queues and uses
+the canonical WebApp-only client for paid launch submission.  It never invokes
+an allocator or provider directly.
+"""
+
+from __future__ import annotations
+
+from .configured_scene_run_identity import episode_namespace, progression_directory
+
+from .configured_controls_plan_validation import TaskEvaluationConfiguredControlsProgressionWorkerError as TaskEvaluationConfiguredControlsProgressionWorkerError
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess  # nosec B404 - fixed repository-owned launch-only client
+import sys
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from . import (
+    task_evaluation_scene_configuration_activation_automation as scene_configuration_activation,
+)
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .configured_controls_plan_validation import load_configured_controls_plan as _load_progression_plan
+from .task_evaluation_configured_controls_progression import (
+    PROGRESSION_SCHEMA_VERSION,
+    TaskEvaluationConfiguredControlsCapacityDeferred,
+    TaskEvaluationConfiguredControlsProgressionError,
+    _publish_materialized_file,
+    build_configured_controls_activation_request,
+    stage_configured_controls_activation,
+    stage_configured_controls_episode_preparation,
+    submit_authorized_progression_launch,
+)
+from .task_evaluation_launch_activation_contract import (
+    launch_activation_intent_digest,
+    validate_launch_activation_request,
+)
+from .task_evaluation_launch_activation_queue import stage_launch_activation_request
+from .task_evaluation_launch_preparation_contract import (
+    TaskEvaluationLaunchPreparationContractError,
+    validate_launch_preparation_request,
+)
+from .task_evaluation_policy_canary_preparation_dispatch import (
+    validate_policy_canary_execution_plan,
+)
+from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
+from .task_evaluation_shared_mutation_window import (
+    TaskEvaluationSharedMutationWindowError,
+    materialize_shared_mutation_window,
+    validate_shared_mutation_window,
+    validate_shared_mutation_window_template,
+)
+from .task_evaluation_configured_scene_object_store import (
+    configured_scene_object_store_publisher,
+)
+from .task_evaluation_launch_dispatcher import (
+    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,
+    validate_launch_request,
+)
+from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
+from . import task_evaluation_policy_canary_handoff as policy_canary_handoff
+from .task_evaluation_release_identity import bound_to_other_release, running_release_commit
+from .validation_file_digests import file_digest_scope, sha256_file
+
+
+PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
+DESTINATION_PLAN_SCHEMA_VERSION = (
+    "task_evaluation_configured_controls_progression_plan.v3"
+)
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+WORKER_RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_worker.v1"
+CONFIGURED_CONTROLS_KEY_PREFIX = (
+    "task-evaluation/production-inputs/configured-controls"
+)
+CONFIGURED_CONTROLS_RELEASE_WINDOW_KEY_PREFIX = (
+    "task-evaluation/production-inputs/coordinator-release-windows"
+)
+Submitter = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+PublisherFactory = Callable[[], Callable[..., Mapping[str, Any]]]
+
+
+def configured_controls_object_store_publisher() -> Callable[..., Mapping[str, Any]]:
+    """Publish readiness inputs inside the preparation worker's admitted prefix."""
+
+    return configured_scene_object_store_publisher(
+        key_prefix=CONFIGURED_CONTROLS_KEY_PREFIX
+    )
+
+
+def configured_controls_release_window_publisher() -> Callable[..., Mapping[str, Any]]:
+    """Publish coordinator authority under the activation worker's exact prefix."""
+
+    return configured_scene_object_store_publisher(
+        key_prefix=CONFIGURED_CONTROLS_RELEASE_WINDOW_KEY_PREFIX
+    )
+
+
+def _load(path: Path, *, blocker: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(blocker) from exc
+    if path.is_symlink() or not isinstance(value, Mapping):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(blocker)
+    return dict(value)
+
+
+def _sha256(path: Path) -> str:
+    return sha256_file(path)
+
+
+def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    try:
+        with path.open("xb") as stream:
+            stream.write(payload)
+        path.chmod(0o440)
+    except FileExistsError:
+        if path.is_symlink() or path.read_bytes() != payload:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_immutable_conflict"
+            )
+
+
+def _sealed_progression(path: Path, *, statuses: set[str]) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    value = _load(path, blocker="configured_controls_worker_state_invalid")
+    if (
+        value.get("schema_version") != PROGRESSION_SCHEMA_VERSION
+        or value.get("status") not in statuses
+        or value.get("progression_digest")
+        != canonical_digest(value, digest_field="progression_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_state_invalid"
+        )
+    return value
+
+
+def _plan(path: Path) -> dict[str, Any]:
+    return _load_progression_plan(
+        path, load_json=_load, sha256=_sha256,
+        error_factory=TaskEvaluationConfiguredControlsProgressionWorkerError,
+        plan_schema=PLAN_SCHEMA_VERSION, destination_plan_schema=DESTINATION_PLAN_SCHEMA_VERSION,
+        commit_pattern=_COMMIT,
+    )
+
+
+def _input(path_value: Any, *, blocker: str) -> dict[str, Any]:
+    return _load(Path(str(path_value)).expanduser(), blocker=blocker)
+
+
+def _validate_source(run_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    receipt = _load(
+        run_root / "launch_receipt.json", blocker="configured_controls_worker_launch_receipt_invalid"
+    )
+    expected = (
+        cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
+        if receipt.get("receipt_digest_canonicalization")
+        == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        else canonical_digest(receipt, digest_field="receipt_digest")
+    )
+    terminal = receipt.get("terminal_evidence")
+    result_artifact = terminal.get("result") if isinstance(terminal, Mapping) else None
+    if (
+        receipt.get("schema_version") != "task_evaluation_launch_receipt.v1"
+        or receipt.get("status") != "completed"
+        or receipt.get("receipt_digest") != expected
+        or not isinstance(terminal, Mapping)
+        or terminal.get("status") != "passed"
+        or not isinstance(terminal.get("scene_configuration"), Mapping)
+        or not isinstance(result_artifact, Mapping)
+        or result_artifact.get("exists") is not True
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_qualifying_terminal_missing"
+        )
+    result_path = Path(str(result_artifact.get("path") or "")).expanduser()
+    if (
+        result_path.is_symlink()
+        or not result_path.is_file()
+        or _sha256(result_path) != result_artifact.get("digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_terminal_artifact_invalid"
+        )
+    sync = _load(
+        run_root / "webapp_sync_succeeded.json",
+        blocker="configured_controls_worker_webapp_sync_missing",
+    )
+    try:
+        validated_succeeded_webapp_sync_row(receipt=receipt, attempt=sync)
+    except Exception as exc:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_webapp_sync_invalid"
+        ) from exc
+    zero = _load(
+        run_root / "post_teardown_provider_zero_receipt.json",
+        blocker="configured_controls_worker_post_teardown_provider_zero_missing",
+    )
+    if (
+        zero.get("schema_version") != "task_evaluation_post_teardown_provider_zero.v1"
+        or zero.get("status") != "provider_zero_confirmed"
+        or zero.get("provider_zero_verified") is not True
+        or zero.get("continuing_spend_from_this_run") is not False
+        or zero.get("allocator_invoked") is not False
+        or zero.get("provider_mutation_performed") is not False
+        or zero.get("automatic_retry_performed") is not False
+        or zero.get("blockers") != []
+        or zero.get("provider_zero_receipt_digest")
+        != canonical_digest(zero, digest_field="provider_zero_receipt_digest")
+        or any(
+            zero.get(field) != receipt.get(field)
+            for field in ("launch_id", "run_id", "request_digest", "receipt_digest", "launch_profile_digest")
+        )
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_post_teardown_provider_zero_invalid"
+        )
+    return _load(result_path, blocker="configured_controls_worker_terminal_result_invalid"), receipt, zero
+
+
+def _phase(plan: Mapping[str, Any], name: str) -> dict[str, Any]:
+    value = plan["phases"].get(name)
+    if not isinstance(value, Mapping):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_phase_invalid"
+        )
+    return dict(value)
+
+
+def _materialize_phase_release_window(
+    *,
+    state: Mapping[str, Any],
+    preparation: Mapping[str, Any],
+    phase: Mapping[str, Any],
+    lineage: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+    lane: str,
+    root: Path,
+    publisher: Callable[..., Mapping[str, Any]],
+    lineage_artifact_paths: Mapping[str, str | Path] | None = None,
+    now: datetime | None = None,
+    activation_id: str | None = None,
+) -> dict[str, Any]:
+    """Publish a current window bound to the now-complete activation intent."""
+
+    placeholder = {
+        "uri": "https://tryblueprint.io/internal/release-window-placeholder",
+        "digest": "sha256:" + "0" * 64,
+        "size_bytes": 1,
+    }
+    request = build_configured_controls_activation_request(
+        progression=state,
+        preparation_result=preparation,
+        release_window=placeholder,
+        lineage=lineage,
+        authorization=authorization,
+        lane=lane,
+        lineage_artifact_paths=lineage_artifact_paths,
+        activation_id=activation_id,
+    )
+    template = _input(
+        phase.get("release_window_template_path"),
+        blocker="configured_controls_worker_release_window_template_missing",
+    )
+    template = validate_shared_mutation_window_template(
+        template,
+        team_namespace=str(request["team_namespace"]),
+        expected_production_commit=str(request["expected_production_commit"]),
+    )
+    provider_allowlist = list(
+        state["episode_preparation_request"]["spend"]["provider_allowlist"]
+    )
+    hard_cap_usd = float(
+        state["episode_preparation_request"]["spend"]["hard_cap_usd"]
+    )
+    observed_now = now or datetime.now(timezone.utc)
+    intent_digest = launch_activation_intent_digest(request)
+    attempts = (
+        root
+        / "release-window-attempts"
+        / lane
+        / (
+            intent_digest.removeprefix("sha256:")
+            + "-"
+            + str(template["template_digest"]).removeprefix("sha256:")
+        )
+    )
+    attempts.mkdir(parents=True, exist_ok=True, mode=0o750)
+    for existing_path in sorted(attempts.glob("window-*.json"), reverse=True):
+        existing = _input(
+            existing_path,
+            blocker="configured_controls_worker_release_window_checkpoint_invalid",
+        )
+        try:
+            window = validate_shared_mutation_window(
+                existing,
+                activation_id=str(request["activation_id"]),
+                activation_intent_digest=intent_digest,
+                team_namespace=str(request["team_namespace"]),
+                expected_production_commit=str(
+                    request["expected_production_commit"]
+                ),
+                provider_allowlist=provider_allowlist,
+                hard_cap_usd=hard_cap_usd,
+                now=observed_now,
+            )
+        except TaskEvaluationSharedMutationWindowError as exc:
+            if str(exc) == "shared_mutation_window_not_current":
+                continue
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_release_window_checkpoint_invalid"
+            ) from exc
+        return _publish_materialized_file(
+            path=existing_path,
+            object_name=(
+                f"release-windows/{request['activation_id']}/"
+                f"{window['window_digest'].removeprefix('sha256:')}.json"
+            ),
+            publisher=publisher,
+        )
+    window = materialize_shared_mutation_window(
+        template,
+        activation_request=request,
+        provider_allowlist=provider_allowlist,
+        hard_cap_usd=hard_cap_usd,
+        now=observed_now,
+    )
+    window_path = attempts / (
+        f"window-{window['window_digest'].removeprefix('sha256:')}.json"
+    )
+    _write_immutable(window_path, window)
+    return _publish_materialized_file(
+        path=window_path,
+        object_name=(
+            f"release-windows/{request['activation_id']}/"
+            f"{window['window_digest'].removeprefix('sha256:')}.json"
+        ),
+        publisher=publisher,
+    )
+
+
+def _queue_result(queue_root: Path, preparation_id: str) -> dict[str, Any] | None:
+    identity = queue_root / "identities" / f"{preparation_id}.json"
+    if not identity.exists():
+        return None
+    matches = list((queue_root / "results").glob(f"{preparation_id}-*.json"))
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_preparation_result_ambiguous"
+        )
+    return _load(matches[0], blocker="configured_controls_worker_preparation_result_invalid")
+
+
+def _compilation_ready(*, preparation: Mapping[str, Any], queue_root: Path,
+                       source_commit: str) -> bool:
+    if preparation.get("status") != "queued_for_production_episode_compilation":
+        return True
+    compilation_id = str(preparation.get("episode_compilation_id") or "")
+    digest = str(preparation.get("episode_compilation_queue_envelope_digest") or "")
+    if not compilation_id or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_compilation_binding_invalid")
+    path = queue_root / "results" / f"{compilation_id}-{digest.removeprefix('sha256:')}.json"
+    if not path.is_file():
+        return False
+    result = _load(path, blocker="configured_controls_compilation_invalid")
+    if (result.get("schema_version") != "task_evaluation_episode_compilation_result.v1"
+            or result.get("status") != "compiled_for_production_launch"
+            or result.get("compilation_id") != compilation_id
+            or result.get("run_id") != preparation.get("run_id")
+            or result.get("source_commit") != source_commit
+            or result.get("configured_scene_revision_digest") != preparation.get("configured_scene_revision_digest")
+            or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_compilation_invalid")
+    return True
+
+
+def _activation_capacity_ready(queue_root: Path) -> bool:
+    ledger = os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT")
+    if not ledger:
+        return True  # The activation worker always retains its own disk gate.
+    from .control_plane_disk_budget import disk_headroom, effective_footprint_bytes as held  # the least activation reserves
+    return disk_headroom(target_root=queue_root, reservation_root=ledger)["available_bytes"] >= held("launch_activation", reservation_root=ledger)
+
+
+def _policy_canary_activation_id(run_id: str) -> str:
+    proposed = f"{run_id}-activation"
+    if len(proposed) <= 192 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", proposed):
+        return proposed
+    return "policy-canary-activation-" + hashlib.sha256(run_id.encode()).hexdigest()[:32]
+
+
+def advance_policy_canary_activation(
+    *,
+    run_root: Path,
+    preparation_queue_root: str | Path,
+    episode_compilation_queue_root: str | Path,
+    activation_queue_root: str | Path,
+    progression_root: str | Path,
+    release_window_publisher_factory: PublisherFactory = (
+        configured_controls_release_window_publisher
+    ),
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Turn a compiled no-spend canary request into one activation queue item."""
+
+    request = _load(
+        run_root / "launch_request.json",
+        blocker="policy_canary_activation_launch_request_invalid",
+    )
+    profile = _load(
+        run_root / "launch_profile.json",
+        blocker="policy_canary_activation_launch_profile_invalid",
+    )
+    receipt = _load(
+        run_root / "launch_receipt.json",
+        blocker="policy_canary_activation_launch_receipt_invalid",
+    )
+    expected_receipt_digest = (
+        cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
+        if receipt.get("receipt_digest_canonicalization")
+        == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        else canonical_digest(receipt, digest_field="receipt_digest")
+    )
+    if (
+        validate_launch_request(request)
+        or request.get("run_kind") != "internal_policy_canary"
+        or profile.get("profile_digest")
+        != canonical_digest(profile, digest_field="profile_digest")
+        or receipt.get("status") != "queued_for_no_spend_preparation"
+        or receipt.get("request_digest") != request.get("request_digest")
+        or receipt.get("receipt_digest") != expected_receipt_digest
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_launch_binding_invalid"
+        )
+    setup = validate_policy_canary_setup(profile.get("internal_policy_canary_setup") or {})
+    plan = validate_policy_canary_execution_plan(
+        profile.get("internal_policy_canary_execution_plan") or {},
+        public_setup=setup,
+    )
+    preparation_binding = receipt.get("preparation_queue")
+    if not isinstance(preparation_binding, Mapping):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_binding_invalid"
+        )
+    preparation_id = str(preparation_binding.get("preparation_id") or "")
+    preparation = _queue_result(Path(preparation_queue_root), preparation_id)
+    if preparation is None:
+        return {"status": "awaiting_policy_canary_preparation", "run_id": request["run_id"]}
+    if preparation.get("status") != "queued_for_production_episode_compilation":
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_invalid"
+        )
+    if preparation.get("result_digest") != canonical_digest(
+        preparation, digest_field="result_digest"
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_invalid"
+        )
+    preparation_filename = (
+        f"{preparation_id}-"
+        f"{str(preparation_binding.get('request_digest') or '').removeprefix('sha256:')}.json"
+    )
+    preparation_envelope = _load(
+        Path(preparation_queue_root) / "materialized" / preparation_filename,
+        blocker="policy_canary_activation_preparation_envelope_invalid",
+    )
+    preparation_request = preparation_envelope.get("request")
+    if (
+        not isinstance(preparation_request, Mapping)
+        or preparation_envelope.get("envelope_digest")
+        != canonical_digest(preparation_envelope, digest_field="envelope_digest")
+        or preparation_envelope.get("request_digest")
+        != preparation_binding.get("request_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_envelope_invalid"
+        )
+    try:
+        preparation_request = validate_launch_preparation_request(preparation_request)
+    except TaskEvaluationLaunchPreparationContractError as exc:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_envelope_invalid"
+        ) from exc
+    compilation_id = str(preparation.get("episode_compilation_id") or "")
+    envelope_digest = str(
+        preparation.get("episode_compilation_queue_envelope_digest") or ""
+    )
+    compilation_path = (
+        Path(episode_compilation_queue_root)
+        / "results"
+        / f"{compilation_id}-{envelope_digest.removeprefix('sha256:')}.json"
+    )
+    if not compilation_path.is_file():
+        return {"status": "awaiting_policy_canary_compilation", "run_id": request["run_id"]}
+    compilation = _load(
+        compilation_path,
+        blocker="policy_canary_activation_compilation_invalid",
+    )
+    if (
+        compilation.get("status") != "compiled_for_production_launch"
+        or compilation.get("run_id") != request.get("run_id")
+        or compilation.get("source_commit") != plan.get("source_commit")
+        or compilation.get("result_digest")
+        != canonical_digest(compilation, digest_field="result_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_compilation_invalid"
+        )
+    state_root = (
+        Path(progression_root)
+        / "policy-canary-activations"
+        / str(request["run_id"])
+    )
+    state_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    state_path = state_root / "activation_progression.json"
+    if state_path.is_file():
+        existing = _load(
+            state_path,
+            blocker="policy_canary_activation_progression_invalid",
+        )
+        if existing.get("progression_digest") != canonical_digest(
+            existing, digest_field="progression_digest"
+        ) or any(
+            existing.get(field) != expected
+            for field, expected in (
+                ("schema_version", "task_evaluation_policy_canary_activation_progression.v1"),
+                ("status", "policy_canary_activation_queued"),
+                ("run_id", request["run_id"]),
+                ("preparation_result_digest", preparation["result_digest"]),
+                ("compilation_result_digest", compilation["result_digest"]),
+            )
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "policy_canary_activation_progression_invalid"
+            )
+        return existing
+    automation = plan["activation_automation"]
+    template_rows = [
+        row
+        for row in preparation.get("references") or []
+        if isinstance(row, Mapping)
+        and row.get("contract_path")
+        == "policy_canary_activation.release_window_template"
+    ]
+    if len(template_rows) != 1:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_window_template_missing"
+        )
+    template_path = Path(str(template_rows[0].get("materialized_path") or ""))
+    template = validate_shared_mutation_window_template(
+        _load(
+            template_path,
+            blocker="policy_canary_activation_window_template_invalid",
+        ),
+        team_namespace=str(request["team_namespace"]),
+        expected_production_commit=str(plan["source_commit"]),
+    )
+    observed_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    authorization_template = automation["authorization_template"]
+    valid_for_seconds = int(authorization_template["valid_for_seconds"])
+    authorization = {
+        "reference": authorization_template["reference"],
+        "authorized_by": authorization_template["authorized_by"],
+        "authorized_on": observed_now.isoformat(),
+        "standing_authorization_expires_at": (
+            observed_now + timedelta(seconds=valid_for_seconds)
+        ).isoformat(),
+        "profile_revision": authorization_template["profile_revision"],
+    }
+    placeholder = {
+        "uri": "https://tryblueprint.io/internal/release-window-placeholder",
+        "digest": "sha256:" + "0" * 64,
+        "size_bytes": 1,
+    }
+    base_request = {
+        "schema_version": "task_evaluation_launch_activation_request.v1",
+        "expected_production_commit": plan["source_commit"],
+        "activation_id": _policy_canary_activation_id(str(request["run_id"])),
+        "team_namespace": request["team_namespace"],
+        "run_kind": "internal_policy_canary",
+        "capture_session_id": plan["configured_source_launch_id"],
+        "intake_id": plan["configured_offering_configuration_run_id"],
+        "lane": "native_task_arena_policy_evaluation",
+        "preparation": {
+            "preparation_id": preparation_id,
+            "request_digest": preparation_binding["request_digest"],
+            "result_digest": preparation["result_digest"],
+        },
+        "release_window": placeholder,
+        "lineage": automation["lineage"],
+        "authorization": authorization,
+        "requested_mutations": automation["requested_mutations"],
+        **(
+            {
+                "episode_interpretation_authority": preparation_request[
+                    "policy_canary_activation"
+                ]["episode_interpretation_authority"],
+                "episode_interpretation_source_rights_admission": preparation_request[
+                    "policy_canary_activation"
+                ]["episode_interpretation_source_rights_admission"],
+            }
+            if "episode_interpretation_authority"
+            in preparation_request["policy_canary_activation"]
+            else {}
+        ),
+    }
+    base_request = validate_launch_activation_request(base_request)
+    window = materialize_shared_mutation_window(
+        template,
+        activation_request=base_request,
+        provider_allowlist=list(preparation_request["spend"]["provider_allowlist"]),
+        hard_cap_usd=float(preparation_request["spend"]["hard_cap_usd"]),
+        now=observed_now,
+    )
+    window_path = state_root / f"{window['window_id']}.json"
+    _write_immutable(window_path, window)
+    window_reference = _publish_materialized_file(
+        path=window_path,
+        object_name=(
+            f"release-windows/{base_request['activation_id']}/"
+            f"{window['window_digest'].removeprefix('sha256:')}.json"
+        ),
+        publisher=release_window_publisher_factory(),
+    )
+    activation_request = validate_launch_activation_request(
+        {**base_request, "release_window": window_reference}
+    )
+    intake = stage_launch_activation_request(
+        value=activation_request,
+        queue_root=activation_queue_root,
+        submitted_by=str((request.get("authorization") or {}).get("actor", {}).get("id") or "blueprint-policy-canary-automation"),
+    )
+    if (
+        intake.get("status") != "queued_for_authority_gated_activation"
+        or intake.get("accepted") is not True
+        or intake.get("activation_id") != activation_request["activation_id"]
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_intake_invalid"
+        )
+    result = {
+        "schema_version": "task_evaluation_policy_canary_activation_progression.v1",
+        "status": "policy_canary_activation_queued",
+        "run_id": request["run_id"],
+        "activation_id": activation_request["activation_id"],
+        "preparation_result_digest": preparation["result_digest"],
+        "compilation_result_digest": compilation["result_digest"],
+        "release_window_digest": window["window_digest"],
+        "activation_request_digest": canonical_digest(activation_request),
+        "activation_intake_receipt_digest": intake["receipt_digest"],
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "progression_digest": "",
+    }
+    result["progression_digest"] = canonical_digest(
+        result, digest_field="progression_digest"
+    )
+    _write_immutable(state_path, result)
+    return result
+
+
+def _activation_authority(
+    *, activation_queue_root: Path, profile_dir: Path, activation_id: str
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for path in (activation_queue_root / "results").glob("*.json"):
+        try:
+            value = _load(
+                path,
+                blocker="configured_controls_worker_activation_result_invalid",
+            )
+        except TaskEvaluationConfiguredControlsProgressionWorkerError:
+            continue
+        if (
+            value.get("activation_id") == activation_id
+            and value.get("status")
+            == "profile_authority_materialized_no_execution"
+        ):
+            matches.append((path, value))
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_activation_result_ambiguous"
+        )
+    _path, activation = matches[0]
+    profile_id = str(activation.get("profile_id") or "")
+    profile_path = profile_dir / f"{profile_id}.json"
+    if (
+        activation.get("activation_id") != activation_id
+        or not profile_id
+        or profile_path.parent != profile_dir
+        or not profile_path.is_file()
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_activation_result_invalid"
+        )
+    profile = _load(
+        profile_path, blocker="configured_controls_worker_profile_invalid"
+    )
+    if profile.get("profile_digest") != activation.get("profile_digest"):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_profile_invalid"
+        )
+    return activation, profile
+
+
+def _construction_predecessor(
+    *,
+    launch_state_root: Path,
+    construction_launch_id: str,
+    publisher: Callable[..., Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, str]] | None:
+    """Resolve and publish the exact terminal construction evidence set."""
+
+    run_root = launch_state_root / construction_launch_id
+    receipt_path = run_root / "launch_receipt.json"
+    if not receipt_path.exists():
+        return None
+    receipt = _load(
+        receipt_path,
+        blocker="configured_controls_worker_construction_launch_receipt_invalid",
+    )
+    expected_receipt_digest = (
+        cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
+        if receipt.get("receipt_digest_canonicalization")
+        == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        else canonical_digest(receipt, digest_field="receipt_digest")
+    )
+    terminal = receipt.get("terminal_evidence")
+    terminal_artifact = (
+        terminal.get("result") if isinstance(terminal, Mapping) else None
+    )
+    if (
+        receipt.get("schema_version") != "task_evaluation_launch_receipt.v1"
+        or receipt.get("status") != "completed"
+        or receipt.get("launch_id") != construction_launch_id
+        or receipt.get("run_id") != construction_launch_id
+        or receipt.get("receipt_digest") != expected_receipt_digest
+        or not isinstance(terminal, Mapping)
+        or terminal.get("status") != "passed"
+        or not isinstance(terminal_artifact, Mapping)
+        or terminal_artifact.get("exists") is not True
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_launch_receipt_invalid"
+        )
+    result_path = Path(str(terminal_artifact.get("path") or "")).expanduser()
+    if (
+        result_path.is_symlink()
+        or not result_path.is_file()
+        or _sha256(result_path) != terminal_artifact.get("digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_terminal_artifact_invalid"
+        )
+    result = _load(
+        result_path,
+        blocker="configured_controls_worker_construction_terminal_result_invalid",
+    )
+    construction_result_path = Path(
+        str(result.get("native_control_result_path") or "")
+    ).expanduser()
+    construction_result = _load(
+        construction_result_path,
+        blocker="configured_controls_worker_construction_result_invalid",
+    )
+    if (
+        result.get("schema_version") != "native_task_arena_vast_run.v1"
+        or result.get("status") != "completed"
+        or result.get("blockers") not in ([], ())
+        or result.get("native_control_result_digest")
+        != construction_result.get("result_digest")
+        or construction_result.get("schema_version")
+        != "native_task_arena_construction_result.v1"
+        or construction_result.get("status") != "completed"
+        or construction_result.get("construction_gate_qualified") is not True
+        or construction_result.get("candidate_policy_queried") is not False
+        or construction_result.get("blockers") not in ([], ())
+        or construction_result.get("result_digest")
+        != canonical_digest(construction_result, digest_field="result_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_result_invalid"
+        )
+    sync_path = run_root / "webapp_sync_succeeded.json"
+    sync = _load(
+        sync_path,
+        blocker="configured_controls_worker_construction_webapp_sync_missing",
+    )
+    try:
+        validated_succeeded_webapp_sync_row(receipt=receipt, attempt=sync)
+    except Exception as exc:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_webapp_sync_invalid"
+        ) from exc
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = _load(
+        zero_path,
+        blocker="configured_controls_worker_construction_provider_zero_missing",
+    )
+    if (
+        zero.get("schema_version")
+        != "task_evaluation_post_teardown_provider_zero.v1"
+        or zero.get("status") != "provider_zero_confirmed"
+        or zero.get("provider_zero_verified") is not True
+        or zero.get("continuing_spend_from_this_run") is not False
+        or zero.get("allocator_invoked") is not False
+        or zero.get("provider_mutation_performed") is not False
+        or zero.get("automatic_retry_performed") is not False
+        or zero.get("blockers") != []
+        or zero.get("provider_zero_receipt_digest")
+        != canonical_digest(zero, digest_field="provider_zero_receipt_digest")
+        or any(
+            zero.get(field) != receipt.get(field)
+            for field in (
+                "launch_id",
+                "run_id",
+                "request_digest",
+                "receipt_digest",
+                "launch_profile_digest",
+            )
+        )
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_provider_zero_invalid"
+        )
+    profile_path = run_root / "launch_profile.json"
+    profile = _load(
+        profile_path,
+        blocker="configured_controls_worker_construction_profile_invalid",
+    )
+    if (
+        profile.get("schema_version") != "task_evaluation_launch_profile.v1"
+        or profile.get("profile_digest") != receipt.get("launch_profile_digest")
+        or profile.get("profile_digest")
+        != canonical_digest(profile, digest_field="profile_digest")
+        or not isinstance(profile.get("immutable_inputs"), list)
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_profile_invalid"
+        )
+    input_names = {
+        "prior_authority": "native_task_arena_attempt_authority",
+        "prior_spend_reconciliation": (
+            "native_task_arena_attempt_authority_prior_spend_reconciliation"
+        ),
+    }
+    artifact_paths: dict[str, Path] = {
+        "prior_result": result_path,
+        "prior_launch_receipt": receipt_path,
+        "prior_webapp_sync": sync_path,
+        "prior_provider_zero": zero_path,
+        "construction_result": construction_result_path,
+    }
+    for role, expected_name in input_names.items():
+        matches = [
+            row
+            for row in profile["immutable_inputs"]
+            if isinstance(row, Mapping) and row.get("name") == expected_name
+        ]
+        if len(matches) != 1:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_construction_profile_invalid"
+            )
+        row = matches[0]
+        path = Path(str(row.get("path") or "")).expanduser()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or _sha256(path) != row.get("digest")
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_construction_profile_input_invalid"
+            )
+        artifact_paths[role] = path
+    lineage: dict[str, Any] = {"kind": "predecessor"}
+    published_paths: dict[str, str] = {}
+    for role, path in sorted(artifact_paths.items()):
+        lineage[role] = _publish_materialized_file(
+            path=path,
+            object_name=(
+                f"construction-predecessor/{construction_launch_id}/{role}.json"
+            ),
+            publisher=publisher,
+        )
+        published_paths[role] = str(path)
+    return lineage, published_paths
+
+
+def _destination_predecessor(
+    *,
+    launch_state_root: Path,
+    destination_launch_id: str,
+    preparation_result: Mapping[str, Any],
+    qualification_output_path: Path,
+    publisher: Callable[..., Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]] | None:
+    """Seal the native observation, publish its decision, and chain spend."""
+
+    run_root = launch_state_root / destination_launch_id
+    receipt_path = run_root / "launch_receipt.json"
+    if not receipt_path.exists():
+        return None
+    receipt = _load(
+        receipt_path,
+        blocker="configured_controls_worker_destination_launch_receipt_invalid",
+    )
+    expected_receipt_digest = (
+        cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
+        if receipt.get("receipt_digest_canonicalization")
+        == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        else canonical_digest(receipt, digest_field="receipt_digest")
+    )
+    terminal = receipt.get("terminal_evidence")
+    terminal_artifact = terminal.get("result") if isinstance(terminal, Mapping) else None
+    if (
+        receipt.get("schema_version") != "task_evaluation_launch_receipt.v1"
+        or receipt.get("status") != "completed"
+        or receipt.get("launch_id") != destination_launch_id
+        or receipt.get("run_id") != destination_launch_id
+        or receipt.get("receipt_digest") != expected_receipt_digest
+        or not isinstance(terminal, Mapping)
+        or terminal.get("status") != "passed"
+        or not isinstance(terminal_artifact, Mapping)
+        or terminal_artifact.get("exists") is not True
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_launch_receipt_invalid"
+        )
+    result_path = Path(str(terminal_artifact.get("path") or "")).expanduser()
+    result = _load(
+        result_path,
+        blocker="configured_controls_worker_destination_terminal_result_invalid",
+    )
+    observation_path = Path(
+        str(result.get("native_control_result_path") or "")
+    ).expanduser()
+    observation = _load(
+        observation_path,
+        blocker="configured_controls_worker_destination_observation_invalid",
+    )
+    if (
+        result_path.is_symlink()
+        or _sha256(result_path) != terminal_artifact.get("digest")
+        or result.get("schema_version") != "native_task_arena_vast_run.v1"
+        or result.get("status") != "completed"
+        or result.get("blockers") not in ([], ())
+        or observation.get("schema_version")
+        != "task_evaluation_rigid_destination_native_observation.v1"
+        or observation.get("status") != "completed"
+        or observation.get("candidate_policy_queried") is True
+        or observation.get("observation_digest")
+        != canonical_digest(observation, digest_field="observation_digest")
+        or result.get("native_control_result_digest")
+        != observation.get("observation_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_observation_invalid"
+        )
+    sync_path = run_root / "webapp_sync_succeeded.json"
+    sync = _load(
+        sync_path,
+        blocker="configured_controls_worker_destination_webapp_sync_missing",
+    )
+    try:
+        validated_succeeded_webapp_sync_row(receipt=receipt, attempt=sync)
+    except Exception as exc:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_webapp_sync_invalid"
+        ) from exc
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = _load(
+        zero_path,
+        blocker="configured_controls_worker_destination_provider_zero_missing",
+    )
+    if (
+        zero.get("status") != "provider_zero_confirmed"
+        or zero.get("provider_zero_verified") is not True
+        or zero.get("continuing_spend_from_this_run") is not False
+        or zero.get("blockers") != []
+        or zero.get("provider_zero_receipt_digest")
+        != canonical_digest(zero, digest_field="provider_zero_receipt_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_provider_zero_invalid"
+        )
+    profile = _load(
+        run_root / "launch_profile.json",
+        blocker="configured_controls_worker_destination_profile_invalid",
+    )
+    immutable_inputs = profile.get("immutable_inputs")
+    if not isinstance(immutable_inputs, list):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_profile_invalid"
+        )
+
+    def profile_input(name: str) -> Path:
+        matches = [
+            row
+            for row in immutable_inputs
+            if isinstance(row, Mapping) and row.get("name") == name
+        ]
+        if len(matches) != 1:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_destination_profile_invalid"
+            )
+        path = Path(str(matches[0].get("path") or "")).expanduser()
+        if path.is_symlink() or not path.is_file() or _sha256(path) != matches[0].get(
+            "digest"
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_destination_profile_input_invalid"
+            )
+        return path
+    references = {
+        str(row.get("contract_path") or ""): Path(
+            str(row.get("materialized_path") or "")
+        ).expanduser()
+        for row in preparation_result.get("references") or []
+        if isinstance(row, Mapping)
+    }
+    required = {
+        "task.destination.asset",
+        "task.destination.static_qualification",
+        "task.destination.native_import_qualification",
+        "task.destination.geometry",
+    }
+    if not required.issubset(references):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_inputs_missing"
+        )
+    from .task_evaluation_rigid_destination_placement_qualification import (
+        materialize_rigid_destination_placement_qualification,
+    )
+
+    if qualification_output_path.is_file() and not qualification_output_path.is_symlink():
+        qualification = _load(
+            qualification_output_path,
+            blocker="configured_controls_worker_destination_qualification_invalid",
+        )
+        if (
+            qualification.get("placement_qualification_digest")
+            != canonical_digest(
+                qualification, digest_field="placement_qualification_digest"
+            )
+            or qualification.get("native_observation_digest")
+            != observation.get("observation_digest")
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_destination_qualification_invalid"
+            )
+    else:
+        qualification = materialize_rigid_destination_placement_qualification(
+            observation_path=observation_path,
+            configured_scene_collision_path=profile_input(
+                "native_task_arena_packet_asset_scene_collision"
+            ),
+            destination_asset_path=references["task.destination.asset"],
+            destination_static_qualification_path=references[
+                "task.destination.static_qualification"
+            ],
+            destination_native_import_qualification_path=references[
+                "task.destination.native_import_qualification"
+            ],
+            destination_geometry_path=references["task.destination.geometry"],
+            output_path=qualification_output_path,
+        )
+    placement_reference = _publish_materialized_file(
+        path=qualification_output_path,
+        object_name=(
+            f"destination-qualification/{destination_launch_id}/"
+            "task_evaluation_rigid_destination_placement_qualification.v1.json"
+        ),
+        publisher=publisher,
+    )
+    artifact_paths = {
+        "prior_authority": profile_input("native_task_arena_attempt_authority"),
+        "prior_result": result_path,
+        "prior_launch_receipt": receipt_path,
+        "prior_webapp_sync": sync_path,
+        "prior_provider_zero": zero_path,
+        "prior_spend_reconciliation": profile_input(
+            "native_task_arena_attempt_authority_prior_spend_reconciliation"
+        ),
+        "destination_qualification_result": observation_path,
+    }
+    lineage: dict[str, Any] = {"kind": "predecessor"}
+    published_paths: dict[str, str] = {}
+    for role, path in sorted(artifact_paths.items()):
+        lineage[role] = _publish_materialized_file(
+            path=path,
+            object_name=(
+                f"destination-predecessor/{destination_launch_id}/{role}.json"
+            ),
+            publisher=publisher,
+        )
+        published_paths[role] = str(path)
+    if qualification.get("status") != "qualified":
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_qualification_invalid"
+        )
+    return lineage, published_paths, placement_reference
+
+
+def _production_submitter(
+    *, repo_root: Path, secret_file: Path, endpoint: str, state_root: Path
+) -> Submitter:
+    def submit(request: Mapping[str, Any]) -> Mapping[str, Any]:
+        launch_id = str(request["launch_id"])
+        request_path = state_root / f"{launch_id}.webapp-request.json"
+        receipt_path = state_root / f"{launch_id}.webapp-submission.json"
+        _write_immutable(request_path, request)
+        if not receipt_path.exists():
+            completed = subprocess.run(  # nosec B603 - fixed Python and repository script
+                [
+                    sys.executable,
+                    str(repo_root / "scripts" / "submit_task_evaluation_launch_via_webapp.py"),
+                    "--request", str(request_path),
+                    "--secret-file", str(secret_file),
+                    "--receipt-out", str(receipt_path),
+                    # The immutable request may already be accepted after a lost response.
+                    "--allow-replay",
+                    "--endpoint", endpoint,
+                ],
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if completed.returncode != 0:
+                raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                    "configured_controls_worker_webapp_submission_failed"
+                )
+        evidence = _load(receipt_path, blocker="configured_controls_worker_webapp_receipt_invalid")
+        web = evidence.get("webapp_receipt")
+        if (
+            evidence.get("status") not in {"submitted", "replayed"}
+            or evidence.get("launch_id") != launch_id
+            or not isinstance(web, Mapping)
+            or web.get("provider_mutation_performed_inside_web_request") is not False
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_webapp_receipt_invalid"
+            )
+        return {
+            "status": "submitted" if evidence["status"] == "submitted" else "accepted",
+            "launch_id": launch_id,
+            "provider_mutation_performed_inside_web_request": False,
+        }
+
+    return submit
+
+
+def advance_configured_controls_plan(
+    *,
+    plan_path: str | Path,
+    launch_state_root: str | Path,
+    progression_root: str | Path,
+    preparation_queue_root: str | Path,
+    activation_queue_root: str | Path,
+    episode_compilation_queue_root: str | Path | None = None,
+    publisher_factory: PublisherFactory = configured_controls_object_store_publisher,
+    release_window_publisher_factory: PublisherFactory | None = None,
+    submitter: Submitter | None = None,
+    repo_root: str | Path | None = None,
+    webapp_secret_file: str | Path | None = None,
+    webapp_endpoint: str = "https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+) -> dict[str, Any]:
+    """Advance at most one transition for one immutable progression plan."""
+    if release_window_publisher_factory is None:
+        release_window_publisher_factory = (
+            configured_controls_release_window_publisher
+            if publisher_factory is configured_controls_object_store_publisher
+            else publisher_factory
+        )
+
+    plan = _plan(Path(plan_path).expanduser())
+    compilation_queue = Path(episode_compilation_queue_root or
+        Path(preparation_queue_root).parent / "task-evaluation-episode-compilations")
+    run_root = Path(launch_state_root).expanduser() / plan["source_launch_id"]
+    # Scope progression state to the production commit. The sealed receipt
+    # carries the episode preparation id, and preparation results are
+    # immutable, so sharing one directory across commits makes a launch that
+    # blocked under an earlier commit unanswerable under its successor.
+    state = (
+        Path(progression_root).expanduser()
+        / plan["source_launch_id"]
+        / progression_directory(plan["expected_production_commit"], plan.get("evaluation_run_id"))
+    )
+    state.mkdir(parents=True, exist_ok=True, mode=0o750)
+    destination_enabled = (
+        plan.get("schema_version") == DESTINATION_PLAN_SCHEMA_VERSION
+    )
+    episode_state = state / "episode" if destination_enabled else state
+    episode_state.mkdir(parents=True, exist_ok=True, mode=0o750)
+    destination_lineage: dict[str, Any] | None = None
+    destination_artifact_paths: dict[str, str] | None = None
+    placement_reference: dict[str, Any] | None = None
+
+    def source_inputs() -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]:
+        terminal, receipt, _ = _validate_source(run_root)
+        if (
+            receipt.get("receipt_digest")
+            != plan["source_launch_receipt_digest"]
+            or receipt.get("source_commit")
+            != plan["source_configuration_commit"]
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_source_receipt_mismatch"
+            )
+        publication = _input(
+            terminal.get("publication_result_path"),
+            blocker="configured_controls_worker_publication_missing",
+        )
+        revision = _input(
+            terminal.get("configured_scene_revision_path"),
+            blocker="configured_controls_worker_revision_missing",
+        )
+        base_pose = _input(
+            plan.get("base_pose_candidate_path"),
+            blocker="configured_controls_worker_base_pose_missing",
+        )
+        cameras = _input(
+            plan.get("cameras_path"),
+            blocker="configured_controls_worker_cameras_missing",
+        )
+        runtime = _input(
+            plan.get("runtime_binding_path"),
+            blocker="configured_controls_worker_runtime_missing",
+        )
+        rows = cameras.get("cameras")
+        if not isinstance(rows, list):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_cameras_invalid"
+            )
+        return terminal, publication, revision, base_pose, rows, runtime
+
+    if destination_enabled:
+        destination_state = state / "destination-qualification"
+        destination_state.mkdir(parents=True, exist_ok=True, mode=0o750)
+        destination_base_path = (
+            destination_state
+            / "configured_destination_qualification_progression.v1.json"
+        )
+        destination_base = _sealed_progression(
+            destination_base_path,
+            statuses={"destination_qualification_preparation_queued"},
+        )
+        if destination_base is None:
+            terminal, publication, revision, base_pose, rows, runtime = source_inputs()
+            try:
+                result = stage_configured_controls_episode_preparation(
+                    terminal_result=terminal,
+                    publication_result=publication,
+                    configured_revision=revision,
+                    expected_production_commit=plan["expected_production_commit"],
+                    robot_mount_interface_path=plan["robot_mount_interface_path"],
+                    scene_camera_calibration_path=plan["scene_camera_calibration_path"],
+                    base_pose_candidate=base_pose,
+                    cameras=rows,
+                    runtime_binding=runtime,
+                    output_root=destination_state,
+                    publisher=publisher_factory(),
+                    queue_root=preparation_queue_root,
+                    submitted_by=plan["submitted_by"],
+                    destination_qualification_only=True,
+                    evaluation_run_id=plan.get("evaluation_run_id"),
+                )
+            except TaskEvaluationConfiguredControlsCapacityDeferred:
+                return {"status": "awaiting_destination_preparation_capacity",
+                        "source_launch_id": plan["source_launch_id"]}
+            return {
+                "status": result["status"],
+                "source_launch_id": plan["source_launch_id"],
+            }
+        destination_preparation_id = destination_base[
+            "episode_preparation_request"
+        ]["preparation_id"]
+        if plan["future_outputs"]["destination"]["expected_activation_id"] != (
+            destination_base["episode_preparation_request"]["run_id"]
+            + "-destination"
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_future_activation_identity_mismatch"
+            )
+        destination_preparation = _queue_result(
+            Path(preparation_queue_root), destination_preparation_id
+        )
+        if destination_preparation is None:
+            return {
+                "status": "awaiting_destination_qualification_preparation",
+                "source_launch_id": plan["source_launch_id"],
+            }
+        destination_phase = _phase(plan, "destination")
+        destination_activation_path = (
+            destination_state / "destination_activation_progression.json"
+        )
+        destination_activation = _sealed_progression(
+            destination_activation_path,
+            statuses={"destination_qualification_activation_queued"},
+        )
+        if destination_activation is None:
+            if not _compilation_ready(preparation=destination_preparation,
+                    queue_root=compilation_queue, source_commit=plan["expected_production_commit"]):
+                return {"status": "awaiting_destination_qualification_compilation",
+                        "source_launch_id": plan["source_launch_id"]}
+            if not _activation_capacity_ready(Path(activation_queue_root)):
+                return {"status": "awaiting_destination_activation_capacity",
+                        "source_launch_id": plan["source_launch_id"]}
+            lineage = _input(
+                destination_phase.get("lineage_path"),
+                blocker="configured_controls_worker_lineage_missing",
+            )
+            authorization = _input(
+                destination_phase.get("authorization_path"),
+                blocker="configured_controls_worker_authorization_missing",
+            )
+            release_window = _materialize_phase_release_window(
+                state=destination_base,
+                preparation=destination_preparation,
+                phase=destination_phase,
+                lineage=lineage,
+                authorization=authorization,
+                lane="native_task_arena_destination_qualification",
+                root=destination_state,
+                publisher=release_window_publisher_factory(),
+            )
+            result = stage_configured_controls_activation(
+                progression=destination_base,
+                preparation_result=destination_preparation,
+                release_window=release_window,
+                lineage=lineage,
+                authorization=authorization,
+                lane="native_task_arena_destination_qualification",
+                queue_root=activation_queue_root,
+                submitted_by=plan["submitted_by"],
+            )
+            _write_immutable(destination_activation_path, result)
+            return {
+                "status": result["status"],
+                "source_launch_id": plan["source_launch_id"],
+            }
+        destination_launch_path = (
+            destination_state / "destination_launch_progression.json"
+        )
+        destination_launch = _sealed_progression(
+            destination_launch_path,
+            statuses={"destination_qualification_launch_queued"},
+        )
+        if destination_launch is None:
+            authority = _activation_authority(
+                activation_queue_root=Path(activation_queue_root),
+                profile_dir=Path(plan["profile_dir"]),
+                activation_id=plan["future_outputs"]["destination"][
+                    "expected_activation_id"
+                ],
+            )
+            if authority is None:
+                return {
+                    "status": "awaiting_destination_qualification_activation",
+                    "source_launch_id": plan["source_launch_id"],
+                }
+            activation_result, profile = authority
+            if submitter is None:
+                if repo_root is None or webapp_secret_file is None:
+                    raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                        "configured_controls_worker_webapp_configuration_missing"
+                    )
+                submitter = _production_submitter(
+                    repo_root=Path(repo_root),
+                    secret_file=Path(webapp_secret_file),
+                    endpoint=webapp_endpoint,
+                    state_root=destination_state,
+                )
+            result = submit_authorized_progression_launch(
+                activation_progression=destination_activation,
+                activation_result=activation_result,
+                profile=profile,
+                launch_authority=_input(
+                    destination_phase.get("launch_authority_path"),
+                    blocker="configured_controls_worker_launch_authority_missing",
+                ),
+                submitter=submitter,
+            )
+            _write_immutable(destination_launch_path, result)
+            return {
+                "status": result["status"],
+                "source_launch_id": plan["source_launch_id"],
+            }
+        predecessor = _destination_predecessor(
+            launch_state_root=Path(launch_state_root),
+            destination_launch_id=str(destination_launch["launch_id"]),
+            preparation_result=destination_preparation,
+            qualification_output_path=(
+                destination_state
+                / "task_evaluation_rigid_destination_placement_qualification.v1.json"
+            ),
+            publisher=publisher_factory(),
+        )
+        if predecessor is None:
+            return {
+                "status": "awaiting_destination_qualification_terminal",
+                "source_launch_id": plan["source_launch_id"],
+            }
+        destination_lineage, destination_artifact_paths, placement_reference = predecessor
+
+    base_path = episode_state / "configured_controls_progression.v1.json"
+    base = _sealed_progression(base_path, statuses={"episode_preparation_queued"})
+    if base is None:
+        terminal, publication, revision, base_pose, rows, runtime = source_inputs()
+        namespace = episode_namespace(terminal["run_id"], plan["expected_production_commit"],
+            evaluation_run_id=plan.get("evaluation_run_id")) + "-episode"
+        if any(
+            plan["future_outputs"][phase]["expected_activation_id"]
+            != f"{namespace}-{phase}"
+            for phase in ("construction", "controls")
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_future_activation_identity_mismatch"
+            )
+        try:
+            result = stage_configured_controls_episode_preparation(
+                terminal_result=terminal,
+                publication_result=publication,
+                configured_revision=revision,
+                expected_production_commit=plan["expected_production_commit"],
+                robot_mount_interface_path=plan["robot_mount_interface_path"],
+                scene_camera_calibration_path=plan["scene_camera_calibration_path"],
+                base_pose_candidate=base_pose,
+                cameras=rows,
+                runtime_binding=runtime,
+                output_root=episode_state,
+                publisher=publisher_factory(),
+                queue_root=preparation_queue_root,
+                submitted_by=plan["submitted_by"],
+                destination_qualification_only=False,
+                destination_placement_qualification=placement_reference,
+                evaluation_run_id=plan.get("evaluation_run_id"),
+            )
+        except TaskEvaluationConfiguredControlsCapacityDeferred:
+            return {"status": "awaiting_episode_preparation_capacity",
+                    "source_launch_id": plan["source_launch_id"]}
+        return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
+
+    prep_id = base["episode_preparation_request"]["preparation_id"]
+    preparation = _queue_result(Path(preparation_queue_root), prep_id)
+    if preparation is None:
+        return {"status": "awaiting_episode_preparation", "source_launch_id": plan["source_launch_id"]}
+
+    from .task_evaluation_scene_control_omission import load_for_run
+    omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"],
+                            evaluation_authority=plan.get("evaluation_authority"))
+    if omission is not None and not (state / "construction_activation_progression.json").exists():
+        _validate_source(run_root)
+        if not _compilation_ready(preparation=preparation, queue_root=compilation_queue,
+                                  source_commit=plan["expected_production_commit"]):
+            return {"status": "awaiting_construction_compilation", "source_launch_id": plan["source_launch_id"]}
+        return {"status": "controls_omitted_for_diagnostic_policy", "source_launch_id": plan["source_launch_id"],
+                "control_omission_directive_digest": omission["directive_digest"],
+                "construction_rehearsal_performed": False, "controls_qualified": False,
+                "qualified_comparison_permitted": False}
+
+    construction_phase = _phase(plan, "construction")
+    construction_activation_path = state / "construction_activation_progression.json"
+    construction_activation = _sealed_progression(
+        construction_activation_path, statuses={"construction_activation_queued"}
+    )
+    if construction_activation is None:
+        if not _compilation_ready(preparation=preparation, queue_root=compilation_queue,
+                source_commit=plan["expected_production_commit"]):
+            return {"status": "awaiting_construction_compilation", "source_launch_id": plan["source_launch_id"]}
+        if not _activation_capacity_ready(Path(activation_queue_root)):
+            return {"status": "awaiting_construction_activation_capacity", "source_launch_id": plan["source_launch_id"]}
+        construction_lane = (
+            "native_task_arena_construction_after_destination"
+            if destination_enabled
+            else "native_task_arena_construction"
+        )
+        lineage = (
+            destination_lineage
+            if destination_enabled
+            else _input(
+                construction_phase.get("lineage_path"),
+                blocker="configured_controls_worker_lineage_missing",
+            )
+        )
+        if not isinstance(lineage, Mapping):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_lineage_missing"
+            )
+        authorization = _input(construction_phase.get("authorization_path"), blocker="configured_controls_worker_authorization_missing")
+        release_window = _materialize_phase_release_window(
+            state=base,
+            preparation=preparation,
+            phase=construction_phase,
+            lineage=lineage,
+            authorization=authorization,
+            lane=construction_lane,
+            root=state,
+            publisher=release_window_publisher_factory(),
+            lineage_artifact_paths=destination_artifact_paths,
+        )
+        result = stage_configured_controls_activation(
+            progression=base,
+            preparation_result=preparation,
+            release_window=release_window,
+            lineage=lineage,
+            authorization=authorization,
+            lane=construction_lane,
+            queue_root=activation_queue_root,
+            submitted_by=plan["submitted_by"],
+            lineage_artifact_paths=destination_artifact_paths,
+        )
+        _write_immutable(construction_activation_path, result)
+        return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
+
+    construction_launch_path = state / "construction_launch_progression.json"
+    construction_launch = _sealed_progression(
+        construction_launch_path, statuses={"construction_launch_queued"}
+    )
+    if construction_launch is None:
+        authority = _activation_authority(
+            activation_queue_root=Path(activation_queue_root),
+            profile_dir=Path(plan["profile_dir"]),
+            activation_id=plan["future_outputs"]["construction"][
+                "expected_activation_id"
+            ],
+        )
+        if authority is None:
+            return {"status": "awaiting_construction_activation", "source_launch_id": plan["source_launch_id"]}
+        activation_result, profile = authority
+        if submitter is None:
+            if repo_root is None or webapp_secret_file is None:
+                raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                    "configured_controls_worker_webapp_configuration_missing"
+                )
+            submitter = _production_submitter(
+                repo_root=Path(repo_root), secret_file=Path(webapp_secret_file),
+                endpoint=webapp_endpoint, state_root=state,
+            )
+        result = submit_authorized_progression_launch(
+            activation_progression=construction_activation,
+            activation_result=activation_result,
+            profile=profile,
+            launch_authority=_input(construction_phase.get("launch_authority_path"), blocker="configured_controls_worker_launch_authority_missing"),
+            submitter=submitter,
+        )
+        _write_immutable(construction_launch_path, result)
+        return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
+
+    from .task_evaluation_controls_autoprovision import CONFIG_ENV
+    if plan.get("evaluation_run_id") and os.getenv(CONFIG_ENV) and construction_activation["lane"] == "native_task_arena_construction":
+        from .task_evaluation_native_startup_recovery import advance as recover_startup, configuration as retry_configuration
+        from .task_evaluation_scene_progression import CONFIG_ENV as PROGRESSION_CONFIG_ENV
+
+        def retry_submitter():
+            if submitter is not None:
+                return submitter
+            if repo_root is None or webapp_secret_file is None:
+                raise TaskEvaluationConfiguredControlsProgressionWorkerError("configured_controls_worker_webapp_configuration_missing")
+            return _production_submitter(repo_root=Path(repo_root), secret_file=Path(webapp_secret_file),
+                endpoint=webapp_endpoint, state_root=state)
+
+        construction_launch, pending = recover_startup(
+            config=retry_configuration(
+                _input(os.environ[CONFIG_ENV], blocker="configured_controls_retry_configuration_missing"),
+                _input(os.getenv(PROGRESSION_CONFIG_ENV), blocker="configured_controls_retry_ownership_configuration_missing")),
+            plan=plan, state=state, launch_root=Path(launch_state_root), launch=construction_launch,
+            activation=construction_activation, phase=construction_phase, base=base, preparation=preparation,
+            activation_queue_root=Path(activation_queue_root), publisher=release_window_publisher_factory,
+            submitter_factory=retry_submitter)
+        if pending:
+            return {"status": pending, "source_launch_id": plan["source_launch_id"]}
+
+    from .task_evaluation_scene_control_omission import load_for_run
+    omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"],
+                            evaluation_authority=plan.get("evaluation_authority"))
+    if omission is not None:
+        if (state / "controls_activation_progression.json").exists() or (state / "controls_launch_progression.json").exists():
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError("configured_controls_omission_after_controls_admission")
+        # The handoff independently waits for real qualified construction and
+        # its billing/teardown closure; this is not a controls-result receipt.
+        return {"status": "controls_omitted_for_diagnostic_policy", "source_launch_id": plan["source_launch_id"],
+                "control_omission_directive_digest": omission["directive_digest"],
+                "controls_qualified": False, "qualified_comparison_permitted": False}
+
+    controls_phase = _phase(plan, "controls")
+    controls_activation_path = state / "controls_activation_progression.json"
+    controls_activation = _sealed_progression(
+        controls_activation_path, statuses={"controls_activation_queued"}
+    )
+    if controls_activation is None:
+        if not _activation_capacity_ready(Path(activation_queue_root)):
+            return {"status": "awaiting_controls_activation_capacity", "source_launch_id": plan["source_launch_id"]}
+        predecessor = _construction_predecessor(
+            launch_state_root=Path(launch_state_root),
+            construction_launch_id=str(construction_launch["launch_id"]),
+            publisher=publisher_factory(),
+        )
+        if predecessor is None:
+            return {
+                "status": "awaiting_qualified_construction",
+                "source_launch_id": plan["source_launch_id"],
+            }
+        lineage, artifact_paths = predecessor
+        authorization = _input(controls_phase.get("authorization_path"), blocker="configured_controls_worker_authorization_missing")
+        release_window = _materialize_phase_release_window(
+            state=base,
+            preparation=preparation,
+            phase=controls_phase,
+            lineage=lineage,
+            authorization=authorization,
+            lane="native_task_arena_controls",
+            root=state,
+            publisher=release_window_publisher_factory(),
+            lineage_artifact_paths=artifact_paths,
+        )
+        result = stage_configured_controls_activation(
+            progression=base,
+            preparation_result=preparation,
+            release_window=release_window,
+            lineage=lineage,
+            authorization=authorization,
+            lane="native_task_arena_controls",
+            queue_root=activation_queue_root,
+            submitted_by=plan["submitted_by"],
+            lineage_artifact_paths={str(key): str(value) for key, value in artifact_paths.items()},
+        )
+        _write_immutable(controls_activation_path, result)
+        return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
+
+    controls_launch_path = state / "controls_launch_progression.json"
+    controls_launch = _sealed_progression(controls_launch_path, statuses={"controls_pair_launch_queued"})
+    if controls_launch is not None:
+        return {"status": "controls_pair_launch_queued", "source_launch_id": plan["source_launch_id"]}
+    authority = _activation_authority(
+        activation_queue_root=Path(activation_queue_root),
+        profile_dir=Path(plan["profile_dir"]),
+        activation_id=plan["future_outputs"]["controls"]["expected_activation_id"],
+    )
+    if authority is None:
+        return {"status": "awaiting_controls_activation", "source_launch_id": plan["source_launch_id"]}
+    activation_result, profile = authority
+    if submitter is None:
+        if repo_root is None or webapp_secret_file is None:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_webapp_configuration_missing"
+            )
+        submitter = _production_submitter(
+            repo_root=Path(repo_root), secret_file=Path(webapp_secret_file),
+            endpoint=webapp_endpoint, state_root=state,
+        )
+    result = submit_authorized_progression_launch(
+        activation_progression=controls_activation,
+        activation_result=activation_result,
+        profile=profile,
+        launch_authority=_input(controls_phase.get("launch_authority_path"), blocker="configured_controls_worker_launch_authority_missing"),
+        submitter=submitter,
+    )
+    _write_immutable(controls_launch_path, result)
+    return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
+
+
+@file_digest_scope()
+def process_plans(**kwargs: Any) -> dict[str, Any]:
+    plan_root = Path(kwargs.pop("plan_root")).expanduser()
+    intent_root_value = kwargs.pop("autostart_intent_root", None)
+    scene_configuration_intent_root = kwargs.pop(
+        "scene_configuration_activation_intent_root", None
+    )
+    profile_dir = kwargs.pop("profile_dir", None)
+    standing_authorization_dir = kwargs.pop("standing_authorization_dir", None)
+    webapp_catalog = kwargs.pop("webapp_catalog", None) or None
+    notification_email = kwargs.pop("policy_canary_notification_email", None) or None
+    intent_root = (
+        Path(intent_root_value).expanduser()
+        if intent_root_value is not None
+        else None
+    )
+    launch_state_root = Path(kwargs["launch_state_root"]).expanduser()
+    from .task_evaluation_controls_autoprovision import progression_owner_scope
+    owner_scope = progression_owner_scope(running_release_commit())
+    rows = owner_scope.rows
+    if owner_scope.unresolved:
+        return owner_scope.blocked_report(WORKER_RESULT_SCHEMA_VERSION)
+    if scene_configuration_intent_root is not None:
+        rows.extend(owner_scope.configuration_activation_rows(
+            intent_root=scene_configuration_intent_root,
+            configured_controls_intent_root=intent_root_value,
+            profile_dir=profile_dir, standing_authorization_dir=standing_authorization_dir,
+            context=kwargs))
+    # Configuration profiles carrying the required autostart intent need no
+    # operator-written plan.  The no-spend materializer reopens the completed
+    # revision, runs the full CPU placement inventory/trajectory gate, and
+    # writes the same immutable plan consumed below.  A profile without the
+    # intent remains untouched for backwards-compatible observation.
+    from .task_evaluation_configured_controls_autostart import (
+        TaskEvaluationConfiguredControlsAutostartError,
+        materialize_configured_controls_autostart,
+    )
+
+    # Canary launches bound to another release can never activate here; a branch
+    # checkout has no release identity and filters nothing.
+    release = running_release_commit() or None
+    from .task_evaluation_team_run_controller import materialize_selected_evaluations
+    rows.extend(materialize_selected_evaluations(intent_root=intent_root, launch_state_root=launch_state_root,
+        progression_root=kwargs['progression_root'], plan_root=plan_root, release=release))
+    for run_root in sorted(launch_state_root.iterdir()) if launch_state_root.is_dir() else []:
+        if not run_root.is_dir() or run_root.is_symlink():
+            continue
+        if owner_scope.run_blocked(run_root):
+            rows.append({"status": "blocked", "source_launch_id": run_root.name,
+                         "blockers": ["configured_controls_owner_authority_refused"]})
+            continue
+        launch_request_path = run_root / "launch_request.json"
+        if launch_request_path.is_file() and not launch_request_path.is_symlink():
+            try:
+                launch_request = _load(
+                    launch_request_path,
+                    blocker="policy_canary_activation_launch_request_invalid",
+                )
+            except TaskEvaluationConfiguredControlsProgressionWorkerError as exc:
+                rows.append(
+                    {
+                        "status": "blocked",
+                        "source_launch_id": run_root.name,
+                        "blockers": [str(exc)],
+                    }
+                )
+                continue
+            if launch_request.get("run_kind") == "internal_policy_canary":
+                bound = str(launch_request.get("source_commit") or "")
+                if release and re.fullmatch(r"[0-9a-f]{40}", bound) and bound != release:
+                    rows.append({"status": "launch_bound_to_superseded_release", "source_launch_id": run_root.name, "source_commit": bound, "running_commit": release})
+                    continue
+                try:
+                    rows.append(
+                        advance_policy_canary_activation(
+                            run_root=run_root,
+                            preparation_queue_root=kwargs["preparation_queue_root"],
+                            episode_compilation_queue_root=kwargs[
+                                "episode_compilation_queue_root"
+                            ],
+                            activation_queue_root=kwargs["activation_queue_root"],
+                            progression_root=kwargs["progression_root"],
+                        )
+                    )
+                except (
+                    TaskEvaluationConfiguredControlsProgressionWorkerError,
+                    ValueError,
+                    OSError,
+                ) as exc:
+                    rows.append(
+                        {
+                            "status": "blocked",
+                            "source_launch_id": run_root.name,
+                            "blockers": [str(exc)],
+                        }
+                    )
+                continue
+        profile_path = run_root / "launch_profile.json"
+        receipt_path = run_root / "launch_receipt.json"
+        if not profile_path.is_file() or not receipt_path.is_file():
+            continue
+        try:
+            profile = _load(
+                profile_path, blocker="configured_controls_autostart_profile_invalid"
+            )
+        except TaskEvaluationConfiguredControlsProgressionWorkerError as exc:
+            rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
+            continue
+        has_intent = any(
+            isinstance(item, Mapping)
+            and item.get("name") == "configured_controls_autostart_intent"
+            for item in profile.get("immutable_inputs") or []
+        )
+        intent_path_override: Path | None = None
+        # A delivered configuration can be explicitly adopted by a successor
+        # release even when its original profile embedded an older intent.
+        registered_adoption = False
+        task_run_for_adoption = profile.get("task_evaluation_run")
+        if intent_root is not None and isinstance(task_run_for_adoption, Mapping):
+            from .task_evaluation_configured_controls_autostart import configured_controls_autostart_adoption_registry_name
+            registered_adoption = (intent_root / configured_controls_autostart_adoption_registry_name(
+                team_namespace=str(task_run_for_adoption.get("team_namespace") or ""),
+                scene_id=str(task_run_for_adoption.get("scene_id") or ""),
+                task_id=str(task_run_for_adoption.get("task_id") or ""),
+                source_launch_id=run_root.name,
+            )).is_file()
+        if not has_intent or registered_adoption:
+            if (
+                intent_root is None
+                or not intent_root.is_absolute()
+                or intent_root.is_symlink()
+                or not intent_root.is_dir()
+            ):
+                continue
+            task_run = profile.get("task_evaluation_run")
+            if not isinstance(task_run, Mapping):
+                continue
+            from .task_evaluation_configured_controls_autostart import (
+                configured_controls_autostart_adoption_registry_name,
+                validate_configured_controls_autostart_intent,
+            )
+
+            candidate = intent_root / configured_controls_autostart_adoption_registry_name(
+                team_namespace=str(task_run.get("team_namespace") or ""),
+                scene_id=str(task_run.get("scene_id") or ""),
+                task_id=str(task_run.get("task_id") or ""),
+                source_launch_id=run_root.name,
+            )
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            try:
+                registry_intent = validate_configured_controls_autostart_intent(
+                    _load(
+                        candidate,
+                        blocker="configured_controls_autostart_adoption_intent_invalid",
+                    )
+                )
+            except (
+                TaskEvaluationConfiguredControlsAutostartError,
+                TaskEvaluationConfiguredControlsProgressionWorkerError,
+            ) as exc:
+                rows.append(
+                    {
+                        "status": "blocked",
+                        "source_launch_id": run_root.name,
+                        "blockers": [str(exc)],
+                    }
+                )
+                continue
+            adoption = registry_intent.get("configuration_adoption")
+            if (
+                not isinstance(adoption, Mapping)
+                or adoption.get("mode") != "explicit_terminal_adoption"
+                or adoption.get("source_launch_id") != run_root.name
+                or (release and registry_intent.get("expected_production_commit") != release)
+            ):
+                continue
+            intent_path_override = candidate
+        try:
+            receipt = _load(
+                receipt_path,
+                blocker="configured_controls_autostart_launch_receipt_invalid",
+            )
+        except TaskEvaluationConfiguredControlsProgressionWorkerError as exc:
+            rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
+            continue
+        if receipt.get("status") != "completed":
+            rows.append({"status": "awaiting_configuration_terminal", "source_launch_id": run_root.name})
+            continue
+        if not (run_root / "webapp_sync_succeeded.json").is_file():
+            rows.append({"status": "awaiting_configuration_webapp_sync", "source_launch_id": run_root.name})
+            continue
+        if not (run_root / "post_teardown_provider_zero_receipt.json").is_file():
+            rows.append({"status": "awaiting_configuration_provider_zero", "source_launch_id": run_root.name})
+            continue
+        try:
+            auto = materialize_configured_controls_autostart(
+                source_launch_id=run_root.name,
+                launch_state_root=launch_state_root,
+                progression_root=kwargs["progression_root"],
+                plan_root=plan_root,
+                intent_path_override=intent_path_override,
+            )
+            rows.append({
+                "status": auto["status"],
+                "source_launch_id": run_root.name,
+                "selected_candidate_id": auto["selected_candidate_id"],
+                "plan_digest": auto["plan_digest"],
+            })
+        except (
+            TaskEvaluationConfiguredControlsAutostartError,
+            TaskEvaluationConfiguredControlsProgressionError,
+            TaskEvaluationConfiguredControlsProgressionWorkerError,
+            OSError,
+            ValueError,
+        ) as exc:
+            rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
+    configured_controls_kwargs = dict(kwargs)
+    for path in sorted(plan_root.glob("*.json")) if plan_root.is_dir() else []:
+        owner_blocker = owner_scope.plan_blocker(path, launch_state_root)
+        if owner_blocker:
+            rows.append({"status": "blocked", "plan": path.name, "blockers": [owner_blocker]})
+            continue
+        foreign = bound_to_other_release(path, release)
+        if foreign:  # sealed for another release: never admissible here, not an alarm
+            rows.append({"status": "plan_bound_to_superseded_release", "plan": path.name, "source_commit": foreign, "running_commit": release})
+            continue
+        try:
+            row = advance_configured_controls_plan(plan_path=path, **configured_controls_kwargs)
+        except (TaskEvaluationConfiguredControlsProgressionError, TaskEvaluationConfiguredControlsProgressionWorkerError) as exc:
+            rows.append({"status": "blocked", "plan": path.name, "blockers": [str(exc)]})
+            continue
+        rows.append(row)
+        if row.get("status") not in {"controls_pair_launch_queued", "controls_omitted_for_diagnostic_policy"}:
+            continue
+        # The launched controls pair is the last configured-controls phase; the same
+        # tick chains the completed pair into the Quick-10 policy canary.
+        try:
+            rows.append(
+                {
+                    "lane": "native_task_arena_policy_canary_handoff",
+                    **policy_canary_handoff.advance_policy_canary_handoff_for_plan(
+                        plan=_plan(path),
+                        progression_root=kwargs["progression_root"],
+                        launch_state_root=launch_state_root,
+                        episode_compilation_queue_root=kwargs["episode_compilation_queue_root"],
+                        activation_intent_root=scene_configuration_intent_root,
+                        repo_root=kwargs.get("repo_root"),
+                        webapp_secret_file=kwargs.get("webapp_secret_file"),
+                        webapp_endpoint=str(kwargs.get("webapp_endpoint") or scene_configuration_activation.DEFAULT_WEBAPP_ENDPOINT),
+                        webapp_catalog_out=webapp_catalog,
+                        notification_email=notification_email,
+                        publisher_factory=configured_controls_kwargs.get("publisher_factory") or configured_controls_release_window_publisher,
+                    ),
+                    "source_launch_id": row.get("source_launch_id"),
+                }
+            )
+        except (policy_canary_handoff.PolicyCanaryHandoffError, OSError, ValueError) as exc:
+            rows.append(
+                {
+                    "lane": "native_task_arena_policy_canary_handoff",
+                    "status": "blocked",
+                    "source_launch_id": row.get("source_launch_id"),
+                    "blockers": [str(exc)],
+                }
+            )
+    return {
+        "schema_version": WORKER_RESULT_SCHEMA_VERSION,
+        "status": "blocked" if any(row["status"] in {"blocked", "controls_autoprovision_refused"} for row in rows) else "completed",
+        "rows": rows,
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan-root", required=True)
+    parser.add_argument("--launch-state-root", required=True)
+    parser.add_argument("--progression-root", required=True)
+    parser.add_argument("--preparation-queue-root", required=True)
+    parser.add_argument("--episode-compilation-queue-root", required=True)
+    parser.add_argument("--activation-queue-root", required=True)
+    parser.add_argument("--autostart-intent-root", required=True)
+    parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--webapp-secret-file", required=True)
+    parser.add_argument("--webapp-endpoint", default="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions")
+    parser.add_argument(
+        "--scene-configuration-activation-intent-root",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_ACTIVATION_INTENT_ROOT") or None,
+        help="Registry of owner activation intents; omitted means no configuration is activated here.",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR") or None,
+    )
+    parser.add_argument(
+        "--standing-authorization-dir",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR") or None,
+    )
+    parser.add_argument(
+        "--webapp-catalog",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG") or None,
+        help="WebApp launch-profile catalog rewritten when a policy-canary profile is published.",
+    )
+    parser.add_argument(
+        "--policy-canary-notification-email",
+        default=os.getenv("BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL") or None,
+        help="Allowlisted recipient for automatic Quick-10 canary notifications; omitted disables the hand-off.",
+    )
+    args = parser.parse_args(argv)
+    report = process_plans(**vars(args))
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report["status"] == "completed" else 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

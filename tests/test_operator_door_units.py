@@ -1,0 +1,104 @@
+"""The operator door's systemd units agree with its code and keep their sandbox."""
+
+from __future__ import annotations
+
+import configparser
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SYSTEMD_DIR = REPO_ROOT / "deploy" / "systemd"
+sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
+
+from operator_door.config import DoorConfig  # noqa: E402
+from operator_door.requests import RequestRefused, validate_request  # noqa: E402
+
+DOOR = SYSTEMD_DIR / "blueprint-operator-door.service"
+RUNNER = SYSTEMD_DIR / "blueprint-operator-door-runner.service"
+TRIGGER = SYSTEMD_DIR / "blueprint-operator-door-runner.path"
+HOLD_SWEEP = SYSTEMD_DIR / "blueprint-operator-door-hold-sweep.service"
+HOLD_SWEEP_TIMER = SYSTEMD_DIR / "blueprint-operator-door-hold-sweep.timer"
+
+
+def _unit(path: Path) -> configparser.RawConfigParser:
+    parser = configparser.RawConfigParser(strict=False, interpolation=None)
+    parser.optionxform = str  # keep systemd's key case
+    parser.read_string(path.read_text(encoding="utf-8"))
+    return parser
+
+
+def test_door_runs_the_installed_package_on_system_python() -> None:
+    service = _unit(DOOR)["Service"]
+    assert service["ExecStart"] == "/usr/bin/python3 -m operator_door serve"
+    assert f"PYTHONPATH={DoorConfig().install_root}" in DOOR.read_text(encoding="utf-8")
+    assert service["User"] == "blueprint"
+    assert service["SupplementaryGroups"] == "systemd-journal blueprint-door"
+
+
+def test_door_hides_every_secret_location_except_its_own_token_store() -> None:
+    text = DOOR.read_text(encoding="utf-8")
+    line = next(line for line in text.splitlines() if line.startswith("InaccessiblePaths="))
+    hidden = {path.lstrip("-") for path in line.split("=", 1)[1].split()}
+    config = DoorConfig()
+    # The door must read its own token file; the file view refuses that directory instead.
+    assert hidden == set(config.hidden_paths) - {"/etc/blueprint-operator-door"}
+
+
+def test_door_can_only_write_its_state_and_only_talk_to_loopback() -> None:
+    service = _unit(DOOR)["Service"]
+    assert service["ReadWritePaths"] == DoorConfig().state_root
+    assert service["IPAddressDeny"] == "any" and service["IPAddressAllow"] == "localhost"
+    assert service["CapabilityBoundingSet"] == "" and service["ProtectSystem"] == "strict"
+
+
+def test_runner_is_a_sandboxed_root_oneshot_without_network() -> None:
+    service = _unit(RUNNER)["Service"]
+    assert service["Type"] == "oneshot" and service["User"] == "root"
+    assert service["ExecStart"] == "/usr/bin/python3 -m operator_door run-spool"
+    assert service["CapabilityBoundingSet"] == "" and service["AmbientCapabilities"] == ""
+    assert _unit(RUNNER)["Unit"]["StartLimitIntervalSec"] == "0"
+    assert service["PrivateNetwork"] == "true" and service["RestrictAddressFamilies"] == "AF_UNIX"
+    assert service["ReadWritePaths"] == DoorConfig().spool_root
+
+
+def test_path_unit_watches_the_spool_the_door_writes() -> None:
+    path = _unit(TRIGGER)["Path"]
+    assert path["PathExistsGlob"] == f"{DoorConfig().spool_root}/pending/*.json"
+    assert path["Unit"] == RUNNER.name
+
+
+def test_hold_sweep_runs_before_boot_triggers_and_repeats_after_boot() -> None:
+    service = _unit(HOLD_SWEEP)
+    assert set(service["Unit"]["Before"].split()) == {"timers.target", "paths.target"}
+    assert service["Service"]["User"] == "root"
+    assert service["Service"]["ExecStart"].endswith(
+        "-m operator_door.holds --sweep --holds-dir /var/lib/blueprint-operator-door/requests/holds"
+    )
+    assert service["Service"]["ReadWritePaths"] == DoorConfig().spool_root
+    assert set(service["Install"]["WantedBy"].split()) == {"timers.target", "paths.target"}
+    timer = _unit(HOLD_SWEEP_TIMER)
+    assert timer["Timer"]["OnBootSec"] and timer["Timer"]["OnUnitActiveSec"]
+    assert timer["Install"]["WantedBy"] == "timers.target"
+    installer = (REPO_ROOT / "deploy" / "operator-door" / "install.sh").read_text(encoding="utf-8")
+    assert "blueprint-operator-door-hold-sweep.service" in installer
+    assert "blueprint-operator-door-hold-sweep.timer" in installer
+
+
+def test_every_holdable_trigger_waits_for_boot_hold_reconciliation() -> None:
+    holdable = []
+    for path in sorted(SYSTEMD_DIR.iterdir()):
+        if path.suffix not in {".timer", ".path"}:
+            continue
+        try:
+            validate_request({"kind": "hold", "unit": path.name, "owner": "operator",
+                              "reason": "maintenance", "expires_in_seconds": 60})
+        except RequestRefused:
+            continue
+        holdable.append(path.name)
+        unit = _unit(path)["Unit"]
+        assert "blueprint-operator-door-hold-sweep.service" in unit["After"].split(), path.name
+        assert "blueprint-operator-door-hold-sweep.service" in unit["Wants"].split(), path.name
+        assert unit["ConditionPathExists"] == (
+            f"!/var/lib/blueprint-operator-door/requests/holds/{path.name}.json"
+        ), path.name
+    assert holdable

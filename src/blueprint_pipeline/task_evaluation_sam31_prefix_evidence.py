@@ -1,0 +1,404 @@
+"""Read-only scientific joins for the two admitted SAM prefix lengths."""
+from __future__ import annotations
+
+from copy import deepcopy
+import importlib
+from pathlib import Path
+import zipfile
+
+import json
+
+from .decision_evidence_contracts import canonical_digest, canonical_json
+from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, require, sha
+from .validation_file_digests import scoped_measurement
+
+SOURCE_CODE = (
+    "src/blueprint_pipeline/public_scene_inpainting_inputs.py",
+    "src/blueprint_pipeline/public_scene_inpainting_preparation.py",
+    "src/blueprint_pipeline/sam31_camera_geometry.py",
+    "src/blueprint_pipeline/source_calibration_camera_resolution.py",
+    "src/blueprint_pipeline/sam31_source_calibration_stage.py",
+    "tools/splat_render/render_splat.mjs", "tools/splat_render/src/render_entry.mjs",
+    "scripts/adp_retained_scene_render_provider_runner.mjs",
+    "scripts/source_calibration_camera_recovery.mjs",
+)
+SAM_CODE = (
+    "src/blueprint_pipeline/public_scene_sam31_task_inputs.py",
+    "src/blueprint_pipeline/sam31_source_track_canary_worker.py",
+    "src/blueprint_pipeline/sam31_source_track_provider_stage.py",
+    "src/blueprint_pipeline/scene_placement/sam31_source_track_provider.py",
+)
+
+
+def file_records(value, found=None):
+    """Every ``{path, sha256, size_bytes}`` record reachable in a document, in document order."""
+    found = [] if found is None else found
+    if isinstance(value, dict):
+        if {"path", "sha256", "size_bytes"} <= set(value) and isinstance(value["path"], str):
+            found.append(value)
+        for child in value.values():
+            file_records(child, found)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            file_records(child, found)
+    return found
+
+
+def path_key(path):
+    """Key part for a path input: its bytes when it is a regular file, else just the name."""
+    candidate = Path(path)
+    return (str(candidate), sha(candidate) if candidate.is_file() else None)
+
+
+def reuse_verdict(name, key, documents, compute):
+    """One validator verdict per synchronous operation; every referenced byte is reopened on reuse.
+
+    Outside a ``file_digest_scope`` this is a plain call. Inside one, the verdict for
+    ``(name, *key)`` is computed once; every later call first reopens each file record
+    referenced by ``documents`` through the identity-checked digest path (device, inode,
+    size, nanosecond mtime/ctime, ownership, mode), so a byte that changed mid-operation
+    still fails closed, then returns a copy of the stored verdict. The 2026-09-12 factory
+    pass validated the same 4.6 GB prefix about twenty times (selection, publication,
+    the review-rights binding nested inside each, then the worker again): 110 GB of
+    content re-derivation for one verdict. Nothing here survives the operation.
+    """
+    records = file_records(documents)
+    for record in records:
+        checked_file(record["path"], record)
+    key = tuple(key)
+
+    def persisted():
+        from .task_evaluation_release_identity import running_release_commit
+        from .validation_file_digests import note_verdict, touched_files
+        from .validation_verdict_store import MISS, executed_code_identity, lookup, store
+        found = lookup(name=name, key=key, missing=MISS)
+        if found is not MISS:
+            note_verdict(reused=True)
+            return found
+
+        def run():
+            for record in records:  # cache hits here: recorded as consulted bytes of this verdict
+                checked_file(record["path"], record)
+            return compute()
+
+        with touched_files() as touched:
+            verdict, code = executed_code_identity(
+                run, always=[__name__, str(getattr(compute, "__module__", "") or "")])
+        note_verdict(reused=False)
+        try:
+            normalized = json.loads(canonical_json({"verdict": verdict}))["verdict"]
+        except (TypeError, ValueError):
+            return verdict  # not persistable; still valid for this operation
+        if code is not None:
+            store(name=name, key=key, files=touched, verdict=normalized, source_commit=running_release_commit(),
+                  code=code)
+        return normalized
+
+    result = scoped_measurement((name, *key), persisted)
+    from .validation_verdict_store import inherit_cached_dependencies
+    inherit_cached_dependencies(name, key)
+    return result
+
+
+def _load(name):
+    # These existing validators own provider evidence but perform no allocation.
+    return importlib.import_module("blueprint_pipeline." + name)
+
+
+def record_identity(value):
+    if isinstance(value, dict):
+        if set(value) >= {"path", "sha256", "size_bytes"}:
+            return {k: record_identity(v) for k, v in value.items() if k != "path"}
+        return {k: record_identity(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [record_identity(v) for v in value]
+    return value
+
+
+def task_science(task):
+    """Only explicitly named release/namespace fields may differ on adoption."""
+    value = deepcopy(task)
+    for name in ("expected_production_commit", "run_prefix", "output_identity", "request_digest",
+                 "team_namespace", "robot_binding_id", "episode_interpretation", "scene_intent_authority"):
+        value.pop(name, None)
+    value.get("configuration_provenance", {}).pop("execution_release_rebinding", None)
+    # Source-stage reuse does not reuse robot execution or owner authority.
+    # Current consent/disclosure is reopened independently below. Preserve all
+    # scientific task fields and permission flags while ignoring issuance metadata.
+    confirmation = value.get("success_contract_authority", {})
+    for name in ("authority_reference", "delegation_authority_reference", "confirmed_by_team_id"):
+        confirmation.pop(name, None)
+    # These are independently reopened through the source and rights validators.
+    references = value.get("source_input_references", {})
+    for name in ("installation_receipt", "source_preparation_receipt", "standard_splat_conversion_receipt"):
+        references.pop(name, None)
+    authority = value.get("human_authority", {})
+    for name in ("full_source_provider_disclosure_authority", "full_source_provider_disclosure_authorities",
+                 "accepted_on", "authority_reference", "max_task_parameter_proposal_cost_usd",
+                 "task_parameter_confirmation_delegated_to_sdk", "task_parameter_proposal_authorized",
+                 "task_success_contract_confirmed"):
+        authority.pop(name, None)
+    return record_identity(value)
+
+
+def camera_science(policy):
+    value = deepcopy(policy)
+    screen = value.get("geometry_screen", {})
+    # Source bytes, collision bounds and shared frame are independently joined.
+    screen.pop("source_files", None)
+    screen.pop("screen_digest", None)
+    return value
+
+
+def source_science(host, commit):
+    from .public_scene_removal_selection import _source_context, EVIDENCE_FIELDS
+    task, context = _source_context({k: host[k] for k in EVIDENCE_FIELDS}, commit)
+    frame = read(context["registered_frame"]["path"], digest_field="receipt_digest")
+    correspondences = deepcopy(frame.get("correspondences"))
+    for row in correspondences:
+        row.pop("identity_receipt_digest", None)
+    science = {
+        "scene_id": context["scene_id"],
+        "raw": {role: {k: row[k] for k in ("sha256", "size_bytes", "publisher_revision", "publisher_url")}
+                for role, row in context["raw"].items()},
+        "identities": {role: {"target": row["receipt"]["target"], "match": row["match"],
+                              "coordinate_frame": row["receipt"]["coordinate_frame"]}
+                       for role, row in context["identities"].items()},
+        "registered_frame": {k: v for k, v in frame.items() if k not in
+                             {"receipt_digest", "source_commit", "source_files", "correspondences"}},
+        "correspondences": correspondences,
+    }
+    return task, context, science
+
+
+def validate_current_rights(task, context, host, commit, roots):
+    from .sam31_contribution_disclosure import validate_full_source_disclosure
+    ref = task["source_input_references"]["standard_splat_conversion_receipt"]
+    conversion_path = checked_file(ref["path"], ref)
+    conversion = read(conversion_path, digest_field="receipt_digest")
+    standard = checked_file(conversion_path.parent / conversion["output"]["relative_path"], conversion["output"])
+    require(conversion["rights"]["terms_digest"] == host["interiorgs_terms"]["sha256"], "sam31_adoption_terms_changed")
+    for purpose in ("exact_source_calibration_gpu_render", "released_code_segment_contribution_sweep",
+                    "configured_scene_partitioned_source_processing"):
+        validate_full_source_disclosure(task_authority=task["human_authority"], conversion_path=conversion_path,
+            standard_splat_path=standard, original_source_path=context["raw"]["appearance_3dgs"]["path"],
+            expected_source_commit=commit, publisher_scene_id=context["scene_id"], approved_roots=roots, purpose=purpose)
+    return {"conversion": {"path": str(conversion_path), "sha256": sha(conversion_path), "size_bytes": conversion_path.stat().st_size},
+            "standard": {"path": str(standard), "sha256": sha(standard), "size_bytes": standard.stat().st_size}}
+
+
+def require_producer_files_present(code, old_root, current_root):
+    """Producer files must still exist under both trees; return their retained (prefix-time) shas.
+
+    Content identity, not commit identity (piece 1).  A completed paid prefix is trusted
+    because its retained OUTPUTS are independently re-validated with the current code (the
+    calibration outcome via validate_retained_source_calibration_stage, the finalized render
+    recomputed to equal the retained receipt, scene/task/camera/rights re-derived, tracking
+    identity re-joined).  A producer-code diff that leaves those outputs valid must NOT
+    invalidate the prefix on every deploy, so we no longer require byte-identical producer
+    files -- only that each still exists.  The retained sha is pinned for provenance.
+    """
+
+    old_root, current_root = Path(old_root), Path(current_root)
+    files = []
+    for relative in code:
+        before, after = old_root / relative, current_root / relative
+        require(before.is_file() and after.is_file(), "sam31_adoption_producer_code_missing:" + relative)
+        files.append({"relative_path": relative, "sha256": sha(before), "size_bytes": before.stat().st_size})
+    return files
+
+
+def validate_render(outcome, artifacts, old_plan, current_repo, through_phase):
+    return reuse_verdict("sam31_prefix_render",
+        (canonical_digest(outcome), canonical_digest(artifacts), canonical_digest(old_plan), str(current_repo), through_phase),
+        artifacts, lambda: _validate_render(outcome, artifacts, old_plan, current_repo, through_phase))
+
+
+def _validate_render(outcome, artifacts, old_plan, current_repo, through_phase):
+    from .public_scene_inpainting_preparation import validate_prepared_inputs, adopt_finalized_public_scene_inpainting_inputs
+    from .public_scene_removal_selection import validate_removal_scene_selection, validate_removal_task_selection
+    prepared_ref = artifacts["source_calibration_prepared_inputs"]
+    prepared = validate_prepared_inputs(checked_file(prepared_ref["path"], prepared_ref))
+    _load("sam31_source_calibration_stage").validate_retained_source_calibration_stage(outcome)
+    # Recompute final masks and the complete receipt from all retained pixels.
+    adopted = adopt_finalized_public_scene_inpainting_inputs(
+        preparation_path=prepared_ref["path"], returned_group_path=artifacts["source_calibration_return"]["path"],
+        retained_render_binding_path=(artifacts.get("source_calibration_retained_render_binding") or {}).get("path"))
+    require(adopted == read(artifacts["calibrated_view_receipt"]["path"]), "sam31_adoption_finalized_render_changed")
+    scene = validate_removal_scene_selection(read(artifacts["scene_selection"]["path"]))
+    task = validate_removal_task_selection(read(artifacts["task_selection"]["path"]))
+    request = read(artifacts["calibrated_view_request"]["path"])
+    require(request["scene"]["scene_freeze_path"] == artifacts["scene_selection"]["path"]
+            and request["scene"]["task_freeze_path"] == artifacts["task_selection"]["path"]
+            and request["scene"]["standard_splat_path"] == artifacts["standard_splat"]["path"]
+            and task["scene_freeze_digest"] == scene["scene_freeze_digest"], "sam31_adoption_render_source_changed")
+    require(camera_science(request["camera_policy"]) == camera_science(old_plan["camera_policy"]),
+            "sam31_adoption_camera_changed")
+    old_repo = Path(prepared["context"]["paths"]["repo"])
+    code = SOURCE_CODE + (SAM_CODE if through_phase == "sam31_tracking" else ())
+    files = require_producer_files_present(code, old_repo, current_repo)
+    return {"path": str(old_repo), "source_commit": prepared["repository"]["commit"],
+            "tree": prepared["repository"]["tree"], "unchanged_producer_files": files}
+
+
+def provider_science(value):
+    value = deepcopy(value)
+    for key in ("source_commit_sha", "profile_digest", "execution_authorization_digest"):
+        value.pop(key, None)
+    value.get("authorization_sources", {}).pop("execution", None)
+    return record_identity(value)
+
+
+def validate_model_sources(old_profile, current_profile_path, old_commit):
+    """Prove model/rights identity before reusing prepared SAM inputs or tracks."""
+    from .sam31_provider_launch_packet import validate_sam31_provider_profile_sources
+    old_provider = read(old_profile["artifact_references"]["sam31_provider_profile"]["path"])
+    current_provider = read(current_profile_path)
+    validate_sam31_provider_profile_sources(old_provider, source_commit_sha=old_commit)
+    validate_sam31_provider_profile_sources(current_provider, source_commit_sha=current_provider["source_commit_sha"])
+    require(provider_science(old_provider) == provider_science(current_provider), "sam31_adoption_model_changed")
+    return old_provider
+
+
+def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit, billing_source_path,
+                      *, billing_audit_roots=None):
+    billing = None if billing_source_path is None else path_key(billing_source_path)
+    return reuse_verdict("sam31_prefix_tracking",
+        (canonical_digest(outcome), canonical_digest(artifacts), canonical_digest(old_profile),
+         path_key(current_profile_path), old_commit, billing,
+         tuple(str(root) for root in (billing_audit_roots or ()))),
+        artifacts, lambda: _validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit,
+                                              billing_source_path, billing_audit_roots=billing_audit_roots))
+
+
+def _validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit, billing_source_path,
+                       *, billing_audit_roots=None):
+    from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
+    from .public_scene_calibrated_object_masks import _verified_source_tracks
+    _load("task_evaluation_sam31_preparation_paid_stages").validate_retained_paid_stage(outcome, stage_id="sam31_tracking")
+    old_provider = validate_model_sources(old_profile, current_profile_path, old_commit)
+    execution_path = Path(artifacts["sam31_allocator_result"]["path"])
+    execution = read(execution_path, digest_field="execution_result_digest")
+    root = execution_path.parent
+    bound = read(root / "bound-request.json", digest_field="bound_request_digest")
+    runtime_path = root / "sam31_vast_source_track_canary" / "provider_runtime_result.json"
+    runtime = _load("sam31_vast_source_track_canary").validate_sam31_runtime_result(read(runtime_path), bound_request=bound)
+    tracks = _verified_source_tracks(Path(artifacts["sam31_source_tracks"]["path"]))
+    require(runtime["normalized_source_tracks"] == tracks and execution["source_commit_sha"] == old_commit
+            and execution["status"] == "completed" and execution["provider_zero_verified"] is True
+            and execution.get("provider_mutation_outcome_ambiguous") is not True
+            and execution["all_staged_objects_absent"] is True
+            and execution["continuing_spend_from_this_run"] is False
+            and execution["retry_cap"] == 0 and execution["blockers"] == []
+            and execution["source_track_import_result_digest"] == tracks["result_digest"]
+            and execution["provider_runtime_result_digest"] == runtime["runtime_result_digest"], "sam31_adoption_tracking_changed")
+    for name in ("request_digest", "bound_request_digest", "input_bundle_digest", "source_track_run_request_digest", "worker_image_digest"):
+        require(execution[name] == bound[name] == runtime[name], "sam31_adoption_runtime_binding_changed:" + name)
+    zero = read(artifacts["sam31_provider_zero"]["path"], digest_field="provider_zero_digest")
+    require(zero.get("schema_version") == "semantic_sam31_vast_provider_zero.v1" and zero.get("status") == "PASS"
+            and zero.get("api_confirmed") is True and zero.get("provider") == "vast"
+            and zero.get("scoped_live_resource_count") == zero.get("global_live_resource_count") == 0
+            and zero.get("provider_zero_digest") == execution.get("provider_zero_digest")
+            and zero.get("request_digest") == execution["request_digest"]
+            and zero.get("bound_request_digest") == execution["bound_request_digest"], "sam31_adoption_provider_zero_invalid")
+    from .public_scene_sam31_track_selection_review import _resolve_prepared_task
+    packet_path = Path(artifacts["sam31_task_input_packet"]["path"])
+    packet = read(packet_path, digest_field="receipt_digest")
+    require(all(packet[key][field] == artifacts[name][field] for key, name in
+                (("task_freeze", "task_selection"), ("calibrated_view_receipt", "calibrated_view_receipt"))
+                for field in ("path", "sha256", "size_bytes")), "sam31_adoption_task_packet_changed")
+    _resolve_prepared_task(task_input_packet_path=packet_path,
+        source_track_result_path=artifacts["sam31_source_tracks"]["path"],
+        selected_track_ids=[row["track_id"] for row in tracks["track_registry"]])
+    request = read(artifacts["sam31_run_request"]["path"])
+    require(request["provider_profile"] == old_provider, "sam31_adoption_request_model_changed")
+    # Reopen the actual portable request and every JPEG, not merely the top ZIP hash.
+    bundle_dir = execution_path.parents[1] / "prepared"
+    receipts = list(bundle_dir.glob("*bundle*receipt*.json"))
+    require(len(receipts) == 1, "sam31_adoption_bundle_receipt_missing")
+    bundle_receipt = read(receipts[0], digest_field="receipt_digest")
+    bundle = checked_file(bundle_dir / bundle_receipt["bundle"]["filename"], bundle_receipt["bundle"])
+    require(sha(bundle) == execution["input_bundle_digest"], "sam31_adoption_bundle_changed")
+    with zipfile.ZipFile(bundle) as archive:
+        import json
+        portable = json.loads(archive.read("request.json"))
+        require(canonical_json_digest(portable) == execution["source_track_run_request_digest"], "sam31_adoption_portable_request_changed")
+        before, after = deepcopy(request), deepcopy(portable)
+        source_frames, portable_frames = before.pop("frame_artifacts"), after.pop("frame_artifacts")
+        require(before == after and len(source_frames) == len(portable_frames), "sam31_adoption_request_changed")
+        for source, portable_frame in zip(source_frames, portable_frames, strict=True):
+            original = checked_file(source["path"], source)
+            require(archive.read(portable_frame["path"]) == original.read_bytes()
+                    and {k:v for k,v in source.items() if k != "path"} == {k:v for k,v in portable_frame.items() if k != "path"},
+                    "sam31_adoption_frame_changed")
+    from .task_evaluation_sam31_prefix_billing import tracking_charge
+    charge = tracking_charge(execution, billing_source_path, approved_roots=billing_audit_roots)
+    return {"raw_runtime_result": {"path": str(runtime_path), "sha256": sha(runtime_path), "size_bytes": runtime_path.stat().st_size},
+            "provider_instance_id": execution["instance_id"], "checkpoint_digest": execution["checkpoint_digest"],
+            "official_charge": charge}
+
+
+def validate_sam_inputs(artifacts, old_profile, current_profile_path, old_commit):
+    """Reopen a completed request packet without encoding frames or running SAM."""
+    return reuse_verdict("sam31_prefix_sam_inputs",
+        (canonical_digest(artifacts), canonical_digest(old_profile), path_key(current_profile_path), old_commit),
+        artifacts, lambda: _validate_sam_inputs(artifacts, old_profile, current_profile_path, old_commit))
+
+
+def _validate_sam_inputs(artifacts, old_profile, current_profile_path, old_commit):
+    import json
+    from .scene_placement.sam31_source_track_provider import _validate_request
+    from .public_scene_calibrated_object_masks import _camera_rows
+    from .task_evaluation_scene_configuration_submission_inputs import beneath
+    from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
+
+    packet_ref = artifacts["sam31_task_input_packet"]
+    packet_path = checked_file(packet_ref["path"], packet_ref)
+    packet = read(packet_path, digest_field="receipt_digest")
+    require(packet.get("schema_version") == "public_scene_sam31_task_input_packet.v1"
+            and packet.get("status") == "prepared_no_upload_no_execution"
+            and packet.get("paid_execution_started") is False
+            and packet.get("provider_mutations_performed") == 0,
+            "sam31_adoption_sam_inputs_invalid")
+    for field, artifact in (("task_freeze", "task_selection"),
+                            ("calibrated_view_receipt", "calibrated_view_receipt")):
+        require(all(packet[field][key] == artifacts[artifact][key]
+                    for key in ("path", "sha256", "size_bytes")), "sam31_adoption_sam_inputs_changed")
+        checked_file(packet[field]["path"], packet[field])
+    request_ref = artifacts["sam31_run_request"]
+    request_path = checked_file(request_ref["path"], request_ref)
+    require(checked_file(beneath(packet_path.parent, packet["run_request"]["relative_path"]),
+                         packet["run_request"]) == request_path,
+            "sam31_adoption_sam_request_changed")
+    request = read(request_path)
+    require(canonical_json_digest(request) == packet["run_request"]["request_digest"]
+            and request["prompts"] == packet["prompts"], "sam31_adoption_sam_request_changed")
+    old_provider = validate_model_sources(old_profile, current_profile_path, old_commit)
+    require(request["provider_profile"] == old_provider, "sam31_adoption_model_changed")
+    frames = request["frame_artifacts"]
+    require(bool(frames), "sam31_adoption_sam_frames_missing")
+    _, registry, _, blockers = _validate_request(request, Path(frames[0]["path"]).parent)
+    require(not blockers, "sam31_adoption_sam_request_invalid")
+    rendered_path = Path(artifacts["calibrated_view_receipt"]["path"])
+    rendered = read(rendered_path, digest_field="receipt_digest")
+    camera_ref = rendered["derived_artifacts"]["cameras"]
+    camera_path = checked_file(beneath(rendered_path.parent, camera_ref["relative_path"]), camera_ref)
+    cameras = _camera_rows(camera_path)
+    camera_ids = sorted(cameras)
+    images = {row["camera_id"]: row for row in rendered["derived_artifacts"]["images"]}
+    sequence = checked_file(beneath(packet_path.parent, packet["retained_sequence"]["relative_path"]),
+                            packet["retained_sequence"])
+    require(len(registry) == len(frames) == packet["camera_count"] == len(cameras)
+            and request["bindings"]["capture_digest"] == rendered["receipt_digest"]
+            and request["bindings"]["camera_solution_digest"] == canonical_json_digest(json.loads(camera_path.read_text()))
+            and request["bindings"]["retained_video_digest"] == sha(sequence),
+            "sam31_adoption_sam_bindings_changed")
+    for index, (frame, entry, camera_id) in enumerate(zip(frames, registry, camera_ids, strict=True)):
+        jpeg = checked_file(frame["path"], frame)
+        png = beneath(packet_path.parent, f"lossless_frames/{index:06d}.png")
+        original = checked_file(beneath(rendered_path.parent, images[camera_id]["relative_path"]), images[camera_id])
+        require(frame["source_frame_id"] == entry["source_frame_id"] == packet["camera_frame_map"][camera_id]
+                and sha(jpeg) == entry["analysis_jpeg_digest"]
+                and sha(png) == sha(original) == entry["source_frame_digest"]
+                and canonical_json_digest(cameras[camera_id]) == entry["camera_record_digest"],
+                "sam31_adoption_sam_frame_changed")

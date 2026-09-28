@@ -182,7 +182,7 @@ def _fake_render(**kwargs) -> dict:
     return {"command": ["fake-observed-render"], "result": {"status": "completed"}}
 
 
-def _write_v2_fixture(tmp_path: Path) -> dict[str, Path]:
+def _write_v2_fixture(tmp_path: Path, *, include_background: bool = False) -> dict[str, Path]:
     repo = tmp_path / "repo"
     data = tmp_path / "data"
     repo.mkdir()
@@ -215,6 +215,8 @@ def _write_v2_fixture(tmp_path: Path) -> dict[str, Path]:
         ],
         dtype=np.float32,
     )
+    if include_background:
+        points = np.vstack((points, upper + np.float32(0.5))).astype(np.float32)
     standard = source_dir / "scene_standard.ply"
     write_standard_3dgs_ply(
         SplatData(
@@ -614,3 +616,128 @@ def test_dual_task_adapter_rejects_changed_standard_splat_bytes(tmp_path: Path) 
             data_root=paths["data"],
             output_root=paths["output"],
         )
+
+
+def test_production_inputs_and_receipt_live_outside_clean_source_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _write_v2_fixture(tmp_path)
+    repo, data = paths["repo"], paths["data"]
+    request = json.loads((repo / "request.json").read_text())
+    for key in (
+        "scene_freeze_path", "task_freeze_path",
+        "standard_splat_conversion_receipt_path",
+    ):
+        source = repo / request["scene"][key]
+        copied = data / source.name
+        shutil.copyfile(source, copied)
+        request["scene"][key] = str(copied)
+    request.pop("request_digest")
+    request_path = data / "request.json"
+    request_path.write_text(json.dumps(build_public_scene_inpainting_input_request(request)))
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpainting_inputs.render_splat_at_exact_cameras",
+        _fake_sealed_render,
+    )
+    retained = data / "receipts/calibrated.json"
+    receipt = materialize_public_scene_inpainting_inputs(
+        request_path=request_path, repo_root=repo, data_root=data,
+        output_root=paths["output"], receipt_output=retained,
+    )
+    assert receipt["schema_version"] == "public_scene_interiorgs_edit_input_receipt.v2"
+    assert json.loads(retained.read_text())["receipt_digest"] == receipt["receipt_digest"]
+    assert receipt["repository"]["tracked_files_clean"] is True
+    assert subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    ).stdout == ""
+
+
+def test_calibrated_input_request_cannot_escape_admitted_input_roots(tmp_path: Path) -> None:
+    paths = _write_v2_fixture(tmp_path)
+    unadmitted = tmp_path / "unadmitted_request.json"
+    shutil.copyfile(paths["repo"] / "request.json", unadmitted)
+    with pytest.raises(PublicSceneInpaintingInputError, match="request_outside"):
+        materialize_public_scene_inpainting_inputs(
+            request_path=unadmitted, repo_root=paths["repo"], data_root=paths["data"],
+            output_root=paths["output"],
+        )
+
+
+def test_calibrated_input_output_cannot_overwrite_retained_evidence(tmp_path: Path) -> None:
+    paths = _write_v2_fixture(tmp_path)
+    paths["output"].mkdir()
+    retained = paths["output"] / "prior_evidence.json"
+    retained.write_text('{"status":"retained"}')
+    with pytest.raises(PublicSceneInpaintingInputError, match="output_not_empty"):
+        materialize_public_scene_inpainting_inputs(
+            request_path=paths["repo"] / "request.json", repo_root=paths["repo"],
+            data_root=paths["data"], output_root=paths["output"],
+        )
+    assert retained.read_text() == '{"status":"retained"}'
+
+
+def _clean_git_repo_for_identity(root: Path) -> Path:
+    """A minimal committed git repo with one tracked file."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "tracked.txt").write_text("content\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@e.com"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "T"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+    return root
+
+
+def test_git_identity_trusts_its_repo_under_suppressed_config_and_foreign_ownership(tmp_path, monkeypatch):
+    """The look-ahead replay runs the SAM CPU stage in-process inside the
+    progression service, whose environment lacks the per-service
+    GIT_CONFIG_KEY=safe.directory drop-ins the SAM service is provisioned with.
+    On the root-owned release worktree git then refuses with dubious ownership
+    -> edit_input_repository_identity_unavailable: a FALSE look-ahead blocker,
+    since the real worker's git is provisioned to trust the repo. _git_identity
+    must trust the specific repo it deliberately inspects, independent of host
+    git config, exactly as the package's other git call sites already do.
+    """
+    import os
+    import re as _re
+    from blueprint_pipeline.public_scene_inpainting_inputs import _git_identity
+
+    repo = _clean_git_repo_for_identity(tmp_path / "release")
+    # Mirror production: system/global git config suppressed, repo owned by
+    # another user (git's own test hook). Only an inline safe.directory saves it.
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+    identity = _git_identity(repo)
+    assert identity["tracked_files_clean"] is True
+    assert _re.fullmatch(r"[0-9a-f]{40}", identity["commit"])
+    assert _re.fullmatch(r"[0-9a-f]{40}", identity["tree"])
+
+
+def test_git_identity_trust_does_not_disable_the_dirty_tracked_file_gate(tmp_path, monkeypatch):
+    import os
+    from blueprint_pipeline.public_scene_inpainting_inputs import (
+        _git_identity, PublicSceneInpaintingInputError,
+    )
+
+    repo = _clean_git_repo_for_identity(tmp_path / "release")
+    (repo / "tracked.txt").write_text("mutated\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+    with pytest.raises(PublicSceneInpaintingInputError) as caught:
+        _git_identity(repo)
+    assert caught.value.codes == ("edit_input_repository_tracked_files_dirty",)
+
+
+def test_git_identity_fails_closed_when_not_a_repository(tmp_path):
+    from blueprint_pipeline.public_scene_inpainting_inputs import (
+        _git_identity, PublicSceneInpaintingInputError,
+    )
+
+    bare = tmp_path / "not-a-repo"
+    bare.mkdir()
+    with pytest.raises(PublicSceneInpaintingInputError) as caught:
+        _git_identity(bare)
+    assert caught.value.codes == ("edit_input_repository_identity_unavailable",)

@@ -383,6 +383,56 @@ def test_multicamera_media_retains_exact_views_calibration_and_timestamps(
     ] == [100, 101]
 
 
+def test_g1_head_policy_input_and_overview_review_video_share_one_manifest(tmp_path) -> None:
+    episode_id = "g1-box-shared-scene"
+
+    def observation(index: int, kind: str, *, include_overview: bool) -> dict:
+        images = {
+            "head": np.full((32, 64, 3), 10 + index, dtype=np.uint8),
+        }
+        if include_overview:
+            images["overview"] = np.full((32, 64, 3), 20 + index, dtype=np.uint8)
+        return persist_multicamera_observation(
+            images,
+            output_dir=tmp_path,
+            episode_id=episode_id,
+            observation_index=index,
+            kind=kind,
+            timestamp_ns=100 + index,
+            simulation_time_s=index / 15.0,
+            calibrations={camera_id: _calibration() for camera_id in images},
+            source_devices={camera_id: "cuda:0" for camera_id in images},
+            synchronizations={
+                camera_id: {"host_bytes_ready": True, "method": "explicit_cuda_copy"}
+                for camera_id in images
+            },
+        )
+
+    policy = observation(0, "policy-input", include_overview=False)
+    review = observation(1, "review-sample", include_overview=True)
+    terminal = observation(2, "terminal-observation", include_overview=True)
+    visual, artifacts = finalize_multicamera_visual_evidence(
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        identity={"robot_id": "unitree_g1", "policy_id": "humanoidarena_dp_g1_dex3_sonic"},
+        policy_input_observations=[policy],
+        review_observations=[review],
+        terminal_observation=terminal,
+        required_camera_ids=("head", "overview"),
+        review_only_camera_ids=("overview",),
+    )
+    assert visual["policy_input_frame_count"] == 1
+    assert set(visual["videos"]) == {"head", "overview"}
+    assert all((tmp_path / row["relative_path"]).is_file() for row in visual["videos"].values())
+    manifest_row = next(row for row in artifacts if row["role"] == "multicamera_observation_frame_manifest")
+    manifest = json.loads((tmp_path / manifest_row["relative_path"]).read_text())
+    validate_multicamera_frame_manifest(manifest, output_dir=tmp_path)
+    manifest["review_observations"][0]["views"].pop("overview")
+    manifest["frame_manifest_digest"] = canonical_digest(manifest, digest_field="frame_manifest_digest")
+    with pytest.raises(ValueError, match="required_view_missing"):
+        validate_multicamera_frame_manifest(manifest, output_dir=tmp_path)
+
+
 def test_multicamera_finalization_resumes_after_first_video_is_written(
     tmp_path, monkeypatch
 ) -> None:
@@ -531,3 +581,53 @@ def test_multicamera_media_rejects_unsynchronized_or_changed_frame(tmp_path) -> 
         validate_multicamera_frame_manifest(
             manifest, output_dir=tmp_path, verify_files=True
         )
+
+
+def test_manifest_publication_failure_preserves_exact_frames_for_replay(tmp_path, monkeypatch):
+    import blueprint_pipeline.episode_visual_evidence as media
+    episode_id = "manifest-interrupted"
+    first = persist_observation_frame(np.full((8, 16, 3), 17, dtype=np.uint8),
+        output_dir=tmp_path, episode_id=episode_id, frame_index=0, kind="policy-input")
+    terminal = persist_observation_frame(np.full((8, 16, 3), 43, dtype=np.uint8),
+        output_dir=tmp_path, episode_id=episode_id, frame_index=1, kind="terminal-observation")
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    original = media._write_json_or_verify_identical
+    def interrupted(path, value):
+        if path.name == "frame_manifest.json":
+            raise OSError("offline_manifest_publication_interrupted")
+        return original(path, value)
+    monkeypatch.setattr(media, "_write_json_or_verify_identical", interrupted)
+    kwargs = dict(output_dir=tmp_path, episode_id=episode_id, identity={"policy_id": "fixture"},
+                  policy_input_frames=[first], terminal_observation=terminal)
+    with pytest.raises(OSError, match="publication_interrupted"):
+        finalize_visual_evidence(**kwargs)
+    assert {path: path.read_bytes() for path in before} == before
+    assert not list(tmp_path.rglob("*.mp4"))
+    monkeypatch.setattr(media, "_write_json_or_verify_identical", original)
+    visual, artifacts = finalize_visual_evidence(**kwargs)
+    assert visual["terminal_observation_frame_present"] is True
+    assert artifacts
+    assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize("fault", ["missing_frame", "missing_terminal", "wrong_digest"])
+def test_multicamera_completion_refuses_missing_or_changed_evidence(tmp_path, fault):
+    episode_id = "incomplete-manifest"
+    first = _multicamera_observation(tmp_path, episode_id=episode_id, index=0, kind="policy-input")
+    terminal = _multicamera_observation(tmp_path, episode_id=episode_id, index=1, kind="terminal-observation")
+    visual, artifacts = finalize_multicamera_visual_evidence(output_dir=tmp_path,
+        episode_id=episode_id, identity={"policy_id": "fixture"},
+        policy_input_observations=[first], terminal_observation=terminal)
+    row = next(row for row in artifacts if row["role"] == "multicamera_observation_frame_manifest")
+    manifest = json.loads((tmp_path / row["relative_path"]).read_text())
+    frame = manifest["policy_input_observations"][0]["views"]["external"]
+    if fault == "missing_frame":
+        (tmp_path / frame["relative_path"]).unlink()
+    elif fault == "missing_terminal":
+        manifest["terminal_observation"] = None
+        manifest["frame_manifest_digest"] = canonical_digest(manifest, digest_field="frame_manifest_digest")
+    else:
+        frame["png_sha256"] = "sha256:" + "0" * 64
+        manifest["frame_manifest_digest"] = canonical_digest(manifest, digest_field="frame_manifest_digest")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        validate_multicamera_frame_manifest(manifest, output_dir=tmp_path, verify_files=True)

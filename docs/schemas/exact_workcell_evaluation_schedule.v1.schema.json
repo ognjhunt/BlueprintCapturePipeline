@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/exact_workcell_evaluation_schedule.v1.schema.json",
+  "title": "Identical-cell two-policy and two-control evaluation schedule",
+  "type": "object",
+  "required": ["schema_version", "matrix_id", "matrix_digest", "schedule_request_digest", "cell_count", "episode_count", "episodes_per_subject", "candidate_ids", "control_ids", "decision_design", "subject_bindings", "all_subjects_receive_identical_cells_resets_and_seeds", "execution_policy", "rows", "claim_boundary", "schedule_digest"],
+  "properties": {
+    "schema_version": {"const": "exact_workcell_evaluation_schedule.v1"},
+    "matrix_id": {"type": "string", "minLength": 1},
+    "matrix_digest": {"$ref": "#/$defs/digest"},
+    "schedule_request_digest": {"$ref": "#/$defs/digest"},
+    "cell_count": {"type": "integer", "minimum": 10},
+    "episode_count": {"type": "integer", "minimum": 40},
+    "episodes_per_subject": {"type": "integer", "minimum": 10},
+    "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true},
+    "control_ids": {"const": ["zero_action_negative", "deterministic_scripted_positive"]},
+    "decision_design": {
+      "type": "object",
+      "required": ["preregistered_experiment_digest", "power_analysis_digest", "minimum_decision_relevant_difference_digest", "planned_cells_per_candidate", "trial_count_justified_by_preregistered_power_analysis", "preregistered_before_policy_outcomes"],
+      "properties": {
+        "preregistered_experiment_digest": {"$ref": "#/$defs/digest"},
+        "power_analysis_digest": {"$ref": "#/$defs/digest"},
+        "minimum_decision_relevant_difference_digest": {"$ref": "#/$defs/digest"},
+        "planned_cells_per_candidate": {"type": "integer", "minimum": 10, "maximum": 1000},
+        "trial_count_justified_by_preregistered_power_analysis": {"const": true},
+        "preregistered_before_policy_outcomes": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "subject_bindings": {"type": "object", "minProperties": 4, "maxProperties": 4},
+    "all_subjects_receive_identical_cells_resets_and_seeds": {"const": true},
+    "execution_policy": {"type": "object", "required": ["controls_before_policies_within_each_cell", "retry_cap", "no_automatic_retries", "no_early_success_stop", "terminal_scientific_or_planned_duration_required"], "properties": {"controls_before_policies_within_each_cell": {"const": true}, "retry_cap": {"const": 0}, "no_automatic_retries": {"const": true}, "no_early_success_stop": {"const": true}, "terminal_scientific_or_planned_duration_required": {"const": true}}, "additionalProperties": false},
+    "rows": {"type": "array", "minItems": 40, "items": {"type": "object", "required": ["episode_id", "subject_type", "subject_id", "cell_id", "cell_digest", "reset_digest", "seed", "execution_order", "candidate_policy_queried", "independent_grader_required", "complete_planned_duration_required", "early_success_stop_allowed", "episode_binding_digest"], "properties": {"episode_id": {"type": "string"}, "subject_type": {"enum": ["control", "policy"]}, "subject_id": {"type": "string"}, "cell_id": {"type": "string"}, "cell_digest": {"$ref": "#/$defs/digest"}, "reset_digest": {"$ref": "#/$defs/digest"}, "seed": {"type": "integer", "minimum": 0}, "execution_order": {"type": "integer", "minimum": 0}, "candidate_policy_queried": {"type": "boolean"}, "independent_grader_required": {"const": true}, "complete_planned_duration_required": {"const": true}, "early_success_stop_allowed": {"const": false}, "episode_binding_digest": {"$ref": "#/$defs/digest"}}, "additionalProperties": false}},
+    "claim_boundary": {"type": "object"},
+    "schedule_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

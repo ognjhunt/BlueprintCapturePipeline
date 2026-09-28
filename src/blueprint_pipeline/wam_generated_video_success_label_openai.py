@@ -19,6 +19,12 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
+from .openai_prompt_cache import (
+    cache_policy_evidence,
+    direct_prompt_cache_request,
+    stable_judge_developer_prefix,
+    usage_and_cost_receipt,
+)
 from .wam_generated_video_success_label_gemini import (
     _bool_or_none,
     _confidence_or_none,
@@ -189,6 +195,8 @@ def _openai_label_one(
     rollout: Mapping[str, Any],
     video_path: Path,
     frames: Sequence[Mapping[str, Any]],
+    expected_reuse_count: int = 0,
+    provider_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         from openai import OpenAI
@@ -202,9 +210,7 @@ def _openai_label_one(
         rollout=rollout,
         task_record=task_record,
     )
-    prompt = {
-        "instruction": PROMPT_INSTRUCTION,
-        "required_json": {
+    output_contract = {
             "scene_description": "one short sentence describing visible content",
             "success": "boolean or null",
             "confidence": "number from 0 to 1",
@@ -214,7 +220,8 @@ def _openai_label_one(
             "end_effector_reaches_target": "boolean or null",
             "target_state_change_visible": "boolean or null",
             "robot_caused_target_motion": "boolean or null",
-        },
+    }
+    prompt = {
         "task_prompt": task_prompt,
         "task_success_criteria": success_criteria,
         "rollout": {
@@ -236,12 +243,36 @@ def _openai_label_one(
             content.append({"type": "input_image", "image_url": image_url})
 
     client = OpenAI(api_key=api_key)
+    stable_prefix = stable_judge_developer_prefix(
+        purpose=PROMPT_INSTRUCTION,
+        output_contract=output_contract,
+        claim_boundary="generated_video_semantic_label_not_physical_robot_proof",
+        contract_version="wam-generated-video-success-v2",
+    )
+    policy, cache_request = direct_prompt_cache_request(
+        model=model,
+        family="wam_generated_video_success_label",
+        contract_version="wam-generated-video-success-v2",
+        stable_developer_prefix=stable_prefix,
+        output_schema=output_contract,
+        dynamic_input=[{"role": "user", "content": content}],
+        reasoning_effort=OPENAI_REASONING_EFFORT,
+        expected_reuse_count=expected_reuse_count,
+        expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
+        dynamic_suffix_fields=("task", "rollout", "trace", "sampled_video_frames"),
+    )
     response = client.responses.create(
         model=model,
-        input=[{"role": "user", "content": content}],
         max_output_tokens=900,
         reasoning={"effort": OPENAI_REASONING_EFFORT},
+        **cache_request,
     )
+    provider_call = {
+        "cache_policy": cache_policy_evidence(policy),
+        "usage": usage_and_cost_receipt(response, model=model),
+    }
+    if provider_calls is not None:
+        provider_calls.append(provider_call)
     payload = _parse_json_text(_string(getattr(response, "output_text", "")) or "{}")
     if isinstance(payload.get("labels"), list) and payload["labels"]:
         first = payload["labels"][0]
@@ -289,6 +320,7 @@ def _openai_label_one(
         "task_success_criteria": success_criteria,
         "criterion_results": criterion_results,
         "evidence_refs": evidence_refs,
+        "provider_call": provider_call,
         "label_source": "openai_generated_video_frame_judge",
         "model": model,
         "reasoning_effort": OPENAI_REASONING_EFFORT,
@@ -333,6 +365,7 @@ def build_openai_wam_success_labels(
     blockers: list[str] = []
     labels: list[dict[str, Any]] = []
     sampled_rollouts: list[dict[str, Any]] = []
+    provider_calls: list[dict[str, Any]] = []
     if not (_truthy(os.getenv(GATE_ENV)) or _truthy(os.getenv(SHARED_GATE_ENV))):
         blockers.append(f"missing_env_{GATE_ENV}_or_{SHARED_GATE_ENV}")
     api_key, api_key_source = _api_key()
@@ -414,6 +447,8 @@ def build_openai_wam_success_labels(
                         rollout=rollout,
                         video_path=video_path,
                         frames=frames,
+                        expected_reuse_count=max(0, len(rollouts) - 1),
+                        provider_calls=provider_calls,
                     )
                 )
             except Exception as exc:  # pragma: no cover - live provider behavior
@@ -433,6 +468,7 @@ def build_openai_wam_success_labels(
         "label_count": len(labels),
         "sampled_rollouts": sampled_rollouts,
         "labels": labels,
+        "provider_calls": provider_calls,
         "visual_evidence_used": bool(labels),
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,

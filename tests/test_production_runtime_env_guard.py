@@ -313,6 +313,33 @@ def test_guard_is_ready_when_every_existing_launch_lock_slot_is_usable(tmp_path)
     assert report["paid_launch_lock_slots"]["status"] == "usable"
 
 
+def test_guard_does_not_rechmod_an_already_usable_launch_lock_slot(
+    tmp_path, monkeypatch
+):
+    """A peer-created exact-mode slot needs proof of use, not metadata mutation."""
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+
+    base = tmp_path / "provider-locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    slot = vast_launch_lock_paths(base)[0]
+    slot.touch(mode=0o600)
+    slot.chmod(0o600)
+    original_chmod = Path.chmod
+
+    def refuse_noop(path, mode, **kwargs):
+        if path == slot:
+            raise PermissionError("already-usable slot must not be rechmodded")
+        original_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", refuse_noop)
+
+    report = build_production_runtime_env_guard(env=_lock_env(base))
+
+    assert report["status"] == "ready", report["blockers"]
+    assert report["paid_launch_lock_slots"]["status"] == "usable"
+
+
 def test_guard_probes_every_slot_the_adapter_would_use(tmp_path):
     """The checked set is rediscovered from the adapter, never hand-listed.
 
@@ -320,11 +347,11 @@ def test_guard_probes_every_slot_the_adapter_would_use(tmp_path):
     slot unchecked, which is how a list drifts out of date without failing.
     """
 
-    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_gate_path, vast_launch_lock_paths
 
     base = tmp_path / "provider-locks" / "vast_paid_launch.lock"
     base.parent.mkdir(parents=True, exist_ok=True)
-    expected = vast_launch_lock_paths(base)
+    expected = [*vast_launch_lock_paths(base), vast_launch_gate_path(base)]
     for slot in expected:
         slot.touch()
 
@@ -344,20 +371,19 @@ def test_guard_precreates_absent_slots_as_the_service_account(tmp_path):
     umask-independent 0600, which is the mode every paid lane demands.
     """
 
-    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_gate_path, vast_launch_lock_paths
 
     base = tmp_path / "provider-locks" / "vast_paid_launch.lock"
     base.parent.mkdir(parents=True, exist_ok=True)
+    expected = [*vast_launch_lock_paths(base), vast_launch_gate_path(base)]
 
     report = build_production_runtime_env_guard(env=_lock_env(base))
 
     assert report["status"] == "ready", report["blockers"]
-    for slot in vast_launch_lock_paths(base):
+    for slot in expected:
         assert slot.is_file(), f"{slot.name} was not provisioned"
         assert slot.stat().st_mode & 0o777 == 0o600, oct(slot.stat().st_mode)
-    assert report["paid_launch_lock_slots"]["created_slots"] == [
-        str(slot) for slot in vast_launch_lock_paths(base)
-    ]
+    assert report["paid_launch_lock_slots"]["created_slots"] == [str(slot) for slot in expected]
 
 
 def test_guard_does_not_create_a_lock_directory_that_was_never_provisioned(tmp_path):

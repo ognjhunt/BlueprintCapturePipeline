@@ -19,25 +19,30 @@ from pathlib import Path
 from typing import Any
 
 from .common import ensure_dir, utc_now_iso, write_json
-from .adp_task_evaluation_abstention import valid_vast_provider_zero_api_call
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_construction_bundle import (
-    load_verified_native_task_arena_construction_bundle,
-)
-from .native_task_arena_controls_bundle import (
-    load_verified_native_task_arena_controls_bundle,
-)
-from .native_task_arena_policy_bundle import load_verified_native_task_arena_policy_bundle
-from .native_task_arena_policy_diagnostic_bundle import (
-    load_verified_native_task_arena_policy_diagnostic_bundle,
+from .vast_evidence_contracts import valid_vast_provider_zero_api_call
+from .native_task_arena_authority_bundle_loader import (
+    native_task_arena_bundle_loader as _bundle_loader,
 )
 from .paid_attempt_authority import (
     bind_lane_prior_spend,
     normalize_active_instance_allowlist,
-    validate_same_goal_spend_reconciliation,
     validate_bound_lane_prior_spend,
 )
+from .project_spend_reconciliation import validate_project_spend_reconciliation
+from .native_task_arena_spend_ceiling import rolling_aggregate_spend_ceiling_usd
 from .spend_authority_consumption_root import prepare_consumption_root
+from .native_task_arena_pre_spend_evidence import validate_pre_spend_original_evidence
+from .native_task_arena_paid_authority_io import (
+    bound_record_matches_observed as _bound_record_matches_observed,
+    lexical_absolute_path as _lexical_absolute_path,
+    lower_hex as _lower_hex,
+    read as _read,
+    record as _record,
+    recorded_path as _recorded_path,
+    sha256 as _sha256,
+    write_exclusive_json as _write_exclusive_json,
+)
 from .task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
@@ -56,12 +61,13 @@ PRE_SPEND_CLOSEOUT_KIND = "pre_spend_preflight_blocked_before_allocation"
 MAX_PREALLOCATION_API_ZERO_AGE_SECONDS = 300
 MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS = 900
 CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
-# Explicitly expanded by the active Task Arena goal owner on 2026-08-24 so the
-# controls and two frozen policy candidates can keep using ordinary 24 GB GPU
-# offers.  The aggregate ceiling does not weaken the per-attempt contract:
-# every authority remains single-use, retry-0, provider-zero-gated, and bounded
-# by ``MAX_HARD_CAP_USD`` below.
-AGGREGATE_GOAL_SPEND_CAP_USD = 50.0
+# Historical authorities remain immutable and therefore retain the fixed
+# aggregate ceilings that were current when they were issued.  New authority
+# has no fixed campaign ceiling: the owner authorizes one bounded attempt at a
+# time, so its aggregate ceiling is the reconciled prior total plus only that
+# attempt's hard cap.  This keeps cumulative spend measured without making an
+# unrelated historical total a permanent refusal.
+LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD = (50.0, 52.0)
 MAX_HARD_CAP_USD = 2.0
 MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
@@ -107,49 +113,49 @@ def native_task_arena_attempt_budget_blockers(
     return tuple(blockers)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+def _terminal_feedback_adoption_is_bundle_bound(
+    prepared_bundle: Mapping[str, Any],
+) -> bool:
+    """True only when the immutable construction bundle contains feedback."""
+
+    inputs = prepared_bundle.get("bound_runtime_inputs")
+    if not isinstance(inputs, list):
+        return False
+    matches = [
+        item
+        for item in inputs
+        if isinstance(item, Mapping)
+        and item.get("relative_path")
+        == "runtime_inputs/native_construction_terminal_feedback_adoption.v1.json"
+    ]
+    if len(matches) != 1:
+        return False
+    match = matches[0]
+    digest = str(match.get("sha256") or "")
+    size = match.get("size_bytes")
+    return (
+        digest.startswith("sha256:")
+        and _lower_hex(digest.removeprefix("sha256:"), length=64)
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and size > 0
+    )
 
 
-def _record(path: Path) -> dict[str, Any]:
-    return {"path": str(path), "size_bytes": path.stat().st_size, "sha256": _sha256(path)}
-
-
-def _lexical_absolute_path(value: Any, code: str) -> Path:
-    raw = str(value or "")
-    expanded = Path(raw).expanduser()
-    if not raw or not expanded.is_absolute():
-        raise ValueError(code)
-    return Path(os.path.abspath(str(expanded)))
-
-
-def _recorded_path(record: Mapping[str, Any], code: str) -> Path:
-    """Return the source path sealed by one byte-verified record.
-
-    Dispatcher children read digest-named staged snapshots, while closeout
-    layout assertions still describe the original attempt tree.  The record
-    has already been verified by :func:`_bound_record`, so those assertions
-    must use its sealed source identity, not the transient staged filename.
-    """
-
-    return _lexical_absolute_path(record.get("path"), code)
-
-
-def _read(path: Path, code: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(code) from exc
-    if path.is_symlink() or not isinstance(value, dict):
-        raise ValueError(code)
-    return value
+def _control_search_warm_continuation_is_bundle_bound(
+    prepared_bundle: Mapping[str, Any],
+) -> bool:
+    digest = str(prepared_bundle.get("control_search_authority_digest") or "")
+    return bool(
+        prepared_bundle.get("execution_mode") == "construction_canary"
+        and prepared_bundle.get("warm_control_search_continuation_requested") is True
+        and _lower_hex(digest.removeprefix("sha256:"), length=64)
+    )
 
 
 def _bound_record(value: Any, code: str) -> tuple[Path, dict[str, Any]]:
+    """Resolve through this module's compatibility-patchable resolver."""
+
     if not isinstance(value, Mapping):
         raise ValueError(code)
     try:
@@ -177,22 +183,6 @@ def _finite_cost(value: Any) -> float:
     if not math.isfinite(cost) or cost < 0:
         raise ValueError("native_task_arena_terminal_cost_invalid")
     return cost
-
-
-def _write_exclusive_json(path: Path, value: Mapping[str, Any]) -> None:
-    """Write one immutable closeout member without replacing existing evidence."""
-
-    ensure_dir(path.parent)
-    payload = (json.dumps(dict(value), indent=1, sort_keys=True) + "\n").encode("utf-8")
-    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o440)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
 
 
 def _validated_api_provider_zero(path: Path) -> dict[str, Any]:
@@ -226,26 +216,25 @@ def _aware_time(value: Any, code: str) -> datetime:
 
 def _expected_watchdog_blocker(authority: Mapping[str, Any]) -> str:
     mode = str(authority.get("execution_mode") or "")
-    if mode not in {"construction_canary", "controls", "policy", "policy_diagnostic"}:
+    if mode not in {
+        "destination_qualification",
+        "construction_canary",
+        "controls",
+        "policy",
+        "policy_diagnostic",
+    }:
         raise ValueError("native_task_arena_preallocation_authority_mode_invalid")
     return f"native_task_arena_{mode}_independent_watchdog_not_armed"
 
 
 def _expected_job_dir(authority: Mapping[str, Any]) -> str:
     return {
+        "destination_qualification": "arena-destination-qualification-job",
         "construction_canary": "arena-construction-job",
         "controls": "arena-controls-job",
         "policy": "arena-policy-job",
         "policy_diagnostic": "arena-policy-diagnostic-job",
     }[str(authority.get("execution_mode") or "")]
-
-
-def _lower_hex(value: Any, *, length: int) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == length
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _preallocation_cleanup_valid(value: Mapping[str, Any]) -> bool:
@@ -412,6 +401,9 @@ def _validate_pre_spend_closed_chain(
         "native_task_arena_pre_spend_closeout_time_invalid",
     )
     provider_run = attempt_root / "vast_provider_run"
+    expected_original_teardown = validate_pre_spend_original_evidence(
+        original=original, provider_run=provider_run
+    )
     if (
         _read(authority_path, "native_task_arena_pre_spend_authority_invalid")
         != dict(authority)
@@ -429,8 +421,6 @@ def _validate_pre_spend_closed_chain(
         or original.get("status") != "blocked"
         or original.get("blockers") != expected_blockers
         or original.get("provider_mutations_performed") != 0
-        or original.get("estimated_cost_usd") is not None
-        or original.get("continuing_spend_from_this_run") is not None
         or original.get("instance_id") not in (None, "")
         or original.get("vast_instance_ids") not in (None, [], ())
         or original.get("provider_instance_ids") not in (None, [], ())
@@ -456,9 +446,11 @@ def _validate_pre_spend_closed_chain(
         != f"native-task-arena-{str(authority.get('authorization_digest'))[7:]}.json"
         or attempt_root.name != "attempt_001"
         or attempt_root.parent.name != "attempts"
-        or attempt_root.parent.parent.name != _expected_job_dir(authority)
         or (provider_run / "vast_provider_adapter_result.json").exists()
-        or (provider_run / "vast_teardown_manifest.json").exists()
+        or result.get("original_pre_spend_teardown")
+        != expected_original_teardown
+        or teardown.get("original_pre_spend_teardown")
+        != expected_original_teardown
         or (attempt_root / "object_store_staging").exists()
         or (attempt_root / "vast_independent_watchdog_handoff.json").exists()
         or teardown.get("schema_version") != PREALLOCATION_TEARDOWN_SCHEMA_VERSION
@@ -822,15 +814,6 @@ def validate_terminal_spend_chain(
     }
 
 
-def _bundle_loader(mode: str):
-    return {
-        "construction_canary": load_verified_native_task_arena_construction_bundle,
-        "controls": load_verified_native_task_arena_controls_bundle,
-        "policy": load_verified_native_task_arena_policy_bundle,
-        "policy_diagnostic": load_verified_native_task_arena_policy_diagnostic_bundle,
-    }[mode]
-
-
 def _native_policy_campaign_binding(
     *,
     campaign_path: str | Path,
@@ -941,22 +924,28 @@ def materialize_native_task_arena_paid_attempt_authority(
             "receipt_digest"
         ),
     )
+    feedback_adoption_bound = _terminal_feedback_adoption_is_bundle_bound(bundle)
+    control_search_continuation_bound = _control_search_warm_continuation_is_bundle_bound(bundle)
     terminal_inputs = (
         prior_authority_path,
         prior_result_path,
         prior_provider_zero_path,
         prior_spend_reconciliation_path,
     )
-    initial_inputs = (
-        project_spend_reconciliation_path,
-        initial_provider_zero_path,
-    )
+    initial_inputs = (project_spend_reconciliation_path, initial_provider_zero_path)
     terminal_mode = all(value is not None for value in terminal_inputs)
-    initial_mode = all(value is not None for value in initial_inputs)
+    terminal_inputs_present = any(value is not None for value in terminal_inputs)
+    initial_mode = not terminal_inputs_present and all(
+        value is not None for value in initial_inputs
+    )
     if (
         terminal_mode == initial_mode
-        or any(value is not None for value in terminal_inputs) != terminal_mode
-        or any(value is not None for value in initial_inputs) != initial_mode
+        or terminal_inputs_present != terminal_mode
+        or (initial_provider_zero_path is not None and not initial_mode)
+        or (
+            not terminal_mode
+            and any(value is not None for value in initial_inputs) != initial_mode
+        )
         or (initial_mode and supplemental_prior_result_paths)
     ):
         raise ValueError("native_task_arena_authority_lineage_invalid")
@@ -1011,11 +1000,22 @@ def materialize_native_task_arena_paid_attempt_authority(
             + reconciled["actual_total_usd"],
             6,
         )
+        if project_spend_reconciliation_path is not None:
+            project_path = Path(
+                str(project_spend_reconciliation_path)
+            ).expanduser().resolve()
+            project_spend, project_spend_record = (
+                validate_project_spend_reconciliation(project_path)
+            )
+            project_total = round(float(project_spend["total_cost_usd"]), 6)
+            if project_total < prior_spend:
+                raise ValueError("native_task_arena_project_spend_stale")
+            prior_spend = project_total
     else:
         project_path = Path(
             str(project_spend_reconciliation_path)
         ).expanduser().resolve()
-        project_spend, project_spend_record = validate_same_goal_spend_reconciliation(
+        project_spend, project_spend_record = validate_project_spend_reconciliation(
             project_path
         )
         zero_path = Path(str(initial_provider_zero_path)).expanduser().resolve()
@@ -1032,7 +1032,13 @@ def materialize_native_task_arena_paid_attempt_authority(
             or (authorized_time - zero_time).total_seconds()
             > MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS
             or allowed_active_instance_ids
-            or retain_warm_session
+            or (
+                retain_warm_session
+                and not (
+                    feedback_adoption_bound
+                    or control_search_continuation_bound
+                )
+            )
             or policy_campaign_path is not None
             or campaign_member_id is not None
         ):
@@ -1043,12 +1049,10 @@ def materialize_native_task_arena_paid_attempt_authority(
         }
         prior_spend = round(float(project_spend["total_cost_usd"]), 6)
     allowed = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
-    # A newly deployed program ceiling is itself the authority boundary.  The
-    # predecessor's lower historical ceiling remains bound in its immutable
-    # receipt, but must not make an explicitly raised current ceiling
-    # impossible to issue: taking ``min`` here permanently froze the chain at
-    # its first value even after the owner expanded the active goal budget.
-    aggregate_cap = AGGREGATE_GOAL_SPEND_CAP_USD
+    aggregate_cap = rolling_aggregate_spend_ceiling_usd(
+        prior_spend_usd=prior_spend,
+        authorized_increment_usd=hard_cap_usd,
+    )
     campaign_inputs_complete = (
         policy_campaign_path is not None and campaign_member_id is not None
     )
@@ -1065,9 +1069,11 @@ def materialize_native_task_arena_paid_attempt_authority(
         or not authorized_by.strip()
         or not authorized_on.strip()
         or budget_blockers
-        or prior_spend + hard_cap_usd > aggregate_cap
         or any(value <= 0 for value in allowed)
-        or (retain_warm_session and mode != "controls")
+        or (
+            retain_warm_session
+            and mode not in {"construction_canary", "controls"}
+        )
         or campaign_inputs_partial
     ):
         raise ValueError("native_task_arena_authority_configuration_invalid")
@@ -1118,7 +1124,17 @@ def materialize_native_task_arena_paid_attempt_authority(
         "aggregate_goal_spend_before_attempt_usd": prior_spend,
         "aggregate_goal_spend_cap_usd": aggregate_cap,
         "lineage_kind": (
-            "terminal_predecessor" if terminal_mode else "project_spend_genesis"
+            "terminal_predecessor"
+            if terminal_mode
+            else (
+                (
+                    "project_spend_feedback_continuation"
+                    if feedback_adoption_bound
+                    else "project_spend_control_search_continuation"
+                )
+                if retain_warm_session
+                else "project_spend_genesis"
+            )
         ),
         **(
             {
@@ -1131,6 +1147,11 @@ def materialize_native_task_arena_paid_attempt_authority(
                 "prior_terminal_attempts": reconciled["prior_terminal_attempts"],
                 "prior_spend_reconciliation": reconciled["reconciliation"],
                 "prior_actual_provider_spend_usd": reconciled["actual_total_usd"],
+                **(
+                    {"project_spend_reconciliation": project_spend_record}
+                    if project_spend_record is not None
+                    else {}
+                ),
             }
             if terminal_mode
             else {
@@ -1185,6 +1206,12 @@ def validate_native_task_arena_paid_attempt_authority(
     retain_warm_session: bool = False,
 ) -> dict[str, Any]:
     value = dict(authority)
+    feedback_adoption_bound = _terminal_feedback_adoption_is_bundle_bound(
+        prepared_bundle
+    )
+    control_search_continuation_bound = _control_search_warm_continuation_is_bundle_bound(
+        prepared_bundle
+    )
     expected_allowlist = {
         "external_provider_owned": tuple(sorted(set(allowed_active_instance_ids))),
         "same_goal_concurrent": (),
@@ -1251,12 +1278,31 @@ def validate_native_task_arena_paid_attempt_authority(
         if recorded_receipt_path != expected_receipt_path:
             errors.append("bundle_receipt_path_mismatch")
         lineage_kind = value.get("lineage_kind", "terminal_predecessor")
-        if lineage_kind == "project_spend_genesis":
+        if lineage_kind in {
+            "project_spend_genesis",
+            "project_spend_feedback_continuation",
+            "project_spend_control_search_continuation",
+        }:
             if (
                 value.get("prior_terminal_attempt") is not None
                 or value.get("prior_spend_reconciliation") is not None
                 or value.get("prior_terminal_attempts") != []
-                or retain_warm_session
+                or (
+                    retain_warm_session
+                    and (
+                        (
+                            lineage_kind
+                            == "project_spend_feedback_continuation"
+                            and not feedback_adoption_bound
+                        )
+                        or (
+                            lineage_kind
+                            == "project_spend_control_search_continuation"
+                            and not control_search_continuation_bound
+                        )
+                        or lineage_kind == "project_spend_genesis"
+                    )
+                )
                 or allowed_active_instance_ids
                 or value.get("policy_campaign_binding") is not None
             ):
@@ -1266,7 +1312,7 @@ def validate_native_task_arena_paid_attempt_authority(
                 "project_spend_reconciliation_unbound",
             )
             project_spend, observed_project_record = (
-                validate_same_goal_spend_reconciliation(project_path)
+                validate_project_spend_reconciliation(project_path)
             )
             zero_path, zero_record = _bound_record(
                 value.get("initial_provider_zero"),
@@ -1283,7 +1329,9 @@ def validate_native_task_arena_paid_attempt_authority(
             )
             actual_after = round(float(project_spend["total_cost_usd"]), 6)
             if (
-                project_record != observed_project_record
+                not _bound_record_matches_observed(
+                    project_record, observed_project_record
+                )
                 or zero_record.get("provider_zero_digest")
                 != initial_zero.get("provider_zero_digest")
                 or zero_time > authorized_time
@@ -1292,6 +1340,15 @@ def validate_native_task_arena_paid_attempt_authority(
                 or value.get("prior_actual_provider_spend_usd") != actual_after
                 or value.get("aggregate_goal_spend_before_attempt_usd")
                 != actual_after
+                or (
+                    lineage_kind == "project_spend_feedback_continuation"
+                    and not feedback_adoption_bound
+                )
+                or (
+                    lineage_kind
+                    == "project_spend_control_search_continuation"
+                    and not control_search_continuation_bound
+                )
             ):
                 errors.append("project_spend_genesis_mismatch")
         elif lineage_kind == "terminal_predecessor":
@@ -1329,11 +1386,30 @@ def validate_native_task_arena_paid_attempt_authority(
                 if len(reconciled["prior_terminal_attempts"]) != 1:
                     raise ValueError("primary_predecessor_reconciliation_invalid")
                 main_actual_provider_charge = reconciled["actual_total_usd"]
-            actual_after = round(
+            terminal_actual_after = round(
                 prior["aggregate_goal_spend_before_attempt_usd"]
                 + reconciled["actual_total_usd"],
                 6,
             )
+            actual_after = terminal_actual_after
+            project_record_value = value.get("project_spend_reconciliation")
+            if project_record_value is not None:
+                project_path, project_record = _bound_record(
+                    project_record_value,
+                    "project_spend_reconciliation_unbound",
+                )
+                project_spend, observed_project_record = (
+                    validate_project_spend_reconciliation(project_path)
+                )
+                project_total = round(float(project_spend["total_cost_usd"]), 6)
+                if (
+                    not _bound_record_matches_observed(
+                        project_record, observed_project_record
+                    )
+                    or project_total < terminal_actual_after
+                ):
+                    raise ValueError("project_spend_continuation_mismatch")
+                actual_after = project_total
             if (
                 predecessor.get("authority_digest") != prior["authority_digest"]
                 or predecessor.get("attempt_cost_usd") != prior["attempt_cost_usd"]
@@ -1345,12 +1421,16 @@ def validate_native_task_arena_paid_attempt_authority(
                 errors.append("prior_terminal_spend_mismatch")
         else:
             raise ValueError("lineage_kind_invalid")
-        if (
-            value.get("aggregate_goal_spend_cap_usd")
-            != AGGREGATE_GOAL_SPEND_CAP_USD
-            or value.get("aggregate_goal_spend_before_attempt_usd", 0) + hard_cap_usd
-            > value.get("aggregate_goal_spend_cap_usd", 0)
-        ):
+        declared_aggregate_cap = value.get("aggregate_goal_spend_cap_usd")
+        rolling_aggregate_cap = rolling_aggregate_spend_ceiling_usd(
+            prior_spend_usd=value.get("aggregate_goal_spend_before_attempt_usd"),
+            authorized_increment_usd=hard_cap_usd,
+        )
+        legacy_cap_valid = (
+            declared_aggregate_cap in LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD
+            and rolling_aggregate_cap <= declared_aggregate_cap
+        )
+        if declared_aggregate_cap != rolling_aggregate_cap and not legacy_cap_valid:
             errors.append("aggregate_goal_spend_mismatch")
     except ValueError:
         errors.append("prior_terminal_spend_invalid")
@@ -1651,6 +1731,9 @@ def materialize_native_task_arena_pre_spend_closeout(
     attempt_root = Path(attempt_root_raw).resolve()
     provider_run = attempt_root / "vast_provider_run"
     preflight_file = provider_run / "pre_spend_preflight.json"
+    original_teardown = validate_pre_spend_original_evidence(
+        original=original, provider_run=provider_run
+    )
     preflight = _read(
         preflight_file, "native_task_arena_pre_spend_preflight_invalid"
     )
@@ -1682,8 +1765,6 @@ def materialize_native_task_arena_pre_spend_closeout(
         or original.get("status") != "blocked"
         or original.get("blockers") != expected_blockers
         or original.get("provider_mutations_performed") != 0
-        or original.get("estimated_cost_usd") is not None
-        or original.get("continuing_spend_from_this_run") is not None
         or original.get("instance_id") not in (None, "")
         or original.get("vast_instance_ids") not in (None, [], ())
         or original.get("provider_instance_ids") not in (None, [], ())
@@ -1702,10 +1783,8 @@ def materialize_native_task_arena_pre_spend_closeout(
         or original_file != attempt_root / "adp_arena_vast_result.json"
         or attempt_root.name != "attempt_001"
         or attempt_root.parent.name != "attempts"
-        or attempt_root.parent.parent.name != _expected_job_dir(authority)
         or consumption_file.name != f"native-task-arena-{authority_digest[7:]}.json"
         or (provider_run / "vast_provider_adapter_result.json").exists()
-        or (provider_run / "vast_teardown_manifest.json").exists()
         or (attempt_root / "object_store_staging").exists()
         or (attempt_root / "vast_independent_watchdog_handoff.json").exists()
         or zero_at < result_at
@@ -1742,6 +1821,7 @@ def materialize_native_task_arena_pre_spend_closeout(
         "original_allocator_result": _record(original_file),
         "pre_spend_preflight": _record(preflight_file),
         "authority_consumption_record": _record(consumption_file),
+        **({"original_pre_spend_teardown": original_teardown} if original_teardown else {}),
         "receipt_digest": "",
     }
     teardown["receipt_digest"] = canonical_digest(
@@ -1764,6 +1844,7 @@ def materialize_native_task_arena_pre_spend_closeout(
         "original_allocator_result": _record(original_file),
         "pre_spend_preflight": _record(preflight_file),
         "authority_consumption_record": _record(consumption_file),
+        **({"original_pre_spend_teardown": original_teardown} if original_teardown else {}),
         "teardown_manifest_path": str(teardown_path),
         "scientific_attempt_started": False,
         "first_observation_reached": False,
@@ -2080,32 +2161,15 @@ def materialize_native_task_arena_provider_zero(
     adapter = _read(adapter_path, "native_task_arena_adapter_unreadable")
     teardown = _read(teardown_path, "native_task_arena_teardown_unreadable")
     global_inventory = watchdog.get("final_global_inventory")
-    # The global sweep observes every instance on the provider account, so an
-    # unrelated debug pod or a concurrent lane blocks this seal forever: the
-    # watchdog receipt is frozen at write time and can never re-observe a
-    # now-quiet account. When the watchdog itself marks the global sweep
-    # informational, its lane-scoped inventory -- matched on this run's own
-    # name prefix -- is the authority on whether THIS run is still spending.
-    # Absent that flag the global sweep stays authoritative, so receipts
-    # written before the watchdog scoped itself keep their original strictness.
+    # A scoped watchdog inventory may supersede its frozen informational global sweep.
     if watchdog.get("global_inventory_informational_only") is True:
         inventory = watchdog.get("final_inventory")
         inventory_scope = "recorded_instance_and_lane_prefix"
     else:
         inventory = global_inventory
         inventory_scope = "provider_global"
-
-    # A run can end before it ever allocates -- no offer met the lane's
-    # constraints, or admission refused. The watchdog then records a handoff
-    # instead of a canary receipt, because it was armed but never had a
-    # resource to observe. There is definitionally nothing to zero, yet the
-    # inventory-based seal below can never be satisfied, which wedges the
-    # whole chain: the successor's first step is sealing its predecessor.
-    #
-    # Accept that state only on proof that nothing was allocated -- zero
-    # provider mutations, armed before allocation, and no continuing spend
-    # anywhere. An orphaned resource requires an allocation to exist, so this
-    # cannot mask one.
+    # Pre-allocation exits can seal only with proof of zero mutations,
+    # pre-allocation watchdog arming, and no continuing spend.
     definitive_preallocation_no_allocation = _definitive_preallocation_no_allocation(
         adapter=adapter,
         teardown=teardown,

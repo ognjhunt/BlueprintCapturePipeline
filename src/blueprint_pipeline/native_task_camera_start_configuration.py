@@ -1,0 +1,467 @@
+"""Bind the final robot reset and policy cameras before native execution.
+
+USD joint-frame kinematics and camera frusta are provisional placement evidence.
+Rendered semantic visibility and native collision checks remain mandatory.
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from copy import deepcopy
+import hashlib
+import math
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from .decision_evidence_contracts import canonical_digest
+from .franka_kinematics import FRANKA_JOINT_LIMITS_RAD
+
+SCHEMA = "policy_canary_camera_start_configuration.v1"
+BODY = "/panda/Gripper/Robotiq_2F_85/base_link"
+WRIST_POSITION = [0.011, -0.031, -0.074]
+WRIST_QUATERNION_XYZW = [0.570, 0.576, -0.409, -0.420]
+EXTERNAL_POSITION = [0.05, 0.57, 0.66]
+EXTERNAL_QUATERNION_XYZW = [-0.195, 0.399, 0.805, -0.393]
+
+
+def pose_matrix(position, quaternion) -> np.ndarray:
+    p = np.asarray(position, dtype=float)
+    q = np.asarray(quaternion, dtype=float)
+    if p.shape != (3,) or q.shape != (4,) or not np.isfinite(p).all() or not np.isfinite(q).all():
+        raise ValueError("policy_camera_pose_invalid")
+    norm = float(np.linalg.norm(q))
+    if not math.isclose(norm, 1.0, abs_tol=0.002):
+        raise ValueError("policy_camera_quaternion_invalid")
+    x, y, z, w = q / norm
+    value = np.eye(4)
+    value[:3, :3] = [[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+                        [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+                        [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]]
+    value[:3, 3] = p
+    return value
+
+
+def joint_body_poses(chain, joints, base_pose) -> dict[str, np.ndarray]:
+    poses = {"/panda/panda_link0": pose_matrix(base_pose["position_world_m"], base_pose["orientation_xyzw"])}
+    pending = list(chain)
+    while pending:
+        advanced = False
+        for row in pending[:]:
+            if row["body0"] not in poses:
+                continue
+            if row["body1"] in poses:
+                raise ValueError("policy_camera_joint_chain_duplicate_body")
+            turn = np.eye(4)
+            if row["axis"] is not None:
+                axis = np.eye(3)["XYZ".index(row["axis"])]
+                angle = float(joints.get(row["joint"], 0.0))
+                turn = pose_matrix([0, 0, 0], [*(axis*math.sin(angle/2)), math.cos(angle/2)])
+            local0, local1 = np.asarray(row["local0"], dtype=float), np.asarray(row["local1"], dtype=float)
+            if any(m.shape != (4, 4) or not np.isfinite(m).all() for m in (local0, local1)):
+                raise ValueError("policy_camera_joint_frame_invalid")
+            poses[row["body1"]] = poses[row["body0"]] @ local0 @ turn @ np.linalg.inv(local1)
+            pending.remove(row)
+            advanced = True
+        if not advanced:
+            raise ValueError("policy_camera_joint_chain_unresolved")
+    if BODY not in poses:
+        raise ValueError("policy_camera_wrist_body_missing")
+    return poses
+
+
+def fixture_reset_clearance(plan, chain, joints, collision_path: Path,
+                            task_asset_path: Path | None = None) -> dict[str, Any]:
+    """Conservative CPU screen against the retained fixture and full task asset.
+
+    Link centerlines are only a broad-phase proxy. Native collision and root
+    stability still decide whether the final pose is usable.
+    """
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    obstacle = next((row for row in plan["objects"] if row.get("semantic_role") == "scene_collision"), None)
+    if obstacle is None or collision_path.is_symlink() or not collision_path.is_file():
+        raise ValueError("policy_camera_fixture_collision_asset_missing")
+    digest = "sha256:" + hashlib.sha256(collision_path.read_bytes()).hexdigest()
+    if obstacle.get("sha256") != digest or obstacle.get("pose_world") != {
+        "position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]
+    }:
+        raise ValueError("policy_camera_fixture_collision_binding_invalid")
+    stage = Usd.Stage.Open(str(collision_path))
+    if stage is None or not stage.GetDefaultPrim().IsValid():
+        raise ValueError("policy_camera_fixture_collision_asset_invalid")
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    boxes = []
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Mesh) or not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        bounds = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        lower = np.asarray(bounds.GetMin(), dtype=float)
+        upper = np.asarray(bounds.GetMax(), dtype=float)
+        if not np.isfinite(lower).all() or not np.isfinite(upper).all():
+            raise ValueError("policy_camera_fixture_collision_bounds_invalid")
+        if upper[2] - lower[2] < 0.01 and abs(upper[2]) < 0.01:
+            continue  # the support floor is expected beneath the robot
+        boxes.append((lower, upper))
+    if not boxes:
+        raise ValueError("policy_camera_fixture_obstacles_missing")
+    task_digest = None
+    if task_asset_path is not None:
+        subjects = [row for row in plan["objects"] if row.get("task_subject") is True]
+        if len(subjects) != 1 or task_asset_path.is_symlink() or not task_asset_path.is_file():
+            raise ValueError("policy_camera_fixture_task_asset_missing")
+        task_digest = "sha256:" + hashlib.sha256(task_asset_path.read_bytes()).hexdigest()
+        if subjects[0].get("sha256") != task_digest:
+            raise ValueError("policy_camera_fixture_task_binding_invalid")
+        task_stage = Usd.Stage.Open(str(task_asset_path))
+        if task_stage is None or not task_stage.GetDefaultPrim().IsValid():
+            raise ValueError("policy_camera_fixture_task_asset_invalid")
+        bound = cache.ComputeWorldBound(task_stage.GetDefaultPrim()).ComputeAlignedRange()
+        lower, upper = np.asarray(bound.GetMin(), dtype=float), np.asarray(bound.GetMax(), dtype=float)
+        if not np.isfinite(lower).all() or not np.isfinite(upper).all() or np.any(upper <= lower):
+            raise ValueError("policy_camera_fixture_task_bounds_invalid")
+        root = subjects[0]["pose_world"]
+        matrix = pose_matrix(root["position_world_m"], root["orientation_xyzw"])
+        corners = np.asarray([[x, y, z, 1.] for x in (lower[0], upper[0])
+                              for y in (lower[1], upper[1]) for z in (lower[2], upper[2])])
+        world = (matrix @ corners.T).T[:, :3]
+        boxes.append((world.min(axis=0), world.max(axis=0)))
+    poses = joint_body_poses(chain, joints, plan["robot"]["base_pose_world"])
+    names = [f"/panda/panda_link{i}" for i in range(9)]
+    names.append(BODY)
+    if any(name not in poses for name in names):
+        raise ValueError("policy_camera_fixture_robot_chain_incomplete")
+    centers = [poses[name][:3, 3] for name in names]
+    samples = list(centers)
+    for start, end in zip(centers, centers[1:], strict=False):
+        samples.extend(start + (end - start) * (index / 10) for index in range(1, 10))
+    def distance(box):
+        lower, upper = box
+        return min(float(np.linalg.norm(np.maximum(np.maximum(lower - point, point - upper), 0.0)))
+                   for point in samples)
+    obstacle_minimum = min(map(distance, boxes[:-1] if task_digest is not None else boxes))
+    task_minimum = distance(boxes[-1]) if task_digest is not None else None
+    radius = 0.13
+    report = {
+        "schema_version": "policy_camera_fixture_reset_clearance.v1",
+        "status": "passed" if obstacle_minimum >= radius
+                  and (task_minimum is None or task_minimum >= 0.16) else "blocked",
+        "scene_collision_digest": digest,
+        "minimum_link_centerline_to_obstacle_m": obstacle_minimum,
+        "conservative_link_radius_m": radius,
+        "native_collision_qualified": False,
+        "report_digest": "",
+    }
+    if task_digest is not None:
+        report.update(task_asset_digest=task_digest,
+                      minimum_link_centerline_to_task_m=task_minimum,
+                      conservative_task_radius_m=0.16,
+                      task_proxy="full_authored_asset_world_aabb")
+    report["report_digest"] = canonical_digest(report, digest_field="report_digest")
+    return report
+
+
+def external_camera_offset_position(plan) -> list[float]:
+    """Apply the preregistered world-X shift in the DROID camera's parent frame."""
+    delta = float(((plan.get("scenario") or {}).get("parameters") or {}).get("external_camera_x_delta_m", 0.0))
+    if not math.isfinite(delta) or abs(delta) > 0.1:
+        raise ValueError("policy_camera_external_variation_out_of_bounds")
+    base = plan["robot"]["base_pose_world"]
+    rotation = pose_matrix(base["position_world_m"], base["orientation_xyzw"])[:3, :3]
+    return (np.asarray(EXTERNAL_POSITION) + rotation.T @ np.asarray([delta, 0., 0.])).tolist()
+
+
+def resolved_camera_matrices(plan, chain, joints) -> dict[str, tuple[np.ndarray, list[list[float]]]]:
+    base = plan["robot"]["base_pose_world"]
+    poses = joint_body_poses(chain, joints, base)
+    overview = next(c for c in plan["cameras"] if c["role"] == "overview")
+    if overview["pose_frame"] != "world" or overview["optical_convention"] != "opencv":
+        raise ValueError("policy_camera_overview_frame_invalid")
+    k = overview["intrinsics"]
+    return {
+        "external": (pose_matrix(base["position_world_m"], base["orientation_xyzw"])
+                     @ pose_matrix(external_camera_offset_position(plan), EXTERNAL_QUATERNION_XYZW),
+                     [[500., 0., 640.], [0., 500., 360.], [0., 0., 1.]]),
+        "wrist": (poses[BODY] @ pose_matrix(WRIST_POSITION, WRIST_QUATERNION_XYZW),
+                  [[2000/3, 0., 640.], [0., 2000/3, 360.], [0., 0., 1.]]),
+        "overview": (np.asarray(overview["frame_from_camera_matrix"]).reshape(4, 4) @ np.diag([1., -1., -1., 1.]),
+                     [[k["fx"], 0., k["cx"]], [0., k["fy"], k["cy"]], [0., 0., 1.]]),
+    }
+
+
+def camera_framing_report(plan, chain, joints) -> dict[str, Any]:
+    points = task_framing_points(plan)
+    rows = []
+    for role, (matrix, intrinsics) in resolved_camera_matrices(plan, chain, joints).items():
+        camera = next(c for c in plan["cameras"] if c["role"] == role)
+        width, height = (1280, 720) if role != "overview" else (camera["intrinsics"]["width"], camera["intrinsics"]["height"])
+        for name, point in points.items():
+            if role == "wrist" and name == "subject_destination":
+                continue
+            local = matrix[:3, :3].T @ (np.asarray(point)-matrix[:3, 3])
+            depth = float(-local[2])
+            uv = [float(intrinsics[0][2]+intrinsics[0][0]*local[0]/depth),
+                  float(intrinsics[1][2]-intrinsics[1][1]*local[1]/depth)] if depth > 0 else None
+            passed = bool(uv is not None and 0.05*width <= uv[0] <= 0.95*width and 0.05*height <= uv[1] <= 0.95*height)
+            rows.append({"camera_role": role, "subject": name, "position_world_m": matrix[:3, 3].tolist(),
+                         "world_from_camera_opengl": matrix.tolist(), "intrinsic_matrix": intrinsics,
+                         "projected_center_uv": uv, "depth_m": depth, "passed": passed})
+    return {"status": "passed" if all(row["passed"] for row in rows) else "blocked", "views": rows,
+            "native_visibility_claimed": False, "occlusion_qualification_claimed": False}
+
+
+def task_framing_points(plan) -> dict[str, list[float]]:
+    """Use authored assembly bounds for a provisional drawer camera target."""
+    spec = plan["task_spec"]
+    if plan.get("task_kind") != "articulated_open_close":
+        return {"subject_start": spec["start_pose_world"][:3],
+                "subject_destination": spec["target_position_world_m"]}
+    subjects = [row for row in plan["objects"] if row.get("task_subject") is True]
+    if len(subjects) != 1 or subjects[0].get("object_type") != "ARTICULATION":
+        raise ValueError("policy_camera_articulated_subject_invalid")
+    extent = np.asarray(plan["task_object_observability"]["task_object_extent_m"], dtype=float)
+    contact = np.asarray(spec["interaction_affordance"]["contact_point_link_m"], dtype=float)
+    pull = np.asarray(spec["interaction_affordance"]["pull_unit_asset_root"], dtype=float)
+    threshold = spec["executable_opening_threshold"]
+    if threshold.get("joint_type") != "prismatic":
+        raise ValueError("policy_camera_articulated_joint_unsupported")
+    interval = threshold["success_interval"]
+    if (extent.shape != (3,) or contact.shape != (3,) or pull.shape != (3,)
+            or not np.isfinite(extent).all() or not np.isfinite(contact).all()
+            or not np.isfinite(pull).all() or np.any(extent <= 0)
+            or not math.isclose(float(np.linalg.norm(pull)), 1.0, abs_tol=1e-3)
+            or not isinstance(interval, list) or len(interval) != 2
+            or not 0 < float(interval[0]) <= float(interval[1])):
+        raise ValueError("policy_camera_articulated_geometry_invalid")
+    pose = subjects[0]["pose_world"]
+    world = pose_matrix(pose["position_world_m"], pose["orientation_xyzw"])
+    # The handle point is link-local, so only its front/side coordinates are
+    # used here. The vertical center comes from the qualified full assembly
+    # extent. Native rendered visibility remains a separate required check.
+    local = np.array([contact[0], contact[1], extent[2] / 2, 1.0])
+    start = (world @ local)[:3]
+    destination = start + world[:3, :3] @ pull * float(interval[0])
+    return {"subject_start": start.tolist(), "subject_destination": destination.tolist()}
+
+
+def validate_camera_start_configuration(plan, value) -> dict[str, Any]:
+    binding = deepcopy(dict(value))
+    if (binding.get("schema_version") != SCHEMA
+        or binding.get("configuration_digest") != canonical_digest(binding, digest_field="configuration_digest")
+        or binding.get("task_success_contract_digest") != plan["task_spec"]["task_success_contract"]["contract_digest"]
+        or binding.get("robot_base_pose_world") != plan["robot"]["base_pose_world"]
+        or binding.get("native_qualification_claimed") is not False
+        or binding.get("official_camera_calibration_preserved") is not True
+        or binding.get("camera_plan_digest") != canonical_digest({"cameras": plan["cameras"]})):
+        raise ValueError("policy_camera_start_configuration_binding_invalid")
+    joints = binding.get("joint_reset_positions_rad")
+    if not isinstance(joints, Mapping) or set(joints) != {f"panda_joint{i}" for i in range(1, 8)}:
+        raise ValueError("policy_camera_start_joint_inventory_invalid")
+    for index, limits in enumerate(FRANKA_JOINT_LIMITS_RAD, 1):
+        angle = joints[f"panda_joint{index}"]
+        if isinstance(angle, bool) or not isinstance(angle, (int, float)) or not math.isfinite(angle) or not limits[0]+0.05 <= angle <= limits[1]-0.05:
+            raise ValueError("policy_camera_start_joint_margin_invalid")
+    reference = binding["native_reference"]
+    baseline = joint_body_poses(binding["source_joint_chain"], reference["joint_reset_positions_rad"], reference["robot_base_pose_world"])[BODY]
+    baseline = baseline @ pose_matrix(WRIST_POSITION, WRIST_QUATERNION_XYZW)
+    observed = np.asarray(reference["world_from_wrist_camera_opengl"], dtype=float)
+    if observed.shape != (4, 4) or not np.isfinite(observed).all() or np.max(np.abs(baseline-observed)) > 0.001:
+        raise ValueError("policy_camera_source_kinematics_native_readback_mismatch")
+    report = camera_framing_report(plan, binding["source_joint_chain"], joints)
+    if report["status"] != "passed":
+        raise ValueError("policy_camera_final_reset_does_not_frame_task")
+    clearance = binding.get("pre_spend_scene_clearance")
+    fixture = (plan.get("task_kind") == "articulated_open_close"
+               and str(plan.get("scene_id", "")).endswith("-development"))
+    if fixture and clearance is None:
+        raise ValueError("policy_camera_fixture_task_clearance_missing")
+    if clearance is not None:
+        obstacle = next((row for row in plan["objects"] if row.get("semantic_role") == "scene_collision"), None)
+        subject = next((row for row in plan["objects"] if row.get("task_subject") is True), None)
+        if (not isinstance(clearance, Mapping)
+            or clearance.get("report_digest") != canonical_digest(clearance, digest_field="report_digest")
+            or clearance.get("status") != "passed"
+            or clearance.get("scene_collision_digest") != (obstacle or {}).get("sha256")
+            or clearance.get("native_collision_qualified") is not False
+            or clearance.get("minimum_link_centerline_to_obstacle_m", -1)
+               < clearance.get("conservative_link_radius_m", 0)):
+            raise ValueError("policy_camera_fixture_clearance_binding_invalid")
+        if fixture:
+            if (clearance.get("task_asset_digest") != subject.get("sha256")
+                or clearance.get("task_proxy") != "full_authored_asset_world_aabb"
+                or clearance.get("conservative_task_radius_m") != 0.16
+                or clearance.get("minimum_link_centerline_to_task_m", -1) < 0.16):
+                raise ValueError("policy_camera_fixture_task_clearance_binding_invalid")
+    return binding
+
+
+def _verified_camera_reference(*, source_binding, native_reference_gate, robot_asset_sha256):
+    if (source_binding.get('schema_version') != SCHEMA
+            or source_binding.get('configuration_digest') != canonical_digest(source_binding, digest_field='configuration_digest')
+            or source_binding.get('source_robot_asset_sha256') != robot_asset_sha256
+            or native_reference_gate.get('schema_version') != 'policy_canary_runtime_observation_integrity_gate.v1'
+            or native_reference_gate.get('gate_digest') != canonical_digest(native_reference_gate, digest_field='gate_digest')
+            or source_binding.get('native_reference', {}).get('gate_digest') != native_reference_gate.get('gate_digest')
+            or native_reference_gate.get('candidate_policy_queried') is not False
+):
+        raise ValueError('policy_camera_construction_calibration_identity_invalid')
+    wrists = [c for c in native_reference_gate.get('snapshot', {}).get('cameras', []) if c.get('role') == 'wrist']
+    if len(wrists) != 1:
+        raise ValueError('policy_camera_calibration_native_wrist_missing')
+    observed = pose_matrix(wrists[0]['position_world_m'], wrists[0]['quaternion_world_opengl_xyzw'])
+    reference = source_binding['native_reference']
+    if not np.allclose(observed, reference['world_from_wrist_camera_opengl'], atol=1e-6, rtol=0):
+        raise ValueError('policy_camera_calibration_native_wrist_changed')
+    return reference
+
+
+def materialize_camera_start_from_construction(*, plan, construction, source_binding,
+        native_reference_gate, robot_asset_sha256, runtime_digest, calibration_digest):
+    """Reuse robot kinematics, binding this scene only to its actual native reset."""
+    reference = _verified_camera_reference(source_binding=source_binding,
+        native_reference_gate=native_reference_gate, robot_asset_sha256=robot_asset_sha256)
+    if (construction.get('schema_version') != 'native_task_arena_construction_result.v1'
+            or construction.get('result_digest') != canonical_digest(construction, digest_field='result_digest')
+            or construction.get('status') != 'completed' or construction.get('construction_gate_qualified') is not True
+            or construction.get('candidate_policy_queried') is not False or construction.get('blockers') not in ([], ())
+            or construction.get('reset_replay', {}).get('passed') is not True):
+        raise ValueError('policy_camera_construction_calibration_identity_invalid')
+    initial = construction.get('initial_readback') or {}
+    names, positions = initial.get('robot_joint_names'), initial.get('robot_joint_positions_rad')
+    pose = initial.get('robot_root_pose_world')
+    if (not isinstance(names, list) or not isinstance(positions, list) or len(names) != len(positions)
+            or len(set(names)) != len(names) or not isinstance(pose, list) or len(pose) != 7):
+        raise ValueError('policy_camera_construction_reset_readback_missing')
+    measured = dict(zip(names, positions, strict=True))
+    joints = {f'panda_joint{i}': measured.get(f'panda_joint{i}') for i in range(1, 8)}
+    base = plan['robot']['base_pose_world']
+    if not np.allclose(pose_matrix(pose[:3], pose[3:]), pose_matrix(base['position_world_m'], base['orientation_xyzw']),
+                       atol=1e-4, rtol=0):
+        raise ValueError('policy_camera_construction_base_readback_changed')
+    value = {'schema_version': SCHEMA, 'source_robot_asset_sha256': robot_asset_sha256,
+        'source_joint_chain': deepcopy(source_binding['source_joint_chain']), 'native_reference': deepcopy(reference),
+        'robot_base_pose_world': deepcopy(base), 'joint_reset_positions_rad': joints,
+        'task_success_contract_digest': plan['task_spec']['task_success_contract']['contract_digest'],
+        'camera_plan_digest': canonical_digest({'cameras':plan['cameras']}),
+        'native_qualification_claimed': False, 'official_camera_calibration_preserved': True,
+        'construction_result_digest': construction['result_digest'], 'runtime_digest': runtime_digest,
+        'source_calibration_digest': calibration_digest, 'historical_scene_visibility_adopted': False}
+    value['configuration_digest'] = canonical_digest(value, digest_field='configuration_digest')
+    return validate_camera_start_configuration(plan, value)
+
+
+def materialize_camera_start_from_plan(*, plan, source_binding, native_reference_gate,
+        robot_asset_sha256, runtime_digest, calibration_digest,
+        scene_collision_asset_path: Path | None = None,
+        task_asset_path: Path | None = None):
+    """Bind the selected reset without claiming a native rehearsal has occurred."""
+    reference = _verified_camera_reference(source_binding=source_binding,
+        native_reference_gate=native_reference_gate, robot_asset_sha256=robot_asset_sha256)
+    if plan.get('plan_digest') != canonical_digest(plan, digest_field='plan_digest'):
+        raise ValueError('policy_camera_source_plan_changed')
+    joints = plan['robot'].get('joint_reset_positions_rad') or {}
+    value = {'schema_version': SCHEMA, 'source_robot_asset_sha256': robot_asset_sha256,
+        'source_joint_chain': deepcopy(source_binding['source_joint_chain']), 'native_reference': deepcopy(reference),
+        'robot_base_pose_world': deepcopy(plan['robot']['base_pose_world']),
+        'joint_reset_positions_rad': {f'panda_joint{i}': joints.get(f'panda_joint{i}') for i in range(1, 8)},
+        'task_success_contract_digest': plan['task_spec']['task_success_contract']['contract_digest'],
+        'camera_plan_digest': canonical_digest({'cameras': plan['cameras']}),
+        'native_qualification_claimed': False, 'official_camera_calibration_preserved': True,
+        'source_scene_plan_digest': plan['plan_digest'], 'runtime_digest': runtime_digest,
+        'source_calibration_digest': calibration_digest, 'historical_scene_visibility_adopted': False,
+        'reset_authority': 'configured_robot_plan_requires_native_readback'}
+    fixture = (plan.get('task_kind') == 'articulated_open_close'
+               and str(plan.get('scene_id', '')).endswith('-development'))
+    if fixture and (scene_collision_asset_path is None or task_asset_path is None):
+        raise ValueError('policy_camera_fixture_collision_asset_missing')
+
+    def checked(candidate):
+        if fixture:
+            clearance = fixture_reset_clearance(
+                plan, candidate['source_joint_chain'], candidate['joint_reset_positions_rad'],
+                Path(scene_collision_asset_path), Path(task_asset_path))
+            if clearance['status'] != 'passed':
+                raise ValueError('policy_camera_fixture_reset_intersects_obstacle')
+            candidate['pre_spend_scene_clearance'] = clearance
+        candidate['configuration_digest'] = canonical_digest(candidate, digest_field='configuration_digest')
+        return validate_camera_start_configuration(plan, candidate)
+
+    try:
+        return checked(value)
+    except ValueError as exc:
+        if str(exc) not in {'policy_camera_final_reset_does_not_frame_task',
+                            'policy_camera_fixture_reset_intersects_obstacle'}:
+            raise
+    if fixture:
+        # A finite generated pose library is checked against this scene's exact
+        # cabinet bytes, desk bytes, wrist framing, and joint limits. It makes
+        # no native collision claim and never changes the frozen task object.
+        for arm in ((.911, -.582, -1.242, -2.402, .618, 2.786, -.514),
+                    (.874, -.413, -1.228, -2.46, 1.491, 2.651, -.271)):
+            candidate = deepcopy(value)
+            candidate['joint_reset_positions_rad'] = {
+                f'panda_joint{i}': angle for i, angle in enumerate(arm, 1)}
+            candidate['reset_adjustment'] = {
+                'joint_reset_positions_rad': dict(candidate['joint_reset_positions_rad']),
+                'reason': 'articulated_fixture_full_assembly_clearance',
+                'native_validated': False,
+            }
+            try:
+                return checked(candidate)
+            except ValueError as exc:
+                if str(exc) not in {'policy_camera_final_reset_does_not_frame_task',
+                                    'policy_camera_start_joint_margin_invalid',
+                                    'policy_camera_fixture_reset_intersects_obstacle'}:
+                    raise
+    # Small wrist-only corrections preserve the selected base and task layout.
+    # This is a camera candidate; native reset, visibility and collision checks remain.
+    for delta in (.1, -.1, .2, -.2, .3, -.3, .4, -.4):
+        for joint in ('panda_joint6', 'panda_joint5', 'panda_joint7'):
+            candidate = deepcopy(value)
+            candidate['joint_reset_positions_rad'][joint] += delta
+            candidate['reset_adjustment'] = {'joint': joint, 'delta_rad': delta,
+                'reason': 'task_outside_wrist_camera_at_selected_reset', 'native_validated': False}
+            try:
+                return checked(candidate)
+            except ValueError as exc:
+                if str(exc) not in {'policy_camera_final_reset_does_not_frame_task',
+                                    'policy_camera_start_joint_margin_invalid',
+                                    'policy_camera_fixture_reset_intersects_obstacle'}:
+                    raise
+    if plan.get('task_kind') == 'articulated_open_close':
+        # A drawer can face the wrist differently from a pick-and-place
+        # target. Search a finite elbow/wrist grid against both the camera and
+        # the retained fixture desk, then require native checks after launch.
+        choices = []
+        for fourth in (0.0, -0.2, -0.3, -0.4):
+            for fifth in (-0.25, -0.5, -0.75, -1.0):
+                for sixth in (0.25, 0.5, 0.75, 0.9, 1.0):
+                    candidate = deepcopy(value)
+                    for joint, delta in (('panda_joint4', fourth), ('panda_joint5', fifth),
+                                         ('panda_joint6', sixth)):
+                        candidate['joint_reset_positions_rad'][joint] += delta
+                    candidate['reset_adjustment'] = {
+                        'joints': {'panda_joint4': fourth, 'panda_joint5': fifth,
+                                   'panda_joint6': sixth},
+                        'reason': 'articulated_task_camera_and_obstacle_clearance',
+                        'native_validated': False,
+                    }
+                    try:
+                        checked(candidate)
+                    except ValueError as exc:
+                        if str(exc) not in {'policy_camera_final_reset_does_not_frame_task',
+                                            'policy_camera_start_joint_margin_invalid',
+                                            'policy_camera_fixture_reset_intersects_obstacle'}:
+                            raise
+                        continue
+                    report = camera_framing_report(plan, candidate['source_joint_chain'],
+                                                   candidate['joint_reset_positions_rad'])
+                    wrist = next(row for row in report['views'] if row['camera_role'] == 'wrist'
+                                 and row['subject'] == 'subject_start')
+                    u, v = wrist['projected_center_uv']
+                    score = (abs(u - 640) / 640 + abs(v - 360) / 360
+                             + 0.25 * (abs(fourth) + abs(fifth) + abs(sixth)))
+                    choices.append((score, fourth, fifth, sixth, candidate))
+        if choices:
+            return min(choices, key=lambda item: item[:4])[4]
+    raise ValueError('policy_camera_final_reset_does_not_frame_task')

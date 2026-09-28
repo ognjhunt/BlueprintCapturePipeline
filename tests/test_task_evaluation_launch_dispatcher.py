@@ -1,6 +1,8 @@
 import hashlib
 import json
 import threading
+import types
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -8,10 +10,15 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher_module
+from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
 import blueprint_pipeline.task_evaluation_launch_webapp_sync as webapp_sync_module
+from blueprint_pipeline.decision_evidence_contracts import (
+    cross_runtime_canonical_digest,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     EXECUTE_ENV,
+    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,
     LAUNCH_RUN_ROOT_PLACEHOLDER,
     SECRET_PROFILE_ID_ENV,
     TaskEvaluationLaunchError,
@@ -26,12 +33,40 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_request,
     validate_public_launch_profile_descriptor,
 )
-from blueprint_pipeline.task_evaluation_launch_reconciler import reconcile_launches
+from blueprint_pipeline.task_evaluation_launch_reconciler import (
+    _guard_provider_zero,
+    reconcile_launches,
+    validated_succeeded_webapp_sync_row,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_publication_readiness import (
+    SceneConfigurationPublicationReadinessError,
+)
 from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
 )
 from scripts.publish_task_evaluation_launch_profiles import publish_profiles
+
+
+@pytest.fixture(autouse=True)
+def _local_disk_reservation_root(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+    actual_reserve = getattr(dispatcher_module, "reserve_control_plane_disk", None)
+    if actual_reserve is None:
+        return
+
+    def reserve_on_roomy_test_disk(role, **kwargs):
+        return actual_reserve(
+            role,
+            disk_usage=lambda _path: types.SimpleNamespace(
+                total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
 
 
 def _reference(name: str) -> dict[str, str]:
@@ -178,6 +213,8 @@ def _request(profile: dict) -> dict:
         "claim_ceiling": "development_only",
         "idempotency_key": "launch-interiorgs-sage-001",
     }
+    if "source_commit" in profile:
+        request["source_commit"] = profile["source_commit"]
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     return request
 
@@ -245,6 +282,130 @@ def test_dispatcher_stages_exact_input_and_child_isolated_from_late_source_tampe
     assert Path(row["staged_path"]) == observed["staged"]
     assert row["staged_digest"] == row["expected_digest"]
     assert staging["source_paths_forwarded_to_allocator"] is False
+
+
+def test_dispatcher_reserves_immutable_input_bytes_before_copying(tmp_path, monkeypatch):
+    profile = _profile(tmp_path)
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    observed = []
+
+    def reserve(role, **kwargs):
+        assert not (tmp_path / "state" / "launch-interiorgs-sage-001" / "immutable_inputs").exists()
+        observed.append((role, kwargs))
+        return nullcontext()
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve, raising=False)
+    receipt = dispatch_launch_request(
+        request_path=request_path, profile_dir=profile_dir, state_root=tmp_path / "state",
+        allocator_runner=lambda _argv: 0,
+    )
+    assert receipt["status"] == "dry_run_completed"
+    assert len(observed) == 1
+    role, kwargs = observed[0]
+    assert role == "launch_dispatch"
+    assert kwargs["expected_bytes"] == sum(
+        Path(item["path"]).stat().st_size for item in profile["immutable_inputs"]
+    ) + 64 * 1024 * 1024
+    assert kwargs["target_root"] == tmp_path / "state"
+    assert kwargs["workspace"] == tmp_path / "state" / "launch-interiorgs-sage-001"
+
+
+def test_dispatcher_reserves_each_unique_directory_projection_copy(tmp_path, monkeypatch):
+    source_dir = tmp_path / "inputs"
+    nested = source_dir / "nested"
+    nested.mkdir(parents=True)
+    source = nested / "packet.json"
+    source.write_bytes(b'{"packet":"sealed"}\n')
+    profile = {"immutable_inputs": [{"name": "packet", "path": str(source), "digest": _path_digest(source)}]}
+    observed = []
+
+    def reserve(_role, **kwargs):
+        observed.append(kwargs["expected_bytes"])
+        return nullcontext()
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve)
+    receipt, _argv = dispatcher_module._stage_profile_immutable_inputs(
+        profile=profile, run_root=tmp_path / "run",
+        allocator_argv=[str(source_dir), str(nested), str(source_dir)],
+    )
+
+    assert receipt["directory_projection_count"] == 2
+    assert observed == [3 * source.stat().st_size + 64 * 1024 * 1024]
+
+
+def test_dispatcher_refuses_source_alias_changed_after_reservation(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    for directory in (first, second):
+        (directory / "packet.json").write_bytes(b'{"packet":"sealed"}\n')
+    alias = tmp_path / "alias"
+    alias.symlink_to(first, target_is_directory=True)
+    source = alias / "packet.json"
+    profile = {"immutable_inputs": [{"name": "packet", "path": str(source), "digest": _path_digest(source)}]}
+
+    def reserve(_role, **_kwargs):
+        alias.unlink()
+        alias.symlink_to(second, target_is_directory=True)
+        return nullcontext()
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve)
+    with pytest.raises(TaskEvaluationLaunchError, match="immutable_input_staging_source_changed:packet"):
+        dispatcher_module._stage_profile_immutable_inputs(
+            profile=profile, run_root=tmp_path / "run", allocator_argv=[str(first)],
+        )
+    assert not list((tmp_path / "run").rglob("*.input"))
+
+
+def test_dispatcher_never_forwards_a_directory_alias_changed_after_reservation(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for root, payload in ((first, b'{"packet":"sealed"}\n'), (second, b'{"packet":"changed"}\n')):
+        packet_dir = root / "inputs"
+        packet_dir.mkdir(parents=True)
+        (packet_dir / "packet.json").write_bytes(payload)
+    alias = tmp_path / "alias"
+    alias.symlink_to(first, target_is_directory=True)
+    source = first / "inputs" / "packet.json"
+    profile = _profile(tmp_path)
+    profile["immutable_inputs"].append({"name": "packet", "path": str(source), "digest": _path_digest(source)})
+    profile["allocator"]["argv"].extend(["--native-task-arena-packet", str(alias / "inputs")])
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls = []
+
+    def reserve(_role, **_kwargs):
+        alias.unlink()
+        alias.symlink_to(second, target_is_directory=True)
+        return nullcontext()
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve)
+    receipt = dispatch_launch_request(
+        request_path=request_path, profile_dir=profile_dir, state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(argv) or 0,
+    )
+    assert receipt["status"] == "blocked"
+    assert "immutable_input_staging_failed:immutable_input_allocator_directory_changed" in receipt["blockers"]
+    assert calls == []
+
+
+def test_dispatcher_disk_refusal_blocks_before_any_provider_call(tmp_path, monkeypatch):
+    profile = _profile(tmp_path)
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls = []
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", refuse, raising=False)
+    receipt = dispatch_launch_request(
+        request_path=request_path, profile_dir=profile_dir, state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(argv) or 0,
+    )
+    assert receipt["status"] == "blocked"
+    assert "task_evaluation_launch_disk_budget_exceeded" in receipt["blockers"]
+    assert calls == []
 
 
 def test_child_resolver_fails_closed_for_missing_or_tampered_mapping(
@@ -382,10 +543,7 @@ def test_dispatcher_blocks_source_tamper_before_staging(
     )
 
     assert receipt["status"] == "blocked"
-    assert any(
-        "immutable_input_staging_source_digest_mismatch" in blocker
-        for blocker in receipt["blockers"]
-    )
+    assert any("digest_mismatch" in blocker for blocker in receipt["blockers"])
     assert calls == []
 
 
@@ -494,6 +652,9 @@ def _webapp_sync_succeeded(receipt: dict, *, attempt_number: int = 1) -> dict:
         "request_digest": receipt["request_digest"],
         "receipt_digest": receipt["receipt_digest"],
         "response": {
+            "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "status": receipt["status"],
+            "already_exists": False,
             "launch_id": receipt["launch_id"],
             "run_id": receipt["run_id"],
             "request_digest": receipt["request_digest"],
@@ -507,6 +668,66 @@ def _webapp_sync_succeeded(receipt: dict, *, attempt_number: int = 1) -> dict:
         value, digest_field="sync_result_digest"
     )
     return value
+
+
+@pytest.mark.parametrize(
+    "offering_status", ["launch_ready", "configured_controls_pending"]
+)
+def test_durable_webapp_sync_proof_requires_the_configured_offering_ack(
+    offering_status: str,
+) -> None:
+    offering_digest = "sha256:" + "9" * 64
+    receipt = {
+        "status": "completed",
+        "launch_id": "scene-launch-839873",
+        "run_id": "scene-run-839873",
+        "request_digest": "sha256:" + "a" * 64,
+        "receipt_digest": "sha256:" + "b" * 64,
+        "terminal_evidence": {
+            "scene_configuration": {
+                "configured_scene_offering": {
+                    "status": offering_status,
+                    "offering_digest": offering_digest,
+                }
+            }
+        },
+    }
+    attempt = _webapp_sync_succeeded(receipt)
+    attempt.update(
+        {
+            "configured_scene_offering_digest": offering_digest,
+            "configured_scene_offering_status": offering_status,
+        }
+    )
+    attempt["response"].update(
+        {
+            "configured_scene_offering_digest": offering_digest,
+            "configured_scene_offering_status": offering_status,
+        }
+    )
+    attempt["sync_result_digest"] = canonical_digest(
+        attempt, digest_field="sync_result_digest"
+    )
+
+    validated = validated_succeeded_webapp_sync_row(
+        receipt=receipt, attempt=attempt
+    )
+    assert validated["receipt"]["configured_scene_offering_digest"] == (
+        offering_digest
+    )
+    assert validated["receipt"]["configured_scene_offering_status"] == (
+        offering_status
+    )
+
+    incomplete = json.loads(json.dumps(attempt))
+    incomplete["response"].pop("configured_scene_offering_digest")
+    incomplete["sync_result_digest"] = canonical_digest(
+        incomplete, digest_field="sync_result_digest"
+    )
+    with pytest.raises(
+        TaskEvaluationLaunchError, match="webapp_sync_succeeded_invalid"
+    ):
+        validated_succeeded_webapp_sync_row(receipt=receipt, attempt=incomplete)
 
 
 def _zero_guard(*, generated_at: datetime, live_instance_count: int = 0) -> dict:
@@ -793,9 +1014,39 @@ def test_public_catalog_binds_request_fields_to_the_published_descriptor(tmp_pat
     ) == ["launch_profile_public_catalog_source_bundle_mismatch"]
 
 
+def test_public_catalog_normalizes_typed_canary_allocation_control(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    descriptor = public_launch_profile_descriptor(profile)
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [descriptor])
+    request = _request(profile)
+    request["run_kind"] = "internal_policy_canary"
+    request["required_controls"] = {
+        **request["required_controls"],
+        "maximum_provider_allocations": 1,
+    }
+
+    assert validate_launch_request_against_public_catalog(
+        request, catalog_path=catalog_path
+    ) == []
+
+    request["run_kind"] = "qualified_evaluation"
+    assert validate_launch_request_against_public_catalog(
+        request, catalog_path=catalog_path
+    ) == ["launch_profile_public_catalog_required_controls_mismatch"]
+
+
 def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from blueprint_pipeline import task_evaluation_scene_storage_release as storage_release
+    released_receipts = []
+    def observe_release(*, run_root, receipt):
+        assert (run_root / 'launch_receipt.json').is_file()
+        released_receipts.append(receipt['status'])
+    monkeypatch.setattr(storage_release, 'release_terminal_scene_activation_pin', observe_release)
     profile = _profile(tmp_path)
     request = _request(profile)
     profile_dir = tmp_path / "profiles"
@@ -849,6 +1100,180 @@ def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     assert live["terminal_evidence"]["status"] == "passed"
     assert live["provider_mutation_attempted"] is True
     assert live["agent_operator_used"] is False
+    assert released_receipts == ['dry_run_completed', 'completed']
+    assert dispatch_launch_request(request_path=request_path, profile_dir=profile_dir,
+        state_root=tmp_path / 'live-state', execute=True, execute_launch_id=request['launch_id'],
+        allocator_runner=lambda _: pytest.fail('must not allocate again')) == live
+    assert released_receipts[-1] == 'completed'
+
+
+@pytest.mark.parametrize(
+    "offering_status", ["launch_ready", "configured_controls_pending"]
+)
+def test_scene_configuration_terminal_evidence_carries_published_revision(
+    tmp_path: Path, offering_status: str,
+) -> None:
+    result_path = tmp_path / "allocator-result.json"
+    teardown = tmp_path / "teardown.json"
+    artifact_manifest = tmp_path / "artifact-manifest.json"
+    provider_result = tmp_path / "provider-result.json"
+    revision = tmp_path / "configured-scene-revision.json"
+    publication = tmp_path / "publication-result.json"
+    for path in (teardown, artifact_manifest, provider_result, revision, publication):
+        _write(path, {"artifact": path.name})
+    result = {
+        "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+        "status": "completed",
+        "continuing_spend_from_this_run": False,
+        "retry_cap": 0,
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "full_byte_service_account_readback_passed": True,
+        "teardown_manifest_path": str(teardown),
+        "artifact_manifest_path": str(artifact_manifest),
+        "execution_result_path": str(provider_result),
+        "configured_scene_revision_path": str(revision),
+        "publication_result_path": str(publication),
+        "configured_scene_revision_digest": "sha256:" + "a" * 64,
+        "publication_result_digest": "sha256:" + "b" * 64,
+        "configured_scene_revision_reference": {
+            "uri": "s3://blueprint/configured/revision.json",
+            "digest": "sha256:" + "c" * 64,
+            "size_bytes": 100,
+        },
+        "configured_scene_bundle_reference": {
+            "uri": "s3://blueprint/configured/bundle.zip",
+            "digest": "sha256:" + "d" * 64,
+            "size_bytes": 200,
+        },
+        "task_thumbnail_reference": {
+            "uri": "s3://blueprint/configured/task-thumbnail.png",
+            "digest": "sha256:" + "e" * 64,
+            "size_bytes": 300,
+        },
+        "task_thumbnail_selection_receipt_reference": {
+            "uri": "s3://blueprint/configured/thumbnail-selection.json",
+            "digest": "sha256:" + "f" * 64,
+            "size_bytes": 400,
+        },
+    }
+    offering = {
+        "schema_version": "task_evaluation_configured_scene_offering.v1",
+        "status": offering_status,
+        "configuration_run_id": "scene-run-1",
+        "team_namespace": "team-a",
+        "catalog_visibility": "team_only",
+        "scene_identity": {"id": "scene-1", "version": "v1"},
+        "task": {
+            "identity": {"id": "push-1", "version": "v1"},
+            "kind": "rigid_relocation",
+            "strategy": "planar_push",
+            "subject_identity": {"id": "object-1", "version": "v1"},
+        },
+        "presentation": {
+            "task_thumbnail": result["task_thumbnail_reference"],
+            "selection_receipt": result[
+                "task_thumbnail_selection_receipt_reference"
+            ],
+        },
+        "evaluation_preparation_binding": {
+            "configured_scene_revision": result[
+                "configured_scene_revision_reference"
+            ],
+            "configured_scene_revision_digest": result[
+                "configured_scene_revision_digest"
+            ],
+            "configured_scene_bundle": result[
+                "configured_scene_bundle_reference"
+            ],
+        },
+        "offering_digest": "",
+    }
+    offering["offering_digest"] = canonical_digest(
+        offering, digest_field="offering_digest"
+    )
+    result["configured_scene_offering"] = offering
+    queue_finalization = {
+        "schema_version": "task_evaluation_scene_construction_finalization.v1",
+        "status": "completed",
+        "queue_state": "completed",
+        "finalization_performed": True,
+        "orchestration_id": "prepare-scene-1",
+        "run_id": "scene-run-1",
+        "source_commit": "a" * 40,
+        "result_digest": "",
+    }
+    queue_finalization["result_digest"] = canonical_digest(
+        queue_finalization, digest_field="result_digest"
+    )
+    result["run_id"] = queue_finalization["run_id"]
+    result["source_commit"] = queue_finalization["source_commit"]
+    result["scene_construction_queue_finalization"] = queue_finalization
+    _write(result_path, result)
+    profile = {
+        "terminal_contract": {
+            "result_path": str(result_path),
+            "success_statuses": ["completed"],
+            "required_values": {
+                "continuing_spend_from_this_run": False,
+                "retry_cap": 0,
+            },
+            "required_path_fields": [
+                "teardown_manifest_path",
+                "artifact_manifest_path",
+                "execution_result_path",
+                "configured_scene_revision_path",
+                "publication_result_path",
+            ],
+        }
+    }
+
+    terminal = dispatcher_module._terminal_evidence(
+        profile, execute=True, run_root=tmp_path
+    )
+
+    assert terminal["status"] == "passed"
+    assert terminal["scene_configuration"] == {
+        "schema_version": "task_evaluation_scene_configuration_terminal_evidence.v1",
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "configured_scene_revision_digest": "sha256:" + "a" * 64,
+        "configured_scene_revision_reference": result[
+            "configured_scene_revision_reference"
+        ],
+        "configured_scene_bundle_reference": result[
+            "configured_scene_bundle_reference"
+        ],
+        "task_thumbnail_reference": result["task_thumbnail_reference"],
+        "task_thumbnail_selection_receipt_reference": result[
+            "task_thumbnail_selection_receipt_reference"
+        ],
+        "configured_scene_offering": offering,
+        "publication_result_digest": "sha256:" + "b" * 64,
+        "scene_construction_queue_finalization_digest": queue_finalization[
+            "result_digest"
+        ],
+        "full_byte_service_account_readback_passed": True,
+    }
+
+    result["configured_scene_bundle_reference"] = None
+    result["blockers"] = [
+        "fixture_provider_refusal:https://objects.example.test/result?X-Amz-Signature=secret"
+    ]
+    _write(result_path, result)
+    refused = dispatcher_module._terminal_evidence(
+        profile, execute=True, run_root=tmp_path
+    )
+    assert refused["status"] == "blocked"
+    assert "scene_configuration_terminal_publication_evidence_invalid" in refused[
+        "blockers"
+    ]
+    assert any(
+        blocker.startswith("scene_configuration_result:fixture_provider_refusal:")
+        and "<redacted>" in blocker
+        for blocker in refused["blockers"]
+    )
+    assert "X-Amz-Signature=secret" not in json.dumps(refused)
 
 
 def test_dispatch_renders_all_output_paths_inside_the_launch_run_root(
@@ -968,6 +1393,248 @@ def test_live_dispatch_blocks_without_independent_execute_environment(
     assert "execute_launch_id_required" in receipt["blockers"]
     assert calls == []
     assert receipt["provider_mutation_attempted"] is False
+
+
+def test_native_policy_sigterm_before_admission_seals_typed_media_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed allocator used to leave neither its result nor the mandatory
+    typed pre-observation media gap, while claiming a provider mutation attempt
+    solely because the subprocess had been invoked."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=lambda _argv: -15,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["execute_requested"] is True
+    assert receipt["allocator_invoked"] is True
+    assert receipt["allocator_exit_code"] == -15
+    assert receipt["provider_mutation_attempted"] is False
+    assert receipt["provider_mutation_evidence"] == {
+        "schema_version": "task_evaluation_provider_mutation_evidence.v1",
+        "status": "absent_before_paid_admission",
+        "allocator_invoked": True,
+        "admission_artifact_path_configured": True,
+        "bound_request_artifact_path_configured": True,
+        "adapter_output_artifact_path_configured": True,
+        "all_boundary_artifact_paths_configured": True,
+        "admission_artifact_present": False,
+        "bound_request_artifact_present": False,
+        "adapter_output_artifact_present": False,
+        "terminal_result_artifact_present": False,
+        "raw_secret_values_recorded": False,
+    }
+    expected_visual = {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "allocator_terminated_before_paid_admission",
+        },
+    }
+    assert receipt["visual_evidence"] == expected_visual
+    assert receipt["terminal_evidence"]["visual_evidence"] == expected_visual
+    assert "allocator_terminal_result_missing" in receipt["blockers"]
+    assert "canonical_allocator_nonzero_exit" in receipt["blockers"]
+    persisted = json.loads(
+        (
+            tmp_path
+            / "state"
+            / request["launch_id"]
+            / "launch_receipt.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted == receipt
+    assert receipt["receipt_digest_canonicalization"] == (
+        LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+    )
+    assert receipt["receipt_digest"] == cross_runtime_canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_native_policy_post_admission_result_propagates_typed_media_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal allocator result remains the media-gap authority after admission."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    expected_visual = {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "vast_probe_interrupted_before_completion",
+        },
+    }
+
+    def _runner(_argv: list[str]) -> int:
+        _write(tmp_path / "admission.json", {"status": "admitted"})
+        _write(tmp_path / "bound-request.json", {"status": "bound"})
+        _write(
+            tmp_path / "allocator-result.json",
+            {
+                "schema_version": "native_task_arena_vast_run.v1",
+                "status": "blocked",
+                "continuing_spend_from_this_run": False,
+                "retry_cap": 0,
+                "visual_evidence": expected_visual,
+            },
+        )
+        return -15
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=_runner,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["allocator_invoked"] is True
+    assert receipt["provider_mutation_attempted"] is True
+    assert (
+        receipt["provider_mutation_evidence"]["status"]
+        == "allocator_boundary_artifacts_present"
+    )
+    assert receipt["visual_evidence"] == expected_visual
+    assert receipt["terminal_evidence"]["visual_evidence"] == expected_visual
+    assert receipt["receipt_digest_canonicalization"] == (
+        LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+    )
+    assert receipt["receipt_digest"] == cross_runtime_canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_native_policy_missing_result_does_not_invent_preobservation_after_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the paid admission artifact exists, a missing result cannot prove
+    whether the provider reached its first observation."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+
+    def _runner(_argv: list[str]) -> int:
+        _write(tmp_path / "admission.json", {"status": "admitted"})
+        return -15
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=_runner,
+    )
+
+    assert receipt["execute_requested"] is True
+    assert receipt["allocator_invoked"] is True
+    assert receipt["provider_mutation_attempted"] is True
+    assert (
+        receipt["provider_mutation_evidence"]["status"]
+        == "allocator_boundary_artifacts_present"
+    )
+    assert receipt["provider_mutation_evidence"]["admission_artifact_present"] is True
+    assert "visual_evidence" not in receipt
+    assert "visual_evidence" not in receipt["terminal_evidence"]
+
+
+@pytest.mark.parametrize(
+    "removed_flags",
+    [
+        ("--admission-out",),
+        ("--admission-out", "--bound-request-out", "--adapter-output"),
+    ],
+)
+def test_native_policy_missing_boundary_paths_stays_conservative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    removed_flags: tuple[str, ...],
+) -> None:
+    """Uninstrumented argv cannot prove that no paid boundary was crossed."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    argv = profile["allocator"]["argv"]
+    for flag in removed_flags:
+        index = argv.index(flag)
+        del argv[index : index + 2]
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=lambda _argv: -15,
+    )
+
+    assert receipt["execute_requested"] is True
+    assert receipt["allocator_invoked"] is True
+    assert receipt["provider_mutation_attempted"] is True
+    evidence = receipt["provider_mutation_evidence"]
+    assert evidence["status"] == "boundary_artifact_paths_unconfigured"
+    assert evidence["all_boundary_artifact_paths_configured"] is False
+    for flag, field in (
+        ("--admission-out", "admission_artifact_path_configured"),
+        ("--bound-request-out", "bound_request_artifact_path_configured"),
+        ("--adapter-output", "adapter_output_artifact_path_configured"),
+    ):
+        assert evidence[field] is (flag not in removed_flags)
+    assert "visual_evidence" not in receipt
+    assert "visual_evidence" not in receipt["terminal_evidence"]
 
 
 def test_live_dispatch_blocks_dry_only_profile_and_secret_profile_mismatch(
@@ -1403,9 +2070,19 @@ def test_reconciler_closes_stale_processing_only_after_fresh_provider_zero(
     assert recovery["automatic_retry_performed"] is False
 
 
+@pytest.mark.parametrize("cross_runtime_receipt", [False, True])
+@pytest.mark.parametrize("unrelated_inventory_failure", [False, True])
 def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
-    tmp_path: Path,
+    tmp_path: Path, cross_runtime_receipt: bool, unrelated_inventory_failure: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    release_calls = []
+    def observe_cache_release(*, run_root, receipt):
+        closure = json.loads((run_root / "post_teardown_provider_zero_receipt.json").read_text())
+        assert closure["receipt_digest"] == receipt["receipt_digest"]
+        release_calls.append(run_root)
+        return {"status": "observed", "evidence_removed": False}
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_scene_storage_release.release_terminal_scene_activation_pin", observe_cache_release)
     profile = _profile(tmp_path)
     request = _request(profile)
     run_root = tmp_path / "state" / request["launch_id"]
@@ -1426,13 +2103,28 @@ def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
         profile=profile,
         teardown_path=teardown_path,
     )
+    if cross_runtime_receipt:
+        receipt["receipt_digest_canonicalization"] = (
+            LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        )
+        receipt["receipt_digest"] = cross_runtime_canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
     _write(run_root / "launch_profile.json", profile)
     _write(run_root / "launch_receipt.json", receipt)
     # Keep this focused on closure evidence rather than WebApp callback setup.
     _write(run_root / "webapp_sync_succeeded.json", _webapp_sync_succeeded(receipt))
     guard_path = tmp_path / "gpu-spend-guard.json"
     observed_at = datetime.now(timezone.utc)
-    _write(guard_path, _zero_guard(generated_at=observed_at - timedelta(seconds=1)))
+    guard = _zero_guard(generated_at=observed_at - timedelta(seconds=1))
+    if unrelated_inventory_failure:
+        guard["provider_zero_verified"] = False
+        guard["provider_zero"]["status"] = "unverified"
+        guard["provider_zero"]["required_provider_ids"].append("runpod")
+        guard["inventory_results"].append({
+            "provider": "runpod", "status": "failed", "required": True,
+        })
+    _write(guard_path, guard)
 
     first = reconcile_launches(
         queue_root=tmp_path / "queue",
@@ -1448,6 +2140,9 @@ def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
     )
 
     assert first["status"] == "passed"
+    assert release_calls == [run_root, run_root]
+    assert first["terminal_provider_zero"][0]["activation_cache_release"]["status"] == "observed"
+    assert second["terminal_provider_zero"][0]["activation_cache_release"]["status"] == "observed"
     assert first["terminal_provider_zero"][0]["status"] == "provider_zero_confirmed"
     assert first["terminal_provider_zero"][0]["provider_mutation_performed"] is False
     assert second["terminal_provider_zero"][0]["status"] == "provider_zero_receipt_retained"
@@ -1461,9 +2156,37 @@ def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
     )
     snapshot_path = Path(closure["independent_guard_snapshot"]["path"])
     snapshot = json.loads(snapshot_path.read_text())
-    assert snapshot["guard"]["provider_zero_verified"] is True
+    assert snapshot["guard"]["provider_zero_verified"] is not unrelated_inventory_failure
+    assert closure["required_providers"] == ["vast"]
     assert snapshot["source_guard_report_sha256"] == _path_digest(guard_path)
     assert len(list((run_root / "provider_zero_guard_snapshots").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("refusal", ["full_scope", "required_failed", "required_missing", "nonzero", "stale"])
+def test_scoped_zero_still_requires_fresh_empty_required_inventory(refusal: str) -> None:
+    now = datetime.now(timezone.utc)
+    guard = _zero_guard(generated_at=now)
+    guard["provider_zero_verified"] = False
+    guard["provider_zero"]["status"] = "unverified"
+    guard["provider_zero"]["required_provider_ids"].append("runpod")
+    guard["inventory_results"].append({"provider": "runpod", "status": "failed", "required": True})
+    required = ["vast"]
+    if refusal == "full_scope":
+        required.append("runpod")
+    elif refusal == "required_failed":
+        guard["inventory_results"][0]["status"] = "failed"
+    elif refusal == "required_missing":
+        guard["inventory_results"].pop(0)
+    elif refusal == "nonzero":
+        guard["inventory_results"][0]["row_count"] = 1
+    elif refusal == "stale":
+        guard["generated_at"] = (now - timedelta(minutes=10)).isoformat()
+    accepted, blockers = _guard_provider_zero(
+        guard=guard, required_providers=required, max_age_seconds=300,
+        now=now, not_before=now - timedelta(minutes=20),
+    )
+    assert accepted is False
+    assert blockers
 
 
 def test_reconciler_never_retains_provider_zero_before_teardown_or_while_nonzero(
@@ -1714,6 +2437,9 @@ def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
             "request_digest": receipt["request_digest"],
             "receipt_digest": receipt["receipt_digest"],
             "response": {
+                "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+                "status": receipt["status"],
+                "already_exists": False,
                 "launch_id": receipt["launch_id"],
                 "run_id": receipt["run_id"],
                 "request_digest": receipt["request_digest"],
@@ -1749,6 +2475,9 @@ def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
             "run_id": request["run_id"],
             "request_digest": request["request_digest"],
             "receipt_digest": receipt["receipt_digest"],
+            "response_schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "terminal_status": receipt["status"],
+            "already_exists": False,
         },
     }]
     assert result["terminal_provider_zero"] == []
@@ -1948,6 +2677,80 @@ def test_profile_publisher_emits_webapp_descriptor_without_allocator_arguments(
     }
 
 
+def test_source_commit_is_public_bound_and_propagated_to_terminal_receipt(
+    tmp_path: Path,
+) -> None:
+    source_commit = "a" * 40
+    profile = _profile(tmp_path)
+    profile["source_commit"] = source_commit
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [public_launch_profile_descriptor(profile)])
+
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    assert request["source_commit"] == source_commit
+    assert validate_launch_request_against_public_catalog(
+        request, catalog_path=catalog_path
+    ) == []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        public_catalog_path=catalog_path,
+        allocator_runner=lambda argv: 0,
+    )
+
+    assert receipt["source_commit"] == source_commit
+    assert receipt["status"] == "dry_run_completed"
+
+
+def test_source_commit_fails_closed_at_every_public_launch_boundary(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    profile["source_commit"] = "a" * 40
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    descriptor = public_launch_profile_descriptor(profile)
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [descriptor])
+    request = _request(profile)
+
+    malformed_profile = dict(profile, source_commit="A" * 40)
+    malformed_profile["profile_digest"] = canonical_digest(
+        malformed_profile, digest_field="profile_digest"
+    )
+    assert "launch_profile_source_commit_invalid" in validate_launch_profile(
+        malformed_profile
+    )
+
+    malformed_descriptor = dict(descriptor, source_commit="main")
+    assert "launch_profile_public_source_commit_invalid" in (
+        validate_public_launch_profile_descriptor(malformed_descriptor)
+    )
+
+    mismatched_request = dict(request, source_commit="b" * 40)
+    mismatched_request["request_digest"] = canonical_digest(
+        mismatched_request, digest_field="request_digest"
+    )
+    assert validate_launch_request(mismatched_request) == []
+    assert validate_launch_request_against_public_catalog(
+        mismatched_request, catalog_path=catalog_path
+    ) == ["launch_profile_public_catalog_source_commit_mismatch"]
+
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    mismatched_path = tmp_path / "mismatched-request.json"
+    _write(mismatched_path, mismatched_request)
+    receipt = dispatch_launch_request(
+        request_path=mismatched_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+    )
+    assert "launch_source_commit_profile_binding_mismatch" in receipt["blockers"]
+
+
 def test_public_catalog_rejects_execution_fields_symlinks_and_duplicates(
     tmp_path: Path,
 ) -> None:
@@ -2048,6 +2851,126 @@ def test_public_descriptor_requires_bounded_authorization_projection(
     bool_ttl["required_authorization"]["hard_ttl_seconds"] = True
     assert "launch_profile_public_required_ttl_invalid" in (
         validate_public_launch_profile_descriptor(bool_ttl)
+    )
+
+
+def test_public_catalog_projects_exact_scene_configuration_team_binding(
+    tmp_path: Path,
+) -> None:
+    """A terminal offering must bind back to the team that configured the scene."""
+
+    profile = _profile(tmp_path)
+    profile["allocator"]["argv"].extend(
+        ["--probe-kind", "task-evaluation-scene-configuration"]
+    )
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    assert "launch_profile_task_evaluation_run_missing" in validate_launch_profile(
+        profile
+    )
+    context = {
+        "run_mode": "scene_configuration",
+        "team_namespace": "team-a",
+        "scene_id": "interiorgs-839873",
+        "task_id": "planar-mug-push",
+        "configuration_run_id": "scene-configuration-run-001",
+        "evaluation_episode_executed": False,
+    }
+    profile["task_evaluation_run"] = context
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    source = tmp_path / "staging" / "profile.json"
+    _write(source, profile)
+
+    publish_profiles(
+        profile_paths=[source],
+        profile_dir=tmp_path / "published",
+        webapp_catalog_out=tmp_path / "catalog.json",
+    )
+
+    descriptor = json.loads((tmp_path / "catalog.json").read_text())[0]
+    assert descriptor["task_evaluation_run"] == context
+    assert validate_public_launch_profile_descriptor(descriptor) == []
+
+    smuggled = json.loads(json.dumps(descriptor))
+    smuggled["task_evaluation_run"]["launch_id"] = "another-team-launch"
+    assert "launch_profile_public_task_evaluation_run_fields_invalid" in (
+        validate_public_launch_profile_descriptor(smuggled)
+    )
+
+    executed = json.loads(json.dumps(descriptor))
+    executed["task_evaluation_run"]["evaluation_episode_executed"] = True
+    assert (
+        "launch_profile_public_task_evaluation_run_evaluation_episode_executed_invalid"
+        in validate_public_launch_profile_descriptor(executed)
+    )
+
+
+def test_scene_configuration_publication_preflight_blocks_before_staging_or_allocator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    profile["allocator"]["argv"].extend(
+        ["--probe-kind", "task-evaluation-scene-configuration"]
+    )
+    profile["task_evaluation_run"] = {
+        "run_mode": "scene_configuration",
+        "team_namespace": "team-a",
+        "scene_id": "interiorgs-839873",
+        "task_id": "planar-mug-push",
+        "configuration_run_id": "scene-configuration-run-001",
+        "evaluation_episode_executed": False,
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    calls: list[list[str]] = []
+    observed: list[dict[str, str]] = []
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+
+    def blocked_probe(**binding: str) -> dict[str, object]:
+        observed.append(binding)
+        raise SceneConfigurationPublicationReadinessError(
+            "scene_configuration_publication_readiness_http_error:404"
+        )
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+        publication_readiness_probe=blocked_probe,
+    )
+
+    assert observed == [
+        {
+            "launch_id": request["launch_id"],
+            "run_id": request["run_id"],
+            "request_digest": request["request_digest"],
+            "team_namespace": "team-a",
+        }
+    ]
+    assert receipt["status"] == "blocked"
+    assert receipt["allocator_invoked"] is False
+    assert receipt["provider_mutation_attempted"] is False
+    assert calls == []
+    assert receipt["immutable_input_staging"]["status"] == "not_started"
+    assert receipt["publication_readiness"] == {
+        "schema_version": "task_evaluation_launch_publication_preflight.v1",
+        "status": "blocked",
+        "blockers": [
+            "scene_configuration_publication_readiness_http_error:404"
+        ],
+        "provider_mutation_performed": False,
+        "spend_authority_granted": False,
+        "raw_secret_values_recorded": False,
+    }
+    assert (
+        "scene_configuration_publication_readiness_http_error:404"
+        in receipt["blockers"]
     )
 
 
@@ -2264,10 +3187,9 @@ def test_one_use_standing_authority_is_atomic_across_distinct_website_launches(
         receipts = list(executor.map(dispatch, request_paths))
 
     assert len(calls) == 1
-    assert sum(receipt["provider_mutation_attempted"] is True for receipt in receipts) == 1
-    refused = next(
-        receipt for receipt in receipts if receipt["provider_mutation_attempted"] is False
-    )
+    assert sum(receipt["allocator_invoked"] is True for receipt in receipts) == 1
+    assert all(receipt["provider_mutation_attempted"] is False for receipt in receipts)
+    refused = next(receipt for receipt in receipts if receipt["allocator_invoked"] is False)
     assert "standing_authorization_consumption_not_recorded" in refused["blockers"]
     assert "standing_authorization_launches_exhausted" in refused["blockers"]
     consumption_records = list(
@@ -2536,3 +3458,106 @@ def test_a_terminal_stale_launch_id_does_not_strand_a_standing_authority(
         )
     )
     assert binding["execute_launch_id"] == ""
+
+
+def test_one_source_bound_under_two_logical_names_stages_once(
+    tmp_path: Path,
+) -> None:
+    """The scene configuration lane binds its bundle receipt as both the
+    source bundle manifest and the evaluation run spec.  One file under two
+    logical names is a single staged copy, not a duplicate-source refusal."""
+
+    profile = _profile(tmp_path)
+    shared = Path(profile["immutable_inputs"][0]["path"])
+    profile["immutable_inputs"][1] = {
+        "name": "evaluation_run_spec",
+        "path": str(shared),
+        "digest": _path_digest(shared),
+    }
+    profile["allocator"]["argv"].extend(["--exact-input", str(shared)])
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert not any(
+        "immutable_input_staging_duplicate_source" in blocker
+        for blocker in receipt.get("blockers", [])
+    )
+    assert receipt["immutable_input_staging"]["input_count"] == 2
+    assert len(calls) == 1
+    staged = sorted(
+        (tmp_path / "state").glob("*/immutable_inputs/*.input")
+    )
+    assert len(staged) == 1
+    assert str(shared) not in " ".join(calls[0])
+    assert str(staged[0]) in calls[0]
+
+
+def test_two_different_files_still_cannot_share_one_source_claim(
+    tmp_path: Path,
+) -> None:
+    """Dedupe must not weaken the guard: a repeated source row whose digest
+    does not match the staged bytes is still refused."""
+
+    profile = _profile(tmp_path)
+    shared = Path(profile["immutable_inputs"][0]["path"])
+    other = Path(profile["immutable_inputs"][1]["path"])
+    profile["immutable_inputs"][1] = {
+        "name": "evaluation_run_spec",
+        "path": str(shared),
+        "digest": _path_digest(other),
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert any("digest_mismatch" in blocker for blocker in receipt["blockers"])
+    assert calls == []
+
+
+
+def test_immutable_input_digest_is_reused_by_stat_identity_and_fails_closed_on_changed_bytes(tmp_path, monkeypatch):
+    """2026-09-13: publication and dispatch re-read a 1.2 GB bundle at every step although it never moved."""
+    from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
+    from blueprint_pipeline import validation_file_digests
+    from blueprint_pipeline.launch_profile_immutable_inputs import immutable_input_digest
+
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"z" * (1024 * 1024 + 3))  # at or above MINIMUM_BYTES: re-proven by stat identity
+    first = immutable_input_digest(bundle)
+    assert first == dispatcher._file_digest(bundle)
+    profile = {"immutable_inputs": [{"name": "bundle", "path": str(bundle), "digest": first}]}
+    assert dispatcher.verify_profile_immutable_inputs(profile) == []
+
+    def refuse(path):
+        raise AssertionError(f"re-read {path} although nothing moved")
+
+    monkeypatch.setattr(validation_file_digests, "sha256_file", refuse)
+    assert immutable_input_digest(bundle) == first
+    assert dispatcher.verify_profile_immutable_inputs(profile) == []
+    monkeypatch.undo()
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
+    bundle.write_bytes(b"y" * (1024 * 1024 + 3))
+    assert immutable_input_digest(bundle) != first
+    assert dispatcher.verify_profile_immutable_inputs(profile) == [
+        "launch_profile_immutable_input_digest_mismatch:bundle"]

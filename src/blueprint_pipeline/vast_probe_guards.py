@@ -180,7 +180,16 @@ def cold_pull_aware_heartbeat_no_progress_seconds(
     # deterministically, while looking like a provider flake.
     if (
         provider_bundle_kind
-        not in {"wam", "paired_target_native_import", "adp_simready_isaac"}
+        not in {
+            "wam",
+            "paired_target_native_import",
+            "adp_simready_isaac",
+            # Scene configuration admits an 18-minute cold Isaac pull and then
+            # runs six stages, so it is the same shape as the three above: the
+            # admission gate allows the pull, the live window is sized for it,
+            # and this window would expire first while looking like a flake.
+            "task_evaluation_scene_configuration",
+        }
         or not allow_cold_image_pull
     ):
         return resolved

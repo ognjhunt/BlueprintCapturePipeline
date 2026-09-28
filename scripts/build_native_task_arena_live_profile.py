@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,10 @@ from typing import Any, Mapping, Sequence
 from blueprint_pipeline.native_task_arena_construction_bundle import (
     PROBE_KIND as CONSTRUCTION_PROBE_KIND,
     load_verified_native_task_arena_construction_bundle,
+)
+from blueprint_pipeline.native_task_arena_destination_qualification_bundle import (
+    PROBE_KIND as DESTINATION_QUALIFICATION_PROBE_KIND,
+    load_verified_native_task_arena_destination_qualification_bundle,
 )
 from blueprint_pipeline.native_task_arena_controls_bundle import (
     PROBE_KIND as CONTROLS_PROBE_KIND,
@@ -62,6 +67,9 @@ from blueprint_pipeline.native_task_arena_warm_authority import (
     validate_native_task_arena_warm_attempt_authority,
     validate_native_task_arena_warm_session,
 )
+from blueprint_pipeline.native_construction_terminal_feedback_contract import (
+    validate_terminal_feedback_adoption,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_runtime import (
     NativeTaskArenaRuntimeError,
@@ -79,6 +87,10 @@ from blueprint_pipeline.task_evaluation_live_profile import (
     build_lane_live_profile,
     file_digest,
 )
+from blueprint_pipeline.task_evaluation_launch_preparation_contract import (
+    EXECUTION_ADAPTER_PROVIDER_CAPABILITIES,
+)
+from blueprint_pipeline.task_evaluation_scene_owner_attempt_profiles import profile_owner_fields
 
 
 def _write_profile_output_exclusive(path: Path, payload: bytes) -> bool:
@@ -149,6 +161,12 @@ class ArenaLink:
 
 
 LINKS: dict[str, ArenaLink] = {
+    "destination": ArenaLink(
+        DESTINATION_QUALIFICATION_PROBE_KIND,
+        "arena-destination-qualification-live",
+        "arena-destination-qualification-job",
+        {},
+    ),
     "construction": ArenaLink(
         CONSTRUCTION_PROBE_KIND, "arena-construction-live", "arena-construction-job", {}
     ),
@@ -181,6 +199,9 @@ LINKS: dict[str, ArenaLink] = {
 }
 
 BUNDLE_LOADERS = {
+    DESTINATION_QUALIFICATION_PROBE_KIND: (
+        load_verified_native_task_arena_destination_qualification_bundle
+    ),
     CONSTRUCTION_PROBE_KIND: load_verified_native_task_arena_construction_bundle,
     CONTROLS_PROBE_KIND: load_verified_native_task_arena_controls_bundle,
     POLICY_PROBE_KIND: load_verified_native_task_arena_policy_bundle,
@@ -511,10 +532,38 @@ def _lane_blockers(
                         )
                     )
                     retain_warm_session = bool(authority.get("retain_warm_session"))
-                    if retain_warm_session and link.probe_kind != CONTROLS_PROBE_KIND:
+                    if retain_warm_session and link.probe_kind not in {
+                        CONSTRUCTION_PROBE_KIND,
+                        CONTROLS_PROBE_KIND,
+                    }:
                         raise ValueError(
-                            "native_task_arena_warm_session_requires_controls"
+                            "native_task_arena_warm_session_requires_construction_or_controls"
                         )
+                    adoption_path = context.extra_paths.get(
+                        "terminal_feedback_adoption"
+                    )
+                    if adoption_path is not None:
+                        if (
+                            link.probe_kind != CONSTRUCTION_PROBE_KIND
+                            or not retain_warm_session
+                        ):
+                            raise ValueError(
+                                "native_task_arena_feedback_bootstrap_mode_invalid"
+                            )
+                        adoption = validate_terminal_feedback_adoption(
+                            _read_mapping(
+                                adoption_path,
+                                error="native_task_arena_terminal_feedback_adoption_invalid",
+                            )
+                        )
+                        if adoption.get("packet_request_digest") != request.get(
+                            "request_digest"
+                        ) or bound_inputs.get(
+                            "native_construction_terminal_feedback_adoption.v1.json"
+                        ) != file_digest(adoption_path):
+                            raise ValueError(
+                                "native_task_arena_terminal_feedback_adoption_invalid"
+                            )
                     validate_native_task_arena_paid_attempt_authority(
                         authority,
                         prepared_bundle=prepared_bundle,
@@ -581,6 +630,12 @@ def _lane_argv(link: ArenaLink, *, authorize_gated_backbone: bool = False):
         )
         if authority.get("retain_warm_session") is True:
             built += ["--native-task-arena-retain-warm-session"]
+        adoption = context.extra_paths.get("terminal_feedback_adoption")
+        if adoption is not None:
+            built += [
+                "--native-task-arena-terminal-feedback-adoption",
+                str(adoption),
+            ]
         for instance_id in (
             (authority.get("active_instance_allowlist") or {}).get(
                 "external_provider_owned", []
@@ -671,6 +726,50 @@ def _immutable_inputs(link: ArenaLink):
                     f"native_task_arena_immutable_input_binding_invalid:{name}"
                 )
             return path
+
+        # The dispatcher replaces the packet directory argument with a projection
+        # built only from declared immutable inputs, and deliberately leaves
+        # undeclared files behind so a stray secret beside the documents is never
+        # copied into the run. That means an asset the workload actually opens --
+        # the collision mesh the planner loads -- has to be declared too, or the
+        # workload is handed a packet directory with the documents present and the
+        # meshes missing. The packet receipt already binds each asset by its
+        # staged path, size and digest, so declare exactly those bindings and let
+        # the existing identity check verify the bytes.
+        packet_dir = context.extra_paths["packet_dir"]
+        packet_receipt_record = _read_mapping(
+            packet_receipt, error="native_task_arena_packet_receipt_invalid"
+        )
+        for binding in packet_receipt_record.get("source_bindings") or []:
+            if not isinstance(binding, Mapping):
+                continue
+            role = str(binding.get("semantic_role") or "")
+            staged_relative = str(binding.get("staged_relative_path") or "")
+            if not role or not staged_relative:
+                raise TaskEvaluationLaunchError(
+                    "native_task_arena_packet_asset_binding_invalid:"
+                    + (role or "unnamed")
+                )
+            append_bound_record(
+                f"native_task_arena_packet_asset_{role}",
+                {
+                    "path": str(packet_dir / staged_relative),
+                    "sha256": binding.get("staged_sha256"),
+                    "size_bytes": binding.get("staged_size_bytes"),
+                },
+            )
+
+        # The bundle contract now requires the packet's runtime contract beside
+        # the other three documents, and the dispatcher projects only declared
+        # inputs -- the same failure class as the meshes, one file later:
+        # run r14 refused with
+        # native_task_arena_bundle_packet_file_missing:native_task_runtime_contract.v1.json
+        # because this document was in the packet but never declared.
+        runtime_contract = packet_dir / "native_task_runtime_contract.v1.json"
+        if runtime_contract.is_file() and not runtime_contract.is_symlink():
+            append_file(
+                "native_task_arena_runtime_contract", runtime_contract
+            )
 
         preallocation_zero_seen: set[Path] = set()
 
@@ -853,6 +952,15 @@ def _immutable_inputs(link: ArenaLink):
                     "digest": file_digest(warm_session),
                 }
             )
+        adoption = context.extra_paths.get("terminal_feedback_adoption")
+        if adoption is not None:
+            rows.append(
+                {
+                    "name": "native_task_arena_terminal_feedback_adoption",
+                    "path": str(adoption),
+                    "digest": file_digest(adoption),
+                }
+            )
         # Each predecessor result is pinned by digest: this link's verdict is
         # only about the packet it actually consumed.
         for name in link.predecessors:
@@ -860,17 +968,27 @@ def _immutable_inputs(link: ArenaLink):
             rows.append(
                 {"name": f"native_task_arena_{name}", "path": str(path), "digest": file_digest(path)}
             )
+        owner_path = context.extra_paths.get("scene_owner_attempt")
+        if owner_path is not None:
+            rows.append({"name": "scene_owner_attempt", "path": str(owner_path), "digest": file_digest(owner_path)})
         return rows
 
     return inputs
 
 
-def _native_policy_profile_fields(link: ArenaLink):
+def _native_policy_profile_fields(link: ArenaLink, *, expected_scene_id: str, expected_task_id: str, provider: str):
     """Expose private frozen-policy identity without claiming generic OCI support."""
 
     def fields(context: LaneLiveProfileContext) -> Mapping[str, Any]:
+        authority = _read_mapping(context.extra_paths["attempt_authority"],
+            error="native_task_arena_attempt_authority_invalid")
+        owner_fields = profile_owner_fields(path=context.extra_paths.get("scene_owner_attempt"),
+            authority=authority, phase=('destination' if link.probe_kind == 'native-task-arena-destination-qualification'
+                else link.probe_kind.removeprefix("native-task-arena-")),
+            source_commit=context.source_commit, scene_id=expected_scene_id, task_id=expected_task_id,
+            maximum_spend_usd=context.max_spend_usd, provider=provider)
         if "policy_execution_spec" not in link.predecessors:
-            return {}
+            return owner_fields
         spec = _read_mapping(
             context.extra_paths["policy_execution_spec"],
             error="native_task_arena_policy_execution_spec_invalid",
@@ -911,6 +1029,7 @@ def _native_policy_profile_fields(link: ArenaLink):
                 )
             }
         return {
+            **owner_fields,
             "native_policy_binding": {
                 "schema_version": "native_task_arena_policy_binding.v1",
                 "candidate_id": spec.get("candidate_id"),
@@ -971,7 +1090,9 @@ def _spec(
     expected_task_id: str = "contract_probe_task",
     with_avoidlist: bool = False,
     with_warm_session: bool = False,
+    with_terminal_feedback_adoption: bool = False,
     authorize_gated_backbone: bool = False,
+    provider: str = "vast",
 ) -> LaneLiveProfileSpec:
     if isinstance(link, str):
         # Shared builder-contract probes call candidate factories with a
@@ -1003,7 +1124,8 @@ def _spec(
             expected_scene_id=expected_scene_id,
             expected_task_id=expected_task_id,
         ),
-        profile_fields=_native_policy_profile_fields(link),
+        profile_fields=_native_policy_profile_fields(link, expected_scene_id=expected_scene_id,
+            expected_task_id=expected_task_id, provider=provider),
         # The skeleton requires every declared path, so the optional
         # avoidlist is only declared on the calls that actually supply one.
         extra_path_names=(
@@ -1012,8 +1134,16 @@ def _spec(
             "attempt_authority",
             *(("machine_avoidlist",) if with_avoidlist else ()),
             *(("warm_session",) if with_warm_session else ()),
+            *(
+                ("terminal_feedback_adoption",)
+                if with_terminal_feedback_adoption
+                else ()
+            ),
             *link.predecessors,
         ),
+        optional_extra_path_names=("scene_owner_attempt",),
+        required_providers=(provider,),
+        provider=provider,
     )
 
 
@@ -1034,15 +1164,28 @@ def build_native_task_arena_live_profile(
     authorize_gated_backbone: bool = False,
     machine_avoidlist_path: str | Path | None = None,
     warm_session_path: str | Path | None = None,
+    terminal_feedback_adoption_path: str | Path | None = None,
+    scene_owner_attempt_path: str | Path | None = None,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
     max_spend_usd: float = 2.0,
     hard_ttl_seconds: int = 7_200,
     preferred_geolocation_regex: str = "",
+    camera_resolution: str = "",
+    provider: str = "vast",
 ) -> dict[str, Any]:
     """Derive a live profile from the packet receipt the link will run."""
 
+    if scene_owner_attempt_path is not None and any(
+            p.is_symlink() for p in (Path(scene_owner_attempt_path), *Path(scene_owner_attempt_path).parents)):
+        raise TaskEvaluationLaunchError("scene_owner_profile_path_unsafe")
     entry = LINKS[link]
+    if provider not in EXECUTION_ADAPTER_PROVIDER_CAPABILITIES[
+        ("native_task_arena", "v1")
+    ]:
+        raise TaskEvaluationLaunchError(
+            "native_task_arena_provider_adapter_unavailable"
+        )
     scene_id = _identifier(expected_scene_id, field="scene_id")
     task_id = _identifier(expected_task_id, field="task_id")
     packet = Path(packet_dir).expanduser().resolve()
@@ -1055,6 +1198,8 @@ def build_native_task_arena_live_profile(
         "policy_execution_spec": policy_execution_spec_path,
         "machine_avoidlist": machine_avoidlist_path,
         "warm_session": warm_session_path,
+        "terminal_feedback_adoption": terminal_feedback_adoption_path,
+        "scene_owner_attempt": scene_owner_attempt_path,
     }
     missing = [name for name in entry.predecessors if supplied.get(name) is None]
     if missing:
@@ -1091,9 +1236,31 @@ def build_native_task_arena_live_profile(
                 "attempt_authority",
                 "machine_avoidlist",
                 "warm_session",
+                "terminal_feedback_adoption",
+                "scene_owner_attempt",
             }
         )
     }
+    runtime_environment: dict[str, str] = {}
+    if preferred_geolocation_regex:
+        runtime_environment["BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX"] = (
+            preferred_geolocation_regex
+        )
+    if camera_resolution:
+        resolution = camera_resolution.strip().lower()
+        match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", resolution)
+        if resolution != "policy" and match is None:
+            raise TaskEvaluationLaunchError(
+                "native_task_arena_camera_resolution_invalid"
+            )
+        if match is not None and (
+            int(match.group(1)) < 320 or int(match.group(2)) < 180
+        ):
+            raise TaskEvaluationLaunchError(
+                "native_task_arena_camera_resolution_below_policy_input"
+            )
+        runtime_environment["BLUEPRINT_ADP009D_CAMERA_RESOLUTION"] = resolution
+
     return build_lane_live_profile(
         _spec(
             entry,
@@ -1101,7 +1268,11 @@ def build_native_task_arena_live_profile(
             expected_task_id=task_id,
             with_avoidlist=machine_avoidlist_path is not None,
             with_warm_session=warm_session_path is not None,
+            with_terminal_feedback_adoption=(
+                terminal_feedback_adoption_path is not None
+            ),
             authorize_gated_backbone=authorize_gated_backbone,
+            provider=provider,
         ),
         bundle_receipt_path=bundle_receipt_path,
         source_commit=source_commit,
@@ -1111,15 +1282,7 @@ def build_native_task_arena_live_profile(
         revision=revision,
         max_spend_usd=max_spend_usd,
         extra_paths=extra,
-        runtime_environment=(
-            {
-                "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX": (
-                    preferred_geolocation_regex
-                )
-            }
-            if preferred_geolocation_regex
-            else None
-        ),
+        runtime_environment=runtime_environment or None,
     )
 
 
@@ -1136,6 +1299,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         target.add_argument("--scene-id", required=True)
         target.add_argument("--task-id", required=True)
         target.add_argument(
+            "--provider",
+            required=True,
+            choices=("runpod", "vast", "digitalocean", "aws"),
+        )
+        target.add_argument(
             "--raw-manifest-uri",
             required=True,
             help="Local digest-bound content-addressed publication receipt for this run spec.",
@@ -1150,6 +1318,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         )
         target.add_argument("--warm-session")
+        if name == "construction":
+            target.add_argument("--terminal-feedback-adoption")
         target.add_argument(
             "--revision",
             help="Distinguish a rebuilt profile whose inputs changed at the same commit.",
@@ -1165,7 +1335,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "profile. It is a preference, not an allowlist."
             ),
         )
+        target.add_argument(
+            "--camera-resolution",
+            default="",
+            help=(
+                "Digest-bind the exact live source-camera render size as "
+                "WIDTHxHEIGHT, or use 'policy' for the 320x180 minimum."
+            ),
+        )
         target.add_argument("--output", required=True)
+        target.add_argument("--scene-owner-attempt", default=None)
         if "construction_result" in entry.predecessors:
             target.add_argument("--construction-result", required=True)
         if "control_result" in entry.predecessors:
@@ -1189,6 +1368,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raw_manifest_uri=args.raw_manifest_uri,
             expected_scene_id=args.scene_id,
             expected_task_id=args.task_id,
+            provider=args.provider,
             construction_result_path=getattr(args, "construction_result", None),
             control_result_path=getattr(args, "control_result", None),
             policy_execution_spec_path=getattr(args, "policy_execution_spec", None),
@@ -1197,11 +1377,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             machine_avoidlist_path=args.machine_avoidlist,
             warm_session_path=args.warm_session,
+            terminal_feedback_adoption_path=getattr(
+                args, "terminal_feedback_adoption", None
+            ),
+            scene_owner_attempt_path=args.scene_owner_attempt,
             revision=args.revision,
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             max_spend_usd=args.max_spend_usd,
             hard_ttl_seconds=args.hard_ttl_seconds,
             preferred_geolocation_regex=args.preferred_geolocation_regex,
+            camera_resolution=args.camera_resolution,
         )
     except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError) as exc:
         print(

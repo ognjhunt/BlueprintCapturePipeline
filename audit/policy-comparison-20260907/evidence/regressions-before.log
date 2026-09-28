@@ -1,0 +1,118 @@
+FFFF.....FFFF.                                                           [100%]
+=================================== FAILURES ===================================
+_ test_same_candidate_cannot_change_frozen_identity_between_cells[checkpoint_digest] _
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4827/test_same_candidate_cannot_cha0')
+field = 'checkpoint_digest'
+
+    @pytest.mark.parametrize("field", ["checkpoint_digest", "runtime_identity_digest"])
+    def test_same_candidate_cannot_change_frozen_identity_between_cells(tmp_path, field):
+        result = _result(tmp_path)
+        result["episodes"][1][field] = "sha256:" + "9" * 64
+>       with pytest.raises(PolicyCanarySessionError, match="candidate_identity"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE PolicyCanarySessionError
+
+tests/test_policy_comparison_integrity_audit.py:67: Failed
+_ test_same_candidate_cannot_change_frozen_identity_between_cells[runtime_identity_digest] _
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4827/test_same_candidate_cannot_cha1')
+field = 'runtime_identity_digest'
+
+    @pytest.mark.parametrize("field", ["checkpoint_digest", "runtime_identity_digest"])
+    def test_same_candidate_cannot_change_frozen_identity_between_cells(tmp_path, field):
+        result = _result(tmp_path)
+        result["episodes"][1][field] = "sha256:" + "9" * 64
+>       with pytest.raises(PolicyCanarySessionError, match="candidate_identity"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE PolicyCanarySessionError
+
+tests/test_policy_comparison_integrity_audit.py:67: Failed
+_______ test_matching_cell_labels_cannot_hide_different_resolved_science _______
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4827/test_matching_cell_labels_cann0')
+
+    def test_matching_cell_labels_cannot_hide_different_resolved_science(tmp_path):
+        result = _result(tmp_path)
+        row = result["episodes"][10]
+        row["resolved_scenario"]["index"] = 999
+        row["resolved_scenario_digest"] = canonical_digest(row["resolved_scenario"])
+>       with pytest.raises(PolicyCanarySessionError, match="scenario"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE PolicyCanarySessionError
+
+tests/test_policy_comparison_integrity_audit.py:76: Failed
+________________ test_result_reader_rehashes_resolved_scenario _________________
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4827/test_result_reader_rehashes_re0')
+
+    def test_result_reader_rehashes_resolved_scenario(tmp_path):
+        result = _result(tmp_path)
+        result["episodes"][0]["resolved_scenario"]["index"] = 999
+>       with pytest.raises(PolicyCanarySessionError, match="scenario"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE PolicyCanarySessionError
+
+tests/test_policy_comparison_integrity_audit.py:83: Failed
+____ test_missing_native_sample_cannot_be_scored_as_complete_trajectory[1] _____
+
+missing_step = 1
+
+    @pytest.mark.parametrize("missing_step", [1, 2, 3, 4])
+    def test_missing_native_sample_cannot_be_scored_as_complete_trajectory(missing_step):
+        samples = _trajectory()
+        del samples[missing_step]
+>       with pytest.raises(TaskNeutralScoringError, match="sample_step"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TaskNeutralScoringError
+
+tests/test_policy_comparison_integrity_audit.py:122: Failed
+____ test_missing_native_sample_cannot_be_scored_as_complete_trajectory[2] _____
+
+missing_step = 2
+
+    @pytest.mark.parametrize("missing_step", [1, 2, 3, 4])
+    def test_missing_native_sample_cannot_be_scored_as_complete_trajectory(missing_step):
+        samples = _trajectory()
+        del samples[missing_step]
+>       with pytest.raises(TaskNeutralScoringError, match="sample_step"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TaskNeutralScoringError
+
+tests/test_policy_comparison_integrity_audit.py:122: Failed
+____ test_missing_native_sample_cannot_be_scored_as_complete_trajectory[3] _____
+
+missing_step = 3
+
+    @pytest.mark.parametrize("missing_step", [1, 2, 3, 4])
+    def test_missing_native_sample_cannot_be_scored_as_complete_trajectory(missing_step):
+        samples = _trajectory()
+        del samples[missing_step]
+>       with pytest.raises(TaskNeutralScoringError, match="sample_step"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TaskNeutralScoringError
+
+tests/test_policy_comparison_integrity_audit.py:122: Failed
+____ test_missing_native_sample_cannot_be_scored_as_complete_trajectory[4] _____
+
+missing_step = 4
+
+    @pytest.mark.parametrize("missing_step", [1, 2, 3, 4])
+    def test_missing_native_sample_cannot_be_scored_as_complete_trajectory(missing_step):
+        samples = _trajectory()
+        del samples[missing_step]
+>       with pytest.raises(TaskNeutralScoringError, match="sample_step"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TaskNeutralScoringError
+
+tests/test_policy_comparison_integrity_audit.py:122: Failed
+=========================== short test summary info ============================
+FAILED tests/test_policy_comparison_integrity_audit.py::test_same_candidate_cannot_change_frozen_identity_between_cells[checkpoint_digest]
+FAILED tests/test_policy_comparison_integrity_audit.py::test_same_candidate_cannot_change_frozen_identity_between_cells[runtime_identity_digest]
+FAILED tests/test_policy_comparison_integrity_audit.py::test_matching_cell_labels_cannot_hide_different_resolved_science
+FAILED tests/test_policy_comparison_integrity_audit.py::test_result_reader_rehashes_resolved_scenario
+FAILED tests/test_policy_comparison_integrity_audit.py::test_missing_native_sample_cannot_be_scored_as_complete_trajectory[1]
+FAILED tests/test_policy_comparison_integrity_audit.py::test_missing_native_sample_cannot_be_scored_as_complete_trajectory[2]
+FAILED tests/test_policy_comparison_integrity_audit.py::test_missing_native_sample_cannot_be_scored_as_complete_trajectory[3]
+FAILED tests/test_policy_comparison_integrity_audit.py::test_missing_native_sample_cannot_be_scored_as_complete_trajectory[4]
+8 failed, 6 passed in 1.96s

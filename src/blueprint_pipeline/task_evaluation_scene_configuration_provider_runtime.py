@@ -1,0 +1,258 @@
+"""Single-allocation provider runtime for a scene-configuration run.
+
+The paid parent launch owns the one provider mutation.  This runtime executes
+the six admitted configuration stages in order inside that already allocated
+host.  No stage may invoke the allocator, create another provider resource, or
+execute a robot episode.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
+
+from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_configuration_adapters import (
+    SceneConfigurationAdapterRegistry,
+    TaskEvaluationSceneConfigurationAdapterError,
+)
+from .task_evaluation_scene_configuration_builtin_adapters import (
+    builtin_scene_configuration_adapter_handlers,
+)
+from .task_evaluation_scene_configuration_builtin_producers import (
+    builtin_scene_configuration_stage_producer_registry,
+)
+from .task_evaluation_scene_configuration_orchestrator import (
+    STAGE_RESULT_SCHEMA_VERSION,
+)
+from .task_evaluation_scene_configuration_stage_producers import (
+    SceneConfigurationStageProducerRegistry,
+)
+from .task_evaluation_scene_configuration_runtime_budget import (
+    OUTPUT_AND_CLOSURE_RESERVE_SECONDS,
+    required_remaining_stage_seconds,
+)
+
+
+RESULT_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_provider_stage_chain.v1"
+)
+
+
+class TaskEvaluationSceneConfigurationProviderRuntimeError(RuntimeError):
+    """The already-allocated provider could not execute the typed chain."""
+
+
+def execute_scene_configuration_stage_chain(
+    *,
+    envelope: Mapping[str, Any],
+    configurations: Mapping[str, tuple[Mapping[str, Any], Path]],
+    output_root: str | Path,
+    registry: SceneConfigurationAdapterRegistry | None = None,
+    producer_registry: SceneConfigurationStageProducerRegistry | None = None,
+    parent_deadline_epoch: float | None = None,
+    clock: Callable[[], float] = time.time,
+    checkpoint_callback: Callable[..., None] | None = None,
+    stage_limit: str | None = None,
+) -> dict[str, Any]:
+    """Execute the six stages once without any nested paid mutation.
+
+    With ``stage_limit`` the chain stops after that stage and reports a
+    completed prefix. Only stages 5 and 6 need the Isaac host; stages 1-4
+    (prepared background, Astra CAD/Blender authoring, static SimReady
+    qualification) are CPU work, so a control-plane prestage can execute
+    them into the same output layout and the paid run adopts the checkpoints
+    and continues from stage 5.
+    """
+
+    recipe = envelope.get("recipe")
+    stages = recipe.get("stage_sequence") if isinstance(recipe, Mapping) else None
+    if (
+        not isinstance(stages, list)
+        or len(stages) != 6
+        or set(configurations) != {
+            str(stage.get("stage_id") or "")
+            for stage in stages
+            if isinstance(stage, Mapping)
+        }
+    ):
+        raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+            "scene_configuration_provider_stage_set_invalid"
+        )
+    runtime_registry = registry or SceneConfigurationAdapterRegistry(
+        builtin_scene_configuration_adapter_handlers()
+    )
+    runtime_producers = producer_registry or (
+        builtin_scene_configuration_stage_producer_registry(
+            expected_source_commit=str(envelope.get("expected_production_commit") or "")
+        )
+    )
+    root = Path(output_root).resolve()
+    if root.is_symlink() or not root.is_dir():
+        raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+            "scene_configuration_provider_output_root_invalid"
+        )
+    if stage_limit is not None and stage_limit not in {str(stage.get("stage_id")) for stage in stages}:
+        raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+            f"scene_configuration_provider_stage_limit_invalid:{stage_limit}"
+        )
+    scheduled_stages = (stages if stage_limit is None else
+                        stages[:next(i for i, stage in enumerate(stages) if stage["stage_id"] == stage_limit) + 1])
+    results: list[dict[str, Any]] = []
+    astra_resume = None
+    if any(value.get("authoring_backend") == "astra_cad_blender_v1" for value, _ in configurations.values()):
+        from .task_evaluation_astra_stage_resume import bind_same_root_resume
+        astra_resume = bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch,
+                                            stage_limit=stage_limit)
+    for index, stage in enumerate(stages):
+        if not isinstance(stage, Mapping):
+            raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+                "scene_configuration_provider_stage_set_invalid"
+            )
+        stage_id = str(stage["stage_id"])
+        configuration, configuration_path = configurations[stage_id]
+        stage_output = root / stage_id
+        if astra_resume is not None:
+            from .task_evaluation_astra_stage_resume import load_completed_stage
+            completed = load_completed_stage(stage_output, stage, astra_resume, results)
+            if completed is not None:
+                results.append(completed)
+                if checkpoint_callback is not None:
+                    checkpoint_callback(tuple(results))
+                print(f"BLUEPRINT_SCENE_CONFIGURATION_STAGE_ADOPTED: stage_id={stage_id}", flush=True)
+                if stage_id == stage_limit:
+                    break
+                continue
+        print(
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_STARTED:"
+            f" index={index + 1}/{len(stages)} stage_id={stage_id}",
+            flush=True,
+        )
+        if parent_deadline_epoch is not None:
+            remaining_seconds = parent_deadline_epoch - clock()
+            required_seconds = required_remaining_stage_seconds(
+                scheduled_stages, start_index=index
+            )
+            if remaining_seconds < required_seconds:
+                raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+                    "scene_configuration_parent_runtime_budget_insufficient:"
+                    f"{stage_id}:{required_seconds}:{max(0, int(remaining_seconds))}"
+                )
+        expected_dependencies = [] if index == 0 else [stages[index - 1]["stage_id"]]
+        if stage.get("depends_on") != expected_dependencies:
+            raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+                f"scene_configuration_provider_dependency_invalid:{stage_id}"
+            )
+        resuming_astra = (astra_resume is not None and stage_output.exists()
+                          and configuration.get("authoring_backend") == "astra_cad_blender_v1")
+        stage_output.mkdir(mode=0o750, exist_ok=resuming_astra)
+        execution_class = str(stage.get("execution_class") or "")
+        if execution_class == "gpu_canary":
+            producer_output = stage_output / "producer"
+            producer_output.mkdir(mode=0o750, exist_ok=resuming_astra)
+            produced_artifacts = None
+            if resuming_astra:
+                from .task_evaluation_astra_stage_resume import retained_astra_production
+                produced_artifacts = retained_astra_production(producer_output, stage, envelope, configuration_path)
+            if produced_artifacts is None:
+                produced_artifacts = runtime_producers.execute(
+                    stage=stage,
+                    envelope=envelope,
+                    configuration=configuration,
+                    configuration_path=configuration_path,
+                    dependency_results=tuple(results),
+                    output_root=producer_output,
+                )
+        elif execution_class == "no_spend":
+            produced_artifacts = ()
+        else:
+            raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+                f"scene_configuration_provider_execution_class_invalid:{stage_id}"
+            )
+        adapter_output = stage_output / "adapter"
+        if resuming_astra and adapter_output.exists():
+            adapter_output = stage_output / f"adapter-resume-{len(list(stage_output.glob('adapter-resume-*'))) + 1:04d}"
+        adapter_output.mkdir(mode=0o750)
+        try:
+            value = runtime_registry.execute(
+                stage=stage,
+                envelope=envelope,
+                configuration=configuration,
+                configuration_path=configuration_path,
+                dependency_results=tuple(results),
+                output_root=adapter_output,
+                provider_runtime_artifacts=produced_artifacts,
+            )
+        except TaskEvaluationSceneConfigurationAdapterError:
+            raise
+        result = dict(value)
+        if (
+            result.get("schema_version") != STAGE_RESULT_SCHEMA_VERSION
+            or result.get("status") != "completed"
+            or result.get("stage_id") != stage_id
+            or result.get("canonical_allocator") is not None
+            or result.get("provider_mutations_performed") != 0
+            or result.get("paid_execution_requested") is not False
+            or result.get("executed_inside_parent_configuration_run") is not True
+            or result.get("diagnostic_only") is True
+            or result.get("qualification_eligible") is False
+            or result.get("executed_inside_one_parent_provider_run") is False
+            or result.get("stage_result_digest")
+            != canonical_digest(result, digest_field="stage_result_digest")
+        ):
+            raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+                f"scene_configuration_provider_stage_result_invalid:{stage_id}"
+            )
+        if astra_resume is not None:
+            from .task_evaluation_astra_stage_resume import save_completed_stage
+            save_completed_stage(stage_output, stage, astra_resume, results, result)
+        results.append(result)
+        if checkpoint_callback is not None:
+            checkpoint_callback(tuple(results))
+        print(
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_COMPLETED:"
+            f" index={index + 1}/{len(stages)} stage_id={stage_id}",
+            flush=True,
+        )
+        if stage_id == stage_limit:
+            break
+    if (
+        parent_deadline_epoch is not None
+        and parent_deadline_epoch - clock() < OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+    ):
+        raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+            "scene_configuration_parent_runtime_budget_insufficient:"
+            f"output_closure:{OUTPUT_AND_CLOSURE_RESERVE_SECONDS}:"
+            f"{max(0, int(parent_deadline_epoch - clock()))}"
+        )
+    chain: dict[str, Any] = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "status": "completed" if stage_limit is None else "completed_prefix",
+        "stage_limit": stage_limit,
+        "whole_run_completed": stage_limit is None,
+        "run_id": envelope["run_id"],
+        "stage_result_digests": [
+            result["stage_result_digest"] for result in results
+        ],
+        "stage_results": results,
+        "stage_count": len(results),
+        "executed_inside_one_parent_provider_run": True,
+        "nested_provider_mutations_performed": 0,
+        "nested_paid_execution_requested": False,
+        "evaluation_episode_executed": False,
+        "retry_cap": 0,
+        "result_digest": "",
+    }
+    chain["result_digest"] = canonical_digest(
+        chain, digest_field="result_digest"
+    )
+    return chain
+
+
+__all__ = [
+    "RESULT_SCHEMA_VERSION",
+    "TaskEvaluationSceneConfigurationProviderRuntimeError",
+    "execute_scene_configuration_stage_chain",
+]

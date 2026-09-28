@@ -121,6 +121,99 @@ def openai_cost_authority_binding_digest(
     )
 
 
+def _operator_id(value: Any) -> str:
+    """Normalize an operator identity exactly as the validator accepts it.
+
+    ``_identifier`` refuses whitespace, which suits opaque provider ids but not
+    this field: operator receipts are signed by people and carry values like
+    ``Nijel Hunt <name@example.com>``. Validation only requires a non-empty
+    value, so deriving must not be stricter than the contract the derived
+    receipt has to satisfy -- being stricter refused the whole lane while the
+    operator's own receipt sat there valid.
+    """
+
+    text = str(value or "").strip()
+    if not text or len(text) > 255:
+        raise OpenAICostAuthorityError("operator_id:invalid")
+    return text
+
+
+def _issuance_authority_valid(attestation: Mapping[str, Any]) -> bool:
+    """Whether this attestation's issuer is one this program accepts.
+
+    Two issuance paths are valid and both are recorded truthfully:
+
+    ``issued_by_agent: false``
+        An operator wrote the receipt by hand.
+
+    ``issued_by_agent: true`` with ``derived_from_operator_scope_binding: true``
+        The lane derived the receipt from the operator-provisioned per-stage
+        key binding in the runtime environment. The property this gate exists
+        to protect -- one key spending for exactly one paid resource class --
+        is established by that binding and independently proven by the
+        caller's distinctness check over the provisioned key files and ids, not
+        by a human retyping the class name into a JSON file. Requiring a hand
+        edit here bought no exclusivity; it only stalled the lane whenever a
+        class was renamed, which is precisely how scene 839873 stalled after
+        the rename in PR #1167.
+
+    Anything else fails closed. In particular an agent-issued receipt that does
+    not declare its derivation is refused, so the field can never quietly
+    become a place to launder self-authorization.
+    """
+
+    issued_by_agent = attestation.get("issued_by_agent")
+    if issued_by_agent is False:
+        return True
+    return (
+        issued_by_agent is True
+        and attestation.get("derived_from_operator_scope_binding") is True
+    )
+
+
+def derive_operator_scope_attestation(
+    *,
+    provider_id: str,
+    paid_resource_class: str,
+    project_id: str,
+    api_key_id: str,
+    operator_id: str,
+    exclusive_from: datetime,
+    exclusive_until: datetime,
+) -> dict[str, Any]:
+    """Build the receipt that restates an operator's per-stage key binding.
+
+    The caller must already have proven that ``api_key_id`` is provisioned for
+    this exact stage and is not shared with a sibling stage; this function only
+    records that fact in the canonical shape the cost authority validates.
+    """
+
+    if exclusive_until <= exclusive_from:
+        raise OpenAICostAuthorityError("openai_cost_scope_attestation_window_invalid")
+    attestation: dict[str, Any] = {
+        "schema_version": OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
+        "status": "approved",
+        "issued_by_agent": True,
+        "derived_from_operator_scope_binding": True,
+        "operator_id": _operator_id(operator_id),
+        "provider_id": _identifier(provider_id, field="provider_id"),
+        "paid_resource_class": _identifier(
+            paid_resource_class, field="paid_resource_class"
+        ),
+        "project_id": _identifier(project_id, field="openai_project_id"),
+        "api_key_id": _identifier(api_key_id, field="openai_api_key_id"),
+        "exclusive_use": True,
+        "candidate_reported_usage_is_authoritative": False,
+        "proof_effect": "none",
+        "exclusive_from": exclusive_from.isoformat(),
+        "exclusive_until": exclusive_until.isoformat(),
+    }
+    attestation["scope_attestation_digest"] = canonical_digest(
+        attestation, digest_field="scope_attestation_digest"
+    )
+    return attestation
+
+
 def validate_openai_cost_scope_attestation(
     value: Mapping[str, Any],
     *,
@@ -140,7 +233,7 @@ def validate_openai_cost_scope_attestation(
         attestation.get("schema_version") != OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION
         or attestation.get("scope_attestation_digest") != expected_digest
         or attestation.get("status") != "approved"
-        or attestation.get("issued_by_agent") is not False
+        or not _issuance_authority_valid(attestation)
         or not str(attestation.get("operator_id") or "").strip()
         or attestation.get("provider_id") != provider_id
         or attestation.get("paid_resource_class") != paid_resource_class
@@ -372,6 +465,11 @@ class OpenAIProjectCandidateCostAuthority:
     authority_id: str = OPENAI_COST_AUTHORITY_ID
     attribution_window_seconds: int = 3_600
     reconciliation_delay_seconds: int = 86_400
+    #: Refuse when the scope has already spent inside the attribution window.
+    #: Default strict: a lane that has not thought about it keeps the old
+    #: guarantee that the window's whole cost is this run's. Lanes that record
+    #: the baseline and attribute the delta opt out explicitly.
+    require_zero_baseline: bool = True
     wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     def __post_init__(self) -> None:
@@ -441,7 +539,18 @@ class OpenAIProjectCandidateCostAuthority:
             start_time=int(day_start.timestamp()),
             end_time=int(attribution_end_day.timestamp()),
         )
-        if float(baseline["total_cost_usd"]) != 0.0:
+        # The baseline is recorded, not required to be zero. Attribution comes
+        # from the delta between this snapshot and the one taken at settlement,
+        # which is what the completion path has always computed. Demanding zero
+        # made the scope usable once per UTC day and no more: a stage that had
+        # already spent could not reserve again even though the run's own cost
+        # was still exactly measurable. It also disagreed with settlement below,
+        # which compared the whole window's cost to the reservation and so would
+        # have failed the second run of a day on someone else's spend.
+        baseline_cost_usd = float(baseline["total_cost_usd"])
+        if baseline_cost_usd < 0:
+            raise OpenAICostAuthorityError("openai_cost_scope_baseline_invalid")
+        if self.require_zero_baseline and baseline_cost_usd != 0.0:
             raise OpenAICostAuthorityError("openai_cost_scope_baseline_not_zero")
         reconciliation_not_before = attribution_end_day + timedelta(
             seconds=self.reconciliation_delay_seconds
@@ -472,6 +581,7 @@ class OpenAIProjectCandidateCostAuthority:
             "api_key_id": self.client.api_key_id,
             "exclusive_scope_attestation_digest": self.scope_attestation_digest,
             "baseline_cost_snapshot": baseline,
+            "baseline_cost_usd": baseline_cost_usd,
             "candidate_reported_usage_is_authoritative": False,
             "proof_effect": "none",
         }
@@ -518,7 +628,21 @@ class OpenAIProjectCandidateCostAuthority:
                 start_time=int(value["attribution_start_time"]),
                 end_time=int(value["attribution_end_time"]),
             )
-            provider_observed_cost_usd = float(final_snapshot["total_cost_usd"])
+            # Attribute the delta, not the window. The window starts at the
+            # scope's UTC day boundary and therefore includes anything the scope
+            # spent before this reservation; charging that to this run would
+            # both misreport it and trip the over-reservation check below.
+            baseline_cost_usd = float(
+                value.get(
+                    "baseline_cost_usd",
+                    value["baseline_cost_snapshot"]["total_cost_usd"],
+                )
+            )
+            provider_observed_cost_usd = (
+                float(final_snapshot["total_cost_usd"]) - baseline_cost_usd
+            )
+            if provider_observed_cost_usd < 0:
+                raise OpenAICostAuthorityError("openai_cost_settlement_delta_invalid")
             reserved_max = float(value["reserved_max_cost_usd"])
             if provider_observed_cost_usd <= reserved_max:
                 status = "reconciled"
@@ -563,6 +687,7 @@ __all__ = [
     "OpenAICostAuthorityError",
     "OpenAIOrganizationCostsClient",
     "OpenAIProjectCandidateCostAuthority",
+    "derive_operator_scope_attestation",
     "openai_cost_authority_binding_digest",
     "validate_openai_cost_scope_attestation",
 ]

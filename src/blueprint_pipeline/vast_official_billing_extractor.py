@@ -1,17 +1,10 @@
-"""Seal exact posted Vast instance charges from retained official billing bytes.
-
-The provider billing reconciler intentionally exports only cohort totals.  This
-module reopens its digest-bound raw Vast responses and extracts named instance
-charges without making a provider request or accepting an operator-entered
-cost.  Reconciliations can be extended from one previously sealed result.
-"""
+"""Seal exact posted Vast instance charges from retained official billing."""
 
 from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
-import hashlib
 import json
 import math
 import os
@@ -20,14 +13,17 @@ import re
 import tempfile
 from typing import Any
 
+from .vast_official_charge_period import VastOfficialBillingExtractionError, validate_charge_period as _validate_charge_period
 from .decision_evidence_contracts import canonical_digest
 from .provider_billing_reconciler import (
     BILLING_SOURCE_SCHEMA_VERSION,
     MAX_RESPONSE_BYTES,
     VAST_CHARGES_URL,
 )
-
-
+from .policy_canary_official_billing import policy_canary_terminal_evidence
+from .native_g1_official_billing import g1_paid_campaign_terminal_evidence
+from .runtime_preflight_official_billing import runtime_preflight_terminal_evidence
+from .vast_official_billing_serialization import _canonical_json, _record, _sha256_bytes
 RECONCILIATION_SCHEMA_VERSION = "blueprint.vast_official_same_goal_reconciliation.v1"
 ENTRY_SCHEMA_VERSION = "blueprint.vast_official_instance_charge.v1"
 RECONCILIATION_STATUS = "reconciled_official_posted_charges"
@@ -51,6 +47,7 @@ _SUPPORTED_TERMINAL_RESULT_SCHEMAS = frozenset(
         "native_task_arena_vast_run.v1",
         "paired_target_native_import_vast_run.v1",
         "public_scene_artifixer3d_vast_run.v1",
+        "task_evaluation_scene_configuration_vast_result.v1",
     }
 )
 _SUPPORTED_ADAPTER_SCHEMAS = frozenset({"vast_provider_adapter_result.v1"})
@@ -59,24 +56,16 @@ _PAIRED_NATIVE_RESULT_NAME = "paired_target_native_import_vast_result.v1.json"
 _PAIRED_NATIVE_JOB_DIR = "paired-target-native-import-job"
 _CONTENT_AGENTS_RESULT_NAME = "adp_content_agents_vast_result.json"
 _CONTENT_AGENTS_JOB_DIR = "content-agents-job"
+_SCENE_CONFIGURATION_RESULT_NAME = (
+    "task_evaluation_scene_configuration_vast_result.v1.json"
+)
+_SCENE_CONFIGURATION_JOB_DIR = "scene-configuration-job"
 _ARENA_RESULT_NAME = "adp_arena_vast_result.json"
 #: The three native Arena links share one transport and one result
 #: schema; only the job directory differs.
 _ARENA_JOB_DIRS = frozenset(
     {"arena-construction-job", "arena-controls-job", "arena-policy-job"}
 )
-
-
-class VastOfficialBillingExtractionError(ValueError):
-    """The retained billing evidence was incomplete, ambiguous, or altered."""
-
-
-def _canonical_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def _sha256_bytes(payload: bytes) -> str:
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 def _strict_file(path: str | Path, *, code: str) -> tuple[Path, bytes]:
@@ -107,14 +96,6 @@ def _json_file(path: str | Path, *, code: str) -> tuple[Path, dict[str, Any], by
     if not isinstance(value, dict):
         raise VastOfficialBillingExtractionError(code)
     return source, value, payload
-
-
-def _record(path: Path, payload: bytes) -> dict[str, Any]:
-    return {
-        "path": str(path),
-        "size_bytes": len(payload),
-        "sha256": _sha256_bytes(payload),
-    }
 
 
 def _prepare_output(path: str | Path) -> Path:
@@ -368,7 +349,6 @@ def _paired_native_terminal_records(
     result_status: str,
 ) -> dict[str, dict[str, Any]]:
     """Reopen the paired-native lane's direct terminal artifact pointers."""
-
     expected_job = run_root / "allocator" / _PAIRED_NATIVE_JOB_DIR
     if result_path.parent != expected_job:
         raise VastOfficialBillingExtractionError(
@@ -503,7 +483,6 @@ def _content_agents_terminal_records(
     result_status: str,
 ) -> dict[str, dict[str, Any]]:
     """Reopen the Content Agents lane's exact terminal closure graph."""
-
     expected_job = run_root / "allocator" / _CONTENT_AGENTS_JOB_DIR
     if result_path.parent != expected_job:
         raise VastOfficialBillingExtractionError(
@@ -755,22 +734,163 @@ def _content_agents_terminal_records(
     }
 
 
+def _scene_configuration_terminal_records(
+    *,
+    instance_id: int,
+    result_path: Path,
+    result: Mapping[str, Any],
+    run_root: Path,
+    result_status: str,
+) -> dict[str, dict[str, Any]]:
+    """Reopen the scene lane's exact paid closure and artifact inventory."""
+
+    job = run_root / "allocator" / _SCENE_CONFIGURATION_JOB_DIR
+    if result_path.parent != job:
+        raise VastOfficialBillingExtractionError(
+            "vast_official_terminal_result_invalid"
+        )
+    expected = {
+        "provider_adapter_result": (
+            "provider_adapter_result_path",
+            job / "vast_provider_run" / "vast_provider_adapter_result.json",
+        ),
+        "teardown_manifest": (
+            "teardown_manifest_path",
+            job / "vast_provider_run" / "vast_teardown_manifest.json",
+        ),
+        "artifact_manifest": (
+            "artifact_manifest_path",
+            job / "artifact_manifest.json",
+        ),
+    }
+    loaded: dict[str, tuple[Path, dict[str, Any], bytes]] = {}
+    for role, (field, expected_path) in expected.items():
+        code = f"vast_official_scene_configuration_{role}_invalid"
+        if result.get(field) != str(expected_path):
+            raise VastOfficialBillingExtractionError(code)
+        path, value, payload = _json_file(expected_path, code=code)
+        if path != expected_path:
+            raise VastOfficialBillingExtractionError(code)
+        loaded[role] = (path, value, payload)
+
+    _adapter_path, adapter, _adapter_bytes = loaded["provider_adapter_result"]
+    _teardown_path, teardown, _teardown_bytes = loaded["teardown_manifest"]
+    _manifest_path, manifest, _manifest_bytes = loaded["artifact_manifest"]
+    cleanup = result.get("object_store_cleanup")
+    blockers = result.get("blockers")
+    required_roles = {
+        "allocator_adapter_result",
+        "provider_runtime_evidence",
+        "teardown_manifest",
+    }
+    files = manifest.get("files")
+    if (
+        result.get("result_digest")
+        != canonical_digest(result, digest_field="result_digest")
+        or result.get("provider_mutations_performed") != 1
+        or not isinstance(blockers, list)
+        or (result_status == "completed" and blockers != [])
+        or result.get("runtime_secret_cleanup_completed") is not True
+        or adapter.get("schema_version") not in _SUPPORTED_ADAPTER_SCHEMAS
+        or adapter.get("status") not in {"completed", "blocked"}
+        or adapter.get("provider_bundle_kind")
+        != "task_evaluation_scene_configuration"
+        or adapter.get("provider_create_attempted") is not True
+        or adapter.get("vast_instance_ids") != [instance_id]
+        or adapter.get("continuing_spend_from_this_run") is not False
+        or adapter.get("final_validation_status") != "passed"
+        or adapter.get("retained_owned") is not False
+        or adapter.get("raw_api_key_stored") is not False
+        or adapter.get("secret_values_in_artifact") is not False
+        or teardown.get("schema_version") not in _SUPPORTED_TEARDOWN_SCHEMAS
+        or teardown.get("status") != "completed"
+        or teardown.get("vast_instance_ids") != [instance_id]
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or teardown.get("runner_gpu_teardown_completed") is not True
+        or teardown.get("retention_authorized") is not False
+        or teardown.get("raw_secret_values_recorded") is not False
+        or not isinstance(cleanup, Mapping)
+        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("status") != "completed"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or cleanup.get("raw_secret_values_recorded") is not False
+        or cleanup.get("blockers") != []
+        or manifest.get("schema_version")
+        != "task_evaluation_artifact_manifest.v1"
+        or manifest.get("status") != "completed"
+        or manifest.get("manifest_digest")
+        != canonical_digest(manifest, digest_field="manifest_digest")
+        or manifest.get("raw_secret_values_recorded") is not False
+        or manifest.get("blockers") != []
+        or not required_roles.issubset(set(manifest.get("required_roles") or []))
+        or not required_roles.issubset(set(manifest.get("observed_roles") or []))
+        or not isinstance(files, list)
+    ):
+        raise VastOfficialBillingExtractionError(
+            "vast_official_scene_configuration_terminal_closure_invalid"
+        )
+    binding = manifest.get("binding")
+    rows = {
+        row.get("relative_path"): row for row in files if isinstance(row, Mapping)
+    }
+    critical = {
+        "vast_provider_run/vast_provider_adapter_result.json": (
+            loaded["provider_adapter_result"],
+            "allocator_adapter_result",
+        ),
+        "vast_provider_run/vast_teardown_manifest.json": (
+            loaded["teardown_manifest"],
+            "teardown_manifest",
+        ),
+    }
+    if (
+        not isinstance(binding, Mapping)
+        or binding.get("allocator_lane") != "task_evaluation_scene_configuration"
+        or binding.get("retry_cap") != 0
+        or binding.get("provider") != "vast"
+        or binding.get("bundle_sha256") != result.get("bundle_sha256")
+        or manifest.get("file_count") != len(files)
+        or len(rows) != len(files)
+        or any(
+            not isinstance(row.get("relative_path"), str)
+            or not isinstance(row.get("roles"), list)
+            or not isinstance(row.get("size_bytes"), int)
+            or isinstance(row.get("size_bytes"), bool)
+            or row["size_bytes"] < 0
+            or not _valid_digest(row.get("sha256"))
+            for row in files
+        )
+        or manifest.get("total_size_bytes")
+        != sum(
+            row.get("size_bytes", -1) for row in files if isinstance(row, Mapping)
+        )
+        or any(
+            not isinstance(row := rows.get(relative), Mapping)
+            or row.get("size_bytes") != len(loaded_record[2])
+            or row.get("sha256") != _sha256_bytes(loaded_record[2])
+            or required_role not in (row.get("roles") or [])
+            for relative, (loaded_record, required_role) in critical.items()
+        )
+    ):
+        raise VastOfficialBillingExtractionError(
+            "vast_official_scene_configuration_artifact_manifest_invalid"
+        )
+    return {
+        role: _record_with_identity(
+            path,
+            payload,
+            value,
+            digest_field=("manifest_digest" if role == "artifact_manifest" else None),
+        )
+        for role, (path, value, payload) in loaded.items()
+    }
+
+
 def _native_task_arena_closure_paths(
     *, result: Mapping[str, Any], result_path: Path, run_root: Path
 ) -> tuple[Path, Path]:
-    """Resolve the Arena lane's attempt-scoped closure artifacts.
-
-    The Arena transport seals under a numbered attempt, so its closure files
-    hang off ``attempt_root`` rather than the job directory that every other
-    reconcilable lane uses.  Reading them from the result's own fields and then
-    pinning each against the canonical layout keeps a result from naming a file
-    outside the attempt it describes.
-
-    This exists so a result already written to disk stays reconcilable: a lane
-    that can only be reconciled by a field added later cannot account for the
-    attempts it has already paid for, and an unaccounted attempt blocks every
-    authority chained after it.
-    """
+    """Resolve the Arena lane's exact attempt-scoped closure artifacts."""
 
     attempt_root = Path(str(result.get("attempt_root") or ""))
     job_dir = result_path.parent
@@ -809,6 +929,39 @@ def _terminal_evidence(
     result_path, result, result_bytes = _json_file(
         terminal_result_path, code="vast_official_terminal_result_invalid"
     )
+    preflight = runtime_preflight_terminal_evidence(instance_id=instance_id, result_path=result_path,
+        result=result, result_bytes=result_bytes, json_file=_json_file, record=_record,
+        error_factory=VastOfficialBillingExtractionError)
+    if preflight is not None:
+        return preflight
+    g1 = g1_paid_campaign_terminal_evidence(
+        instance_id=instance_id, result_path=result_path, result=result,
+        result_bytes=result_bytes, json_file=_json_file, record=_record,
+        error_factory=VastOfficialBillingExtractionError,
+    )
+    if g1 is not None:
+        return g1
+    if result.get("schema_version") == (
+        "task_evaluation_native_direct_execution_adoption.v1"
+    ):
+        try:
+            from .native_task_arena_direct_execution_closeout import (  # noqa: PLC0415
+                direct_execution_terminal_evidence,
+            )
+            return direct_execution_terminal_evidence(
+                result_path, instance_id=instance_id
+            )
+        except ValueError as exc:
+            raise VastOfficialBillingExtractionError(
+                "vast_official_terminal_result_invalid"
+            ) from exc
+    canary = policy_canary_terminal_evidence(
+        instance_id=instance_id, result_path=result_path, result=result,
+        result_bytes=result_bytes, json_file=_json_file, record=_record,
+        error_factory=VastOfficialBillingExtractionError,
+    )
+    if canary is not None:
+        return canary
     artifixer_layout = (
         result_path.name == "public_scene_artifixer3d_vast_result.json"
         and result_path.parent.name == "artifixer3d-job"
@@ -827,6 +980,13 @@ def _terminal_evidence(
         and result_path.parent.parent.name == "allocator"
         and result.get("schema_version") == "adp_content_agents_vast_run.v1"
     )
+    scene_configuration_layout = (
+        result_path.name == _SCENE_CONFIGURATION_RESULT_NAME
+        and result_path.parent.name == _SCENE_CONFIGURATION_JOB_DIR
+        and result_path.parent.parent.name == "allocator"
+        and result.get("schema_version")
+        == "task_evaluation_scene_configuration_vast_result.v1"
+    )
     arena_layout = (
         result_path.name == _ARENA_RESULT_NAME
         and result_path.parent.name in _ARENA_JOB_DIRS
@@ -837,6 +997,7 @@ def _terminal_evidence(
         not artifixer_layout
         and not paired_native_layout
         and not content_agents_layout
+        and not scene_configuration_layout
         and not arena_layout
     ):
         raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
@@ -886,6 +1047,20 @@ def _terminal_evidence(
         teardown = json.loads(teardown_bytes)
     elif content_agents_layout:
         lane_records = _content_agents_terminal_records(
+            instance_id=instance_id,
+            result_path=result_path,
+            result=result,
+            run_root=run_root,
+            result_status=result_status,
+        )
+        adapter_path = Path(lane_records["provider_adapter_result"]["path"])
+        teardown_path = Path(lane_records["teardown_manifest"]["path"])
+        adapter_bytes = adapter_path.read_bytes()
+        teardown_bytes = teardown_path.read_bytes()
+        adapter = json.loads(adapter_bytes)
+        teardown = json.loads(teardown_bytes)
+    elif scene_configuration_layout:
+        lane_records = _scene_configuration_terminal_records(
             instance_id=instance_id,
             result_path=result_path,
             result=result,
@@ -1063,7 +1238,7 @@ def _terminal_evidence(
         or terminal_teardown.get("digest") != _sha256_bytes(teardown_bytes)
         or terminal_teardown.get("exists") is not True
         or (
-            content_agents_layout
+            (content_agents_layout or scene_configuration_layout)
             and (
                 not isinstance(terminal_artifact_manifest, Mapping)
                 or terminal_artifact_manifest.get("path")
@@ -1090,7 +1265,7 @@ def _terminal_evidence(
             "vast_official_launch_identity_invalid"
         )
 
-    if content_agents_layout:
+    if content_agents_layout or scene_configuration_layout:
         sync_path, sync, sync_bytes = _identity_json(
             run_root,
             "webapp_sync_succeeded.json",
@@ -1207,8 +1382,11 @@ def _entry(
         or row.get("type") != "instance"
         or not isinstance(metadata, Mapping)
         or metadata.get("label") != launch_label
+        or (terminal_evidence.get("financial_closeout_kind") == "native_task_arena_runtime_preflight.v1"
+            and terminal_evidence.get("launch_label") != launch_label)
     ):
         raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
+    _validate_charge_period(row, source_receipt)
     amount = _money(row.get("amount"), code="vast_official_charge_amount_invalid")
     items, bandwidth = _line_items(row)
     item_total = sum(
@@ -1377,6 +1555,7 @@ def _validate_entry(entry: Any) -> None:
     ):
         raise VastOfficialBillingExtractionError("vast_official_prior_entry_invalid")
     row = results[result_index]
+    _validate_charge_period(row, source_receipt)
     metadata = row.get("metadata")
     source_items, source_bandwidth = _line_items(row)
     if (
@@ -1579,6 +1758,7 @@ def extract_vast_official_instance_charge(
         or metadata.get("label") != launch_label
     ):
         raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
+    _validate_charge_period(row, source_receipt)
     amount = _money(row.get("amount"), code="vast_official_charge_amount_invalid")
     items, bandwidth = _line_items(row)
     item_total = sum((Decimal(str(value)) for value in items.values()), Decimal("0"))

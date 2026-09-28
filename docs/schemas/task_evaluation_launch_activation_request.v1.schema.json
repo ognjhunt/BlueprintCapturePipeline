@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_launch_activation_request.v1.schema.json",
+  "title": "Task Evaluation launch activation request v1",
+  "description": "Immutable, customer-facing request to turn one verified Task Evaluation preparation into a profile and one-use standing authority. All filesystem destinations and provider credentials remain server-owned.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "expected_production_commit",
+    "activation_id",
+    "team_namespace",
+    "lane",
+    "preparation",
+    "release_window",
+    "lineage",
+    "authorization",
+    "requested_mutations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_launch_activation_request.v1"},
+    "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "activation_id": {"$ref": "#/$defs/identifier"},
+    "team_namespace": {"$ref": "#/$defs/identifier"},
+    "run_kind": {"enum": ["qualified_evaluation", "internal_policy_canary"]},
+    "capture_session_id": {"$ref": "#/$defs/identifier"},
+    "intake_id": {"$ref": "#/$defs/identifier"},
+    "episode_interpretation_authority": {"type": "object"},
+    "episode_interpretation_source_rights_admission": {"type": "object"},
+    "lane": {
+      "enum": [
+        "task_evaluation_scene_configuration",
+        "native_task_arena_construction",
+        "native_task_arena_construction_after_destination",
+        "native_task_arena_destination_qualification",
+        "native_task_arena_controls",
+        "native_task_arena_zero_action",
+        "native_task_arena_scripted_positive",
+        "native_task_arena_policy_evaluation"
+      ]
+    },
+    "preparation": {
+      "type": "object",
+      "required": ["preparation_id", "request_digest", "result_digest"],
+      "additionalProperties": false,
+      "properties": {
+        "preparation_id": {"$ref": "#/$defs/identifier"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "result_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "release_window": {"$ref": "#/$defs/reference"},
+    "lineage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "project_spend_reconciliation", "initial_provider_zero"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "initial_project"},
+            "project_spend_reconciliation": {"$ref": "#/$defs/reference"},
+            "initial_provider_zero": {"$ref": "#/$defs/reference"},
+            "construction_result": {"$ref": "#/$defs/reference"}
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "prior_authority",
+            "prior_result",
+            "prior_launch_receipt",
+            "prior_webapp_sync",
+            "prior_provider_zero",
+            "prior_spend_reconciliation"
+          ],
+          "anyOf": [
+            {"required": ["construction_result"]},
+            {"required": ["destination_qualification_result"]}
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "predecessor"},
+            "prior_authority": {"$ref": "#/$defs/reference"},
+            "prior_result": {"$ref": "#/$defs/reference"},
+            "prior_launch_receipt": {"$ref": "#/$defs/reference"},
+            "prior_webapp_sync": {"$ref": "#/$defs/reference"},
+            "prior_provider_zero": {"$ref": "#/$defs/reference"},
+            "prior_spend_reconciliation": {"$ref": "#/$defs/reference"},
+            "construction_result": {"$ref": "#/$defs/reference"},
+            "destination_qualification_result": {"$ref": "#/$defs/reference"},
+            "zero_action_result": {"$ref": "#/$defs/reference"},
+            "controls_qualification_manifest": {"$ref": "#/$defs/reference"}
+          }
+        }
+      ]
+    },
+    "authorization": {
+      "type": "object",
+      "required": [
+        "reference",
+        "authorized_by",
+        "authorized_on",
+        "standing_authorization_expires_at",
+        "profile_revision"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "reference": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "authorized_by": {"$ref": "#/$defs/identifier"},
+        "authorized_on": {"type": "string", "format": "date-time"},
+        "standing_authorization_expires_at": {"type": "string", "format": "date-time"},
+        "profile_revision": {"$ref": "#/$defs/identifier"},
+        "scene_owner_attempt": {"$ref": "task_evaluation_scene_owner_attempt.v1.schema.json"}
+      }
+    },
+    "requested_mutations": {
+      "type": "object",
+      "required": ["profile_publication", "catalog_synchronization", "standing_authorization"],
+      "additionalProperties": false,
+      "properties": {
+        "profile_publication": {"type": "boolean"},
+        "catalog_synchronization": {"type": "boolean"},
+        "standing_authorization": {"type": "boolean"},
+        "policy_campaign_queue": {"type": "boolean"}
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}, "lineage": {"properties": {"kind": {"const": "initial_project"}}}}, "required": ["lane", "lineage"]}, "then": {"required": ["run_kind"], "properties": {"run_kind": {"const": "internal_policy_canary"}, "lineage": {"required": ["construction_result"]}}}},
+    {
+      "if": {"properties": {"lane": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_destination_qualification", "native_task_arena_construction"]}}},
+      "then": {"properties": {"lineage": {"properties": {"kind": {"const": "initial_project"}}}}}
+    },
+    {
+      "if": {"allOf": [{"properties": {"lane": {"not": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_destination_qualification", "native_task_arena_construction"]}}}}, {"not": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}, "run_kind": {"const": "internal_policy_canary"}}, "required": ["lane", "run_kind"]}}]},
+      "then": {"properties": {"lineage": {"properties": {"kind": {"const": "predecessor"}}}}}
+    },
+    {
+      "if": {"properties": {"lane": {"const": "native_task_arena_scripted_positive"}}},
+      "then": {"properties": {"lineage": {"required": ["zero_action_result"]}}}
+    },
+    {
+      "if": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}},
+      "then": {
+        "properties": {
+          "requested_mutations": {
+            "required": ["profile_publication", "catalog_synchronization", "standing_authorization", "policy_campaign_queue"],
+            "properties": {
+              "profile_publication": {"const": false},
+              "catalog_synchronization": {"const": false},
+              "standing_authorization": {"const": false},
+              "policy_campaign_queue": {"const": true}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "requested_mutations": {
+            "properties": {
+              "profile_publication": {"const": true},
+              "catalog_synchronization": {"const": true},
+              "standing_authorization": {"const": true}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}},
+          {"not": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]}}
+        ]
+      },
+      "then": {"properties": {"lineage": {"required": ["controls_qualification_manifest"]}}}
+    },
+    {
+      "if": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]},
+      "then": {
+        "required": ["capture_session_id", "intake_id"],
+        "properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {
+      "type": "object",
+      "required": ["uri", "digest", "size_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

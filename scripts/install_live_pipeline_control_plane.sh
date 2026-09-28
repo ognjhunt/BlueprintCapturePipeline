@@ -13,6 +13,11 @@ HANDOFF_DIR="${HANDOFF_DIR:-/var/lib/blueprint/pubsub-handoffs}"
 PROVIDER_SECRETS_DIR="${PROVIDER_SECRETS_DIR:-${ENV_DIR}/provider-secrets}"
 CREDENTIALS_DIR="${CREDENTIALS_DIR:-${ENV_DIR}/credentials}"
 LAUNCH_PROFILE_DIR="${LAUNCH_PROFILE_DIR:-${ENV_DIR}/task-evaluation-launch-profiles}"
+CONFIGURED_CONTROLS_PLAN_ROOT="${CONFIGURED_CONTROLS_PLAN_ROOT:-${ENV_DIR}/task-evaluation-configured-controls-plans}"
+CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT="${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT:-${ENV_DIR}/task-evaluation-configured-controls-intents}"
+CONFIGURED_CONTROLS_WEBAPP_SECRET="${CONFIGURED_CONTROLS_WEBAPP_SECRET:-${PROVIDER_SECRETS_DIR}/blueprint_task_evaluation_launch_submit_secret}"
+TASK_EVALUATION_INPUT_ROOT="${TASK_EVALUATION_INPUT_ROOT:-/var/lib/blueprint/task-evaluation-inputs}"
+WORK_VOLUME_ROOT="${WORK_VOLUME_ROOT:-/mnt/blueprint-work}"
 CAPTURE_RECONSTRUCTION_POLICY_DIR="${CAPTURE_RECONSTRUCTION_POLICY_DIR:-${ENV_DIR}/capture-reconstruction-policies}"
 CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/Caddyfile}"
 SERVICE_USER="${SERVICE_USER:-blueprint}"
@@ -43,6 +48,8 @@ Environment overrides:
   PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
   CREDENTIALS_DIR=/etc/blueprint/credentials
   LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
+  TASK_EVALUATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs
+  WORK_VOLUME_ROOT=/mnt/blueprint-work
   CAPTURE_RECONSTRUCTION_POLICY_DIR=/etc/blueprint/capture-reconstruction-policies
   CADDY_SITE_FILE=/etc/caddy/Caddyfile
   SERVICE_USER=blueprint
@@ -91,6 +98,14 @@ if [[ "${EUID}" -ne 0 && "${DRY_RUN}" != "true" ]]; then
   echo "Run as root or use --dry-run." >&2
   exit 1
 fi
+if [[ -L "${WORK_VOLUME_ROOT}" ]]; then
+  echo "ERROR: work volume root is a symlink" >&2
+  exit 1
+fi
+if [[ "${DRY_RUN}" != "true" ]] && ! mountpoint -q -- "${WORK_VOLUME_ROOT}"; then
+  echo "ERROR: mount the work volume before installing the lane scratch root" >&2
+  exit 1
+fi
 
 if ! getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
   run groupadd --system "${SERVICE_GROUP}"
@@ -114,7 +129,7 @@ run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${PROVIDER_SECRETS_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${CREDENTIALS_DIR}"
-run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${LAUNCH_PROFILE_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${CAPTURE_RECONSTRUCTION_POLICY_DIR}"
@@ -124,7 +139,8 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/incoming_webapp_job_requests" \
   "${STATE_DIR}/deliveries" \
   "${STATE_DIR}/gpu_spend_guard" \
-  "${STATE_DIR}/provider-locks"
+  "${STATE_DIR}/provider-locks" \
+  "${STATE_DIR}/storage-pins"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launches/pending" \
   "${STATE_DIR}/task-evaluation-launches/processing" \
@@ -140,6 +156,107 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launch-reconciliation" \
   "${STATE_DIR}/task-evaluation-launch-supervision/recommendations"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${STATE_DIR}/task-evaluation-launch-preparations" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/pending" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/processing" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/materialized" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/blocked" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/identities" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/results" \
+  "${STATE_DIR}/scene-object-discoveries/pending" \
+  "${STATE_DIR}/scene-object-discoveries/processing" \
+  "${STATE_DIR}/scene-object-discoveries/blocked" \
+  "${STATE_DIR}/scene-object-discoveries/results" \
+  "${STATE_DIR}/scene-object-discoveries/identities" \
+  "${STATE_DIR}/scene-object-discoveries/selections" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/pending" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/processing" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/completed" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/blocked" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/results" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/pending" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/processing" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/completed" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/blocked" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/results" \
+  "${STATE_DIR}/task-evaluation-launch-activations" \
+  "${STATE_DIR}/task-evaluation-launch-activations/pending" \
+  "${STATE_DIR}/task-evaluation-launch-activations/processing" \
+  "${STATE_DIR}/task-evaluation-launch-activations/prepared" \
+  "${STATE_DIR}/task-evaluation-launch-activations/blocked" \
+  "${STATE_DIR}/task-evaluation-launch-activations/identities" \
+  "${STATE_DIR}/task-evaluation-launch-activations/results" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches/pending" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches/processing" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches/completed" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches/blocked" \
+  "${STATE_DIR}/task-evaluation-policy-canaries" \
+  "${STATE_DIR}/standing-authorizations" \
+  "${TASK_EVALUATION_INPUT_ROOT}" \
+  "${TASK_EVALUATION_INPUT_ROOT}/prepared-references" \
+  "${TASK_EVALUATION_INPUT_ROOT}/compiled-episodes" \
+  "${TASK_EVALUATION_INPUT_ROOT}/launch-activations" \
+  "${TASK_EVALUATION_INPUT_ROOT}/lanes" \
+  "${TASK_EVALUATION_INPUT_ROOT}/policy-canary-execution-setups" \
+  "${TASK_EVALUATION_INPUT_ROOT}/system-runtimes"
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${WORK_VOLUME_ROOT}/lanes"
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discoveries" \
+  "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discovery-outputs"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  printf '[dry-run] verify mode=0750 owner=%s group=%s %s\n' \
+    "${SERVICE_USER}" "${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_PLAN_ROOT}"
+  printf '[dry-run] verify mode=0750 owner=root group=%s %s\n' \
+    "${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}"
+  printf '[dry-run] verify mode=0440 owner=root group=%s %s\n' \
+    "${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_WEBAPP_SECRET}"
+else
+  if [[ -L "${CONFIGURED_CONTROLS_PLAN_ROOT}" ]]; then
+    echo "ERROR: configured-controls plan root is a symlink" >&2
+    exit 1
+  fi
+  if [[ ! -d "${CONFIGURED_CONTROLS_PLAN_ROOT}" ]]; then
+    run mkdir -p "${CONFIGURED_CONTROLS_PLAN_ROOT}"
+  fi
+  PLAN_OWNER="$(stat -c '%U:%G' "${CONFIGURED_CONTROLS_PLAN_ROOT}")"
+  PLAN_MODE="$(stat -c '%a' "${CONFIGURED_CONTROLS_PLAN_ROOT}")"
+  if [[ "${PLAN_OWNER}" != "${SERVICE_USER}:${SERVICE_GROUP}" ]]; then
+    run chown "${SERVICE_USER}:${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_PLAN_ROOT}"
+  fi
+  if [[ "${PLAN_MODE}" != "750" ]]; then
+    run chmod 0750 "${CONFIGURED_CONTROLS_PLAN_ROOT}"
+  fi
+  test "$(stat -c '%U:%G:%a' "${CONFIGURED_CONTROLS_PLAN_ROOT}")" = \
+    "${SERVICE_USER}:${SERVICE_GROUP}:750"
+  if [[ -L "${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}" ]]; then
+    echo "ERROR: configured-controls autostart intent root is a symlink" >&2
+    exit 1
+  fi
+  if [[ ! -d "${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}" ]]; then
+    run mkdir -p "${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}"
+  fi
+  run chown "root:${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}"
+  run chmod 0750 "${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}"
+  test "$(stat -c '%U:%G:%a' "${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}")" = \
+    "root:${SERVICE_GROUP}:750"
+  if [[ ! -f "${CONFIGURED_CONTROLS_WEBAPP_SECRET}" || -L "${CONFIGURED_CONTROLS_WEBAPP_SECRET}" ]]; then
+    echo "ERROR: configured-controls WebApp submit secret missing or unsafe" >&2
+    exit 1
+  fi
+  SECRET_OWNER="$(stat -c '%U:%G' "${CONFIGURED_CONTROLS_WEBAPP_SECRET}")"
+  SECRET_MODE="$(stat -c '%a' "${CONFIGURED_CONTROLS_WEBAPP_SECRET}")"
+  if [[ "${SECRET_OWNER}" != "root:${SERVICE_GROUP}" ]]; then
+    run chown "root:${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_WEBAPP_SECRET}"
+  fi
+  if [[ "${SECRET_MODE}" != "440" ]]; then
+    run chmod 0440 "${CONFIGURED_CONTROLS_WEBAPP_SECRET}"
+  fi
+  test "$(stat -c '%U:%G:%a' "${CONFIGURED_CONTROLS_WEBAPP_SECRET}")" = \
+    "root:${SERVICE_GROUP}:440"
+fi
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/capture-reconstruction-queue/pending" \
   "${STATE_DIR}/capture-reconstruction-queue/processing" \
   "${STATE_DIR}/capture-reconstruction-queue/completed" \
@@ -153,9 +270,23 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
 run chown -R --no-dereference "${SERVICE_USER}:${SERVICE_GROUP}" \
   "${HANDOFF_DIR}" \
   "${STATE_DIR}"
+# Host hygiene that used to be hand-applied: bound journald and age /var/tmp.
+run install -d -m 0755 /etc/systemd/journald.conf.d /etc/tmpfiles.d
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/host/journald.conf.d/50-blueprint-cap.conf" \
+  /etc/systemd/journald.conf.d/50-blueprint-cap.conf
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/host/tmpfiles.d/blueprint-var-tmp.conf" \
+  /etc/tmpfiles.d/blueprint-var-tmp.conf
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.service" \
   "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.service" \
+  "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.timer" \
+  "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.timer" \
   "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.timer"
@@ -190,6 +321,51 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-dispatcher.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-dispatcher.path"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.service" \
+  "${SYSTEMD_DIR}/blueprint-scene-object-discovery.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.path" \
+  "${SYSTEMD_DIR}/blueprint-scene-object-discovery.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-policy-canary-dispatcher.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-policy-canary-dispatcher.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-native-g1-team-campaign-dispatcher.service" \
+  "${SYSTEMD_DIR}/blueprint-native-g1-team-campaign-dispatcher.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-native-g1-team-campaign-dispatcher.timer" \
+  "${SYSTEMD_DIR}/blueprint-native-g1-team-campaign-dispatcher.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-native-g1-team-campaign-settlement.service" \
+  "${SYSTEMD_DIR}/blueprint-native-g1-team-campaign-settlement.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-native-g1-team-campaign-settlement.timer" \
+  "${SYSTEMD_DIR}/blueprint-native-g1-team-campaign-settlement.timer"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-terminal-resource-release.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-terminal-resource-release.service"
 run install -m 0644 \
@@ -201,6 +377,39 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-reconciler.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-reconciler.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-scene-progression.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-scene-progression.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-scene-progression.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-scene-progression.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.path"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-storage-gc.service" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-storage-gc.service"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-storage-gc.timer" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-storage-gc.timer"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-capacity.service" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-capacity.service"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-capacity.timer" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-capacity.timer"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-preflight.service" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-preflight.service"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-preflight.timer" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-preflight.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.service"
@@ -382,7 +591,21 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-provider-billing-reconciler.timer
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
+  systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer
+  systemctl enable --now blueprint-task-evaluation-scene-progression.timer
+  systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
+  systemctl enable --now blueprint-control-plane-storage-gc.timer
+  systemctl enable --now blueprint-control-plane-capacity.timer
+  systemctl enable --now blueprint-control-plane-preflight.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
+  systemctl enable --now blueprint-task-evaluation-launch-preparation.path
+  systemctl enable --now blueprint-task-evaluation-launch-preparation.timer
+  systemctl enable --now blueprint-scene-object-discovery.path
+  systemctl enable --now blueprint-task-evaluation-episode-compilation.path
+  systemctl enable --now blueprint-task-evaluation-launch-activation.path
+  systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path
+  systemctl enable --now blueprint-native-g1-team-campaign-dispatcher.timer
+  systemctl enable --now blueprint-native-g1-team-campaign-settlement.timer
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
   systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
@@ -392,7 +615,17 @@ else
   echo "enable billing reconciliation with: systemctl enable --now blueprint-provider-billing-reconciler.timer"
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
+  echo "enable configured-controls progression with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer"
+  echo "enable compilation-result progression wake-up with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
+  echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
+  echo "enable bounded disk-capacity preparation retries with: systemctl enable --now blueprint-task-evaluation-launch-preparation.timer"
+  echo "enable whole-splat object discovery queue with: systemctl enable --now blueprint-scene-object-discovery.path"
+  echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
+  echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
+  echo "enable authority-gated paid policy canary queue with: systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path"
+  echo "enable G1 team campaign dispatcher with: systemctl enable --now blueprint-native-g1-team-campaign-dispatcher.timer"
+  echo "enable G1 team campaign settlement with: systemctl enable --now blueprint-native-g1-team-campaign-settlement.timer"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
   echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"

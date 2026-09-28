@@ -67,12 +67,25 @@ run_with_progress() {
 
 python3 -m pip install --disable-pip-version-check --no-cache-dir uv==0.10.7 \
   || { write_missing_result "artifixer3d_uv_install_failed"; exit 2; }
-uv_bin="$(command -v uv)"
+# The scene-configuration parent exposes Isaac Python through a PATH shim.
+# pip installs console scripts beside the underlying interpreter, which is not
+# necessarily a PATH directory. Invoke uv as that interpreter's module so the
+# install and every use resolve through the same exact Python environment.
+uv_command=(python3 -m uv)
 export UV_NATIVE_TLS=true
-"${uv_bin}" venv "${runtime_dir}/.artifixer-venv" --python "$(command -v python3)" \
+"${uv_command[@]}" venv "${runtime_dir}/.artifixer-venv" --python "$(command -v python3)" \
   || { write_missing_result "artifixer3d_venv_failed"; exit 2; }
 artifixer_python="${runtime_dir}/.artifixer-venv/bin/python"
-export CUDA_HOME=/usr/local/cuda
+nvcc_path="$(command -v nvcc)" \
+  || { write_missing_result "artifixer3d_nvcc_missing"; exit 2; }
+nvcc_path="$(readlink -f "${nvcc_path}")"
+export CUDA_HOME="$(cd "$(dirname "${nvcc_path}")/.." && pwd)"
+if [[ "${CUDA_HOME}" != /usr/local/cuda* ]] \
+    || [[ ! -x "${CUDA_HOME}/bin/nvcc" ]] \
+    || ! "${CUDA_HOME}/bin/nvcc" --version | grep -Fq "release 12.8"; then
+  write_missing_result "artifixer3d_cuda_toolkit_identity_invalid"
+  exit 2
+fi
 
 mapfile -t runtime_mode < <(
   python3 - "${runtime_dir}/artifixer3d_runtime_request.json" <<'PY'
@@ -109,10 +122,10 @@ if [[ "${direct_editor_backend}" == "vibe_image_edit" \
 fi
 
 if [[ "${direct_editor_backend}" == "vibe_image_edit" ]]; then
-  "${uv_bin}" pip install --python "${artifixer_python}" \
+  "${uv_command[@]}" pip install --python "${artifixer_python}" \
     torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124 \
     || { write_missing_result "artifixer3d_vibe_torch_install_failed"; exit 2; }
-  "${uv_bin}" pip install --python "${artifixer_python}" \
+  "${uv_command[@]}" pip install --python "${artifixer_python}" \
     accelerate==1.11.0 annotated-types==0.7.0 click==8.3.1 diffusers==0.33.1 \
     huggingface-hub==0.35.3 loguru==0.7.3 numpy==1.26.4 protobuf==3.20.2 \
     pydantic==2.0.3 pydantic-core==2.3.0 pydantic-settings==2.0.3 \
@@ -139,9 +152,9 @@ if [[ "${direct_editor_backend}" == "vibe_image_edit" ]]; then
   [[ "sha256:$(sha256sum "${vibe_source_dir}/LICENSE" | awk '{print $1}')" == \
       "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" ]] \
     || { write_missing_result "artifixer3d_vibe_source_license_mismatch"; exit 2; }
-  "${uv_bin}" pip install --python "${artifixer_python}" --no-deps -e "${vibe_source_dir}" \
+  "${uv_command[@]}" pip install --python "${artifixer_python}" --no-deps -e "${vibe_source_dir}" \
     || { write_missing_result "artifixer3d_vibe_source_install_failed"; exit 2; }
-  "${uv_bin}" pip check --python "${artifixer_python}" \
+  "${uv_command[@]}" pip check --python "${artifixer_python}" \
     > "${output_dir}/artifixer3d-pip-check.txt" \
     || { write_missing_result "artifixer3d_vibe_dependency_conflict"; exit 2; }
 
@@ -184,14 +197,35 @@ if receipt["blockers"]:
     raise SystemExit(";".join(receipt["blockers"]))
 PY
 else
-"${uv_bin}" pip install --python "${artifixer_python}" \
-  torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128 \
+"${uv_command[@]}" pip install --python "${artifixer_python}" \
+  torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128 \
   || { write_missing_result "artifixer3d_torch_install_failed"; exit 2; }
-"${uv_bin}" pip uninstall --python "${artifixer_python}" flash-attn opencv-python || true
-"${uv_bin}" pip install --python "${artifixer_python}" \
+
+# Isaac contributes nvcc, while the pinned PyTorch CUDA wheels contribute the
+# developer headers and shared libraries.  Torch's extension builder otherwise
+# searches only the incomplete /usr/local/cuda tree and fails on cusparse.h.
+cuda_package_path_output="$(
+  "${artifixer_python}" \
+    "${runtime_dir}/blueprint_pipeline/artifixer_cuda_package_paths.py"
+)" || { write_missing_result "artifixer3d_cuda_package_paths_invalid"; exit 2; }
+mapfile -t cuda_package_paths <<< "${cuda_package_path_output}"
+if [[ "${#cuda_package_paths[@]}" -ne 2 \
+      || -z "${cuda_package_paths[0]}" \
+      || -z "${cuda_package_paths[1]}" ]]; then
+  write_missing_result "artifixer3d_cuda_package_paths_invalid"
+  exit 2
+fi
+export CPATH="${cuda_package_paths[0]}${CPATH:+:${CPATH}}"
+export CPLUS_INCLUDE_PATH="${cuda_package_paths[0]}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
+export LIBRARY_PATH="${cuda_package_paths[1]}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${cuda_package_paths[1]}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export TORCH_HOME="${runtime_dir}/torch_home"
+
+"${uv_command[@]}" pip uninstall --python "${artifixer_python}" flash-attn opencv-python || true
+"${uv_command[@]}" pip install --python "${artifixer_python}" \
   accelerate==1.13.0 diffusers==0.37.1 transformers==5.5.0 ftfy \
   'numpy<2.0' einops scipy wandb tqdm Pillow matplotlib opencv-python-headless \
-  pyyaml torchmetrics imageio-ffmpeg h5py av torch-fidelity huggingface-hub \
+  pyyaml torchmetrics==1.9.0 imageio-ffmpeg h5py av torch-fidelity huggingface-hub \
   || { write_missing_result "artifixer3d_python_dependencies_failed"; exit 2; }
 
 submodule_dir="${runtime_dir}/ArtiFixer_official/thirdparty/3DGRUT-ArtiFixer"
@@ -218,14 +252,25 @@ if git -C "${submodule_dir}" submodule status --recursive | grep -Eq '^[-+U]'; t
   exit 2
 fi
 
-"${uv_bin}" pip install --python "${artifixer_python}" --no-build-isolation \
+# ``uv venv`` deliberately creates an unseeded environment.  The pinned
+# 3DGRUT requirements include native/VCS projects installed below with
+# ``--no-build-isolation``; listing setuptools in that same requirements file
+# is too late because uv must import the build backend before it installs the
+# resolved requirements.  Seed the exact compatible backend first, as an
+# explicit prerequisite of the native build rather than relying on whichever
+# tooling the provider image happens to expose.
+"${uv_command[@]}" pip install --python "${artifixer_python}" \
+  setuptools==71.1.0 wheel==0.45.1 \
+  || { write_missing_result "artifixer3d_build_dependencies_failed"; exit 2; }
+
+"${uv_command[@]}" pip install --python "${artifixer_python}" --no-build-isolation \
   -r "${submodule_dir}/requirements.txt" \
   || { write_missing_result "artifixer3d_3dgrut_requirements_failed"; exit 2; }
 bash "${submodule_dir}/scripts/install_slangc.sh" /usr/local \
   || { write_missing_result "artifixer3d_slangc_install_failed"; exit 2; }
-"${uv_bin}" pip install --python "${artifixer_python}" -e "${submodule_dir}" \
+"${uv_command[@]}" pip install --python "${artifixer_python}" -e "${submodule_dir}" \
   || { write_missing_result "artifixer3d_3dgrut_install_failed"; exit 2; }
-"${uv_bin}" pip check --python "${artifixer_python}" \
+"${uv_command[@]}" pip check --python "${artifixer_python}" \
   > "${output_dir}/artifixer3d-pip-check.txt" \
   || { write_missing_result "artifixer3d_python_dependency_conflict"; exit 2; }
 
@@ -235,10 +280,13 @@ bash "${submodule_dir}/scripts/install_slangc.sh" /usr/local \
 # a shallow parent-only submodule checkout therefore fails here, before a long
 # direct-inference pass can hide the packaging defect.
 export PYTHONPATH="${runtime_dir}/ArtiFixer_official:${submodule_dir}${PYTHONPATH:+:${PYTHONPATH}}"
-"${artifixer_python}" - "${output_dir}/artifixer3d-runtime-preflight.json" "${submodule_dir}" <<'PY' \
+"${artifixer_python}" - "${output_dir}/artifixer3d-runtime-preflight.json" "${submodule_dir}" \
+  "${runtime_dir}/artifixer3d_runtime_request.json" <<'PY' \
   || { write_missing_result "artifixer3d_runtime_preflight_failed"; exit 2; }
 import importlib
+import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -248,6 +296,7 @@ import torch
 
 receipt_path = Path(sys.argv[1])
 submodule_root = Path(sys.argv[2])
+runtime_request = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
 required_commands = ("git", "gcc", "g++", "cmake", "ninja", "nvcc", "slangc")
 required_files = (
     submodule_root / "thirdparty" / "tiny-cuda-nn" / "include" / "tiny-cuda-nn" / "common.h",
@@ -272,6 +321,7 @@ receipt = {
     "commands": {},
     "required_files": {},
     "entrypoint_imports": {},
+    "lpips_vgg16": {},
     "nested_submodules": [],
     "torch": {
         "version": torch.__version__,
@@ -321,6 +371,43 @@ try:
             raise
         else:
             receipt["entrypoint_imports"][module] = True
+    expected_vgg = runtime_request["artifixer3d"]["lpips_vgg16_imagenet1k_v1"]
+    vgg_path = (
+        Path(os.environ["TORCH_HOME"])
+        / expected_vgg["torch_home_relative_path"]
+    )
+    digest = hashlib.sha256()
+    if vgg_path.is_file() and not vgg_path.is_symlink():
+        with vgg_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    vgg_valid = (
+        vgg_path.is_file()
+        and not vgg_path.is_symlink()
+        and vgg_path.stat().st_size == expected_vgg["size_bytes"]
+        and "sha256:" + digest.hexdigest() == expected_vgg["sha256"]
+        and expected_vgg["network_retrieval_during_method_execution_required"] is False
+    )
+    receipt["lpips_vgg16"] = {
+        "path": str(vgg_path),
+        "size_bytes": vgg_path.stat().st_size if vgg_path.is_file() else None,
+        "sha256": "sha256:" + digest.hexdigest() if vgg_path.is_file() else None,
+        "network_disabled_during_preflight": True,
+        "instantiated": False,
+    }
+    if not vgg_valid:
+        receipt["blockers"].append("lpips_vgg16_materialization_invalid")
+    else:
+        def reject_network(event, _args):
+            if event.startswith("socket."):
+                raise RuntimeError("lpips_vgg16_preflight_network_forbidden")
+
+        sys.addaudithook(reject_network)
+        from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+
+        metric = LearnedPerceptualImagePatchSimilarity(net_type="vgg").eval()
+        del metric
+        receipt["lpips_vgg16"]["instantiated"] = True
     if not receipt["blockers"]:
         receipt["status"] = "completed"
 finally:
@@ -330,7 +417,7 @@ if receipt["blockers"]:
     raise SystemExit(";".join(receipt["blockers"]))
 PY
 fi
-"${uv_bin}" pip freeze --python "${artifixer_python}" > "${output_dir}/artifixer3d-pip-freeze.txt"
+"${uv_command[@]}" pip freeze --python "${artifixer_python}" > "${output_dir}/artifixer3d-pip-freeze.txt"
 
 export HF_HOME="${bundle_root}/.hf_home"
 export HF_HUB_CACHE="${bundle_root}/.hf_home/hub"

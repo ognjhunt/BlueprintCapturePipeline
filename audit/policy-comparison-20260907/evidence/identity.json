@@ -1,0 +1,18 @@
+{
+  "base_sha": "c217cf39659d5c8c4988dd463d02b7450b5c6345",
+  "branch": "codex/policy-comparison-audit-20260907-e524",
+  "primary_sha": "b7c0249b5cfbe48bd14a00b6b4ca6e2169a50eba",
+  "primary_status": "",
+  "website_sha": "c2cef1a6f464847d9cc94a9a2a7d5c82ccb85882",
+  "website_status": "",
+  "interpreter": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.venv/bin/python",
+  "interpreter_resolved": "/opt/homebrew/Caskroom/miniforge/base/bin/python3.12",
+  "python": "3.12.11",
+  "dependencies": {
+    "pytest": "9.1.1",
+    "numpy": "2.3.1",
+    "Pillow": "12.3.0",
+    "jsonschema": "4.26.0"
+  },
+  "uv_lock_sha256": "ab556a71dd06c6610f21ba3a18b6395be38aa7bd585bf22f2c7cc36c0d3bd878"
+}

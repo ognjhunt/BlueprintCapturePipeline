@@ -1,0 +1,74 @@
+{
+  "schema_version": "policy_canary_wrist_camera_mount_registry.v1",
+  "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+  "selection_authority": "native_render_measurements",
+  "candidates": [
+    {
+      "schema_version": "policy_canary_wrist_camera_mount_candidate.v1",
+      "candidate_id": "franka_robotiq_wrist_mount_01",
+      "source": "robot_preset_registry",
+      "target_binding": "task_start_position",
+      "forward_offset_m": 0.12,
+      "lateral_offset_m": 0.1,
+      "vertical_offset_m": 0.02,
+      "maximum_offset_m": 0.28,
+      "candidate_digest": "sha256:f38ef1c1b01334b202652baaa59adc4b514aaa60b9a9b10e1dc9d0f6e621da58"
+    },
+    {
+      "schema_version": "policy_canary_wrist_camera_mount_candidate.v1",
+      "candidate_id": "franka_robotiq_wrist_mount_02",
+      "source": "robot_preset_registry",
+      "target_binding": "task_start_position",
+      "forward_offset_m": 0.12,
+      "lateral_offset_m": -0.1,
+      "vertical_offset_m": 0.02,
+      "maximum_offset_m": 0.28,
+      "candidate_digest": "sha256:e25580c95184bcd4c2318e33a4c7fa617444da3883f35f2083ed9204a5e0a063"
+    },
+    {
+      "schema_version": "policy_canary_wrist_camera_mount_candidate.v1",
+      "candidate_id": "franka_robotiq_wrist_mount_03",
+      "source": "robot_preset_registry",
+      "target_binding": "task_start_position",
+      "forward_offset_m": 0.18,
+      "lateral_offset_m": 0.1,
+      "vertical_offset_m": 0.0,
+      "maximum_offset_m": 0.28,
+      "candidate_digest": "sha256:d0c298414eb49890148db9b0e63f7442f11f6a533aa857ac56dde06ae072339b"
+    },
+    {
+      "schema_version": "policy_canary_wrist_camera_mount_candidate.v1",
+      "candidate_id": "franka_robotiq_wrist_mount_04",
+      "source": "robot_preset_registry",
+      "target_binding": "task_start_position",
+      "forward_offset_m": 0.18,
+      "lateral_offset_m": -0.1,
+      "vertical_offset_m": 0.0,
+      "maximum_offset_m": 0.28,
+      "candidate_digest": "sha256:1d67a539803e99ccebdac36aafeb2244b6915122d9eca9c79d3c91389529b2d3"
+    },
+    {
+      "schema_version": "policy_canary_wrist_camera_mount_candidate.v1",
+      "candidate_id": "franka_robotiq_wrist_mount_05",
+      "source": "robot_preset_registry",
+      "target_binding": "task_start_position",
+      "forward_offset_m": 0.22,
+      "lateral_offset_m": 0.12,
+      "vertical_offset_m": -0.02,
+      "maximum_offset_m": 0.28,
+      "candidate_digest": "sha256:ab65cabcd05a5c9bc1a19644387f02b3472ee88c893c937c08be11fc2df63453"
+    },
+    {
+      "schema_version": "policy_canary_wrist_camera_mount_candidate.v1",
+      "candidate_id": "franka_robotiq_wrist_mount_06",
+      "source": "robot_preset_registry",
+      "target_binding": "task_start_position",
+      "forward_offset_m": 0.22,
+      "lateral_offset_m": -0.12,
+      "vertical_offset_m": -0.02,
+      "maximum_offset_m": 0.28,
+      "candidate_digest": "sha256:4dfbc7bbd33de5ebb6d0f1a5a5bed61653ef8278dba02466f98ae61c6bc27bd1"
+    }
+  ],
+  "registry_digest": "sha256:31187a6ba9d5501f275e94b0322bc93ad6003629f1aba6fbe19199f4a9c31f5b"
+}

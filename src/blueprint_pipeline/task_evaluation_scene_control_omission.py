@@ -1,0 +1,233 @@
+"""Private exact-owner opt-in to existing unqualified policy control omission."""
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any, Mapping
+
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+
+SCHEMA = 'task_evaluation_scene_control_omission_directive.v1'
+ROOT_ENV = 'BLUEPRINT_TASK_EVALUATION_DIAGNOSTIC_CONTROL_OMISSION_ROOT'
+DEFAULT_ROOT = '/etc/blueprint/task-evaluation-diagnostic-control-omissions'
+OMITTED = ['zero_action_negative', 'deterministic_scripted_positive']
+
+
+def _require(condition: bool, code: str):
+    if not condition:
+        raise ValueError('scene_control_omission_' + code)
+
+
+def _safe(path: Path):
+    _require(path.is_absolute() and '..' not in path.parts
+             and not any(p.is_symlink() for p in (path, *path.parents)), 'path_unsafe')
+
+
+def load_for_run(*, launch_state_root: str | Path, source_launch_id: str,
+                 now: float | None = None, evaluation_authority: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    """Bind the platform pause or an exact directive to the current owner intent."""
+    from . import task_evaluation_scene_policy_binding as policy
+    from . import task_evaluation_scene_intake as intake
+    _require(intake._identifier(source_launch_id), 'source_id_invalid')
+    profile_path = Path(launch_state_root) / source_launch_id / 'launch_profile.json'
+    _safe(profile_path)
+    if not profile_path.exists():
+        return None
+    profile = json.loads(profile_path.read_bytes())
+    if profile.get('scene_intent_digest') is None:
+        return None
+    intent_id = (profile.get('scene_attempt_binding') or {}).get('intent_id')
+    if evaluation_authority is None:
+        _require(intake._identifier(intent_id), 'owner_binding_missing')
+    from . import task_evaluation_control_stage_policy as stage_policy
+    _require(profile.get('profile_digest') == canonical_digest(profile, digest_field='profile_digest'), 'profile_changed')
+    moment = time.time() if now is None else now
+    _require(intake._number(moment), 'clock_invalid')
+    if evaluation_authority is None:
+        owner = policy.owner_for_profile(profile, now=moment)
+    else:
+        from .task_evaluation_team_run_authority import evaluation_owner
+        owner = evaluation_owner(source_profile=profile, authority=evaluation_authority,
+            source_launch_id=source_launch_id,
+            configured_scene_revision_digest=evaluation_authority.get('configured_scene_revision_digest'),
+            evaluation_run_id=evaluation_authority.get('evaluation_run_id'), now=moment)
+        intent_id = owner['intent_id']
+    _require(owner is not None and owner['intent_id'] == intent_id, 'owner_mismatch')
+    configured_root = os.getenv(ROOT_ENV)
+    root = Path(configured_root or DEFAULT_ROOT)
+    path = root / (intent_id + '.json')
+    if root.exists() or root.is_symlink() or configured_root:
+        _safe(root)
+        _safe(path)
+    if not path.exists():
+        if not stage_policy.CONTROLS_PAUSED:
+            return None
+        request = owner['request']
+        directive = {
+            'schema_version': SCHEMA, 'intent_id': intent_id, 'intent_digest': owner['intent_digest'],
+            'owner': request['owner'], 'authenticated_issuer': owner['authenticated_issuer'],
+            'authorized_by': stage_policy.AUTHORIZED_BY,
+            'authorization_reference': stage_policy.AUTHORIZATION_REFERENCE,
+            'user_request': stage_policy.USER_REQUEST,
+            'original_task_digest': cross_runtime_canonical_digest(request['task']),
+            'policy_candidates': request['execution']['policy_candidates'],
+            'expires_at_epoch': request['execution']['expires_at_epoch'],
+            'omitted_controls': OMITTED, 'run_kind': 'internal_policy_canary',
+            'claim_ceiling': 'diagnostic_policy_execution', 'maximum_policy_episodes': 20,
+            'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
+        }
+        directive['directive_digest'] = canonical_digest(directive, digest_field='directive_digest')
+        return directive
+    _require(path.is_file() and not path.stat().st_mode & 0o027, 'directive_file_unsafe')
+    directive = json.loads(path.read_bytes())
+    request = owner['request']
+    _require(isinstance(directive, dict) and directive.get('schema_version') == SCHEMA
+        and directive.get('directive_digest') == canonical_digest(directive, digest_field='directive_digest')
+        and directive.get('intent_id') == intent_id and directive.get('intent_digest') == owner['intent_digest']
+        and directive.get('owner') == request['owner']
+        and directive.get('authenticated_issuer') == owner['authenticated_issuer']
+        and directive.get('authorized_by') == request['owner']['user_id']
+        and isinstance(directive.get('authorization_reference'), str) and bool(directive['authorization_reference'].strip())
+        and isinstance(directive.get('user_request'), str) and bool(directive['user_request'].strip())
+        and directive.get('original_task_digest') == cross_runtime_canonical_digest(request['task'])
+        and directive.get('policy_candidates') == request['execution']['policy_candidates']
+        and intake._number(directive.get('expires_at_epoch'))
+        and moment < directive['expires_at_epoch'] <= request['execution']['expires_at_epoch']
+        and directive.get('omitted_controls') == OMITTED
+        and directive.get('run_kind') == 'internal_policy_canary'
+        and directive.get('claim_ceiling') == 'diagnostic_policy_execution'
+        and type(directive.get('maximum_policy_episodes')) is int and directive['maximum_policy_episodes'] == 20
+        and directive.get('task_scoring_criteria_changed') is False
+        and directive.get('qualified_comparison_permitted') is False, 'directive_invalid')
+    return directive
+
+
+def confirmed_articulated_contract(*, task_spec: Mapping[str, Any], site_id: str,
+                                   task_id: str) -> dict[str, Any]:
+    """Translate the owner's frozen drawer criteria without changing scoring."""
+    from .adp_articulated_task_success_contract import seal_task_success_contract
+    owner = task_spec.get('configured_owner_authority') or {}
+    criteria = task_spec.get('configured_success_criteria') or {}
+    _require(task_spec.get('task_kind') == 'articulated_open_close'
+             and criteria.get('owner_success_contract_required') is True
+             and criteria.get('task_joint_drive_forbidden') is True
+             and owner.get('confirmation_status') == 'confirmed'
+             and bool(str(owner.get('accepted_by') or '').strip())
+             and bool(str(owner.get('authority_reference') or '').strip()),
+             'articulated_owner_contract_unconfirmed')
+    contract = seal_task_success_contract(
+        task_kind='articulated_open_close', task_spec=task_spec,
+        site_id=site_id, task_id=task_id, author_source='task_owner',
+        author_id=owner['accepted_by'], confirmation_status='confirmed',
+        confirmed_by_team_id=owner['accepted_by'])
+    opening = contract['criteria']['opening']['success_interval']
+    _require(opening == task_spec['executable_opening_threshold']['success_interval'],
+             'articulated_threshold_changed')
+    return contract
+
+
+def derived_contract(*, packet_request_path: Path, directive: Mapping[str, Any],
+                     scene_plan_path: Path | None = None):
+    """Use the existing typed omission producer; retain original request bytes."""
+    from .native_marked_area_rehearsal import direct_policy_request
+    _safe(packet_request_path)
+    source = json.loads(packet_request_path.read_bytes())
+    if (source.get('task_spec') or {}).get('task_kind') == 'articulated_open_close':
+        from .native_task_arena_packet import validate_native_task_arena_packet_request
+        from .native_task_arena_policy_canary_session import validate_control_omission_authority
+        _require(scene_plan_path is not None, 'articulated_scene_plan_missing')
+        _safe(scene_plan_path)
+        plan = json.loads(scene_plan_path.read_bytes())
+        validate_native_task_arena_packet_request(source)
+        _require(plan.get('schema_version') == 'native_task_arena_scene_plan.v1'
+                 and plan.get('plan_digest') == canonical_digest(plan, digest_field='plan_digest')
+                 and plan.get('scene_id') == source.get('scene_id')
+                 and plan.get('task_id') == source.get('task_id')
+                 and plan.get('task_spec') == source.get('task_spec'),
+                 'articulated_scene_plan_changed')
+        contract = confirmed_articulated_contract(
+            task_spec=plan['task_spec'], site_id=plan['scene_id'], task_id=plan['task_id'])
+        authority = {
+            'schema_version': 'task_evaluation_diagnostic_control_omission_authority.v1',
+            'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
+            'authorized_by': directive['authorized_by'],
+            'authorization_reference': directive['authorization_reference'],
+            'omitted_controls': OMITTED,
+            'source_task_success_contract_digest': contract['contract_digest'],
+            'result_task_success_contract_digest': contract['contract_digest'],
+            'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
+        }
+        authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+        validate_control_omission_authority(authority, contract_digest=contract['contract_digest'])
+        return contract, authority
+    derived = direct_policy_request(source_request=source, authorized_by=directive['authorized_by'],
+        authorization_reference=directive['authorization_reference'])
+    return derived['task_spec']['task_success_contract'], derived['diagnostic_control_omission_authority']
+
+
+def bind_camera_start(*, directive, plan, contract, cells, construction=None,
+                      scene_plan_path: Path | None = None):
+    """Reopen exact owner robot calibration, then check every current cell's framing."""
+    import hashlib
+    from copy import deepcopy
+    from . import task_evaluation_controls_autoprovision as controls
+    from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
+    from .native_task_camera_start_configuration import materialize_camera_start_from_construction, materialize_camera_start_from_plan, validate_camera_start_configuration
+    from .native_task_arena_policy_canary_worker import _resolved_scene_plan
+    from . import task_evaluation_scene_intake as intake
+    config = controls._json(Path(os.getenv(controls.CONFIG_ENV, '/etc/blueprint/task-evaluation-controls-autoprovision.json')))
+    directory = Path(config['scene_root']) / directive['intent_id']
+    intent = intake._read(directory / 'intent.json', 'intent_digest')
+    _require(intent['intent_digest'] == directive['intent_digest'] and intent['authenticated_issuer'] in config['trusted_clients'],
+             'camera_owner_changed')
+    catalog = controls._sealed(Path(config['robot_catalog_path']), 'catalog_digest')
+    robot, _ = resolve_controls_robot_binding(directory=directory, intent=intent, catalog=catalog)
+    controls._asset(robot['robot_asset_usd'])
+    robot_sha = robot['robot_asset_usd']['digest']
+    root = Path(os.getenv('BLUEPRINT_TASK_EVALUATION_POLICY_CAMERA_CALIBRATION_ROOT',
+                          '/etc/blueprint/task-evaluation-policy-camera-calibrations'))
+    path = root / (robot_sha.removeprefix('sha256:') + '.json')
+    _safe(path)
+    _require(path.is_file() and not path.stat().st_mode & 0o027, 'camera_calibration_file_unsafe')
+    calibration = json.loads(path.read_bytes())
+    _require(calibration.get('schema_version') == 'policy_canary_robot_camera_kinematic_calibration.v1'
+        and calibration.get('calibration_digest') == canonical_digest(calibration, digest_field='calibration_digest')
+        and calibration.get('source_robot_asset_sha256') == robot_sha, 'camera_calibration_invalid')
+    values = []
+    for key in ('camera_start_binding', 'native_reference_gate'):
+        ref = calibration[key]
+        ref_path = Path(ref['path'])
+        _safe(ref_path)
+        _require(ref_path.is_file() and not ref_path.stat().st_mode & 0o027, 'camera_calibration_reference_unsafe')
+        raw = ref_path.read_bytes()
+        _require(ref == {'path':str(ref_path), 'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(), 'size_bytes':len(raw)},
+                 'camera_calibration_reference_changed')
+        values.append(json.loads(raw))
+    current = deepcopy(plan)
+    current['task_spec']['task_success_contract'] = deepcopy(contract)
+    current['plan_digest'] = canonical_digest(current, digest_field='plan_digest')
+    materialize = materialize_camera_start_from_plan if construction is None else materialize_camera_start_from_construction
+    direct_kwargs = {}
+    if construction is None and current.get('task_kind') == 'articulated_open_close' and str(current.get('scene_id', '')).endswith('-development'):
+        _require(scene_plan_path is not None, 'camera_scene_plan_path_missing')
+        obstacle = next((row for row in current['objects'] if row.get('semantic_role') == 'scene_collision'), None)
+        _require(obstacle is not None and isinstance(obstacle.get('usd_path'), str), 'camera_scene_collision_missing')
+        collision_path = Path(scene_plan_path).parent / obstacle['usd_path']
+        _safe(collision_path)
+        direct_kwargs['scene_collision_asset_path'] = collision_path
+        subject = next((row for row in current['objects'] if row.get('task_subject') is True), None)
+        _require(subject is not None and isinstance(subject.get('usd_path'), str), 'camera_task_asset_missing')
+        task_path = Path(scene_plan_path).parent / subject['usd_path']
+        _safe(task_path)
+        direct_kwargs['task_asset_path'] = task_path
+    binding = materialize(plan=current, **(direct_kwargs if construction is None else {'construction': construction}),
+        source_binding=values[0], native_reference_gate=values[1], robot_asset_sha256=robot_sha,
+        runtime_digest=robot['runtime_digest'], calibration_digest=calibration['calibration_digest'])
+    current['policy_canary_camera_start_configuration'] = binding
+    _require(len(cells) == 10, 'camera_cell_count_invalid')
+    for cell in cells:
+        resolved = _resolved_scene_plan(current, cell, task_success_contract=contract)
+        validate_camera_start_configuration(resolved, binding)
+    return binding

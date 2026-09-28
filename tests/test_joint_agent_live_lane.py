@@ -284,6 +284,88 @@ def test_dispatcher_refuses_a_retry_profile_without_exact_linear_official_lineag
 
 
 @pytest.mark.parametrize(
+    ("mutation", "unavailable_blocker"),
+    [
+        (
+            "deleted",
+            "launch_profile_immutable_input_missing:"
+            "joint_agent_prior_spend_0_official_billing_response",
+        ),
+        (
+            "changed",
+            "launch_profile_immutable_input_digest_mismatch:"
+            "joint_agent_prior_spend_0_official_billing_response",
+        ),
+    ],
+)
+def test_catalog_demotes_a_joint_agent_profile_with_unavailable_billing_lineage(
+    lane, tmp_path: Path, mutation: str, unavailable_blocker: str
+) -> None:
+    """One lost prior-spend file must not take every published lane offline."""
+
+    import sys
+
+    from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_task_evaluation_launch_dispatcher import _profile, _write
+
+    profile_dir = tmp_path / "profiles"
+    joint_agent = _build(lane)
+    intact = _profile(tmp_path)
+    _write(profile_dir / f"{joint_agent['profile_id']}.json", joint_agent)
+    _write(profile_dir / f"{intact['profile_id']}.json", intact)
+
+    if mutation == "deleted":
+        lane["billing"].unlink()
+    else:
+        lane["billing"].write_text('{"results":[]}', encoding="utf-8")
+    assert "joint_agent_prior_spend_lineage_invalid" in validate_launch_profile(joint_agent)
+    catalog_payload = build_catalog_payload(profile_dir)
+    rows = {
+        row["profile_id"]: row for row in json.loads(catalog_payload.decode("utf-8"))
+    }
+
+    assert set(rows) == {joint_agent["profile_id"], intact["profile_id"]}
+    assert rows[joint_agent["profile_id"]]["execution_admission"]["live_enabled"] is False
+    assert unavailable_blocker in rows[joint_agent["profile_id"]]["execution_admission"][
+        "blockers"
+    ]
+    assert rows[intact["profile_id"]]["execution_admission"]["live_enabled"] is True
+
+
+def test_catalog_still_refuses_tampered_joint_agent_lineage_when_files_exist(
+    lane, tmp_path: Path
+) -> None:
+    """Structural projection must not turn inconsistent evidence into availability."""
+
+    from blueprint_pipeline.task_evaluation_launch_catalog import (
+        LaunchCatalogError,
+        build_catalog_payload,
+    )
+
+    joint_agent = _build(lane)
+    joint_agent["same_goal_spend_lineage"]["prior_actual_provider_spend_usd"] = 0.0
+    joint_agent["profile_digest"] = canonical_digest(
+        joint_agent, digest_field="profile_digest"
+    )
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    (profile_dir / f"{joint_agent['profile_id']}.json").write_text(
+        json.dumps(joint_agent), encoding="utf-8"
+    )
+
+    with pytest.raises(
+        LaunchCatalogError,
+        match=(
+            "published_profile_invalid:.*:"
+            "joint_agent_prior_spend_lineage_invalid"
+        ),
+    ):
+        build_catalog_payload(profile_dir)
+
+
+@pytest.mark.parametrize(
     ("mutation", "match"),
     [
         ("omit", "prior_spend_reconciliation_required"),

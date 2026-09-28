@@ -1,0 +1,422 @@
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
+from blueprint_pipeline.adp_articulated_task_success_contract import (
+    EVENT_LEDGER_SCHEMA_VERSION,
+    SAFETY_PREDICATE,
+    seal_articulated_task_success_contract,
+)
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
+from blueprint_pipeline.task_evaluation_policy_canary_setup import (
+    TaskEvaluationPolicyCanarySetupError,
+    policy_canary_setup_digest,
+    validate_policy_canary_setup,
+)
+from scripts.attach_internal_policy_canary_setup import (
+    attach_internal_policy_canary_setup,
+)
+
+
+def _setup() -> dict[str, object]:
+    task_spec = {
+        "manipulation_strategy": "planar_push",
+        "destination_position_bounds_world_m": {
+            "minimum": [1.14, 1.99, 0.79],
+            "maximum": [1.16, 2.01, 0.81],
+        },
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.1,
+        "support_height_interval_m": [0.79, 0.81],
+        "minimum_translation_m": 0.14,
+        "minimum_lift_m": 0.0,
+        "movement_epsilon_m": 0.001,
+        "settle_window_samples": 3,
+        "settle_position_tolerance_m": 0.002,
+        "settle_orientation_tolerance_rad": 0.01,
+        "release_gripper_width_min_m": 0.07,
+    }
+    task_success_contract = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id="interiorgs-839873",
+        task_id="scene-839873-mug-planar-push",
+        author_source="compatibility_default",
+        author_id="blueprint:manipulation_strategy_defaults.v1",
+        confirmation_status="confirmed",
+    )
+    families = [
+        "canonical_anchor",
+        "canonical_anchor",
+        "placement_approach",
+        "placement_approach",
+        "illumination",
+        "camera_sensor",
+        "bounded_physics",
+        "admitted_object_material_cousin",
+        "pairwise_stress",
+        "held_out_composition",
+    ]
+    cells = []
+    for index, family in enumerate(families):
+        scenario = {"family": family, "ordinal": index}
+        cells.append(
+            {
+                "cell_id": f"quick-{index}",
+                "family": family,
+                "seed": 1000 + index,
+                "partition": (
+                    "canonical"
+                    if family == "canonical_anchor"
+                    else "held_out"
+                    if family == "held_out_composition"
+                    else "stress"
+                ),
+                "label": f"{family} {index}",
+                "cell_digest": canonical_digest(scenario),
+            }
+        )
+    candidates = []
+    for index, candidate_id in enumerate(("pi05_droid", "groot_n17_droid")):
+        candidates.append(
+            {
+                "candidate_id": candidate_id,
+                "display_name": candidate_id,
+                "checkpoint": {
+                    "uri": f"s3://checkpoints/{candidate_id}",
+                    "digest": f"sha256:{index + 1:064x}",
+                },
+                "adapter_id": f"{candidate_id}_adapter",
+                "license_id": "admitted_license",
+                "compatibility": {
+                    "robot_preset_ids": ["franka_panda_robotiq_2f85_v1"],
+                    "embodiment_ids": ["franka_robotiq"],
+                    "observation_schema_ids": ["droid_observation_v1"],
+                    "action_schema_ids": ["droid_joint_position_v1"],
+                    "simulator_runtime_ids": ["isaac_native_arena_v1"],
+                    "task_family_ids": ["rigid_relocation"],
+                },
+                "readiness": {
+                    "status": "verified_runnable",
+                    "receipt": {
+                        "uri": f"s3://readiness/{candidate_id}.json",
+                        "digest": f"sha256:{index + 5:064x}",
+                    },
+                    "reason": None,
+                },
+            }
+        )
+    value: dict[str, object] = {
+        "schema_version": "task_evaluation_policy_canary_setup.v1",
+        "source_launch_id": "scene-839873-policy-canary",
+        "offering_digest": "sha256:" + "a" * 64,
+        "scene_revision_digest": "sha256:" + "b" * 64,
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "registry_digest": "sha256:" + "c" * 64,
+        "robot_presets": [
+            {
+                "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+                "display_name": "Franka Panda + Robotiq 2F-85",
+                "embodiment_id": "franka_robotiq",
+                "task_family_id": "rigid_relocation",
+                "simulator_runtime_id": "isaac_native_arena_v1",
+                "runtime_image": {
+                    "uri": "registry.example/isaac@sha256:" + "3" * 64,
+                    "digest": "sha256:" + "3" * 64,
+                },
+                "observation_schema": {
+                    "schema_id": "droid_observation_v1",
+                    "cameras": ["external", "wrist"],
+                    "modalities": ["rgb", "joint_position"],
+                },
+                "action_schema": {
+                    "schema_id": "droid_joint_position_v1",
+                    "space": "joint_position",
+                    "control_hz": 15,
+                },
+                "readiness": {
+                    "status": "verified_runnable",
+                    "receipt": {
+                        "uri": "s3://readiness/franka.json",
+                        "digest": "sha256:" + "8" * 64,
+                    },
+                    "reason": None,
+                },
+                "policy_candidates": candidates,
+            }
+        ],
+        "episode_presets": [
+            {
+                "preset_id": "quick_10",
+                "label": "Quick",
+                "episodes_per_policy": 10,
+                "availability": "enabled",
+                "recommended": True,
+                "matrix": {
+                    "matrix_digest": canonical_digest({"ordered_cells": cells}),
+                    "resolver_id": "quick_10_deterministic",
+                    "resolver_version": "v1",
+                    "deterministic": True,
+                    "cells": cells,
+                    "expected_family_counts": {
+                        "canonical_anchor": 2,
+                        "placement_approach": 2,
+                        "illumination": 1,
+                        "camera_sensor": 1,
+                        "bounded_physics": 1,
+                        "admitted_object_material_cousin": 1,
+                        "pairwise_stress": 1,
+                        "held_out_composition": 1,
+                    },
+                    "coverage_gaps": [],
+                },
+                "estimate": {
+                    "duration_minutes": {"minimum": 20, "maximum": 60},
+                    "maximum_authorized_cost_usd": 5,
+                    "hard_ttl_seconds": 9000,
+                    "basis_digest": "sha256:" + "9" * 64,
+                    "as_of": "2026-08-31T12:00:00Z",
+                },
+            },
+            {
+                "preset_id": "standard_100",
+                "label": "Standard",
+                "episodes_per_policy": 100,
+                "availability": "coming_later",
+                "recommended": False,
+                "matrix": {"matrix_digest": "sha256:" + "d" * 64, "resolver_id": "standard", "resolver_version": "v1", "deterministic": True, "cells": [], "expected_family_counts": {"canonical_anchor": 0, "placement_approach": 0, "illumination": 0, "camera_sensor": 0, "bounded_physics": 0, "admitted_object_material_cousin": 0, "pairwise_stress": 0, "held_out_composition": 0}, "coverage_gaps": []},
+                "estimate": {"duration_minutes": {"minimum": 0, "maximum": 0}, "maximum_authorized_cost_usd": 5, "hard_ttl_seconds": 9000, "basis_digest": "sha256:" + "d" * 64, "as_of": "2026-08-31T12:00:00Z"},
+            },
+            {
+                "preset_id": "deep_500",
+                "label": "Deep",
+                "episodes_per_policy": 500,
+                "availability": "coming_later",
+                "recommended": False,
+                "matrix": {"matrix_digest": "sha256:" + "e" * 64, "resolver_id": "deep", "resolver_version": "v1", "deterministic": True, "cells": [], "expected_family_counts": {"canonical_anchor": 0, "placement_approach": 0, "illumination": 0, "camera_sensor": 0, "bounded_physics": 0, "admitted_object_material_cousin": 0, "pairwise_stress": 0, "held_out_composition": 0}, "coverage_gaps": []},
+                "estimate": {"duration_minutes": {"minimum": 0, "maximum": 0}, "maximum_authorized_cost_usd": 5, "hard_ttl_seconds": 9000, "basis_digest": "sha256:" + "e" * 64, "as_of": "2026-08-31T12:00:00Z"},
+            },
+        ],
+        "diagnostics": {
+            "zero_action": "nonblocking",
+            "deterministic_scripted_positive": "nonblocking",
+        },
+        "task_success_contract": task_success_contract,
+        "task_success_contract_digest": task_success_contract["contract_digest"],
+        "setup_digest": "",
+    }
+    value["setup_digest"] = policy_canary_setup_digest(value)
+    return value
+
+
+def test_setup_and_profile_attachment_are_digest_bound() -> None:
+    setup = _setup()
+    assert validate_policy_canary_setup(setup) == setup
+    profile = {
+        "profile_id": setup["source_launch_id"],
+        "profile_digest": "sha256:" + "f" * 64,
+    }
+    attached = attach_internal_policy_canary_setup(
+        profile=profile,
+        setup=setup,
+        profile_validator=lambda value: [],
+    )
+    assert attached["internal_policy_canary_setup"] == setup
+    assert attached["profile_digest"] == canonical_digest(
+        attached, digest_field="profile_digest"
+    )
+
+
+def test_setup_digest_uses_cross_runtime_number_canonicalization() -> None:
+    setup = _setup()
+    for preset in setup["episode_presets"]:
+        preset["estimate"]["maximum_authorized_cost_usd"] = 4.0
+    setup["setup_digest"] = ""
+    python_digest = canonical_digest(setup, digest_field="setup_digest")
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+
+    assert setup["setup_digest"] != python_digest
+    assert setup["setup_digest"] == (
+        "sha256:73a0d3cbb5c015699b90ace8b9c0a7669c8d0bdae3c7780ec0794f62ecc8605b"
+    )
+    assert validate_policy_canary_setup(setup) == setup
+
+
+def test_setup_attaches_to_new_profile_bound_to_configured_scene_launch() -> None:
+    setup = _setup()
+    profile = {
+        "profile_id": "scene-839873-policy-canary-current-main",
+        "configured_source_launch_id": setup["source_launch_id"],
+        "profile_digest": "sha256:" + "f" * 64,
+    }
+
+    attached = attach_internal_policy_canary_setup(
+        profile=profile,
+        setup=setup,
+        profile_validator=lambda value: [],
+    )
+
+    assert attached["profile_id"] != setup["source_launch_id"]
+    assert attached["configured_source_launch_id"] == setup["source_launch_id"]
+    assert attached["internal_policy_canary_setup"]["source_launch_id"] == setup[
+        "source_launch_id"
+    ]
+
+
+def test_setup_rejects_unrunnable_second_policy() -> None:
+    setup = _setup()
+    mutated = copy.deepcopy(setup)
+    readiness = mutated["robot_presets"][0]["policy_candidates"][1]["readiness"]
+    readiness["status"] = "unavailable"
+    readiness["receipt"] = None
+    readiness["reason"] = "checkpoint_not_installed"
+    mutated["setup_digest"] = policy_canary_setup_digest(mutated)
+    with pytest.raises(
+        TaskEvaluationPolicyCanarySetupError,
+        match="policy_canary_setup_runnable_pair_invalid",
+    ):
+        validate_policy_canary_setup(mutated)
+
+
+def test_setup_accepts_unavailable_g1_candidates_with_distinct_objectives() -> None:
+    setup = _setup()
+    robot = copy.deepcopy(setup["robot_presets"][0])
+    robot.update(
+        robot_preset_id="unitree_g1_dex3_v1",
+        display_name="Unitree G1 + Dex3",
+        embodiment_id="unitree_g1",
+        readiness={
+            "status": "unavailable", "receipt": None,
+            "reason": "GPU checkpoint episode not yet verified",
+        },
+    )
+    candidates = []
+    for index, objective in enumerate(
+        ("task_success", "task_success", "g1_navigation_goal", "g1_navigation_goal")
+    ):
+        candidate = copy.deepcopy(robot["policy_candidates"][index % 2])
+        candidate["candidate_id"] = f"g1_policy_{index}"
+        candidate["evaluation_objective_id"] = objective
+        candidate["readiness"] = {
+            "status": "unavailable", "receipt": None,
+            "reason": "GPU checkpoint episode not yet verified",
+        }
+        candidate["compatibility"]["robot_preset_ids"] = [robot["robot_preset_id"]]
+        candidate["compatibility"]["embodiment_ids"] = ["unitree_g1"]
+        candidates.append(candidate)
+    robot["policy_candidates"] = candidates
+    setup["robot_presets"].append(robot)
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+
+    assert validate_policy_canary_setup(setup) == setup
+    candidates[2]["evaluation_objective_id"] = "unknown_goal"
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    with pytest.raises(TaskEvaluationPolicyCanarySetupError, match="policy_canary_setup_invalid"):
+        validate_policy_canary_setup(setup)
+
+
+def test_setup_rejects_one_runnable_policy_per_objective() -> None:
+    setup = _setup()
+    setup["robot_presets"][0]["policy_candidates"][1]["evaluation_objective_id"] = "g1_navigation_goal"
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    with pytest.raises(TaskEvaluationPolicyCanarySetupError, match="runnable_pair_invalid"):
+        validate_policy_canary_setup(setup)
+
+
+def test_setup_rejects_runnable_navigation_without_confirmed_contract() -> None:
+    setup = _setup()
+    for candidate in setup["robot_presets"][0]["policy_candidates"]:
+        candidate["evaluation_objective_id"] = "g1_navigation_goal"
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    with pytest.raises(TaskEvaluationPolicyCanarySetupError, match="navigation_success_contract_not_published"):
+        validate_policy_canary_setup(setup)
+
+
+def test_setup_schema_rejects_unknown_task_success_contract_fields() -> None:
+    setup = _setup()
+    mutated = copy.deepcopy(setup)
+    mutated["task_success_contract"]["criteria"]["unexpected_rule"] = True
+    mutated["task_success_contract"]["contract_digest"] = (
+        cross_runtime_canonical_digest(
+            mutated["task_success_contract"], digest_field="contract_digest"
+        )
+    )
+    mutated["task_success_contract_digest"] = mutated[
+        "task_success_contract"
+    ]["contract_digest"]
+    mutated["setup_digest"] = policy_canary_setup_digest(mutated)
+
+    with pytest.raises(
+        TaskEvaluationPolicyCanarySetupError,
+        match="policy_canary_setup_invalid:task_success_contract",
+    ):
+        validate_policy_canary_setup(mutated)
+
+
+def test_setup_accepts_sealed_articulated_drawer_criteria_and_rejects_extra_fields() -> None:
+    setup = _setup()
+    criteria = {
+        "target_joint": {"joint_id": "middle_drawer_slide", "joint_ids": ["middle_drawer_slide"]},
+        "opening": {"mode": "required", "success_interval": [0.18, 0.3],
+                    "joint_hard_limits": [0.0, 0.3], "reset_position": 0.0},
+        "hold": {"mode": "required", "window_samples": 15,
+                 "maximum_settled_target_speed": 0.02},
+        "locked_joints": {"mode": "ignored", "joint_ids": [], "motion_tolerance": 0.01},
+        "reset": {"tolerance": 0.005},
+        "motion": {"movement_epsilon": 0.003},
+        "assembly_root": {"mode": "required"},
+        "safety": SAFETY_PREDICATE,
+        "temporal_invariants": {
+            "schema_version": EVENT_LEDGER_SCHEMA_VERSION,
+            "rebound_below_threshold_allowed": False,
+            "forbidden_collision_allowed": False,
+            "joint_limit_violation_allowed": False,
+            "assembly_root_excursion_allowed": False,
+        },
+    }
+    prior = setup["task_success_contract"]
+    contract = seal_articulated_task_success_contract(
+        task_spec={}, site_id=prior["scope"]["site_id"],
+        task_id=prior["scope"]["task_id"],
+        author_source="compatibility_default", author_id="blueprint:articulated_defaults.v1",
+        confirmation_status="confirmed", confirmed_by_team_id="test-robot-team",
+        criteria=criteria,
+    )
+    setup["task_success_contract"] = contract
+    setup["task_success_contract_digest"] = contract["contract_digest"]
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    assert validate_policy_canary_setup(setup) == setup
+
+    invalid = copy.deepcopy(setup)
+    invalid["task_success_contract"]["criteria"]["unobserved_rule"] = True
+    invalid["task_success_contract"]["contract_digest"] = cross_runtime_canonical_digest(
+        invalid["task_success_contract"], digest_field="contract_digest"
+    )
+    invalid["task_success_contract_digest"] = invalid["task_success_contract"]["contract_digest"]
+    invalid["setup_digest"] = policy_canary_setup_digest(invalid)
+    with pytest.raises(TaskEvaluationPolicyCanarySetupError, match="policy_canary_setup_invalid"):
+        validate_policy_canary_setup(invalid)
+
+
+def test_public_setup_may_publish_an_agent_proposal_without_authorizing_it() -> None:
+    setup = _setup()
+    proposal = seal_rigid_task_success_contract(
+        task_spec={},
+        site_id=setup["task_success_contract"]["scope"]["site_id"],
+        task_id=setup["task_success_contract"]["scope"]["task_id"],
+        author_source="agent_proposal",
+        author_id="agent:criteria-drafter",
+        confirmation_status="proposal_only",
+        criteria=setup["task_success_contract"]["criteria"],
+    )
+    setup["task_success_contract"] = proposal
+    setup["task_success_contract_digest"] = proposal["contract_digest"]
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+
+    assert validate_policy_canary_setup(setup)["task_success_contract"] == proposal

@@ -332,6 +332,31 @@ def test_graph_articulation_readback_uses_interaction_link_and_forbidden_contact
     ] == pytest.approx(2.0)
 
 
+def test_marker_pose_reader_observes_live_usd_transform(monkeypatch) -> None:
+    import sys
+    from types import ModuleType
+    from pxr import Usd, UsdGeom
+    from blueprint_pipeline.native_task_arena_readback import _read_marker_pose_world
+
+    stage = Usd.Stage.CreateInMemory()
+    marker = UsdGeom.Cylinder.Define(stage, "/World/envs/env_0/policy_target_marker")
+    translation = marker.AddTranslateOp()
+    translation.Set((1., 2., .3))
+    omni = ModuleType("omni")
+    usd = ModuleType("omni.usd")
+    usd.get_context = lambda: SimpleNamespace(get_stage=lambda: stage)
+    omni.usd = usd
+    monkeypatch.setitem(sys.modules, "omni", omni)
+    monkeypatch.setitem(sys.modules, "omni.usd", usd)
+    scene = SimpleNamespace(env_prim_paths=["/World/envs/env_0"])
+    assert _read_marker_pose_world(scene) == pytest.approx([1., 2., .3, 0., 0., 0., 1.])
+    translation.Set((3., 4., .5))
+    assert _read_marker_pose_world(scene)[:3] == pytest.approx([3., 4., .5])
+    stage.RemovePrim("/World/envs/env_0/policy_target_marker")
+    with pytest.raises(NativeTaskArenaReadbackError, match="target_marker_missing"):
+        _read_marker_pose_world(scene)
+
+
 def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
     built = _built()
     built.plan["task_kind"] = "rigid_pick_place"
@@ -350,8 +375,25 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
         "task_scene_contact",
     )
     del built.contact_sensor_names["task_scene_contact"]
+    built.env.unwrapped.scene["task_support"] = SimpleNamespace(
+        data=SimpleNamespace(
+            root_pose_w=[[3.2, -6.76, 0.82, 0.0, 0.0, 0.0, 1.0]]
+        )
+    )
+    built.scene_asset_names["task_support"] = "task_support"
+    with pytest.raises(NativeTaskArenaReadbackError, match="contact_sensor_missing:destination_scene_support_contact"):
+        NativeRigidTaskArenaReadback(built).read_task_sample()
+    built.contact_sensor_names["destination_scene_support_contact"] = ("task_scene_contact",)
+    with pytest.raises(NativeTaskArenaReadbackError, match="contact_sensor_missing:destination_scene_forbidden_contact"):
+        NativeRigidTaskArenaReadback(built).read_task_sample()
+    built.contact_sensor_names["destination_scene_forbidden_contact"] = ("robot_scene_contact",)
+    built.plan["articulation"]["initial_support_contact_body_paths"] = ["/Scene/source_cabinet"]
+    with pytest.raises(NativeTaskArenaReadbackError, match="contact_sensor_missing:task_initial_support_contact"):
+        NativeRigidTaskArenaReadback(built).read_task_sample()
+    built.contact_sensor_names["task_initial_support_contact"] = ("task_scene_contact",)
 
     sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+    assert sample["task_initial_support_contact_peak_force_n"] == sample["task_support_contact_peak_force_n"]
 
     assert sample["asset_root_pose_world"] == pytest.approx(
         [1.9742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0]
@@ -360,10 +402,101 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
         [2.0742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0]
     )
     assert sample["task_object_pose_world"] == sample["task_scoring_pose_world"]
+    assert sample["destination_pose_world"] == pytest.approx(
+        [3.2, -6.76, 0.82, 0.0, 0.0, 0.0, 1.0]
+    )
     assert sample["measurement_authority"] == (
         "native_rigid_root_pose_and_filtered_contact_sensors"
     )
 
+
+def test_rigid_readback_uses_live_physical_pad_centers_when_available(monkeypatch) -> None:
+    built = _built()
+    built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_sample_binding"] = {"joint_ids": []}
+    built.plan["task_spec"] = {
+        "task_kind": "rigid_pick_place",
+        "interaction_affordance": {
+            "asset_root_from_scoring_frame": {
+                "position_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+        },
+    }
+    built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
+    built.contact_sensor_names["task_support_contact"] = ("task_scene_contact",)
+    del built.contact_sensor_names["task_scene_contact"]
+
+    sample = NativeRigidTaskArenaReadback(
+        built,
+        gripper_pad_readback_callback=lambda: {
+            "measured": {
+                "pad_centers_world_m": {
+                    "left": [1.0, 2.0, 3.0],
+                    "right": [1.0, 2.1, 3.0],
+                }
+            }
+        },
+    ).read_task_sample()
+
+    assert sample["grasp_frame_position_world_m"] == pytest.approx([1.0, 2.05, 3.0])
+    assert sample["finger_separation_m"] == pytest.approx(0.1)
+    assert sample["grasp_frame_position_source"] == (
+        "native_franka_pose_servo.live_physical_pad_centers"
+    )
+
+    built.plan["task_spec"]["visible_target_marker"] = {"requested": "not_readback"}
+    measured_pose = [3., 4., .2, 0., 0., 0., 1.]
+    calls = []
+    def read_marker(scene):
+        calls.append(scene)
+        return measured_pose
+    monkeypatch.setattr("blueprint_pipeline.native_task_arena_readback._read_marker_pose_world", read_marker)
+    sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+    assert calls == [built.env.unwrapped.scene]
+    assert sample["destination_pose_world"] == measured_pose
+
+
+def test_g1_rigid_readback_requires_exact_dex3_grasp_bodies() -> None:
+    built = _built()
+    built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_sample_binding"] = {"joint_ids": []}
+    built.plan["task_spec"] = {
+        "task_kind": "rigid_pick_place",
+        "interaction_affordance": {
+            "asset_root_from_scoring_frame": {
+                "position_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+        },
+    }
+    built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
+    built.contact_sensor_names["task_support_contact"] = ("task_scene_contact",)
+    del built.contact_sensor_names["task_scene_contact"]
+    built.plan["robot"] = {
+        "robot_id": "unitree_g1",
+        "task_contact_body_paths": [
+            "{ENV_REGEX_NS}/Robot/right_hand_index_1_link",
+            "{ENV_REGEX_NS}/Robot/right_hand_thumb_2_link",
+        ],
+    }
+    with pytest.raises(NativeTaskArenaReadbackError, match="g1_grasp_frame_invalid"):
+        NativeRigidTaskArenaReadback(built)
+
+    built.plan["robot"]["grasp_frame"] = {
+        "kind": "body_midpoint",
+        "body_names": ["right_hand_index_1_link", "right_hand_thumb_2_link"],
+    }
+    robot = built.env.unwrapped.scene["robot"]
+    robot.data.body_names = ["right_hand_index_1_link", "right_hand_thumb_2_link"]
+    robot.data.body_pose_w = [[
+        [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0],
+        [1.0, 2.1, 3.0, 0.0, 0.0, 0.0, 1.0],
+    ]]
+    sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+    assert sample["grasp_frame_position_world_m"] == pytest.approx([1.0, 2.05, 3.0])
+    assert sample["finger_separation_m"] == pytest.approx(0.1)
+    assert sample["grasp_frame_position_source"] == "native_g1_dex3_body_origin_midpoint"
 
 def test_rigid_articulation_readback_monitors_every_locked_joint_during_motion() -> None:
     built = _built()
@@ -489,6 +622,32 @@ def test_reset_readback_covers_active_and_inactive_replacements() -> None:
             joint_pos=[[0.25]],
         ),
     )
+    built.plan["objects"].append(
+        {
+            "semantic_role": "task_support",
+            "asset_id": "document_tray",
+            "name": "task_support",
+            "task_subject": False,
+            "object_type": "RIGID",
+            "pose_world": {
+                "position_world_m": [3.2, -6.76, 0.82],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "reset_state": {
+                "root_pose_world": {
+                    "position_world_m": [3.2, -6.76, 0.82],
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                "joint_positions": {},
+            },
+        }
+    )
+    built.scene_asset_names["task_support"] = "task_support"
+    built.env.unwrapped.scene["task_support"] = SimpleNamespace(
+        data=SimpleNamespace(
+            root_pose_w=[[3.2, -6.76, 0.82, 0.0, 0.0, 0.0, 1.0]],
+        )
+    )
 
     report = read_native_task_arena_object_reset_state(built)
 
@@ -496,6 +655,7 @@ def test_reset_readback_covers_active_and_inactive_replacements() -> None:
     assert [row["asset_id"] for row in report["objects"]] == [
         "legacy_task_object",
         "inactive_drawer",
+        "document_tray",
     ]
     assert all(row["passed"] for row in report["objects"])
 
@@ -567,7 +727,8 @@ def test_inactive_replacement_mutation_fails_reset_replay() -> None:
     assert inactive["passed"] is False
 
 
-def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() -> None:
+@pytest.mark.parametrize('rigid', [False, True])
+def test_native_scenario_parameter_readback_uses_live_object_and_camera_state(rigid) -> None:
     built = _built()
     built.plan["scenario"] = {
         "parameter_applications": [
@@ -608,7 +769,7 @@ def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() 
                 "unit": "coefficient",
                 "resolved_value": 0.45,
                 "application_tolerance": 1.0e-6,
-                "readback_kind": "task_subject_link_dynamic_friction",
+                "readback_kind": "task_subject_rigid_dynamic_friction" if rigid else "task_subject_link_dynamic_friction",
                 "expected_native_value": 0.45,
                 "task_link_id": "door",
             },
@@ -625,6 +786,7 @@ def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() 
                 "light_intensity_scale": {"observed_intensity_scale": 0.9},
                 "object_dynamic_friction": {
                     "task_link_id": "door",
+                    "source": "physx_material_properties",
                     "observed_dynamic_friction": 0.45,
                 },
             },

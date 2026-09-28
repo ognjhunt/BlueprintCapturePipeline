@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/exact_workcell_variation_request.v1.schema.json",
+  "title": "Policy-neutral exact-workcell variation matrix request",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "program_id",
+    "matrix_id",
+    "matrix_kind",
+    "implementation_commit",
+    "cell_count",
+    "seed_root",
+    "scene_binding",
+    "task_binding",
+    "embodiment_binding",
+    "controls",
+    "variation_dimensions",
+    "object_cousins",
+    "request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "exact_workcell_variation_request.v1"},
+    "program_id": {"const": "arm-decision-proof-v1"},
+    "matrix_id": {"$ref": "#/$defs/id"},
+    "matrix_kind": {"const": "exact_workcell_primary"},
+    "implementation_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "cell_count": {"type": "integer", "minimum": 10, "maximum": 1000, "default": 100},
+    "seed_root": {"type": "integer", "minimum": 0},
+    "scene_binding": {
+      "type": "object",
+      "required": ["scene_id", "scene_digest", "coordinate_frame_digest", "canonical_object_asset_id", "canonical_object_asset_digest"],
+      "properties": {
+        "scene_id": {"$ref": "#/$defs/id"},
+        "scene_digest": {"$ref": "#/$defs/digest"},
+        "coordinate_frame_digest": {"$ref": "#/$defs/digest"},
+        "canonical_object_asset_id": {"$ref": "#/$defs/id"},
+        "canonical_object_asset_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "task_binding": {
+      "type": "object",
+      "required": ["task_id", "task_digest", "reset_contract_digest", "success_contract_digest"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/id"},
+        "task_digest": {"$ref": "#/$defs/digest"},
+        "reset_contract_digest": {"$ref": "#/$defs/digest"},
+        "success_contract_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "embodiment_binding": {
+      "type": "object",
+      "required": ["embodiment_id", "embodiment_digest", "joint_limits_digest", "camera_calibration_digest"],
+      "properties": {
+        "embodiment_id": {"$ref": "#/$defs/id"},
+        "embodiment_digest": {"$ref": "#/$defs/digest"},
+        "joint_limits_digest": {"$ref": "#/$defs/digest"},
+        "camera_calibration_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "controls": {"$ref": "#/$defs/controls"},
+    "variation_dimensions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/dimension"}
+    },
+    "agent_proposal": {"$ref": "#/$defs/agentProposal"},
+    "object_cousins": {"type": "array", "maxItems": 0},
+    "request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "controls": {
+      "type": "object",
+      "required": ["control_ids", "run_on_every_cell", "same_resolved_cell_required"],
+      "properties": {
+        "control_ids": {"const": ["zero_action_negative", "deterministic_scripted_positive"]},
+        "run_on_every_cell": {"const": true},
+        "same_resolved_cell_required": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "dimension": {
+      "type": "object",
+      "required": ["dimension_id", "family", "value_type", "nominal", "unit", "application_target", "application_tolerance", "source_contract", "authority_digest", "exact_workcell_invariant", "changes_object_or_task_identity"],
+      "properties": {
+        "dimension_id": {"$ref": "#/$defs/id"},
+        "family": {"enum": ["reset_state", "placement_approach", "camera_sensor", "illumination", "bounded_physics", "policy_stochasticity"]},
+        "value_type": {"enum": ["continuous", "integer", "categorical"]},
+        "nominal": {},
+        "minimum": {"type": "number"},
+        "maximum": {"type": "number"},
+        "values": {"type": "array", "minItems": 2},
+        "decimals": {"type": "integer", "minimum": 0, "maximum": 12},
+        "unit": {"type": "string", "minLength": 1},
+        "application_target": {"type": "string", "minLength": 1},
+        "application_tolerance": {"type": "number", "minimum": 0},
+        "parameter_path": {"type": "string"},
+        "source_contract": {"enum": ["scene", "task", "embodiment"]},
+        "authority_digest": {"$ref": "#/$defs/digest"},
+        "exact_workcell_invariant": {"const": true},
+        "changes_object_or_task_identity": {"const": false}
+      },
+      "allOf": [
+        {"if": {"properties": {"value_type": {"enum": ["continuous", "integer"]}}}, "then": {"required": ["minimum", "maximum"]}},
+        {"if": {"properties": {"value_type": {"const": "categorical"}}}, "then": {"required": ["values"]}}
+      ],
+      "additionalProperties": false
+    },
+    "agentProposal": {
+      "type": "object",
+      "required": ["schema_version", "status", "model_identity", "prompt_digest", "response_digest", "raw_proposal", "outcome_data_accessed", "may_widen_admitted_bounds", "may_change_workcell_or_task_identity", "dimension_priorities", "targeted_interactions", "object_cousins", "proposal_digest"],
+      "properties": {
+        "schema_version": {"const": "exact_workcell_variation_agent_proposal.v1"},
+        "status": {"const": "proposal_only"},
+        "model_identity": {"type": "string", "minLength": 1},
+        "prompt_digest": {"$ref": "#/$defs/digest"},
+        "response_digest": {"$ref": "#/$defs/digest"},
+        "raw_proposal": {"$ref": "#/$defs/rawProposal"},
+        "outcome_data_accessed": {"const": false},
+        "may_widen_admitted_bounds": {"const": false},
+        "may_change_workcell_or_task_identity": {"const": false},
+        "dimension_priorities": {"type": "array", "items": {"type": "object", "required": ["dimension_id", "weight"], "properties": {"dimension_id": {"$ref": "#/$defs/id"}, "weight": {"type": "number", "exclusiveMinimum": 0}}, "additionalProperties": false}},
+        "targeted_interactions": {"type": "array", "items": {"type": "object", "required": ["dimension_ids", "rationale"], "properties": {"dimension_ids": {"type": "array", "minItems": 2, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}, "rationale": {"type": "string", "minLength": 1}}, "additionalProperties": false}},
+        "object_cousins": {"type": "array", "maxItems": 0},
+        "proposal_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "rawProposal": {
+      "type": "object",
+      "required": ["dimension_priorities", "targeted_interactions", "object_cousins"],
+      "properties": {
+        "dimension_priorities": {"type": "array", "items": {"type": "object", "required": ["dimension_id", "weight"], "properties": {"dimension_id": {"$ref": "#/$defs/id"}, "weight": {"type": "number", "exclusiveMinimum": 0}}, "additionalProperties": false}},
+        "targeted_interactions": {"type": "array", "items": {"type": "object", "required": ["dimension_ids", "rationale"], "properties": {"dimension_ids": {"type": "array", "minItems": 2, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}, "rationale": {"type": "string", "minLength": 1}}, "additionalProperties": false}},
+        "object_cousins": {"type": "array", "maxItems": 0}
+      },
+      "additionalProperties": false
+    }
+  }
+}
