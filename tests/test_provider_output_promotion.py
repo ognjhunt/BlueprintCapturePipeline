@@ -154,6 +154,8 @@ class World:
                                                bucket=self.cas.bucket),
                 "file_publisher": functools.partial(scene_store.publish_configured_scene_artifact,
                                                     client=self.cas, bucket=self.cas.bucket),
+                "verifier": functools.partial(scene_store.verify_configured_scene_artifact, client=self.cas,
+                                              bucket=self.cas.bucket),
                 "opener": self.spaces.opener}
 
     def cleanup(self):
@@ -167,7 +169,7 @@ class World:
 
     def resume(self, **options):
         return promotion.resume_provider_output_promotion(
-            self.attempt, maximum_archive_bytes=MAXIMUM, **{**self.dependencies(), **options})
+            self.attempt, **{"maximum_archive_bytes": MAXIMUM, **self.dependencies(), **options})
 
     def files(self):
         return sorted(path for path in self.tmp_path.rglob("*") if path.is_file())
@@ -223,7 +225,7 @@ def test_promotion_indexes_then_copies_the_pinned_object_to_cas_with_full_readba
     assert receipt["staged_objects"]["output"] == {
         "key_sha256": records.key_sha256(world.keys["output"]), "state": "promoted",
         "versions": [{"size_bytes": archive.size, "etag": '"spaces-1"', "archive_sha256": digest,
-                      "durable_uri": reference["uri"]}]}
+                      "durable_uri": reference["uri"], "durable_reference": reference}]}
     # Only then did cleanup delete the staged output, and the absence is proven.
     assert cleanup["status"] == "completed" and cleanup["all_objects_absent"] is True
     assert world.keys["output"] in world.spaces.deleted
@@ -319,10 +321,14 @@ def _paired(case: str = "redundant"):
     cell = {name.removeprefix("cell_runs/00/"): data for name, data in base.payloads.items()
             if name.startswith("cell_runs/00/")}
     manifest = {"schema_version": "policy_canary_paired_witness.v1", "run_id": "run-1",
-                "source": "retained_first_quick10_cell", "files": sorted(cell), "manifest_digest": ""}
+                "source": "retained_first_quick10_cell", "files": sorted(cell),
+                "new_learned_episodes_executed": 0, "manifest_digest": ""}
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     output = quick10_shaped_archive(**SMALL, extra_members={MANIFEST_MEMBER: json.dumps(manifest, indent=2).encode()})
-    witness_manifest = {**manifest, "run_id": "run-2"} if case == "manifest_differs" else manifest
+    witness_manifest = {"manifest_differs": {**manifest, "run_id": "run-2"},
+                        # Equal under Python's ==, different JSON: 0 and 0.0.
+                        "manifest_type_differs": {**manifest, "new_learned_episodes_executed": 0.0},
+                        }.get(case, manifest)
     members = {MANIFEST_MEMBER: json.dumps(witness_manifest, sort_keys=True).encode(), **cell}
     if case == "extra_member":
         members["episodes/unarchived_large_review.mp4"] = b"\1" * 4096
@@ -332,7 +338,8 @@ def _paired(case: str = "redundant"):
     return output.archive, build_zip([Entry(name, data) for name, data in members.items()]), len(members)
 
 
-@pytest.mark.parametrize("case", ["redundant", "extra_member", "manifest_differs", "member_differs"])
+@pytest.mark.parametrize("case", ["redundant", "extra_member", "manifest_differs", "manifest_type_differs",
+                                  "member_differs"])
 def test_witness_is_redundant_only_when_every_row_is_in_cell_00(paired_world, case):
     world = paired_world
     output, witness, witness_members = _paired(case)
@@ -422,7 +429,7 @@ def test_promotion_without_an_observation_promotes_whatever_is_present(world):
     assert (receipt["status"], receipt["source"], receipt["observation"]) == ("promoted", "remote_present", None)
     assert receipt["staged_objects"]["output"]["versions"] == [
         {"size_bytes": archive.size, "etag": '"spaces-9"', "archive_sha256": virtual_sha256(archive),
-         "durable_uri": receipt["durable_reference"]["uri"]}]
+         "durable_uri": receipt["durable_reference"]["uri"], "durable_reference": receipt["durable_reference"]}]
     assert cleanup["all_objects_absent"] is True
 
 
@@ -687,3 +694,130 @@ def test_a_held_lock_times_out_quickly_and_still_runs_the_gated_cleanup(world):
     assert "provider_output_promotion_lock_timeout" in resumed["blockers"]
     assert world.cas.uploads == 0 and world.keys["output"] in world.spaces.stores
 
+
+class _Killed(BaseException):
+    """The process dies: nothing after this point runs, not even exception handlers."""
+
+
+def _kill(*_args, **_kwargs):
+    raise _Killed()
+
+
+def _receipt_now(world):
+    return records.load_promotion_receipt(
+        world.staging, staging_manifest_sha256=records.staging_manifest_sha256(world.staging))
+
+
+def test_a_kill_during_the_witness_step_resumes_from_the_durable_output(paired_world, monkeypatch):
+    world = paired_world
+    output, witness, _ = _paired()
+    world.stage("output", output)
+    world.stage("paired_witness", witness, etag='"witness-1"')
+    observation = _observed(output)
+    (world.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": observation}), encoding="utf-8")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(promotion._Promotion, "_witness", _kill)
+        with pytest.raises(_Killed):
+            world.promote(observation=observation)
+
+    # The output was durable before the witness step began, and the receipt already says so.
+    interim = _receipt_now(world)
+    assert interim["status"] == "promoted" and len(interim["staged_objects"]["output"]["versions"]) == 1
+    assert interim["staged_objects"]["paired_witness"] == {
+        "key_sha256": records.key_sha256(world.keys["paired_witness"]), "state": "pending", "versions": []}
+    reads, uploads = world.spaces.whole_object_gets(world.keys["output"]), world.cas.uploads
+    # A resume with the CLI's own default maximum reuses it: the output is not read again.
+    resumed = world.resume(maximum_archive_bytes=promotion.DEFAULT_MAXIMUM_ARCHIVE_BYTES)
+    assert resumed["status"] == "completed", resumed["blockers"]
+    assert world.spaces.whole_object_gets(world.keys["output"]) == reads
+    assert world.cas.uploads == uploads + 1  # the witness, promoted: this run never read the output
+    assert _receipt_now(world)["witness"]["disposition"] == "promoted"
+
+
+def test_an_output_failure_after_the_index_was_written_resumes_with_any_maximum(world):
+    first = quick10_shaped_archive(**SMALL).archive
+    second = quick10_shaped_archive(**{**SMALL, "cells": 3}).archive
+    world.stage("output", second)  # Spaces holds other bytes than SSH recovered
+    local = _local_zip(world, first)
+
+    def b2_down(**_kwargs):
+        raise RuntimeError("b2 down")
+
+    receipt, cleanup = world.promote(local_archive=local, publisher=b2_down)
+
+    # The recovered ZIP is durable and indexed; only the staged object's copy failed.
+    assert receipt["status"] == "promoted" and receipt["source"] == "ssh_local_zip"
+    assert receipt["blockers"] == ["provider_output_promotion_failed:RuntimeError"]
+    assert receipt["staged_objects"]["output"]["versions"] == []
+    assert not local.exists() and (world.attempt / promotion.INDEX_FILENAME).is_file()
+    assert cleanup["blockers"] == ["staged_output_promotion_identity_mismatch"]
+    index = (world.attempt / promotion.INDEX_FILENAME).read_bytes()
+
+    resumed = world.resume(maximum_archive_bytes=promotion.DEFAULT_MAXIMUM_ARCHIVE_BYTES)
+
+    assert resumed["status"] == "completed", resumed["blockers"]
+    assert (world.attempt / promotion.INDEX_FILENAME).read_bytes() == index
+    assert world.keys["output"] not in world.spaces.stores
+    assert json.loads(index)["limits"] == promotion.INDEX_LIMITS  # the caller's maximum is not recorded
+
+
+def test_index_limits_do_not_depend_on_the_caller_s_maximum(tmp_path, monkeypatch):
+    archive = quick10_shaped_archive(**SMALL).archive
+    indexes = []
+    for name, maximum in (("lane", MAXIMUM), ("cli", promotion.DEFAULT_MAXIMUM_ARCHIVE_BYTES)):
+        world = World(tmp_path / name, monkeypatch, witness=False)
+        world.stage("output", archive)
+        receipt, _ = world.promote(observation=_observed(archive), maximum_archive_bytes=maximum)
+        assert receipt["status"] == "promoted"
+        indexes.append((world.attempt / promotion.INDEX_FILENAME).read_bytes())
+    assert indexes[0] == indexes[1]
+
+
+def _drop_from_b2(world, uri):
+    key = urlparse(uri).path.lstrip("/")
+    del world.cas.objects[key]
+
+
+def test_a_reused_receipt_is_trusted_only_while_its_durable_copies_exist(tmp_path, monkeypatch):
+    archive = quick10_shaped_archive(**SMALL).archive
+
+    # A staged delete: the B2 copy vanished after promotion, before cleanup.
+    staged = World(tmp_path / "staged", monkeypatch, witness=False)
+    staged.stage("output", archive)
+    observation = _observed(archive)
+    (staged.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": observation}), encoding="utf-8")
+    first, cleanup = staged.promote(observation=observation, cleanup=lambda: {"status": "blocked"})
+    _drop_from_b2(staged, first["durable_reference"]["uri"])
+    uploads = staged.cas.uploads
+
+    resumed = staged.resume()
+
+    assert resumed["status"] == "completed", resumed["blockers"]
+    assert staged.cas.uploads == uploads + 1  # promoted again from the still-staged object
+    assert first["durable_reference"]["uri"].removeprefix("s3://blueprint-artifacts/") in staged.cas.objects
+    # With the copy gone and nothing left to promote it from, the receipt no longer stands.
+    _drop_from_b2(staged, first["durable_reference"]["uri"])
+    gone = staged.resume()
+    assert gone["status"] == "blocked" and "provider_output_durable_copy_missing" in gone["blockers"]
+
+    # A local unlink: the recovered ZIP stays until its bytes are durable again.
+    local_world = World(tmp_path / "local", monkeypatch)
+    _, witness, _ = _paired()
+    local_world.stage("paired_witness", witness, etag='"witness-1"')
+    local = _local_zip(local_world, archive)
+    with monkeypatch.context() as patch:
+        patch.setattr(promotion._Promotion, "_witness", _kill)
+        with pytest.raises(_Killed):
+            local_world.promote(local_archive=local)
+    interim = _receipt_now(local_world)
+    assert interim["local_copy_removed_after_verified_promotion"] is False and local.is_file()
+    _drop_from_b2(local_world, interim["durable_reference"]["uri"])
+
+    resumed = local_world.resume()
+
+    assert resumed["status"] == "completed", resumed["blockers"]
+    assert not local.exists() and _receipt_now(local_world)["local_copy_removed_after_verified_promotion"] is True
+    assert interim["durable_reference"]["uri"].removeprefix("s3://blueprint-artifacts/") in local_world.cas.objects

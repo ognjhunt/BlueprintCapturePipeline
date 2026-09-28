@@ -22,31 +22,38 @@ an assumption:
 - an absent object is recorded as ``absent_confirmed``.
 
 Each promoted staged object's (size, ETag) is recorded as a version of its key,
-so the gate deletes exactly the objects made durable. A later resume reuses a
-receipt whose versions still match and promotes any object that does not.
+with its durable reference, so the gate deletes exactly the objects made
+durable. A later resume reuses a receipt only while every durable copy it
+relies on still answers a HEAD (``verifier``); a missing copy is promoted
+again from what is still there, or the run fails
+(``provider_output_durable_copy_missing``). A present object that matches no
+recorded version is promoted.
 
 Steps for the archive a consumer reads (the primary): one index pass
-(``build_member_index``; limits 4 x ``maximum_archive_bytes`` expanded, 100,000
-members, 2 GiB per member), one pinned copy into B2 with full readback
-(``publish_configured_scene_stream``), then ``seal_durable_reference`` and the
-index at ``<attempt>/provider_output_member_index.v1.json``. An archive the
-index refuses is still promoted as evidence after one hash pass, and the
-receipt carries ``provider_output_index_refused:<code>``. Transient transport
-and publication failures get three attempts with backoff; identity refusals
-get one.
-
-Paired witness. A promoted, indexed output makes a staged witness redundant
-only when every member of the witness (indexed from its own bytes) is in the
-output: each file at ``cell_runs/00/<path>`` with the same SHA-256 and size,
-and the witness manifest equal, as JSON, to the output's
-``paired_witness_manifest.v1.json``. Otherwise -- including when the output is
-absent or its index was refused -- the witness is promoted
-(``policy-canary-paired-witness``); if the output's promotion failed, it is
-deferred untouched.
+(``build_member_index`` under the fixed ``INDEX_LIMITS``, so an index never
+depends on the caller's ``maximum_archive_bytes``), one pinned copy into B2
+with full readback (``publish_configured_scene_stream``), then
+``seal_durable_reference`` and the index at
+``<attempt>/provider_output_member_index.v1.json``. An archive the index refuses
+is still promoted as evidence after one hash pass, and the receipt carries
+``provider_output_index_refused:<code>``. The receipt is written as soon as the
+primary is durable and again after any other staged object, before the witness
+step, so a run killed later leaves a receipt a resume reuses. Transient
+transport and publication failures get three attempts with backoff; identity
+refusals get one.
 
 Only a staging manifest with ``output_promotion_required`` is promoted
 (``provider_output_promotion_not_required`` otherwise): a download-mode
 attempt keeps its own ZIP and ungated cleanup, and resume refuses it outright.
+
+Paired witness. A promoted, indexed output makes a staged witness redundant
+only when every member of the witness (indexed from its own bytes) is in the
+output: each file at ``cell_runs/00/<path>`` with the same SHA-256 and size,
+and the witness manifest equal, by canonical digest, to the output's
+``paired_witness_manifest.v1.json``. Otherwise -- including when the output is
+absent or its index was refused -- the witness is promoted
+(``policy-canary-paired-witness``); if the output's promotion failed, it is
+deferred untouched.
 
 B2 must be configured explicitly (review I4): all five
 ``BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE`` variables. The artifact
@@ -107,6 +114,7 @@ from .task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError,
     publish_configured_scene_artifact,
     publish_configured_scene_stream,
+    verify_configured_scene_artifact,
 )
 from .wam_provider_object_store import (
     SCHEMA_VERSION as STAGING_SCHEMA_VERSION,
@@ -129,10 +137,13 @@ WITNESS_MANIFEST_MEMBER = "paired_witness_manifest.v1.json"
 STAGING_DIRNAME = "object_store_staging"
 PROVIDER_RUN_DIRNAME = "vast_provider_run"
 COMMAND_RESULT_NAME = "vast_provider_command_result.json"
-MAXIMUM_MEMBERS = 100_000
-MAXIMUM_MEMBER_INFLATED_BYTES = 2 * 1024**3
 MAXIMUM_MANIFEST_BYTES = 64 * 1024**2
 DEFAULT_MAXIMUM_ARCHIVE_BYTES = 64 * 1024**3
+# Fixed, so the index a lane writes and the one a resume rebuilds are the same
+# document whatever maximum each caller passes (the maximum still bounds reads).
+INDEX_LIMITS = {"maximum_expanded_bytes": 4 * DEFAULT_MAXIMUM_ARCHIVE_BYTES, "maximum_members": 100_000,
+                "maximum_member_inflated_bytes": 2 * 1024**3}
+PRIMARY_FIELDS = ("source", "archive_sha256", "size_bytes", "durable_reference", "member_index", "index_refusal")
 PRESIGN_EXPIRATION_SECONDS = 2 * 3600
 READER_DEADLINE_SECONDS = 2 * 3600
 # Short: a promoter that cannot take the lock falls through to the gated cleanup,
@@ -198,12 +209,6 @@ def _require_artifact_store() -> None:
         raise ProviderOutputPromotionError("provider_output_promotion_artifact_store_not_configured")
 
 
-def _index_limits(maximum_archive_bytes: int) -> dict[str, int]:
-    expanded = min(MAX_EXPANDED_BYTES, 4 * maximum_archive_bytes)
-    return {"maximum_expanded_bytes": expanded, "maximum_members": MAXIMUM_MEMBERS,
-            "maximum_member_inflated_bytes": min(MAXIMUM_MEMBER_INFLATED_BYTES, expanded)}
-
-
 def _identity(reader) -> dict[str, Any]:
     return {"size_bytes": reader.identity["size_bytes"], "etag": reader.identity["etag"]}
 
@@ -230,35 +235,49 @@ def _json_or_none(data: bytes) -> Any:
 
 
 class _Promotion:
-    """One promotion run: sources, the primary archive, and the per-key sections."""
+    """One promotion run: the primary archive, other staged objects, then the witness.
+
+    The receipt is written as soon as the output is as durable as it will get
+    (after the primary, and again after any other staged object), before the
+    witness step, so a run killed later leaves a receipt a resume can reuse.
+    """
 
     def __init__(self, *, staging_dir, attempt_root, artifact_kind, observation, local_archive,
-                 maximum_archive_bytes, publisher, file_publisher, presign_staged, opener):
+                 maximum_archive_bytes, publisher, file_publisher, presign_staged, verifier, opener):
         self.staging = Path(staging_dir).expanduser().resolve()
         self.attempt = Path(attempt_root).expanduser().resolve()
         self.artifact_kind, self.maximum = artifact_kind, maximum_archive_bytes
         self.observation_argument, self.local_argument = observation, local_archive
         self.publisher, self.file_publisher = publisher, file_publisher
-        self.presign_staged, self.opener = presign_staged, opener
+        self.presign_staged, self.verifier, self.opener = presign_staged, verifier, opener
         self.attempts: dict[str, int] = {}
         self.blockers: list[str] = []
+        self.manifest_sha256: str | None = None
+        self.output_key: str | None = None
+        self.witness_key: str | None = None
+        self.witness_maximum = maximum_archive_bytes
+        self.status = "failed"
+        self.primary: dict | None = None
+        self.versions: list[dict] = []
+        self.witness_section: dict | None = None
         self.output_source = None
         self.output_index: dict | None = None
+        self.staged_reader = None
         self.output_reused = False
-        self.output_succeeded = False
-        self.local_removed_before = False
         self.local_verified: Path | None = None
+        self.local_removed_before = False
+        self.durable: dict[str, bool] = {}
         self.closers: list[Callable[[], None]] = []
 
     # -- inputs -----------------------------------------------------------
-    def _staging(self) -> tuple[str, dict]:
+    def _staging(self) -> str:
         path = self.staging / STAGING_MANIFEST_FILENAME
         try:
             manifest = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
         except (OSError, UnicodeError, ValueError):
             manifest = None
         digest = staging_manifest_sha256(self.staging)
-        output_key = str((manifest or {}).get("output_key") or "") if isinstance(manifest, dict) else ""
+        output_key = str(manifest.get("output_key") or "") if isinstance(manifest, dict) else ""
         if (not isinstance(manifest, dict) or digest is None
                 or manifest.get("schema_version") != STAGING_SCHEMA_VERSION
                 or manifest.get("status") not in {"completed", "blocked"} or not output_key):
@@ -266,7 +285,6 @@ class _Promotion:
         if manifest.get("output_promotion_required") is not True:
             # A download-mode attempt: its own ZIP and ungated cleanup stay as they are.
             raise ProviderOutputPromotionError("provider_output_promotion_not_required")
-        self.output_key, self.witness_key, self.witness_maximum = output_key, None, self.maximum
         witness = manifest.get("paired_witness") if isinstance(manifest.get("paired_witness"), dict) else {}
         if witness.get("status") == "ready":
             if witness.get("witness_key") != output_key + PAIRED_WITNESS_SUFFIX:
@@ -275,7 +293,8 @@ class _Promotion:
             capacity = (witness.get("authority") or {}).get("maximum_archive_bytes")
             if type(capacity) is int and capacity > 0:
                 self.witness_maximum = capacity
-        return digest, manifest
+        self.output_key = output_key
+        return digest
 
     def _open(self, role: str, maximum: int):
         """A pinned reader on the staged object, or None when it is absent (HTTP 404)."""
@@ -297,6 +316,20 @@ class _Promotion:
             raise ProviderOutputPromotionError("provider_output_remote_etag_missing")
         return reader
 
+    def _still_durable(self, reference: Mapping[str, Any]) -> bool:
+        """One HEAD per durable copy a reused receipt relies on (cached for the run)."""
+        uri = str(reference.get("uri") or "")
+        if uri not in self.durable:
+            try:
+                self.verifier(reference=dict(reference))
+                self.durable[uri] = True
+            except TaskEvaluationConfiguredSceneObjectStoreError as exc:
+                if str(exc) not in {"configured_scene_artifact_missing",
+                                    "configured_scene_artifact_existing_identity_mismatch"}:
+                    raise ProviderOutputPromotionError(_code(exc)) from None
+                self.durable[uri] = False
+        return self.durable[uri]
+
     # -- publication ------------------------------------------------------
     def _verified(self, reference: Any, digest: str, size: int, mismatch: str) -> dict:
         try:
@@ -305,6 +338,7 @@ class _Promotion:
             raise ProviderOutputPromotionError("provider_output_promotion_reference_invalid") from None
         if facts["digest"] != digest or facts["size_bytes"] != size:
             raise ProviderOutputPromotionError(mismatch)
+        self.durable[facts["uri"]] = True
         return facts
 
     def _publish_stream(self, reader, digest, size, filename, kind) -> dict:
@@ -332,10 +366,14 @@ class _Promotion:
             raise ProviderOutputPromotionError(str(exc)) from None
         return "sha256:" + digest.hexdigest()
 
-    def _index(self, source, maximum: int) -> tuple[dict | None, str | None]:
-        """Index ``source``; a structural refusal is returned, a transport one raised."""
+    def _hash_local(self, local: Path) -> str:
+        with LocalArchiveRangeSource(local) as source:
+            return self._hash(source)
+
+    def _index(self, source) -> tuple[dict | None, str | None]:
+        """Index ``source`` under the fixed limits; a structural refusal is returned, a transport one raised."""
         try:
-            return build_member_index(source, **_index_limits(maximum)), None
+            return build_member_index(source, **INDEX_LIMITS), None
         except ProviderOutputMemberIndexError as exc:
             if str(exc) in TRANSPORT_CODES:
                 raise ProviderOutputPromotionError(str(exc)) from None
@@ -366,9 +404,9 @@ class _Promotion:
         return {"path": INDEX_FILENAME, "index_digest": sealed["index_digest"],
                 "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
 
-    # -- the output ---------------------------------------------------------
+    # -- phase 1: the primary archive -----------------------------------------
     def _primary_from_source(self, source, size: int, origin: str, publish: Callable[[str], dict]) -> dict:
-        index, refusal = self._index(source, self.maximum)
+        index, refusal = self._index(source)
         digest = index["archive"]["sha256"] if index is not None else self._hash(source)
         facts = publish(digest)
         member_index = None
@@ -380,14 +418,20 @@ class _Promotion:
         return {"source": origin, "archive_sha256": digest, "size_bytes": size, "durable_reference": facts,
                 "member_index": member_index, "index_refusal": refusal}
 
+    def _version(self, identity: Mapping[str, Any], digest: str, reference: Mapping[str, Any] | None,
+                 **extra: Any) -> dict:
+        return {**identity, "archive_sha256": digest,
+                "durable_uri": reference["uri"] if reference else None,
+                "durable_reference": dict(reference) if reference else None, **extra}
+
     def _remote_primary(self, reader, origin: str) -> tuple[dict, dict]:
         identity = _identity(reader)
         primary = self._primary_from_source(
             reader, identity["size_bytes"], origin,
             lambda digest: self._publish_stream(reader, digest, identity["size_bytes"], OUTPUT_FILENAME,
                                                 self.artifact_kind))
-        return primary, {**identity, "archive_sha256": primary["archive_sha256"],
-                         "durable_uri": primary["durable_reference"]["uri"]}
+        self.staged_reader = reader
+        return primary, self._version(identity, primary["archive_sha256"], primary["durable_reference"])
 
     def _local_primary(self, local: Path) -> dict:
         source = LocalArchiveRangeSource(local)
@@ -407,77 +451,76 @@ class _Promotion:
         self.local_verified = local
         return primary
 
-    def _remote_version(self, reader, known: dict[str, str]) -> dict:
-        """Make one more staged object durable: hash it; publish it unless those bytes already are."""
-        identity = _identity(reader)
-        digest = self._hash(reader)
-        uri = known.get(digest)
-        if uri is None:
-            uri = self._publish_stream(reader, digest, identity["size_bytes"], OUTPUT_FILENAME,
-                                       self.artifact_kind)["uri"]
-        return {**identity, "archive_sha256": digest, "durable_uri": uri}
-
-    def _output(self, prior: Mapping | None) -> tuple[dict | None, dict]:
-        prior_durable = bool(prior and prior.get("status") == "promoted")
-        primary = ({key: prior.get(key) for key in ("source", "archive_sha256", "size_bytes", "durable_reference",
-                                                    "member_index", "index_refusal")}
-                   if prior_durable else None)
-        self.output_reused = primary is not None
-        self.local_removed_before = bool(
-            prior_durable and prior.get("local_copy_removed_after_verified_promotion") is True)
-        versions = list(prior["staged_objects"]["output"]["versions"]) if prior_durable else []
-        observation = self.observation_argument
+    def _establish(self, prior: Mapping | None) -> tuple[dict | None, list[dict]]:
+        """The primary archive: a reused receipt while its durable copy exists, else promoted from what is there."""
+        self.output_source = self.output_index = self.staged_reader = self.local_verified = None
+        self.output_reused = False
         local = Path(self.local_argument) if self.local_argument else None
         local_present = bool(local and local.is_file() and not local.is_symlink())
+        prior_durable = bool(prior and prior.get("status") == "promoted")
+        copy_missing = False
+        if prior_durable:
+            primary = {key: prior.get(key) for key in PRIMARY_FIELDS}
+            if self._still_durable(primary["durable_reference"]):
+                self.output_reused = True
+                self.local_removed_before = prior.get("local_copy_removed_after_verified_promotion") is True
+                versions = [row for row in prior["staged_objects"]["output"]["versions"]
+                            if row.get("durable_reference") and self._still_durable(row["durable_reference"])]
+                if local_present:
+                    known = {primary["archive_sha256"], *(row["archive_sha256"] for row in versions)}
+                    if self._hash_local(local) not in known:
+                        raise ProviderOutputPromotionError("provider_output_local_archive_differs_from_promoted")
+                    self.local_verified = local
+                return primary, versions
+            # The durable copy the receipt names is gone: promote again from what is there.
+            copy_missing = True
+        observation = self.observation_argument
+        if observation is not None and local_present:
+            raise ProviderOutputPromotionError("provider_output_promotion_sources_ambiguous")
+        if local_present:
+            return self._local_primary(local), []
         reader = self._open("output", self.maximum)
-        if primary is None:
-            if observation is not None and local_present:
-                raise ProviderOutputPromotionError("provider_output_promotion_sources_ambiguous")
+        if reader is None:
+            if copy_missing:
+                raise ProviderOutputPromotionError("provider_output_durable_copy_missing")
             if observation is not None:
-                if reader is None:
-                    raise ProviderOutputPromotionError("provider_output_observed_object_missing")
-                if not _same(observation, _identity(reader)):
-                    raise ProviderOutputPromotionError("provider_output_remote_version_changed")
-                primary, version = self._remote_primary(reader, "remote_observation")
-                versions.append(version)
-            elif local_present:
-                primary = self._local_primary(local)
-                if reader is not None:
-                    versions.append(self._remote_version(
-                        reader, {primary["archive_sha256"]: primary["durable_reference"]["uri"]}))
-            elif reader is not None:
-                primary, version = self._remote_primary(reader, "remote_present")
-                versions.append(version)
-        else:
-            known = {primary["archive_sha256"]: primary["durable_reference"]["uri"],
-                     **{row["archive_sha256"]: row["durable_uri"] for row in versions if row.get("durable_uri")}}
-            if local_present:
-                if self._hash_local(local) not in known:
-                    raise ProviderOutputPromotionError("provider_output_local_archive_differs_from_promoted")
-                self.local_verified = local
-            if reader is not None and not any(_same(row, _identity(reader)) for row in versions):
-                versions.append(self._remote_version(reader, known))
-        self.output_succeeded = True
-        return primary, versions
+                raise ProviderOutputPromotionError("provider_output_observed_object_missing")
+            return None, []
+        if observation is not None and not _same(observation, _identity(reader)):
+            raise ProviderOutputPromotionError("provider_output_remote_version_changed")
+        primary, version = self._remote_primary(
+            reader, "remote_observation" if observation is not None else "remote_present")
+        return primary, [version]
 
-    def _hash_local(self, local: Path) -> str:
-        with LocalArchiveRangeSource(local) as source:
-            return self._hash(source)
+    # -- phase 2: any other staged object ---------------------------------------
+    def _staged_versions(self) -> list[dict]:
+        """Make a present staged object durable when no recorded version is its identity."""
+        versions = list(self.versions)
+        reader, self.staged_reader = self.staged_reader, None  # a retry opens a fresh reader
+        reader = reader or self._open("output", self.maximum)
+        if reader is None or any(_same(row, _identity(reader)) for row in versions):
+            return versions
+        known = {self.primary["archive_sha256"]: self.primary["durable_reference"],
+                 **{row["archive_sha256"]: row["durable_reference"] for row in versions}}
+        identity, digest = _identity(reader), self._hash(reader)
+        reference = known.get(digest) or self._publish_stream(reader, digest, identity["size_bytes"],
+                                                              OUTPUT_FILENAME, self.artifact_kind)
+        return [*versions, self._version(identity, digest, reference)]
 
-    # -- the witness --------------------------------------------------------
-    def _witness_redundancy(self, reader, output_state: str) -> tuple[dict, str | None]:
+    # -- phase 3: the witness ---------------------------------------------------
+    def _witness_redundancy(self, reader) -> tuple[dict, str | None]:
         """Prove the witness adds nothing to the promoted output, or say why not.
 
         Returns the proof (or a not-proven record) and the witness digest when
         its index already computed it.
         """
-        if output_state != "promoted":
+        if self.status != "promoted":
             return {"status": "not_proven", "reason": "output_not_promoted"}, None
         if self.output_reused:
             return {"status": "not_proven", "reason": "promoted_output_not_read_in_this_run"}, None
         if self.output_index is None or self.output_source is None:
             return {"status": "not_proven", "reason": "promoted_output_has_no_member_index"}, None
-        index, refusal = self._index(reader, self.witness_maximum)
+        index, refusal = self._index(reader)
         if index is None:
             return {"status": "not_proven", "reason": f"paired_witness_index_refused:{refusal}"}, None
         digest = index["archive"]["sha256"]
@@ -488,8 +531,10 @@ class _Promotion:
                 mine = output.get(WITNESS_MANIFEST_MEMBER)
                 if mine is None:
                     return {"status": "not_proven", "reason": "paired_witness_manifest_absent_from_output"}, digest
-                theirs = _json_or_none(self._read(reader, row))
-                if theirs is None or theirs != _json_or_none(self._read(self.output_source, mine)):
+                theirs, ours = _json_or_none(self._read(reader, row)), _json_or_none(self._read(self.output_source, mine))
+                # Canonical digests, not ==: Python equates 1, 1.0 and True.
+                if (not isinstance(theirs, dict) or not isinstance(ours, dict)
+                        or canonical_digest(theirs) != canonical_digest(ours)):
                     return {"status": "not_proven", "reason": "paired_witness_manifest_differs"}, digest
                 continue
             mine = output.get(WITNESS_CELL_PREFIX + row["path"])
@@ -508,102 +553,112 @@ class _Promotion:
         except ProviderOutputMemberIndexError as exc:
             raise ProviderOutputPromotionError(str(exc)) from None
 
-    def _witness(self, prior: Mapping | None, output_state: str) -> dict:
-        prior_section = (prior or {}).get("staged_objects", {}).get("paired_witness") if prior else None
-        keep = prior_section is not None and prior_section.get("state") in DURABLE_STATES
-        section = {"key_sha256": key_sha256(self.witness_key),
-                   "state": prior_section["state"] if keep else "deferred",
-                   "versions": list(prior_section["versions"]) if keep else []}
-        if output_state == "failed":
+    def _prior_witness_versions(self, prior: Mapping | None) -> list[dict]:
+        """Prior witness versions that still stand: promoted copies that exist, redundancy with a durable output."""
+        section = (prior or {}).get("staged_objects", {}).get("paired_witness") if prior else None
+        if not section or section.get("state") not in DURABLE_STATES:
+            return []
+        kept = []
+        for row in section["versions"]:
+            reference = row.get("durable_reference")
+            if reference is not None:
+                if self._still_durable(reference):
+                    kept.append(row)
+            elif self.status == "promoted":
+                kept.append(row)
+        return kept
+
+    def _witness(self, prior: Mapping | None) -> dict:
+        versions = self._prior_witness_versions(prior)
+        section = {"key_sha256": key_sha256(self.witness_key), "state": _witness_state(versions) or "deferred",
+                   "versions": versions}
+        if self.status == "failed":
             return section
         reader = self._open("paired_witness", self.witness_maximum)
         if reader is None:
-            if not keep:
-                section["state"] = "absent_confirmed"
+            section["state"] = _witness_state(versions) or "absent_confirmed"
             return section
         identity = _identity(reader)
-        if any(_same(row, identity) for row in section["versions"]):
+        if any(_same(row, identity) for row in versions):
             return section
-        redundancy, digest = self._witness_redundancy(reader, output_state)
+        redundancy, digest = self._witness_redundancy(reader)
         if redundancy["status"] == "proven":
-            section["versions"].append({**identity, "archive_sha256": digest, "durable_uri": None,
-                                        "redundancy": redundancy})
+            versions.append(self._version(identity, digest, None, redundancy=redundancy))
         else:
             digest = digest or self._hash(reader)
-            uri = self._publish_stream(reader, digest, identity["size_bytes"], WITNESS_FILENAME,
-                                       WITNESS_ARTIFACT_KIND)["uri"]
-            section["versions"].append({**identity, "archive_sha256": digest, "durable_uri": uri,
-                                        "redundancy": redundancy})
-        section["state"] = ("promoted" if any(row.get("durable_uri") for row in section["versions"])
-                            else "redundant_with_promoted_output")
+            reference = self._publish_stream(reader, digest, identity["size_bytes"], WITNESS_FILENAME,
+                                             WITNESS_ARTIFACT_KIND)
+            versions.append(self._version(identity, digest, reference, redundancy=redundancy))
+        section["state"] = _witness_state(versions)
         return section
 
     # -- the run ------------------------------------------------------------
     def run(self) -> dict:
-        manifest_sha256 = output_key = None
-        primary, output_section, witness_section, status = None, None, None, "failed"
         try:
             if (not isinstance(self.artifact_kind, str) or not _ARTIFACT_KIND.fullmatch(self.artifact_kind)
                     or type(self.maximum) is not int or not 0 < self.maximum <= MAX_EXPANDED_BYTES):
                 raise ProviderOutputPromotionError("provider_output_promotion_arguments_invalid")
             self.observation_argument = _observation(self.observation_argument)
-            manifest_sha256, _ = self._staging()
-            output_key = self.output_key
+            manifest_sha256 = self._staging()
             _require_artifact_store()
+            self.manifest_sha256 = manifest_sha256
             prior = load_promotion_receipt(self.staging, staging_manifest_sha256=manifest_sha256)
             try:
-                primary, versions = _retrying(lambda: self._output(prior), self.attempts, "output")
-                status = "promoted" if primary else "absent_confirmed"
-                output_section = {"key_sha256": key_sha256(output_key), "state": status, "versions": versions}
+                self.primary, self.versions = _retrying(lambda: self._establish(prior), self.attempts, "output")
+                self.status = "promoted" if self.primary else "absent_confirmed"
             except ProviderOutputPromotionError as exc:
                 self.blockers.append(str(exc))
-                primary = None
-                prior_durable = bool(prior and prior.get("status") == "promoted")
-                if prior_durable:  # what was made durable before stays durable
-                    primary = {key: prior.get(key) for key in (
-                        "source", "archive_sha256", "size_bytes", "durable_reference", "member_index",
-                        "index_refusal")}
-                    status = "promoted"
-                output_section = {"key_sha256": key_sha256(output_key), "state": status,
-                                  "versions": list(prior["staged_objects"]["output"]["versions"])
-                                  if prior_durable else []}
-            if primary and primary.get("index_refusal"):
-                self.blockers.append(f"provider_output_index_refused:{primary['index_refusal']}")
+            self._checkpoint()
+            if self.status == "promoted":
+                try:
+                    self.versions = _retrying(self._staged_versions, self.attempts, "staged_versions")
+                except ProviderOutputPromotionError as exc:
+                    self.blockers.append(str(exc))
+                self._checkpoint()
             if self.witness_key is not None:
                 try:
-                    witness_section = _retrying(lambda: self._witness(prior, status), self.attempts,
-                                                "paired_witness")
+                    self.witness_section = _retrying(lambda: self._witness(prior), self.attempts, "paired_witness")
                 except ProviderOutputPromotionError as exc:
                     self.blockers.append(f"paired_witness_promotion_failed:{exc}")
-                    kept = ((prior or {}).get("staged_objects", {}).get("paired_witness") or {}) if prior else {}
-                    durable = kept.get("state") in DURABLE_STATES
-                    witness_section = {"key_sha256": key_sha256(self.witness_key),
-                                       "state": kept["state"] if durable else "failed",
-                                       "versions": list(kept["versions"]) if durable else []}
+                    try:
+                        versions = self._prior_witness_versions(prior)
+                    except ProviderOutputPromotionError:
+                        versions = []
+                    self.witness_section = {"key_sha256": key_sha256(self.witness_key),
+                                            "state": _witness_state(versions) or "failed", "versions": versions}
         except ProviderOutputPromotionError as exc:
             self.blockers.append(str(exc))
         finally:
             for close in self.closers:
                 close()
-        return self._receipt(status, manifest_sha256, output_key, primary, output_section, witness_section)
+        return self._receipt(final=True)
 
-    def _receipt(self, status, manifest_sha256, output_key, primary, output_section, witness_section) -> dict:
+    def _checkpoint(self) -> None:
+        """Write the receipt as it stands, the witness still pending, before any later step."""
+        self._receipt(final=False)
+
+    def _receipt(self, *, final: bool) -> dict:
         staged = {}
-        if output_section is not None:
-            staged["output"] = output_section
+        if self.output_key is not None and self.manifest_sha256 is not None:
+            staged["output"] = {"key_sha256": key_sha256(self.output_key),
+                                "state": "promoted" if self.primary else self.status,
+                                "versions": list(self.versions)}
+        witness_section = self.witness_section
+        if self.witness_key is not None and self.manifest_sha256 is not None and not final:
+            witness_section = {"key_sha256": key_sha256(self.witness_key), "state": "pending", "versions": []}
         if witness_section is not None:
             staged["paired_witness"] = witness_section
         latest = (witness_section or {}).get("versions") or [{}]
         witness = {"disposition": (witness_section or {}).get("state", "not_staged"),
                    "reference": latest[-1].get("durable_uri"), "redundancy": latest[-1].get("redundancy")}
-        primary = primary or {}
+        primary = self.primary or {}
         receipt = {
             "schema_version": RECEIPT_SCHEMA,
             "generated_at": utc_now_iso(),
-            "status": status,
+            "status": "promoted" if self.primary else self.status,
             "attempt_root": str(self.attempt),
-            "staging_manifest_sha256": manifest_sha256,
-            "output_key_sha256": key_sha256(output_key) if output_key else None,
+            "staging_manifest_sha256": self.manifest_sha256,
+            "output_key_sha256": key_sha256(self.output_key) if self.output_key else None,
             "artifact_kind": self.artifact_kind,
             "maximum_archive_bytes": self.maximum,
             "observation": self.observation_argument if isinstance(self.observation_argument, dict) else None,
@@ -617,16 +672,17 @@ class _Promotion:
             "staged_objects": staged,
             "witness": witness,
             "attempts": dict(self.attempts),
-            "blockers": sorted(set(self.blockers)),
+            "blockers": sorted(set(self.blockers) | ({f"provider_output_index_refused:{primary['index_refusal']}"}
+                                                    if primary.get("index_refusal") else set())),
             "private_url_recorded": False,
             "raw_secret_values_recorded": False,
         }
-        if manifest_sha256 is None or not self.staging.is_dir():
+        if self.manifest_sha256 is None or not self.staging.is_dir():
             receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
             return receipt
-        if self.local_verified is not None and status == "promoted" and self.output_succeeded:
+        if final and self.local_verified is not None and self.primary:
             # The receipt names the durable copy before the local one goes, so a
-            # crash in between leaves a pointer and a zip resume can verify.
+            # crash in between leaves a pointer and a ZIP a resume can verify.
             receipt["local_copy_removed_after_verified_promotion"] = True
             written = write_promotion_receipt(self.staging, receipt)
             try:
@@ -637,6 +693,13 @@ class _Promotion:
                 written = write_promotion_receipt(self.staging, receipt)
             return written
         return write_promotion_receipt(self.staging, receipt)
+
+
+def _witness_state(versions: list[dict]) -> str | None:
+    if not versions:
+        return None
+    return ("promoted" if any(row.get("durable_reference") for row in versions)
+            else "redundant_with_promoted_output")
 
 
 def promote_staged_provider_output(
@@ -650,19 +713,22 @@ def promote_staged_provider_output(
     publisher: Callable[..., Mapping[str, Any]] = publish_configured_scene_stream,
     file_publisher: Callable[..., Mapping[str, Any]] = publish_configured_scene_artifact,
     presign_staged: Callable[..., str] = presign_staged_object_get,
+    verifier: Callable[..., Mapping[str, Any]] = verify_configured_scene_artifact,
     opener: Callable | None = None,
 ) -> dict:
     """Promote the staged output (and witness) and write the receipt; never raises.
 
     See the module docstring. Returns the receipt, written to the staging dir
-    whenever its manifest could be read; a refusal is a ``failed`` receipt
-    with one typed blocker.
+    whenever its manifest could be read and asks for promotion; a refusal is a
+    ``failed`` receipt with one typed blocker. ``verifier`` HEADs each durable
+    copy a reused receipt relies on.
     """
     try:
         return _Promotion(staging_dir=staging_dir, attempt_root=attempt_root, artifact_kind=artifact_kind,
                           observation=observation, local_archive=local_archive,
                           maximum_archive_bytes=maximum_archive_bytes, publisher=publisher,
-                          file_publisher=file_publisher, presign_staged=presign_staged, opener=opener).run()
+                          file_publisher=file_publisher, presign_staged=presign_staged, verifier=verifier,
+                          opener=opener).run()
     except Exception as exc:  # noqa: BLE001 - promotion reports, it never raises
         return _unwritten_failure(staging_dir, artifact_kind, _code(exc))
 
@@ -771,8 +837,6 @@ def _promotion_refusal(staging: Path) -> str | None:
     if manifest.get("output_promotion_required") is not True:
         return "provider_output_promotion_not_required"
     return None
-
-
 
 
 def resume_provider_output_promotion(
