@@ -68,9 +68,18 @@ def capture(context, old):
                   'capture_reference_invalid')
         if selected['preparation']:
             preparation = selected['preparation'][0]
-            c.require(preparation.get('intake_request') is not None
-                and c.cross_runtime_canonical_digest(preparation['intake_request']) == value['request_digest'],
-                'registration_request_invalid')
+            if preparation.get('schema_version') == 'website_scene_preparation.v1':
+                c.require(preparation.get('intake_request') is not None
+                    and c.cross_runtime_canonical_digest(preparation['intake_request']) == value['request_digest'],
+                    'registration_request_invalid')
+            else:
+                context.missing('website_preparation', 'unsupported_retained_schema', [selected['preparation'][1]])
+                selected['preparation'] = None
+        for selected_role, schema in (('runtime_inputs', 'website_scene_runtime_inputs.v1'),
+                                      ('task_context', 'website_site_task_context.v1')):
+            if selected[selected_role] and selected[selected_role][0].get('schema_version') != schema:
+                context.missing('website_' + selected_role, 'unsupported_retained_schema', [selected[selected_role][1]])
+                selected[selected_role] = None
         registration_index[(proof['path'], proof['sha256'], proof['size_bytes'])] = row, selected, capture_root
     for row in bindings:
         value, proof = row
@@ -188,7 +197,7 @@ def _available_capture_edges(context, rows):
         _, base = _layout(context, row)
         for field, role, expected, seal in (
             ('source_preparation_digest', 'website_preparations', c.child(base, 'preparation.json'), 'digest'),
-            ('task_context_digest', 'website_task_contexts', c.child(base, 'development_test', 'task_context.json'), 'context_digest')):
+            ('source_task_context_digest', 'website_task_contexts', c.child(base, 'development_test', 'task_context.json'), 'context_digest')):
             if field in development:
                 c.require(c.matches(development[field]), 'development_preparation_invalid')
                 candidates = indexes[role].get(expected, [])
@@ -196,6 +205,10 @@ def _available_capture_edges(context, rows):
                     c.require(any(r[0][seal] == development[field] for r in candidates), 'development_preparation_invalid')
                 else:
                     context.missing(role, 'development_selector_unavailable', [proof], expected, {'digest': development[field]})
+        if ('source_task_context_digest' in development and isinstance(value.get('binding'), dict)
+                and 'task_context_digest' in value['binding']):
+            c.require(value['binding']['task_context_digest'] == development['source_task_context_digest'],
+                      'development_context_binding_invalid')
     for row in rows['website_handoffs']:
         value, proof = row
         _, base = _layout(context, row)
@@ -302,7 +315,7 @@ def publication(context, old):
                 and uri not in seen_uris and relative not in seen_paths, 'publication_inventory_invalid')
             seen_uris.add(uri)
             seen_paths.add(relative)
-        host_seen = set()
+        host_seen, host_uris = set(), set()
         for item in value['host_only_source_objects']:
             c.require(isinstance(item, dict) and set(item) == {'relative_path', 'uri', 'digest', 'size_bytes', 'publication_allowed'},
                       'publication_host_source_invalid')
@@ -310,8 +323,10 @@ def publication(context, old):
             c.require(relative.startswith('source/') and isinstance(item['uri'], str) and len(item['uri']) <= 4096
                 and item['uri'].startswith(('https://', 'gs://', 's3://')) and not any(ch.isspace() for ch in item['uri'])
                 and c.matches(item['digest']) and type(item['size_bytes']) is int and item['size_bytes'] > 0
-                and item['publication_allowed'] is False and relative not in host_seen, 'publication_host_source_invalid')
+                and item['publication_allowed'] is False and relative not in host_seen and item['uri'] not in host_uris,
+                'publication_host_source_invalid')
             host_seen.add(relative)
+            host_uris.add(item['uri'])
         workspace = proof['path'].rsplit('/', 1)[0]
         c.require(proof['path'].endswith('/publication.json') and c.under(proof['path'], c.child(context.roots['factory_output_root'], context.intent_id)),
                   'publication_path_invalid')
@@ -320,8 +335,12 @@ def publication(context, old):
         copies = manifests.get((value['manifest_sha256'], value['manifest_digest']), [])
         selected_rows = [r for r in copies if factory_ref == {k: r[0][1][k] for k in ('path', 'sha256', 'size_bytes')}]
         selected = selected_rows[0] if len(selected_rows) == 1 else None
-        if selected:
-            manifest, inventory, prefix = selected
+        # Raw SHA + document seal validates supplied content independently of
+        # owner proof. Byte-identical copied content does not select a raw path:
+        # only the exact factory tuple below can establish that provenance.
+        observed_manifest = selected if selected is not None else copies[0] if copies else None
+        if observed_manifest:
+            manifest, inventory, prefix = observed_manifest
             c.require(all(value[k] == manifest[0][k] for k in ('source_commit', 'input_namespace', 'request_digest')), 'publication_binding_invalid')
             expected = {uri: {k: r[k] for k in ('relative_path', 'uri', 'digest', 'size_bytes')} for uri, r in inventory.items() if r['publication_allowed']}
             expected[prefix + 'bundle_manifest.v1.json'] = {'relative_path': 'bundle_manifest.v1.json',

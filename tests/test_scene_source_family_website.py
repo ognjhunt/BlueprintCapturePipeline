@@ -59,7 +59,7 @@ def fixture(*, website=False, development=False, status='intake_ready'):
     preparation = original
     if development:
         preparation = seal(dict(original, development_test={'source_preparation_digest': original['digest'],
-            'task_context_digest': context['context_digest']}), 'digest')
+            'source_task_context_digest': context['context_digest']}, binding={'task_context_digest': context['context_digest']}), 'digest')
     prep_pair = pair(selected_root + '/preparation.json', preparation)
     context_pair = pair(selected_root + '/task_context.json', context)
     runtime = seal({'schema_version': 'website_scene_runtime_inputs.v1', 'status': 'native_inputs_ready',
@@ -345,7 +345,9 @@ def test_development_original_and_context_available_selector_contradictions_refu
         value['status'] = 'needs_input'
         args['source_records']['website_preparations'][1] = pair(path, seal(value, 'digest'))
     else:
-        change(args, 'website_preparations', lambda p: p['development_test'].update(task_context_digest='sha256:' + 'f'*64), 'digest')
+        change(args, 'website_preparations', lambda p: p['development_test'].update(source_task_context_digest='sha256:' + 'f'*64), 'digest')
+        args['source_records']['website_runtime_inputs'] = []
+        args['source_records']['website_handoffs'] = []
     args['source_records']['website_registrations'] = []
     refuses(args)
 
@@ -387,3 +389,39 @@ def test_copied_manifest_provenance_selected_by_exact_factory_path_is_permutatio
     assert first['publication_observations'][0]['historical_publication_binding_verified']
     args['seed_records']['source_submissions'].reverse()
     assert first == api().join_retained_scene_source_family_inventory(**args)
+
+
+def test_unknown_selected_preparation_stays_raw_protected_without_known_semantics():
+    args = fixture(website=True)
+    path, raw = args['source_records']['website_preparations'][0]
+    unknown = pair(path, {'schema_version': 'website_scene_preparation.v2', 'future_field': 'protected'})
+    args['source_records']['website_preparations'] = [unknown]
+    change(args, 'website_registrations', lambda r: r['references'].update(preparation=ref(unknown)), 'registration_digest')
+    args['seed_records']['source_snapshots'] = []
+    args['seed_records']['factories'] = []
+    args['source_records']['website_bindings'] = []
+    args['source_records']['website_handoffs'] = []
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert result['website_observations'][0]['capture_binding_verified'] is False
+    assert any(r['path'] == path for r in result['raw_versions'])
+
+
+@pytest.mark.parametrize('host_only', [False, True])
+def test_available_manifest_receipt_edges_validate_without_factory_owner(host_only):
+    args = publication_fixture(host_only=host_only)
+    args['seed_records']['factories'] = []
+    if host_only:
+        change(args, 'submission_publications', {'host_only_source_objects': []}, 'receipt_digest')
+    else:
+        change(args, 'submission_publications', lambda p: p['published_objects'][0].update(relative_path='derived/other.json'), 'receipt_digest')
+    refuses(args)
+
+
+def test_host_only_duplicate_uri_refuses_without_manifest_even_with_distinct_paths():
+    args = publication_fixture(host_only=True)
+    def edit(p):
+        p['host_only_source_objects'].append(dict(p['host_only_source_objects'][0], relative_path='source/other.glb'))
+    change(args, 'submission_publications', edit, 'receipt_digest')
+    args['seed_records']['source_submissions'] = args['seed_records']['source_submissions'][:1]
+    args['seed_records']['factories'] = []
+    refuses(args)
