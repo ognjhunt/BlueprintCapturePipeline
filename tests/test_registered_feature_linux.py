@@ -442,6 +442,20 @@ def _linux_contained_phase(root):
             and arguments[3:] == ["--no-pager", "--all", fixed_query]
         ):
             sys.stderr.write("fixed_systemd_unit_observation=" + json.dumps(raw) + "\n")
+            values = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
+            if values.get("Result") == "exit-code" and values.get("ExecMainStatus") != "0":
+                # Only the exact disposable unit selected by the fixed native
+                # observer. Its fake CPU/request fixture has no provider or
+                # credential payload. Preserve the genuine child's traceback
+                # before the root cleanup removes the transient unit.
+                unit = arguments[2]
+                assert unit.startswith("blueprint-experiment-") and unit.endswith(".service")
+                journal = contained._native_control([
+                    "/usr/bin/journalctl", "--unit=" + unit, "--no-pager", "--lines=40",
+                    "--output=cat", "--quiet",
+                ])
+                assert len(journal.encode()) <= 65536
+                sys.stderr.write("fixed_disposable_child_journal=" + json.dumps(journal) + "\n")
         return raw
 
     contained._native_control = observed_native_control
