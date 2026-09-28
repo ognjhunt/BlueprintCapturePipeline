@@ -40,12 +40,18 @@ def _controller_boot_id(files):
 
 class _ActionFiles(_BirthFiles):
     def __init__(self, *, monotonic=time.monotonic, now=time.time):
+        _require('_action_initialized' not in self.__dict__, 'experiment_work_initialization_reused')
+        _require(callable(monotonic) and callable(now), 'experiment_work_clock_invalid')
+        origin, epoch = monotonic(), now()
+        _require(_epoch(origin) and _epoch(epoch), 'experiment_work_clock_invalid')
+        # First valid initialization is permanently consumed even if later
+        # allocation fails. Never lose owned descriptors/closed or failed B.
+        self._action_initialized = True
         self.monotonic, self.now = monotonic, now
-        self.controller_origin = monotonic()
-        self.controller_epoch = now()
+        self.controller_origin = origin
+        self.controller_epoch = epoch
         self.last_clock = self.controller_origin
         self.last_epoch = self.controller_epoch
-        _require(_epoch(self.controller_origin) and _epoch(self.controller_epoch), 'experiment_work_clock_invalid')
         self.deadline_epoch = self.controller_epoch + 4 * 3600
         self.deadline_monotonic = self.controller_origin + 4 * 3600
         self.boot_id, self.controller_bound = None, False
