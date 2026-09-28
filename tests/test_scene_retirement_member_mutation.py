@@ -53,3 +53,21 @@ def test_new_detach_destination_is_never_overwritten(tmp_path,monkeypatch):
         detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
     assert (destination/'new.bin').read_bytes()==b'new-writer'
     assert (member/'nested'/'evidence.bin').read_bytes()==b'preserved-evidence'
+
+
+def test_proved_internal_cross_member_hardlink_union_removes_completely(tmp_path,monkeypatch):
+    import os
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    access,first,_,journal=setup_operation(tmp_path,monkeypatch)
+    second=first.parent/'second'
+    second.mkdir()
+    os.link(first/'nested'/'evidence.bin',second/'same-evidence.bin')
+    preserved=preserve_members([first,second],transport=MemoryTransport([first,second]),
+                              allowance=journal.allowance,token='3'*32)
+    removed={}
+    with access.exclusive_scene_access():
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal,removed_inodes=removed)
+        outcome=detach_and_remove(preserved,member_index=1,generation_id='4'*32,journal=journal,removed_inodes=removed)
+    assert outcome['outcome']=='removed' and not first.exists() and not second.exists()
