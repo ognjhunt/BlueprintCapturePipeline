@@ -27,6 +27,14 @@ observed motor steps, and stops on exit. Independent outcome scoring remains
 separate. Controller plugins implement the same interface in an isolated image;
 no customer Python is imported into the simulator process.
 
+`ControlledSimulatorAdapter` wraps the existing Isaac episode environment:
+configure exact camera/state bindings and the measured native action translator
+(including joint order, units, control rate and gripper convention), plus the
+trusted task-terminal and controller-stop functions. It encodes fresh RGB PNG
+frames, rejects incompatible shapes/types, and calls the native simulator step
+for each validated action. These bindings are operator configuration, never
+customer-selected asset paths or executable imports.
+
 For customer-hosted policies, configure operator-approved HTTPS origins and an
 optional protected credential resolver. Credentials stay in HTTP headers and
 are excluded from retained policy-input records. The wire object contains only
