@@ -87,11 +87,12 @@ def test_immutable_event_publication_releases_only_its_original_fds(tmp_path, ro
         files.budget.close()
 
 
-def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_installation, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize('member_count', [32, 160])
+def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_installation, monkeypatch, member_count):  # noqa: F811
     from tests.test_registered_experiment_retirement_flow import _born_scratch, _issue_action, _gc
     from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
     grant, _, target = _born_scratch(retirement_installation)
-    for index in range(32):
+    for index in range(member_count):
         (target/f'member-{index:02d}').write_bytes(b'x')
     action = _issue_action(retirement_installation, grant)
     phases = []
@@ -103,7 +104,7 @@ def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_install
     report = _gc(retirement_installation)
     outcome = next(row for row in report['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
     assert outcome['decision'] == 'retired', outcome
-    assert phases.count('removal_batch') == 3
+    assert phases.count('removal_batch') == (member_count + 3 + 15) // 16
     assert {path.name for path in target.iterdir()} == {'.lane-scratch.v1.json', '.registered-experiment.v1.json'}
 
 
