@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'member_link_before_event', 'member_unlink_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'member_link_before_event', 'member_unlink_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', 'second_expiry', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -114,6 +114,7 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
     from blueprint_pipeline import control_plane_lane_experiment_restore as restore
     from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
     value, target, born, action, intent_id = expired_completed_evidence
+    actual_installation = value
     before = {str(path.relative_to(target)): path.read_bytes() for path in target.rglob('*') if path.is_file()}
     original_inode = target.stat().st_ino
     cloud = Cloud()
@@ -322,6 +323,19 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         result = _read_result(target / candidate / 'native_g1_development_worker_result.v1.json',
             candidate_id=candidate, scene_plan_digest=value['scene_plan_digest'], request_digest=worker['request_digest'])
         assert result['status'] == 'blocked'
+    if certificate_case == 'second_expiry':
+        from blueprint_pipeline.control_plane_storage_gc import run_storage_gc, RUN_ACK
+        config, settings, _, _ = actual_installation
+        historical = entry['completion']
+        again = root.issue_experiment_action_intent(intent_id, principal='operator', owner='owner',
+            action='offload', expires_at_epoch=4000, installed_config_path=config, now=lambda: 3502)
+        report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=config.parent / 'pins',
+            apply=True, ack=RUN_ACK, lane_scratch_roots=(settings['lane_scratch_work_root'], settings['lane_scratch_inputs_root']),
+            lane_scratch_enabled=True, _experiment_config_path=config, now=lambda: 3502)
+        retired = report['registered_experiments']['outcomes'][0]
+        assert retired['decision'] == 'retired' and retired['action_id'] == again['action_id'], retired
+        assert _current_entry(actual_installation, intent_id)['completion'] == historical
+        assert len(list(target.iterdir())) == 2
 
 
 def test_actual_issued_manifest_binds_exact_generation_and_compact_member_versions(expired_completed_evidence):
