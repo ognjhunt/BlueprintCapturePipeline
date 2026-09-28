@@ -191,3 +191,27 @@ def test_publisher_one_clock_covers_all_roots_before_growth(monkeypatch):
     )
     with pytest.raises(ValueError, match="experiment_publisher_input_limit"):
         gate.refuse_registered_references({"one": ["safe"]}, {"two": ["safe"]})
+
+
+def test_native_installed_uri_resolution_observes_actual_selected_source_before_payload(
+    tmp_path, monkeypatch
+):
+    from blueprint_pipeline.task_evaluation_installed_source_bindings import (
+        InstalledSource,
+        InstalledSourceBindings,
+    )
+    from pathlib import Path
+
+    source = InstalledSource(
+        path=tmp_path / "g1" / ("registered-" + "a" * 32) / "payload",
+        digest="sha256:" + "b" * 64,
+        size_bytes=7,
+        installation_receipt_digest="receipt",
+        publisher_intake_sha256="intake",
+    )
+    mapping = InstalledSourceBindings({"https://publisher.example/pinned": source})
+    monkeypatch.setattr(
+        Path, "open", lambda *args, **kwargs: pytest.fail("resolved registered payload opened")
+    )
+    with pytest.raises(ValueError, match="experiment_external_publisher_unsupported"):
+        mapping.resolve("https://publisher.example/pinned", source.digest, source.size_bytes)
