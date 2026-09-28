@@ -1,0 +1,134 @@
+"""Dedicated bounded handshake for the controlled optional G1 worker protocol."""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import select
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+
+from .control_plane_lane_scratch import LaneScratchError
+from .control_plane_scratch_lifetime import LeasedScratchUse, _path
+
+MAX_MESSAGE_BYTES = 4096
+HANDSHAKE_SECONDS = 5.0
+
+
+def _wire_size(value: Any, depth: int = 0) -> int:
+    if depth > 12:
+        raise LaneScratchError("lane_scratch_handshake_invalid")
+    if isinstance(value, str):
+        if len(value) > MAX_MESSAGE_BYTES:
+            raise LaneScratchError("lane_scratch_handshake_invalid")
+        size = 2
+        for char in value:
+            size += 2 if char in ('"', "\\") else 6 if ord(char) < 32 else len(char.encode("utf-8"))
+        return size
+    if type(value) is int and value.bit_length() <= 64:
+        return len(str(value))
+    if isinstance(value, (list, tuple)) and len(value) <= 16:
+        return 2 + max(0, len(value) - 1) + sum(_wire_size(v, depth + 1) for v in value)
+    if isinstance(value, dict) and len(value) <= 16:
+        return 2 + max(0, len(value) - 1) + sum(_wire_size(k, depth + 1) + 1 + _wire_size(v, depth + 1) for k, v in value.items())
+    raise LaneScratchError("lane_scratch_handshake_invalid")
+
+
+def write_message(fd: int, value: dict[str, Any]) -> None:
+    if _wire_size(value) + 1 > MAX_MESSAGE_BYTES:
+        raise LaneScratchError("lane_scratch_handshake_invalid")
+    raw = (json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()
+    try:
+        if os.write(fd, raw) != len(raw):
+            raise LaneScratchError("lane_scratch_handshake_invalid")
+    except OSError:
+        raise LaneScratchError("lane_scratch_handshake_invalid") from None
+
+
+def read_message(fd: int, *, timeout: float = HANDSHAKE_SECONDS) -> dict[str, Any]:
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= HANDSHAKE_SECONDS:
+        raise LaneScratchError("lane_scratch_handshake_invalid")
+    deadline = time.monotonic() + timeout
+    raw = bytearray()
+    try:
+        while b"\n" not in raw:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                raise LaneScratchError("lane_scratch_handshake_timeout")
+            chunk = os.read(fd, min(512, MAX_MESSAGE_BYTES + 1 - len(raw)))
+            if not chunk or len(raw) + len(chunk) > MAX_MESSAGE_BYTES:
+                raise LaneScratchError("lane_scratch_handshake_invalid")
+            raw.extend(chunk)
+        if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
+            raise LaneScratchError("lane_scratch_handshake_invalid")
+        value = json.loads(raw)
+        if not isinstance(value, dict) or not value or _wire_size(value) + 1 > MAX_MESSAGE_BYTES:
+            raise LaneScratchError("lane_scratch_handshake_invalid")
+        return value
+    except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+        raise LaneScratchError("lane_scratch_handshake_invalid") from None
+
+
+def worker_proof(use: LeasedScratchUse, *, output: Path, request_digest: str) -> dict[str, Any]:
+    with use.borrow(output):
+        pass
+    proof = {"identity": {**use.identity, "inodes": list(use.identity["inodes"])},
+             "output": str(output), "request_digest": request_digest}
+    if _wire_size(proof) + 1 > MAX_MESSAGE_BYTES:
+        raise LaneScratchError("lane_scratch_handshake_invalid")
+    return proof
+
+
+def adopt_worker_proof(fd: int, proof: dict[str, Any], *, output: Path, request_digest: str,
+                       now: Any = time.time) -> LeasedScratchUse:
+    try:
+        if (not isinstance(proof, dict) or set(proof) != {"identity", "output", "request_digest"}
+                or proof["output"] != str(_path(output)) or proof["request_digest"] != request_digest):
+            raise LaneScratchError("lane_scratch_handshake_invalid")
+    except BaseException:
+        os.close(fd)
+        raise
+    use = LeasedScratchUse.inherited(fd, proof["identity"], now=now)
+    try:
+        with use.borrow(output):
+            pass
+        return use
+    except BaseException:
+        use.close()
+        raise
+
+
+def controlled_worker_run(*, executable: Path, request: Path, output: Path, request_digest: str,
+                          use: LeasedScratchUse, stdout: Any, timeout: float) -> subprocess.CompletedProcess:
+    """Keep parent SH while the acknowledged direct child owns its inherited SH."""
+    proof = worker_proof(use, output=output, request_digest=request_digest)
+    to_child, parent_write = os.pipe()
+    parent_read, from_child = os.pipe()
+    process = None
+    try:
+        process = subprocess.Popen([str(executable), "-m", "blueprint_pipeline.native_g1_development_worker",
+                                    "--request", str(request), "--output-dir", str(output),
+                                    "--lifetime-fd", str(use.fd), "--lifetime-input-fd", str(to_child),
+                                    "--lifetime-output-fd", str(from_child)], stdout=stdout, stderr=subprocess.STDOUT,
+                                   pass_fds=(use.fd, to_child, from_child))
+        os.close(to_child)
+        to_child = None
+        os.close(from_child)
+        from_child = None
+        write_message(parent_write, proof)
+        if read_message(parent_read) != {"status": "ready", "request_digest": request_digest}:
+            raise LaneScratchError("lane_scratch_handshake_invalid")
+        write_message(parent_write, {"status": "proceed"})
+        return subprocess.CompletedProcess(process.args, process.wait(timeout=timeout))
+    except BaseException:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=HANDSHAKE_SECONDS)
+        raise
+    finally:
+        for fd in (to_child, from_child, parent_write, parent_read):
+            if fd is not None:
+                os.close(fd)
