@@ -13,6 +13,7 @@ from . import control_plane_lane_experiment_actions as actions
 from . import control_plane_lane_experiment_archive as archive
 from . import control_plane_lane_experiment_birth as birth
 from . import control_plane_lane_experiment_recovery as recovery
+from . import control_plane_lane_experiment_restore_checkpoint as checkpoint_io
 from . import control_plane_lane_experiment_retirement as issuance
 from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch as scratch
@@ -202,8 +203,10 @@ def _lease_cas(files, target, parent, previous, payload):
     check()
     os.ftruncate(fd, 0)
     expected = own_transition()
-    count = 0
+    count, writes = 0, 0
     while count < len(payload):
+        _require(writes < 8, "experiment_restore_lease_fragment_limit")
+        writes += 1
         check()
         written = os.write(fd, memoryview(payload)[count:])
         _require(type(written) is int and 0 < written <= len(payload) - count, 'experiment_restore_lease_changed')
@@ -450,7 +453,8 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                  and all(entry[key] == action[key] for key in ('generation', 'birth', 'lease', 'target_identity', 'owner')),
                  'experiment_restore_current_changed')
         target, target_fd = actions._target(files, config, entry)
-        lease, lease_record = actions._lease(files, target, entry)
+        checkpoint = checkpoint_io.read(files, config, action, expected_restore_intent, target, entry)
+        lease, lease_record = ((checkpoint[1], checkpoint[2]) if checkpoint is not None else actions._lease(files, target, entry))
         _require(issued >= lease['expires_at_epoch'] and lease['released_at_epoch'] is None, 'experiment_restore_lease_changed')
         origin = actions._birth(files, public, entry, gid)
         reference, reference_fd = actions._pin_fence(files, config, pins_root, target, issued)
@@ -490,7 +494,10 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                      and initial[0]['body']['restore_intent'] == expected_restore_intent,
                      'experiment_restore_operation_invalid')
             possible = recovery._read_event(files, restore_operation, action, 1, initial[1])
-            if possible is not None:
+            if checkpoint is not None:
+                union = checkpoint_io.published_union(files, config, action, entry, checkpoint, target, target_fd, restore_operation, initial)
+                stage_resume = checkpoint
+            elif possible is not None:
                 event, selected = possible
                 _require(event['event_kind'] == 'restore_stage_ready' and set(event['body']) == {
                     'restore_started', 'stage_manifest', 'stage_identity', 'stage_metadata', 'target_metadata'}
@@ -666,19 +673,22 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             files.close(child)
             files.location(parent)
             os.fsync(parent)
-        files.location(stage)
-        files.location(target_fd)
-        os.rmdir(stage_name, dir_fd=target_fd)
-        files.removed_directory(target / stage_name, stage)
-        files.close(stage)
-        files.location(target_fd)
-        os.fsync(target_fd)
+        if stage is not None:
+            files.location(stage)
+            files.location(target_fd)
+            os.rmdir(stage_name, dir_fd=target_fd)
+            files.removed_directory(target / stage_name, stage)
+            files.close(stage)
+            files.location(target_fd)
+            os.fsync(target_fd)
         files.phase("restore_prepare")
         new_lease = lease | {'renewed_at_epoch': issued, 'expires_at_epoch': action['new_lease_expires_at_epoch']}
-        payload = actions._encoded(new_lease, 'lease_digest', scratch.MAX_LEASE_BYTES)
+        payload = (checkpoint[0]['new_lease'].encode() if checkpoint is not None else actions._encoded(new_lease, 'lease_digest', scratch.MAX_LEASE_BYTES))
         _require(scratch._lease_fields_valid(json.loads(payload)), 'experiment_restore_lease_invalid')
         root = config.lane_scratch_work_root if entry['root'] == 'work' else config.lane_scratch_inputs_root
         birth._locked_lane(files, root)
+        if checkpoint is None:
+            checkpoint_io.prepare(files, store, target, target_fd, action, expected_restore_intent, entry, lease_record, payload, started, previous, index)
         new_selector = _lease_cas(files, target, target_fd, lease_record, payload)
         # Root measured publication bytes bind restored identities, not a new execution.
         restored_manifest = actions._manifest(files, target, target_fd, binding=entry | {'lease': new_selector}, hash_payload=False)

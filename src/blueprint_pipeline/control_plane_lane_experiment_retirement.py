@@ -29,7 +29,7 @@ _LOCK = ".experiment-authority.lock"
 _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
-_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|reservation|retiring-head|retired-head))?\.json\Z")
+_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|retiring-head|retired-head))?\.json\Z")
 _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
@@ -151,7 +151,7 @@ def _capacity(files, parent, *, adding_registration=True):
             total += info.st_size
             _require(records <= MAX_EXPERIMENT_REGISTRATIONS * 12
                      and count <= MAX_EXPERIMENT_REGISTRATIONS - int(adding_registration)
-                     and 0 < info.st_size <= (1048576 if match.group(2) in ("manifest", "stage-manifest") else _MAX_INTENT)
+                     and 0 < info.st_size <= (1048576 if match.group(2) in ("manifest", "stage-manifest", "payload-manifest") else _MAX_INTENT)
                      and total <= MAX_EXPERIMENT_STORE_BYTES,
                      "experiment_store_full")
     files.budget.tick()
