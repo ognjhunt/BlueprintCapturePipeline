@@ -11,17 +11,20 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
-import stat
 import time
-import unicodedata
 import uuid
 import zipfile
 import zlib
 
 from .decision_evidence_contracts import canonical_digest
 from .provider_output_disk_capacity import observe_provider_output_disk_capacity
+from .provider_output_member_index import (
+    MAX_ARCHIVE_ENTRIES,
+    ProviderOutputMemberIndexError,
+    check_archive_entries,
+)
 from .provider_output_native_inventory import ProviderOutputInventoryError, safe_member_name, verify_native_inventory
 from .provider_output_range_transport import ProviderOutputRangeReader, ProviderOutputTransportError
 from .provider_signed_object_binding import signed_output_object_binding_sha256
@@ -29,7 +32,7 @@ from .provider_signed_object_binding import signed_output_object_binding_sha256
 SCHEMA = 'provider_output_ingestion_binding.v1'
 FLOOR_BYTES = 8 * 1024**3
 CHUNK_BYTES = 1024**2
-MAX_ENTRIES = 200_000
+MAX_ENTRIES = MAX_ARCHIVE_ENTRIES
 MAX_JSON_BYTES = 128 * 1024**2
 MAX_JOURNAL_BYTES = 256 * 1024**2
 
@@ -116,36 +119,12 @@ def validate_ingestion_binding(binding, signed_get_url_file):
 
 
 def _archive_members(archive, maximum_extracted_bytes):
-    infos = archive.infolist()
-    if not infos or len(infos) > MAX_ENTRIES:
-        raise ProviderOutputIngestionError('provider_output_archive_entry_count_invalid')
-    normalized, files, total = {}, {}, 0
-    for info in infos:
-        name = info.filename[:-1] if info.is_dir() else info.filename
-        safe_member_name(name)
-        if info.orig_filename != info.filename:
-            raise ProviderOutputIngestionError('provider_output_archive_path_invalid')
-        folded = unicodedata.normalize('NFC', name).casefold()
-        if folded in normalized:
-            raise ProviderOutputIngestionError('provider_output_archive_duplicate_path')
-        normalized[folded] = info.is_dir()
-        kind = stat.S_IFMT(info.external_attr >> 16)
-        if (kind not in (0, stat.S_IFDIR, stat.S_IFREG)
-                or info.flag_bits & 1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
-                or info.file_size < 0 or info.compress_size < 0
-                or (info.is_dir() and info.file_size != 0)
-                or (not info.is_dir() and kind == stat.S_IFDIR)):
-            raise ProviderOutputIngestionError('provider_output_archive_entry_type_invalid')
-        if not info.is_dir():
-            total += info.file_size
-            if total > maximum_extracted_bytes:
-                raise ProviderOutputIngestionError('provider_output_archive_expansion_cap_exceeded')
-            files[name] = info
-    for name in normalized:
-        if any(parent.as_posix() in normalized and not normalized[parent.as_posix()]
-               for parent in PurePosixPath(name).parents if parent.as_posix() != '.'):
-            raise ProviderOutputIngestionError('provider_output_archive_file_directory_collision')
-    return files, total
+    # The rules are shared with the member index; the codes, and the path
+    # refusal's inventory error type, are unchanged for this collector.
+    try:
+        return check_archive_entries(archive.infolist(), maximum_extracted_bytes)
+    except ProviderOutputMemberIndexError as exc:
+        raise ProviderOutputIngestionError(str(exc)) from None
 
 
 def _safe_destination(root, relative):
