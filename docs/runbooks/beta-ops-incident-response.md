@@ -10,7 +10,7 @@ not replace counsel/security review for regulated notification decisions.
 
 ## Owners and escalation
 
-- Primary owner: `blueprint-cto` until a named beta incident commander is
+- Primary owner: the founder until a named beta incident commander is
   assigned.
 - Pipeline owner: `pipeline-oncall`.
 - Ops owner: `ops-lead`.
