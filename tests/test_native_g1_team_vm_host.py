@@ -86,6 +86,7 @@ def rehearsal(tmp_path, monkeypatch, request):
         "claim_ceiling": "development_only", "provider_teardown_verified": False,
         "guest_gpu_inference_verified": False, "archive_gpu_device_exposure_verified": False,
         "archive_gpu_device_binding": gpu_binding,
+        "archive_sandbox_required_features": list(host.BWRAP_REQUIRED_OPTIONS) if mode == "noncontainer_artifact" else None,
     })
     calls, processes, sessions, config_paths = [], [], [], []
     original_popen = subprocess.Popen
@@ -203,23 +204,29 @@ def test_real_policy_lifecycle_score_and_media_under_host_supervision(rehearsal)
 
 @pytest.mark.slow
 @pytest.mark.parametrize("rehearsal", ["noncontainer_artifact"], indirect=True)
-@pytest.mark.parametrize("fault", ["probe_uuid", "probe_missing", "child_binding"])
+@pytest.mark.parametrize("fault", ["probe_uuid", "probe_missing", "child_binding", "sandbox_features"])
 def test_archive_gpu_proof_is_required_and_cross_bound(rehearsal, fault):
     from blueprint_pipeline.native_g1_team_archive_gpu import PROBE_FILENAME
     args, verify_args, _, _, _, _, output = rehearsal
     assert host.run_g1_team_vm_host(**args)["status"] == "completed_development_only"
     runtime = args["output_dir"] / "policy-host/runtime"
     path = runtime / ("native_g1_team_artifact_teardown.v1.json" if fault == "child_binding" else PROBE_FILENAME)
+    if fault == "sandbox_features":
+        path = args["output_dir"] / host.PREFLIGHT_FILENAME
     if fault == "probe_missing":
         path.unlink()
     else:
         receipt = json.loads(path.read_text())
         if fault == "probe_uuid":
             receipt["observed"]["gpu_uuid_hex"] = "f" * 32
+        elif fault == "sandbox_features":
+            receipt.pop("archive_sandbox_required_features")
         else:
             receipt["gpu_binding_digest"] = "sha256:" + "f" * 64
         receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError):
+        output.verify_g1_team_vm_evidence(**verify_args)
     with pytest.raises(ValueError):
         output.verify_g1_team_vm_host_output(**verify_args)
 

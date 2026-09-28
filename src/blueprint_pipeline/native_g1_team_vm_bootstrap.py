@@ -309,7 +309,7 @@ def _verify_provider_sources(root: Path, expected_digest: str, commit: str):
     observed = set()
     for row in manifest.get("artifacts", []):
         relative = _relative(row["relative_path"])
-        if relative.parts[0] != "provider_runtime" or str(relative) in observed:
+        if relative.parts[0] not in {"provider_runtime", "configs"} or str(relative) in observed:
             raise ValueError("g1_host_python_provider_source_invalid")
         observed.add(str(relative))
         _asset(root.parent.joinpath(*relative.parts), row)

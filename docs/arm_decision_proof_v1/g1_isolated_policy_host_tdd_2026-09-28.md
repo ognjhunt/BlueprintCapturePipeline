@@ -727,3 +727,159 @@ the installed bubblewrap's actual --ro-bind-fd/--clearenv support, canonical
 root-owned ancestor accessibility, and required UVM nodes before untrusted
 execution. The canonical bundle/VM allocator refusal stays in place until full
 integration, actual CUDA, and all launch/output gates are complete.
+
+## Reviewed selected-bundle integration: offline host assets and archive bytes
+
+ADP-050 Day28 / ADP-060 owner extension. Observed blocker: paired-mode bundles
+still contain only the Isaac guest entrypoint, no proved host CPython package
+and no fixed-path approved archive. The allocator refuses these modes. Preserve
+that refusal until VM allocation/bootstrap/image/runtime/output admission is
+fully integrated; this transport change alone cannot authorize a run.
+
+For container/archive bundles require the sealed host-Python package bound to
+the same implementation commit, embed its exact manifest and three pinned assets
+under provider_runtime/host-python-package, and verify their inventory/bytes on
+every bundle reopen. Add a separate VM entrypoint that provisions offline with
+system Python in isolated/no-bytecode/stdlib-only mode, then executes the actual
+VM host with the proved cp312 runtime and explicit -I/-B. Keep the existing
+Isaac guest shell entrypoint for the simulator container. Expose the actual
+allocator entrypoint in the manifest, but no ready/spend/qualification claim.
+
+For archives copy the trusted operator-staged file to the fixed transported
+inputs/team-policy/policy.tar path only after exact approved SHA, regular-file,
+safe archive and existing size/member checks. A trusted source-path override
+does not edit the packet or approval. Bind transported artifact path/hash/size
+to the approved profile and its actual artifact row on every reopen; reject
+artifact arguments in other modes. Endpoints retain their current credential
+transport and entrypoint with no host package/artifact included. Existing
+endpoint retained evidence remains readable.
+
+Lookahead found the host source verifier rejecting ALL configs/ artifact rows
+despite the real bundle always including the two G1 inventories there. Admit
+only the existing configs/ root alongside provider_runtime/, still verify every
+listed artifact, canonical containment, and every Python source/bytecode/shared
+library. Test the real manifest shape before a rented VM. No arbitrary roots.
+
+Test first: absent/foreign-commit/changed host package, wrong staged archive SHA,
+unsafe archive, forbidden endpoint/OCI artifact inputs, unchanged approval and
+packet, host-vs-guest entrypoint selection, resealed foreign host-package metadata,
+config artifact mutation and foreign root refusal. Execute generated shell syntax
+and isolated entrypoint imports; preserve required provider import-closure and
+policy lifecycle rehearsals. Package proof, cold imports, synthetic actions and
+VM metadata are not a scored/GPU run. Actual system prerequisites and allocation
+remain separate implementation gates.
+
+Design review: inspected producer, retained/live readers, guest sealed-input
+verifier, host materializer and canonical preallocation refusal. Reuse the proved
+bootstrap and exact approved archive hash rather than a new runtime/provider.
+Accepted for focused test-first implementation. Canonical paid refusal remains.
+
+## Reviewed allocator collection gate: paired host and bootstrap closeout
+
+ADP-050 Day28 / ADP-060 owner extension. The canonical paid lane currently
+reopens only the simulator's selected-worker score/media result. That evidence
+cannot prove the separately hosted policy, relay, simulator container, or outer
+bootstrap completed. Preserve the current paired-mode allocation refusal while
+repairing the downstream verifier before connecting VM launch.
+
+For a paired packet require the generated bootstrap terminal receipt: its digest,
+exact implementation commit, explicit integer zero exit code, vm-host stage,
+host_exited status and development-only/no-provider/no-GPU-qualification flags.
+Then invoke the existing full VM output verifier against the same collected root,
+packet and scene bindings. It already reopens policy/relay/worker/simulator
+receipts, archives' CUDA roundtrip proof, exact observation bytes and both videos.
+Return its full verification so later ingest can retain the host evidence.
+Endpoint output continues through the existing native score/media verifier.
+
+Collection-to-review lookahead: the existing private projector requires the
+worker verification schema and its top-level profile/score/media fields. Preserve
+that interface and embed the complete reopened VM host verification under
+`isolated_policy_host_verification`. Do not replace the worker schema with a VM
+wrapper that the existing review URL cannot ingest. Positive tests must feed the
+actual collected verification through the existing private projector for both
+paired modes and preserve their selected policy delivery identity.
+
+Test first with the existing real socket/JSONL/scoring/media rehearsal and fake
+Docker/Isaac, both OCI and archive modes. Move its actual retained evidence into
+the canonical attempt layout and call the real allocator output function.
+Absent/resealed foreign bootstrap commit, nonzero/boolean exit, wrong stage,
+invented GPU/provider qualification, absent VM host result, corrupted relay and
+changed media must refuse. Fixtures prove the collection contract only; they do
+not qualify a VM or learned-policy GPU execution. Preserve endpoint coverage.
+
+Design review: this reuses the VM evidence verifier rather than another output
+schema or launcher. Package/sandbox/source prerequisites and provider-zero/billing
+remain separate gates. Accepted for focused test-first implementation.
+
+## Reviewed host admission gate: installed archive sandbox capabilities
+
+ADP-050 Day28 / ADP-060 owner extension. Current host preflight checks only
+`bwrap --version`; that does not prove the flags required by the encoded archive
+launcher exist. The real control-host binary's help was inspected on Sept28
+08:23 UTC and declares --ro-bind-fd and --clearenv. The VM remains unobserved.
+Check installed `bwrap --help` before observing GPU binding or opening the
+untrusted archive policy. Require exact option tokens for all isolation/device
+arguments used by isolated_artifact_command, including --ro-bind-fd, --clearenv,
+--unshare-all, --uid/--gid, --cap-drop, --dev-bind and --die-with-parent.
+Retain the exact observed required-feature list in the host preflight and
+require it in collected archive evidence. OCI does not require bubblewrap.
+
+Test first: a zero-exit version command with missing feature(s), a nonzero help
+command, and substring-only fake support must refuse before GPU/device
+observation. Complete exact help tokens pass without installing/changing the
+host; the subsequent real same-namespace CUDA probe remains mandatory. Test
+resealed removal of the capability receipt in retained archive evidence.
+
+Design review: this is an early prerequisite check for the existing launcher,
+not another sandbox or inferred namespace/GPU qualification. Actual VM system
+bootstrap must install a pinned capable binary before this gate is admitted;
+canonical paired allocation remains refused. Accepted for focused TDD.
+
+## Sept28 implementation evidence: packaged host and collected review path
+
+The selected bundle now embeds the exact same-commit offline CPython/NumPy/RFC
+package for OCI/archive modes, the approved SHA-bound archive at its fixed VM
+path, and a separate isolated host launcher. The retained reader and guest
+verifier reopen the host package and policy artifact bindings. Endpoint
+transport remains compatible without host assets. Missing archive entrypoints,
+unsafe members and missing actual VM launcher/modules refuse before allocation.
+The host bootstrap now admits the two existing configs/ inventory artifacts and
+still reopens all listed source bytes. Generated shell execution tests caught and
+repaired lexical ../ paths that the real materializer would refuse.
+
+The paid output verifier now requires the bootstrap's zero integer exit and
+exact commit, then reopens the full host/relay/policy/worker/simulator closure and
+native score/media. It keeps the existing worker verification schema and embeds
+the full VM verification under isolated_policy_host_verification, so the SAME
+private review projector accepts both paired policy modes. Real socket/JSONL,
+scoring and retained frame/video fixtures exercise that entire collection-to-
+projection path; Docker, Isaac and archive CUDA remain explicit test doubles.
+
+Installed sandbox preflight now checks exact help option tokens, including
+--ro-bind-fd and --clearenv, before device observation. The observed feature
+list is mandatory in collected archive evidence. No new binary was installed;
+the previously CPU-proved control-host binary's help was inspected read-only.
+
+Focused evidence, in execution order:
+
+- Packaging/bootstrap/host/runtime/import/lifecycle batch: 167 passed in
+  353.31s. It includes six provider import-closure and 19 lifecycle cases.
+- After the capability gate: 76 passed in 111.49s across feature rejection,
+  host/VM collection, cold imports, six provider closure and 19 lifecycle cases.
+- Final review-interface repair: 14 passed in 14.73s, including both actual
+  retained paired-mode collection/projection paths, ten tampering/refusal cases,
+  existing endpoint media verification and private projection/staging.
+- Changed-file Ruff and git diff --check pass. Red-first archive entrypoint,
+  missing host evidence, missing sandbox features and review-schema failures
+  were observed before their encoded repairs.
+
+Read-only host observation: deployed release remains
+4a59c6bb668ac53ca9cc3440fcc57b21242d3612; both inspected campaign dispatchers
+are inactive/MainPID0. Work-volume free bytes 11,136,524,288; root free bytes
+16,146,935,808. Neither meets the selected-policy 32,000,000,000-byte collection
+reservation. Service inactivity is not current provider-zero or billing proof.
+No paid allocation, deployment, model download, data deletion or runtime/image
+qualification occurred in this slice. The paired dispatch admission refusal
+remains until exact VM system/image/bootstrap/allocation integration is complete.
+Full four built-ins, learned GPU execution for all delivery modes, actual private
+URL and final merge/push/deployment/settlement remain required by the full goal.

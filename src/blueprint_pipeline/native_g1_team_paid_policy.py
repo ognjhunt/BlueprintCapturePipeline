@@ -79,6 +79,33 @@ def _verify_output(result: dict[str, Any], bundle: dict[str, Any], *, job: Path)
             or not attempt.name.startswith("attempt_")):
         raise ValueError("g1_team_paid_output_path_invalid")
     root = attempt / "immutable_execution"
+    if packet["request"]["policy_profile"]["delivery"]["mode"] != "authenticated_endpoint":
+        # A guest score cannot stand in for policy-host/relay/container closure.
+        # Keep this mandatory even while paired launch admission is refused.
+        from .native_g1_team_vm_bundle_support import BOOTSTRAP_RESULT_FILENAME
+        from .native_g1_team_vm_output import _receipt, verify_g1_team_vm_host_output
+        bootstrap = _receipt(root / BOOTSTRAP_RESULT_FILENAME, digest_field="receipt_digest")
+        if (bootstrap.get("schema_version") != "native_g1_team_vm_bootstrap_entrypoint.v1"
+                or bootstrap.get("status") != "host_exited"
+                or bootstrap.get("stage_reached") != "vm-host"
+                or type(bootstrap.get("runner_exit_code")) is not int
+                or bootstrap["runner_exit_code"] != 0
+                or bootstrap.get("implementation_commit") != bundle["implementation_commit"]
+                or bootstrap.get("provider_mutation_performed") is not False
+                or bootstrap.get("gpu_runtime_qualified") is not False
+                or bootstrap.get("claim_ceiling") != "development_only"):
+            raise ValueError("g1_team_paid_vm_bootstrap_result_invalid")
+        verified = verify_g1_team_vm_host_output(
+            output_dir=root, execution_packet=packet,
+            scene_plan_digest=bundle["scene_plan_digest"],
+            scene_packet_receipt_digest=bundle["scene_packet_receipt_digest"],
+        )
+        return {
+            **verified["verified_output"],
+            "isolated_policy_host_verification": {
+                **verified, "bootstrap_entrypoint_digest": bootstrap["receipt_digest"],
+            },
+        }
     path = root / RESULT_FILENAME
     if path.is_symlink() or not path.is_file():
         raise ValueError("g1_team_paid_native_result_missing")

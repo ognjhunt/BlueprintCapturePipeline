@@ -25,6 +25,7 @@ from typing import Any, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_team_container_runtime import _verified_local_image
+from .native_g1_team_artifact_runtime import BWRAP_REQUIRED_OPTIONS
 from .native_g1_team_archive_gpu import observe_archive_gpu_binding, validate_archive_gpu_binding
 from .native_g1_team_policy_relay import G1PolicyRelayServer, RelayBinding
 from .native_g1_team_provider_bundle import ENTRYPOINT, RESULT_FILENAME
@@ -140,13 +141,18 @@ def preflight_g1_vm_host(packet: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("g1_vm_host_gpu_driver_unavailable")
     profile = packet["request"]["policy_profile"]
     mode = profile["delivery"]["mode"]
-    policy_id, archive_gpu = None, None
+    policy_id, archive_gpu, archive_features = None, None, None
     if mode == "container":
         policy_id = _verified_local_image(profile["delivery"]["image_ref"])
     elif mode == "noncontainer_artifact":
         result = subprocess.run(["bwrap", "--version"], capture_output=True, check=False, timeout=10)
         if result.returncode != 0:
             raise ValueError("g1_vm_host_archive_sandbox_unavailable")
+        help_result = subprocess.run(["bwrap", "--help"], capture_output=True, text=True, check=False, timeout=10)
+        options = set(re.findall(r"(?m)^\s*(--[a-z][a-z0-9-]*)(?=\s|$)", help_result.stdout))
+        if help_result.returncode != 0 or not set(BWRAP_REQUIRED_OPTIONS) <= options:
+            raise ValueError("g1_vm_host_archive_sandbox_features_unavailable")
+        archive_features = list(BWRAP_REQUIRED_OPTIONS)
         archive_gpu = observe_archive_gpu_binding(profile_digest=profile["profile_digest"],
                                                   execution_packet_digest=packet["packet_digest"])
     else:
@@ -158,6 +164,7 @@ def preflight_g1_vm_host(packet: dict[str, Any]) -> dict[str, Any]:
         "simulator_local_image_id": _verified_local_image(NATIVE_TASK_ARENA_IMAGE),
         "policy_local_image_id": policy_id, "python_abi": "cp312",
         "archive_gpu_device_binding": archive_gpu,
+        "archive_sandbox_required_features": archive_features,
         "numpy_version": "2.3.1", "rfc8785_version": "0.1.4",
         "guest_gpu_inference_verified": False, "archive_gpu_device_exposure_verified": False,
         "provider_teardown_verified": False, "claim_ceiling": "development_only",

@@ -11,6 +11,9 @@ import textwrap
 import zipfile
 
 import pytest
+import hashlib
+import io
+import tarfile
 
 from blueprint_pipeline import native_g1_team_provider_bundle as bundle
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -23,23 +26,40 @@ from tests.test_native_g1_team_policy_approval import _approval
 from tests.test_team_policy_delivery_profile import _profile
 from tests.test_native_g1_shared_scene_episode import _Scene
 from tests.test_native_rigid_episode_telemetry import _spec
+from blueprint_pipeline import native_g1_team_vm_bootstrap as host_bootstrap
 
 
 COMMIT = "a" * 40
 
 
-def _inputs(tmp_path: Path, monkeypatch, *, endpoint=False):
+def _inputs(tmp_path: Path, monkeypatch, *, endpoint=False, archive=False, artifact_fault=None):
     monkeypatch.setattr("blueprint_pipeline.native_g1_team_policy_run_request.time.time", lambda: NOW)
     authority, _ = _authority(tmp_path, monkeypatch)
-    if endpoint:
+    staged_archive = None
+    if endpoint or archive:
         # A new immutable queue intent uses the same owner/source registry.
         original = json.loads(authority["intent_path"].read_text())
         current = bundle.verify_g1_team_policy_authority(**authority)
         setup = current["trusted_setup"]
-        profile = _profile(setup, {
+        delivery = {
             "mode": "authenticated_endpoint", "endpoint_url": "https://policy.example.org/v1/action",
             "auth_secret_ref": "secretref:team/policy", "timeout_ms": 5000,
-        })
+        }
+        if archive:
+            staged_archive = tmp_path / "operator-policy.tar"
+            with tarfile.open(staged_archive, "w") as stream:
+                member = tarfile.TarInfo("../outside" if artifact_fault == "traversal" else
+                                         "policy/other.py" if artifact_fault == "entrypoint" else "policy/run.py")
+                content = b"#!/usr/bin/python3\n"
+                member.size = len(content)
+                if artifact_fault == "link":
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = "/host-private-fixture"
+                stream.addfile(member, io.BytesIO(content))
+            delivery = {"mode": "noncontainer_artifact", "artifact_uri": "https://files.example.org/policy.tar",
+                        "artifact_sha256": bundle._sha256(staged_archive), "entrypoint": "policy/run.py",
+                        "protocol": "jsonl_observation_action_v1"}
+        profile = _profile(setup, delivery)
         request = _request(setup, profile)
         queue = tmp_path / "endpoint-queue"
         staged = stage_g1_team_policy_run(
@@ -48,10 +68,15 @@ def _inputs(tmp_path: Path, monkeypatch, *, endpoint=False):
             trusted_clients=authority["trusted_clients"], now_epoch=NOW,
         )
         authority["intent_path"] = queue / staged["intent_id"] / "intent.json"
-        approval = _approval(setup, profile, {
+        binding = {
             "mode": "authenticated_endpoint", "profile_digest": profile["profile_digest"],
             "approved_origin": "https://policy.example.org", "resolved_secret_ref": "secretref:team/policy",
-        })
+        }
+        if archive:
+            binding = {"mode": "noncontainer_artifact", "profile_digest": profile["profile_digest"],
+                       "artifact_sha256": delivery["artifact_sha256"],
+                       "staged_artifact_path": str(tmp_path / "approved-operator-origin.tar")}
+        approval = _approval(setup, profile, binding)
         authority["approval_path"].write_text(json.dumps(approval))
     packet = prepare_g1_team_policy_execution_packet(
         **authority, output_dir=tmp_path / "execution", implementation_commit=COMMIT,
@@ -125,7 +150,93 @@ def _inputs(tmp_path: Path, monkeypatch, *, endpoint=False):
         "publisher_source": publisher, "runtime_source_receipt": runtime,
         "sonic_asset_dir": sonic, "expected_implementation_commit": COMMIT,
     }
+    if not endpoint:
+        paths, catalogue = {}, {}
+        for role, row in host_bootstrap.ASSETS.items():
+            path = tmp_path / row["filename"]
+            path.write_bytes(("fixture-host-asset-" + role).encode())
+            paths[role] = path
+            catalogue[role] = {**row, "size_bytes": path.stat().st_size,
+                              "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+        monkeypatch.setattr(host_bootstrap, "ASSETS", catalogue)
+        host_root = tmp_path / "host-package"
+        host_bootstrap.seal_g1_vm_host_python(asset_paths=paths, output_root=host_root,
+                                             implementation_commit=COMMIT)
+        args["host_python_package_root"] = host_root
+    if archive:
+        args["staged_policy_artifact_path"] = staged_archive
     return args, receipt
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_paired_bundle_ships_bound_host_assets_and_separate_vm_entrypoint(tmp_path, monkeypatch, archive):
+    args, _ = _inputs(tmp_path, monkeypatch, archive=archive)
+    original = json.loads(args["execution_packet_path"].read_text())
+    receipt = bundle.build_g1_team_provider_bundle(**args)
+    assert receipt["runtime_entrypoint"] == bundle.VM_ENTRYPOINT
+    assert receipt["host_python_package"]["relative_root"] == bundle.HOST_PACKAGE_ROOT
+    with zipfile.ZipFile(receipt["bundle_path"]) as sealed:
+        assert json.loads(sealed.read(bundle.PACKET_RELATIVE_PATH)) == original
+        assert b"native_g1_team_provider_runtime" in sealed.read(bundle.ENTRYPOINT)
+        host_shell = sealed.read(bundle.VM_ENTRYPOINT)
+        assert b"native_g1_team_vm_bootstrap.py" in host_shell
+        assert b"native_g1_team_vm_host" in host_shell and b"-I -B" in host_shell
+        for row in host_bootstrap.ASSETS.values():
+            assert sealed.read(bundle.HOST_PACKAGE_ROOT + "/" + row["filename"]) == (
+                args["host_python_package_root"] / row["filename"]).read_bytes()
+        if archive:
+            assert sealed.read(bundle.POLICY_ARTIFACT_PATH) == args["staged_policy_artifact_path"].read_bytes()
+            assert receipt["policy_artifact"]["sha256"] == original["request"]["policy_profile"]["delivery"]["artifact_sha256"]
+        else:
+            assert receipt["policy_artifact"] is None
+            assert bundle.POLICY_ARTIFACT_PATH not in sealed.namelist()
+
+
+@pytest.mark.parametrize("fault", ["absent", "changed", "commit"])
+def test_paired_host_package_is_required_and_exact_before_output(tmp_path, monkeypatch, fault):
+    args, _ = _inputs(tmp_path, monkeypatch)
+    root = args["host_python_package_root"]
+    if fault == "absent":
+        args.pop("host_python_package_root")
+    elif fault == "changed":
+        path = root / host_bootstrap.ASSETS["numpy"]["filename"]
+        path.chmod(0o600)
+        path.write_bytes(b"changed")
+    else:
+        path = root / host_bootstrap.MANIFEST_NAME
+        value = json.loads(path.read_text())
+        value["implementation_commit"] = "b" * 40
+        value["manifest_digest"] = host_bootstrap._digest(value)
+        path.chmod(0o600)
+        path.write_text(json.dumps(value))
+    with pytest.raises(ValueError):
+        bundle.build_g1_team_provider_bundle(**args)
+    assert not args["job_dir"].exists()
+
+
+def test_changed_archive_bytes_block_before_bundle_creation(tmp_path, monkeypatch):
+    args, _ = _inputs(tmp_path, monkeypatch, archive=True)
+    args["staged_policy_artifact_path"].write_bytes(b"changed")
+    with pytest.raises(ValueError, match="policy_artifact"):
+        bundle.build_g1_team_provider_bundle(**args)
+    assert not args["job_dir"].exists()
+
+
+@pytest.mark.parametrize("fault", ["traversal", "link", "entrypoint"])
+def test_approved_hash_does_not_admit_unsafe_or_unrunnable_archive(tmp_path, monkeypatch, fault):
+    args, _ = _inputs(tmp_path, monkeypatch, archive=True, artifact_fault=fault)
+    with pytest.raises(ValueError, match="policy_artifact|member_unsafe"):
+        bundle.build_g1_team_provider_bundle(**args)
+    assert not args["job_dir"].exists()
+
+
+@pytest.mark.parametrize("endpoint", [False, True])
+def test_artifact_path_argument_is_refused_for_other_modes(tmp_path, monkeypatch, endpoint):
+    args, _ = _inputs(tmp_path, monkeypatch, endpoint=endpoint)
+    args["staged_policy_artifact_path"] = tmp_path / "foreign-artifact"
+    with pytest.raises(ValueError, match="policy_artifact"):
+        bundle.build_g1_team_provider_bundle(**args)
+    assert not args["job_dir"].exists()
 
 
 def test_seals_selected_scene_and_transport_without_credentials_or_paid_mutation(tmp_path, monkeypatch):
@@ -189,7 +300,7 @@ def test_bundle_byte_change_is_rejected_without_rebuilding(tmp_path, monkeypatch
         )
 
 
-def _rewrite_bundle(receipt, *, change_manifest=None, extra=None):
+def _rewrite_bundle(receipt, *, change_manifest=None, extra=None, remove=None):
     path = Path(receipt["bundle_path"])
     with zipfile.ZipFile(path) as archive:
         entries = [(info, archive.read(info)) for info in archive.infolist()]
@@ -199,6 +310,8 @@ def _rewrite_bundle(receipt, *, change_manifest=None, extra=None):
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     with zipfile.ZipFile(path, "w") as archive:
         for info, value in entries:
+            if info.filename == remove:
+                continue
             archive.writestr(info, json.dumps(manifest).encode() if info.filename == bundle.MANIFEST else value)
         if extra:
             info = zipfile.ZipInfo(extra)
@@ -209,6 +322,55 @@ def _rewrite_bundle(receipt, *, change_manifest=None, extra=None):
     receipt["bundle_size_bytes"] = path.stat().st_size
     receipt["bundle_sha256"] = bundle._sha256(path)
     Path(receipt["receipt_path"]).write_text(json.dumps(receipt))
+
+
+@pytest.mark.parametrize("missing", [bundle.VM_ENTRYPOINT,
+    "provider_runtime/blueprint_pipeline/native_g1_team_vm_bootstrap.py",
+    "provider_runtime/blueprint_pipeline/native_g1_team_vm_host.py"])
+def test_resealed_paired_bundle_requires_actual_host_launcher_and_modules(tmp_path, monkeypatch, missing):
+    args, _ = _inputs(tmp_path, monkeypatch)
+    receipt = bundle.build_g1_team_provider_bundle(**args)
+    _rewrite_bundle(receipt, remove=missing, change_manifest=lambda value: value.update(
+        artifacts=[row for row in value["artifacts"] if row["relative_path"] != missing]))
+    with pytest.raises(ValueError, match="host_package_runtime_missing"):
+        bundle.read_retained_g1_team_provider_bundle(
+            Path(receipt["receipt_path"]), expected_implementation_commit=COMMIT)
+
+
+@pytest.mark.parametrize("fault", ["host_root", "host_digest", "host_row", "entrypoint", "archive_hash"])
+def test_resealed_transport_cannot_change_host_or_approved_archive_binding(tmp_path, monkeypatch, fault):
+    args, _ = _inputs(tmp_path, monkeypatch, archive=fault == "archive_hash")
+    receipt = bundle.build_g1_team_provider_bundle(**args)
+
+    def change(value):
+        if fault == "host_root":
+            value["host_python_package"]["relative_root"] = "provider_runtime/foreign-package"
+        elif fault == "host_digest":
+            value["host_python_package"]["manifest_digest"] = "sha256:" + "f" * 64
+        elif fault == "host_row":
+            value["artifacts"] = [row for row in value["artifacts"] if not row["relative_path"].endswith(
+                host_bootstrap.ASSETS["numpy"]["filename"])]
+        elif fault == "entrypoint":
+            value["runtime_entrypoint"] = bundle.ENTRYPOINT
+        else:
+            value["policy_artifact"]["sha256"] = "sha256:" + "f" * 64
+
+    _rewrite_bundle(receipt, change_manifest=change)
+    with pytest.raises(ValueError):
+        bundle.load_verified_g1_team_provider_bundle(
+            Path(receipt["receipt_path"]), expected_implementation_commit=COMMIT,
+            authority_arguments=args["authority_arguments"],
+        )
+
+
+def test_endpoint_never_includes_host_package_and_rejects_foreign_metadata(tmp_path, monkeypatch):
+    args, _ = _inputs(tmp_path, monkeypatch, endpoint=True)
+    receipt = bundle.build_g1_team_provider_bundle(**args)
+    assert receipt["runtime_entrypoint"] == bundle.ENTRYPOINT
+    assert receipt["host_python_package"] is None and receipt["policy_artifact"] is None
+    _rewrite_bundle(receipt, change_manifest=lambda value: value.update(host_python_package={"foreign": True}))
+    with pytest.raises(ValueError, match="host_package_mode"):
+        bundle.read_retained_g1_team_provider_bundle(Path(receipt["receipt_path"]), expected_implementation_commit=COMMIT)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -281,8 +443,8 @@ def test_selected_bundle_entrypoints_import_in_isolated_provider_interpreter(tmp
         assert "usage:" in result.stdout
         if module == "native_g1_team_policy_worker":
             assert "--policy-relay-config" in result.stdout
-    shell = root / bundle.ENTRYPOINT
-    assert subprocess.run(["bash", "-n", str(shell)], capture_output=True).returncode == 0
+    for relative in (bundle.ENTRYPOINT, bundle.VM_ENTRYPOINT):
+        assert subprocess.run(["bash", "-n", str(root / relative)], capture_output=True).returncode == 0
 
 
 def test_retained_bundle_evidence_survives_expired_launch_approval_without_admitting_spend(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@ import re
 from typing import Any, Mapping
 
 from .native_g1_team_paid_output import _receipt as _paid_receipt, verify_g1_team_paid_output
+from .native_g1_team_artifact_runtime import BWRAP_REQUIRED_OPTIONS
 from .native_g1_team_archive_gpu import (
     PROBE_FILENAME as ARCHIVE_GPU_PROBE_FILENAME, validate_archive_gpu_binding, validate_archive_gpu_probe,
 )
@@ -126,6 +127,8 @@ def verify_g1_team_vm_evidence(
                 or child["local_image_id"] != preflight.get("policy_local_image_id")):
             raise ValueError("g1_vm_policy_container_evidence_invalid")
     else:
+        if preflight.get("archive_sandbox_required_features") != list(BWRAP_REQUIRED_OPTIONS):
+            raise ValueError("g1_vm_archive_sandbox_evidence_invalid")
         if (child.get("status") != "process_exited"
                 or child.get("artifact_sha256") != profile["delivery"]["artifact_sha256"]):
             raise ValueError("g1_vm_policy_archive_evidence_invalid")

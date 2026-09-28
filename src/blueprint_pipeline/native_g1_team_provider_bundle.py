@@ -15,6 +15,7 @@ import argparse
 import json
 import re
 import stat
+import tarfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -32,6 +33,10 @@ from .native_task_arena_bundle import _write_zip_file, verify_native_task_arena_
 from .native_task_arena_packet import REQUEST_SCHEMA_VERSION
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .native_task_runtime_source_packet import verify_native_task_runtime_source_packet
+from .native_g1_team_vm_bundle_support import (
+    HOST_PACKAGE_ROOT as HOST_PACKAGE_ROOT, VM_ENTRYPOINT, POLICY_ARTIFACT_PATH, host_package_sources,
+    verify_host_package_in_bundle, verify_policy_artifact_in_bundle, vm_host_entrypoint,
+)
 
 
 SCHEMA = "native_g1_team_provider_bundle.v1"
@@ -224,7 +229,8 @@ def verify_g1_team_manifest_binding(manifest: Mapping[str, Any], packet: Mapping
         "objective_id": packet["objective_id"], "delivery_mode": mode,
         "policy_runtime_required": mode != "authenticated_endpoint",
         "private_credential_staging_required": mode == "authenticated_endpoint",
-        "expected_output_filename": RESULT_FILENAME, "runtime_entrypoint": ENTRYPOINT,
+        "expected_output_filename": RESULT_FILENAME,
+        "runtime_entrypoint": ENTRYPOINT if mode == "authenticated_endpoint" else VM_ENTRYPOINT,
         "claim_ceiling": "development_only", "credential_value_included": False,
         "provider_mutation_performed": False,
     }
@@ -268,6 +274,8 @@ def validate_g1_team_provider_manifest(archive: zipfile.ZipFile) -> dict[str, An
         json.loads(archive.read(PACKET_RELATIVE_PATH)), manifest.get("implementation_commit"),
     )
     verify_g1_team_manifest_binding(manifest, packet)
+    verify_host_package_in_bundle(manifest, packet, archive.open)
+    verify_policy_artifact_in_bundle(manifest, packet)
     return manifest
 
 
@@ -275,11 +283,37 @@ def build_g1_team_provider_bundle(
     *, job_dir: Path, execution_packet_path: Path, authority_arguments: Mapping[str, Any],
     scene_packet_root: Path, publisher_source: Path, runtime_source_receipt: Path,
     sonic_asset_dir: Path, expected_implementation_commit: str,
+    host_python_package_root: Path | None = None,
+    staged_policy_artifact_path: Path | None = None,
 ) -> dict[str, Any]:
     """Create one immutable selected-policy transport; never allocate compute."""
 
     packet = _execution_packet(execution_packet_path, expected_implementation_commit)
     _authority_matches(packet, verify_g1_team_policy_authority(**authority_arguments))
+    mode = packet["delivery_mode"]
+    host_package, host_sources, policy_artifact = None, [], None
+    if mode != "authenticated_endpoint":
+        host_package, host_sources = host_package_sources(host_python_package_root, expected_implementation_commit)
+    elif host_python_package_root is not None:
+        raise ValueError("g1_team_bundle_host_package_mode_invalid")
+    if mode == "noncontainer_artifact":
+        from .native_g1_team_artifact_runtime import _archive_members, _MAX_ARCHIVE_BYTES
+        staged = staged_policy_artifact_path or Path(packet["operator_approval"]["runtime_binding"]["staged_artifact_path"])
+        expected_sha = packet["request"]["policy_profile"]["delivery"]["artifact_sha256"]
+        if (not isinstance(staged, Path) or not staged.is_absolute() or staged.resolve() != staged
+                or not staged.is_file() or not 0 < staged.stat().st_size <= _MAX_ARCHIVE_BYTES
+                or _sha256(staged) != expected_sha):
+            raise ValueError("g1_team_bundle_policy_artifact_invalid")
+        with tarfile.open(staged, "r:*") as archive:
+            members, _ = _archive_members(archive)
+            entrypoint = packet["request"]["policy_profile"]["delivery"]["entrypoint"]
+            if not any(member.isfile() and PurePosixPath(member.name).as_posix() == entrypoint for member in members):
+                raise ValueError("g1_team_bundle_policy_artifact_entrypoint_invalid")
+        policy_artifact = {"relative_path": POLICY_ARTIFACT_PATH,
+                           "sha256": expected_sha, "size_bytes": staged.stat().st_size}
+        host_sources += [(POLICY_ARTIFACT_PATH, staged)]
+    elif staged_policy_artifact_path is not None:
+        raise ValueError("g1_team_bundle_policy_artifact_mode_invalid")
     scene, scene_receipt, scene_rows = verify_g1_team_scene_packet(scene_packet_root, packet)
     publisher = verify_g1_publisher_source(publisher_source)
     runtime = verify_native_task_runtime_source_packet(runtime_source_receipt)
@@ -293,6 +327,7 @@ def build_g1_team_provider_bundle(
         raise ValueError("g1_team_bundle_output_invalid")
     sources = [(SCENE_RELATIVE_ROOT + "/" + row["relative_path"], scene / row["relative_path"])
                for row in scene_rows]
+    sources += host_sources
     source_root = publisher_source / "source"
     sources += [("provider_runtime/publisher-source/source/" + path.relative_to(source_root).as_posix(), path)
                 for path in _files(source_root) if path.relative_to(source_root).as_posix() != ".git/config"]
@@ -316,11 +351,12 @@ def build_g1_team_provider_bundle(
             + '[remote "origin"]\n url = ' + SOURCE_REPOSITORY + "\n",
         ENTRYPOINT: _entrypoint(),
     }
+    if mode != "authenticated_endpoint":
+        generated[VM_ENTRYPOINT] = vm_host_entrypoint(expected_implementation_commit)
     artifacts = [{"relative_path": relative, "sha256": _sha256(path), "size_bytes": path.stat().st_size}
                  for relative, path in sources]
     artifacts += [{"relative_path": relative, "sha256": "sha256:" + hashlib.sha256(value.encode()).hexdigest(),
                    "size_bytes": len(value.encode())} for relative, value in generated.items()]
-    mode = packet["delivery_mode"]
     manifest = {
         "schema_version": SCHEMA, "status": "sealed_not_admitted",
         "provider_bundle_kind": PROVIDER_BUNDLE_KIND, "container_image": NATIVE_TASK_ARENA_IMAGE,
@@ -347,7 +383,9 @@ def build_g1_team_provider_bundle(
         },
         "runtime_dependency_license_review": review,
         "contract_python_dependencies": [dependency], "expected_output_filename": RESULT_FILENAME,
-        "runtime_entrypoint": ENTRYPOINT, "claim_ceiling": "development_only",
+        "runtime_entrypoint": ENTRYPOINT if mode == "authenticated_endpoint" else VM_ENTRYPOINT,
+        "host_python_package": host_package, "policy_artifact": policy_artifact,
+        "claim_ceiling": "development_only",
         "credential_value_included": False, "provider_mutation_performed": False,
         "artifacts": sorted(artifacts, key=lambda row: row["relative_path"]),
     }
@@ -363,7 +401,7 @@ def build_g1_team_provider_bundle(
         for relative, value in generated.items():
             info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
             info.create_system = 3
-            info.external_attr = (stat.S_IFREG | (0o755 if relative == ENTRYPOINT else 0o600)) << 16
+            info.external_attr = (stat.S_IFREG | (0o755 if relative in {ENTRYPOINT, VM_ENTRYPOINT} else 0o600)) << 16
             archive.writestr(info, value)
         archive.writestr(MANIFEST, json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     receipt = {**manifest, "bundle_path": str(path), "bundle_size_bytes": path.stat().st_size,
@@ -433,6 +471,9 @@ def read_retained_g1_team_provider_bundle(
     ):
         raise ValueError("g1_team_bundle_packet_binding_invalid")
     verify_g1_team_manifest_binding(manifest, packet)
+    with zipfile.ZipFile(path) as archive:
+        verify_host_package_in_bundle(manifest, packet, archive.open)
+    verify_policy_artifact_in_bundle(manifest, packet)
     layer = manifest["runtime_source_packet"]
     runtime_path = Path(str(layer.get("packet_path") or ""))
     if (
@@ -468,6 +509,8 @@ def main(argv=None) -> int:
                  "scene-packet-root", "publisher-source", "runtime-source-receipt", "sonic-asset-dir"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--host-python-package-root", type=Path)
+    parser.add_argument("--staged-policy-artifact-path", type=Path)
     parser.add_argument("--trusted-client", action="append", required=True)
     args = parser.parse_args(argv)
     receipt = build_g1_team_provider_bundle(
@@ -477,6 +520,8 @@ def main(argv=None) -> int:
         scene_packet_root=args.scene_packet_root, publisher_source=args.publisher_source,
         runtime_source_receipt=args.runtime_source_receipt, sonic_asset_dir=args.sonic_asset_dir,
         expected_implementation_commit=args.implementation_commit,
+        host_python_package_root=args.host_python_package_root,
+        staged_policy_artifact_path=args.staged_policy_artifact_path,
     )
     print(json.dumps({"status": receipt["status"], "bundle_sha256": receipt["bundle_sha256"]}))
     return 0

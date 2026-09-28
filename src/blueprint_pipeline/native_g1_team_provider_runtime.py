@@ -22,6 +22,7 @@ from .native_g1_team_provider_bundle import (
 from .native_g1_publisher_source_stage import verify_g1_publisher_source
 from .native_g1_team_policy_worker import _credential, _execution_packet
 from .native_g1_team_worker_supervisor import run_supervised_g1_team_worker
+from .native_g1_team_vm_bundle_support import verify_host_package_in_bundle, verify_policy_artifact_in_bundle
 
 
 CREDENTIAL_FILE_ENV = "BLUEPRINT_G1_TEAM_CREDENTIAL_FILE"
@@ -56,6 +57,8 @@ def verify_g1_team_sealed_inputs(runtime_root: Path) -> dict[str, Any]:
     )
     packet = _execution_packet(bundle_root / PACKET_RELATIVE_PATH, manifest["implementation_commit"])
     verify_g1_team_manifest_binding(manifest, packet)
+    verify_host_package_in_bundle(manifest, packet, open_artifact)
+    verify_policy_artifact_in_bundle(manifest, packet)
     _, scene, _ = verify_g1_team_scene_packet(bundle_root / SCENE_RELATIVE_ROOT, packet)
     if (scene["receipt_digest"] != manifest["scene_packet_receipt_digest"]
             or scene["arena_scene_plan_digest"] != manifest["scene_plan_digest"]):

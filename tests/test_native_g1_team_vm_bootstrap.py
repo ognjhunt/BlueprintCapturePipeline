@@ -212,6 +212,31 @@ def test_provider_source_is_verified_before_extraction_or_execution(package, tmp
     assert not destination.exists()
 
 
+@pytest.mark.parametrize("fault", [None, "changed", "foreign_root"])
+def test_real_bundle_configuration_root_is_verified_with_sources(tmp_path, fault):
+    provider = tmp_path / "provider_runtime"
+    (provider / "blueprint_pipeline").mkdir(parents=True)
+    source = provider / "blueprint_pipeline/__init__.py"
+    source.write_text("# sealed source\n")
+    config = tmp_path / ("foreign" if fault == "foreign_root" else "configs") / "g1.json"
+    config.parent.mkdir()
+    config.write_text("{}")
+    artifacts = [{"relative_path": path.relative_to(tmp_path).as_posix(),
+                  "sha256": bootstrap._sha(path), "size_bytes": path.stat().st_size}
+                 for path in (source, config)]
+    manifest = {"schema_version": "native_g1_team_provider_bundle.v1",
+                "implementation_commit": COMMIT, "artifacts": artifacts}
+    manifest["manifest_digest"] = bootstrap._digest(manifest)
+    (provider / "native_g1_team_provider_manifest.json").write_text(json.dumps(manifest))
+    if fault == "changed":
+        config.write_text('{"changed":true}')
+    if fault is None:
+        bootstrap._verify_provider_sources(provider, manifest["manifest_digest"], COMMIT)
+    else:
+        with pytest.raises(ValueError):
+            bootstrap._verify_provider_sources(provider, manifest["manifest_digest"], COMMIT)
+
+
 def test_duplicate_manifest_keys_are_rejected_before_asset_use(package):
     root, _, _ = package
     path = root / bootstrap.MANIFEST_NAME

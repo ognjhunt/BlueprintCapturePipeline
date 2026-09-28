@@ -39,6 +39,9 @@ _MAX_FILES = 20_000
 _MAX_ARCHIVE_BYTES = 16 * 1024**3
 _MAX_UNPACKED_BYTES = 32 * 1024**3
 _MIN_FREE_AFTER_EXTRACT = 8 * 1024**3
+BWRAP_REQUIRED_OPTIONS = ("--cap-drop", "--chdir", "--clearenv", "--dev", "--dev-bind", "--die-with-parent",
+                          "--dir", "--gid", "--new-session", "--proc", "--ro-bind", "--ro-bind-fd", "--setenv",
+                          "--tmpfs", "--uid", "--unshare-all", "--unsetenv")
 
 
 def _sha256(path: Path) -> str:
