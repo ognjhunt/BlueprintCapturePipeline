@@ -186,49 +186,72 @@ def _append_journal(stream, name, record):
     return value
 
 
-def _extract_member(archive, info, target, partial, *, root, reserve, disk_usage_provider):
+def _partial_path(meta, name):
+    return meta / (hashlib.sha256(name.encode()).hexdigest() + '.partial')
+
+
+def _prepare_partial(target, partial, expected_size):
     target.parent.mkdir(parents=True, exist_ok=True)
     partial_size = partial.stat().st_size if partial.exists() else 0
     if partial.is_symlink() or (partial.exists() and (not partial.is_file() or partial.stat().st_nlink != 1)):
         raise ProviderOutputIngestionError('provider_output_partial_file_unsafe')
-    if partial_size > info.file_size:
+    if partial_size > expected_size:
         raise ProviderOutputIngestionError('provider_output_partial_file_size_invalid')
-    digest, crc, copied = hashlib.sha256(), 0, 0
-    with archive.open(info) as incoming, partial.open('r+b' if partial.exists() else 'x+b') as sink:
-        while True:
-            chunk = incoming.read(CHUNK_BYTES)
-            if not chunk:
-                break
-            if copied + len(chunk) > info.file_size:
-                raise ProviderOutputIngestionError('provider_output_entry_size_exceeded')
-            retained = min(len(chunk), max(0, partial_size - copied))
-            if retained and sink.read(retained) != chunk[:retained]:
-                raise ProviderOutputIngestionError('provider_output_partial_bytes_mismatch')
-            if retained < len(chunk):
-                _capacity(root, reserve + len(chunk) - retained, disk_usage_provider)
-                sink.write(chunk[retained:])
-            digest.update(chunk)
-            crc = zlib.crc32(chunk, crc)
-            copied += len(chunk)
-        sink.flush()
-        os.fsync(sink.fileno())
-    if copied != info.file_size or crc & 0xffffffff != info.CRC:
-        raise ProviderOutputIngestionError('provider_output_entry_size_or_crc_mismatch')
+    return partial_size
+
+
+class _PartialWriter:
+    """Write one member through its partial file, re-checking bytes a crash left there."""
+
+    def __init__(self, sink, partial_size, expected_size, before_write):
+        self._sink, self._partial_size, self._expected_size = sink, partial_size, expected_size
+        self._before_write = before_write
+        self._digest, self._crc, self._copied = hashlib.sha256(), 0, 0
+
+    def write(self, chunk):
+        if self._copied + len(chunk) > self._expected_size:
+            raise ProviderOutputIngestionError('provider_output_entry_size_exceeded')
+        retained = min(len(chunk), max(0, self._partial_size - self._copied))
+        if retained and self._sink.read(retained) != chunk[:retained]:
+            raise ProviderOutputIngestionError('provider_output_partial_bytes_mismatch')
+        if retained < len(chunk):
+            self._before_write(len(chunk) - retained)
+            self._sink.write(chunk[retained:])
+        self._digest.update(chunk)
+        self._crc = zlib.crc32(chunk, self._crc)
+        self._copied += len(chunk)
+
+    def record(self):
+        self._sink.flush()
+        os.fsync(self._sink.fileno())
+        return {'size_bytes': self._copied, 'sha256': 'sha256:' + self._digest.hexdigest(),
+                'crc32': self._crc & 0xffffffff}
+
+
+def _publish(partial, target):
     if target.exists():
         raise ProviderOutputIngestionError('provider_output_extraction_target_appeared')
     os.rename(partial, target)
-    return {'size_bytes': copied, 'sha256': 'sha256:' + digest.hexdigest(), 'crc32': crc & 0xffffffff}
+
+
+def _extract_member(archive, info, target, partial, *, root, reserve, disk_usage_provider):
+    partial_size = _prepare_partial(target, partial, info.file_size)
+    with archive.open(info) as incoming, partial.open('r+b' if partial.exists() else 'x+b') as sink:
+        writer = _PartialWriter(sink, partial_size, info.file_size,
+                                lambda needed: _capacity(root, reserve + needed, disk_usage_provider))
+        for chunk in iter(lambda: incoming.read(CHUNK_BYTES), b''):
+            writer.write(chunk)
+        record = writer.record()
+    if record['size_bytes'] != info.file_size or record['crc32'] != info.CRC:
+        raise ProviderOutputIngestionError('provider_output_entry_size_or_crc_mismatch')
+    _publish(partial, target)
+    return record
 
 
 @contextmanager
-def _output_lock(root, binding):
-    if root.is_symlink():
-        raise ProviderOutputIngestionError('provider_output_evidence_root_unsafe')
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if any(path.name not in ('.ingestion', 'native') for path in root.iterdir()):
-        raise ProviderOutputIngestionError('provider_output_evidence_root_not_owned')
-    meta = root / '.ingestion'
-    if meta.is_symlink() or (root / 'native').is_symlink():
+def _locked_roots(members, meta, binding_record):
+    """Hold the ingestion lock and bind ``meta`` to ``binding_record`` on first use."""
+    if meta.is_symlink() or members.is_symlink():
         raise ProviderOutputIngestionError('provider_output_evidence_root_unsafe')
     meta.mkdir(exist_ok=True, mode=0o700)
     if any(path.is_symlink() for path in meta.iterdir()):
@@ -241,16 +264,47 @@ def _output_lock(root, binding):
             raise ProviderOutputIngestionError('provider_output_ingestion_already_running') from None
         binding_path = meta / 'binding.json'
         if binding_path.exists():
-            if _json(binding_path) != {'binding_digest': binding['binding_digest']}:
+            if _json(binding_path) != binding_record:
                 raise ProviderOutputIngestionError('provider_output_resume_binding_mismatch')
         else:
-            if (root / 'native').exists() and any((root / 'native').iterdir()):
+            if members.exists() and any(members.iterdir()):
                 raise ProviderOutputIngestionError('provider_output_evidence_root_not_owned')
-            _atomic_json(binding_path, {'binding_digest': binding['binding_digest']})
-        (root / 'native').mkdir(exist_ok=True, mode=0o700)
+            _atomic_json(binding_path, binding_record)
+        members.mkdir(exist_ok=True, mode=0o700)
         yield meta
     finally:
         os.close(descriptor)
+
+
+@contextmanager
+def _output_lock(root, binding):
+    if root.is_symlink():
+        raise ProviderOutputIngestionError('provider_output_evidence_root_unsafe')
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if any(path.name not in ('.ingestion', 'native') for path in root.iterdir()):
+        raise ProviderOutputIngestionError('provider_output_evidence_root_not_owned')
+    with _locked_roots(root / 'native', root / '.ingestion', {'binding_digest': binding['binding_digest']}) as meta:
+        yield meta
+
+
+def _record_failure(meta, result, exc):
+    code = (str(exc) if isinstance(exc, (ProviderOutputIngestionError, ProviderOutputTransportError,
+                                          ProviderOutputInventoryError))
+            else 'provider_output_archive_crc_or_structure_invalid' if isinstance(exc, zipfile.BadZipFile)
+            else 'provider_output_archive_or_io_failed')
+    if not re.fullmatch(r'[a-z0-9_]+', code):
+        code = 'provider_output_ingestion_failed'
+    result.update(status='not_ready' if code == 'provider_output_not_ready' else 'blocked',
+                  blockers=[code], partial_evidence_retained=True, failure_type=type(exc).__name__)
+    failure_path = meta / 'failures.jsonl'
+    if not failure_path.exists() or failure_path.stat().st_size < 4 * 1024**2:
+        with failure_path.open('a') as stream:
+            stream.write(json.dumps({'time_ns': time.time_ns(), 'code': code, 'failure_type': type(exc).__name__}) + '\n')
+
+
+def _write_receipt(meta, result):
+    result['receipt_digest'] = canonical_digest(result, digest_field='receipt_digest')
+    _atomic_json(meta / 'receipt.json', result)
 
 
 def ingest_provider_output(*, binding: dict, signed_get_url_file: str | Path, output_root: str | Path,
@@ -303,7 +357,7 @@ def ingest_provider_output(*, binding: dict, signed_get_url_file: str | Path, ou
                         verified[name] = actual
                         remaining -= info.file_size
                     else:
-                        partial = meta / (hashlib.sha256(name.encode()).hexdigest() + '.partial')
+                        partial = _partial_path(meta, name)
                         if partial.exists() and not partial.is_symlink():
                             remaining -= min(partial.stat().st_size, info.file_size)
                 reserve = binding['minimum_free_bytes'] + max(16 * 1024**2, len(entries) * 1024)
@@ -325,9 +379,8 @@ def ingest_provider_output(*, binding: dict, signed_get_url_file: str | Path, ou
                                 _append_journal(journal, name, verified[name])
                             continue
                         target = _safe_destination(root / 'native', name)
-                        partial = meta / (hashlib.sha256(name.encode()).hexdigest() + '.partial')
-                        record = _extract_member(archive, info, target, partial, root=root, reserve=reserve,
-                                                 disk_usage_provider=disk_usage_provider)
+                        record = _extract_member(archive, info, target, _partial_path(meta, name), root=root,
+                                                 reserve=reserve, disk_usage_provider=disk_usage_provider)
                         _append_journal(journal, name, record)
                         verified[name] = record
                 native = verify_native_inventory(root / 'native', binding, verified)
@@ -341,17 +394,6 @@ def ingest_provider_output(*, binding: dict, signed_get_url_file: str | Path, ou
                     transferred_bytes=remote.transferred_bytes, http_request_count=remote.request_count,
                     member_inventory_digest=inventory['inventory_digest'], native_inventory=native, blockers=[])
         except Exception as exc:
-            code = (str(exc) if isinstance(exc, (ProviderOutputIngestionError, ProviderOutputTransportError, ProviderOutputInventoryError))
-                    else 'provider_output_archive_crc_or_structure_invalid' if isinstance(exc, zipfile.BadZipFile)
-                    else 'provider_output_archive_or_io_failed')
-            if not re.fullmatch(r'[a-z0-9_]+', code):
-                code = 'provider_output_ingestion_failed'
-            result.update(status='not_ready' if code == 'provider_output_not_ready' else 'blocked',
-                          blockers=[code], partial_evidence_retained=True, failure_type=type(exc).__name__)
-            failure_path = meta / 'failures.jsonl'
-            if not failure_path.exists() or failure_path.stat().st_size < 4 * 1024**2:
-                with failure_path.open('a') as stream:
-                    stream.write(json.dumps({'time_ns': time.time_ns(), 'code': code, 'failure_type': type(exc).__name__}) + '\n')
-        result['receipt_digest'] = canonical_digest(result, digest_field='receipt_digest')
-        _atomic_json(meta / 'receipt.json', result)
+            _record_failure(meta, result, exc)
+        _write_receipt(meta, result)
     return result
