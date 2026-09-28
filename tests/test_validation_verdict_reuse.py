@@ -1,10 +1,14 @@
 """Validator verdicts are proven once per operation and once per content change, never trusted blindly."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
+import threading
 
 import pytest
 
@@ -277,3 +281,44 @@ def test_deploy_outside_the_executed_code_keeps_verdicts(tmp_path, persisted_roo
     with file_digest_scope():
         reuse_verdict("t", ("k",), documents, _validator(aside, calls))
     assert calls == [1]  # a change inside the executed code recomputes
+
+
+def test_a_thread_started_during_a_validation_is_not_traced_after_it(monkeypatch):
+    """A worker started inside a validation inherits its tracer through threading.settrace and kept
+    it for life: it re-derived code dependencies for unrelated work after the verdict was returned,
+    and raised into that work once a caller's test double replaced find_spec (2026-09-28 shard 1)."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        during, code = store.executed_code_identity(lambda: pool.submit(sys.gettrace).result())
+        assert during is not None and code is None  # while it ran, the worker was traced and refused persistence
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+        assert pool.submit(store.verdict_root).result() == store.verdict_root()
+        assert pool.submit(sys.gettrace).result() is not during
+
+
+def test_overlapping_validations_in_two_threads_restore_the_thread_hook():
+    """Two dispatcher workers validating at once ended out of order: the first restored the hook it
+    saw, then the second restored the first one's finished tracer as the process-wide hook, which
+    every thread started afterwards inherited."""
+    before = threading.gettrace()
+    first_running, second_running, first_ended = threading.Event(), threading.Event(), threading.Event()
+    waited = {}
+
+    def first():
+        waited["second started"] = store.executed_code_identity(
+            lambda: (first_running.set(), second_running.wait(5))[1])[0]
+        first_ended.set()
+
+    def second():
+        first_running.wait(5)
+        waited["first ended"] = store.executed_code_identity(
+            lambda: (second_running.set(), first_ended.wait(5))[1])[0]
+
+    workers = [threading.Thread(target=first), threading.Thread(target=second)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(10)
+    leaked = threading.gettrace()
+    threading.settrace(before)  # keep a failure here from reaching later tests
+    assert waited == {"second started": True, "first ended": True}  # they overlapped; the first ended first
+    assert leaked is before
