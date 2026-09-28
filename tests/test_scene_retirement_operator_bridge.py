@@ -264,6 +264,17 @@ def test_installed_environment_duplicate_selection_refuses_before_partial_export
     assert 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE' not in __import__('os').environ
 
 
+def test_installed_environment_test_restores_absent_policy_before_other_consumers(tmp_path, monkeypatch):
+    import os
+    key = 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE'
+    # Track even an initially absent key so this RED cannot pollute its own run.
+    monkeypatch.setenv(key, '')
+    monkeypatch.delenv(key)
+    with pytest.MonkeyPatch.context() as scoped:
+        test_installed_environment_reads_only_selected_literal_settings(tmp_path, scoped)
+    assert key not in os.environ
+
+
 def test_installer_stages_the_actual_whole_scene_script():
     root=Path(__file__).resolve().parents[1]
     assert '"$source_dir"/door-scene-lifecycle.sh' in (root/'deploy/operator-door/install.sh').read_text()
