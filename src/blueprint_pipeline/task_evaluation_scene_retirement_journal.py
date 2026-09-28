@@ -15,7 +15,7 @@ from .task_evaluation_scene_retirement_access import _canonical, _close_owned, _
 from .task_evaluation_scene_retirement_authority import TOKEN, raw_digest, raw_reference, load_document
 from .task_evaluation_scene_retirement_generations import _guard, _named, _new_file
 
-EVENTS={'detach_planned','detached','member_removed','retiring','retired','restoring',
+EVENTS={'allowance_reserved','detach_planned','detached','member_removed','retiring','retired','restoring',
         'restore_directory_created','restore_file_created','member_restored','restored-active','kept',
         'leaf_unlink_planned','leaf_unlinked','directory_unlink_planned','directory_unlinked'}
 MAX_EVENTS=10000

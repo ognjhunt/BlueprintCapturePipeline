@@ -14,7 +14,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_scene_retirement_intent_receipt import operation,raw_ref
 
 
-def pending_action(tmp_path,monkeypatch):
+def pending_action(tmp_path,monkeypatch,*,after_generation=False):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
     policy,scope,_,_,_,_,transport=operation(tmp_path,monkeypatch,member_count=2,with_transport=True)
     policy['principals']=[dict(principal_id='operator',actions=['retire'],owner_intent_ids=[scope['intent_id']],private_archive_classes=['host'])]
@@ -34,13 +34,16 @@ def pending_action(tmp_path,monkeypatch):
             dev=info.st_dev,ino=info.st_ino,mode=info.st_mode,state='active',state_sequence=1)
         generation['state_digest']=canonical_digest(generation,digest_field='state_digest')
         path=Path(policy['generation_store'])/(hashlib.sha256(member['canonical_path'].encode()).hexdigest()+'.json')
-        path.write_text(json.dumps(generation));path.chmod(0o600)
+        path.write_text(json.dumps(generation))
+        path.chmod(0o600)
     scope.update(schema_version='scene_retirement_consent.v1',consent_id='a'*32,principal_id='operator',
         retired_journal_raw_ref=None,action='retire',created_at=100,expires_at=999,members=members,
         policy_sha256=raw_ref(policy_path)['sha256'],cohort_sha256=canonical_digest({'consumer_cohort':[]}),
         private_archive_classes=['host'])
     scope['consent_digest']=canonical_digest(scope,digest_field='consent_digest')
-    consent=tmp_path/'resume-consent.json';consent.write_text(json.dumps(scope));consent.chmod(0o600)
+    consent=tmp_path/'resume-consent.json'
+    consent.write_text(json.dumps(scope))
+    consent.chmod(0o600)
     monkeypatch.setattr(engine,'_current_plan',lambda *args: {})
     monkeypatch.setattr(engine,'_resume_current_references',lambda *args: None,raising=False)
     # No assertion of unknown process absence: this test only exercises replay.
@@ -51,12 +54,19 @@ def pending_action(tmp_path,monkeypatch):
         if kwargs['member_index']==0:
             raise OSError('owned test interruption after durable native removal')
         return outcome
-    monkeypatch.setattr(engine,'detach_and_remove',interrupted)
+    original_progress=engine.publish_progress_receipt
+    if after_generation:
+        def interrupted_progress(*args,**kwargs):
+            raise OSError('owned interruption after native removal and generation update')
+        monkeypatch.setattr(engine,'publish_progress_receipt',interrupted_progress)
+    else:
+        monkeypatch.setattr(engine,'detach_and_remove',interrupted)
     result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
     assert result['status']=='incomplete',result
     assert not Path(members[0]['canonical_path']).exists()
     assert Path(members[1]['canonical_path']).exists()
     monkeypatch.setattr(engine,'detach_and_remove',original)
+    monkeypatch.setattr(engine,'publish_progress_receipt',original_progress)
     # Original source-presence assertion is for INITIAL archive readback only;
     # replay validates the exact already-preserved private archive natively.
     def readback(uri):
@@ -89,8 +99,55 @@ def test_public_recovery_cannot_renew_the_original_action_deadline(tmp_path,monk
 def test_public_recovery_never_adopts_new_capture_at_an_old_removed_name(tmp_path,monkeypatch):
     engine,_,scope,consent,_,transport=pending_action(tmp_path,monkeypatch)
     foreign=Path(scope['members'][0]['canonical_path'])
-    foreign.mkdir();(foreign/'new-capture.bin').write_bytes(b'foreign-identity')
+    foreign.mkdir()
+    (foreign/'new-capture.bin').write_bytes(b'foreign-identity')
     result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
     assert result['status']!='retired',result
     assert (foreign/'new-capture.bin').read_bytes()==b'foreign-identity'
     assert Path(scope['members'][1]['canonical_path']).exists()
+
+
+def test_public_recovery_retains_reserved_counts_before_readback(tmp_path,monkeypatch):
+    engine,_,scope,consent,first,transport=pending_action(tmp_path,monkeypatch)
+    initial=json.loads(Path(first['journal_initial_raw_ref']['path']).read_bytes())
+    events=sorted(Path(first['journal_initial_raw_ref']['path']).parent.glob(initial['token']+'.[0-9]*.json'),
+                  key=lambda path:int(path.name.split('.')[1]))
+    reserved=[json.loads(path.read_bytes())['evidence']['action_allowance'] for path in events
+              if json.loads(path.read_bytes())['event']=='allowance_reserved'][-1]
+    assert reserved['counts']['local_bytes']>initial['action_allowance']['counts']['local_bytes']
+    original_consume=engine._consume
+    observations=[]
+    def consume(preserved,transport,allowance):
+        observations.append(dict(allowance.counts))
+        assert allowance._resume_origin['start_monotonic']==initial['action_allowance']['start_monotonic']
+        assert allowance.counts['local_bytes']>=reserved['counts']['local_bytes']
+        assert allowance.counts['remote_bytes']>=reserved['counts']['remote_bytes']+preserved['archive']['size_bytes']
+        return original_consume(preserved,transport,allowance)
+    monkeypatch.setattr(engine,'_consume',consume)
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    assert result['status']=='retired',result
+    assert len(observations)==1
+
+
+def test_public_recovery_handles_durable_retired_generation_before_receipt(tmp_path,monkeypatch):
+    engine,policy,scope,consent,_,transport=pending_action(tmp_path,monkeypatch,after_generation=True)
+    member=scope['members'][0]
+    path=Path(policy['generation_store'])/(hashlib.sha256(member['canonical_path'].encode()).hexdigest()+'.json')
+    before=json.loads(path.read_bytes())
+    assert before['state']=='retired'
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    assert result['status']=='retired',result
+    assert json.loads(path.read_bytes())==before,'replay rewrote an already proved retired generation'
+
+
+def test_public_recovery_cannot_borrow_a_changed_consent(tmp_path,monkeypatch):
+    engine,_,scope,consent,_,transport=pending_action(tmp_path,monkeypatch)
+    value=json.loads(consent.read_bytes())
+    value['created_at']=101
+    value['consent_digest']=canonical_digest(value,digest_field='consent_digest')
+    consent.write_text(json.dumps(value))
+    entered=[]
+    monkeypatch.setattr(engine,'_consume',lambda *args:entered.append('readback'))
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    assert result['status']!='retired',result
+    assert entered==[] and Path(scope['members'][1]['canonical_path']).exists()

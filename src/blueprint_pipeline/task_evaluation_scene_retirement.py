@@ -13,6 +13,7 @@ import os
 import secrets
 import stat
 import time
+import sys
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
@@ -23,10 +24,11 @@ from .task_evaluation_scene_retirement_generations import _write, _sealed
 from .task_evaluation_scene_retirement_journal import SceneJournal
 from .task_evaluation_scene_retirement_mutation import detach_and_remove, inventory_digest, removal_records
 from .task_evaluation_scene_retirement_preservation import ActionAllowance, preserve_members
-from .task_evaluation_scene_retirement_restore import restore_preserved_members, restore_records
+from .task_evaluation_scene_retirement_restore import restore_preserved_members, restore_records, _consume
 from .task_evaluation_scene_retirement_metadata import retain_metadata_closure
 from .task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt, publish_progress_receipt
 from .task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
+from . import task_evaluation_scene_retirement_recovery as recovery
 
 
 _LIFETIME='scene_retirement_lifetime.v1'
@@ -207,6 +209,32 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
     return fresh
 
 
+def _resume_current_references(policy,consent,retained,allowance,now,monotonic):
+    from .control_plane_reference_budget import ReferenceCollectionBudget
+    from .task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    from .task_evaluation_scene_lifecycle_plan import _context
+    from .task_evaluation_scene_lifecycle_references import observe
+    context=retained.get('planner_context')
+    _require(type(context) is dict and policy.get('reference_context')==context,
+             'scene_retirement_installed_context_unproven')
+    _require(retained.get('schema_version')=='task_evaluation_scene_lifecycle_plan.v1'
+             and retained.get('intent_id')==consent['intent_id'], 'scene_retirement_plan_invalid')
+    _installed_cohort(policy,allowance)
+    budget=ReferenceCollectionBudget._for_scene_lifecycle_plan(monotonic=monotonic,time_budget_seconds=30)
+    sink=RetainedEmissionBudget(max_bytes=16*1024*1024,max_rows=10000,max_refs=10000,work_budget=budget)
+    try:
+        _context(context,budget)
+        observation=observe(context,now(),budget,sink)
+        allowance.tick()
+        _require(not observation.get('blockers') and observation.get('child_scopes')
+                 and all(row.get('complete') is True for row in observation['child_scopes']),
+                 'scene_retirement_reference_scope_unproven')
+        _require(not observation.get('record_dispositions') and not observation.get('protections'),
+                 'scene_retirement_reference_closure_unproven')
+    finally:
+        budget.close()
+
+
 def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance,restore_context=None):
     result=_kept(reason,journal=journal,members=outcomes)
     if journal is None or pending is None:
@@ -229,6 +257,34 @@ def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance,res
     return result
 
 
+def _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance,*,resumed=False):
+    preserved=initial['preserved']
+    closure=initial['metadata_closure_raw_ref']
+    token=journal.token
+    removed=recovery.removed_inode_counts(journal) if resumed else {}
+    for index,generation in enumerate(generations):
+        allowance.tick()
+        outcome=detach_and_remove(preserved,member_index=index,generation_id=generation['generation_id'],
+                  journal=journal,removed_inodes=removed)
+        outcomes.append(outcome)
+        if generation['state']!='retired':
+            generations[index]=_transition(policy,generation,state='retired',token=token,
+                    journal_ref=outcome['event_raw_ref'])
+        pending=publish_progress_receipt(policy,consent,pending,dict(status='retiring',token=token,
+            intent_id=consent['intent_id'],members=list(outcomes),last_event_raw_ref=journal.prior_ref),allowance)
+    snapshot=journal.retired_snapshot(dict(initial,status='retired',members=consent['members'],
+                   outcomes=outcomes,generations=generations))
+    receipt=dict(schema_version='scene_retirement_receipt.v1',status='retired',intent_id=consent['intent_id'],
+        token=token,members=outcomes,retired_journal_raw_ref=snapshot,fresh_remote_readback_verified=True,
+        removed_allocated_bytes=sum(row['removed_allocated_bytes'] for row in outcomes),
+        logical_bytes=sum(row['logical_bytes'] for row in outcomes),
+        planned_unique_allocated_bytes=preserved['unique_allocated_bytes'],
+        metadata_closure_raw_ref=closure)
+    receipt['intent_receipt_raw_ref']=publish_terminal_receipt(policy,consent,pending,receipt,allowance)
+    receipt['intent_receipt_path']=receipt['intent_receipt_raw_ref']['path']
+    return receipt
+
+
 def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic=time.monotonic):
     journal=None
     pending=None
@@ -248,6 +304,23 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             current=load_authority(consent_path,action='retire',now=now)
             _require(current==authority,'scene_retirement_policy_changed')
             retained=selected_document(consent['plan_raw_ref'],maximum=16*1024*1024)
+            resumed=recovery.select_retirement(policy,authority,allowance)
+            if resumed is not None:
+                journal,pending,initial=resumed
+                recovery.bind_original_allowance(journal,initial,allowance)
+                _resume_current_references(policy,consent,retained,allowance,now,monotonic)
+                generations=recovery.resumed_generations(sys.modules[__name__],policy,consent,journal,initial)
+                recovery.reserve_phase(journal,initial['preserved'],readback=True)
+                _consume(initial['preserved'],transport,allowance)
+                recovery.reserve_phase(journal,initial['preserved'])
+                for index,generation in enumerate(generations):
+                    if generation['state'] in {'active','restored-active'}:
+                        event=journal.append('retiring',member_key=str(index),evidence={
+                            'generation_id':generation['generation_id'],
+                            'inventory_sha256':consent['members'][index]['inventory_sha256']})
+                        generations[index]=_transition(policy,generation,state='retiring',token=journal.token,
+                            journal_ref=event,inventory_sha256=consent['members'][index]['inventory_sha256'])
+                return _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance,resumed=True)
             _current_plan(policy,consent,retained,allowance,now,monotonic)
             generations=[]
             for member in consent['members']:
@@ -271,7 +344,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 intent_raw_ref=consent['intent_raw_ref'],plan_raw_ref=consent['plan_raw_ref'],
                 consent_raw_ref=authority['consent_raw_ref'],policy_sha256=consent['policy_sha256'],
                 cohort_sha256=consent['cohort_sha256'],status='pending',members=consent['members'],
-                generations=generations,preserved=preserved,metadata_closure_raw_ref=closure)
+                generations=generations,preserved=preserved,metadata_closure_raw_ref=closure,
+                action_allowance=allowance.checkpoint())
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
             pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
             def complete_records():
@@ -285,32 +359,13 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                     with _opened(Path(consent['members'][index]['canonical_path']).parent,directory=True) as (_,info):
                         yield from removal_records(preserved,index,generation['generation_id'],journal,_identity(info))
             journal.preflight(complete_records())
+            recovery.reserve_phase(journal,preserved)
             for index,generation in enumerate(generations):
                 event=journal.append('retiring',member_key=str(index),evidence={
                     'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][index]['inventory_sha256']})
                 generations[index]=_transition(policy,generation,state='retiring',token=token,journal_ref=event,
                     inventory_sha256=consent['members'][index]['inventory_sha256'])
-            removed={}
-            for index,generation in enumerate(generations):
-                allowance.tick()
-                outcome=detach_and_remove(preserved,member_index=index,generation_id=generation['generation_id'],
-                                          journal=journal,removed_inodes=removed)
-                outcomes.append(outcome)
-                generations[index]=_transition(policy,generation,state='retired',token=token,
-                                                journal_ref=outcome['event_raw_ref'])
-                pending=publish_progress_receipt(policy,consent,pending,dict(status='retiring',token=token,
-                    intent_id=consent['intent_id'],members=list(outcomes),last_event_raw_ref=journal.prior_ref),allowance)
-            snapshot=journal.retired_snapshot(dict(initial,status='retired',members=consent['members'],
-                                                   outcomes=outcomes,generations=generations))
-            receipt=dict(schema_version='scene_retirement_receipt.v1',status='retired',intent_id=consent['intent_id'],
-                token=token,members=outcomes,retired_journal_raw_ref=snapshot,fresh_remote_readback_verified=True,
-                removed_allocated_bytes=sum(row['removed_allocated_bytes'] for row in outcomes),
-                logical_bytes=sum(row['logical_bytes'] for row in outcomes),
-                planned_unique_allocated_bytes=preserved['unique_allocated_bytes'],
-                metadata_closure_raw_ref=closure)
-            receipt['intent_receipt_raw_ref']=publish_terminal_receipt(policy,consent,pending,receipt,allowance)
-            receipt['intent_receipt_path']=receipt['intent_receipt_raw_ref']['path']
-            return receipt
+            return _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance)
     except access.SceneRetirementAccessError as error:
         code=str(error) if str(error).startswith('scene_retirement_') and len(str(error))<=128 else 'scene_retirement_action_unproven'
         return _partial_result(code,journal,outcomes,policy,consent,pending,allowance)
