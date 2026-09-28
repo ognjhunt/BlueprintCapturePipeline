@@ -1,8 +1,13 @@
 """Protected administrative owner intent; no target-generation or action authority."""
 from __future__ import annotations
 
+import errno
 import math
+import os
 import re
+import stat
+from pathlib import Path
+from typing import NamedTuple
 
 from . import control_plane_lane_scratch_decisions as retained
 from .decision_evidence_contracts import canonical_digest
@@ -232,3 +237,162 @@ def _build_consent(*, census_bytes, annotation_bytes, census_sha256, census_size
         inventory_count=validation['decision_count'], selected_count=len(pairs), scope=_SCOPE, decisions=pairs,
         execution_authorized=False, target_generation_bound=False, requires_fresh_reference_check=True, mutations=0)
     return _seal(record, budget)
+
+
+class _Acquired(NamedTuple):
+    fd: int
+    parent: int
+    name: str
+    info: object
+
+
+def _metadata(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _protected(info, *, directory=False, mode=None):
+    _require(info.st_uid == 0 and not info.st_mode & 0o022
+             and (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+             and (directory or info.st_nlink == 1)
+             and (mode is None or stat.S_IMODE(info.st_mode) == mode), 'owner_consent_store_unsafe')
+
+
+class _Files:
+    """Invocation-owned descriptors; no finalizer consults an expired budget."""
+    def __init__(self, budget, *, raw_cap=None):
+        self.budget, self.raw_cap = budget, raw_cap
+        self.owned, self.edges, self.records = {}, [], []
+        self.unresolved = 0
+
+    def slot(self):
+        self.budget.tick()
+        _require(len(self.owned) < MAX_DESCRIPTOR_COUNT, 'owner_consent_resource_exhausted')
+
+    def adopt(self, fd):
+        # Register ownership before the first identity call; do not guess on failure.
+        self.owned[fd] = None
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            self.owned.pop(fd, None)
+            self.unresolved += 1
+            raise OwnerCensusConsentError('owner_consent_descriptor_ownership_unproven') from None
+        self.owned[fd] = (info.st_dev, info.st_ino)
+        return info
+
+    def open(self, name, flags, *, parent=None, mode=0o600):
+        self.slot()
+        try:
+            fd = os.open(name, flags, mode, dir_fd=parent)
+        except OSError as exc:
+            code = "owner_consent_store_unsafe" if exc.errno in (errno.ELOOP, errno.ENOTDIR) else "owner_consent_io_failed"
+            raise OwnerCensusConsentError(code) from None
+        self.adopt(fd)
+        return fd
+
+    def close(self, fd):
+        expected = self.owned.get(fd)
+        if expected is None:
+            return
+        for _ in range(2):
+            try:
+                info = os.fstat(fd)
+            except OSError as exc:
+                if exc.errno == errno.EBADF:
+                    self.owned.pop(fd, None)
+                    return
+                continue
+            if (info.st_dev, info.st_ino) != expected:
+                self.owned.pop(fd, None)
+                self.unresolved += 1
+                return
+            try:
+                os.close(fd)
+            except OSError:
+                continue
+            self.owned.pop(fd, None)
+            return
+
+    def finish(self):
+        for fd in list(self.owned):
+            self.close(fd)
+        _require(not self.unresolved, 'owner_consent_descriptor_ownership_unproven')
+        _require(not self.owned, 'owner_consent_descriptor_cleanup_failed')
+
+    def parent(self, path, *, protected=False):
+        text = os.fspath(path)
+        try:
+            retained._path(text, _work_budget=self.budget)
+        except (retained.CensusDecisionError, UnicodeError):
+            raise OwnerCensusConsentError('owner_consent_options_invalid') from None
+        self.budget.charge('roots')
+        fd = self.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        if protected:
+            _protected(os.fstat(fd), directory=True)
+        for name in Path(text).parts[1:-1]:
+            self.budget.charge('entries')
+            child = self.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, parent=fd)
+            info = os.fstat(child)
+            if protected:
+                _protected(info, directory=True)
+            self.edges.append((fd, name, child, (info.st_dev, info.st_ino)))
+            fd = child
+        return fd, Path(text).name
+
+    def read_bytes(self, fd, cap):
+        pieces, size = [], 0
+        while True:
+            self.budget.tick()
+            remaining = self.budget.limits['raw_bytes'] - self.budget.counts['raw_bytes']
+            if self.raw_cap is not None:
+                remaining = min(remaining, self.raw_cap - self.budget.counts['raw_bytes'])
+            _require(remaining > 0, 'owner_consent_resource_exhausted')
+            amount = min(65536, cap + 1 - size, remaining)
+            _require(amount > 0, 'owner_consent_resource_exhausted')
+            self.budget.available('raw_bytes', amount)
+            part = os.read(fd, amount)
+            self.budget.tick()
+            if not part:
+                break
+            self.budget.charge('raw_bytes', len(part))
+            size += len(part)
+            _require(size <= cap, 'owner_consent_resource_exhausted')
+            pieces.append(part)
+        self.budget.tick()
+        return b''.join(pieces)
+
+    def read(self, path, *, cap, protected=False, mode=None):
+        parent, name = self.parent(path, protected=protected)
+        fd = self.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, parent=parent)
+        before = os.fstat(fd)
+        _require(stat.S_ISREG(before.st_mode), 'owner_consent_store_unsafe')
+        if protected:
+            _protected(before, mode=mode)
+        _require(0 <= before.st_size <= cap, 'owner_consent_resource_exhausted')
+        record = _Acquired(fd, parent, name, before)
+        raw = self.read_bytes(fd, cap)
+        _require(len(raw) == before.st_size and _metadata(os.fstat(fd)) == _metadata(before),
+                 'owner_consent_record_changed')
+        self.budget.charge('entries')
+        self.records.append(record)
+        self.verify_record(record)
+        return raw, record
+
+    def verify_record(self, record):
+        self.budget.tick()
+        _require(_metadata(os.fstat(record.fd)) == _metadata(record.info)
+                 and _metadata(os.stat(record.name, dir_fd=record.parent, follow_symlinks=False))
+                 == _metadata(record.info), 'owner_consent_record_changed')
+        self.budget.tick()
+
+    def verify(self):
+        for parent, name, fd, expected in self.edges:
+            self.budget.charge('entries')
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            opened = os.fstat(fd)
+            _require((named.st_dev, named.st_ino) == expected == (opened.st_dev, opened.st_ino)
+                     and stat.S_ISDIR(named.st_mode), 'owner_consent_record_changed')
+        for record in self.records:
+            self.budget.charge('entries')
+            self.verify_record(record)

@@ -66,7 +66,20 @@ def _bound(value: int) -> int:
 
 
 @contextmanager
-def _opened_parent(path: Path):
+def _opened_parent(path: Path, *, _work_budget=None, _descriptors=None):
+    if _work_budget is not None:
+        from .control_plane_lane_owner_consents import _Files, _require
+        own = _descriptors is None
+        files = _Files(_work_budget) if own else _descriptors
+        _require(type(files) is _Files and files.budget is _work_budget, "owner_consent_options_invalid")
+        try:
+            yield files.parent(path)
+        finally:
+            if own:
+                files.finish()
+        return
+    if _descriptors is not None:
+        _refuse("census_input_unsafe")
     if ".." in Path(path).parts:
         _refuse("census_input_unsafe")
     absolute = Path(os.path.abspath(path))
@@ -80,9 +93,24 @@ def _opened_parent(path: Path):
         yield directory, absolute.name
 
 
-def read_census_input_record(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> tuple[bytes, tuple[int, int]]:
+def read_census_input_record(path: Path, *, max_bytes: int = MAX_JSON_BYTES,
+                             _work_budget=None, _descriptors=None) -> tuple[bytes, tuple[int, int]]:
     """Read bounded input bytes and retain their inode identity for artifact alias checks."""
     limit = _bound(max_bytes)
+    if _work_budget is not None:
+        from .control_plane_lane_owner_consents import _Files, _require
+        own = _descriptors is None
+        files = _Files(_work_budget) if own else _descriptors
+        _require(type(files) is _Files and files.budget is _work_budget, "owner_consent_options_invalid")
+        try:
+            raw, acquired = files.read(path, cap=limit)
+            files.verify()
+            return raw, (acquired.info.st_dev, acquired.info.st_ino)
+        finally:
+            if own:
+                files.finish()
+    if _descriptors is not None:
+        _refuse("census_input_unsafe")
     try:
         with _opened_parent(path) as (directory, name):
             descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -122,9 +150,11 @@ def read_census_input_record(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> 
         raise CensusDecisionError(code) from exc
 
 
-def read_census_input(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> bytes:
+def read_census_input(path: Path, *, max_bytes: int = MAX_JSON_BYTES,
+                      _work_budget=None, _descriptors=None) -> bytes:
     """Read a bounded regular input through no-follow ancestor descriptors."""
-    return read_census_input_record(path, max_bytes=max_bytes)[0]
+    return read_census_input_record(path, max_bytes=max_bytes, _work_budget=_work_budget,
+                                    _descriptors=_descriptors)[0]
 
 
 def write_census_validation_report(path: Path, payload: bytes, *, input_paths, input_identities) -> None:
