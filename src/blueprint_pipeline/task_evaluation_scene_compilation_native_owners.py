@@ -223,11 +223,12 @@ def inventory(context):
             sources += owner_sources
             sources += context.provenance(dict(v[1], json_pointer='/request/authorization/scene_owner_attempt',
                 seal_field='owner_attempt_digest', seal_digest=owner['owner_attempt_digest']) for v in versions[1:])
-            matched_profiles, supported_results = False, True
+            matched_profiles, supported_results, supported_profiles = False, True, True
             for result in results.get(name, []):
                 supported_results = supported_results and context.supported(result)
                 profile_rows = profiles.get((result[0]['profile_id'], result[0]['profile_digest']), [])
                 for profile in profile_rows:
+                    supported_profiles = supported_profiles and context.supported(profile)
                     c.require(profile[0]['source_commit'] == request['expected_production_commit']
                         and all(profile[0].get(k) == owner[k] for k in OWNER_FIELDS - {'scene_attempt_binding'})
                         and isinstance(profile[0].get('scene_attempt_binding'), dict)
@@ -242,6 +243,6 @@ def inventory(context):
                 context.member(c.child(context.roots['activation_output_root'], request['activation_id']), 'native_activation_workspace',
                     {'activation_id': request['activation_id'], 'intent_id': context.intent_id, 'attempt_id': owner['scene_attempt_id']}, sources)
             observations.append(c.observation(envelope, kind='native_owner', owner_metadata_binding_verified=bound,
-                profile_metadata_binding_verified=bool(matched_profiles) and bound and supported_results, source_provenance=sources,
+                profile_metadata_binding_verified=bool(matched_profiles) and bound and supported_results and supported_profiles, source_provenance=sources,
                 configured_payload_to_runtime_bundle_equivalence_verified=False))
     return observations

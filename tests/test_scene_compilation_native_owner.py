@@ -282,3 +282,41 @@ def test_reused_native_activation_result_extension_cannot_promote_profile():
     args['bridge_records']['native_activation_results'] = []
     result = api().join_retained_scene_compilation_native_owner_inventory(**args)
     assert not next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')['profile_metadata_binding_verified']
+
+
+def rebind_profile(args, edit):
+    change(args, 'launch_profiles', edit, 'profile_digest', family='downstream_records')
+    profile = json.loads(args['downstream_records']['launch_profiles'][0][1])
+    change(args, 'native_activation_results', {'profile_digest': profile['profile_digest']}, 'result_digest')
+
+
+def test_reused_launch_profile_outer_extension_is_retained_without_new_profile_promotion():
+    args = fixture()
+    rebind_profile(args, {'future_writer_extension': {'keeps_until_owner_approval': True}})
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    row = next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')
+    assert row['owner_metadata_binding_verified']
+    assert not row['profile_metadata_binding_verified']
+    profile_path, profile_bytes = args['downstream_records']['launch_profiles'][0]
+    obligation = next(r for r in result['structural_join_obligations']
+        if r['role'] == 'launch_profiles' and r['reason'] == 'unsupported_retained_field_set')
+    assert any(p['path'] == profile_path and p['sha256'] == 'sha256:'+hashlib.sha256(profile_bytes).hexdigest()
+        for p in obligation['source_provenance'])
+    assert any(p['role'] == 'launch_profiles' and p['path'] == profile_path for p in row['source_provenance'])
+
+
+def test_reused_launch_profile_outer_extension_does_not_hide_known_owner_contradiction():
+    args = fixture()
+    rebind_profile(args, {'future_writer_extension': True, 'scene_attempt_id': 'foreign'})
+    refuses(args)
+
+
+def test_reused_launch_profile_supported_optional_wrappers_preserve_nested_open_payloads():
+    args = fixture()
+    rebind_profile(args, {'runtime_environment': {'producer_defined_key': 'retained'},
+        'standing_launch_authorization': {'producer_defined_key': True},
+        'manifest_publication': {'producer_defined_key': True}})
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')['profile_metadata_binding_verified']
+    assert not any(r['role'] == 'launch_profiles' and r['reason'] == 'unsupported_retained_field_set'
+        for r in result['structural_join_obligations'])

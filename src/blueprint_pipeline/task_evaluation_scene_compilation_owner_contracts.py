@@ -40,6 +40,15 @@ NATIVE_ACTIVATION_REQUEST_FIELDS = {'activation_id', 'authorization', 'capture_s
     'episode_interpretation_source_rights_admission', 'expected_production_commit', 'intake_id', 'lane', 'lineage',
     'preparation', 'release_window', 'requested_mutations', 'run_kind', 'schema_version', 'team_namespace'}
 FIELD_SETS = {
+    # Shared live-profile skeleton/control surface plus native/scene lane
+    # owner fields and dispatcher-defined optional wrappers. No nested policy
+    # or runtime validation is introduced by this retained metadata bridge.
+    'launch_profiles': {'schema_version', 'profile_id', 'profile_digest', 'program_id', 'source_commit', 'claim_ceiling',
+        'allocator', 'execution_admission', 'evaluation_run_spec', 'source_bundle', 'immutable_inputs', 'runtime_environment',
+        'reconciliation', 'required_controls', 'terminal_contract', 'webapp_sync', 'standing_launch_authorization',
+        'manifest_publication', 'scene_intent_digest', 'scene_attempt_id', 'scene_attempt_binding', 'native_policy_binding',
+        'task_evaluation_run', 'policy_run_setup', 'internal_policy_canary_setup', 'internal_policy_canary_execution_plan',
+        'prelaunch_skill_plan', 'same_goal_spend_lineage'},
     'native_preparation_envelopes': {'schema_version', 'request_digest', 'request', 'submitted_by', 'submitted_at_iso',
         'provider_mutation_performed_inside_intake', 'catalog_mutation_performed_inside_intake', 'envelope_digest'},
     'native_activation_envelopes': {'schema_version', 'request_digest', 'request', 'submitted_by', 'submitted_at_iso',
