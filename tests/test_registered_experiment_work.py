@@ -1,6 +1,10 @@
 """Real owned descriptor work keeps metadata phases separate from payload IO."""
 import pytest
 
+from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
+from tests.test_registered_experiment_retirement_flow import retirement_installation  # noqa: F401
+from tests.test_registered_experiment_issuer import installation  # noqa: F401
+
 
 def test_long_payload_keeps_old_budget_closed_and_original_fd_guards(tmp_path):
     from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
@@ -60,3 +64,43 @@ def test_declared_metadata_phase_cannot_be_repeated_to_extend_deadline(tmp_path)
     finally:
         files.finish()
         files.budget.close()
+
+
+def test_immutable_event_publication_releases_only_its_original_fds(tmp_path, root_metadata):
+    import json
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
+    destination = tmp_path/'events'
+    destination.mkdir(mode=0o700)
+    files = _ActionFiles()
+    try:
+        parent, _ = files.parent(destination/'e-00000.json', protected=True)
+        original = set(files.owned)
+        for index in range(32):
+            raw = json.dumps({'index': index}).encode()
+            selected = actions._publish(files, parent, f'e-{index:05d}.json', raw, kind='event')
+            assert selected['size_bytes'] == len(raw)
+            assert set(files.owned) == original
+        assert len(tuple(destination.iterdir())) == 32
+    finally:
+        files.finish()
+        files.budget.close()
+
+
+def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_installation, monkeypatch):
+    from tests.test_registered_experiment_retirement_flow import _born_scratch, _issue_action, _gc
+    from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
+    grant, _, target = _born_scratch(retirement_installation)
+    for index in range(32):
+        (target/f'member-{index:02d}').write_bytes(b'x')
+    action = _issue_action(retirement_installation, grant)
+    phases = []
+    original = _ActionFiles.phase
+    def observe(files, name):
+        phases.append(name)
+        return original(files, name)
+    monkeypatch.setattr(_ActionFiles, 'phase', observe)
+    report = _gc(retirement_installation)
+    outcome = next(row for row in report['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
+    assert outcome['decision'] == 'retired', outcome
+    assert phases.count('removal_batch') == 3
