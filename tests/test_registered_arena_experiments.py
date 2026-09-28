@@ -328,3 +328,33 @@ def test_fixed_root_recovery_cli_selects_original_tag_only(monkeypatch):
     )
     assert result == {} and called[0][0] == "r33"
     assert called[0][1]["installed_config_path"] == root.INSTALLED_CONFIG_PATH
+
+
+def test_arena_shell_does_not_reuse_expired_admission_budget(retirement_installation, monkeypatch):
+    import subprocess
+    from blueprint_pipeline import control_plane_arena_scratch as arena
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+
+    setup = retirement_installation
+    birth(setup, _arena(setup))
+    monkeypatch.setattr(consumer, "AUTHORITY_ROOT", setup[2].parents[1] / "experiment-authority")
+    monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
+    script = setup[0].parent / "installed-chain.sh"
+    script.write_bytes(b"#!/bin/bash\nexit 0\n")
+    script.chmod(0o644)
+    monkeypatch.setattr(arena, "REGISTERED_CHAIN_PATH", script)
+    clock = [0.0]
+    original = ReferenceCollectionBudget.__init__
+
+    def init(self, **kwargs):
+        original(self, **(kwargs | {"monotonic": lambda: clock[0]}))
+
+    monkeypatch.setattr(ReferenceCollectionBudget, "__init__", init)
+
+    def child(argv, **kwargs):
+        clock[0] = 6.0
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", child)
+    assert arena.run_registered_arena_chain("r33", previous_tag="r32", now=lambda: 1102) == 0
