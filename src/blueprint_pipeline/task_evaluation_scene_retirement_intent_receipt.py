@@ -226,6 +226,43 @@ def publish_pending_receipt(policy, consent, journal, preserved, allowance):
     return _publish(directory, NAME, raw, allowance)
 
 
+def _measured_members(policy, pending, snapshot, outcomes, allowance):
+    _require(type(outcomes) is list and len(outcomes) == len(pending['members'])
+             and snapshot.get('outcomes') == outcomes, 'scene_retirement_receipt_members_invalid')
+    measured = []
+    fields = ('logical_bytes', 'apparent_bytes', 'unique_allocated_bytes',
+              'removed_allocated_bytes', 'removed_file_count')
+    for index, (selected, outcome) in enumerate(zip(pending['members'], outcomes)):
+        allowance.tick()
+        _require(type(outcome) is dict and outcome.get('outcome') == 'removed'
+                 and all(outcome.get(key) == selected[key]
+                         for key in ('canonical_path', 'generation_id', 'inventory_sha256')),
+                 'scene_retirement_receipt_members_invalid')
+        _require(all(type(outcome.get(key)) is int and 0 <= outcome[key] < 2**63 for key in fields)
+                 and outcome['removed_allocated_bytes'] <= outcome['unique_allocated_bytes']
+                 and outcome['apparent_bytes'] == outcome['logical_bytes']
+                 and outcome.get('allocation_method') == 'observed_file_st_blocks_512_last_union_link_unlinked',
+                 'scene_retirement_receipt_members_invalid')
+        event_ref = raw_reference(outcome['event_raw_ref'])
+        _require(Path(event_ref['path']).parent == Path(policy['journal_store'])
+                 and event_ref['size_bytes'] <= MAX_BYTES, 'scene_retirement_receipt_event_invalid')
+        allowance.tick()
+        event = selected_document(event_ref, maximum=MAX_BYTES, protected=True)
+        sequence = event.get('sequence')
+        _require(type(sequence) is int and 1 <= sequence <= 10000
+                 and Path(event_ref['path']).name == pending['retiring_token'] + '.' + str(sequence) + '.json'
+                 and event.get('schema_version') == 'scene_retirement_journal_event.v1'
+                 and event.get('event_digest') == canonical_digest(event, digest_field='event_digest')
+                 and event.get('token') == pending['retiring_token']
+                 and event.get('event') == 'member_removed' and event.get('member_key') == str(index)
+                 and event.get('evidence') == {key: value for key, value in outcome.items() if key != 'event_raw_ref'},
+                 'scene_retirement_receipt_event_invalid')
+        measured.append(dict(selected, action='offloaded', outcome='removed',
+                             **{key: outcome[key] for key in fields},
+                             allocation_method=outcome['allocation_method'], event_raw_ref=event_ref))
+    return measured
+
+
 def publish_terminal_receipt(policy, consent, pending_raw_ref, receipt, allowance):
     """Advance exact pending projection only after the immutable retired snapshot."""
     directory = _location(policy, consent, allowance)
@@ -251,14 +288,10 @@ def publish_terminal_receipt(policy, consent, pending_raw_ref, receipt, allowanc
     _require(snapshot.get('status') == 'retired' and snapshot.get('token') == receipt['token']
              and snapshot.get('intent_id') == consent['intent_id'] and snapshot.get('members') == consent['members'],
              'scene_retirement_restore_snapshot_invalid')
-    outcomes = receipt['members']
-    _require(type(outcomes) is list and len(outcomes) == len(pending['members']))
-    expected_paths = {row['canonical_path'] for row in pending['members']}
-    _require({row['canonical_path'] for row in outcomes} == expected_paths
-             and all(row.get('outcome') == 'removed' for row in outcomes), 'scene_retirement_receipt_members_invalid')
+    members = _measured_members(policy, pending, snapshot, receipt['members'], allowance)
     value = {key: item for key, item in pending.items() if key != 'receipt_digest'}
     value.update(status='retired', pending_receipt_raw_ref=history_ref, retired_journal_raw_ref=snapshot_ref,
-                 members=[dict(row, action='offloaded', outcome='removed') for row in pending['members']])
+                 members=members)
     value['receipt_digest'] = canonical_digest(value, digest_field='receipt_digest')
     raw = _encode(value)
     with _opened(directory / NAME) as (prior_fd, current):
