@@ -618,7 +618,9 @@ class SceneConfigurationOutputAdmission:
             else self._covered_before_output + int(self.hold.sample() or 0)
         )
         remaining = 0 if held is None else max(0, held - int(used or 0))
-        growth = max(0, requirement["required_bytes"] - remaining)
+        # A zip the extractor refuses before writing a member needs no room.
+        writes = requirement["extraction_bytes"] > 0
+        growth = max(0, requirement["required_bytes"] - remaining) if writes else 0
         record: dict[str, Any] = {
             "schema_version": EXTRACTION_SCHEMA_VERSION,
             "status": "ready",
@@ -632,15 +634,19 @@ class SceneConfigurationOutputAdmission:
             "hold_bytes_remaining": remaining,
             "growth_bytes": growth,
             "growth_reservation": None,
+            "observed_free_bytes": None,
             "archive_durable": self.archive_durable,
             "blockers": [],
         }
-        if growth:
-            blocker = self._take_growth(growth, record)
-            if blocker:
-                # Nothing is extracted; the durable zip stays here for recovery.
-                record.update(status="blocked", blockers=[blocker])
-                return {}, [blocker], record
+        blocker = self._take_growth(growth, record) if growth else None
+        if writes and blocker is None:
+            # The ledger can only account for ledger writers: re-read the
+            # volume itself, even when the hold alone covers the extraction.
+            blocker = self._recheck_free(destination.parent, record)
+        if blocker:
+            # Nothing is extracted; the durable zip stays here for recovery.
+            record.update(status="blocked", blockers=[blocker])
+            return {}, [blocker], record
         result, blockers = arguments["extractor"](
             archive_path,
             destination,
@@ -648,6 +654,17 @@ class SceneConfigurationOutputAdmission:
             diagnostic_only=bool(arguments.get("diagnostic_only", False)),
         )
         return result, blockers, record
+
+    def _recheck_free(self, directory: Path, record: dict[str, Any]) -> str | None:
+        try:
+            free = self._disk_usage(directory).free
+        except (OSError, TypeError, ValueError) as exc:
+            record["measurement_error_type"] = type(exc).__name__
+            return ADMISSION_UNAVAILABLE_BLOCKER
+        if type(free) is not int or free < 0:
+            return ADMISSION_UNAVAILABLE_BLOCKER
+        record["observed_free_bytes"] = free
+        return EXTRACTION_BUDGET_EXCEEDED_BLOCKER if free < record["required_bytes"] else None
 
     def _take_growth(self, growth: int, record: dict[str, Any]) -> str | None:
         try:

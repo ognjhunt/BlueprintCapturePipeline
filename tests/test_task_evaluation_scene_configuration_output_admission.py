@@ -1249,6 +1249,61 @@ def test_extraction_refusal_blocks_with_the_archive_durable(tmp_path, monkeypatc
     assert _history(lane.ledger)[-1]["outcome"] == "blocked"
 
 
+def test_extraction_rechecks_the_volume_even_inside_the_hold(tmp_path, monkeypatch) -> None:
+    """The volume filled while the provider ran: the hold still covers the
+    extraction on the ledger, but the disk itself has no room. The run blocks
+    with a typed code before extracting, not with an invalid-zip error."""
+
+    lane = _harness(tmp_path, monkeypatch)
+    lane.behaviour["free_after_adapter"] = 1
+
+    result = lane.run()
+
+    assert result["status"] == "blocked"
+    assert admission.EXTRACTION_BUDGET_EXCEEDED_BLOCKER in result["blockers"]
+    assert "scene_configuration_provider_output_zip_invalid" not in result["blockers"]
+    assert _event_names(lane.events) == [("publish", "vast_provider_runtime_output.zip")]
+    extraction = result["provider_output_disk_capacity"]["before_extraction"]
+    assert extraction["growth_bytes"] == 0 and extraction["growth_reservation"] is None
+    assert extraction["observed_free_bytes"] == 1
+    assert result["provider_output_archive_durable"] is True
+    assert _ledger_rows(lane.ledger) == []
+
+
+def test_an_archive_the_extractor_refuses_needs_no_room(tmp_path, monkeypatch) -> None:
+    """No member will be written, so no growth is reserved and a full disk
+    does not replace the extractor's own typed refusal."""
+
+    gate = admission.open_scene_configuration_output_admission(
+        job=tmp_path / "job", receipt={},
+        read_envelope=lambda _r: {"request": {"scene": {"website_native_inputs": {"x": 1}}}},
+        expected_upload_bytes=SMALL_UPLOAD, diagnostic_only=False, retain_warm_session=False,
+        api_pretraining=False, cpu_prestage=False, disk_usage_provider=_Volume(0),
+        environment={admission.OUTPUT_ADMISSION_ENV: "measured",
+                     "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT": str(tmp_path / "ledger")},
+    )
+    monkeypatch.setattr(admission, "_publish_provider_output_archive", lambda **_kwargs: (
+        {}, {"status": "completed", "all_artifacts_remote_verified": True}, tmp_path / "index"))
+    archive = tmp_path / "vast_provider_runtime_output.zip"
+    archive.write_bytes(b"not a zip archive")
+    extracted: list[Path] = []
+
+    def extractor(path, _destination, **_kwargs):  # type: ignore[no-untyped-def]
+        extracted.append(path)
+        return {}, ["scene_configuration_provider_output_zip_invalid"]
+
+    _result, blockers, record = gate.extract(
+        lambda *_a, **_k: pytest.fail("ceiling extraction"), archive, tmp_path / "immutable_execution",
+        maximum_archive_bytes=SMALL_UPLOAD, extractor=extractor, diagnostic_only=False,
+    )
+
+    assert extracted == [archive]
+    assert blockers == ["scene_configuration_provider_output_zip_invalid"]
+    assert record["extraction_bytes"] == 0 and record["growth_bytes"] == 0
+    assert record["observed_free_bytes"] is None
+    assert not (tmp_path / "ledger").exists()
+
+
 def test_an_archive_that_outgrows_the_hold_extracts_under_a_growth_reservation(
     tmp_path, monkeypatch
 ) -> None:
