@@ -34,6 +34,8 @@ SCHEMA = "control_plane_needed_cache_creation_intent.v1"
 MARKER = ".needed-cache-birth.v1.json"
 _STORE_LOCK = ".cache-store.lock"
 _DEFAULT_CONFIG = "/etc/blueprint-operator-door/door.json"
+_PUBLIC_REGISTRATION = Path("/var/lib/blueprint-operator-door/needed-checkpoint-cache-registration")
+_PUBLIC_INVENTORY = Path("/opt/blueprint/control-plane-config-tools/operator-door-source/configs/g1_humanoidarena_checkpoint_inventory.v1.json")
 _REGISTERED_ROOTS = (Path("/mnt/blueprint-work/lanes"),
                      Path("/var/lib/blueprint/task-evaluation-inputs/lanes"))
 _QUANTUM = 1024 * 1024
@@ -310,11 +312,14 @@ class NeededCheckpointCacheUse:
 
 class _PayloadFiles:
     """Retain named originals; unknown first tokens and reused numbers stay foreign."""
-    def __init__(self):
+    def __init__(self, initial_budget=None):
+        self.initial_budget = initial_budget
         self.owned, self.bindings = {}, {}
         self.unresolved = 0
 
     def proof(self, fd):
+        if self.initial_budget is not None:
+            self.initial_budget.tick()
         expected = self.owned.get(fd)
         _require(expected is not None, "needed_cache_descriptor_unproven")
         info = os.fstat(fd)
@@ -337,6 +342,8 @@ class _PayloadFiles:
         raise NeededCheckpointCacheError("needed_cache_resource_exhausted")
 
     def open(self, parent, name, flags, *, mode=0o640):
+        if self.initial_budget is not None:
+            self.initial_budget.tick()
         _require(len(self.owned) < 104, "needed_cache_descriptor_limit")
         if parent is not None:
             self.location(parent)
@@ -485,6 +492,21 @@ def _read_layout(files, config_path):
                 private=Path(config.needed_checkpoint_cache_record_store), config=config)
 
 
+def _public_reader_layout(files, target):
+    """Fixed accessible installation, not private config or environment capability."""
+    target = Path(target)
+    root = _REGISTERED_ROOTS[0]
+    _require(target.parent == root / "g1-checkpoint", "needed_cache_target_invalid")
+    public, inventory = Path(_PUBLIC_REGISTRATION), Path(_PUBLIC_INVENTORY)
+    parent, _ = files.parent(public / "record.json", protected=True)
+    info = os.fstat(parent)
+    _require(info.st_uid == info.st_gid == 0 and stat.S_IMODE(info.st_mode) == 0o755,
+             "needed_cache_registration_unsafe")
+    files.parent(inventory, protected=True)
+    return dict(root=root, public=public, authority=public / "authority", inventory=inventory,
+                private=None, config=None)
+
+
 def _retain_source_records(files, payload, records):
     selected = set()
     for record in records:
@@ -512,12 +534,18 @@ def _retain_source_records(files, payload, records):
 def _open_registered(cls, root, *, mode="read", installed_config_path=_DEFAULT_CONFIG,
                      now=time.time, monotonic=time.monotonic):
     _require(cls is NeededCheckpointCacheUse and mode in ("read", "fill"), "needed_cache_use_invalid")
+    origin = monotonic()
+    _require(type(origin) in (int, float) and math.isfinite(origin), "needed_cache_clock_invalid")
     files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000, monotonic=monotonic))
-    payload = _PayloadFiles()
+    payload = _PayloadFiles(files.budget)
     result = None
     try:
         # Preflight current authority completes before an existing target SH acquisition.
-        layout = _read_layout(files, installed_config_path)
+        if mode == "read" and os.fspath(installed_config_path) == _DEFAULT_CONFIG:
+            layout = _public_reader_layout(files, root)
+        else:
+            _require(os.geteuid() == 0, "needed_cache_root_required")
+            layout = _read_layout(files, installed_config_path)
         _, gid = _blueprint_identity()
         head, authority, _ = _current_projection(files, layout["authority"], gid)
         target = Path(root)
@@ -570,13 +598,17 @@ def _open_registered(cls, root, *, mode="read", installed_config_path=_DEFAULT_C
         result._rows, result._inventory, result._gid, result._mode = rows, inventory, gid, mode
         result._authority_epoch, result._authority_version = head["authority_epoch_id"], head["version"]
         result._writer, result._now, result._monotonic = writer, now, monotonic
-        result._origin = result._last = monotonic()
+        result._origin = result._last = origin
         _require(type(result._origin) in (int, float) and math.isfinite(result._origin), "needed_cache_clock_invalid")
         result._deadline, result._failure = result._origin + 4*3600, None
         result._lock, result._counts, result._windows = threading.RLock(), {}, {}
         result._checks, result._health, result._reservation = 0, None, None
         result._resources = derive_checkpoint_flow_resources(inventory, "stage_miss" if mode == "read" else "fill")
+        result._initial_budget = files.budget
         result.check()
+        files.budget.tick()
+        result._initial_budget = None
+        payload.initial_budget = None
         return result
     except (OSError, ValueError) as exc:
         if result is not None:
@@ -618,7 +650,7 @@ def _use_check(self):
                          "needed_cache_source_changed")
             if self._health is not None:
                 self._health.check()
-            with _metadata(self._monotonic) as files:
+            with _metadata(self._monotonic, _budget=getattr(self, "_initial_budget", None)) as files:
                 head, current, _ = _current_projection(files, self._layout["authority"], self._gid)
                 _require(head["authority_epoch_id"] == self._authority_epoch
                          and head["version"] >= self._authority_version, "needed_cache_authority_rollback")
@@ -652,8 +684,9 @@ def _use_check(self):
 
 
 @contextmanager
-def _metadata(monotonic=time.monotonic):
-    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000, monotonic=monotonic))
+def _metadata(monotonic=time.monotonic, *, _budget=None):
+    budget = _budget if _budget is not None else ReferenceCollectionBudget(values_limit=10000, monotonic=monotonic)
+    files = _BirthFiles(budget)
     try:
         files.budget.tick()
         yield files
@@ -661,7 +694,8 @@ def _metadata(monotonic=time.monotonic):
         try:
             files.finish()
         finally:
-            files.budget.close()
+            if _budget is None:
+                files.budget.close()
 
 
 def _use_row(self, path):
