@@ -95,3 +95,31 @@ def test_actual_sixteen_expired_experiments_retire_two_per_tick_without_rebindin
     assert seen == set(selected)
     assert _gc(setup)["registered_experiments"]["outcomes"] == []
     assert peaks and max(peaks) < 128
+
+
+def test_authentic_new_registration_is_attributed_by_existing_usage_survey(retirement_installation):
+    from blueprint_pipeline.control_plane_disk_usage import survey_usage
+    from tests.test_control_plane_disk_usage import _statvfs
+
+    setup = retirement_installation
+    grant = issue(setup)
+    born = birth(setup, grant)
+    target = Path(born["path"])
+    (target / "result.bin").write_bytes(b"bounded attributed result")
+    volume = Path(setup[1]["lane_scratch_work_root"]).parent
+    survey = survey_usage(
+        [str(volume)],
+        aliases={str(volume): "/mnt/blueprint-work"},
+        statvfs=_statvfs(),
+        mountinfo=str(setup[0].parent / "missing-mountinfo"),
+    )
+    assert survey["status"] == "complete"
+    assert any(
+        row["owner"] == "lane:g1"
+        and row["storage_class"] == "lane_scratch"
+        and row["allocated_bytes"] > 0
+        for row in survey["top_owners"]
+    )
+    assert not any(
+        row["root"].endswith("/" + target.name) for row in survey["orphan_scratch_roots"]
+    )
