@@ -22,6 +22,7 @@ MAX_FACTS = 20_000
 MAX_ROOTS = 16
 MAX_PATH_BYTES, MAX_PATH_COMPONENTS = 4096, 64
 MAX_CONTRACT_PATH_BYTES = 1024
+MAX_OUTPUT_INTEGER_BITS = 4096
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -280,6 +281,10 @@ class _Interpretation:
         if isinstance(value, bool):
             return 4 if value else 5
         if type(value) is int:
+            # Captured stat integers are supplied provenance, not authority.
+            # Refuse enormous integers before allocating a decimal string.
+            if value.bit_length() > MAX_OUTPUT_INTEGER_BITS:
+                raise _Blocked("reference_output_limit")
             try:
                 return len(str(value))
             except ValueError:

@@ -64,6 +64,22 @@ def test_root_length_refusal_precedes_slicing(monkeypatch):
         subject.interpret_preparation_activation_references([subject.ReferenceFamilyContract("preparation", SliceSpy("/too-long"))], [])
 
 
+def test_extreme_observed_integer_is_fixed_resource_refusal_without_raw_decimal_text():
+    row = record()
+    row = replace(row, observed_identity=(10 ** 5000, 1, len(row.raw_bytes), 0, 0))
+    result = observe(row)
+    assert result.blockers == ("reference_output_limit",)
+    assert not result.records and not result.complete_supplied_supported_projection
+
+
+def test_integer_bit_budget_precedes_decimal_size_allocation(monkeypatch):
+    row = record()
+    monkeypatch.setattr(subject, "MAX_OUTPUT_INTEGER_BITS", 64)
+    result = observe(replace(row, observed_identity=(1 << 65, 1, len(row.raw_bytes), 0, 0)))
+    assert result.blockers == ("reference_output_limit",)
+    assert not result.records
+
+
 def test_invalid_later_decoded_string_precedes_any_hash_or_canonical_encoding(monkeypatch):
     first = record()
     second = replace(first, row_path=first.row_path.replace("materialized", "pending"), raw_bytes=b'{"bad":"\\ud800"}')
