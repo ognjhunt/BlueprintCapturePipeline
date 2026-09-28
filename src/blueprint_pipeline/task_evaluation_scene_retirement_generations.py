@@ -87,26 +87,39 @@ def _birth_gate(parent, key, *, parent_identity):
 def _write(parent, name, value, *, parent_identity, replace=False):
     raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
     _require(len(raw) <= 65536)
+    _guard(parent,parent_identity)
+    store_info=os.fstat(parent)
+    owner=(store_info.st_uid,store_info.st_gid)
+    _require(all(type(value) is int and 0 <= value < 2**32-1 for value in owner))
+    def named():
+        _guard(parent,parent_identity)
+        current=os.fstat(parent)
+        _require((current.st_uid,current.st_gid)==owner,'scene_retirement_generation_changed')
+        _named(parent,parent_identity,temporary,fd,identity)
     temporary = '.' + secrets.token_hex(16) + '.pending'
     fd, identity = _new_file(parent, temporary, parent_identity=parent_identity)
     placed = False
     try:
         view = memoryview(raw)
         while view:
-            _named(parent, parent_identity, temporary, fd, identity)
+            named()
             written = os.write(fd, view)
             _require(written > 0)
             view = view[written:]
-        _named(parent, parent_identity, temporary, fd, identity)
+        named()
+        os.fchown(fd,*owner)
+        named()
+        _require((os.fstat(fd).st_uid,os.fstat(fd).st_gid)==owner)
+        named()
         os.fsync(fd)
-        _named(parent, parent_identity, temporary, fd, identity)
+        named()
         if replace:
             # Only producer metadata under the exact birth gate; never payload
             # restoration. Recheck the prior destination if present as well.
             os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
         else:
             os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
-            _named(parent, parent_identity, temporary, fd, identity)
+            named()
             os.unlink(temporary, dir_fd=parent)
         placed = True
         _guard(parent, parent_identity)
@@ -119,7 +132,7 @@ def _write(parent, name, value, *, parent_identity, replace=False):
         cleanup_failure = None
         if not placed:
             try:
-                _named(parent, parent_identity, temporary, fd, identity)
+                named()
                 os.unlink(temporary, dir_fd=parent)
             except FileNotFoundError:
                 pass

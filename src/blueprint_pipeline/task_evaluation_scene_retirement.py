@@ -83,7 +83,9 @@ def _transition(policy, prior, *, state, token, journal_ref, inventory_sha256=No
         value.update(zip(('dev','ino','mode'),identity))
     value=_sealed(value)
     with _opened(store,directory=True) as (fd,info):
-        _require(stat.S_IMODE(info.st_mode)==0o700 and info.st_uid==os.geteuid())
+        _require(stat.S_IMODE(info.st_mode)==0o700
+                 and (info.st_uid,info.st_gid)==access._service_identity(),
+                 'scene_retirement_service_identity_unproven')
         # Global EX excludes every enrolled SH birth/publisher; immutable history
         # and the exact prior value are checked before updating this projection.
         _write(fd,key+'.'+value['generation_id']+'.'+str(value['state_sequence'])+'.'+state+'.json',

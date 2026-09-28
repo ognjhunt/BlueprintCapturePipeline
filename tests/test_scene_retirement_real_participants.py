@@ -42,6 +42,7 @@ def access_fixture(tmp_path, monkeypatch):
     monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(policy))
     # Authority is a current-user hermetic fixture, never a production override.
     monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
+    monkeypatch.setattr(access, '_SERVICE_IDENTITY', (os.getuid(),os.getgid()))
     return access, value, member
 
 

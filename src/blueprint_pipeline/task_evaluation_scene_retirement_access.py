@@ -19,6 +19,7 @@ from pathlib import Path
 from .decision_evidence_contracts import canonical_digest
 
 _POLICY_UID = 0
+_SERVICE_IDENTITY = None
 _MAX_JSON_BYTES = 64 * 1024
 _POLICY_KEYS = {'schema_version', 'enabled', 'policy_id', 'roots', 'coordinator_path',
                 'generation_store', 'journal_store', 'consumer_cohort', 'principals',
@@ -64,6 +65,19 @@ def _open_owned(name, flags, *, dir_fd=None):
         _close_owned(fd, expected)
         raise
     return fd, observed
+
+
+def _service_identity():
+    if _SERVICE_IDENTITY is not None:
+        identity=_SERVICE_IDENTITY
+    else:
+        import pwd
+        import grp
+        identity=(pwd.getpwnam('blueprint').pw_uid,grp.getgrnam('blueprint').gr_gid)
+    _require(type(identity) is tuple and len(identity)==2 and all(
+        type(value) is int and 0<=value<2**32-1 for value in identity),
+        'scene_retirement_service_identity_unproven')
+    return identity
 
 
 def _canonical(path):
