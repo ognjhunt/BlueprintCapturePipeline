@@ -855,6 +855,15 @@ def _sdk_closure(packages, tools):
              and row.get('source') == {'editable': '.'}]
     _require(len(roots) == 1)
     selected, todo = {}, list(roots[0].get('dependencies', ()))
+    # These declared CPU runtime roots are imported by actual control-plane
+    # services/guards. Model/GPU operators remain in their separate workers.
+    runtime = roots[0].get('optional-dependencies', {}).get('runtime')
+    if runtime is not None:
+        _require(type(runtime) is list)
+        cpu = {'opencv-python-headless', 'build123d', 'pycollada', 'trimesh'}
+        edges = [edge for edge in runtime if edge['name'] in cpu]
+        _require(len(edges) <= 128 and {edge['name'] for edge in edges} == cpu)
+        todo.extend(edges)
     _require(todo)
     seen_edges = 0
     while todo:
