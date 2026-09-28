@@ -3535,6 +3535,7 @@ def test_two_different_files_still_cannot_share_one_source_claim(
 
 
 
+@pytest.mark.usefixtures("_single_threaded_verdict_persistence")
 def test_immutable_input_digest_is_reused_by_stat_identity_and_fails_closed_on_changed_bytes(tmp_path, monkeypatch):
     """2026-09-13: publication and dispatch re-read a 1.2 GB bundle at every step although it never moved."""
     from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
