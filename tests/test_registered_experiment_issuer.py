@@ -48,6 +48,10 @@ def installation(tmp_path, monkeypatch, root_metadata):  # noqa: F811
     monkeypatch.setattr(consumer, 'LANE_ROOTS', (Path(settings['lane_scratch_work_root']), Path(settings['lane_scratch_inputs_root'])))
     monkeypatch.setattr(owners, "INSTALLED_PACKAGE_ROOT", package.parent)
     monkeypatch.setattr(os, "geteuid", lambda: 0)
+    # This hermetic root-metadata fixture does not claim kernel boot proof.
+    # Mandatory distinct-UID Linux acceptance bypasses this fixture entirely.
+    from blueprint_pipeline import control_plane_lane_experiment_work as work
+    monkeypatch.setattr(work, '_controller_boot_id', lambda files: '12345678-1234-1234-1234-123456789abc')
     return config, settings, store, policy
 
 

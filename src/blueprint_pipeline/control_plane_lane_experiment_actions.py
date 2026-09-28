@@ -29,6 +29,50 @@ _ACTION_FIELDS = frozenset({"schema_version", "intent_id", "action_id", "issuer_
     "generation", "birth", "target_identity", "lease", "completion", "manifest", "action",
     "issued_at_epoch", "expires_at_epoch", "policy", "action_digest"})
 _METADATA = frozenset({scratch.LEASE_FILE, ".registered-experiment.v1.json"})
+_ISSUE_SELECTION_SCHEMA = 'control_plane_lane_experiment_issue_selection.v1'
+
+
+def _issue_selection(files, config, entry, authority, store, *, principal, owner, action, expiry):
+    """ONE protected current-authority operation, selected before any new UUID."""
+    intent_raw, intent_record = files.read(Path(config.experiment_record_store) / (entry['intent_id'] + '.json'),
+                                          cap=32768, protected=True, mode=0o600)
+    intent = retained._document(intent_raw, 32768, _work_budget=files.budget)
+    _require(set(intent) == birth_code._INTENT_FIELDS
+             and intent['intent_digest'] == canonical_digest(intent, digest_field='intent_digest')
+             and all(intent[key] == entry[key] for key in ('intent_id', 'generation', 'owner', 'root', 'lane', 'name')),
+             'experiment_issue_selection_invalid')
+    expected = dict(schema_version=_ISSUE_SELECTION_SCHEMA, intent_id=entry['intent_id'],
+                    intent=issuance._selector(intent_raw, files.budget), generation=entry['generation'],
+                    birth=entry['birth'], target_identity=entry['target_identity'], lease=entry['lease'],
+                    current_authority=authority, policy=files._issue_policy, principal=principal,
+                    owner=owner, action=action, expires_at_epoch=expiry)
+    _require(_valid_digest(authority['sha256']), 'experiment_issue_selection_invalid')
+    name = entry['intent_id'] + '.issue-selection-' + authority['sha256'][7:] + '.json'
+    files.location(store)
+    try:
+        os.stat(name, dir_fd=store, follow_symlinks=False)
+    except FileNotFoundError:
+        operation_id = secrets.token_hex(16)
+        _require(owners._matches(operation_id, owners._CONSENT_ID) and operation_id != entry['intent_id'],
+                 'experiment_issue_selection_invalid')
+        controller = files.controller()
+        value = expected | dict(operation_id=operation_id, controller=controller)
+        raw = _encoded(value, 'selection_digest', 4096)
+        _publish(files, store, name, raw, kind='issue_selection')
+    else:
+        raw, record = files.read(Path(config.experiment_record_store) / name, cap=4096, protected=True, mode=0o600)
+        value = retained._document(raw, 4096, _work_budget=files.budget)
+        _require(set(value) == set(expected) | {'operation_id', 'controller', 'selection_digest'}
+                 and all(value[key] == part for key, part in expected.items())
+                 and owners._matches(value['operation_id'], owners._CONSENT_ID)
+                 and value['operation_id'] != entry['intent_id']
+                 and value['selection_digest'] == canonical_digest(value, digest_field='selection_digest'),
+                 'experiment_issue_selection_invalid')
+        files.verify_record(record)
+    files.verify_record(intent_record)
+    files.verify()
+    files.bind_controller(value['controller'])
+    return value['operation_id']
 
 
 def _publish(files, *args, **kwargs):
@@ -326,16 +370,19 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         owners._authorize(decision, policy, expires_at_epoch, issued)
         policy_selector = issuance._selector(policy_raw, files.budget)
         _require(current[1]["policy"] == policy_selector, "experiment_policy_changed")
+        store = issuance._store(files, config.experiment_record_store)
+        issuance._capacity(files, store, adding_registration=False)
+        files._issue_policy = policy_selector
+        action_id = _issue_selection(files, config, entry, current[0]['record'], store,
+            principal=principal, owner=owner, action=action, expiry=expires_at_epoch)
         files.phase('manifest')
         manifest = _manifest(files, target, target_fd, binding=entry, hash_payload=False)
         files.budget.measure(manifest, cap=1048576 - 100)
         _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
         files.phase('finalize')
         manifest_raw = _encoded(manifest, "manifest_digest", 1048576)
-        action_id = secrets.token_hex(16)
         _require(owners._matches(action_id, owners._CONSENT_ID) and action_id != intent_id,
                  "experiment_action_invalid")
-        store = issuance._store(files, config.experiment_record_store)
         occupied = issuance._capacity(files, store, adding_registration=False)
         _require(occupied + len(manifest_raw) + 8 * 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES,
                  "experiment_store_full")

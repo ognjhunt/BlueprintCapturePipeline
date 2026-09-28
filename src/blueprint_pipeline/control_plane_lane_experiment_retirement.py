@@ -30,6 +30,7 @@ _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
 _STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|retiring-head|retired-head))?\.json\Z")
+_ISSUE_SELECTION_NAME = re.compile(r'[0-9a-f]{32}\.issue-selection-[0-9a-f]{64}\.json\Z')
 _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
@@ -144,14 +145,15 @@ def _capacity(files, parent, *, adding_registration=True):
                 _require(info.st_size == 0, "experiment_store_unsafe")
                 continue
             match = _STORE_NAME.fullmatch(item.name)
-            _require(match is not None, "experiment_store_unsafe")
+            selection = _ISSUE_SELECTION_NAME.fullmatch(item.name) is not None
+            _require(match is not None or selection, "experiment_store_unsafe")
             records += 1
-            if match.group(2) is None:
+            if match is not None and match.group(2) is None:
                 count += 1
             total += info.st_size
             _require(records <= MAX_EXPERIMENT_REGISTRATIONS * 12
                      and count <= MAX_EXPERIMENT_REGISTRATIONS - int(adding_registration)
-                     and 0 < info.st_size <= (1048576 if match.group(2) in ("manifest", "stage-manifest", "payload-manifest") else _MAX_INTENT)
+                     and 0 < info.st_size <= (4096 if selection else 1048576 if match.group(2) in ("manifest", "stage-manifest", "payload-manifest") else _MAX_INTENT)
                      and total <= MAX_EXPERIMENT_STORE_BYTES,
                      "experiment_store_full")
     files.budget.tick()

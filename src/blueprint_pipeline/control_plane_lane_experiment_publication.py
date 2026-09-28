@@ -18,6 +18,7 @@ from .control_plane_lane_owner_target_io import _TargetFiles, _typed
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _require
 
 _NAMES = {
+    "issue_selection": r"[0-9a-f]{32}\.issue-selection-[0-9a-f]{64}\.json",
     "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|reservation|retiring-head|retired-head|lease-transition))?\.json",
     "manifest": r"[0-9a-f]{32}\.(?:(?:stage|payload)-)?manifest\.json",
     "event": r"e-[0-9]{5}\.json",
@@ -29,9 +30,9 @@ _NAMES = {
     "lease": r"\.lane-scratch\.v1\.json",
     "marker": r"\.registered-experiment\.v1\.json",
 }
-_MODES = dict(manifest=0o600, event=0o600, private=0o600, birth=0o640, authority=0o640, head=0o640,
+_MODES = dict(issue_selection=0o600, manifest=0o600, event=0o600, private=0o600, birth=0o640, authority=0o640, head=0o640,
               lease=0o600, marker=0o600, certificate=0o640, bootstrap=0o640)
-_CAPS = dict(manifest=1048576, event=32768, private=32768, birth=32768, authority=32768, head=4096,
+_CAPS = dict(issue_selection=4096, manifest=1048576, event=32768, private=32768, birth=32768, authority=32768, head=4096,
              lease=8192, marker=4096, certificate=8192, bootstrap=32768)
 
 
