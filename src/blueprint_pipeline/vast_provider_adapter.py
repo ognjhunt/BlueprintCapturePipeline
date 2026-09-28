@@ -7132,6 +7132,7 @@ def run_vast_provider_adapter(
     expected_provider_upload_bytes: int = 0,
     expected_provider_bundle_sha256: str | None = None,
     provider_output_minimum_free_bytes: int = 0,
+    provider_output_collector: Callable[..., Mapping[str, Any]] | None = None,
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -8936,7 +8937,7 @@ def run_vast_provider_adapter(
         # A missing log marker must never erase the worker's diagnostic result.
         preclassification_transfer = None
         if enable_blueprint_bundle and onstart_logs.get("output_probe_observed"):
-            transfer = _download_provider_output_with_capacity_guard(
+            transfer = (provider_output_collector or _download_provider_output_with_capacity_guard)(
                 url=_string(provider_output_get_url),
                 output_path=output_zip_path,
                 minimum_free_bytes=provider_output_minimum_free_bytes,
@@ -9365,8 +9366,9 @@ def run_vast_provider_adapter(
             # so an output the workload may well have uploaded would never have
             # been fetched. The object's presence is stronger evidence than a
             # line claiming it was written.
+            remote_transfer: Mapping[str, Any] = {}
             if _string(provider_output_get_url):
-                transfer = preclassification_transfer or _download_provider_output_with_capacity_guard(
+                transfer = preclassification_transfer or (provider_output_collector or _download_provider_output_with_capacity_guard)(
                     url=_string(provider_output_get_url),
                     output_path=output_zip_path,
                     minimum_free_bytes=provider_output_minimum_free_bytes,
@@ -9378,6 +9380,7 @@ def run_vast_provider_adapter(
                     }
                 )
                 if transfer["status"] == "completed":
+                    remote_transfer = transfer if transfer.get("delivery") == "remote_only" else {}
                     output_download_manifest.update(
                         {
                             "status": "completed",
@@ -9473,9 +9476,9 @@ def run_vast_provider_adapter(
                 r"BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:([^\s]+)",
                 heartbeat_text,
             )
-            output_zip_inspection = _inspect_provider_runtime_output_zip(
+            output_zip_inspection = _mapping(remote_transfer.get("inspection")) or _inspect_provider_runtime_output_zip(
                 output_zip_path,
-                video_extract_dir=resolved_job_dir / "vast_provider_runtime_output_videos",
+                video_extract_dir=None if provider_output_collector else resolved_job_dir / "vast_provider_runtime_output_videos",
                 expected_video_count=_provider_expected_video_count(provider_bundle_kind),
             )
             output_zip_received = output_zip_inspection.get("zip_present") is True
@@ -9540,7 +9543,7 @@ def run_vast_provider_adapter(
             runtime_result = _mapping(output_zip_inspection.get("runtime_result"))
             runtime_result_status = _string(runtime_result.get("status"))
             expected_provider_video_count = _provider_expected_video_count(provider_bundle_kind)
-            structured_policy_canary = _inspect_structured_policy_canary_output(output_zip_path)
+            structured_policy_canary = _mapping(remote_transfer.get("structured_policy_canary")) or _inspect_structured_policy_canary_output(output_zip_path)
             structured_policy_canary_passed = _structured_policy_canary_runtime_passed(
                 runtime_result,
                 structured_policy_canary,
@@ -9609,6 +9612,7 @@ def run_vast_provider_adapter(
                     "provider_output_get_url_present": bool(_string(provider_output_get_url)),
                     "provider_output_download_manifest": output_download_manifest,
                     "provider_runtime_output_zip_inspection": output_zip_inspection,
+                    **({"provider_output_remote_observation": dict(remote_transfer["remote_object"])} if remote_transfer else {}),
                     "runtime_result_status": runtime_result_status or None,
                     "runtime_result_blockers": _string_list(runtime_result.get("blockers")),
                     "blueprint_provider_bundle_execution_proven": provider_status == "completed",
