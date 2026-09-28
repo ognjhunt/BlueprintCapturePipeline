@@ -624,6 +624,9 @@ def test_a_member_swapped_while_it_is_packed_fails_publication(tmp_path, monkeyp
     def racing(directory, members):
         for path, relative in real_listed(directory, members):
             if relative == "provider/outputs.zip":
+                # The listed inode stays allocated, so the replacement cannot reuse its number (Linux
+                # reuses a freed inode number at once) and pass as the planned file.
+                os.link(target, tmp_path / "held-outputs.zip")
                 target.unlink()
                 if swap == "symlink":
                     target.symlink_to(tmp_path / "secret.zip")

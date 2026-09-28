@@ -606,12 +606,15 @@ def test_a_queue_row_swapped_after_its_lstat_fails_the_strict_read(tmp_path, mon
     row = queue / "pending" / "row.json"
     row.write_text('{"name": "named"}', encoding="utf-8")
     (tmp_path / "elsewhere.json").write_text('{"name": "elsewhere"}', encoding="utf-8")
-    os.link(row, tmp_path / "held.json")  # the listed inode stays allocated, so a new file cannot reuse it
+    held = iter(range(8))
     real_lstat = Path.lstat
 
     def lstat_then_swap(self):
         observed = real_lstat(self)
         if self == row and stat.S_ISREG(observed.st_mode):
+            # Every swapped-out inode stays allocated, so no new file can reuse its number (Linux
+            # reuses a freed inode number at once), on the first read and on the read once more.
+            os.link(row, tmp_path / f"held-{next(held)}.json")
             row.unlink()
             if swap == "fifo":
                 os.mkfifo(row)
