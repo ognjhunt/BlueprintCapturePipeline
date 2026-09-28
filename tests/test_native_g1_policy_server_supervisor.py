@@ -205,3 +205,32 @@ def test_unowned_listener_fails_and_reaps_child(tmp_path, monkeypatch) -> None:
             popen_factory=lambda argv, **kwargs: process,
         )
     assert process.terminated is True
+
+
+@pytest.mark.parametrize("policy_type,compile_model,expected", [
+    ("pi05", True, 600), ("pi05", False, 30), ("diffusion", True, 30),
+])
+def test_supervisor_binds_reviewed_compilation_first_inference_allowance(
+    tmp_path, monkeypatch, policy_type, compile_model, expected,
+):
+    args = _launch_inputs(tmp_path, monkeypatch)
+    config = tmp_path / "checkpoints/small/model/config.json"
+    config.write_text(json.dumps({"type": policy_type, "compile_model": compile_model}))
+    process = _Process()
+    received = []
+    def client_factory(**kwargs):
+        received.append(kwargs)
+        return _Client(base_url=kwargs["base_url"])
+    args["client_factory"] = client_factory
+    lease = supervisor.start_g1_policy_server(
+        **args, owner_reader=lambda port: {process.pid},
+        popen_factory=lambda argv, **kwargs: process,
+    )
+    assert received[0].get("first_inference_timeout_seconds", 30) == expected
+    assert lease.receipt["inference_timeout_policy"] == {
+        "schema_version": "native_g1_policy_inference_timeout_policy.v1",
+        "policy_type": policy_type, "compile_model": compile_model,
+        "first_inference_timeout_seconds": expected, "steady_timeout_seconds": 30,
+        "automatic_retries": 0,
+    }
+    assert lease.close()["status"] == "child_exited"
