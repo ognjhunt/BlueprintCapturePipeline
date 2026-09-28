@@ -17,7 +17,7 @@ def test_scene_factory_is_fresh_exact_type_with_fixed_initial_policy():
     budget = Budget._for_scene_lifecycle_plan(monotonic=clock)
     assert type(budget) is Budget
     assert budget.monotonic is clock and budget.duration == 30
-    assert budget.limits['values'] == 1_000_000
+    assert budget.limits['values'] == 2_000_000
     native = Budget(monotonic=clock)
     assert native.duration == 5 and native.limits['values'] == 100_000
     assert {k: v for k, v in budget.limits.items() if k != 'values'} == {k: v for k, v in native.limits.items() if k != 'values'}
@@ -208,3 +208,20 @@ def test_exhausted_root_cap_refuses_child_emission_before_growth(cap):
     assert budget.counts['rows'] == before[2]['rows']
     assert budget.counts['output_bytes'] == before[2]['output_bytes']
     assert child.work_budget is root.work_budget is budget
+
+
+def test_scene_complete_value_allowance_refuses_next_collection_before_callback():
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import _work_items
+    entered = []
+    budget = Budget._for_scene_lifecycle_plan(monotonic=lambda: 0)
+    budget.charge('values', 2_000_000)
+    def next_item():
+        entered.append(True)
+        yield {'must_not_allocate': True}
+    with pytest.raises(ReferenceCollectionBudgetError, match='^reference_values_limit$'):
+        list(_work_items(next_item(), budget))
+    assert entered == [] and budget.counts['values'] == 2_000_000
+    before = dict(budget.counts)
+    with pytest.raises(ReferenceCollectionBudgetError, match='^reference_values_limit$'):
+        budget.available('values', 0)
+    assert budget.failure == 'reference_values_limit' and dict(budget.counts) == before

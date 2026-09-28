@@ -238,7 +238,7 @@ def test_actual_cli_connected_graph_keeps_one_budget_and_one_emission_sink(tmp_p
     assert all(sink.work_budget is budgets[0] for sink in sinks)
     assert all(sink is roots[0] or roots[0] in sink.ancestors for sink in sinks)
     assert budgets[0].closed and budgets[0].failure is None
-    assert budgets[0].limits['values'] == 1_000_000 and budgets[0].duration == 30
+    assert budgets[0].limits['values'] == 2_000_000 and budgets[0].duration == 30
     record_property('actual_budget_counts', json.dumps(dict(budgets[0].counts), sort_keys=True))
     record_property('root_emission_counts', json.dumps(roots[0].used, sort_keys=True))
     record_property('native_child_scope_views', len(sinks)-1)
