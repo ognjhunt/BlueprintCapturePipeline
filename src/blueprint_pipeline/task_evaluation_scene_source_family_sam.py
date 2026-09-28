@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import json
+import hashlib
 
 from . import task_evaluation_scene_source_family_contracts as c
 
@@ -39,6 +41,7 @@ def refs(context, value, proof, *, maximum=64, nonempty=False):
     c.require(isinstance(value, dict) and len(value) <= maximum and (value or not nonempty)
         and all(c.matches(k, NAME) for k in value), 'sam_artifacts_invalid')
     for reference in value.values():
+        c.require(isinstance(reference, dict) and set(reference) == {'path', 'sha256', 'size_bytes'}, 'sam_artifact_reference_invalid')
         context.selected(reference, proof)
     return value
 
@@ -129,6 +132,10 @@ def _result(context, row):
 def _plan_parent(context, plan, parent):
     value, proof = plan
     request = parent[0]['request']
+    key = (proof['sha256'], parent[0]['request_digest'])
+    if key in context.sam_plan_parent_checked:
+        return
+    context.sam_plan_parent_checked.add(key)
     c.require(value['source_commit'] == request['expected_production_commit']
         and value['scene_identity'] == request['scene']['identity'] and value['task_identity'] == request['task']['identity'],
         'sam_parent_plan_invalid')
@@ -141,22 +148,28 @@ def _plan_parent(context, plan, parent):
     if recipe_ref is None:
         context.missing('sam_recipe', 'parent_recipe_selector_unavailable', [parent[1]])
         return
-    selected = context.by_sha.get((recipe_ref.get('digest'), recipe_ref.get('size_bytes'), 'sam_recipes'), [])
-    if len(selected) != 1:
+    selected = [r for r in context.by_sha.get((recipe_ref.get('digest'), recipe_ref.get('size_bytes'), 'sam_recipes'), [])
+                if r[0].get('schema_version') == SCHEMAS['sam_recipes'][0]]
+    if not selected:
         context.missing('sam_recipe', 'recipe_bytes_unavailable_or_ambiguous', [parent[1]], selector={
             k: recipe_ref.get(k) for k in ('uri', 'digest', 'size_bytes')})
         return
+    if len(selected) > 1:
+        context.missing('sam_recipe', 'recipe_copy_provenance_unresolved', context.provenance(r[1] for r in selected), selector={
+            k: recipe_ref.get(k) for k in ('uri', 'digest', 'size_bytes')})
     stages = selected[0][0].get('stage_sequence')
     c.require(isinstance(stages, list) and 1 <= len(stages) <= 64 and isinstance(stages[0], dict), 'sam_recipe_invalid')
     stage_ref = stages[0].get('configuration', {})
-    selected_stage = context.by_sha.get((stage_ref.get('digest'), stage_ref.get('size_bytes'), 'sam_stage_configurations'), [])
+    selected_stage = [r for r in context.by_sha.get((stage_ref.get('digest'), stage_ref.get('size_bytes'), 'sam_stage_configurations'), [])
+                      if r[0].get('schema_version') == SCHEMAS['sam_stage_configurations'][0]]
     for stage in selected_stage:
         if stage[0].get('schema_version') != SCHEMAS['sam_stage_configurations'][0]:
             continue
         declared = stage[0].get('sam31_preparation_plan', {})
         c.require(stage[0].get('sam31_review_kind') == 'ai' and any(declared == m for m in matching), 'sam_stage_plan_invalid')
     if not selected_stage:
-        context.missing('sam_stage_configuration', 'stage_bytes_unavailable', [selected[0][1]], selector=stage_ref)
+        context.missing('sam_stage_configuration', 'stage_bytes_unavailable', [selected[0][1]], selector={
+            k: stage_ref.get(k) for k in ('uri', 'digest', 'size_bytes')})
 
 
 def inventory(context, old):
@@ -180,12 +193,14 @@ def inventory(context, old):
     for row in parents:
         parent_index.setdefault((row[0]['request']['preparation_id'], row[0]['request_digest']), []).append(row)
     context.sam_parents = parent_index
-    plan_index = {r[1]['sha256']: r for r in tables['sam_plans']}
-    context.sam_plans = plan_index
+    context.sam_current_plans = {}
+    context.sam_plan_parent_checked = set()
     for row in tables['sam_plans']:
         _plan(context, row)
         profiles = context.by_sha.get((row[0]['server_profile_sha256'], context.sizes.get(row[0]['server_profile_sha256']), 'sam_profiles'), [])
         for profile in profiles:
+            if profile[0].get('schema_version') != SCHEMAS['sam_profiles'][0]:
+                continue
             c.require(profile[0]['source_commit'] == row[0]['source_commit'], 'sam_profile_commit_invalid')
             refs(context, profile[0].get('artifact_references'), profile[1])
     for row in tables['sam_profiles']:
@@ -194,6 +209,31 @@ def inventory(context, old):
     for task in tables['sam_host_tasks']:
         if 'request_digest' in task[0]:
             c.c.seal(task, 'request_digest')
+    owner_keys = {(m.get('binding', {}).get('preparation_id'), m.get('binding', {}).get('request_digest'))
+                  for m in old['seed']['members'] if m['kind'] == 'preparation_workspace'}
+    semantic_plans = {}
+    for plan in tables['sam_plans']:
+        semantic_plans.setdefault((plan[1]['sha256'], plan[1]['size_bytes']), plan)
+    # Raw-identical copies have the same metadata; retain every raw path in
+    # context.raw/observations, but do not Cartesian-scan their content joins.
+    semantic_parents = {}
+    for parent in parents:
+        semantic_parents.setdefault(parent[0]['request_digest'], parent)
+    for parent in semantic_parents.values():
+        request = parent[0]['request']
+        mounts = request.get('runtime', {}).get('mounts', [])
+        c.require(isinstance(mounts, list) and len(mounts) <= 64, 'sam_parent_mounts_invalid')
+        for mount in mounts:
+            source = mount.get('source') if isinstance(mount, dict) else None
+            if not isinstance(source, dict):
+                continue
+            plan = semantic_plans.get((source.get('digest'), source.get('size_bytes')))
+            if plan:
+                _plan_parent(context, plan, parent)
+                if (request['preparation_id'], parent[0]['request_digest']) in owner_keys:
+                    task_ref = plan[0]['host_inputs']['task_request']
+                    key = tuple(task_ref[k] for k in ('path', 'sha256', 'size_bytes'))
+                    context.sam_current_plans.setdefault(key, []).append(plan)
     observations, job_index = context.rows(), {}
     for parent in parents:
         observations.append(c.observation(parent, role='sam_parent', preparation_id=parent[0]['request']['preparation_id'],
@@ -221,16 +261,12 @@ def inventory(context, old):
         if selected_plan and selected_plan[0].get('schema_version') == SCHEMAS['sam_plans'][0]:
             c.require(selected_plan[0]['source_commit'] == value['expected_source_commit'], 'sam_job_plan_commit_invalid')
         parent_rows = parent_index.get((value['parent_preparation_id'], value['parent_request_digest']), [])
-        for parent in parent_rows:
-            if selected_plan:
-                _plan_parent(context, selected_plan, parent)
+        if parent_rows and selected_plan:
+            _plan_parent(context, selected_plan, parent_rows[0])
         matched = results_by_job.get((value['child_id'], value['job_digest']), [])
         observations.append(c.observation(row, role='sam_job', child_id=value['child_id'], phase=value['phase'],
             result_binding_verified=len(matched) == 1, parent_binding_verified=len(parent_rows) == 1))
-        owner = [m for m in old['seed']['members'] if m['kind'] == 'preparation_workspace'
-                 and m.get('binding', {}).get('preparation_id') == value['parent_preparation_id']
-                 and m.get('binding', {}).get('request_digest') == value['parent_request_digest']]
-        if len(owner) == len(parent_rows) == 1:
+        if (value['parent_preparation_id'], value['parent_request_digest']) in owner_keys and len(parent_rows) == 1:
             context.member(c.child(context.roots['sam_execution_root'], value['parent_request_digest'][7:], value['child_id']),
                 'sam_execution_dependency', {'binding_strength': 'owner_parent_exact_job', 'intent_id': context.intent_id},
                 [proof, parent_rows[0][1]])
@@ -240,6 +276,12 @@ def inventory(context, old):
     _execution_progress(context, job_index, observations)
     _source_progress(context, parent_index, observations)
     _host_evidence(context)
+    _artifact_metadata(context)
+    for rows in (tables['sam_jobs'], tables['sam_results']):
+        for row in rows:
+            if row[1]['role'] == 'sam_results' and row[0].get('status') not in {'completed', 'failed'}:
+                continue
+            artifact_edges(context, row[0].get('inputs', row[0].get('artifacts', {})), row[1])
     context.sam_observations = observations
     return observations
 
@@ -256,7 +298,10 @@ def _receipts(context, results, jobs):
             and value.get('phase') in PHASES and isinstance(value.get('outcome'), dict), 'sam_receipt_invalid')
         outcome = value['outcome']
         refs(context, outcome.get('artifacts'), proof)
-        c.require(outcome.get('status') in {'completed', 'failed', 'waiting_for_external_result'}, 'sam_receipt_invalid')
+        c.require(outcome.get('status') in {'completed', 'failed'}, 'sam_receipt_invalid')
+        if value['schema_version'] == 'task_evaluation_sam31_phase_replay_receipt.v1':
+            c.require(value.get('production_execution_authorized') is False, 'sam_replay_authority_invalid')
+            c.path(value.get('diagnostic_replay_code_root'))
         child_id = proof['path'].rsplit('/', 2)[1]
         if value['schema_version'] == 'task_evaluation_sam31_phase_execution_receipt.v1':
             relative = proof['path'][len(context.roots['sam_execution_root']) + 1:].split('/')
@@ -269,9 +314,15 @@ def _receipts(context, results, jobs):
             if value['schema_version'] == 'task_evaluation_sam31_phase_execution_receipt.v1':
                 c.require(proof['path'] == c.child(context.roots['sam_execution_root'], job[0]['parent_request_digest'][7:],
                     child_id, 'phase_execution_receipt.v1.json'), 'sam_receipt_path_invalid')
-                for result in results.get((child_id, value['job_digest']), []):
-                    c.require(outcome.get('status') == result[0]['status'] and outcome.get('artifacts') == result[0]['artifacts'],
-                              'sam_receipt_result_invalid')
+        if value['schema_version'] == 'task_evaluation_sam31_phase_execution_receipt.v1':
+            selected_results = results.get((child_id, value['job_digest']), [])
+            if len(selected_results) == 1:
+                result = selected_results[0]
+                c.require(outcome.get('status') == result[0]['status'] and outcome.get('artifacts') == result[0]['artifacts'],
+                          'sam_receipt_result_invalid')
+            elif len(selected_results) > 1:
+                context.missing('sam_receipt_result', 'historical_result_selector_ambiguous', [proof],
+                                selector={'job_digest': value['job_digest']})
         index.setdefault((child_id, value['job_digest']), []).append(row)
     return index
 
@@ -315,8 +366,8 @@ def _source_progress(context, parents, observations):
             context.missing('sam_previous_progress', 'canonical_predecessor_unavailable', [proof],
                             selector={'progress_digest': value['previous_progress_digest']})
         selected_parents = parents.get((value['preparation_id'], value['request_digest']), [])
-        for parent in selected_parents:
-            request = parent[0]['request']
+        if selected_parents:
+            request = selected_parents[0][0]['request']
             c.require(request['run_id'] == value['run_id'] and request['expected_production_commit'] == value['source_commit'],
                       'sam_progress_parent_invalid')
         final = value['advancement'].get('sam31_preparation_result')
@@ -326,6 +377,10 @@ def _source_progress(context, parents, observations):
                 context.missing('sam_final', 'unsupported_retained_schema', [proof])
                 continue
             nested = context.nested(final, proof, '/advancement/sam31_preparation_result', 'result_digest')
+            if final.get('status') != 'exact_mask_inputs_ready':
+                context.missing('sam_final', 'unsupported_retained_status', [nested[1]])
+                observations.append(c.observation(row, role='sam_source_progress', sequence=value['sequence'], progress_status=value['status']))
+                continue
             c.require(final.get('status') == 'exact_mask_inputs_ready' and final.get('source_commit') == value['source_commit']
                 and c.matches(final.get('plan_digest')) and isinstance(final.get('evidence'), dict) and set(final['evidence']) == EVIDENCE
                 and final['evidence'] == value['advancement'].get('sam31_exact_mask_inputs')
@@ -392,10 +447,109 @@ def _host_evidence(context):
                     and c.matches(value.get('source_commit'), c.COMMIT) and c.matches(value.get('scene_id'), c.ID)
                     and c.matches(value.get('source_installation_digest')) and all(value.get(k) is False for k in
                         ('provider_mutation_performed', 'paid_resource_used', 'candidate_policy_queried')), 'sam_source_preparation_invalid')
+                context.missing('sam_source_installation', 'canonical_installation_selector_without_raw_identity', [proof],
+                                selector={'receipt_digest': value['source_installation_digest']})
             elif schema == 'standard_splat_conversion_receipt.v1':
                 output = row[0].get('output')
                 c.require(isinstance(output, dict) and c.matches(output.get('sha256'))
                     and type(output.get('size_bytes')) is int and output['size_bytes'] > 0, 'sam_conversion_invalid')
                 c.relative(output.get('relative_path'))
+                rights = value.get('rights')
+                if isinstance(rights, dict) and 'terms_digest' in rights:
+                    c.require(c.matches(rights['terms_digest']), 'sam_conversion_terms_invalid')
+                    context.missing('sam_conversion_terms', 'raw_terms_selector_without_size', [proof],
+                                    selector={'sha256': rights['terms_digest']})
         else:
             context.missing('sam_host_evidence', 'unsupported_retained_schema', [row[1]])
+
+
+def _ascii_digest(value):
+    # This producer uses stdlib sort_keys/ensure_ascii=True, distinct from
+    # decision canonical seals. Feed bounded characters instead of encoding a
+    # potentially six-times-amplified Unicode document as one allocation.
+    def tokens(item):
+        if isinstance(item, dict):
+            yield '{'
+            for index, key in enumerate(sorted(item)):
+                if index:
+                    yield ','
+                yield from tokens(key)
+                yield ':'
+                yield from tokens(item[key])
+            yield '}'
+        elif isinstance(item, list):
+            yield '['
+            for index, child in enumerate(item):
+                if index:
+                    yield ','
+                yield from tokens(child)
+            yield ']'
+        elif isinstance(item, str):
+            yield '"'
+            for char in item:
+                yield json.dumps(char, ensure_ascii=True)[1:-1]
+            yield '"'
+        else:
+            yield json.dumps(item, allow_nan=False, ensure_ascii=True, separators=(',', ':'))
+    digest = hashlib.sha256()
+    for token in tokens(value):
+        digest.update(token.encode('ascii'))
+    return 'sha256:' + digest.hexdigest()
+
+
+def _artifact_metadata(context):
+    for row in context.decoded['sam_artifact_metadata']:
+        _allowed(context, row)
+        value, proof = row
+        schema = value.get('schema_version')
+        if schema == 'public_scene_sam31_task_input_packet.v1':
+            c.c.seal(row, 'receipt_digest')
+            c.require(value.get('status') == 'prepared_no_upload_no_execution'
+                and value.get('paid_execution_started') is False
+                and type(value.get('provider_mutations_performed')) is int and value['provider_mutations_performed'] == 0,
+                'sam_packet_invalid')
+            for name, seal in (('task_freeze', 'task_freeze_digest'), ('calibrated_view_receipt', 'receipt_digest'),
+                               ('provider_profile', 'profile_digest')):
+                declared = value.get(name)
+                context.selected(declared, proof)
+                c.require(c.matches(declared.get(seal)), 'sam_packet_selector_invalid')
+            run = value.get('run_request')
+            c.require(isinstance(run, dict) and c.matches(run.get('request_digest')), 'sam_packet_request_invalid')
+            reference = {'path': c.child(proof['path'].rsplit('/', 1)[0], c.relative(run.get('relative_path'))),
+                         'sha256': run.get('sha256'), 'size_bytes': run.get('size_bytes')}
+            request = context.selected(reference, proof, {'sam_artifact_metadata'})
+            if request and request[0].get('schema_version') == 'semantic_sam31_source_track_run_request.v1':
+                c.require(_ascii_digest(request[0]) == run['request_digest'], 'sam_packet_request_digest_invalid')
+            elif request:
+                context.missing('sam_run_request', 'unsupported_retained_schema', [request[1]])
+        elif schema in {'semantic_sam31_source_track_run_request.v1', 'public_scene_interiorgs_edit_input_request.v2'}:
+            # No invented universal signature, checkpoint or science validator.
+            if schema == 'public_scene_interiorgs_edit_input_request.v2':
+                scene = value.get('scene')
+                c.require(isinstance(scene, dict), 'sam_render_request_invalid')
+                for name in ('scene_freeze_path', 'task_freeze_path', 'standard_splat_conversion_receipt_path',
+                             'standard_splat_path', 'labels_path', 'structure_path', 'registered_frame_receipt_path'):
+                    if name in scene:
+                        c.path(scene[name])
+                        context.missing('sam_renderer_input', 'bare_input_path_without_raw_identity', [proof],
+                                        scene[name], {'field': name})
+        else:
+            context.missing('sam_artifact_metadata', 'unsupported_retained_schema', [proof])
+
+
+def artifact_edges(context, artifacts, proof):
+    packet_ref = artifacts.get('sam31_task_input_packet')
+    if packet_ref:
+        packet = context.selected(packet_ref, proof, {'sam_artifact_metadata', 'opaque_evidence'})
+        if packet and packet[0] is not None and packet[0].get('schema_version') == 'public_scene_sam31_task_input_packet.v1':
+            for name, alias in (('task_freeze', 'task_selection'), ('calibrated_view_receipt', 'calibrated_view_receipt')):
+                declared = packet[0][name]
+                if alias in artifacts:
+                    c.require(all(declared[k] == artifacts[alias][k] for k in ('path', 'sha256', 'size_bytes')), 'sam_packet_original_alias_invalid')
+                else:
+                    context.missing('sam_packet_original_alias', 'original_artifact_selector_unavailable', [packet[1]], selector={'alias': alias})
+            if 'sam31_run_request' in artifacts:
+                run = packet[0]['run_request']
+                expected = {'path': c.child(packet[1]['path'].rsplit('/', 1)[0], c.relative(run['relative_path'])),
+                            'sha256': run['sha256'], 'size_bytes': run['size_bytes']}
+                c.require(artifacts['sam31_run_request'] == expected, 'sam_packet_original_request_invalid')

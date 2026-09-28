@@ -203,3 +203,125 @@ def test_selected_source_installation_canonical_identity_refuses_even_without_jo
     for role in ('sam_jobs', 'sam_results', 'sam_execution_receipts', 'sam_parent_envelopes'):
         rows[role] = []
     refuses(args)
+
+
+def packet_fixture():
+    import hashlib
+    args = base_fixture()
+    root = args['roots']['sam_execution_root'] + '/packet'
+    rows = args['source_records']
+    dependency = (root + '/dependency.json', b'tiny')
+    rows['opaque_evidence'] = [dependency]
+    request = {'schema_version': 'semantic_sam31_source_track_run_request.v1',
+               'provider_profile': {'checkpoint': 'historical-only'}, 'prompts': ['tiny ☃']}
+    request_pair = pair(root + '/semantic_sam31_source_track_run_request.v1.json', request)
+    packet = seal({'schema_version': 'public_scene_sam31_task_input_packet.v1', 'status': 'prepared_no_upload_no_execution',
+        'task_freeze': dict(ref(dependency), task_freeze_digest='sha256:'+'1'*64),
+        'calibrated_view_receipt': dict(ref(dependency), receipt_digest='sha256:'+'2'*64),
+        'provider_profile': dict(ref(dependency), profile_digest='sha256:'+'3'*64),
+        'run_request': {'relative_path': request_pair[0].rsplit('/', 1)[1], 'sha256': ref(request_pair)['sha256'],
+            'size_bytes': ref(request_pair)['size_bytes'], 'request_digest': 'sha256:' + hashlib.sha256(
+                json.dumps(request, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()},
+        'paid_execution_started': False, 'provider_mutations_performed': 0}, 'receipt_digest')
+    rows['sam_artifact_metadata'] = [pair(root + '/public_scene_sam31_task_input_packet.v1.json', packet), request_pair]
+    return args
+
+
+@pytest.mark.parametrize('edit', [lambda v: v['run_request'].update(relative_path='../escape.json'),
+    lambda v: v['run_request'].update(size_bytes=False), lambda v: v.update(provider_mutations_performed=False),
+    lambda v: v['run_request'].update(request_digest='sha256:'+'f'*64)])
+def test_known_packet_own_and_available_request_metadata_refuse_without_adoption(edit):
+    args = packet_fixture()
+    change(args, 'sam_artifact_metadata', edit, 'receipt_digest')
+    refuses(args)
+
+
+def test_packet_unicode_uses_actual_ascii_canonical_selector_and_keeps_model_unchecked():
+    result = api().join_retained_scene_source_family_inventory(**packet_fixture())
+    assert result['scientific_validity_checked'] is False
+    assert any(r['role'] == 'sam_artifact_metadata' for r in result['raw_versions'])
+
+
+def test_exact_selected_future_recipe_keeps_raw_bytes_without_known_stage_interpretation():
+    args = fixture()
+    rows = args['source_records']
+    recipe_pair = pair('/retained/metadata/recipe.json', {'schema_version': 'future_recipe', 'stage_sequence': None})
+    rows['sam_recipes'] = [recipe_pair]
+    parent = json.loads(rows['sam_parent_envelopes'][0][1])
+    parent['request']['construction'] = {'recipe': {'uri': 's3://test/recipe', 'digest': ref(recipe_pair)['sha256'],
+                                                   'size_bytes': ref(recipe_pair)['size_bytes']}}
+    parent['request_digest'] = canonical_digest(parent['request'])
+    parent = seal(parent, 'envelope_digest')
+    rows['sam_parent_envelopes'] = [pair(args['roots']['preparation_queue_root'] + '/completed/parent-1-' +
+        parent['request_digest'][7:] + '.json', parent)]
+    job = json.loads(rows['sam_jobs'][0][1])
+    job['parent_request_digest'] = parent['request_digest']
+    job['child_id'] = 'sam31-' + canonical_digest({k: job[k] for k in
+        ('parent_request_digest', 'plan_digest', 'phase', 'inputs_digest')})[7:]
+    rows['sam_jobs'] = [pair(args['roots']['sam_queue_root'] + '/completed/' + job['child_id'] + '.json', seal(job, 'job_digest'))]
+    rows['sam_results'], rows['sam_execution_receipts'] = [], []
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert any(r['path'] == recipe_pair[0] for r in result['raw_versions'])
+    assert any(r['reason'] == 'unsupported_retained_schema' for r in result['structural_join_obligations'])
+
+
+def test_unknown_nested_final_status_and_unknown_result_status_remain_discoverable():
+    args = fixture()
+    change(args, 'sam_results', {'status': 'future_status', 'artifacts': None}, 'result_digest')
+    args['source_records']['sam_execution_receipts'] = []
+    parent = json.loads(args['source_records']['sam_parent_envelopes'][0][1])
+    final = seal({'schema_version': 'task_evaluation_sam31_preparation_result.v1', 'status': 'future_status'}, 'result_digest')
+    progress = seal({'schema_version': 'task_evaluation_sam31_preparation_progress.v1',
+        'preparation_id': 'parent-1', 'request_digest': parent['request_digest'], 'run_id': 'run-1', 'source_commit': COMMIT,
+        'status': 'future_status', 'advancement': {'status': 'future_status', 'sam31_preparation_result': final},
+        'sequence': 1, 'previous_progress_digest': None, 'provider_mutation_performed': False, 'paid_execution_requested': False}, 'progress_digest')
+    path = args['roots']['preparation_queue_root'] + '/source-progress/parent-1-' + parent['request_digest'][7:] + '/000001-' + progress['progress_digest'][7:] + '.json'
+    args['source_records']['source_progress'] = [pair(path, progress)]
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert any(r['path'] == path for r in result['raw_versions'])
+    assert not any(r['role'] == 'sam_final' for r in result['sam_observations'])
+
+
+def test_known_replay_receipt_cannot_claim_production_execution():
+    args = fixture()
+    change(args, 'sam_execution_receipts', {'schema_version': 'task_evaluation_sam31_phase_replay_receipt.v1',
+        'production_execution_authorized': True, 'diagnostic_replay_code_root': '/retained/metadata/replay'}, 'receipt_digest')
+    refuses(args)
+
+
+def test_available_receipt_result_contradiction_refuses_when_job_is_absent():
+    args = fixture()
+    args['source_records']['sam_jobs'] = []
+    change(args, 'sam_execution_receipts', lambda v: v['outcome'].update(status='failed'), 'receipt_digest')
+    refuses(args)
+
+
+def test_conflicting_historical_result_variants_stay_raw_without_cross_joining_one_receipt():
+    args = fixture()
+    rows = args['source_records']
+    path, raw = rows['sam_results'][0]
+    older = json.loads(raw)
+    older.update(status='failed', artifacts={}, executor_result={'status': 'failed', 'artifacts': {}})
+    older = seal(older, 'result_digest')
+    rows['sam_results'].append(pair(path[:-5] + '.conflict-' + older['result_digest'][7:] + '.json', older))
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert len([r for r in result['raw_versions'] if r['role'] == 'sam_results']) == 2
+    assert not next(r for r in result['sam_observations'] if r['role'] == 'sam_job')['result_binding_verified']
+
+
+def test_bare_source_conversion_and_renderer_selectors_remain_structural_without_raw_size():
+    args = fixture()
+    rows, root = args['source_records'], args['roots']['host_input_root']
+    source = seal({'schema_version': 'public_scene_source_preparation.v1', 'status': 'blocked',
+        'source_commit': COMMIT, 'scene_id': 'scene-1', 'source_installation_digest': 'sha256:'+'c'*64,
+        'provider_mutation_performed': False, 'paid_resource_used': False, 'candidate_policy_queried': False}, 'receipt_digest')
+    conversion = seal({'schema_version': 'standard_splat_conversion_receipt.v1',
+        'output': {'relative_path': 'derived/model.ply', 'sha256': 'sha256:'+'d'*64, 'size_bytes': 1},
+        'rights': {'terms_digest': 'sha256:'+'e'*64}}, 'receipt_digest')
+    rows['sam_host_evidence'] = [pair(root+'/source.json', source), pair(root+'/conversion.json', conversion)]
+    rows['sam_artifact_metadata'] = [pair('/retained/metadata/renderer.json',
+        {'schema_version': 'public_scene_interiorgs_edit_input_request.v2', 'scene': {'standard_splat_path': root+'/original.ply'}})]
+    result = api().join_retained_scene_source_family_inventory(**args)
+    obligations = result['structural_join_obligations']
+    assert {'sam_source_installation', 'sam_conversion_terms', 'sam_renderer_input'} <= {r['role'] for r in obligations}
+    assert next(r for r in obligations if r['role'] == 'sam_renderer_input')['expected_path'] == root+'/original.ply'

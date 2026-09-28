@@ -309,6 +309,20 @@ def test_publication_own_rows_validate_even_without_manifest_or_owner(edit):
     refuses(args)
 
 
+@pytest.mark.parametrize('edit', [
+    lambda r: r['published_objects'][0].update(uri='s3://blueprint/task-evaluation/production-inputs/foreign/derived/packet.json'),
+    lambda r: r['published_objects'][0].update(relative_path='derived/foreign.json'),
+    lambda r: r['published_objects'][0].update(relative_path='source/raw.json',
+        uri='s3://blueprint/task-evaluation/production-inputs/'+r['input_namespace']+'/source/raw.json'),
+])
+def test_publication_own_namespace_derivative_policy_without_manifest_or_factory(edit):
+    args = publication_fixture()
+    change(args, 'submission_publications', edit, 'receipt_digest')
+    args['seed_records']['source_submissions'] = args['seed_records']['source_submissions'][:1]
+    args['seed_records']['factories'] = []
+    refuses(args)
+
+
 def test_handoff_own_reference_positive_size_validates_without_registration():
     args = fixture(website=True)
     change(args, 'website_handoffs', lambda r: r['source_registration'].update(size_bytes=0), 'digest')

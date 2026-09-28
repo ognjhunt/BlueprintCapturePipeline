@@ -24,8 +24,15 @@ def _raw_key(row):
     return (*[row[1][k] for k in ('path', 'sha256', 'size_bytes')], row[1].get('json_pointer'))
 
 
+def _raw_tuple(reference):
+    return {key: reference[key] for key in ('path', 'sha256', 'size_bytes')}
+
+
 def _selected(context, reference, proof, role, schema):
     row = context.selected(reference, proof, {role})
+    if row and role == 'sam_adoptions' and row[0].get('status') != 'verified_completed_prefix':
+        context.missing(role, 'unsupported_retained_status', [row[1]])
+        return None
     if row and row[0].get('schema_version') == schema:
         return row
     if row:
@@ -72,14 +79,28 @@ class Graph:
         current_host = value.get('current_host_inputs')
         c.require(isinstance(current_host, dict) and set(current_host) == sam.HOST_NAMES, 'adoption_current_host_invalid')
         sam.refs(context, current_host, proof)
+        task_key = tuple(current_host['task_request'][k] for k in ('path', 'sha256', 'size_bytes'))
+        current_plans = [plan for plan in context.sam_current_plans.get(task_key, [])
+                         if plan[0]['source_commit'] == value['source_commit']]
+        for current_plan in current_plans:
+            c.require(current_plan[0]['source_commit'] == value['source_commit']
+                and current_plan[0]['host_inputs'] == current_host, 'adoption_current_parent_plan_invalid')
+        if not current_plans:
+            context.missing('sam_current_parent_plan', 'owner_parent_plan_selector_unavailable', [proof])
         context.selected(value.get('current_sam31_provider_profile'), proof)
         context.selected(value.get('provider_zero_at_adoption'), proof)
         if 'current_release_root' in value:
             c.path(value['current_release_root'])
+            context.missing('sam_current_release', 'current_release_validity_unverified', [proof],
+                            value['current_release_root'], {'source_commit': value['source_commit']})
+        _retained_selectors(context, row)
         if plan:
             c.require(plan[0]['source_commit'] == value['original_execution_commit'], 'adoption_original_commit_invalid')
         if profile:
             c.require(profile[0]['source_commit'] == value['original_execution_commit'], 'adoption_original_commit_invalid')
+            if 'repo_root' in profile[0]:
+                context.missing('sam_source_release', 'historical_release_validity_unverified', [profile[1]],
+                    c.path(profile[0]['repo_root']), {'source_commit': profile[0]['source_commit']})
         if plan and profile:
             c.require(plan[0]['server_profile_sha256'] == profile[1]['sha256'], 'adoption_original_profile_invalid')
         if parent:
@@ -88,7 +109,7 @@ class Graph:
                 and request['expected_production_commit'] == value['original_execution_commit'], 'adoption_original_parent_invalid')
             if plan:
                 sam._plan_parent(context, plan, parent)
-        _historical_contract(context, value.get('historical_parent_contract'), parent, proof)
+        contract_complete = _historical_contract(context, value.get('historical_parent_contract'), parent, proof)
         inherited, predecessor_missing = None, False
         if profile and profile[0].get('completed_prefix_adoption') is not None:
             predecessor = _selected(context, profile[0]['completed_prefix_adoption'], profile[1], 'sam_adoptions', SCHEMA)
@@ -105,7 +126,7 @@ class Graph:
         if inherited:
             _extend(inputs, inherited['successor_artifacts'])
             artifacts.update(inherited['successor_artifacts'])
-        complete = bool(plan and profile and parent and not predecessor_missing and (not inherited or inherited['complete']))
+        complete = bool(plan and profile and parent and contract_complete and not predecessor_missing and (not inherited or inherited['complete']))
         start = inherited['phase_count'] if inherited else 0
         phase_rows = value.get('phase_records')
         c.require(isinstance(phase_rows, list) and 1 <= len(phase_rows) <= 10
@@ -121,10 +142,10 @@ class Graph:
         rebindings, successors = _rebindings(context, row, artifacts, current_host)
         selection = inherited['selection_origin'] if inherited else {
             'task_request': plan[0]['host_inputs']['task_request'] if plan else None,
-            'source_commit': value['original_execution_commit'], 'source_plan': value['source_plan'],
-            'source_profile': value['source_profile'], 'parent_request_digest': value['original_parent_request_digest']}
+            'source_commit': value['original_execution_commit'], 'source_plan': _raw_tuple(value['source_plan']),
+            'source_profile': _raw_tuple(value['source_profile']), 'parent_request_digest': value['original_parent_request_digest']}
         tracking = inherited['tracking_origin'] if inherited and inherited['phase_count'] >= 5 else {
-            'source_commit': value['original_execution_commit'], 'source_profile': value['source_profile']}
+            'source_commit': value['original_execution_commit'], 'source_profile': _raw_tuple(value['source_profile'])}
         if not complete:
             context.missing('sam_original_prefix', 'prefix_proof_unavailable_or_unresolved', [proof])
         return {'complete': complete, 'phase_count': end, 'original_artifacts': artifacts,
@@ -157,6 +178,12 @@ class Graph:
         if receipt:
             c.require(receipt[0]['phase'] == phase and receipt[0]['source_commit'] == value['original_execution_commit']
                 and receipt[0]['outcome']['status'] == 'completed', 'adoption_receipt_invalid')
+            for selected in (job, result):
+                if selected:
+                    c.require(receipt[0]['job_digest'] == selected[0]['job_digest']
+                        and receipt[1]['path'] == c.child(context.roots['sam_execution_root'],
+                            value['original_parent_request_digest'][7:], selected[0]['child_id'], 'phase_execution_receipt.v1.json'),
+                        'adoption_receipt_job_invalid')
             if result:
                 c.require(receipt[0]['outcome']['artifacts'] == result[0]['artifacts']
                     and receipt[0]['job_digest'] == result[0]['job_digest'], 'adoption_receipt_result_invalid')
@@ -168,6 +195,7 @@ class Graph:
                 c.require('standard_splat_conversion_receipt' in result[0]['artifacts'], 'adoption_conversion_alias_invalid')
                 _extend(inputs, {'standard_splat_conversion': result[0]['artifacts']['standard_splat_conversion_receipt']})
                 _extend(artifacts, {'standard_splat_conversion': result[0]['artifacts']['standard_splat_conversion_receipt']})
+            sam.artifact_edges(context, artifacts, proof)
         self.phases.append(c.observation(adoption, role='sam_original_phase', phase=phase, phase_binding_verified=bool(job and result and receipt),
             selected_provenance=[r[1] for r in (job, result, receipt) if r], original_owner_transfer_authorized=False))
         return complete
@@ -177,6 +205,29 @@ def _extend(target, additions):
     for name, reference in additions.items():
         c.require(name not in target or target[name] == reference, 'adoption_artifact_conflict')
         target[name] = reference
+
+
+def _retained_selectors(context, row):
+    value, proof = row
+    release = value.get('retained_release_pin')
+    if release is not None:
+        c.require(isinstance(release, dict) and c.matches(release.get('source_commit'), c.COMMIT)
+            and c.matches(release.get('tree'), c.COMMIT), 'adoption_retained_release_invalid')
+        context.missing('sam_retained_release', 'historical_release_validity_unverified', [proof], c.path(release.get('path')),
+                        {k: release[k] for k in ('source_commit', 'tree')})
+    tracking = value.get('tracking_identity')
+    if tracking is not None:
+        c.require(isinstance(tracking, dict), 'adoption_tracking_identity_invalid')
+        instance = tracking.get('provider_instance_id')
+        c.require(type(instance) is int and instance >= 0 or isinstance(instance, str) and 0 < len(instance) <= 192,
+                  'adoption_tracking_instance_invalid')
+        c.require(c.matches(tracking.get('checkpoint_digest')), 'adoption_tracking_checkpoint_invalid')
+        context.selected(tracking.get('raw_runtime_result'), proof)
+        charge = tracking.get('official_charge')
+        c.require(isinstance(charge, dict), 'adoption_tracking_charge_invalid')
+        context.selected(charge.get('provider_billing_source_receipt'), proof)
+        context.missing('sam_tracking_identity', 'provider_checkpoint_billing_validity_unverified', [proof], selector={
+            'provider_instance_id': instance, 'checkpoint_digest': tracking['checkpoint_digest']})
 
 
 def _rebindings(context, row, artifacts, current_host):
@@ -190,7 +241,7 @@ def _rebindings(context, row, artifacts, current_host):
         context.selected(rebinding['successor'], proof)
         if name in artifacts:
             c.require(rebinding['original'] == artifacts[name], 'adoption_rebinding_original_invalid')
-        successors[name] = rebinding['successor']
+        successors[name] = _raw_tuple(rebinding['successor'])
     c.require(successors['standard_splat_conversion_receipt'] == successors['standard_splat_conversion'], 'adoption_conversion_alias_invalid')
     task = _selected(context, current_host['task_request'], proof, 'sam_host_tasks', sam.SCHEMAS['sam_host_tasks'][0])
     if task:
@@ -213,22 +264,23 @@ def _rebindings(context, row, artifacts, current_host):
             if path is not None and path != artifacts.get('standard_splat', {}).get('path'):
                 c.path(path)
                 context.missing('sam_original_render_source', 'original_render_source_selector_unresolved', [renderer[1]], path)
-    return rebindings, successors
+    return {name: {role: _raw_tuple(reference) for role, reference in rebinding.items()}
+            for name, rebinding in rebindings.items()}, successors
 
 
 def _historical_contract(context, value, parent, proof):
     if value is None:
-        return
+        return True
     c.require(isinstance(value, dict), 'historical_contract_invalid')
     schema = value.get('schema_version')
     if schema not in {'task_evaluation_retained_preparation_contract_identity.v1', 'task_evaluation_retained_preparation_contract_identity.v2'}:
         context.missing('sam_historical_parent_contract', 'unsupported_retained_schema', [proof])
-        return
+        return False
     context.nested(value, proof, '/historical_parent_contract', 'contract_digest')
     contract = value.get('contract_id')
     if contract not in CONTRACT_REVISIONS:
         context.missing('sam_historical_parent_contract', 'unsupported_retained_contract', [proof])
-        return
+        return False
     c.require(c.matches(value.get('request_source_commit'), c.COMMIT) and c.matches(value.get('schema_sha256'))
         and value.get('request_schema_version') == 'task_evaluation_launch_preparation_request.v1', 'historical_contract_invalid')
     if parent:
@@ -265,8 +317,11 @@ def _historical_contract(context, value, parent, proof):
                 c.require(contract == expected, 'historical_contract_budget_identity_invalid')
             else:
                 context.missing('sam_historical_parent_contract', 'historical_budget_identity_unavailable', [proof])
+                return False
         else:
             context.missing('sam_historical_parent_contract', 'historical_budget_identity_unavailable', [proof])
+            return False
+    return parent is not None
 
 
 def inventory(context):
@@ -300,7 +355,10 @@ def _prefix_selections(context, graph, adoptions):
             if row:
                 c.require(row[1]['path'] == c.child(factory[1]['path'].rsplit('/', 1)[0], 'materialized', 'prefix_selection.json'),
                           'prefix_selection_factory_path_invalid')
-                selected_factories.setdefault(_raw_key(row), []).append(factory[1])
+                if factory[1]['path'].rsplit('/', 1)[0] in context.source_owner_workspaces:
+                    selected_factories.setdefault(_raw_key(row), []).append(factory[1])
+                else:
+                    context.missing('sam_prefix_factory_owner', 'factory_owner_join_unavailable', [factory[1], row[1]])
     by_seal = {}
     for adoption in adoptions:
         by_seal.setdefault(adoption[0]['adoption_digest'], []).append(adoption)
@@ -326,7 +384,7 @@ def _prefix_selections(context, graph, adoptions):
         if value['status'] == 'reusable_prefix_selected':
             adoption = value.get('adoption')
             c.require(isinstance(adoption, dict) and value.get('through_phase') in sam.PHASES[2:], 'prefix_selection_adoption_invalid')
-            if adoption.get('schema_version') == SCHEMA:
+            if adoption.get('schema_version') == SCHEMA and adoption.get('status') == 'verified_completed_prefix':
                 nested = context.nested(adoption, proof, '/adoption', 'adoption_digest')
                 c.require(adoption.get('through_phase') == value['through_phase'], 'prefix_selection_adoption_invalid')
                 copies = by_seal.get(adoption['adoption_digest'], [])

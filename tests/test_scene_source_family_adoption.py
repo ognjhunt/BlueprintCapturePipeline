@@ -136,6 +136,42 @@ def test_future_adoption_status_is_retained_unresolved_without_interpreting_pref
     assert any(r['path'] == args['source_records']['sam_adoptions'][0][0] for r in result['raw_versions'])
 
 
+@pytest.mark.parametrize('change_kind', ['missing_result_wrong_job', 'wrong_parent_path', 'wrong_child_path'])
+def test_selected_original_receipt_binds_every_available_edge(change_kind):
+    args = fixture()
+    rows = args['source_records']
+    path, raw = rows['sam_execution_receipts'][0]
+    receipt = json.loads(raw)
+    if change_kind == 'missing_result_wrong_job':
+        rows['sam_results'].pop(0)
+        receipt['job_digest'] = 'sha256:' + 'f'*64
+    else:
+        parts = path.split('/')
+        parts[-3 if change_kind == 'wrong_parent_path' else -2] = 'f'*64 if change_kind == 'wrong_parent_path' else 'sam31-' + 'f'*64
+        path = '/'.join(parts)
+    updated = pair(path, seal(receipt, 'receipt_digest'))
+    rows['sam_execution_receipts'][0] = updated
+    change(args, 'sam_adoptions', lambda v: v['phase_records'][0].update(execution_receipt=ref(updated)), 'adoption_digest')
+    refuses(args)
+
+
+def test_retained_release_and_tracking_bare_selectors_are_explicit_unverified_obligations():
+    args = fixture(through='sam31_tracking')
+    dependency = ref(args['source_records']['opaque_evidence'][0])
+    change(args, 'sam_adoptions', {'retained_release_pin': {'path': '/retained/original-release',
+        'source_commit': 'a'*40, 'tree': 'c'*40}, 'tracking_identity': {'raw_runtime_result': dependency,
+        'provider_instance_id': 12345, 'checkpoint_digest': 'sha256:'+'4'*64,
+        'official_charge': {'provider_billing_source_receipt': dependency}}}, 'adoption_digest')
+    result = api().join_retained_scene_source_family_inventory(**args)
+    roles = {r['role']: r for r in result['structural_join_obligations']}
+    assert roles['sam_current_release']['expected_path'] == '/retained/release'
+    assert roles['sam_retained_release']['expected_path'] == '/retained/original-release'
+    assert roles['sam_tracking_identity']['selector'] == {'provider_instance_id': 12345,
+        'checkpoint_digest': 'sha256:'+'4'*64}
+    assert roles['sam_tracking_identity']['expected_path'] is None
+    assert result['current_billing_settled'] is False
+
+
 def test_adoption_input_permutations_keep_original_successor_provenance():
     args = fixture()
     result = api().join_retained_scene_source_family_inventory(**args)

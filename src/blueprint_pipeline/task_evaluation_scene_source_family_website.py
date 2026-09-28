@@ -145,7 +145,8 @@ def capture(context, old):
             matching.append(handoff)
         owners = owner_bindings.get(key, [])
         unique = len(owners) == 1 and len(matching) == 1 and all(selected.values())
-        provenance = [proof, *[r[1] for r in selected.values() if r], *[r[1] for r in matching], *[r[1] for r in owners]]
+        provenance = context.provenance(p for group in ((proof,), (r[1] for r in selected.values() if r),
+            (r[1] for r in matching), (r[1] for r in owners)) for p in group)
         if unique:
             context.member(capture_root, 'capture_dependency', {'intent_id': context.intent_id,
                 'binding_strength': 'owner_registration_original_handoff_exact_bytes'}, provenance)
@@ -304,11 +305,12 @@ def publication(context, old):
             and isinstance(value.get('host_only_source_objects'), list)
             and len(value['host_only_source_objects']) <= 1024, 'publication_inventory_invalid')
         seen_uris, seen_paths = set(), set()
+        prefix = 's3://blueprint/task-evaluation/production-inputs/' + value['input_namespace'] + '/'
         for item in objects:
             c.require(isinstance(item, dict), 'publication_inventory_invalid')
             relative = c.relative(item.get('relative_path'))
             uri = item.get('uri')
-            c.require(isinstance(uri, str) and len(uri) <= 4096 and uri.startswith('s3://blueprint/task-evaluation/production-inputs/')
+            c.require(isinstance(uri, str) and len(uri) <= 4096 and uri == prefix + relative and not relative.startswith('source/')
                 and not any(ch.isspace() for ch in uri) and c.matches(item.get('digest'))
                 and type(item.get('size_bytes')) is int and item['size_bytes'] > 0
                 and type(item.get('upload_performed')) is bool and item.get('full_byte_service_account_readback_passed') is True
