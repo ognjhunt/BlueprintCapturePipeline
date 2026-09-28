@@ -340,6 +340,14 @@ def test_actual_installed_script_invokes_exact_engine_cli_and_writes_sanitized_o
         'with open(os.environ["TEST_ARGS"],"w") as f: json.dump(sys.argv[1:],f)\n'
         'print(json.dumps({"status":"planned","mutations":0}))\n')
     executable.chmod(0o700)
+    # Substitute only the compiled interpreter+installed bootstrap in this
+    # portable shell fixture. Production accepts no interpreter override; the
+    # separate Linux fixture proves the real root/ordinary-UID boundary.
+    script=scripts/'door-scene-lifecycle.sh'
+    source=script.read_text()
+    fixed='/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py'
+    assert source.count(fixed)==1
+    script.write_text(source.replace(fixed,str(executable)))
     resultdir=tmp_path/'results'
     resultdir.mkdir()
     identity='20260928T180000Z-retire-scene-12345678'
@@ -353,7 +361,7 @@ def test_actual_installed_script_invokes_exact_engine_cli_and_writes_sanitized_o
     assert result.returncode==0, result.stderr+'\n'+(resultdir/(identity+'.log')).read_text()
     import json
     args=json.loads((tmp_path/'args.json').read_text())
-    assert args[:3]==['-m','blueprint_pipeline.task_evaluation_scene_retirement_cli','retire']
+    assert args[:3]==['--action-module','blueprint_pipeline.task_evaluation_scene_retirement_cli','retire']
     assert '--apply' not in args and '--intent-id' in args and '--consent-id' in args
     outcome=json.loads((resultdir/(identity+'.outcome.json')).read_text())
     assert outcome['status']=='planned' and outcome['intent_id']=='scene-1'

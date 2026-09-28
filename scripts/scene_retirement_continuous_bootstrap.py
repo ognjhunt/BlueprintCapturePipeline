@@ -25,6 +25,8 @@ _CORE = ('__init__.py', 'task_evaluation_scene_retirement_supervisor.py',
          'task_evaluation_scene_retirement_generations.py')
 _DAEMONS = frozenset(('blueprint_pipeline.live_pipeline_intake_service',
                      'blueprint_pipeline.agent_execution.production'))
+_ACTIONS = frozenset(('blueprint_pipeline.control_plane_storage_gc',
+                     'blueprint_pipeline.task_evaluation_scene_retirement_cli'))
 _ERROR = 'scene_retirement_bootstrap_unproven'
 _MAX_SOURCE = 1024 * 1024
 
@@ -109,6 +111,62 @@ def _core_sources():
     return values
 
 
+def _action_sources(module):
+    _require(module in _ACTIONS)
+    values = _core_sources()
+    path = _RUNTIME_ROOT / 'src' / (module.replace('.', '/') + '.py')
+    raw, identity = _source(path, retain_identity=True)
+    values[module] = (path, raw)
+    values.identities = MappingProxyType(dict(values.identities) | {module: identity})
+    return values
+
+
+def _directory(path):
+    descriptors = []
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        _component(os.fstat(fd), directory=True)
+        descriptors.append(fd)
+        for name in path.parts[1:]:
+            before = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            _component(before, directory=True)
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=fd)
+            descriptors.append(child)
+            _require(_identity(os.fstat(child)) == _identity(before))
+            fd = child
+    except OSError as exc:
+        raise ValueError(_ERROR) from exc
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def _action_main(module, arguments):
+    """Root GC and door actions share one installed, isolated entry boundary."""
+    _directory(_RUNTIME_ROOT / 'src')
+    _directory(_RUNTIME_ROOT / 'dependencies')
+    _directory(_RUNTIME_ROOT / 'scripts')
+    stdlib = [value for value in sys.path if value and value.startswith('/usr/lib/python')]
+    _require(stdlib)
+    for path in stdlib:
+        if Path(path).is_dir():
+            _directory(Path(path))
+    sys.path[:] = [str(_RUNTIME_ROOT / 'src'), str(_RUNTIME_ROOT / 'dependencies'),
+                   str(_RUNTIME_ROOT), *stdlib]
+    os.chdir('/')
+    loader = _SourceOnly(_action_sources(module))
+    sys.meta_path.insert(0, loader)
+    try:
+        supervisor = importlib.import_module('blueprint_pipeline.task_evaluation_scene_retirement_supervisor')
+        with supervisor._installed_policy_binding():
+            selected = importlib.import_module(module)
+            _require(callable(getattr(selected, 'main', None)))
+            return selected.main(arguments)
+    finally:
+        sys.meta_path.remove(loader)
+
+
 class _SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def __init__(self, values):
         self.values = MappingProxyType(dict(values))
@@ -136,14 +194,18 @@ def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     _require(sys.flags.isolated == 1 and sys.flags.no_site == 1
              and os.getuid() == os.geteuid() == 0
-             and len(arguments) >= 2 and arguments[0] == '--continuous-module'
-             and arguments[1] in _DAEMONS
-             and (len(arguments) == 2 or arguments[2] == '--'))
+             and 2 <= len(arguments) <= 64
+             and all(type(value) is str and len(value.encode()) <= 4096 for value in arguments))
+    _require((arguments[0] == '--continuous-module' and arguments[1] in _DAEMONS
+              and (len(arguments) == 2 or arguments[2] == '--'))
+             or (arguments[0] == '--action-module' and arguments[1] in _ACTIONS))
     _require(not any(name == 'blueprint_pipeline' or name.startswith('blueprint_pipeline.')
                      for name in sys.modules))
-    loader = _SourceOnly(_core_sources())
     os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
     sys.dont_write_bytecode = True
+    if arguments[0] == '--action-module':
+        return _action_main(arguments[1], arguments[2:])
+    loader = _SourceOnly(_core_sources())
     sys.meta_path.insert(0, loader)
     try:
         module = importlib.import_module('blueprint_pipeline.task_evaluation_scene_retirement_supervisor')
