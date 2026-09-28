@@ -13,6 +13,7 @@ from . import control_plane_lane_scratch as primitive
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_retirement_access import _identity, _opened, _require
 from .task_evaluation_scene_retirement_generations import _guard
+from .task_evaluation_scene_retirement_authority import selected_document
 from .task_evaluation_scene_retirement_preservation import _payload, _scan, _snapshot
 
 
@@ -25,11 +26,20 @@ def inventory_digest(preserved,index):
     return canonical_digest({'files':files,'directories':directories})
 
 
-def _verify_current(preserved,index,allowance,removed_inodes):
+def _verify_current(preserved,index,allowance,removed_inodes,*,detached_path=None):
     member=preserved['members'][index]
     files,directories=[],[]
-    current=_scan(Path(member['path']),index,allowance,files,directories)
-    _require(current['snapshot']==member['snapshot'],'scene_retirement_member_changed')
+    root=Path(member['path']) if detached_path is None else detached_path
+    current=_scan(root,index,allowance,files,directories)
+    if detached_path is None:
+        _require(current['snapshot']==member['snapshot'],'scene_retirement_member_changed')
+    else:
+        # A proved atomic rename can change only the root directory ctime here.
+        # All remaining root attributes, exact child names and every payload
+        # snapshot/hash still bind the original prejournaled inventory.
+        _require(current['snapshot'][:-2]==member['snapshot'][:-2]
+                 and current['snapshot'][-1]==member['snapshot'][-1],
+                 'scene_retirement_member_changed')
     expected_files={row['relative_path']:row for row in preserved['files'] if row['member_index']==index}
     expected_directories={row['relative_path']:row for row in preserved['directories'] if row['member_index']==index}
     _require({row['relative_path'] for row in files}==expected_files.keys()
@@ -49,7 +59,7 @@ def _verify_current(preserved,index,allowance,removed_inodes):
             _require(row['snapshot']==original['snapshot'],'scene_retirement_member_changed')
         checked=dict(original,snapshot=row['snapshot'])
         digest=hashlib.sha256()
-        for chunk in _payload(Path(member['path'])/row['relative_path'],checked,allowance):
+        for chunk in _payload(root/row['relative_path'],checked,allowance):
             digest.update(chunk)
         _require('sha256:'+digest.hexdigest()==original['sha256'],'scene_retirement_payload_changed')
 
@@ -70,19 +80,41 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
     source=Path(member['path'])
     destination=source.parent/('.scene-retirement-'+journal.token+'-'+str(member_index))
     removed=removed_inodes if removed_inodes is not None else {}
-    _verify_current(preserved,member_index,allowance,removed)
+    plans=[row for row in journal.events if row['event']=='detach_planned' and row['member_key']==str(member_index)]
+    _require(len(plans)<=1,'scene_retirement_journal_chain_unproven')
     with _opened(source.parent,directory=True) as (parent,parent_info):
         parent_identity=_identity(parent_info)
         evidence=dict(canonical_path=str(source),detached_path=str(destination),generation_id=generation_id,
                       pre_identity=member['physical_identity'],parent_identity=list(parent_identity),
                       inventory_sha256=inventory_digest(preserved,member_index))
-        planned=journal.append('detach_planned',member_key=str(member_index),evidence=evidence)
+        if plans:
+            prior=selected_document(plans[0]['raw_ref'],maximum=65536,protected=True)
+            _require(prior.get('event')=='detach_planned' and prior.get('token')==journal.token
+                     and prior.get('member_key')==str(member_index) and prior.get('evidence')==evidence,
+                     'scene_retirement_journal_chain_unproven')
+            planned=plans[0]['raw_ref']
+        else:
+            planned=None
         allowance.tick()
         _current_parent(source.parent,parent,parent_identity)
-        _require(list(_identity(os.stat(source.name,dir_fd=parent,follow_symlinks=False)))==member['physical_identity'])
-        # This is the existing supported Linux/macOS atomic NO-REPLACE primitive,
-        # never a check followed by an overwriting rename or whole-tree rmtree.
-        primitive._publish_no_replace(parent,source.name,destination.name)
+        try:
+            original=os.stat(source.name,dir_fd=parent,follow_symlinks=False)
+        except FileNotFoundError:
+            _require(planned is not None,'scene_retirement_member_changed')
+            _current_parent(source.parent,parent,parent_identity)
+            found=os.stat(destination.name,dir_fd=parent,follow_symlinks=False)
+            _require(list(_identity(found))==member['physical_identity'],'scene_retirement_member_changed')
+            _verify_current(preserved,member_index,allowance,removed,detached_path=destination)
+        else:
+            _require(list(_identity(original))==member['physical_identity'],'scene_retirement_member_changed')
+            _verify_current(preserved,member_index,allowance,removed)
+            if planned is None:
+                planned=journal.append('detach_planned',member_key=str(member_index),evidence=evidence)
+            allowance.tick()
+            _current_parent(source.parent,parent,parent_identity)
+            _require(list(_identity(os.stat(source.name,dir_fd=parent,follow_symlinks=False)))==member['physical_identity'])
+            # Atomic NO-REPLACE, never check then overwrite or orphan adoption.
+            primitive._publish_no_replace(parent,source.name,destination.name)
         allowance.tick()
         _current_parent(source.parent,parent,parent_identity)
         _require(list(_identity(os.stat(destination.name,dir_fd=parent,follow_symlinks=False)))==member['physical_identity'])
