@@ -260,9 +260,11 @@ jobs:
       - name: Install and protect real system-Python dependencies
         run: |
           set -euo pipefail
-          test "$(readlink -f /proc/1/exe)" = /usr/lib/systemd/systemd
-          test -f /sys/fs/cgroup/cgroup.controllers
           sudo -n true
+          manager="$(sudo -n readlink -f /proc/1/exe)"
+          printf 'PID 1 executable: %s\n' "$manager"
+          test "$manager" = /usr/lib/systemd/systemd
+          test -f /sys/fs/cgroup/cgroup.controllers
           sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-native-test-venv
           uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv
           uv lock --check
