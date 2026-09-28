@@ -1,7 +1,7 @@
 #!/bin/bash
 # Parameterized arena construction launch.
-#   PREV=r10 CUR=r11 ARENA_SCRATCH_OWNER=<owner> ARENA_SCRATCH_RUN_REF=<run> \
-#     ARENA_SCRATCH_TTL_SECONDS=<seconds> bash scripts/arena_construction_launch_chain.sh
+# Root issue/create of arena_owner_review.v1 must precede a new attempt.
+#   PREV=r10 CUR=r11 bash scripts/arena_construction_launch_chain.sh
 # Every step is idempotent: single-write receipts are skipped when present, so
 # the script is safe to re-run after any failure.
 set -euo pipefail
