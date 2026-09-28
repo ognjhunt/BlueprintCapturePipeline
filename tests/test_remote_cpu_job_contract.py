@@ -418,7 +418,7 @@ def test_records_refuse_url_and_credential_shaped_keys_and_values(tmp_path: Path
         "descriptor": descriptor,
         "worker_identity": contract.worker_identity_for(descriptor["execution"], EXECUTION),
         "outcome": "completed",
-        "compute": _compute(),
+        "compute": _compute(descriptor),
         "provider": _provider(),
         "observed_at_epoch": 2_000_000_000.0,
     }
@@ -531,7 +531,7 @@ def test_records_refuse_surrogates_deep_nesting_and_oversized_receipts_with_type
     typed(lambda: contract.validate_descriptor(descriptor, config={**_config(), "project": lone}))
     typed(lambda: records.teardown_record(
         descriptor=dict(descriptor, mode=lone), worker_identity=None, outcome="expired",
-        compute=_compute(), provider=_provider(), observed_at_epoch=2_000_000_000.0,
+        compute=_compute(descriptor), provider=_provider(), observed_at_epoch=2_000_000_000.0,
     ))
     typed(lambda: records.pointer_record({**_pointer_fields(descriptor), "compilation_id": lone}))
 
@@ -624,7 +624,7 @@ def test_blocked_receipt_with_release_path_misses_is_not_terminal() -> None:
     )
 
 
-def _compute(**changes) -> dict:
+def _compute(descriptor: dict, **changes) -> dict:
     compute = {
         "execution_completed": True,
         "running_count": 0,
@@ -632,6 +632,9 @@ def _compute(**changes) -> dict:
         "listing_pages": 3,
         "executions_for_attempt": 1,
         "unfinished_executions_for_attempt": 0,
+        "transport_object": (f"gs://blueprint-8c1ca-remote-cpu-transport/transport/{descriptor['job_id']}/"
+                             f"{descriptor['attempt_id']}-{'a' * 32}.json"),
+        "transport_generation": 7,
         "transport_deleted": True,
         "transport_absent_at_generation": True,
     }
@@ -695,7 +698,7 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
 
     unproven = records.teardown_record(
         descriptor=descriptor, worker_identity=identity, outcome="completed",
-        compute=_compute(), provider=_provider(), observed_at_epoch=1_999_998_000.0,
+        compute=_compute(descriptor), provider=_provider(), observed_at_epoch=1_999_998_000.0,
     )
     assert unproven["compute_zero_proven"] is True and unproven["provider_zero_proven"] is False
     assert "remote_cpu_pointer_teardown_not_provider_zero" in _reasons(
@@ -703,19 +706,25 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
     )
     still_running = records.teardown_record(
         descriptor=descriptor, worker_identity=identity, outcome="completed",
-        compute=_compute(unfinished_executions_for_attempt=1), provider=_provider(), observed_at_epoch=2_000_000_000.0,
+        compute=_compute(descriptor, unfinished_executions_for_attempt=1), provider=_provider(),
+        observed_at_epoch=2_000_000_000.0,
     )
     assert still_running["compute_zero_proven"] is False and still_running["provider_zero_proven"] is False
     hidden_only = records.teardown_record(
         descriptor=descriptor, worker_identity=identity, outcome="completed",
-        compute=_compute(), provider=_provider(staging_versions_remaining=2), observed_at_epoch=2_000_000_000.0,
+        compute=_compute(descriptor), provider=_provider(staging_versions_remaining=2), observed_at_epoch=2_000_000_000.0,
     )
     assert hidden_only["provider_zero_proven"] is False
     teardown = records.teardown_record(
         descriptor=descriptor, worker_identity=identity, outcome="completed",
-        compute=_compute(), provider=_provider(), observed_at_epoch=2_000_000_000.0,
+        compute=_compute(descriptor), provider=_provider(), observed_at_epoch=2_000_000_000.0,
     )
     assert teardown["provider_zero_proven"] is True
+    other_transport = _compute(_descriptor(attempt=2, nonce="f" * 32))
+    assert "remote_cpu_teardown_transport_unbound" in _reasons(lambda: records.teardown_record(
+        descriptor=descriptor, worker_identity=identity, outcome="completed",
+        compute=other_transport, provider=_provider(), observed_at_epoch=2_000_000_000.0,
+    ))
 
     proven = records.pointer_record({}, previous=landed, teardown=teardown)
     assert proven["teardown_receipt_digest"] == teardown["teardown_digest"]
@@ -754,7 +763,7 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
     other = _descriptor(attempt=2, nonce="f" * 32)
     foreign = records.teardown_record(
         descriptor=other, worker_identity=identity, outcome="completed",
-        compute=_compute(), provider=_provider(), observed_at_epoch=2_000_000_000.0,
+        compute=_compute(other), provider=_provider(), observed_at_epoch=2_000_000_000.0,
     )
     assert "remote_cpu_pointer_teardown_attempt_mismatch" in _reasons(
         lambda: records.pointer_record({}, previous=landed, teardown=foreign)

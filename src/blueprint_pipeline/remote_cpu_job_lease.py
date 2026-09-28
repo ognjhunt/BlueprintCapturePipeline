@@ -232,14 +232,22 @@ def _apply_updates(lease: dict[str, Any], updates: Mapping[str, Any]) -> None:
             raise RemoteCpuLeaseError("remote_cpu_lease_transport_immutable")
         lease["transport_object"], lease["transport_generation"] = name, generation
     if "compute_zero" in updates:
-        if not compute_zero_proven(updates["compute_zero"], worker_identity=lease["worker_identity"]):
+        evidence = updates["compute_zero"]
+        proven = compute_zero_proven(evidence, worker_identity=lease["worker_identity"])
+        if (evidence["transport_object"], evidence["transport_generation"]) != (
+                lease["transport_object"], lease["transport_generation"]):
+            raise RemoteCpuLeaseError("remote_cpu_lease_compute_zero_transport_mismatch")
+        if not proven:
             raise RemoteCpuLeaseError("remote_cpu_lease_compute_zero_unproven")
         lease["compute_zero_proven"] = True
     if "teardown" in updates:
         record = validate_teardown(updates["teardown"])
+        compute = record["compute_zero"]
+        claimed = (record["attempt_id"], record["descriptor_digest"], record["worker_identity"],
+                   compute["transport_object"], compute["transport_generation"])
         targets = [attempt for attempt in [*lease["prior_attempts"], lease]
-                   if (attempt["attempt_id"], attempt["descriptor_digest"], attempt["worker_identity"])
-                   == (record["attempt_id"], record["descriptor_digest"], record["worker_identity"])]
+                   if (attempt["attempt_id"], attempt["descriptor_digest"], attempt["worker_identity"],
+                       attempt["transport_object"], attempt["transport_generation"]) == claimed]
         if len(targets) != 1 or record["job_id"] != lease["job_id"]:
             raise RemoteCpuLeaseError("remote_cpu_lease_teardown_unbound")
         target = targets[0]
@@ -254,6 +262,9 @@ def _apply_updates(lease: dict[str, Any], updates: Mapping[str, Any]) -> None:
 
 def _enter(lease: dict[str, Any], state: str, now: float) -> None:
     if state == "dispatching":
+        # Compute-zero needs the transport deleted at its generation, so it is on record before any run.
+        if lease["transport_object"] is None:
+            raise RemoteCpuLeaseError("remote_cpu_lease_transport_missing")
         limits, started = lease["limits"], float(now)
         hard = hard_deadline_epoch(started, limits)
         start_by = started + limits["start_allowance_seconds"]
@@ -263,9 +274,6 @@ def _enter(lease: dict[str, Any], state: str, now: float) -> None:
         lease["lease_expires_at_epoch"] = min(start_by, hard)
     if state in {"dispatched", "running", "collecting"} and lease["worker_identity"] is None:
         raise RemoteCpuLeaseError("remote_cpu_lease_worker_identity_missing")
-    if state == "dispatched" and lease["transport_object"] is None:
-        # Compute-zero needs the transport deleted at its generation, so it must be on record.
-        raise RemoteCpuLeaseError("remote_cpu_lease_transport_missing")
     if state == "running" and lease["heartbeat"] is None:
         raise RemoteCpuLeaseError("remote_cpu_lease_heartbeat_missing")
     if (state == "expired" or state in TERMINAL_STATES) and not lease["outcome"]:

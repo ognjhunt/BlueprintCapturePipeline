@@ -48,20 +48,24 @@ def _heartbeat(descriptor: dict, sequence: int, *, name: str = EXECUTION, phase:
     }
 
 
-def _compute(**changes) -> dict:
+def _compute(descriptor: dict, config: dict, **changes) -> dict:
     compute = {
         "execution_completed": True, "running_count": 0, "listing_complete": True, "listing_pages": 2,
-        "executions_for_attempt": 1, "unfinished_executions_for_attempt": 0, "transport_deleted": True,
-        "transport_absent_at_generation": True,
+        "executions_for_attempt": 1, "unfinished_executions_for_attempt": 0,
+        "transport_object": _transport(config, descriptor), "transport_generation": 7,
+        "transport_deleted": True, "transport_absent_at_generation": True,
     }
     compute.update(changes)
     return compute
 
 
-def _teardown(descriptor: dict, *, now: float, outcome: str = "completed", name: str | None = EXECUTION) -> dict:
+def _teardown(descriptor: dict, config: dict, *, now: float, outcome: str = "completed",
+              name: str | None = EXECUTION) -> dict:
+    compute = _compute(descriptor, config) if name else _compute(
+        descriptor, config, execution_completed=False, executions_for_attempt=0)
     return records.teardown_record(
         descriptor=descriptor, worker_identity=None if name is None else _identity(descriptor, name),
-        outcome=outcome, compute=_compute() if name else _compute(execution_completed=False, executions_for_attempt=0),
+        outcome=outcome, compute=compute,
         provider={"staging_versions_deleted": 3, "staging_versions_remaining": 0, "staging_listing_complete": True,
                   "urls_expire_at_epoch": now - 1, "named_objects_absent": False},
         observed_at_epoch=now,
@@ -110,9 +114,14 @@ def test_stale_heartbeat_expires_the_attempt_and_fences_a_late_receipt(tmp_path:
     )
     assert "remote_cpu_lease_compute_zero_unproven" in _reasons(lambda: lease.transition(
         root, job, attempt_id=attempt, to_state=None, now=T0 + 215,
-        updates={"compute_zero": _compute(unfinished_executions_for_attempt=1)},
+        updates={"compute_zero": _compute(first, config, unfinished_executions_for_attempt=1)},
     ))
-    lease.transition(root, job, attempt_id=attempt, to_state=None, now=T0 + 216, updates={"compute_zero": _compute()})
+    assert "remote_cpu_lease_compute_zero_transport_mismatch" in _reasons(lambda: lease.transition(
+        root, job, attempt_id=attempt, to_state=None, now=T0 + 215,
+        updates={"compute_zero": _compute(first, config, transport_generation=8)},
+    ))
+    lease.transition(root, job, attempt_id=attempt, to_state=None, now=T0 + 216,
+                     updates={"compute_zero": _compute(first, config)})
     claimed = lease.claim_handoff(root, descriptor=second, config=config, now=T0 + 217)
     assert (claimed["attempt"], claimed["attempt_id"], claimed["state"]) == (2, second["attempt_id"], "claimed")
     assert [(row["attempt_id"], row["compute_zero_proven"], row["provider_zero_proven"])
@@ -189,11 +198,13 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
     assert lease.slots_in_use(root) == 0
     lease.transition(root, job, attempt_id=attempt, to_state="awaiting_capacity", now=T0)
     assert lease.slots_in_use(root) == 0
-    lease.transition(root, job, attempt_id=attempt, to_state="dispatching", now=T0 + 1)
+    assert "remote_cpu_lease_transport_missing" in _reasons(
+        lambda: lease.transition(root, job, attempt_id=attempt, to_state="dispatching", now=T0 + 1)
+    )
+    assert lease.slots_in_use(root) == 0
+    lease.transition(root, job, attempt_id=attempt, to_state="dispatching", now=T0 + 1,
+                     updates={"transport_object": _transport(config, first), "transport_generation": 7})
     assert lease.slots_in_use(root) == 1
-    assert "remote_cpu_lease_transport_missing" in _reasons(lambda: lease.transition(
-        root, job, attempt_id=attempt, to_state="dispatched", now=T0 + 1, updates={"worker_identity": _identity(first)},
-    ))
     _dispatch(root, config, other, T0 + 2)
     assert lease.slots_in_use(root) == 2
 
@@ -201,7 +212,8 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
     assert _record(root, job)["outcome"] == "start_timeout"
     assert lease.slots_in_use(root) == 2
     lease.transition(root, job, attempt_id=attempt, to_state=None, now=T0 + 700,
-                     updates={"compute_zero": _compute(execution_completed=False, executions_for_attempt=0)})
+                     updates={"compute_zero": _compute(first, config, execution_completed=False,
+                                                       executions_for_attempt=0)})
     assert lease.slots_in_use(root) == 2
     assert "remote_cpu_lease_provider_zero_unproven" in _reasons(lambda: lease.transition(
         root, job, attempt_id=attempt, to_state="fallback_host", now=T0 + 701, updates={"outcome": "fallback_host"},
@@ -213,7 +225,8 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
     assert lease.slots_in_use(root) == 3
 
     lease.transition(root, job, attempt_id=second["attempt_id"], to_state=None, now=T0 + 5000,
-                     updates={"teardown": _teardown(first, now=T0 + 5000, outcome="expired:start_timeout", name=None)})
+                     updates={"teardown": _teardown(first, config, now=T0 + 5000, outcome="expired:start_timeout",
+                                                   name=None)})
     assert lease.slots_in_use(root) == 2
     assert _record(root, job)["prior_attempts"][0]["provider_zero_proven"] is True
 
@@ -223,7 +236,7 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
         root, other_job, attempt_id=other_attempt, to_state="completed", now=T0 + 5002, updates={"outcome": "completed"},
     ))
     done = lease.transition(root, other_job, attempt_id=other_attempt, to_state="completed", now=T0 + 5003,
-                            updates={"outcome": "completed", "teardown": _teardown(other, now=T0 + 5003)})
+                            updates={"outcome": "completed", "teardown": _teardown(other, config, now=T0 + 5003)})
     assert done["provider_zero_proven"] is True and done["teardown_digest"].startswith("sha256:")
     assert lease.slots_in_use(root) == 1
     assert not (root / "live" / other_job).exists() and (root / "live" / job).exists()

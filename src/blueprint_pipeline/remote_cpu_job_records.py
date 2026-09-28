@@ -55,6 +55,7 @@ from .remote_cpu_job_contract import (
 TEARDOWN_SCHEMA_VERSION = "remote_cpu_job_teardown.v1"
 POINTER_SCHEMA_VERSION = "remote_cpu_output_pointer.v1"
 POINTER_STATES = ("landed", "restored_full")
+_TRANSPORT_OBJECT = re.compile(r"gs://[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]/transport/[a-z0-9-]+/[a-z0-9-]+\.json")
 
 
 def fsync_directory(path: Path) -> None:
@@ -95,6 +96,8 @@ def write_remote_cpu_record(path: str | Path, value: Mapping[str, Any]) -> bool:
 _COMPUTE_SPEC = {
     "execution_completed": _flag, "running_count": _is_count, "listing_complete": _flag, "listing_pages": _is_count,
     "executions_for_attempt": _is_count, "unfinished_executions_for_attempt": _is_count,
+    # The evidence names the transport it proved deleted, so a lease can bind it to its own.
+    "transport_object": _matches(_TRANSPORT_OBJECT), "transport_generation": _positive,
     "transport_deleted": _flag, "transport_absent_at_generation": _flag,
 }
 _PROVIDER_SPEC = {
@@ -184,6 +187,9 @@ def validate_teardown(value: Mapping[str, Any]) -> dict[str, Any]:
     if record.get("teardown_digest") != canonical_digest(record, digest_field="teardown_digest"):
         reasons.append("remote_cpu_teardown_digest_mismatch")
     _raise_if(reasons)
+    transport = rf"gs://[^/]+/transport/{re.escape(record['job_id'])}/{re.escape(record['attempt_id'])}-[0-9a-f]{{32}}\.json"
+    if not re.fullmatch(transport, record["compute_zero"]["transport_object"]):
+        raise RemoteCpuContractError("remote_cpu_teardown_transport_unbound")
     compute_zero = compute_zero_proven(record["compute_zero"], worker_identity=record["worker_identity"])
     if record["compute_zero_proven"] is not compute_zero or record["provider_zero_proven"] is not _provider_zero(
             compute_zero, record["provider_zero"], record["observed_at_epoch"]):
