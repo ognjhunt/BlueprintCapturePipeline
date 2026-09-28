@@ -35,6 +35,33 @@ from .task_evaluation_scene_retirement_declared_bytes import verify_declared_byt
 _LIFETIME='scene_retirement_lifetime.v1'
 _TERMINAL={'completed','revoked_grace_elapsed','expired_grace_elapsed'}
 
+# Finite actual participating consumers. Source hashes for an arbitrary subset
+# do not establish closure; unknown future callsites require a reviewed update.
+_COHORT_CALLS={
+    'task_evaluation_scene_intake':'reserve_scene_attempt stage_scene_intent',
+    'task_evaluation_scene_progression':'process_scene_intents',
+    'task_evaluation_launch_preparation_worker':'materialize_preparation_references materialize_recipe_configuration_references materialize_recipe_supplemental_destination_references process_launch_preparation_queue',
+    'task_evaluation_launch_activation_worker':'process_launch_activation_queue',
+    'task_evaluation_episode_compilation_worker':'process_episode_compilation_queue',
+    'task_evaluation_sam31_prefix_adoption':'materialize_completed_prefix_adoption publish_adoption_release_binding validate_completed_prefix_adoption',
+    'task_evaluation_sam31_preparation_execution':'process_sam31_phase_queue',
+    'task_evaluation_scene_configuration_sam31_preparation_driver':'advance_sam31_preparation',
+    'task_evaluation_launch_dispatcher':'dispatch_launch_request process_launch_queue',
+    'task_evaluation_policy_canary_dispatcher':'dispatch_policy_canary_activation process_policy_canary_activation_results process_policy_canary_dispatch_queue',
+    'task_evaluation_scene_configuration_submission_publication':'publish_scene_configuration_submission',
+    'website_scene_dispatch':'materialize_website_attempt register_website_preparation resolve_website_source',
+    'website_native_submission':'materialize_website_submission validate_website_publication verified_submission_inputs',
+    'artifixer_completed_training_reuse':'stage_completed_review stage_completed_training',
+    'control_plane_storage_pins':'release_storage_pin write_storage_pin',
+    'pubsub_handoff_listener':'process_handoff_payload pull_and_process stage_handoff_capture',
+    'task_evaluation_terminal_scene_attempt_settlement':'budget_retained_hold retained_hold settle_retired_attempt_rows sweep_retired_attempts validate_terminal_settlement',
+    'task_evaluation_scene_owner_authority':'reopen_scene_intent validate_task_scene_owner',
+    'live_pipeline_result_artifact_resolution':'resolve_live_pipeline_result_artifact',
+    'live_pipeline_result_artifact_response':'ResultArtifactFileResponse.__call__ result_artifact_response',
+}
+_REQUIRED_COHORT=frozenset('blueprint_pipeline.'+module+':'+name
+    for module,names in _COHORT_CALLS.items() for name in names.split())
+
 
 def _kept(reason, *, journal=None, members=()):
     result=dict(schema_version='scene_retirement_action_result.v1',status='kept',action='KEEP',
@@ -107,7 +134,15 @@ def _transition(policy, prior, *, state, token, journal_ref, inventory_sha256=No
 
 def _installed_cohort(policy, allowance):
     rows=policy['consumer_cohort']
-    _require(rows,'scene_retirement_cohort_unproven')
+    _require(type(rows) is list and 1<=len(rows)<=256,'scene_retirement_cohort_unproven')
+    names=set()
+    for row in rows:
+        allowance.tick()
+        _require(type(row) is dict and type(row.get('entrypoint')) is str
+                 and len(row['entrypoint'])<=256 and row['entrypoint'] not in names,
+                 'scene_retirement_cohort_unproven')
+        names.add(row['entrypoint'])
+    _require(names==_REQUIRED_COHORT,'scene_retirement_cohort_unproven')
     for row in rows:
         allowance.tick()
         entrypoint=row['entrypoint']
