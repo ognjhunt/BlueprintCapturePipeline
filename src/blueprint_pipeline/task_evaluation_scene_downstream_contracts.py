@@ -79,24 +79,24 @@ def bounded_size(value, limit, *, work_budget=None):
             size += 2 + max(0, len(item) - 1)
             stack.extend(_work_items(item, work_budget) if work_budget is not None else item)
         elif isinstance(item, str):
-            require(len(item) <= limit - size, 'output_limit', **_work_kwargs(work_budget))
+            require(len(item) <= limit - size, 'output_limit', work_budget=work_budget) if work_budget is not None else require(len(item) <= limit - size, 'output_limit')
             size += 2
             for char in (_work_items(item, work_budget) if work_budget is not None else item):
                 code = ord(char)
-                require(not 0xD800 <= code <= 0xDFFF, 'json_invalid', **_work_kwargs(work_budget))
+                require(not 0xD800 <= code <= 0xDFFF, 'json_invalid', work_budget=work_budget) if work_budget is not None else require(not 0xD800 <= code <= 0xDFFF, 'json_invalid')
                 size += (2 if char in '"\\\b\f\n\r\t' else 6 if code < 32 else
                          1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
-                require(size <= limit, 'output_limit', **_work_kwargs(work_budget))
+                require(size <= limit, 'output_limit', work_budget=work_budget) if work_budget is not None else require(size <= limit, 'output_limit')
         elif item is None:
             size += 4
         elif type(item) is bool:
             size += 4 if item else 5
         elif type(item) in (int, float):
-            require(math.isfinite(item), 'json_invalid', **_work_kwargs(work_budget))
+            require(math.isfinite(item), 'json_invalid', work_budget=work_budget) if work_budget is not None else require(math.isfinite(item), 'json_invalid')
             size += len((_work_call(work_budget, json.dumps, item, allow_nan=False) if work_budget is not None else json.dumps(item, allow_nan=False)))
         else:
-            require(False, 'json_invalid', **_work_kwargs(work_budget))
-        require(size <= limit, 'output_limit', **_work_kwargs(work_budget))
+            require(False, 'json_invalid', work_budget=work_budget) if work_budget is not None else require(False, 'json_invalid')
+        require(size <= limit, 'output_limit', work_budget=work_budget) if work_budget is not None else require(size <= limit, 'output_limit')
     return size
 
 
