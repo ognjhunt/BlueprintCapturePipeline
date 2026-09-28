@@ -1,5 +1,8 @@
 # Control-plane storage: budget, content stores, and reclaim
 
+For capacity pages, queue ETAs, and operator actions, use the
+[capacity response runbook](runbooks/control-plane-capacity.md).
+
 Status: operating contract for the production control plane (the single
 Task Evaluation host). Measured 2026-09-02 on a 154 GB root disk at 98 %.
 
@@ -52,7 +55,9 @@ bytes). `BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS` maps each bulk role to its
 absolute write root; unspecified roles use the default target. A malformed map
 fails closed for the whole chain. The launch-preparation, launch-activation, and
 task-evaluation-launch intakes refuse a submission (HTTP 503, typed blocker)
-while its role is refused.
+while their roles are refused. The signed scene-intent intake accepts and queues
+the intent with `capacity.state=queued_for_capacity`; scene progression waits for
+whole-chain capacity before execution.
 The staging reservation is renewed while a blob download is in progress, so a
 long download does not release its bytes merely because the original lease
 period elapsed.

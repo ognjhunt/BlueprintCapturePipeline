@@ -415,10 +415,14 @@ def _release_scratch_inputs(path: Path) -> dict[str, Any]:
     when every one of its links was inside the tree, so a copy and its materialized
     names free its bytes once, and a name shared with the production store frees
     nothing. This replay made the tree and its parent, so a symlink at either is
-    refused, and the walk never enters a linked directory.
+    refused, and the walk never enters a linked directory. rmtree crosses mount points,
+    so the release is refused, removing nothing, when the tree or any entry the walk meets
+    in it shows another st_dev than the replay's root; a bind mount of the same filesystem
+    keeps its st_dev and cannot be told apart this way.
     """
 
     released = {"files": 0, "inodes": 0, "bytes": 0}
+    cross_device = {**released, "refused": "replay_scratch_inputs_cross_device"}
     links: dict[tuple[int, int], list[int]] = {}
     try:
         # Inside the try: this runs in replay_parent's finally, where raising would replace
@@ -427,9 +431,16 @@ def _release_scratch_inputs(path: Path) -> dict[str, Any]:
             return {**released, "refused": "replay_scratch_inputs_unsafe"}
         if not path.is_dir():
             return released
-        for directory, _directories, names in os.walk(path):
+        device = os.lstat(path.parent).st_dev
+        if os.lstat(path).st_dev != device:
+            return cross_device
+        for directory, directories, names in os.walk(path):
+            if any(os.lstat(os.path.join(directory, name)).st_dev != device for name in directories):
+                return cross_device
             for name in names:
                 info = os.lstat(os.path.join(directory, name))
+                if info.st_dev != device:
+                    return cross_device
                 if stat.S_ISREG(info.st_mode):
                     released["files"] += 1
                     links.setdefault((info.st_dev, info.st_ino), [info.st_size, info.st_nlink, 0])[2] += 1

@@ -98,7 +98,28 @@ def _restore_environment(config: DoorConfig, request: dict[str, Any]) -> dict[st
             "DOOR_BUCKET": request["bucket"]}
 
 
-def _retire_properties(config: DoorConfig) -> tuple[str, ...]:
+def _scratch_root(config: DoorConfig, request: dict[str, Any]) -> str:
+    return config.lane_scratch_work_root if request["root"] == "work" else config.lane_scratch_inputs_root
+
+
+def _scratch_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+              "DOOR_SCRATCH_ROOT": _scratch_root(config, request),
+              "DOOR_SCRATCH_ACTION": request["action"], "DOOR_SCRATCH_LANE": request["lane"]}
+    for field in ("name", "owner", "expected_digest", "ttl_seconds", "limit", "offset"):
+        if field in request:
+            values["DOOR_SCRATCH_" + field.upper()] = str(request[field])
+    return values
+
+
+def _scratch_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
+    results = str(Path(config.spool_root) / "results")
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes",
+            f"ReadWritePaths={_scratch_root(config, request)} {results}")
+
+
+def _retire_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
     """Limit retirement to its spool, coordination locks, and result."""
 
     results = str(Path(config.spool_root) / "results")
@@ -121,7 +142,7 @@ class _LaunchSpec:
     runtime_max: str
     label: Callable[[dict[str, Any]], str]
     environment: Callable[[DoorConfig, dict[str, Any]], dict[str, str]]
-    properties: Callable[[DoorConfig], tuple[str, ...]] = lambda _config: ()
+    properties: Callable[[DoorConfig, dict[str, Any]], tuple[str, ...]] = lambda _config, _request: ()
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
@@ -137,6 +158,10 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
     "restore-scene-workspace": _LaunchSpec("blueprint-operator-door-restore", "door-restore-scene-workspace.sh", "2h",
                                            lambda request: hashlib.sha256(request["scene_id"].encode("utf-8"))
                                            .hexdigest()[:12], _restore_environment, _retire_properties),
+    "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
+                                lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
+                                                                .encode("utf-8")).hexdigest()[:12],
+                                _scratch_environment, _scratch_properties),
 }
 
 
@@ -159,7 +184,7 @@ def _launch(config: DoorConfig, runner: CommandRunner, request_id: str, request:
         "systemd-run", f"--unit={unit}", "--collect", "--service-type=exec",
         f"--property=TimeoutStartSec={spec.runtime_max}", "--setenv=PYTHONDONTWRITEBYTECODE=1",
         f"--property=RuntimeMaxSec={spec.runtime_max}",
-        *(f"--property={value}" for value in spec.properties(config)),
+        *(f"--property={value}" for value in spec.properties(config, request)),
         *_script_env(config, request_id, request),
         "--", "/bin/bash", f"{config.install_root}/{spec.script}",
     ]

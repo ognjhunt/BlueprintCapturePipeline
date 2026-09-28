@@ -55,6 +55,8 @@ class DoorConfig:
     control_plane_state: str = _CONTROL_PLANE
     # The capacity controller's secret-free summary: its other reports are root-only.
     capacity_summary: str = f"{_CONTROL_PLANE}/capacity/summary.json"
+    lane_scratch_work_root: str = "/mnt/blueprint-work/lanes"
+    lane_scratch_inputs_root: str = "/var/lib/blueprint/task-evaluation-inputs/lanes"
     active_release_link: str = "/opt/blueprint/task-evaluation-control-plane"
     unit_prefix: str = "blueprint-"
     controller_units: tuple[str, ...] = (
@@ -107,6 +109,7 @@ _PATH_SCALARS = (
     "state_root", "token_file", "install_root", "control_plane_state", "active_release_link",
     "source_clone", "reference_repo", "github_deploy_key", "github_known_hosts", "venv_python",
     "capacity_summary",
+    "lane_scratch_work_root", "lane_scratch_inputs_root",
 )
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 

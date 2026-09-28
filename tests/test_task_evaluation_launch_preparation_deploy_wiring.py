@@ -452,7 +452,7 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
     ]
     assert not set(roots(PLAN_ONLY_DERIVED_ROOTS_ENV)) & set(roots(DERIVED_ROOTS_ENV))
     assert "ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations" in service
-    # Activation lookaheads (configured-controls work state) keep their leaked store copies until the
+    # Activation lookaheads (configured-controls work state) keep their leaked scratch inputs until the
     # owner opts in; the root is optional so a host without activations still starts the unit.
     activations = (
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls/"

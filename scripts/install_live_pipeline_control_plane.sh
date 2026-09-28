@@ -17,6 +17,7 @@ CONFIGURED_CONTROLS_PLAN_ROOT="${CONFIGURED_CONTROLS_PLAN_ROOT:-${ENV_DIR}/task-
 CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT="${CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT:-${ENV_DIR}/task-evaluation-configured-controls-intents}"
 CONFIGURED_CONTROLS_WEBAPP_SECRET="${CONFIGURED_CONTROLS_WEBAPP_SECRET:-${PROVIDER_SECRETS_DIR}/blueprint_task_evaluation_launch_submit_secret}"
 TASK_EVALUATION_INPUT_ROOT="${TASK_EVALUATION_INPUT_ROOT:-/var/lib/blueprint/task-evaluation-inputs}"
+WORK_VOLUME_ROOT="${WORK_VOLUME_ROOT:-/mnt/blueprint-work}"
 CAPTURE_RECONSTRUCTION_POLICY_DIR="${CAPTURE_RECONSTRUCTION_POLICY_DIR:-${ENV_DIR}/capture-reconstruction-policies}"
 CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/Caddyfile}"
 SERVICE_USER="${SERVICE_USER:-blueprint}"
@@ -48,6 +49,7 @@ Environment overrides:
   CREDENTIALS_DIR=/etc/blueprint/credentials
   LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
   TASK_EVALUATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs
+  WORK_VOLUME_ROOT=/mnt/blueprint-work
   CAPTURE_RECONSTRUCTION_POLICY_DIR=/etc/blueprint/capture-reconstruction-policies
   CADDY_SITE_FILE=/etc/caddy/Caddyfile
   SERVICE_USER=blueprint
@@ -94,6 +96,14 @@ run() {
 
 if [[ "${EUID}" -ne 0 && "${DRY_RUN}" != "true" ]]; then
   echo "Run as root or use --dry-run." >&2
+  exit 1
+fi
+if [[ -L "${WORK_VOLUME_ROOT}" ]]; then
+  echo "ERROR: work volume root is a symlink" >&2
+  exit 1
+fi
+if [[ "${DRY_RUN}" != "true" ]] && ! mountpoint -q -- "${WORK_VOLUME_ROOT}"; then
+  echo "ERROR: mount the work volume before installing the lane scratch root" >&2
   exit 1
 fi
 
@@ -187,8 +197,11 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${TASK_EVALUATION_INPUT_ROOT}/prepared-references" \
   "${TASK_EVALUATION_INPUT_ROOT}/compiled-episodes" \
   "${TASK_EVALUATION_INPUT_ROOT}/launch-activations" \
+  "${TASK_EVALUATION_INPUT_ROOT}/lanes" \
   "${TASK_EVALUATION_INPUT_ROOT}/policy-canary-execution-setups" \
   "${TASK_EVALUATION_INPUT_ROOT}/system-runtimes"
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${WORK_VOLUME_ROOT}/lanes"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discoveries" \
   "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discovery-outputs"

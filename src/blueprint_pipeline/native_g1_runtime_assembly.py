@@ -214,6 +214,7 @@ def run_g1_supervised_built_scene_episode(
             "scene_plan_digest": plan.get("plan_digest"),
             "candidate_id": candidate_id,
             "server_lease_receipt": lease.receipt if lease is not None else None,
+            "policy_query_timing": getattr(lease.client, "inference_timing_receipt", None) if lease is not None else None,
             "episode_result_digest": episode.get("result_digest") if episode is not None else None,
             "server_teardown": teardown,
             "blocker": type(failure).__name__ if failure is not None else None,
