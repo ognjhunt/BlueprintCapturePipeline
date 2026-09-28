@@ -134,3 +134,33 @@ def test_owner_expiry_also_restricts_original_monotonic_time_when_wall_clock_sta
     finally:
         files.finish()
         files.budget.close()
+
+
+def test_interrupted_scan_permanently_consumes_two_passes_without_new_operation(
+    retirement_installation, monkeypatch
+):
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline.control_plane_lane_owner_target_versions import OwnerTargetVersionError
+
+    setup = retirement_installation
+    grant = issue(setup)
+    birth(setup, grant)
+    calls = []
+
+    def interrupted(*args, **kwargs):
+        calls.append(True)
+        raise OwnerTargetVersionError("injected_manifest_acquisition_failure")
+
+    monkeypatch.setattr(actions, "_manifest", interrupted)
+    for number in range(2):
+        with pytest.raises(ValueError, match="injected_manifest_acquisition_failure"):
+            _issue_action(setup, grant)
+        records = list(setup[2].glob("operations/*/scan-issue-*-reserved.json"))
+        assert len(records) == number + 1
+        assert len({path.parent.name for path in records}) == 1
+        record = json.loads(records[-1].read_bytes())
+        assert record["reserved_member_operations"] == 4096
+        assert record["reserved_batches"] == 256
+    with pytest.raises(ValueError, match="experiment_scan_pass_exhausted"):
+        _issue_action(setup, grant)
+    assert len(calls) == 2
