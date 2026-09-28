@@ -217,3 +217,32 @@ def test_native_installed_uri_resolution_observes_actual_selected_source_before_
     )
     with pytest.raises(ValueError, match="experiment_external_publisher_unsupported"):
         mapping.resolve("https://publisher.example/pinned", source.digest, source.size_bytes)
+
+
+@pytest.mark.parametrize("value", [float("inf"), 1 << 5000], ids=["nonfinite", "oversize_integer"])
+def test_publisher_native_scalar_size_is_refused_before_encoding(value):
+    from blueprint_pipeline.control_plane_registered_reference_gate import (
+        refuse_registered_references,
+    )
+
+    with pytest.raises(ValueError, match="experiment_publisher_input_limit"):
+        refuse_registered_references(value)
+
+
+def test_publisher_overlong_native_path_is_rejected_before_string_growth(monkeypatch):
+    from pathlib import Path
+    from blueprint_pipeline.control_plane_registered_reference_gate import (
+        refuse_registered_references,
+    )
+
+    selected = Path("/" + "x" * 5000)
+    original = Path.__str__
+
+    def guarded(path):
+        if path is selected:
+            pytest.fail("overlong native Path was expanded before bounds")
+        return original(path)
+
+    monkeypatch.setattr(Path, "__str__", guarded)
+    with pytest.raises(ValueError, match="experiment_publisher_input_limit"):
+        refuse_registered_references(selected)
