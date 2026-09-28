@@ -683,10 +683,12 @@ HTTPServer((a.host,a.port),Handler).serve_forever()
     assert completion["kernel_unit"]["kernel"]["tasks"] == 0
     assert completion["kernel_unit"]["finished"]["ActiveState"] == "inactive"
     roundtrip = _linux_completed_gc_restore(value, grant, born, receipt, paths, now, account, pins)
+    arena_result = _linux_arena_owner_review(value, account, pins, now)
     return dict(
         status="passed",
         actual_uid=account.pw_uid,
         candidates=2,
+        **arena_result,
         **roundtrip,
         actual_systemd=True,
         actual_native_child=True,
@@ -695,6 +697,105 @@ HTTPServer((a.host,a.port),Handler).serve_forever()
         postpair_reader_sh=True,
         exec_start=completion["kernel_unit"]["started"]["ExecStart"],
     )
+
+
+def _linux_arena_owner_review(value, account, pins, origin):
+    """Actual ordinary UID, current SH writer, then shipped GC KEEP only."""
+    import fcntl
+    import select
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    from blueprint_pipeline import control_plane_lane_experiment_birth as birth
+    from blueprint_pipeline import control_plane_arena_scratch as arena
+
+    lane = Path(value["settings"]["lane_scratch_inputs_root"]) / "arena"
+    lane.mkdir(mode=0o750)
+    os.chown(lane, 0, account.pw_gid)
+    issued = origin + 1806
+    grant = issuer.issue_experiment_creation_intent(
+        installed_config_path=value["config"], principal="operator", owner="owner",
+        root="inputs", reference_value="arena-launch-r33", lease_ttl_seconds=30,
+        participant_profile="arena_owner_review.v1", request_records=(), now=lambda: issued)
+    born = birth.create_registered_experiment(grant["intent_id"], expected_intent=grant["intent"],
+        installed_config_path=value["config"], now=lambda: issued + 1)
+    target = Path(born["path"])
+    ready_read, ready_write = os.pipe()
+    finish_read, finish_write = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(ready_read)
+        os.close(finish_write)
+        try:
+            os.initgroups("blueprint", account.pw_gid)
+            os.setgid(account.pw_gid)
+            os.setuid(account.pw_uid)
+            for private in (value["config"], value["policy"],
+                            value["config"].parent / "state/requests/experiment-records"):
+                try:
+                    fd = os.open(private, os.O_RDONLY)
+                except PermissionError:
+                    pass
+                else:
+                    os.close(fd)
+                    raise AssertionError("Arena ordinary UID opened private owner authority")
+            with arena.admit_registered_arena_attempt("r33", now=lambda: issued + 2) as use:
+                assert use.path == target and use.entry["intent_id"] == grant["intent_id"]
+                assert arena.prepare_arena_attempt("r33", _registered_use=use) == target
+                payload = arena.mkdir_arena_payload("r33", "arena_packet", _registered_use=use)
+                assert payload == target / "arena_packet"
+                use.check()
+                (payload / "evidence").write_bytes(b"tiny genuine Arena evidence")
+                os.link(payload / "evidence", payload / "copied-evidence")
+                use.check()
+                os.write(ready_write, encoded({"status": "held", "uid": os.geteuid()}))
+                assert os.read(finish_read, 1) == b"x"
+            os.write(ready_write, encoded({"status": "closed", "uid": os.geteuid()}))
+        except BaseException as error:
+            os.write(ready_write, encoded({"status": "failed", "error": repr(error)}))
+        finally:
+            os.close(ready_write)
+            os.close(finish_read)
+            os._exit(0)
+    os.close(ready_write)
+    os.close(finish_read)
+    try:
+        assert select.select([ready_read], [], [], 30)[0], "Arena actual UID writer timed out"
+        response = json.loads(os.read(ready_read, 4097))
+        assert response == {"status": "held", "uid": account.pw_uid}, response
+        fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+        os.write(finish_write, b"x")
+        assert select.select([ready_read], [], [], 30)[0]
+        response = json.loads(os.read(ready_read, 4097))
+        assert response == {"status": "closed", "uid": account.pw_uid}, response
+    finally:
+        os.close(finish_write)
+        os.close(ready_read)
+        waited, _ = os.waitpid(child, os.WNOHANG)
+        if not waited:
+            os.kill(child, 15)
+            os.waitpid(child, 0)
+    before = {str(path.relative_to(target)): (path.stat().st_ino, path.stat().st_nlink, path.read_bytes())
+              for path in target.rglob("*") if path.is_file()}
+    action = issuer.issue_experiment_action_intent(grant["intent_id"], principal="operator", owner="owner",
+        action="owner_review", expires_at_epoch=issued + 600, installed_config_path=value["config"],
+        now=lambda: issued + 31)
+    raw = json.loads((value["config"].parent / "state/requests/experiment-records"
+                     / (action["action_id"] + ".action.json")).read_bytes())
+    assert raw["manifest"] is None
+    sandbox = _run_shipped_gc_sandbox(value, action, issued + 32, pins)
+    row = next(row for row in sandbox["report"]["registered_experiments"]["outcomes"]
+               if row["action_id"] == action["action_id"])
+    assert row["decision"] == "kept" and row["reason"] == "owner_review"
+    assert row["removed_logical_bytes"] == row["removed_allocated_bytes"] == 0
+    after = {str(path.relative_to(target)): (path.stat().st_ino, path.stat().st_nlink, path.read_bytes())
+             for path in target.rglob("*") if path.is_file()}
+    assert after == before and target.is_dir()
+    return {"arena_actual_uid": account.pw_uid, "arena_current_writer_sh": True,
+            "arena_expired_shipped_gc_owner_review_kept": True}
 
 
 def _linux_completed_gc_restore(
@@ -847,7 +948,7 @@ def _run_shipped_gc_sandbox(value, action, clock, pins):
     """Run actual GC under the shipped unit's protections and finite RW roots."""
     root = value['config'].parent
     installed = root / 'installed'
-    report_root = root / 'sandbox-control-plane/storage-gc'
+    report_root = root / ('sandbox-control-plane/storage-gc-' + action['action_id'])
     report_root.mkdir(parents=True, mode=0o700)
     selected = report_root / 'selected.json'
     selected.write_bytes(encoded(dict(config=str(value['config']), pins=str(pins), now=clock,
@@ -949,8 +1050,13 @@ def _gc_sandbox_main(selected):
         lane_scratch_enabled=True, _experiment_config_path=root / 'door.json',
         now=lambda: selection['now'])
     outcomes = report['registered_experiments']['outcomes']
-    assert next(row for row in outcomes if row['action_id'] == selection['action_id'])['decision'] == 'retired'
-    assert cloud.objects and all(body.closed for body in cloud.bodies)
+    chosen = next(row for row in outcomes if row['action_id'] == selection['action_id'])
+    if chosen['decision'] == 'retired':
+        assert cloud.objects and all(body.closed for body in cloud.bodies)
+    else:
+        assert chosen['decision'] == 'kept' and chosen['reason'] == 'owner_review'
+        assert chosen['removed_logical_bytes'] == chosen['removed_allocated_bytes'] == 0
+        assert not cloud.objects and not cloud.bodies
     result = dict(report={'registered_experiments': report['registered_experiments']},
         objects=[dict(key=key, payload=base64.b64encode(raw).decode('ascii'))
                  for key, raw in cloud.objects.items()], object_metadata=cloud.metadata,
@@ -1138,6 +1244,8 @@ def test_actual_contained_blueprint_native_pair_child_and_kernel_completion():
     assert receipt['actual_shipped_gc_sandbox']
     assert receipt["actual_expired_gc_offload"] and receipt["native_archive_full_readback"]
     assert receipt["actual_root_restore"] and receipt["ordinary_uid_restored_reader"]
+    assert receipt["arena_actual_uid"] != 0 and receipt["arena_current_writer_sh"]
+    assert receipt["arena_expired_shipped_gc_owner_review_kept"]
 
 
 if __name__ == "__main__":
