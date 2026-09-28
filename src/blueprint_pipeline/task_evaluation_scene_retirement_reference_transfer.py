@@ -100,7 +100,9 @@ def _sam_value(identity,proofs,fresh,allowance):
     roles={p['role'] for p in proofs}
     _require(len(roles)==1,_REASON)
     role=next(iter(roles))
-    root=_canonical(fresh.get('planner_context',{}).get('sam_queue_root'))
+    roots=fresh.get('planner_context',{}).get('roots')
+    _require(type(roots) is dict and type(roots.get('sam_queue_root')) is str,_REASON)
+    root=_canonical(roots['sam_queue_root'])
     path=Path(identity[0])
     _require(path.is_relative_to(root) and len(path.relative_to(root).parts)==2,_REASON)
     state='completed' if role=='sam_jobs' else 'results'
