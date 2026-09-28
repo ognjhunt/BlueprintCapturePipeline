@@ -408,7 +408,7 @@ def test_native_cache_union_metadata_refuses_a_second_owner_alias_before_payload
             cache_aliases=[dict(canonical_path=str(alias),digest='sha256:'+alias.name,size_bytes=6)])
 
 
-@pytest.mark.parametrize('mode',['complete','combined_journal_cap'])
+@pytest.mark.parametrize('mode',['complete','combined_journal_cap','restore'])
 def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generations(tmp_path,monkeypatch,mode):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
@@ -474,3 +474,41 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
     snapshot=json.loads(Path(receipt['retired_journal_raw_ref']['path']).read_bytes())
     assert snapshot['cache_outcomes']==receipt['cache_outcomes']
     assert all(json.loads(file.read_bytes())['state']=='retired' for file,_ in caches)
+    if mode!='restore':
+        return
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_progress_receipt
+    retired_generation=engine._generation(policy,consent['members'][0],expected_states={'retired'},
+        retired_token=journal.token)[0]
+    restore_consent=dict(consent,action='restore',plan_raw_ref=None,
+        retired_journal_raw_ref=receipt['retired_journal_raw_ref'])
+    restore_path=tmp_path/'restore-consent.json'
+    _sealed_file(restore_path,restore_consent,'consent_digest',mode=0o600)
+    restore=SceneJournal.create(store,token='8'*32,allowance=allowance,initial=dict(
+        schema_version='scene_restore_journal.v1',status='restoring',intent_id=consent['intent_id'],
+        intent_raw_ref=consent['intent_raw_ref'],members=consent['members'],generations=[retired_generation],
+        original_retirement_token=journal.token,retired_journal_raw_ref=receipt['retired_journal_raw_ref'],
+        consent_raw_ref=_raw(restore_path),cache_objects=consent['cache_objects'],
+        cache_generations=snapshot['cache_generations']))
+    context=dict(original_retirement_token=journal.token,restore_journal_initial_raw_ref=restore.initial_ref)
+    pending=publish_progress_receipt(policy,restore_consent,receipt['intent_receipt_raw_ref'],dict(
+        status='restoring',token=restore.token,intent_id=consent['intent_id'],members=[],
+        last_event_raw_ref=restore.prior_ref,**context),allowance)
+    transport.members=[]
+    with access.exclusive_scene_access():
+        event=restore.append('restoring',member_key='0',evidence={'generation_id':retired_generation['generation_id']})
+        restoring=engine._transition(policy,retired_generation,state='restoring',token=journal.token,journal_ref=event)
+        result=engine._finish_restore(policy,restore_consent,snapshot,receipt['retired_journal_raw_ref'],
+            restore,pending,context,[restoring],[],allowance,transport)
+    assert result['status']=='restored' and root.is_dir()
+    for file,original in caches:
+        value=json.loads(file.read_bytes())
+        alias=Path(original['canonical_path'])
+        assert value['state']=='restored-active', 'engine restored cache bytes without activating exact generation'
+        assert value['generation_id']==original['generation_id']
+        assert (value['dev'],value['ino'],value['mode'])==(alias.stat().st_dev,alias.stat().st_ino,alias.stat().st_mode)
+        source=next(row for row in preserved['cache_aliases'] if row['path']==str(alias))
+        projection=root/source['relative_path']
+        assert alias.stat().st_ino==projection.stat().st_ino
+        assert alias.read_bytes()==projection.read_bytes()
+        assert (alias.stat().st_uid,alias.stat().st_gid)==(source['uid'],source['gid'])
+
