@@ -9,6 +9,7 @@ readback without ever invoking the allocator again.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 from .policy_canary_billing_recovery import reconcile_posted_billing
 from .policy_canary_retained_billing import adapter_instance_ids as _retained_adapter_instance_ids
 from .policy_canary_retained_billing import retained_sparse_billing_gap as _retained_sparse_billing_gap
@@ -1374,6 +1375,7 @@ def _has_materialized_delivery(root: Path) -> bool:
     ))
 
 
+@scene_participant('activation_result_path', 'execution_setup_path', 'output_root')
 def dispatch_policy_canary_activation(
     *,
     activation_result_path: str | Path,
@@ -2157,6 +2159,7 @@ def dispatch_policy_canary_activation(
     )
 
 
+@scene_participant('activation_results_root', 'execution_setup_root', 'dispatch_root')
 def process_policy_canary_activation_results(
     *,
     activation_results_root: str | Path,
@@ -2243,6 +2246,7 @@ def process_policy_canary_activation_results(
     }
 
 
+@scene_participant('dispatch_queue_root', 'execution_setup_root', 'dispatch_root')
 def process_policy_canary_dispatch_queue(
     *,
     dispatch_queue_root: str | Path,

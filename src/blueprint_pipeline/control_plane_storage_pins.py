@@ -15,6 +15,7 @@ first writer wins; a pin is never rewritten except to record its release.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import json
 import os
 import re
@@ -101,6 +102,7 @@ def storage_pin_guard(pins_root: str | Path, *, exclusive: bool):
         yield
 
 
+@scene_participant()
 def write_storage_pin(
     *,
     pins_root: str | Path,
@@ -229,6 +231,7 @@ def live_pinned_paths(pins_root: str | Path, *, now: Any = time.time) -> set[str
     }
 
 
+@scene_participant()
 def release_storage_pin(
     *, pins_root: str | Path, kind: str, owner_id: str, now: Any = time.time
 ) -> dict[str, Any]:

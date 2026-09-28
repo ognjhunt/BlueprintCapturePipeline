@@ -1,6 +1,7 @@
 """Drive persistent scene intent through real no-allocation preparation services."""
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 from copy import deepcopy
 from dataclasses import dataclass
@@ -790,6 +791,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     return emit("awaiting_execution", "preparation_complete")
 
 
+@scene_participant('config_path')
 def process_scene_intents(*, config_path, source_resolver=None, publisher=None, submitter=None,
                           status_reader=None, activation_provisioner=None, now=None, only_intent_id=None):
     config_path = safe_path(config_path)

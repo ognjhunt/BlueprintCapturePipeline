@@ -8,6 +8,7 @@ catalog, issue paid authority, call the allocator, or allocate a provider.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 import hashlib
 import json
@@ -406,6 +407,7 @@ def default_reference_fetcher(uri: str, destination: Path, maximum_bytes: int) -
     )
 
 
+@scene_participant('input_root', 'content_store_root')
 def materialize_preparation_references(
     *,
     request: Mapping[str, Any],
@@ -645,6 +647,7 @@ def _materialize_reference_records(
     return rows, len(by_identity)
 
 
+@scene_participant('input_root')
 def materialize_recipe_configuration_references(
     *,
     recipe: Mapping[str, Any],
@@ -696,6 +699,7 @@ SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX = (
 )
 
 
+@scene_participant('input_root')
 def materialize_recipe_supplemental_destination_references(
     *,
     recipe: Mapping[str, Any],
@@ -1111,6 +1115,7 @@ def worker_failure_blocker(exc: BaseException) -> str:
     return annotate_blocker(code, exc)
 
 
+@scene_participant('queue_root', 'input_root', 'construction_queue_root', 'episode_compilation_queue_root')
 def process_launch_preparation_queue(
     *,
     queue_root: str | Path,

@@ -7,6 +7,7 @@ allocates resources and does not substitute user declarations for source proof.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import fcntl
 import json
 import math
@@ -170,6 +171,7 @@ def _read(path: Path, field: str) -> dict[str, Any]:
     return value
 
 
+@scene_participant('queue_root')
 def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
                        authenticated_client: str, trusted_clients: set[str],
                        now: float | None = None) -> dict[str, Any]:
@@ -202,6 +204,7 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
                   "provider_mutation_performed_inside_http_request": False}, "receipt_digest")
 
 
+@scene_participant('queue_root')
 def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id: str,
                           source_commit: str, runtime_digest: str, input_digest: str,
                           provider: str, maximum_spend_usd: float,

@@ -30,6 +30,7 @@ def _index_path(root, request):
     return root / (cross_runtime_canonical_digest(request)[7:] + ".json")
 
 
+@scene_participant('preparation_path', 'runtime_inputs_path', 'task_context_path')
 def register_website_preparation(*, preparation_path, runtime_inputs_path, task_context_path, root, now):
     from .website_native_background import prepare_construction_stages, construction_rights_admission
     preparation = read(preparation_path, digest_field="digest")
@@ -53,6 +54,7 @@ def register_website_preparation(*, preparation_path, runtime_inputs_path, task_
     return record(path)
 
 
+@scene_participant()
 def resolve_website_source(*, intent, config):
     from .task_evaluation_scene_progression import SourceResolution
     path = _index_path(binding_root(config), intent["request"])

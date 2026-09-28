@@ -6,6 +6,7 @@ launch dispatcher and canonical paid-resource allocator.
 """
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import os
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,7 @@ def _server_profile(plan: dict[str, Any], roots: tuple[Path, ...]) -> dict[str, 
     return profile
 
 
+@scene_participant()
 def advance_sam31_preparation(
     context: dict[str, Any], *, approved_roots: tuple[Path, ...] = HOST_ROOTS,
     enqueue_phase: Any | None = None,

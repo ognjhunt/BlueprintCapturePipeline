@@ -9,6 +9,7 @@ episode packet used by the existing Task Evaluation launch path.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 import hashlib
 import json
@@ -296,6 +297,7 @@ def _expected_compilation_bytes(
     return total
 
 
+@scene_participant('queue_root', 'input_root', 'output_root')
 def process_episode_compilation_queue(
     *,
     queue_root: str | Path,

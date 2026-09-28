@@ -10,6 +10,7 @@ authorization, or allocates a provider resource.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 import fcntl
 import json
@@ -1585,6 +1586,7 @@ def _release_created_early_storage_pins(request, created_pins):
             continue
 
 
+@scene_participant('queue_root', 'preparation_queue_root', 'preparation_input_root', 'episode_compilation_queue_root', 'episode_compilation_output_root', 'activation_root')
 def process_launch_activation_queue(
     *,
     queue_root: str | Path,

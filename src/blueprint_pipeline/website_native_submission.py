@@ -5,6 +5,7 @@ object provenance. It never reconstructs, removes an object again, or allocates.
 """
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import math
 from pathlib import Path
 
@@ -31,6 +32,7 @@ def _validate_development_opening_criterion(success, hypothesis):
             "website_articulated_depth_opening_criterion_mismatch")
 
 
+@scene_participant()
 def verified_submission_inputs(task, *, now=None):
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
     intent = reopen_scene_intent(task["scene_intent_authority"], now=now)
@@ -48,6 +50,7 @@ def verified_submission_inputs(task, *, now=None):
     return intent, preparation, context, rights, construction, paths
 
 
+@scene_participant('root')
 def validate_website_publication(*, root, manifest, request):
     """Reopen real owner authority before publishing the exact derivative set."""
     from .task_evaluation_launch_preparation_worker import collect_preparation_references
@@ -83,6 +86,7 @@ def validate_website_publication(*, root, manifest, request):
 
 
 @completed_submission_transaction(task_relative_path="provenance/website_task_request.v1.json")
+@scene_participant('runtime_publication_root', 'staging_root')
 def materialize_website_submission(*, task, deploy_receipt_path, release_provenance_path,
                                   release_environment_path, runtime_publication_root,
                                   expected_production_commit, namespace_timestamp,

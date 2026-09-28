@@ -5,6 +5,7 @@ changes historical evidence. It emits a separately sealed provenance record.
 """
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 import math
 from copy import deepcopy
@@ -231,6 +232,7 @@ def _current_sources(value, old_plan, artifacts, roots):
 
 
 @file_digest_scope()
+@scene_participant('path')
 def validate_completed_prefix_adoption(path, *, expected_source_commit, approved_roots,
                                       current_plan=None, current_provider_profile_path=None,
                                       require_current_tracking_request=False):
@@ -332,6 +334,7 @@ def _validate_completed_prefix_adoption_document(value, *, roots, expected_sourc
             "tracking_origin": tracking_origin, "selection_origin": selection_origin}
 
 
+@scene_participant('adoption_path')
 def publish_adoption_release_binding(adoption_path, *, binding_root=None):
     """Publish the existing retention schema after a validated adoption exists.
 
@@ -417,6 +420,7 @@ def _require_possible_extension(profile, *, queue, parent_digest, plan_digest, t
 
 
 @file_digest_scope()
+@scene_participant('source_plan_path', 'source_profile_path', 'current_provider_profile_path', 'output_path', 'queue_root', 'parent_queue_root', 'execution_root')
 def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_path, parent_request_digest,
     through_phase, current_host_inputs, current_provider_profile_path, current_repo_root,
     expected_source_commit, provider_zero_path, output_path, approved_roots,

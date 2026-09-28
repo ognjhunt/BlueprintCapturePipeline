@@ -8,6 +8,7 @@ dispatcher resolves the exact profile from local Pipeline state and invokes
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 import contextlib
 import hashlib
@@ -1464,6 +1465,7 @@ def _native_policy_terminal_visual_evidence(
     return None
 
 
+@scene_participant('request_path', 'profile_dir', 'state_root')
 def dispatch_launch_request(
     *,
     request_path: str | Path,
@@ -1902,6 +1904,7 @@ def dispatch_launch_request(
     return receipt
 
 
+@scene_participant('queue_root', 'profile_dir', 'state_root')
 def process_launch_queue(
     *,
     queue_root: str | Path,

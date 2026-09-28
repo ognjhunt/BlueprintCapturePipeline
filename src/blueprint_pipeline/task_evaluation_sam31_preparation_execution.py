@@ -1,6 +1,7 @@
 """Execute closed, immutable SAM preparation phases outside the no-spend parent."""
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 import hashlib
 import json
@@ -89,6 +90,7 @@ def _wake_parent(root: Path, job: dict, parent_queue: Path, roots: Sequence[Path
     return True
 
 
+@scene_participant('queue_root', 'parent_queue_root', 'preparation_input_root', 'execution_root')
 def process_sam31_phase_queue(
     *, queue_root: str | Path = DEFAULT_QUEUE, parent_queue_root: str | Path = DEFAULT_PARENT_QUEUE,
     preparation_input_root: str | Path = DEFAULT_INPUT_ROOT,

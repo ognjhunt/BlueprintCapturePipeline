@@ -249,7 +249,9 @@ def scene_participant(*path_arguments):
         def admitted(*args, **kwargs):
             if not os.environ.get('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE'):
                 return function(*args, **kwargs)
-            values = signature.bind(*args, **kwargs).arguments
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            values = bound.arguments
             paths = [values[key] for key in path_arguments if values.get(key) is not None]
             with scene_access(*paths):
                 return function(*args, **kwargs)
