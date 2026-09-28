@@ -34,6 +34,7 @@ def _evidence(tmp_path: Path, monkeypatch):
     packet = {
         "schema_version": PACKET_SCHEMA,
         "request": {
+            "run_id": "team-g1-book-1",
             "owner": episode["owner"],
             "objective_id": episode["objective_id"],
             "policy_profile": {
@@ -43,10 +44,15 @@ def _evidence(tmp_path: Path, monkeypatch):
         },
         "operator_approval": {"approval_digest": supervised["operator_approval_digest"]},
         "trusted_setup": {
+            "scene_id": episode["scene_id"],
+            "task_id": episode["task_id"],
             "setup_digest": episode["source_setup_digest"],
             "source_packet_receipt_digest": episode["source_packet_receipt_digest"],
         },
     }
+    packet["intent_id"] = "g1-team-policy-" + cross_runtime_canonical_digest({
+        "owner": packet["request"]["owner"], "run_id": packet["request"]["run_id"],
+    }).removeprefix("sha256:")
     packet["packet_digest"] = cross_runtime_canonical_digest(packet, digest_field="packet_digest")
     scene_receipt_digest = "sha256:" + "f" * 64
     core = {

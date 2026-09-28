@@ -489,3 +489,66 @@ Remaining full-suite failures include unchanged listener size, materializer,
 quality-ledger, cold-import, supervisor and verdict-cache boundaries owned by
 issue #2236; the isolated immutable cache case passed locally. Exact previous
 head run is terminal/red, not a pending or green promotion gate.
+
+## Selected-episode private review contract: TDD and design review
+
+ADP-050 Day 28 / ADP-060 evidence delivery, explicit owner G1 scope. The
+existing private projector, registry and Website validator require the four
+built-in candidates. A single selected episode cannot satisfy that schema.
+Introduce `native_g1_team_private_review.v1` alongside the unchanged built-in
+record. Bind its intent, accepted owner, execution packet, policy profile,
+objective, sealed bundle and verified worker receipt. Preserve the simulator
+container field separately from the selected policy's actual delivery mode.
+Do not invent a campaign digest or describe one result as four-policy proof.
+
+Reuse the current authenticated artifact registry, ingest route and review
+page. The selected record has exactly one scored episode, a positive query
+count, complete independently verified lossless observations, and both head
+and overview review videos. Registration verifies/reopens bytes on every
+invocation. Website ingestion must reject a selected record whose accepted
+owner, organization or intent differs from the signed envelope, before probing
+media. The page shows the actual count and delivery mode. No execution gate is
+enabled by this record. Official billing, provider-zero, complete controller
+settlement and the paired runtime paths remain required subsequent work.
+
+Red-first tests: project the actual hermetic scored worker output rather than
+a fabricated success; retain its failure score; reject changed packet/profile,
+bundle, owner, objective, query count, unsafe paths, duplicate/missing videos
+and claim promotion. Stage and resolve actual media, replay the registry and
+refuse post-registration tampering. A Python-sealed selected fixture must pass
+the Website's cross-runtime digest validator. Signed route tests cover exact
+owner/intent matching, unauthorized reads, three artifact probes and unchanged
+four-policy behavior. Component checks cover both scopes and labels.
+
+Design review before implementation: inspected the real output verifier,
+packet/manifest bindings, registry, ingest authorization and review page. A
+separate versioned record avoids weakening the existing four-policy contract.
+Only identifiers, digests, scores and relative artifact paths cross the review
+boundary; endpoint addresses, credentials and archive/OCI acquisition details
+stay in the approved execution packet. This review is an agent design review,
+not a new owner rights approval or a claim of live qualification.
+
+Verification: the missing selected module failed test collection first. After
+projection/registration, 18 selected cases passed; expanded request/owner,
+organization, intent, malformed-mode and wrong-registration-ID checks bring
+the combined selected review / unchanged built-in review / registry / actual
+retained-output verification set to 40 passes. The fixture is generated from
+the hermetic scored worker's two real client queries against fake Isaac and
+retains its failure; it is not a GPU qualification. Both Python and Website
+derive the exact intake intent from accepted owner plus submitted run ID.
+The URL/registry preserve that submitted ID. Changed-file Ruff and diff checks
+passed. Website's selected ingest/read/ticket and same-page component checks
+pass alongside legacy four-policy cases (16 tests); full typecheck passed.
+Graphify was refreshed using the already installed isolated interpreter after
+the default interpreter refused the absent graphifyy module.
+
+The review scope now exists in source in both draft PRs. Selected controller
+settlement must still independently reopen the full sealed bundle/native
+output, exact provider identity, posted billing and fresh provider-zero before
+registration and signed private ingest. No paid attempt, owner-visible live
+review URL, paired-runtime qualification, merge or deployment is claimed by
+this increment. Hosted previous-head impacted tests passed; full shard 1 in
+36371769430 failed the unchanged payload persisted-verdict case with 6034
+passes. Retrieved exact job log shows the miss inside executed_code_identity;
+its suite cause remains on #2236, not silently declared a new G1 regression or
+ignored as a successful promotion.
