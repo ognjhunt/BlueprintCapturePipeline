@@ -802,6 +802,7 @@ def test_a_reused_receipt_is_trusted_only_while_its_durable_copies_exist(tmp_pat
     _drop_from_b2(staged, first["durable_reference"]["uri"])
     gone = staged.resume()
     assert gone["status"] == "blocked" and "provider_output_durable_copy_missing" in gone["blockers"]
+    assert _receipt_now(staged)["status"] == "failed"  # proven gone: the only case that downgrades it
 
     # A local unlink: the recovered ZIP stays until its bytes are durable again.
     local_world = World(tmp_path / "local", monkeypatch)
@@ -821,3 +822,97 @@ def test_a_reused_receipt_is_trusted_only_while_its_durable_copies_exist(tmp_pat
     assert resumed["status"] == "completed", resumed["blockers"]
     assert not local.exists() and _receipt_now(local_world)["local_copy_removed_after_verified_promotion"] is True
     assert interim["durable_reference"]["uri"].removeprefix("s3://blueprint-artifacts/") in local_world.cas.objects
+
+
+def test_a_transient_head_failure_on_resume_keeps_the_durable_receipt(world):
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    observation = _observed(archive)
+    (world.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": observation}), encoding="utf-8")
+    first, _ = world.promote(observation=observation, cleanup=lambda: {"status": "blocked"})
+
+    def head_failed(**_kwargs):
+        raise scene_store.TaskEvaluationConfiguredSceneObjectStoreError("configured_scene_artifact_head_failed")
+
+    resumed = world.resume(verifier=head_failed)
+
+    assert resumed["status"] == "blocked" and "configured_scene_artifact_head_failed" in resumed["blockers"]
+    # Nothing proved the durable copy gone, so the durable record stands as it was.
+    kept = _receipt_now(world)
+    for field in ("status", "source", "archive_sha256", "durable_reference", "member_index", "staged_objects"):
+        assert kept[field] == first[field], field
+    # Later the staged object is gone and B2 answers again: the pointer still leads somewhere.
+    world.spaces.stores.pop(world.keys["output"], None)
+    again = world.resume()
+    assert again["status"] == "completed", again["blockers"]
+    assert _receipt_now(world)["durable_reference"] == first["durable_reference"]
+
+
+def test_a_resume_killed_during_the_witness_step_keeps_the_promoted_witness(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch)
+    _, witness, _ = _paired()
+    world.stage("paired_witness", witness, etag='"witness-1"')
+    first, _ = world.promote(cleanup=lambda: {"status": "blocked"})
+    assert (first["status"], first["witness"]["disposition"]) == ("absent_confirmed", "promoted")
+    world.cleanup()  # the witness, the only paid evidence, leaves staging behind its receipt
+    assert world.keys["paired_witness"] not in world.spaces.stores
+
+    with monkeypatch.context() as patch:
+        patch.setattr(promotion._Promotion, "_witness", _kill)
+        with pytest.raises(_Killed):
+            world.resume()
+
+    mid = _receipt_now(world)
+    # Still a checkpoint (closeout waits on ``pending``), yet it names the promoted witness.
+    section = mid["staged_objects"]["paired_witness"]
+    assert section["state"] == "pending"
+    assert section["versions"] == first["staged_objects"]["paired_witness"]["versions"]
+    assert mid["witness"]["reference"] == first["witness"]["reference"]
+    assert world.resume()["status"] == "completed"
+    end = _receipt_now(world)
+    assert (end["witness"]["disposition"], end["witness"]["reference"]) == ("promoted", first["witness"]["reference"])
+
+
+def test_a_transient_head_failure_on_the_witness_copy_keeps_it(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch)
+    _, witness, _ = _paired()
+    world.stage("paired_witness", witness, etag='"witness-1"')
+    first, _ = world.promote(cleanup=lambda: {"status": "blocked"})
+    world.cleanup()
+
+    def head_failed(**_kwargs):
+        raise scene_store.TaskEvaluationConfiguredSceneObjectStoreError("configured_scene_artifact_head_failed")
+
+    resumed = world.resume(verifier=head_failed)
+
+    assert "paired_witness_promotion_failed:configured_scene_artifact_head_failed" in resumed["blockers"]
+    assert _receipt_now(world)["staged_objects"]["paired_witness"] == first["staged_objects"]["paired_witness"]
+    assert world.resume()["status"] == "completed"
+    assert _receipt_now(world)["witness"]["reference"] == first["witness"]["reference"]
+
+
+def test_a_redundant_witness_stands_only_with_the_primary_it_was_proven_against(paired_world):
+    world = paired_world
+    output, witness, _ = _paired()
+    world.stage("output", output)
+    world.stage("paired_witness", witness, etag='"witness-1"')
+    first, _ = world.promote(observation=_observed(output), cleanup=lambda: {"status": "blocked"})
+    assert first["witness"]["disposition"] == "redundant_with_promoted_output"
+    uploads = world.cas.uploads
+    world.resume(cleanup=lambda: {"status": "blocked"})  # the same durable primary: the proof stands
+    assert _receipt_now(world)["witness"]["disposition"] == "redundant_with_promoted_output"
+    assert world.cas.uploads == uploads
+    # B2 loses the output, and different (unindexable) bytes land at the staged output key.
+    _drop_from_b2(world, first["durable_reference"]["uri"])
+    late = build_zip([Entry("frames/0001.png", Zeros(256 * 1024)), Entry("a\\b.json", b"{}")])
+    world.stage("output", late, etag='"late"')
+
+    world.resume()
+
+    end = _receipt_now(world)
+    assert end["status"] == "promoted" and end["archive_sha256"] == virtual_sha256(late)
+    # The witness was redundant with the lost bytes, not these: it is promoted itself.
+    assert end["witness"]["disposition"] == "promoted"
+    assert [row["redundancy"]["status"] for row in end["staged_objects"]["paired_witness"]["versions"]] == [
+        "not_proven"]

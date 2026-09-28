@@ -26,7 +26,9 @@ with its durable reference, so the gate deletes exactly the objects made
 durable. A later resume reuses a receipt only while every durable copy it
 relies on still answers a HEAD (``verifier``); a missing copy is promoted
 again from what is still there, or the run fails
-(``provider_output_durable_copy_missing``). A present object that matches no
+(``provider_output_durable_copy_missing``). Only that proof downgrades a
+durable receipt: any other failure, a HEAD that errs say, rewrites the prior
+record as it was, with the blocker. A present object that matches no
 recorded version is promoted.
 
 Steps for the archive a consumer reads (the primary): one index pass
@@ -38,9 +40,10 @@ with full readback (``publish_configured_scene_stream``), then
 is still promoted as evidence after one hash pass, and the receipt carries
 ``provider_output_index_refused:<code>``. The receipt is written as soon as the
 primary is durable and again after any other staged object, before the witness
-step, so a run killed later leaves a receipt a resume reuses. Transient
-transport and publication failures get three attempts with backoff; identity
-refusals get one.
+step, so a run killed later leaves a receipt a resume reuses. Such a
+checkpoint's witness section stays ``pending`` but carries the prior witness
+versions that still stand. Transient transport and publication failures get
+three attempts with backoff; identity refusals get one.
 
 Only a staging manifest with ``output_promotion_required`` is promoted
 (``provider_output_promotion_not_required`` otherwise): a download-mode
@@ -53,7 +56,8 @@ and the witness manifest equal, by canonical digest, to the output's
 ``paired_witness_manifest.v1.json``. Otherwise -- including when the output is
 absent or its index was refused -- the witness is promoted
 (``policy-canary-paired-witness``); if the output's promotion failed, it is
-deferred untouched.
+deferred untouched. A redundant witness stands only with the primary it was
+proven against.
 
 B2 must be configured explicitly (review I4): all five
 ``BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE`` variables. The artifact
@@ -264,6 +268,8 @@ class _Promotion:
         self.output_index: dict | None = None
         self.staged_reader = None
         self.output_reused = False
+        self.prior_copy_missing = False
+        self.witness_carried: list[dict] = []
         self.local_verified: Path | None = None
         self.local_removed_before = False
         self.durable: dict[str, bool] = {}
@@ -473,7 +479,7 @@ class _Promotion:
                     self.local_verified = local
                 return primary, versions
             # The durable copy the receipt names is gone: promote again from what is there.
-            copy_missing = True
+            copy_missing = self.prior_copy_missing = True
         observation = self.observation_argument
         if observation is not None and local_present:
             raise ProviderOutputPromotionError("provider_output_promotion_sources_ambiguous")
@@ -553,23 +559,49 @@ class _Promotion:
         except ProviderOutputMemberIndexError as exc:
             raise ProviderOutputPromotionError(str(exc)) from None
 
-    def _prior_witness_versions(self, prior: Mapping | None) -> list[dict]:
-        """Prior witness versions that still stand: promoted copies that exist, redundancy with a durable output."""
+    def _prior_witness_versions(self, prior: Mapping | None, *, verify: bool = True) -> list[dict]:
+        """Prior witness versions that still stand, from a final receipt or a checkpoint.
+
+        A promoted copy stands while it exists (one HEAD unless ``verify`` is
+        false); a redundancy proof stands only with the durable primary it was
+        proven against, never with other bytes promoted since.
+        """
         section = (prior or {}).get("staged_objects", {}).get("paired_witness") if prior else None
-        if not section or section.get("state") not in DURABLE_STATES:
+        if not section or section.get("state") not in {*DURABLE_STATES, "pending"}:
             return []
         kept = []
         for row in section["versions"]:
             reference = row.get("durable_reference")
             if reference is not None:
-                if self._still_durable(reference):
+                if not verify or self._still_durable(reference):
                     kept.append(row)
-            elif self.status == "promoted":
+            elif (self.status == "promoted" and self.primary
+                  and (row.get("redundancy") or {}).get("output_archive_sha256") == self.primary["archive_sha256"]):
                 kept.append(row)
         return kept
 
-    def _witness(self, prior: Mapping | None) -> dict:
-        versions = self._prior_witness_versions(prior)
+    def _carried_witness_versions(self, prior: Mapping | None) -> list[dict]:
+        """The prior witness versions every receipt carries until the witness step decides."""
+        if self.witness_key is None:
+            return []
+        try:
+            return _retrying(lambda: self._prior_witness_versions(prior), self.attempts, "paired_witness")
+        except ProviderOutputPromotionError as exc:
+            # A HEAD that failed proves no copy gone: carry them as the prior receipt had them.
+            self.blockers.append(f"paired_witness_promotion_failed:{exc}")
+            return self._prior_witness_versions(prior, verify=False)
+
+    def _restore(self, prior: Mapping) -> dict:
+        """Rewrite the prior durable record exactly, with this run's blocker: nothing was proven gone."""
+        self.primary = {key: prior.get(key) for key in PRIMARY_FIELDS}
+        self.versions = list(prior["staged_objects"]["output"]["versions"])
+        self.witness_section = prior["staged_objects"].get("paired_witness")
+        self.local_verified = None  # a run that verified nothing never removes the local copy
+        self.local_removed_before = prior.get("local_copy_removed_after_verified_promotion") is True
+        return self._receipt(final=True)
+
+    def _witness(self) -> dict:
+        versions = list(self.witness_carried)
         section = {"key_sha256": key_sha256(self.witness_key), "state": _witness_state(versions) or "deferred",
                    "versions": versions}
         if self.status == "failed":
@@ -608,6 +640,10 @@ class _Promotion:
                 self.status = "promoted" if self.primary else "absent_confirmed"
             except ProviderOutputPromotionError as exc:
                 self.blockers.append(str(exc))
+                if prior and prior.get("status") == "promoted" and not self.prior_copy_missing:
+                    # Only provider_output_durable_copy_missing proves the durable copy gone.
+                    return self._restore(prior)
+            self.witness_carried = self._carried_witness_versions(prior)
             self._checkpoint()
             if self.status == "promoted":
                 try:
@@ -617,15 +653,12 @@ class _Promotion:
                 self._checkpoint()
             if self.witness_key is not None:
                 try:
-                    self.witness_section = _retrying(lambda: self._witness(prior), self.attempts, "paired_witness")
+                    self.witness_section = _retrying(self._witness, self.attempts, "paired_witness")
                 except ProviderOutputPromotionError as exc:
                     self.blockers.append(f"paired_witness_promotion_failed:{exc}")
-                    try:
-                        versions = self._prior_witness_versions(prior)
-                    except ProviderOutputPromotionError:
-                        versions = []
                     self.witness_section = {"key_sha256": key_sha256(self.witness_key),
-                                            "state": _witness_state(versions) or "failed", "versions": versions}
+                                            "state": _witness_state(self.witness_carried) or "failed",
+                                            "versions": list(self.witness_carried)}
         except ProviderOutputPromotionError as exc:
             self.blockers.append(str(exc))
         finally:
@@ -645,7 +678,10 @@ class _Promotion:
                                 "versions": list(self.versions)}
         witness_section = self.witness_section
         if self.witness_key is not None and self.manifest_sha256 is not None and not final:
-            witness_section = {"key_sha256": key_sha256(self.witness_key), "state": "pending", "versions": []}
+            # Still ``pending`` until the witness step decides (closeout waits on it), but
+            # carrying the prior witness versions that stand, so a kill here loses none.
+            witness_section = {"key_sha256": key_sha256(self.witness_key), "state": "pending",
+                               "versions": list(self.witness_carried)}
         if witness_section is not None:
             staged["paired_witness"] = witness_section
         latest = (witness_section or {}).get("versions") or [{}]
