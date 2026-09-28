@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import stat
 from pathlib import PurePosixPath
 
 from . import task_evaluation_scene_compilation_native_owner_inventory as native
@@ -218,8 +219,17 @@ class Pool:
         for run in self.names('terminal_run_groups', owner+'/runs', HEX):
             self.terminal(owner+'/runs/'+run)
         for canary in self.names('canary_groups', roots['policy_canary_root'], ID):
+            # A published pointer is an ID-shaped regular file alongside the
+            # real canary directories, not an evidence-workspace directory.
+            if canary.endswith('.offloaded.v1.json'):
+                info = self.reader.stat(roots['policy_canary_root']+'/'+canary)
+                if stat.S_ISREG(info.st_mode):
+                    continue
             self.canary(roots['policy_canary_root']+'/'+canary)
-        self.rows('canary_offload_pointers', roots['policy_canary_root'], ID+r'\.offloaded\.v1\.json')
+        for pointer in self.names('canary_offload_pointers', roots['policy_canary_root'], ID+r'\.offloaded\.v1\.json'):
+            absolute = roots['policy_canary_root']+'/'+pointer
+            if not stat.S_ISDIR(self.reader.stat(absolute).st_mode):
+                self.read('canary_offload_pointers', absolute)
         for activation in self.names('native_owner_groups', roots['activation_output_root'], ID):
             self.read('native_owner_records', roots['activation_output_root']+'/'+activation+'/scene_owner_attempt.json')
         for compilation in self.names('adapter_groups', roots['compilation_output_root'], '(?:'+STEM+'|'+ID+')'):
@@ -282,6 +292,11 @@ def select(decoded, context, intent_id, budget):
     bridge = {role: [] for role in native.ROLES}
     raw_index, canonical, by_path, parent_modes, activation_modes = {}, {}, {}, {}, {}
     explicit = {row['path'] for row in _work_items(context.get('retained_metadata_files', []), budget)}
+    sam_hints, linked_parents = set(), set()
+    for selector in _work_items(context.get('retained_metadata_files', []), budget):
+        if selector['role'] == 'sam_parent_envelopes':
+            budget.charge('facts')
+            sam_hints.add(selector['path'])
     selected, frontier, protected = set(), [], []
     owner = context['roots']['intent_root'] + '/' + intent_id
     for index, row in enumerate(_work_items(decoded, budget)):
@@ -292,6 +307,11 @@ def select(decoded, context, intent_id, budget):
             if key.endswith('_digest') and isinstance(value, str) and re.fullmatch('sha256:' + HEX, value):
                 budget.charge('facts')
                 canonical.setdefault(value, []).append(index)
+        if (row['role'] == 'preparation_links' and supported(row)
+                and row['path'].startswith(owner+'/preparations/')
+                and isinstance(row['value'].get('request_digest'), str)):
+            budget.charge('facts')
+            linked_parents.add(row['value']['request_digest'])
         if row['role'] == 'parent_envelopes' and row['value'].get('schema_version') == 'task_evaluation_launch_preparation_envelope.v1':
             request = row['value'].get('request')
             if isinstance(request, dict):
@@ -370,7 +390,13 @@ def select(decoded, context, intent_id, budget):
         if role in {'parent_envelopes', 'parent_results'}:
             p = PurePosixPath(row['path'])
             modes = parent_modes.get((str(p.parent.parent), p.name), set())
-            if modes == {'scene_configuration'}:
+            if (role == 'parent_envelopes' and row['path'] in sam_hints
+                    and modes == {'scene_configuration'} and value.get('request_digest') not in linked_parents):
+                # An exact explicit historical SAM role cannot establish an
+                # owner-link. Its source-family reader independently checks the
+                # real route/name/request, and adoption selects exact raw bytes.
+                role = 'sam_parent_envelopes'
+            elif modes == {'scene_configuration'}:
                 role = 'preparation_envelopes' if role == 'parent_envelopes' else 'preparation_results'
             elif len(modes) == 1 and modes <= {'episode_evaluation', 'destination_qualification'}:
                 role = 'native_preparation_envelopes' if role == 'parent_envelopes' else 'native_preparation_results'

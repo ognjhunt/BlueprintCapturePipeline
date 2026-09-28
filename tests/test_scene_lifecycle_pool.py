@@ -3,9 +3,13 @@
 """Discovery labels never substitute for exact queue-root/parent selectors."""
 import hashlib
 import json
+from pathlib import Path
+
+import pytest
 
 from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
-from blueprint_pipeline.task_evaluation_scene_lifecycle_pool import select
+from blueprint_pipeline.task_evaluation_scene_lifecycle_pool import select, Pool
+from blueprint_pipeline.task_evaluation_scene_lifecycle_acquisition import Acquisition
 from tests.test_scene_compilation_owner_preparations import fixture
 
 
@@ -60,6 +64,10 @@ def test_publication_discovery_is_actual_attempt_sibling_not_submission_child():
         def read_json(self, path):
             seen.append(path)
             raise AcquisitionError('scene_lifecycle_metadata_unavailable')
+        def stat(self, path):
+            import stat
+            from types import SimpleNamespace
+            return SimpleNamespace(st_mode=stat.S_IFREG if path.endswith('.offloaded.v1.json') else stat.S_IFDIR)
     context = {'roots': args['roots'], 'parent_routes': args['parent_routes'],
                'retained_metadata_files': [], 'progression_config': None}
     Pool(Reader(), context, args['intent_id']).discovery()
@@ -89,6 +97,10 @@ def test_fixed_family_discovery_covers_receipts_and_terminal_copies_without_payl
         def entries(self, path):
             directories.append(path)
             return layouts.get(path, ())
+        def stat(self, path):
+            import stat
+            from types import SimpleNamespace
+            return SimpleNamespace(st_mode=stat.S_IFREG if path.endswith('.offloaded.v1.json') else stat.S_IFDIR)
         def read_json(self, path):
             seen.append(path)
             raise AcquisitionError('scene_lifecycle_metadata_unavailable')
@@ -172,3 +184,89 @@ def test_capture_metadata_discovery_uses_fixed_layout_not_payload_directories():
     assert prefix+'handoff.json' in observed and prefix+'native/runtime_inputs.json' in observed
     assert prefix+'development_test/preparation.json' in observed
     assert all('/frames' not in path and '/videos' not in path for path in visited)
+@pytest.mark.parametrize('directory', [False, True])
+def test_reserved_pointer_basename_distinguishes_actual_file_from_id_shaped_directory(tmp_path, monkeypatch, directory):
+    from tests.test_scene_lifecycle_plan import context_fixture
+    from tests.scene_lifecycle_fixture_support import stable_shared_ancestors
+    context, intent_id = context_fixture(tmp_path)
+    target = Path(context['roots']['policy_canary_root']) / 'canary.offloaded.v1.json'
+    if directory:
+        target.mkdir()
+        (target / 'dispatch_receipt.json').write_text('{"schema_version":"future.v2"}')
+    else:
+        target.write_text('{"schema_version":"future.v2"}')
+    stable_shared_ancestors(monkeypatch, tmp_path)
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    with Acquisition(budget, [str(tmp_path.resolve())]) as reader:
+        pool = Pool(reader, context, intent_id)
+        pool.fixed_families()
+        assert reader.verify()
+    expected = 'canary_dispatches' if directory else 'canary_offload_pointers'
+    assert any(row[0] == expected for row in pool.raw)
+    assert not any(row[0] == ('canary_offload_pointers' if directory else 'canary_dispatches') for row in pool.raw)
+
+
+@pytest.mark.parametrize('hint,linked', [(False, False), (True, False), (True, True)])
+def test_exact_sam_original_role_hint_never_overrides_a_strict_owner_link(hint, linked):
+    from tests.test_scene_source_family_adoption import fixture as original_fixture
+    from tests.test_scene_inventory_history import pair, seal
+    args = original_fixture()
+    parent = args['source_records']['sam_parent_envelopes'][0]
+    envelope = json.loads(parent[1])
+    rows = [decoded('intent', args['seed_records']['intent']), decoded('parent_envelopes', parent)]
+    if linked:
+        # Even a caller-forged/incomplete link must reach strict seed validation;
+        # an explicit structural SAM hint cannot suppress that owner-edge check.
+        link = pair(args['roots']['intent_root']+'/'+args['intent_id']+'/preparations/'+envelope['request_digest'][7:]+'.json',
+                    seal({'schema_version': 'task_evaluation_scene_preparation_link.v1',
+                          'request_digest': envelope['request_digest']}, 'link_digest'))
+        rows.append(decoded('preparation_links', link))
+    context = {'roots': args['roots'], 'retained_metadata_files':
+               [{'role': 'sam_parent_envelopes', 'path': parent[0]}] if hint else []}
+    seed, _, source, _, protected = select(rows, context, args['intent_id'], ReferenceCollectionBudget(monotonic=lambda: 0))
+    expected = hint and not linked
+    assert source['sam_parent_envelopes'] == ([parent] if expected else [])
+    assert seed['preparation_envelopes'] == ([] if expected or not hint else [parent])
+    if not hint:
+        assert protected and protected[0]['status'] == 'kept_unselected_metadata'
+
+
+def test_explicit_original_sam_hint_does_not_reinterpret_unknown_parent_schema():
+    from tests.test_scene_source_family_adoption import fixture as original_fixture
+    from tests.test_scene_inventory_history import pair
+    args = original_fixture()
+    parent = args['source_records']['sam_parent_envelopes'][0]
+    value = json.loads(parent[1])
+    value['schema_version'] = 'task_evaluation_launch_preparation_envelope.future'
+    unknown = pair(parent[0], value)
+    context = {'roots': args['roots'], 'retained_metadata_files':
+               [{'role': 'sam_parent_envelopes', 'path': parent[0]}]}
+    seed, _, source, bridge, protected = select(
+        [decoded('intent', args['seed_records']['intent']), decoded('parent_envelopes', unknown)],
+        context, args['intent_id'], ReferenceCollectionBudget(monotonic=lambda: 0))
+    assert source['sam_parent_envelopes'] == seed['preparation_envelopes'] == []
+    assert bridge['native_preparation_envelopes'] == []
+    assert protected == [dict(role='parent_envelopes', path=unknown[0],
+        sha256='sha256:'+hashlib.sha256(unknown[1]).hexdigest(), size_bytes=len(unknown[1]),
+        status='kept_unsupported_schema')]
+
+
+def test_explicit_original_sam_hint_does_not_choose_a_conflicting_parent_mode():
+    from tests.test_scene_source_family_adoption import fixture as original_fixture
+    from tests.test_scene_inventory_history import pair, seal
+    args = original_fixture()
+    parent = args['source_records']['sam_parent_envelopes'][0]
+    conflicting = json.loads(parent[1])
+    conflicting['request']['run_mode'] = 'episode_evaluation'
+    competing = pair(parent[0], seal(conflicting, 'envelope_digest'))
+    context = {'roots': args['roots'], 'retained_metadata_files':
+               [{'role': 'sam_parent_envelopes', 'path': parent[0]}]}
+    rows = [decoded('intent', args['seed_records']['intent']),
+            decoded('parent_envelopes', parent), decoded('parent_envelopes', competing)]
+    seed, _, source, bridge, protected = select(rows, context, args['intent_id'],
+        ReferenceCollectionBudget(monotonic=lambda: 0))
+    assert source['sam_parent_envelopes'] == seed['preparation_envelopes'] == []
+    assert bridge['native_preparation_envelopes'] == []
+    assert len(protected) == 2
+    assert {row['sha256'] for row in protected} == {row['sha256'] for row in rows[1:]}
+    assert all(row['status'] == 'kept_parent_mode_unproven' for row in protected)
