@@ -631,7 +631,11 @@ the dependency closure's queue and process checks, and a re-derivation at the
 mutation edge. The extended proofs read queues strictly: they also count a row
 parked in a state that will still run (`LIVE_QUEUE_STATES`, such as a
 preparation awaiting its source preparation), and a row they cannot read keeps
-their candidates as `queue_unreadable`.
+their candidates as `queue_unreadable`, while a row that merely moved between
+states mid-read is found where it went. Planning and the releases each read the
+launch queue and the preparation queue's ended envelopes once (twice over,
+unioned), and the process table is swept once for planning and once per
+release.
 
 **Why a tick kept what it kept.** On 2026-09-27 an applied tick with offload
 enabled reclaimed nothing, and its report could not say why. The derived and

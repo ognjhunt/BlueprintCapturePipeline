@@ -40,7 +40,7 @@ from pathlib import Path
 
 from .control_plane_pin_proofs import (
     MINIMUM_PIN_AGE_SECONDS, _evidence_names, _pin_path_allowed, _present, _read, extended_proof,
-    launch_queue_snapshot,
+    launch_queue_snapshot, preparation_envelope_snapshot,
 )
 from .control_plane_storage_pins import depends_on, load_storage_pins, release_storage_pin, storage_pin_guard
 from .control_plane_storage_references import QueueReferenceUnreadable, queue_reference_text
@@ -250,7 +250,8 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     under any id; without them an unlaunched activation is kept.
     ``reference_checker`` answers whether a process still reads a path; by
     default planning sweeps the process table once, and each release sweeps it
-    again. The launch queue is read once for planning and once for the releases.
+    again. The launch queue and the preparation envelopes are read once for
+    planning and once for the releases.
     Each candidate carries its ``proof`` and whether it is ``enabled``, each kept
     pin a typed ``reason`` (and ``error_type`` for ``proof_error``), and
     ``released_count_by_kind`` counts every pin a release receipt lists, its
@@ -268,9 +269,12 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
                "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root,
                "preparation_queue_root": preparation_queue_root, "running_commit": running_commit,
                "launch_queue_root": launch_queue_root, "standing_authorization_dir": standing_authorization_dir,
-               "launch_queue": launch_queue_snapshot(launch_queue_root)}
-    # The releases re-derive their proofs against a launch queue read again, once, after planning.
-    edge_context = {**context, "launch_queue": launch_queue_snapshot(launch_queue_root)}
+               "launch_queue": launch_queue_snapshot(launch_queue_root),
+               "preparation_envelopes": preparation_envelope_snapshot(preparation_queue_root)}
+    # The releases re-derive their proofs against the launch queue and the preparation
+    # envelopes read again, once each, after planning.
+    edge_context = {**context, "launch_queue": launch_queue_snapshot(launch_queue_root),
+                    "preparation_envelopes": preparation_envelope_snapshot(preparation_queue_root)}
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
         row = {"kind": pin["kind"], "owner_id": pin["owner_id"]}

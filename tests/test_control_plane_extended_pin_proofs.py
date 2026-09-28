@@ -1448,6 +1448,34 @@ def test_a_run_without_registry_is_judged_by_its_receipt_not_its_tree(tmp_path, 
         "fresh": "run_hot", "old": "run_without_registry"}[receipt_age]}
 
 
+def test_each_pass_lists_the_preparation_envelopes_a_bounded_number_of_times(tmp_path, monkeypatch) -> None:
+    """Code review of 10c: every stale preparation or compilation pin listed materialized/ and blocked/
+    again. Planning and the releases each index both directories once, listing each twice so an
+    envelope moving between them is seen, however many pins ask."""
+
+    args = _args(tmp_path)
+    preparations = _preparation_queue(tmp_path, args)
+    owners = ("prep-a", "prep-b", "prep-c", "prep-d")
+    for owner in owners:
+        _prepared(preparations, owner, state="blocked" if owner == "prep-d" else "materialized")
+        _pin(args, "preparation", owner, age=LAPSE + DAY)
+    listed: list[str] = []
+    real_scandir = pin_proofs.os.scandir
+
+    def counting(path):
+        if Path(path).name in ("materialized", "blocked"):
+            listed.append(Path(path).name)
+        return real_scandir(path)
+
+    monkeypatch.setattr(pin_proofs.os, "scandir", counting)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert result["released_count_by_kind"] == {"preparation": len(owners)}
+    # Two passes (planning, releases) x two reads x two directories, not per pin.
+    assert sorted(listed) == ["blocked"] * 4 + ["materialized"] * 4
+
+
 def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> None:
     """The proof reads the worker's result, so its schema and prepared statuses must stay the worker's own."""
 

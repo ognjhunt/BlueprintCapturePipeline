@@ -186,7 +186,8 @@ def preparation_queue_root_of(queue_roots):
     return _queue_root_named(queue_roots, PREPARATION_QUEUE_NAME)
 
 
-def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, preparation_queue_root, running_commit, **_context):
+def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, preparation_queue_root, running_commit,
+                          preparation_envelopes=None, **_context):
     """A preparation or compilation that nothing consumes, that has outlived every mutation window, and that
     no activation can take any more.
 
@@ -199,7 +200,8 @@ def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, preparation_queue_
         return None, "pin_not_stale"
     if not _paths_classify(classifier, pin["paths"], ("cache",)):
         return None, "path_class_invalid"
-    ended, reason = _unactivatable_preparation(pin["owner_id"], preparation_queue_root, running_commit)
+    envelopes = preparation_envelopes or preparation_envelope_snapshot(preparation_queue_root)
+    ended, reason = _unactivatable_preparation(pin["owner_id"], envelopes, running_commit)
     if ended is None:
         return None, reason
     state, commit = ended
@@ -207,7 +209,53 @@ def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, preparation_queue_
             "preparation_state": state, "preparation_commit": commit}, None
 
 
-def _unactivatable_preparation(preparation_id, preparation_queue_root, running_commit):
+_ENVELOPE_NAME = re.compile(r"(.+)-[0-9a-f]{64}\.json")
+
+
+def preparation_envelope_snapshot(preparation_queue_root):
+    """The preparation queue's ended envelopes, indexed once however many pins ask.
+
+    Call it for ``(index, None)`` or ``(None, reason)``: the index maps a
+    preparation id to the ``(state, path)`` of every envelope named for it in
+    ``materialized/`` and ``blocked/``. Both directories are listed twice and the
+    listings unioned, so an envelope moving between them is seen (twice, and so
+    ambiguous: the pin is kept). A linked or unlistable state proves nothing.
+    """
+
+    taken = []
+
+    def snapshot():
+        if not taken:
+            taken.append(_index_envelopes(preparation_queue_root))
+        return taken[0]
+
+    return snapshot
+
+
+def _index_envelopes(preparation_queue_root):
+    if preparation_queue_root is None:
+        return None, "preparation_queue_unconfigured"
+    found = set()
+    for _read_pass in range(2):
+        for state in ("materialized", "blocked"):
+            directory = Path(preparation_queue_root) / state
+            try:
+                if directory.is_symlink():
+                    return None, "preparation_queue_unavailable"
+                if not directory.is_dir():
+                    continue
+                with os.scandir(directory) as entries:
+                    found.update((state, entry.name) for entry in entries if _ENVELOPE_NAME.fullmatch(entry.name))
+            except OSError:
+                return None, "preparation_queue_unavailable"
+    index = {}
+    for state, name in sorted(found):
+        index.setdefault(_ENVELOPE_NAME.fullmatch(name).group(1), []).append(
+            (state, Path(preparation_queue_root) / state / name))
+    return index, None
+
+
+def _unactivatable_preparation(preparation_id, envelopes, running_commit):
     """``(state, commit)`` when no activation can take the preparation any more, else ``(None, reason)``.
 
     The activation worker takes a preparation only from ``materialized/``, and only
@@ -216,25 +264,15 @@ def _unactivatable_preparation(preparation_id, preparation_queue_root, running_c
     envelope must sit in ``materialized/`` bound to another release, or in
     ``blocked/``. Anything else, including an envelope this queue does not hold, keeps
     the pin. A rollback to that release would make it activatable again.
+    ``envelopes`` is a ``preparation_envelope_snapshot``.
     """
 
-    if preparation_queue_root is None:
-        return None, "preparation_queue_unconfigured"
+    index, reason = envelopes()
+    if index is None:
+        return None, reason
     if not isinstance(running_commit, str) or _COMMIT.fullmatch(running_commit) is None:
         return None, "running_commit_unknown"
-    pattern = re.compile(re.escape(preparation_id) + r"-[0-9a-f]{64}\.json")
-    found = []
-    for state in ("materialized", "blocked"):
-        directory = Path(preparation_queue_root) / state
-        try:
-            if directory.is_symlink():
-                return None, "preparation_queue_unavailable"
-            if not directory.is_dir():
-                continue
-            found.extend((state, directory / entry.name) for entry in os.scandir(directory)
-                         if pattern.fullmatch(entry.name))
-        except OSError:
-            return None, "preparation_queue_unavailable"
+    found = index.get(preparation_id, [])
     if len(found) != 1:
         return None, "preparation_envelope_ambiguous" if found else "preparation_envelope_missing"
     state, path = found[0]
@@ -561,5 +599,6 @@ __all__ = [
     "extended_proof",
     "launch_queue_root_of",
     "launch_queue_snapshot",
+    "preparation_envelope_snapshot",
     "preparation_queue_root_of",
 ]
