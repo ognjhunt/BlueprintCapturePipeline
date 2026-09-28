@@ -126,6 +126,7 @@ class _Observation:
         self.named: list[tuple[int, str, tuple[int, ...], dict[str, Any] | None]] = []
         self.leases: list[tuple[int, str, str, bytes, dict[str, Any]]] = []
         self.chains: list[tuple[str, tuple[tuple[int, int], ...]]] = []
+        self.root_identities: dict[str, tuple[int, int]] = {}
         self.entries = [0, 0]
         self.lanes = self.folders = self.unregistered = self.lease_bytes = self.comparisons = 0
         self.pin_complete = False
@@ -270,7 +271,8 @@ class _Observation:
         except FileNotFoundError:
             self.unregistered += 1
             return
-        row = {"root": root, "lane": lane, "name": name, "folder_identity": _identity(self.call(os.fstat, fd)),
+        row = {"root": root, "lane": lane, "name": name, "root_identity": self.root_identities[root],
+               "folder_identity": _identity(self.call(os.fstat, fd)),
                "lane_identity": _identity(self.call(os.fstat, parent)), "lease_digest": value["lease_digest"],
                "owner": value["owner"], "reference": {k: value[k] for k in ("run_ref", "scene_ref") if k in value},
                "class_intent": value["class_intent"], "cleanup": value["cleanup"],
@@ -310,6 +312,7 @@ class _Observation:
             try:
                 fd, chain = self.chain(root)
                 self.chains.append((root, chain))
+                self.root_identities[root] = chain[-1]
                 initial = self.call(os.fstat, fd)
                 _require((initial.st_dev, initial.st_ino) not in identities, "lane_root_alias")
                 identities.add((initial.st_dev, initial.st_ino))
@@ -345,13 +348,22 @@ class _Observation:
                         self.block("lane_directory_unavailable")
             except OSError:
                 self.block("lane_root_unavailable")
-        self.verify()
         self.references()
+        # Pin observation consumes part of the same interval. Recheck retained
+        # lane metadata after it, so publication/renewal during that interval
+        # cannot leave a complete observation of an obsolete lease.
+        self.verify()
 
     def verify(self) -> None:
         for fd, initial, names in self.directories:
-            _require(self.names(fd, 1) == names and _identity(self.call(os.fstat, fd)) == _identity(initial),
-                     "lane_directory_changed")
+            try:
+                _require(self.names(fd, 1) == names and _identity(self.call(os.fstat, fd)) == _identity(initial),
+                         "lane_directory_changed")
+            except (OSError, _Blocked) as error:
+                code = error.code if isinstance(error, _Blocked) else "lane_directory_changed"
+                if code in _RESOURCE or code.endswith("limit"):
+                    raise _Blocked(code) from None
+                self.invalidate(code)
         for parent, name, identity, row in self.named:
             try:
                 _require(_identity(self.call(os.stat, name, dir_fd=parent, follow_symlinks=False)) == identity,
@@ -363,7 +375,7 @@ class _Observation:
                 if row is not None:
                     self.mark(row, "lane_lease_changed" if name == LEASE_FILE else code)
                 else:
-                    self.block(code)
+                    self.invalidate(code)
         for fd, lane, name, raw, row in self.leases:
             try:
                 _, current = self.read_lease(fd, lane, name)
@@ -374,8 +386,21 @@ class _Observation:
                     raise _Blocked(code) from None
                 self.mark(row, "lane_lease_changed")
         for root, original in self.chains:
-            _, current = self.chain(root)
-            _require(current == original, "lane_root_changed")
+            try:
+                _, current = self.chain(root)
+                _require(current == original, "lane_root_changed")
+            except OSError:
+                self.invalidate("lane_root_changed")
+            except _Blocked as error:
+                if error.code in _RESOURCE:
+                    raise
+                self.invalidate(error.code)
+
+    def invalidate(self, code: str) -> None:
+        self.block(code)
+        for row in self.rows:
+            self.tick()
+            self.mark(row, code)
 
     def references(self) -> None:
         current = self.tick()
@@ -394,11 +419,11 @@ class _Observation:
             matched = False
             for protected in pins.protected_paths if pins is not None else ():
                 self.tick()
-                self.comparisons += 1
-                if self.comparisons > MAX_COMPARISONS:
+                if self.comparisons >= MAX_COMPARISONS:
                     self.pin_complete = False
                     self.block("lane_reference_comparisons_limit")
                     break
+                self.comparisons += 1
                 if path == protected or path.startswith(protected.rstrip("/") + "/") or protected.startswith(path + "/"):
                     matched = True
                     break
@@ -428,6 +453,8 @@ class _Observation:
         for row, observed_files in zip(self.rows, self.row_files):
             if fallback is None:
                 self.tick()
+            if not self.pin_complete:
+                row["keep_reasons"].append("references_unknown")
             row["keep_reasons"] = [r for r in _PRIORITY if r in row["keep_reasons"]]
             row["blockers"] = sorted(set(row["blockers"]))[:MAX_BLOCKERS]
             primary = row["keep_reasons"][0]
