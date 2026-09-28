@@ -83,3 +83,25 @@ def test_actual_result_response_retains_outer_fence_until_send_or_disconnect(tmp
     assert observed
     with access.exclusive_scene_access():
         pass
+
+
+def test_actual_pin_publisher_denies_reference_to_retired_generation(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    from pathlib import Path
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
+    from tests.test_scene_retirement_real_participants import authenticated_birth_refs
+    access, policy, member = access_fixture(tmp_path,monkeypatch)
+    intent_id, owner, request = authenticated_birth_refs(tmp_path,monkeypatch)
+    member.rmdir()
+    state = access.birth_scene_member(member,owner_intent_id=intent_id,
+        owner_raw_ref=owner,birth_request_raw_ref=request,now=101)
+    state.update(state='retired',retirement_token='2'*32,journal_sha256='sha256:'+'c'*64)
+    state['state_digest'] = canonical_digest(state,digest_field='state_digest')
+    record = Path(policy['generation_store'])/(hashlib.sha256(str(member).encode()).hexdigest()+'.json')
+    record.write_text(json.dumps(state))
+    pins = tmp_path/'pins'
+    with pytest.raises(access.SceneRetirementAccessError,match='scene_retirement_generation_unavailable'):
+        write_storage_pin(pins_root=pins,kind='preparation',owner_id='new-pin',paths=[member])
+    assert not pins.exists() or list(pins.rglob('*.json')) == []
