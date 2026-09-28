@@ -267,7 +267,7 @@ jobs:
           uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv
           uv lock --check
           uv sync --frozen --extra dev --python /usr/bin/python3
-          uv pip install --python /opt/blueprint-native-test-venv/bin/python -e BlueprintContracts
+          uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts
           uv pip install --python /opt/blueprint-native-test-venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
           # ProtectHome hides /home/runner from the actual different-UID child.
           # Seal only this new disposable interpreter, with a root-owned base.
