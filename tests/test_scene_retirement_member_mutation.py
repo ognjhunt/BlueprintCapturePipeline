@@ -124,3 +124,28 @@ def test_resume_never_adopts_substituted_detach_inode(tmp_path,monkeypatch):
         detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
     assert (destination/'foreign.bin').read_bytes()==b'new-generation'
     assert (parked/'nested'/'evidence.bin').read_bytes()==b'preserved-evidence'
+
+
+def test_resume_proved_leaf_unlink_after_native_success_before_completion_event(tmp_path,monkeypatch):
+    import os
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
+    access,member,preserved,journal=setup_operation(tmp_path,monkeypatch)
+    original=os.unlink
+    class Interrupted(RuntimeError):
+        pass
+    def unlink_then_interrupt(name,*args,**kwargs):
+        result=original(name,*args,**kwargs)
+        if name=='evidence.bin':
+            raise Interrupted()
+        return result
+    with monkeypatch.context() as patch:
+        patch.setattr(os,'unlink',unlink_then_interrupt)
+        with access.exclusive_scene_access(),pytest.raises(Interrupted):
+            detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+    resumed=SceneJournal.resume(journal.initial_ref,allowance=journal.allowance)
+    with access.exclusive_scene_access():
+        outcome=detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=resumed)
+    assert outcome['outcome']=='removed' and not member.exists()
+    assert outcome['removed_file_count']==1
+    assert outcome['removed_allocated_bytes']==preserved['unique_allocated_bytes']
