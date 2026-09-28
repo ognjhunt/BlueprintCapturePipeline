@@ -93,14 +93,9 @@ def _current_record(record,selected,allowance):
                 disposition='exact_selected_closed_metadata_retained',action='KEEP')
 
 
-def _selected_sam(protection,selected,fresh,allowance):
-    """Transfer an exact prefix-selected terminal SAM record, never raw history."""
+def _sam_value(identity,proofs,fresh,allowance):
+    """Reselect already bound terminal bytes without borrowing a raw version."""
     allowance.tick()
-    _require(set(protection)=={'kind','path','raw_sha256','raw_size_bytes','scope','action'}
-             and protection['scope'] in {'selected_primary_queue_states_only','preparation_sam_auxiliary_layouts_only'}
-             and protection['action']=='KEEP',_REASON)
-    identity=_selector(protection,'path','raw_sha256','raw_size_bytes')
-    proofs=selected.get(identity,[])
     _require(proofs and all(p.get('role') in _SAM_KEYS for p in proofs),_REASON)
     roles={p['role'] for p in proofs}
     _require(len(roles)==1,_REASON)
@@ -126,6 +121,60 @@ def _selected_sam(protection,selected,fresh,allowance):
         _require(value.get('status')=='completed',_REASON)
         names.add(value['child_id']+'.conflict-'+value[field][7:]+'.json')
     _require(path.name in names,_REASON)
+    return value,role,root,field
+
+
+def _current_sam_results(selected,fresh,allowance):
+    """A result follows a positively owned terminal job, not arbitrary history."""
+    source=fresh.get('historical_lineage',{}).get('source_family_inventory',{})
+    observations=_rows(source.get('sam_observations',[]))
+    jobs={}
+    for row in observations:
+        allowance.tick()
+        _require(type(row) is dict,_REASON)
+        if (row.get('role')!='sam_job' or row.get('parent_binding_verified') is not True
+                or row.get('result_binding_verified') is not True):
+            continue
+        proofs=_rows(row.get('source_provenance'))
+        _require(len(proofs)==1,_REASON)
+        identity=_selector(proofs[0])
+        if identity not in selected:
+            continue
+        value,role,_,_=_sam_value(identity,selected[identity],fresh,allowance)
+        _require(role=='sam_jobs',_REASON)
+        key=(value['child_id'],value['job_digest'])
+        _require(key not in jobs or jobs[key]==value,_REASON)
+        jobs[key]=value
+    occurrences=sum(len(proofs) for proofs in selected.values())
+    for row in observations:
+        allowance.tick()
+        if row.get('role')!='sam_result' or row.get('result_status')!='completed':
+            continue
+        proofs=_rows(row.get('source_provenance'))
+        _require(len(proofs)==1,_REASON)
+        identity=_selector(proofs[0])
+        if identity in selected:
+            continue
+        value,role,_,_=_sam_value(identity,proofs,fresh,allowance)
+        job=jobs.get((value['child_id'],value['job_digest']))
+        if job is None:
+            continue
+        _require(role=='sam_results' and all(value[k]==job[k] for k in
+                 ('parent_request_digest','plan_digest','phase'))
+                 and value['source_commit']==job['expected_source_commit'],_REASON)
+        occurrences+=1
+        _require(occurrences<=10000,'scene_retirement_reference_limit')
+        selected[identity]=[proofs[0]]
+
+
+def _selected_sam(protection,selected,fresh,allowance):
+    """Transfer an exact prefix-selected terminal SAM record, never raw history."""
+    allowance.tick()
+    _require(set(protection)=={'kind','path','raw_sha256','raw_size_bytes','scope','action'}
+             and protection['scope'] in {'selected_primary_queue_states_only','preparation_sam_auxiliary_layouts_only'}
+             and protection['action']=='KEEP',_REASON)
+    identity=_selector(protection,'path','raw_sha256','raw_size_bytes')
+    value,role,root,field=_sam_value(identity,selected.get(identity,[]),fresh,allowance)
     return dict(source={'row_path':identity[0],'raw_sha256':identity[1],'raw_size_bytes':identity[2],
                         'role':role,'queue_root':str(root)},canonical_digest=value[field],
                 disposition='exact_selected_closed_metadata_retained',action='KEEP')
@@ -139,6 +188,7 @@ def validate_current_reference_transfer(fresh,allowance):
              and all(type(row) is dict and row.get('complete') is True for row in scopes)
              and not observation.get('blockers'),'scene_retirement_reference_scope_unproven')
     selected=_sources(fresh,allowance)
+    _current_sam_results(selected,fresh,allowance)
     records=[]
     emitted=0
     for row in _rows(observation.get('record_dispositions')):
