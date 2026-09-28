@@ -154,3 +154,57 @@ def test_deadline_before_final_publication_refuses_large_encoder(tmp_path, monke
     report = json.loads(capsys.readouterr().out)
     assert entered and report['blockers'] == ['reference_deadline_exceeded']
     assert 'historical_lineage' not in report and report['action'] == 'KEEP'
+
+
+def test_native_child_scopes_charge_the_unique_root_allowance_once():
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    budget = Budget._for_scene_lifecycle_plan(monotonic=lambda: 0)
+    root = RetainedEmissionBudget(max_bytes=1000, max_rows=4, max_references=4, work_budget=budget)
+    first = root.scope(max_bytes=5000, max_rows=100, max_references=100)
+    second = first.scope(max_bytes=5000, max_rows=100, max_references=100)
+    initial = dict(budget.counts)
+    first.reserve_reference({'action': 'KEEP', 'n': 1})
+    first_bytes = root.used['bytes']
+    assert first.used['bytes'] == first_bytes and root.used['rows'] == first.used['rows'] == 1
+    second.reserve_reference({'action': 'KEEP', 'n': 2})
+    assert root.used['rows'] == first.used['rows'] == 2 and second.used['rows'] == 1
+    assert root.used['references'] == first.used['references'] == 2 and second.used['references'] == 1
+    assert root.used['bytes'] == first_bytes + second.used['bytes']
+    assert budget.counts['rows'] - initial['rows'] == 2
+    assert budget.counts['output_bytes'] - initial['output_bytes'] == root.used['bytes']
+    assert second.ancestors == (root, first)
+    assert second.remaining_bytes == 1000 - root.used['bytes']
+
+
+@pytest.mark.parametrize('cap', ['rows', 'references', 'bytes'])
+def test_exhausted_root_cap_refuses_child_emission_before_growth(cap):
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget, RetainedEmissionBudgetError
+    budget = Budget._for_scene_lifecycle_plan(monotonic=lambda: 0)
+    root = RetainedEmissionBudget(max_bytes=2 if cap == 'bytes' else 1000,
+        max_rows=1 if cap == 'rows' else 100, max_references=1 if cap == 'references' else 100,
+        work_budget=budget)
+    root.reserve_reference({})
+    child = root.scope(max_bytes=10000, max_rows=1000, max_references=1000)
+    before = dict(root.used), dict(child.used), dict(budget.counts)
+    entered = []
+    if cap == 'bytes':
+        class Unexpanded(list):
+            def __iter__(self):
+                entered.append(True)
+                pytest.fail('variable child contents walked beyond root output allowance')
+        emitted = child.rows()
+        with pytest.raises(RetainedEmissionBudgetError):
+            emitted.append({'payload': Unexpanded([1])})
+        assert not emitted
+    else:
+        def variable_rows():
+            entered.append(True)
+            pytest.fail('next child row allocated after root occurrence exhaustion')
+            yield {}
+        with pytest.raises(RetainedEmissionBudgetError):
+            child.rows(variable_rows(), reference=cap == 'references')
+    assert not entered
+    assert root.used == before[0] and child.used == before[1]
+    assert budget.counts['rows'] == before[2]['rows']
+    assert budget.counts['output_bytes'] == before[2]['output_bytes']
+    assert child.work_budget is root.work_budget is budget
