@@ -154,6 +154,8 @@ class _Scan:
         self.entries = [0, 0]
         self.bytes = self.row_count = self.values = 0
         self.root_inodes: set[tuple[int, int]] = set()
+        self.snapshots: list[tuple[Any, ...]] = []
+        self.opened_roots: set[str] = set()
 
     def block(self, code: str) -> None:
         if code in self.blockers or len(self.blockers) < MAX_BLOCKERS:
@@ -275,6 +277,7 @@ class _Scan:
         try:
             text = raw.decode("utf-8")
             self.tick()
+            self.preflight(text)
             value = json.loads(text, object_pairs_hook=pairs, parse_int=number,
                                parse_float=number, parse_constant=number)
             self.tick()
@@ -289,13 +292,56 @@ class _Scan:
                         key.encode("utf-8")
                         pending.append(child)
                 elif isinstance(item, list):
-                    pending.extend(item)
+                    for child in item:
+                        self.tick()
+                        pending.append(child)
                 elif isinstance(item, str):
                     item.encode("utf-8")
             self.tick()
             return text
         except (ValueError, TypeError, UnicodeError, OverflowError, RecursionError):
             raise _Blocked("queue_row_invalid") from None
+
+    def preflight(self, text: str) -> None:
+        """Bound containers and lexical values (including keys) before parsing.
+
+        String-aware scanning delegates syntax to JSON's parser; it never
+        interprets strings as reference paths. A character is <=4 UTF-8 bytes.
+        """
+        depth = 0
+        quoted = escaped = atom = False
+        for offset, char in enumerate(text):
+            if offset % PREFLIGHT_CHECK_CHARS == 0:
+                self.tick()
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+                continue
+            if char == '"':
+                quoted = True
+                atom = False
+                self.values += 1
+            elif char in "{[":
+                depth += 1
+                _require(depth <= MAX_DEPTH, "queue_depth_limit")
+                atom = False
+                self.values += 1
+            elif char in "}]":
+                depth -= 1
+                _require(depth >= 0, "queue_row_invalid")
+                atom = False
+            elif char in " \t\r\n,:":
+                atom = False
+            elif not atom:
+                atom = True
+                self.values += 1
+            _require(self.values <= MAX_VALUES, "queue_values_limit")
+        self.tick()
+        _require(not quoted and depth == 0, "queue_row_invalid")
 
     def read_row(self, root: str, state: str, directory: int, name: str) -> ObservedQueueRow:
         self.tick()
@@ -334,12 +380,14 @@ class _Scan:
         chain = self.walk(contract.root_path)
         root = chain[-1][0]
         root_identity = chain[-1][1]
+        self.opened_roots.add(contract.root_path)
         _require(root_identity not in self.root_inodes, "queue_root_alias")
         self.root_inodes.add(root_identity)
         initial = self.call(os.fstat, root)
         root_names = self.names(root, 0)
         directories: dict[str, tuple[int, os.stat_result, tuple[str, ...]]] = {}
         missing = []
+        self.snapshots.append((contract, chain, initial, root_names, directories))
         for state in contract.states:
             self.tick()
             if state not in root_names:
@@ -366,6 +414,10 @@ class _Scan:
             contract.root_path, contract.states, root_identity,
             tuple((state, (metadata.st_dev, metadata.st_ino)) for state, (_, metadata, _) in sorted(directories.items())),
             tuple(missing), tuple(name for name in root_names if name not in contract.states)))
+
+    def verify_root(self, snapshot: tuple[Any, ...]) -> None:
+        contract, chain, initial, root_names, directories = snapshot
+        root = chain[-1][0]
         _require(self.names(root, 1) == root_names and _identity(self.call(os.fstat, root)) == _identity(initial),
                  "queue_directory_changed")
         for state, (directory, before, names) in directories.items():
@@ -375,6 +427,7 @@ class _Scan:
             named = self.call(os.stat, state, dir_fd=root, follow_symlinks=False)
             _require(stat.S_ISDIR(named.st_mode) and _identity(named) == _identity(before), "queue_directory_changed")
         for row in self.rows:
+            self.tick()
             if row.root_path != contract.root_path:
                 continue
             directory = directories[row.state][0]
@@ -390,7 +443,9 @@ class _Scan:
     def result(self) -> QueueStateObservation:
         try:
             self.tick()
-            roots = tuple(sorted(self.roots, key=lambda row: row.root_path))
+            observed = {row.root_path: row for row in self.roots}
+            roots = tuple(observed.get(contract.root_path, ObservedQueueRoot(
+                contract.root_path, contract.states, None, (), (), ())) for contract in self.contracts)
             self.tick()
             rows = tuple(sorted(self.rows, key=lambda row: (row.root_path, row.state, row.row_path)))
             self.tick()
@@ -420,21 +475,35 @@ def observe_queue_states(contracts: Sequence[QueueRootContract], *, observed_at_
             and 0 < time_budget_seconds <= 5 and callable(monotonic)):
         raise QueueObservationError("queue_parameters_invalid")
     scan = _Scan(normalized, float(observed_at_epoch), monotonic, float(time_budget_seconds))
+    exhausted = False
     try:
         for contract in normalized:
             try:
                 scan.observe_root(contract)
             except FileNotFoundError:
-                scan.block("queue_root_missing" if not any(r.root_path == contract.root_path for r in scan.roots)
+                scan.block("queue_root_missing" if contract.root_path not in scan.opened_roots
                            else "queue_inventory_changed")
             except OSError:
                 scan.block("queue_inventory_unavailable")
             except _Blocked as error:
                 scan.block(error.code)
                 if error.code.endswith("limit") or error.code in _RESOURCE_CODES:
+                    exhausted = True
                     break
             except (TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
                 scan.block("queue_inventory_invalid")
+        if not exhausted:
+            # All initial reads precede every final pass, including other roots.
+            # This is a stability check, never atomic publication/use exclusion.
+            for snapshot in scan.snapshots:
+                try:
+                    scan.verify_root(snapshot)
+                except OSError:
+                    scan.block("queue_inventory_changed")
+                except _Blocked as error:
+                    scan.block(error.code)
+                    if error.code.endswith("limit") or error.code in _RESOURCE_CODES:
+                        break
     finally:
         for _pass in range(2):
             for fd in tuple(reversed(scan.fds)):
