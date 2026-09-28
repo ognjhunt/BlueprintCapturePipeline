@@ -201,8 +201,10 @@ def _validated_index(index: Any) -> dict[str, Any]:
         return RemoteCpuArchiveError(f"remote_cpu_archive_index_invalid:{detail}")
 
     try:
-        value = json.loads(json.dumps(index, allow_nan=False))
-    except (TypeError, ValueError) as exc:
+        text = json.dumps(index, ensure_ascii=False, allow_nan=False)
+        text.encode("utf-8")
+        value = json.loads(text)
+    except (TypeError, ValueError, RecursionError) as exc:  # UnicodeEncodeError is a ValueError
         raise invalid("not_json") from exc
     if not isinstance(value, dict) or set(value) != _INDEX_KEYS:
         raise invalid("keys")

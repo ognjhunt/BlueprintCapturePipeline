@@ -223,6 +223,7 @@ def test_stream_verifier_refuses_bad_framing_unindexed_blobs_and_digest_mismatch
     assert missing.startswith("sha256:")
     unsealed = dict(index, paths_total=index["paths_total"] + 1)
     assert refused(data, against=unsealed).startswith("remote_cpu_archive_index_invalid")
+    assert refused(data, against=dict(index, root_mode="0\ud800")) == "remote_cpu_archive_index_invalid:not_json"
 
 
 def test_landing_assembles_in_a_temporary_directory_and_renames_once_complete(tmp_path: Path, monkeypatch) -> None:

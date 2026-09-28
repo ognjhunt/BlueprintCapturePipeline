@@ -116,7 +116,7 @@ def _read(path: Path) -> dict[str, Any] | None:
         payload = stream.read(_MAX_LEASE_BYTES + 1) if stat.S_ISREG(os.fstat(stream.fileno()).st_mode) else b""
     try:
         lease = json.loads(payload)
-    except ValueError:
+    except (ValueError, RecursionError):
         lease = None
     if (not isinstance(lease, dict) or set(lease) != _LEASE_KEYS or len(payload) > _MAX_LEASE_BYTES
             or lease["schema_version"] != LEASE_SCHEMA_VERSION or lease["state"] not in STATES

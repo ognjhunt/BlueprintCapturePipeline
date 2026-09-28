@@ -155,8 +155,8 @@ def teardown_record(
     reasons = forbidden_record_content({"outcome": outcome, "compute": compute, "provider": provider})
     _check(compute, _COMPUTE_SPEC, "compute", reasons)
     _check(provider, _PROVIDER_SPEC, "provider", reasons)
-    if not isinstance(descriptor, Mapping) or descriptor.get("descriptor_digest") != canonical_digest(
-            descriptor, digest_field="descriptor_digest"):
+    descriptor = _clone(descriptor, "descriptor")
+    if descriptor.get("descriptor_digest") != canonical_digest(descriptor, digest_field="descriptor_digest"):
         reasons.append("remote_cpu_teardown_descriptor_unsealed")
     if reasons or not _is_amount(observed_at_epoch):
         raise RemoteCpuContractError(reasons or ["remote_cpu_field_invalid:observed_at_epoch"])

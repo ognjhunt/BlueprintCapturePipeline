@@ -487,6 +487,55 @@ def test_transport_schema_is_refused_by_every_record_writer(tmp_path: Path) -> N
         assert b"https://" not in path.read_bytes(), path
 
 
+def test_records_refuse_surrogates_deep_nesting_and_oversized_receipts_with_typed_errors(tmp_path: Path) -> None:
+    descriptor = _descriptor()
+    deep: dict = {}
+    cursor = deep
+    for _ in range(5000):
+        cursor["n"] = {}
+        cursor = cursor["n"]
+    lone = "blocker\ud800"
+
+    def typed(call) -> tuple[str, ...]:
+        with pytest.raises(contract.RemoteCpuContractError) as caught:
+            call()
+        caught.value.args[0].encode("utf-8")  # the refusal itself is always printable
+        return caught.value.reasons
+
+    target = tmp_path / "record.json"
+    for value in ({"a": lone}, {"a": deep}, {lone: 1}):
+        typed(lambda: records.write_remote_cpu_record(target, {"schema_version": "x.v1", **value}))
+    assert not target.exists()
+    assert "remote_cpu_record_too_deep" in contract.forbidden_record_content({"a": deep})
+
+    deep_result = _receipt(descriptor)
+    deep_result["result"] = dict(deep_result["result"], deep=deep)
+    surrogate = _receipt(descriptor, status="blocked", result=_result(descriptor, blocker="x"))
+    surrogate["result"] = dict(surrogate["result"], blockers=[lone])
+    # CPython's C JSON encoder may accept depth that the Python-level scan refuses: either is typed.
+    assert {"remote_cpu_receipt_not_json", "remote_cpu_record_too_deep"} & set(
+        typed(lambda: contract.validate_receipt(deep_result, descriptor=descriptor, execution_name=EXECUTION)))
+    assert typed(lambda: contract.validate_receipt(surrogate, descriptor=descriptor, execution_name=EXECUTION)) == (
+        "remote_cpu_receipt_not_json",)
+    padded = _result(descriptor)
+    padded["padding"] = "x" * contract.MAX_RECEIPT_BYTES
+    _seal(padded, "result_digest")
+    assert typed(lambda: contract.validate_receipt(
+        _receipt(descriptor, result=padded), descriptor=descriptor, execution_name=EXECUTION
+    )) == ("remote_cpu_receipt_too_large",)
+    heartbeat = {"schema_version": "remote_cpu_job_heartbeat.v1", "attempt_id": descriptor["attempt_id"],
+                 "execution_name": EXECUTION, "sequence": 1, "phase": "stage", "elapsed_seconds": 1.0,
+                 "bytes_fetched": 0, "bytes_uploaded": 0, "padding": "x" * contract.MAX_HEARTBEAT_BYTES}
+    assert typed(lambda: contract.validate_heartbeat(
+        heartbeat, attempt_id=descriptor["attempt_id"], execution_name=EXECUTION)) == ("remote_cpu_heartbeat_too_large",)
+    typed(lambda: contract.validate_descriptor(descriptor, config={**_config(), "project": lone}))
+    typed(lambda: records.teardown_record(
+        descriptor=dict(descriptor, mode=lone), worker_identity=None, outcome="expired",
+        compute=_compute(), provider=_provider(), observed_at_epoch=2_000_000_000.0,
+    ))
+    typed(lambda: records.pointer_record({**_pointer_fields(descriptor), "compilation_id": lone}))
+
+
 def test_receipt_must_echo_descriptor_attempt_and_execution_identity() -> None:
     descriptor = _descriptor()
     verdict = contract.validate_receipt(_receipt(descriptor), descriptor=descriptor, execution_name=EXECUTION)

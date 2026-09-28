@@ -232,6 +232,8 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
     ))
     (root / "leases" / f"{job}.json").write_text("{}", encoding="utf-8")
     assert lease.slots_in_use(root) == contract.MAX_ATTEMPTS_CAP
+    (root / "leases" / f"{job}.json").write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    assert lease.slots_in_use(root) == contract.MAX_ATTEMPTS_CAP
 
 
 class _NoPidOs:

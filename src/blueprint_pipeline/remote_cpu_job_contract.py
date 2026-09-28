@@ -39,6 +39,8 @@ MAX_ATTEMPTS_CAP = 2
 PHASE_MARGIN_SECONDS = 180
 MAX_TASK_TIMEOUT_SECONDS = 3600
 MAX_MEMORY_BYTES = 32 * 1024**3
+MAX_RECEIPT_BYTES = 1024 * 1024
+MAX_HEARTBEAT_BYTES = 16 * 1024
 INFRASTRUCTURE_FAILED = "infrastructure_failed:"
 RELEASE_PATH_MISSING = INFRASTRUCTURE_FAILED + "release_path_missing:"
 
@@ -99,16 +101,28 @@ def _credential_shaped_key(text: str) -> bool:
 
 
 def safe_label(value: Any) -> str:
-    """A key fit for a refusal message: a credential- or URL-shaped key becomes ``<key#sha256[:12]>``."""
+    """A key fit for a refusal message: a credential-shaped, URL-shaped or non-UTF-8 key becomes
+    ``<key#sha256[:12]>``."""
     text = str(value)
-    if _credential_shaped_key(text) or _url_or_credential_text(text):
-        return f"<key#{hashlib.sha256(text.encode('utf-8', 'surrogatepass')).hexdigest()[:12]}>"
-    return text
+    try:
+        text.encode("utf-8")
+        printable = not (_credential_shaped_key(text) or _url_or_credential_text(text))
+    except UnicodeEncodeError:
+        printable = False
+    return text if printable else f"<key#{hashlib.sha256(text.encode('utf-8', 'surrogatepass')).hexdigest()[:12]}>"
 
 
 def forbidden_record_content(value: Any, path: str = "") -> list[str]:
     """Name every credential-shaped key, URL-shaped value and embedded transport, never the value."""
     reasons: list[str] = []
+    try:
+        _scan(value, path, reasons)
+    except RecursionError:
+        reasons.append("remote_cpu_record_too_deep")
+    return reasons
+
+
+def _scan(value: Any, path: str, reasons: list[str]) -> None:
     if isinstance(value, Mapping):
         if value.get("schema_version") == TRANSPORT_SCHEMA_VERSION:
             reasons.append(f"remote_cpu_transport_never_persisted:{path or '$'}")
@@ -118,13 +132,12 @@ def forbidden_record_content(value: Any, path: str = "") -> list[str]:
                 reasons.append(f"remote_cpu_record_credential_shaped_key:{where}")
             elif _url_or_credential_text(str(key)):
                 reasons.append(f"remote_cpu_record_url_or_credential_value:{where}")
-            reasons.extend(forbidden_record_content(item, where))
+            _scan(item, where, reasons)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            reasons.extend(forbidden_record_content(item, f"{path}[{index}]"))
+            _scan(item, f"{path}[{index}]", reasons)
     elif isinstance(value, str) and _url_or_credential_text(value):
         reasons.append(f"remote_cpu_record_url_or_credential_value:{path or '$'}")
-    return reasons
 
 
 def record_bytes(value: Mapping[str, Any]) -> bytes:
@@ -135,9 +148,9 @@ def record_bytes(value: Mapping[str, Any]) -> bytes:
     _raise_if(reasons)
     try:
         text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-    except (TypeError, ValueError) as exc:
+        return (text + "\n").encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:  # UnicodeEncodeError is a ValueError
         raise RemoteCpuContractError("remote_cpu_record_not_json") from exc
-    return (text + "\n").encode("utf-8")
 
 
 def job_id_for(stage: str, queue_name: str) -> str:
@@ -207,13 +220,19 @@ def _check(value: Any, spec: Any, where: str, reasons: list[str]) -> None:
         reasons.append(f"remote_cpu_field_invalid:{where}")
 
 
-def _clone(value: Any, label: str) -> dict[str, Any]:
+def _clone(value: Any, label: str, *, limit: int | None = None) -> dict[str, Any]:
+    """A JSON copy that is UTF-8 encodable, not too deep and, with ``limit``, not too large."""
     if not isinstance(value, Mapping):
         raise RemoteCpuContractError(f"remote_cpu_{label}_not_mapping")
     try:
-        return json.loads(json.dumps(value, allow_nan=False))
-    except (TypeError, ValueError) as exc:
+        text = json.dumps(value, ensure_ascii=False, allow_nan=False)
+        size = len(text.encode("utf-8"))
+        cloned = json.loads(text)
+    except (TypeError, ValueError, RecursionError) as exc:  # UnicodeEncodeError is a ValueError
         raise RemoteCpuContractError(f"remote_cpu_{label}_not_json") from exc
+    if limit is not None and size > limit:
+        raise RemoteCpuContractError(f"remote_cpu_{label}_too_large")
+    return cloned
 
 
 def _path_reasons(value: Any, where: str, roots: Sequence[str], *, directory: bool = False) -> list[str]:
@@ -561,7 +580,7 @@ def validate_receipt(value: Mapping[str, Any], *, descriptor: Mapping[str, Any],
     A release-path miss, an environment mismatch, an unqualified CPU class or a retryable stage
     blocker overrides the worker's own status: that attempt is an infrastructure failure.
     """
-    receipt = _clone(value, "receipt")
+    receipt = _clone(value, "receipt", limit=MAX_RECEIPT_BYTES)
     if not isinstance(descriptor, Mapping):
         raise RemoteCpuContractError("remote_cpu_descriptor_not_mapping")
     reasons = forbidden_record_content(receipt)
@@ -585,7 +604,7 @@ def validate_receipt(value: Mapping[str, Any], *, descriptor: Mapping[str, Any],
 
 def validate_heartbeat(value: Mapping[str, Any], *, attempt_id: str, execution_name: str) -> dict[str, Any]:
     """A heartbeat counts only under the current attempt id and its execution."""
-    heartbeat = _clone(value, "heartbeat")
+    heartbeat = _clone(value, "heartbeat", limit=MAX_HEARTBEAT_BYTES)
     reasons = forbidden_record_content(heartbeat)
     _check(heartbeat, _HEARTBEAT_SPEC, "", reasons)
     reasons.extend(f"remote_cpu_heartbeat_fenced:{name}" for name, expected in (
