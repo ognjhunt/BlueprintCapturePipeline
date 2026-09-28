@@ -66,9 +66,13 @@ def _blueprint_identity():
 
 
 def is_registered_checkpoint_path(path):
-    """Lexical namespace gate before config, marker, stat or credential access."""
-    value = Path(path)
-    return any(value == root / "g1-checkpoint" or root / "g1-checkpoint" in value.parents
+    """Refuse alias spellings before config, marker, payload or credentials."""
+    from .control_plane_lane_experiment_consumer import _canonical_reader_path
+    try:
+        value = _canonical_reader_path(Path(path))
+    except OwnerTargetVersionError:
+        raise NeededCheckpointCacheError('needed_cache_path_unsafe') from None
+    return any(value == root / 'g1-checkpoint' or root / 'g1-checkpoint' in value.parents
                for root in _REGISTERED_ROOTS)
 
 

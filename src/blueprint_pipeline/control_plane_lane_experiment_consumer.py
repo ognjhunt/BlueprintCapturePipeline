@@ -21,7 +21,7 @@ from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_lane_experiment_authority import _current, _read
 from .control_plane_lane_experiment_publication import _BirthFiles
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require, _valid_digest
-from .control_plane_reference_budget import ReferenceCollectionBudget
+from .control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
 from .control_plane_scratch_lifetime import LANE_ROOTS, LeasedScratchUse
 from .decision_evidence_contracts import canonical_digest
 
@@ -39,14 +39,52 @@ def _blueprint_gid():
         raise OwnerTargetVersionError("experiment_account_missing") from None
 
 
-def registered_target(output, roots):
-    """Lexical reservation is checked before any payload or marker access."""
-    if not isinstance(output, Path) or not output.is_absolute():
+def _canonical_reader_path(value, *, _budget=None):
+    """Reject unsafe spellings before payload access, without resolving a link.
+
+    Named no-follow metadata is finite pre-call evidence, never permission or
+    an atomic fence against another thread changing pathname components.
+    """
+    budget = _budget if _budget is not None else ReferenceCollectionBudget(values_limit=10000)
+    try:
+        budget.tick()
+        _require(isinstance(value, Path) and len(value.parts) <= 64 and '..' not in value.parts,
+                 'experiment_consumer_path_unsafe')
+        text = str(value)
+        _require(len(text) <= 4096 and len(text.encode('utf-8')) <= 4096,
+                 'experiment_consumer_path_unsafe')
+        budget.charge('raw_bytes', len(text.encode('utf-8')))
+        absolute = value if value.is_absolute() else Path.cwd() / value
+        _require(len(absolute.parts) <= 64, 'experiment_consumer_path_unsafe')
+        parent = Path(absolute.anchor)
+        for component in absolute.parts[1:]:
+            budget.charge('values')
+            parent = parent / component
+            try:
+                info = os.stat(parent, follow_symlinks=False)
+            except FileNotFoundError:
+                break
+            _require(not stat.S_ISLNK(info.st_mode), 'experiment_consumer_path_unsafe')
+        budget.tick()
+        return absolute
+    except (OSError, ReferenceCollectionBudgetError):
+        raise OwnerTargetVersionError('experiment_consumer_path_unsafe') from None
+    finally:
+        if _budget is None:
+            budget.close()
+
+
+def registered_target(output, roots, *, _budget=None):
+    """Marker-independent reservation; alias spellings cannot enter legacy."""
+    if not isinstance(output, Path):
         return None
+    selected = _canonical_reader_path(output, _budget=_budget)
     for root in roots:
-        if output.is_relative_to(root):
-            parts = output.relative_to(root).parts
-            if len(parts) >= 2 and parts[0] in ("g1", "arena") and re.fullmatch(r"registered-[0-9a-f]{32}", parts[1]):
+        if selected.is_relative_to(root):
+            parts = selected.relative_to(root).parts
+            if len(parts) >= 2 and parts[0] in ('g1', 'arena') and parts[1].startswith('registered-'):
+                _require(re.fullmatch(r'registered-[0-9a-f]{32}', parts[1]) is not None,
+                         'experiment_consumer_path_unsafe')
                 return root / parts[0] / parts[1]
     return None
 
@@ -95,15 +133,22 @@ class RegisteredExperimentUse(LeasedScratchUse):
     """Borrowed scopes retain the same target SH; they never close the parent."""
     @classmethod
     def admit(cls, target, *, expected_birth=None, expected_generation=None, now=time.time,
-              _producer_request_paths=None, _producer_config_path=None, _producer_bootstrap_path=None, _arena_tag=None):
-        _require((isinstance(target, Path) and registered_target(target, LANE_ROOTS) == target and _arena_tag is None)
-                 or target is None and isinstance(_arena_tag, str) and re.fullmatch(r"r[1-9][0-9]{0,5}", _arena_tag)
-                 and _producer_request_paths is None and _producer_config_path is None and _producer_bootstrap_path is None,
-                 "experiment_consumer_authority_required")
-        files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+              _producer_request_paths=None, _producer_config_path=None, _producer_bootstrap_path=None, _arena_tag=None,
+              _metadata_budget=None):
+        _require(_metadata_budget is None or type(_metadata_budget) is ReferenceCollectionBudget
+                 and _metadata_budget.duration == 5.0 and _metadata_budget.limits['values'] == 10000
+                 and not _metadata_budget.closed and _metadata_budget.failure is None,
+                 'experiment_consumer_path_unsafe')
+        files = _BirthFiles(_metadata_budget if _metadata_budget is not None else
+                            ReferenceCollectionBudget(values_limit=10000))
         result = None
         accepted = False
         try:
+            _require((isinstance(target, Path) and registered_target(target, LANE_ROOTS, _budget=files.budget) == target
+                      and _arena_tag is None)
+                     or target is None and isinstance(_arena_tag, str) and re.fullmatch(r"r[1-9][0-9]{0,5}", _arena_tag)
+                     and _producer_request_paths is None and _producer_config_path is None and _producer_bootstrap_path is None,
+                     "experiment_consumer_authority_required")
             gid = _blueprint_gid()
             public, _ = files.parent(AUTHORITY_ROOT / "HEAD.json")
             info = os.fstat(public)
@@ -416,18 +461,24 @@ def _admit_public_producer(result, files, target, public, selected, gid, issued)
 @contextmanager
 def registered_reader(path):
     """Finite real reader scope; ambient use is rechecked, never a grant."""
-    selected = Path(path)
-    target = registered_target(selected, LANE_ROOTS)
-    if target is None:
-        yield None
-        return
-    current = _CURRENT_USE.get()
-    if type(current) is RegisteredExperimentUse and current.path == target:
-        current.check()
-        try:
-            yield current
-        finally:
+    budget = ReferenceCollectionBudget(values_limit=10000)
+    try:
+        selected = Path(path)
+        target = registered_target(selected, LANE_ROOTS, _budget=budget)
+        if target is None:
+            budget.close()
+            yield None
+            return
+        current = _CURRENT_USE.get()
+        if type(current) is RegisteredExperimentUse and current.path == target:
+            budget.close()
             current.check()
-    else:
-        with RegisteredExperimentUse.admit(target) as use:
-            yield use
+            try:
+                yield current
+            finally:
+                current.check()
+        else:
+            with RegisteredExperimentUse.admit(target, _metadata_budget=budget) as use:
+                yield use
+    finally:
+        budget.close()
