@@ -83,3 +83,38 @@ def test_durable_controller_cannot_gain_fresh_retry_deadline(monkeypatch, change
     finally:
         files.finish()
         files.budget.close()
+
+
+@pytest.mark.parametrize("state", ["unused", "used", "failed", "closed"])
+def test_original_action_controller_initializes_once_before_any_reset_or_clock(state, tmp_path):
+    from blueprint_pipeline import control_plane_lane_experiment_work as work
+    import os
+
+    clock = [1000.0]
+    files = work._ActionFiles(monotonic=lambda: clock[0], now=lambda: 2000.0)
+    try:
+        if state == "used":
+            directory = tmp_path / "target"
+            directory.mkdir()
+            files.parent(directory / "payload")
+        elif state == "failed":
+            clock[0] = 20000.0
+            with pytest.raises(ValueError):
+                files.check_long()
+        elif state == "closed":
+            files.budget.close()
+        old_budget, old_owned = files.budget, dict(files.owned)
+        old_origin, old_failure = files.controller_origin, files.failure
+
+        def forbidden_clock():
+            pytest.fail("reinitialization reached a new clock")
+
+        with pytest.raises(ValueError, match="experiment_work_initialization_reused"):
+            files.__init__(monotonic=forbidden_clock, now=forbidden_clock)
+        assert files.budget is old_budget and files.owned == old_owned
+        assert files.controller_origin == old_origin and files.failure == old_failure
+        for fd in old_owned:
+            os.fstat(fd)
+    finally:
+        files.finish()
+        files.budget.close()
