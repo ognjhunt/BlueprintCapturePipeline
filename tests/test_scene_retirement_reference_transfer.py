@@ -110,7 +110,7 @@ def original_sam_transfer(tmp_path):
     from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
     from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
     from blueprint_pipeline.task_evaluation_scene_lifecycle_measurement import members
-    args=rebase_graph(fixture(through='standard_splat_conversion'),tmp_path.resolve())
+    args=rebase_graph(fixture(through='calibrated_views'),tmp_path.resolve())
     for group in ('seed_records','downstream_records','source_records'):
         for role,rows in args[group].items():
             rows=([rows] if rows else []) if role in {'intent','projection'} else rows
