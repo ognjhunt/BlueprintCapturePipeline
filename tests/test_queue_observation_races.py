@@ -297,3 +297,113 @@ def test_ambiguous_close_reusing_foreign_fd_never_closes_foreign(tmp_path, monke
     finally:
         for fd in foreign:
             real_close(fd)
+
+
+def test_proven_foreign_reuse_relinquishes_tracking_before_scan_continues(tmp_path, monkeypatch):
+    module = _module()
+    owned_path, foreign_path, next_path = (tmp_path / name for name in ("owned", "foreign", "next"))
+    for path in (owned_path, foreign_path, next_path):
+        path.write_bytes(path.name.encode())
+    real_open, real_close, real_fstat = module.os.open, module.os.close, module.os.fstat
+    scan = module._Scan((module.QueueRootContract(str(tmp_path), ("pending",)),), 10, lambda: 0, 5)
+    owned = scan.open(str(owned_path), module._FILE_FLAGS)
+    foreign = []
+
+    def ambiguous(fd):
+        real_close(fd)
+        replacement = real_open(foreign_path, os.O_RDONLY)
+        if replacement != fd:
+            os.dup2(replacement, fd)
+            real_close(replacement)
+        foreign.append(fd)
+        raise OSError(errno.EINTR, "ambiguous")
+
+    try:
+        with monkeypatch.context() as fault:
+            fault.setattr(module.os, "close", ambiguous)
+            scan.close(owned)
+        scan.close(owned)  # SUT detects another component's still-open inode.
+        assert stat.S_ISREG(real_fstat(foreign[0]).st_mode)
+        assert owned not in scan.fds and owned not in scan.failed_closes
+        next_fd = scan.open(str(next_path), module._FILE_FLAGS)
+        scan.close(next_fd)
+        for fd in tuple(scan.fds):
+            scan.close(fd)
+        assert stat.S_ISREG(real_fstat(foreign[0]).st_mode)
+    finally:
+        # The fixture is the foreign component's owner; SUT never closes it.
+        for fd in foreign:
+            real_close(fd)
+        for fd in tuple(scan.fds):
+            if fd not in foreign:
+                scan.close(fd)
+
+
+def test_fresh_open_replaces_stale_unknown_tracking_without_duplicate_ownership(tmp_path, monkeypatch):
+    module = _module()
+    path = tmp_path / "owned"
+    path.write_bytes(b"owned")
+    real_close = module.os.close
+    scan = module._Scan((module.QueueRootContract(str(tmp_path), ("pending",)),), 10, lambda: 0, 5)
+    first = scan.open(str(path), module._FILE_FLAGS)
+    scan.fd_identities.pop(first)  # Post-open fstat/cleanup identity is unavailable.
+
+    def unavailable(fd):
+        raise OSError(errno.EIO, "unavailable")
+
+    def ambiguous(fd):
+        real_close(fd)
+        raise OSError(errno.EINTR, "ambiguous close actually completed")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(module.os, "fstat", unavailable)
+        fault.setattr(module.os, "close", ambiguous)
+        scan.close(first)
+    assert first in scan.fds
+    second = scan.open(str(path), module._FILE_FLAGS)
+    try:
+        assert second == first  # Kernel reuses the lowest closed descriptor.
+        assert scan.fds.count(second) == 1
+        assert second not in scan.failed_closes
+        scan.close(second)
+        assert scan.fds == []
+    finally:
+        for fd in tuple(set(scan.fds)):
+            scan.close(fd)
+
+
+def test_continued_scan_cleanup_never_closes_later_foreign_reuse(tmp_path, monkeypatch):
+    module = _module()
+    owned_path, foreign_path = tmp_path / "owned", tmp_path / "foreign"
+    owned_path.write_bytes(b"owned")
+    foreign_path.write_bytes(b"foreign")
+    real_close, real_open, real_fstat = module.os.close, module.os.open, module.os.fstat
+    scan = module._Scan((module.QueueRootContract(str(tmp_path), ("pending",)),), 10, lambda: 0, 5)
+    first = scan.open(str(owned_path), module._FILE_FLAGS)
+    scan.fd_identities.pop(first)
+
+    def unavailable(fd):
+        raise OSError(errno.EIO, "unavailable")
+
+    def ambiguous(fd):
+        real_close(fd)
+        raise OSError(errno.EINTR, "ambiguous close actually completed")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(module.os, "fstat", unavailable)
+        fault.setattr(module.os, "close", ambiguous)
+        scan.close(first)
+    second = scan.open(str(owned_path), module._FILE_FLAGS)
+    assert second == first
+    scan.close(second)
+    foreign = real_open(foreign_path, os.O_RDONLY)
+    try:
+        assert foreign == first
+        for fd in tuple(scan.fds):
+            scan.close(fd)
+        assert stat.S_ISREG(real_fstat(foreign).st_mode)
+    finally:
+        try:
+            real_close(foreign)  # Cleanup by the fixture's foreign owner only.
+        except OSError as error:
+            assert error.errno == errno.EBADF  # The failing baseline closed it.

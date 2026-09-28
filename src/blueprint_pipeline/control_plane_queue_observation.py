@@ -203,7 +203,7 @@ class _Scan:
                 return
             identity = None
         previous = self.fd_identities.get(fd)
-        if fd in self.failed_closes and (previous is None or identity != previous):
+        if fd in self.failed_closes and (previous is None or identity is None):
             self.block("queue_descriptor_changed")
             return
         if previous is not None and identity is not None and identity != previous:
@@ -226,6 +226,10 @@ class _Scan:
     def open(self, name: str, flags: int, parent: int | None = None) -> int:
         self.tick()
         fd = os.open(name, flags, dir_fd=parent)
+        # A genuinely fresh open proves any prior ownership of this numeric
+        # slot ended, even if a prior close/fstat left its state ambiguous.
+        while fd in self.fds:
+            self.forget(fd)
         self.fds.append(fd)  # Ownership precedes every fallible post-open step.
         value = os.fstat(fd)
         self.fd_identities[fd] = _fd_identity(value)
