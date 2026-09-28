@@ -258,3 +258,94 @@ the exact failed case then passed in isolation (64 unique cases verified).
 All six sealed provider import-closure and nineteen lifecycle rehearsal cases
 passed together. Changed-file Ruff passed. No new dependency, secret service,
 policy inference or GPU allocation was introduced by these checks.
+
+## Provider transport checkpoint: selected policy kind
+
+Observed blocker: the selected bundle entrypoint exists, but the shared Vast
+transport does not recognize its kind or result filename. Its generic output
+cap would omit large lossless observation files. Close this seam before adding
+the canonical allocator probe. Register the selected kind in the existing
+Isaac image/entrypoint/secret/external-layer/output/recovery contracts. Validate
+the sealed manifest, execution packet and all artifact bytes without converting
+input sealing into paid authorization. Retain the entire selected worker output
+and require its exact terminal result. No command-execute restart fallback for
+this kind: a missing log marker does not prove the owned worker never started.
+
+Red-first cases cover real built-bundle acceptance, altered artifact and
+resealed launch-field refusal, exact readiness/entrypoint selection, generated
+bootstrap shell syntax, required result and full-frame retention, private token
+transport without receipt leakage, and selected native terminal completion
+without any physical/billing/public-rights upgrade. Typed worker failure and
+zero queries never become successful inference. All existing selected worker,
+provider closure and lifecycle checks remain required before a paid attempt.
+
+Agent review: examined actual Vast bundle preflight, image bootstrap, native
+terminal contract and output recovery. Accepted under ADP-050 Day 28; canonical
+paid grant/one-attempt queue and all three live delivery modes remain required.
+
+Canonical allocator increment: accept only a previously sealed selected bundle
+and current owner/operator/secret registry arguments. Reuse deployed-release,
+spend-lock, credit, launch-gate, paid-grant, watchdog and adapter closeout seams.
+At provider create, reopen identity and selected dispatch inputs; consume an
+exclusive single-attempt record binding exact intent/profile/approval/bytes and
+budgets. Repeated invocation must not allocate twice. Post-run, rehash the same
+bundle and independently verify the selected worker's score, frames and videos.
+Do not label that result billed, delivered or publicly publishable.
+
+Hermetic tests drive the real controller boundary through fake canonical
+transport, checking revoked authority after slow preparation, duplicate
+consumption, unsupported modes before adapter invocation, control identity
+change, typed failures and independent watchdog/secret transport arguments.
+Review: existing paid controller supplies these boundaries; no direct provider
+API, new service or separate web intake is permitted. The installed selected
+queue and delivery settlement remain the next integration increment.
+
+Collection admission review: the current transport retains both ZIP and extracted
+lossless output. Its declared transfer forecast is 12 GB of provider inputs plus
+10 GB of output; reserve 32 GB for inputs and both output copies through the
+existing disk ledger, with its separate floor and live reservations. This is a
+conservative declared forecast, not a proven upper bound on episode output.
+Dry transport must refuse insufficient observed headroom; execute must acquire
+and renew the reservation before staging or grant use, and hold it through
+verification/closeout. Test shortage before transport, reservation release after
+failure, final renewal refusal before create, and CLI dispatch. Streaming and
+generation bounds remain required to remove this collection limitation.
+
+Verification, 2026-09-28: the combined selected allocator/transport/worker/
+bundle/media/preflight/import/lifecycle run completed with 71 passes and one
+artifact-digest refusal while source edits overlapped test bundle sealing.
+The same preflight case passed in isolation once writes stopped. A concurrent
+source change is consistent with that refusal; the exact mismatched member was
+not retained long enough to confirm it. The two added reservation-loss cases
+and the independently retained score/frame/video corruption case passed in a
+targeted three-case run. After the final provider receipt change, the endpoint
+worker test passed and all six sealed import-closure cases passed again. All
+nineteen lifecycle cases passed in the combined run. Changed-file Ruff and
+diff whitespace checks passed. These are hermetic contract checks, not GPU
+qualification. A started but unverified worker now reports query state unknown,
+rather than inventing zero queries. No new paid attempt or data deletion.
+
+## Next integration checkpoint: selected intake to durable dispatch
+
+The existing campaign preparer/dispatcher consumes a different intent schema
+and always runs the four built-ins; it cannot dispatch the team's chosen profile.
+Reuse its immutable records, lock, canonical allocator subprocess and fresh
+spend-guard seams. A selected-policy preparer must re-open current authority,
+derive manipulation/movement scene paths only from the owner-scoped registry,
+seal the existing execution packet and selected bundle, and take SONIC assets
+from an operator-owned configuration. Cached preparation must reverify every
+bundle byte and exact approval instead of silently rebuilding under a new
+release. The queue supplies approvals by exact intent ID from an operator root;
+team input never supplies host paths or credential bytes.
+
+The dispatcher must replay the complete current dry preflight, refresh billing
+and spend admission after slow preparation, re-open selected authority, and
+write an exclusive execution-start record before invoking the canonical paid
+allocator. An interrupted start requires reconciliation of its exact attempt;
+it does not authorize a replacement allocation. Terminal dispatch remains
+pending settlement and private ingest. Tests cover both objective choices,
+owner/registry/approval changes, stale preparation, absent approval, revoked
+authority after guard refresh, interrupted execution and repeat invocation.
+Agent review accepted this as the next required bridge to the existing shared
+configurator; neither inspection-only preparation nor endpoint-only execution
+will satisfy the full delivery requirement.

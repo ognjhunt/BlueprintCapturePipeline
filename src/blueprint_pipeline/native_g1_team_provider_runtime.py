@@ -89,6 +89,7 @@ def run_g1_team_provider_runtime(
         "stage_reached": "input_verification", "blocker_type": None, "blocker_code": None,
         "execution_packet_digest": None, "supervised_result_digest": None,
         "worker_output_relative_path": "selected-worker/worker", "verified_output": None,
+        "candidate_policy_queried": False,
         "provider_teardown_verified": False, "official_billing_reconciled": False,
         "public_redistribution_authorized": False,
     }
@@ -106,6 +107,9 @@ def run_g1_team_provider_runtime(
         assets = {row["role"]: row for row in inputs["sonic_assets"]}
         root = Path(runtime_root)
         result["stage_reached"] = "supervised_worker"
+        # A started child can query before failing. Until retained output is
+        # verified, neither zero queries nor successful inference is proven.
+        result["candidate_policy_queried"] = None
         supervised = run_supervised_g1_team_worker(
             worker_arguments={
                 "execution_packet_path": root.parent / PACKET_RELATIVE_PATH,
@@ -125,6 +129,10 @@ def run_g1_team_provider_runtime(
         if supervised["status"] != "completed_development_only":
             raise ValueError("g1_team_provider_worker_incomplete")
         result["verified_output"] = supervised["verified_output"]
+        queries = result["verified_output"].get("policy_query_count")
+        if type(queries) is not int or queries < 1:
+            raise ValueError("g1_team_provider_policy_query_required")
+        result["candidate_policy_queried"] = True
         result["status"] = "completed_development_only"
     except Exception as exc:  # noqa: BLE001 - retain typed terminal proof, never raw endpoint details
         result["blocker_type"] = type(exc).__name__

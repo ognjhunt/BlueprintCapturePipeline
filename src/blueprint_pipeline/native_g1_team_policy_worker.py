@@ -53,8 +53,14 @@ def _execution_packet(path: Path, expected_commit: str) -> dict[str, Any]:
     ):
         raise ValueError("g1_team_worker_execution_packet_unavailable")
     value = json.loads(path.read_text(encoding="utf-8"))
+    return validate_g1_team_execution_packet(value, expected_commit)
+
+
+def validate_g1_team_execution_packet(value: Any, expected_commit: str) -> dict[str, Any]:
+    """Use the same exact packet validator for a file and a sealed ZIP member."""
     if (
-        not isinstance(value, dict)
+        not isinstance(expected_commit, str) or _COMMIT.fullmatch(expected_commit) is None
+        or not isinstance(value, dict)
         or set(value) != PACKET_FIELDS
         or value.get("schema_version") != PACKET_SCHEMA
         or value.get("status") != "approved_input_not_executed"

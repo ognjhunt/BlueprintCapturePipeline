@@ -91,6 +91,8 @@ from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_ma
 from .provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
+    g1_provider_output_contract,
+    provider_command_execute_fallback_allowed,
     wam_registered_alternative_inputs_present,
 )
 from . import vast_runtime_environment_contract as vrec
@@ -380,6 +382,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }
@@ -394,6 +397,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -2735,6 +2739,12 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/blueprint_pipeline/native_g1_provider_runtime.py"
         readiness_name = "native_g1_provider_manifest.json"
+    elif provider_bundle_kind == "native_g1_team_policy":
+        from .native_g1_team_provider_bundle import REQUIRED_ENTRIES, validate_g1_team_provider_manifest
+        required_entries = set(REQUIRED_ENTRIES)
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/blueprint_pipeline/native_g1_team_provider_runtime.py"
+        readiness_name = "native_g1_team_provider_manifest.json"
     elif provider_bundle_kind == "paired_target_native_import":
         required_entries = paired_target_native_import_required_entries
         entrypoint_member = "provider_runtime/run_paired_target_native_import_probe.sh"
@@ -2857,6 +2867,7 @@ def _blueprint_bundle_preflight(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
@@ -3037,6 +3048,14 @@ def _blueprint_bundle_preflight(
                             readiness["local_bundle_ready_for_remote_staging"] = True
                         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                             blockers.append("native_g1_provider_manifest_invalid")
+                    if provider_bundle_kind == "native_g1_team_policy":
+                        readiness_member = "provider_runtime/native_g1_team_provider_manifest.json"
+                        readiness_source = "immutable_bundle_member"
+                        try:
+                            readiness = dict(validate_g1_team_provider_manifest(archive))
+                            readiness["local_bundle_ready_for_remote_staging"] = True
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            blockers.append("native_g1_team_provider_manifest_invalid")
                     if provider_bundle_kind == "task_evaluation_scene_configuration":
                         readiness_member = (
                             "provider_runtime/"
@@ -3487,6 +3506,7 @@ def _blueprint_bundle_preflight(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "task_evaluation_scene_configuration",
         }:
             # The native readiness manifest is a required, JSON-validated member
@@ -3894,6 +3914,7 @@ def _resolve_launch_mode(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
             "paired_target_native_import",
             "adp009d_ovrtx",
@@ -3962,6 +3983,7 @@ def _probe_env(
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
+        "native_g1_team_policy",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -4697,6 +4719,7 @@ def _probe_shell_script(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "paired_target_native_import",
         }:
             script += (
@@ -4782,28 +4805,18 @@ def _probe_shell_script(
                 + repr(
                     "native_task_arena_policy_canary_session_result.v1.json"
                     if provider_bundle_kind == "native_task_arena_policy_canary_session"
-                    else (
-                        "native_g1_provider_campaign_result.v1.json"
-                        if provider_bundle_kind == "native_g1_development_campaign"
-                        else None
-                    )
+                    else g1_provider_output_contract(provider_bundle_kind)[0]
                 )
                 + "\n"
                 "preserve_all_output = "
-                + repr(provider_bundle_kind == "native_g1_development_campaign")
+                + repr(g1_provider_output_contract(provider_bundle_kind)[1])
                 + "\n"
                 # The pinned checkpoint and SONIC receipts live directly under
                 # models/. Their downloaded weights are execution inputs, not
                 # review evidence, and exceed the bounded output PUT ceiling.
                 "g1_transient_runtime_prefixes = "
                 + repr(
-                    (
-                        "policy-runtime-build/policy-runtime/",
-                        "models/checkpoints/",
-                        "models/sonic/",
-                    )
-                    if provider_bundle_kind == "native_g1_development_campaign"
-                    else ()
+                    g1_provider_output_contract(provider_bundle_kind)[2]
                 )
                 + "\n"
                 "required_result_max_bytes = 512 * 1024 * 1024\n"
@@ -6721,6 +6734,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -7417,6 +7431,7 @@ def run_vast_provider_adapter(
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
+            "native_g1_team_policy",
             "adp009d_ovrtx",
             "adp009d_aura_native",
         }
@@ -8983,14 +8998,9 @@ def run_vast_provider_adapter(
             _log_result_saw_container_missing(onstart_logs)
             or onstart_logs.get("break_reason") == "log_transport_unavailable"
         )
-        command_execute_fallback_allowed = bool(
-            provider_bundle_kind
-            in {
-                "native_task_arena",
-                "native_task_arena_policy_canary_session",
-                "native_g1_development_campaign",
-            }
-            or _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV)
+        command_execute_fallback_allowed = provider_command_execute_fallback_allowed(
+            provider_bundle_kind,
+            configured_override=_env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV),
         )
         if (
             not _log_text_has_success_marker(heartbeat_text, log_success_markers)
@@ -9458,7 +9468,7 @@ def run_vast_provider_adapter(
                         minimum_free_bytes=provider_output_minimum_free_bytes,
                         timeout_seconds=(
                             MAX_G1_RECOVERY_SECONDS
-                            if provider_bundle_kind == "native_g1_development_campaign"
+                            if provider_bundle_kind in {"native_g1_development_campaign", "native_g1_team_policy"}
                             else MAX_RECOVERY_SECONDS
                         ),
                     )

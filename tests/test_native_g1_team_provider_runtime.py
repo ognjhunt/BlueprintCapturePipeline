@@ -61,6 +61,7 @@ def test_endpoint_requires_private_credential_then_reaches_selected_worker(tmp_p
     assert result["stage_reached"] == "supervised_worker"
     assert result["execution_packet_digest"] == receipt["execution_packet_digest"]
     assert result["status"] == "blocked"
+    assert result["candidate_policy_queried"] is None
     assert "private-test-value" not in json.dumps(result)
 
 

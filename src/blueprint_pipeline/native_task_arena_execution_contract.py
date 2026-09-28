@@ -328,6 +328,25 @@ def native_task_arena_execution_transport_completed(
     a policy or ordinary controls result cannot borrow this transport status.
     """
 
+    if expected_output_filename == "native_g1_team_provider_result.v1.json":
+        # This proves transport only. The paid controller must reopen the real
+        # selected worker's score/frame/video bytes and settle resource costs.
+        from .decision_evidence_contracts import canonical_digest
+        verified = result.get("verified_output")
+        return (
+            result.get("schema_version") == "native_g1_team_provider_result.v1"
+            and result.get("status") == "completed_development_only"
+            and result.get("claim_ceiling") == "development_only"
+            and result.get("candidate_policy_queried") is True
+            and result.get("provider_teardown_verified") is False
+            and result.get("official_billing_reconciled") is False
+            and result.get("public_redistribution_authorized") is False
+            and isinstance(verified, Mapping)
+            and verified.get("status") == "verified_development_only"
+            and type(verified.get("policy_query_count")) is int
+            and verified["policy_query_count"] > 0
+            and result.get("result_digest") == canonical_digest(result, digest_field="result_digest")
+        )
     if result.get("status") == "completed":
         return True
     if expected_output_filename == POLICY_CANARY_RESULT_FILENAME:

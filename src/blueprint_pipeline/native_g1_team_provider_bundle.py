@@ -25,7 +25,7 @@ from .native_g1_provider_bundle import (
 from .native_g1_publisher_source_stage import SOURCE_REPOSITORY, verify_g1_publisher_source
 from .native_g1_team_policy_authority import verify_g1_team_policy_authority
 from .native_g1_team_policy_execution_packet import FIELDS as PACKET_FIELDS, SCHEMA as PACKET_SCHEMA
-from .native_g1_team_policy_worker import _execution_packet
+from .native_g1_team_policy_worker import _execution_packet, validate_g1_team_execution_packet
 from .native_task_arena_bundle import _write_zip_file, verify_native_task_arena_packet
 from .native_task_arena_packet import REQUEST_SCHEMA_VERSION
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
@@ -45,6 +45,12 @@ SCENE_RELATIVE_ROOT = "provider_runtime/inputs/scene_packet"
 _REPOSITORY = Path(__file__).resolve().parents[2]
 _SONIC_INVENTORY = _REPOSITORY / "configs/g1_sonic_default_asset_inventory.v1.json"
 _RECEIPT_ONLY_FIELDS = {"bundle_path", "bundle_size_bytes", "bundle_sha256", "receipt_path"}
+REQUIRED_ENTRIES = frozenset({
+    ENTRYPOINT, MANIFEST, PACKET_RELATIVE_PATH,
+    "provider_runtime/blueprint_pipeline/native_g1_team_provider_runtime.py",
+    "provider_runtime/blueprint_pipeline/native_g1_team_worker_supervisor.py",
+    "provider_runtime/blueprint_pipeline/native_g1_team_paid_output.py",
+})
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -240,6 +246,27 @@ def _verify_archive_paths(archive: zipfile.ZipFile) -> None:
         ):
             raise ValueError("g1_team_bundle_archive_path_invalid")
         names.add(name)
+
+
+def validate_g1_team_provider_manifest(archive: zipfile.ZipFile) -> dict[str, Any]:
+    """Validate transport bytes; this never grants execution or paid authority."""
+    _verify_archive_paths(archive)
+    names = [info.filename for info in archive.infolist() if not info.is_dir()]
+    if len(set(names)) != len(names) or not REQUIRED_ENTRIES <= set(names):
+        raise ValueError("g1_team_bundle_manifest_invalid")
+    if (archive.getinfo(MANIFEST).file_size > 8 * 1024 * 1024
+            or archive.getinfo(PACKET_RELATIVE_PATH).file_size > 1024 * 1024):
+        raise ValueError("g1_team_bundle_manifest_invalid")
+    manifest = json.loads(archive.read(MANIFEST))
+    if (not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA
+            or manifest.get("manifest_digest") != canonical_digest(manifest, digest_field="manifest_digest")):
+        raise ValueError("g1_team_bundle_manifest_invalid")
+    _verify_artifacts(manifest, archive.open, set(names))
+    packet = validate_g1_team_execution_packet(
+        json.loads(archive.read(PACKET_RELATIVE_PATH)), manifest.get("implementation_commit"),
+    )
+    verify_g1_team_manifest_binding(manifest, packet)
+    return manifest
 
 
 def build_g1_team_provider_bundle(
