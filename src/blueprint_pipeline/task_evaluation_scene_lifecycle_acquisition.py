@@ -107,6 +107,11 @@ class Acquisition:
     def _open(self, name, flags, parent=None):
         self.budget.tick()
         require(len(self.handles) < MAX_FDS, 'descriptors_limit')
+        expected = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        self.budget.tick()
+        require(types.S_ISDIR(expected.st_mode) if flags & os.O_DIRECTORY else types.S_ISREG(expected.st_mode),
+                'metadata_type_invalid')
+        named = expected.st_dev, expected.st_ino, types.S_IFMT(expected.st_mode)
         fd = os.open(name, flags | getattr(os, 'O_CLOEXEC', 0), dir_fd=parent)
         try:
             info = os.fstat(fd)
@@ -114,6 +119,9 @@ class Acquisition:
             # An unobserved numeric token must never be adopted/closed blindly.
             self.unproven = True
             raise AcquisitionError('scene_lifecycle_descriptor_ownership_unproven') from None
+        if (info.st_dev, info.st_ino, types.S_IFMT(info.st_mode)) != named:
+            self.unproven = True
+            raise AcquisitionError('scene_lifecycle_descriptor_ownership_unproven')
         self.handles[fd] = (info.st_dev, info.st_ino)
         self.budget.tick()
         return fd, info

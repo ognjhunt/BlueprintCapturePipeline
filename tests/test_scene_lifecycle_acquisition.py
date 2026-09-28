@@ -196,3 +196,61 @@ def test_cached_parent_descriptor_is_rechecked_before_child_metadata_access(tmp_
             scoped.setattr(m.os, 'stat', lambda *a, **k: pytest.fail('child used a substituted retained parent'))
             with pytest.raises(m.AcquisitionError, match='metadata_changed'):
                 reader.stat(str(file))
+
+
+@pytest.mark.parametrize(('target', 'foreign_kind'), [
+    ('/', 'regular'), ('/', 'directory'), ('child', 'directory'), ('owner.json', 'regular')])
+def test_first_successful_fstat_cannot_adopt_or_close_reused_foreign_token(tmp_path, monkeypatch, target, foreign_kind):
+    m = module()
+    anchor = tmp_path.resolve()
+    (anchor/'child').mkdir()
+    (anchor/'owner.json').write_bytes(b'{}')
+    foreign = anchor/('foreign-directory' if foreign_kind == 'directory' else 'foreign.json')
+    if foreign_kind == 'directory':
+        foreign.mkdir()
+    else:
+        foreign.write_bytes(b'{}')
+    real_open, real_close, real_fstat, real_dup2 = os.open, os.close, os.fstat, os.dup2
+    original_foreign = real_open(foreign, os.O_RDONLY)
+    expected_foreign = real_fstat(original_foreign)
+    reused, closed, reader, refusal = [], [], None, None
+    def substituted(name, *args, **kwargs):
+        fd = real_open(name, *args, **kwargs)
+        if name == target and not reused:
+            real_close(fd)
+            real_dup2(original_foreign, fd)
+            reused.append(fd)
+        return fd
+    def observed_close(fd):
+        closed.append(fd)
+        real_close(fd)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(m.os, 'open', substituted)
+            scoped.setattr(m.os, 'close', observed_close)
+            try:
+                with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(anchor)]) as reader:
+                    if target == 'child':
+                        reader.entries(str(anchor/'child'))
+                    elif target == 'owner.json':
+                        reader.read_json(str(anchor/'owner.json'))
+            except (ValueError, OSError) as error:
+                refusal = error
+        assert len(reused) == 1
+        assert reused[0] not in closed, 'first fstat adopted and closed a foreign descriptor'
+        observed = real_fstat(reused[0])
+        assert (observed.st_dev, observed.st_ino) == (expected_foreign.st_dev, expected_foreign.st_ino)
+        assert isinstance(refusal, m.AcquisitionError) and str(refusal) == 'scene_lifecycle_descriptor_ownership_unproven'
+        if reader is not None:
+            assert not reader.handles  # Other initially proven descriptors still close.
+    finally:
+        # The fixture owns this deliberately substituted token, independently
+        # observes it, and cleans it; production must never claim that ownership.
+        for fd in reused:
+            try:
+                info = real_fstat(fd)
+            except OSError:
+                continue
+            if (info.st_dev, info.st_ino) == (expected_foreign.st_dev, expected_foreign.st_ino):
+                real_close(fd)
+        real_close(original_foreign)
