@@ -1,0 +1,157 @@
+{
+  "executor_receipt": {
+    "attestation_hmac_sha256": "0d11f1616a0dc7e1efe47904fa9b5b703e184c3465a22c8a279738691a4c0f8f",
+    "attestation_key_id": "ephemeral-synthetic-proof",
+    "contract_digest": "sha256:45071450c2b520d17a83ad1c7ec1b8fcadb83335ec33c36a4c3d0b5c9a1aad1c",
+    "docker_server_version": "29.8.1",
+    "evidence": {
+      "completed_phase_order": [
+        "credential_redeemed_for_exact_pull",
+        "policy_image_pulled_and_digest_verified",
+        "registry_credential_and_docker_config_deleted",
+        "network_namespace_created",
+        "blueprint_proxy_started",
+        "policy_container_started",
+        "no_egress_measured",
+        "synthetic_conformance_completed"
+      ],
+      "credential_deleted_before_policy_start": true,
+      "dedicated_worker_verified": true,
+      "docker_config_deleted_before_policy_start": true,
+      "image_pull_receipt_digest": "sha256:5173876fff5550dc13c50fd38ebba1e888d9960f2311e01337b7083370696bcf",
+      "isolated_runtime_verified": true,
+      "network_probes": {
+        "blueprint_proxy_unix_socket": {
+          "redirect_followed": false,
+          "status": "reachable"
+        },
+        "cloud_metadata": {
+          "kind": "tcp",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "169.254.169.254:80"
+        },
+        "dns_resolution": {
+          "kind": "dns",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "example.com:443"
+        },
+        "host_gateway": {
+          "kind": "tcp",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "172.17.0.1:2375"
+        },
+        "link_local": {
+          "kind": "tcp",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "169.254.1.1:80"
+        },
+        "policy_action_route_through_proxy": {
+          "redirect_followed": false,
+          "status": "reachable"
+        },
+        "public_ipv4": {
+          "kind": "tcp",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "1.1.1.1:443"
+        },
+        "public_ipv6": {
+          "kind": "tcp",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "2606:4700:4700::1111:443"
+        },
+        "redirect_target": {
+          "kind": "tcp",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "93.184.216.34:80"
+        },
+        "registry_after_pull": {
+          "kind": "tcp",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "172.217.216.82:443"
+        },
+        "rfc1918": {
+          "kind": "tcp",
+          "redirect_followed": false,
+          "status": "denied",
+          "target": "10.255.255.1:443"
+        }
+      },
+      "observation_bytes_present_during_pull": false,
+      "plan_digest": "sha256:837d1b8e5cc66c44e2f0cfdfc8af602307e9c12c4c0640e34546e7baedc190bd",
+      "policy_image_digest_verified": true,
+      "raw_container_logs_retained": false,
+      "registry_redirect_behavior": "not_measured_by_docker_engine",
+      "scene_bytes_present_during_pull": false,
+      "synthetic_conformance": {
+        "contract_digest": "sha256:45071450c2b520d17a83ad1c7ec1b8fcadb83335ec33c36a4c3d0b5c9a1aad1c",
+        "real_observation_used": false,
+        "request_digest": "sha256:f93bbf785f546e9293edba1c64377b182838948b428b6eb3492cdbe8a537cdfd",
+        "status": "conformant"
+      },
+      "teardown_plan_armed": true,
+      "worker_boot_receipt_digest": "sha256:ffc15ab60a900c56779097733c703c3fb3eb9f33cb343d70732beba1ba4abb39"
+    },
+    "launch_authority_granted": false,
+    "plan_digest": "sha256:837d1b8e5cc66c44e2f0cfdfc8af602307e9c12c4c0640e34546e7baedc190bd",
+    "provider_mutation_authorized": false,
+    "provider_mutation_performed": false,
+    "proxy_image_digest_verified": true,
+    "receipt_digest": "sha256:725bc60f9dd306ae770c75a03889eb8e148f09a35b7cac2290145ff248ec543c",
+    "runsc_smoke_verified": true,
+    "runtime_class": "runsc",
+    "sandbox_attempt_id": "blueprint-synthetic-attempt-20260928",
+    "schema_version": "company_policy_sandbox_executor_receipt.v1",
+    "source": "trusted_company_policy_sandbox_executor",
+    "status": "qualified_before_first_observation",
+    "worker_identity": "blueprint-policy-proof-dedicated-lima"
+  },
+  "launch_authority_granted": false,
+  "provider_mutation_authorized": false,
+  "provider_mutation_performed": false,
+  "qualification_receipt": {
+    "admission_digest": "sha256:21f1f6ffc4830a035b3305e5c48feb2192923b88a5e4ac12561a5ede4a9c4650",
+    "contract_digest": "sha256:45071450c2b520d17a83ad1c7ec1b8fcadb83335ec33c36a4c3d0b5c9a1aad1c",
+    "first_observation_permitted": true,
+    "launch_authority_granted": false,
+    "network_denial_probe_count": 9,
+    "pipeline_release_sha": "e85d3e29277f9662e81352dd0dc5a80316e93d60",
+    "plan_digest": "sha256:837d1b8e5cc66c44e2f0cfdfc8af602307e9c12c4c0640e34546e7baedc190bd",
+    "provider_mutation_authorized": false,
+    "provider_mutation_performed": false,
+    "qualification_digest": "sha256:1530682a86b6bde20c23a2d7d0b057a498220a65612d892ed612597eb083c760",
+    "required_path_probe_count": 2,
+    "sandbox_attempt_id": "blueprint-synthetic-attempt-20260928",
+    "schema_version": "company_policy_sandbox_qualification_receipt.v2",
+    "status": "qualified_before_first_observation",
+    "synthetic_conformance_completed": true,
+    "worker_identity": "blueprint-policy-proof-dedicated-lima"
+  },
+  "real_observation_sent": false,
+  "status": "qualified_dry_run_no_real_observation",
+  "terminal_receipt": {
+    "attestation_hmac_sha256": "d4dae855c9ae21765be7d5eeea88396c168ffc9890d3271b319cdbd460ff2c20",
+    "attestation_key_id": "ephemeral-synthetic-proof",
+    "blockers": [],
+    "cleanup_complete": true,
+    "credential_ciphertext_deleted": true,
+    "customer_policy_image_removed": true,
+    "executor_receipt_digest": "sha256:725bc60f9dd306ae770c75a03889eb8e148f09a35b7cac2290145ff248ec543c",
+    "launch_authority_granted": false,
+    "plan_digest": "sha256:837d1b8e5cc66c44e2f0cfdfc8af602307e9c12c4c0640e34546e7baedc190bd",
+    "provider_mutation_authorized": false,
+    "provider_mutation_performed": false,
+    "real_observation_sent": false,
+    "receipt_digest": "sha256:e1545994e7c06721662f6db18da7771eb2a0dfe9d96c94f9815c338a863e99ae",
+    "schema_version": "company_policy_sandbox_terminal_receipt.v1",
+    "source": "trusted_company_policy_sandbox_executor",
+    "status": "qualified_dry_run_no_real_observation"
+  }
+}

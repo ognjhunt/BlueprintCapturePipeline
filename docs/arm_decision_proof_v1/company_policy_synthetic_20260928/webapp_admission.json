@@ -1,0 +1,209 @@
+{
+  "schema_version": "blueprint_owned_synthetic_webapp_admission_proof.v1",
+  "firebase_auth": "local_development_route_proof",
+  "datastore": "firestore_emulator",
+  "production_webapp_tested": false,
+  "real_observation_used": false,
+  "run_id": "blueprint-synthetic-policy-proof-20260928",
+  "candidate": {
+    "schema_version": "company_policy_candidate_submission.v1",
+    "submission_id": "policy-candidate-adffd9cc5d2adfbdaa641725809ed8d4fd1fef24",
+    "owner_uid": "local-webapp-route-proof",
+    "tenant_id": "account_0f45c887149d249887870bfea1bfeeea28175b10",
+    "run_id": "blueprint-synthetic-policy-proof-20260928",
+    "company_id": "account_0f45c887149d249887870bfea1bfeeea28175b10",
+    "policy_id": "blueprint_synthetic_joint_policy_v1",
+    "image": "us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/company-policy-synthetic@sha256:909e782a917bf2a959bf9eb0ee0bf6da7463d156c27cb589a60626a18495ded4",
+    "contract_digest": "sha256:45071450c2b520d17a83ad1c7ec1b8fcadb83335ec33c36a4c3d0b5c9a1aad1c",
+    "contract": {
+      "schema_version": "company_policy_container_contract.v2",
+      "policy_id": "blueprint_synthetic_joint_policy_v1",
+      "company_id": "account_0f45c887149d249887870bfea1bfeeea28175b10",
+      "display_name": "Blueprint synthetic interface policy",
+      "checkpoint_identity": {
+        "repository": "us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/company-policy-synthetic",
+        "revision": "synthetic-proof-20260928",
+        "inventory_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "claim_ceiling": "development_only",
+      "rights": {
+        "license": "Blueprint-owned synthetic interface fixture",
+        "rights_provenance": "BlueprintCapturePipeline/deploy/docker/company_policy_synthetic/policy.py",
+        "rights_evidence_uri": "blueprint-rights://synthetic-policy/20260928",
+        "rights_evidence_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "provider_use_status": "permitted_for_this_evaluation",
+        "redistribution_status": "weights_remain_in_company_container",
+        "rights_ready": true
+      },
+      "container": {
+        "image": "us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/company-policy-synthetic@sha256:909e782a917bf2a959bf9eb0ee0bf6da7463d156c27cb589a60626a18495ded4",
+        "visibility": "private",
+        "serve_command": [
+          "python",
+          "/opt/policy.py"
+        ],
+        "port": 8600,
+        "handshake": {
+          "kind": "http_json_v1",
+          "protocol_version": "1.0",
+          "action_route": "/v1/actions"
+        },
+        "run_as_uid": 65532,
+        "run_as_gid": 65532,
+        "gpu_required": false,
+        "resources": {
+          "cpus": 1,
+          "memory_mib": 256,
+          "pids_limit": 64,
+          "tmpfs_mib": 64,
+          "startup_timeout_seconds": 30,
+          "request_timeout_ms": 2500
+        }
+      },
+      "robot": {
+        "embodiment_id": "franka_panda_robotiq_2f85_v1",
+        "definition_uri": "blueprint-robot://franka-panda-robotiq-2f85/v1",
+        "definition_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "joint_names": [
+          "panda_joint1"
+        ],
+        "joint_limits": [
+          {
+            "name": "panda_joint1",
+            "lower": -2,
+            "upper": 2,
+            "unit": "radian"
+          }
+        ],
+        "gripper": {
+          "name": "gripper",
+          "command_interval": [
+            0,
+            1
+          ],
+          "unit": "normalized_fraction",
+          "executed_semantics": "clip_then_map_to_parallel_jaw_width"
+        }
+      },
+      "observation_schema": {
+        "cameras": [
+          {
+            "name": "external_rgb",
+            "width": 320,
+            "height": 180,
+            "color_space": "rgb",
+            "dtype": "uint8",
+            "layout": "hwc",
+            "encoding": "lossless_png",
+            "calibration_uri": "blueprint-calibration://scene/external/v1",
+            "calibration_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ],
+        "state_fields": [
+          {
+            "name": "joint_position",
+            "shape": [
+              1
+            ],
+            "dtype": "float32",
+            "unit": "radian"
+          }
+        ],
+        "prompt": {
+          "mode": "text",
+          "required": true
+        },
+        "control_frequency_hz": 15
+      },
+      "action_schema": {
+        "adapter_id": "absolute_joint_position_gripper_v1",
+        "chunk_rows": 15,
+        "channels": [
+          {
+            "name": "panda_joint1",
+            "kind": "bounded_continuous",
+            "command_interval": [
+              -2,
+              2
+            ],
+            "raw_accepted_bounds": [
+              -2,
+              2
+            ],
+            "unit": "radian",
+            "executed_semantics": "absolute_joint_position"
+          },
+          {
+            "name": "gripper",
+            "kind": "threshold_scalar",
+            "command_interval": [
+              0,
+              1
+            ],
+            "raw_accepted_bounds": [
+              -0.25,
+              1.25
+            ],
+            "unit": "normalized_fraction",
+            "executed_semantics": "clip_then_map_to_parallel_jaw_width"
+          }
+        ],
+        "normalization": {
+          "observation": "none",
+          "action": "none",
+          "gripper": "raw_envelope_then_clip_to_command_interval"
+        }
+      },
+      "security_profile": {
+        "profile_id": "blueprint_company_policy_sandbox_v2",
+        "network_mode": "none_with_blueprint_proxy",
+        "egress_policy": "deny_all_measured_before_first_observation",
+        "dns_available": false,
+        "ipv6_available": false,
+        "host_network_available": false,
+        "scene_mounts_allowed": false,
+        "capture_mounts_allowed": false,
+        "evidence_mounts_allowed": false,
+        "output_mounts_allowed": false,
+        "docker_socket_mounted": false,
+        "registry_credential_mounted": false,
+        "runtime_credential_mounts_allowed": false,
+        "root_filesystem_read_only": true,
+        "capabilities_dropped": "all",
+        "no_new_privileges": true,
+        "raw_logs_after_scene_access": "quarantined_not_customer_visible",
+        "blueprint_owned_proxy_only": true,
+        "container_and_image_removal_required": true
+      },
+      "contract_digest": "sha256:45071450c2b520d17a83ad1c7ec1b8fcadb83335ec33c36a4c3d0b5c9a1aad1c"
+    },
+    "idempotency_key_digest": "sha256:387cd42df0bef23d00a0631ffc88ff44e717b9c4c42dc8ff91fb90e965ae641a",
+    "claim_ceiling": "development_only",
+    "launch_authority_granted": false,
+    "provider_mutation_authorized": false,
+    "created_at_iso": "2026-09-28T15:06:55.464Z",
+    "created_at": {
+      "_seconds": 1790608015,
+      "_nanoseconds": 476000000
+    },
+    "registry_credential_lease_id": "policy-registry-lease-28baf7bf78b6d126ab364a5fb8ff3466b7aba5d80d97257",
+    "credential_requirement": "leased",
+    "pipeline_handoff": {
+      "admission_digest": "sha256:21f1f6ffc4830a035b3305e5c48feb2192923b88a5e4ac12561a5ede4a9c4650",
+      "accepted": true,
+      "pipeline_status": 201,
+      "blockers": [],
+      "admission_id": "company-policy-admission-53dc36974751417513a7af704ddeab87fbd8e69e",
+      "performed": true,
+      "required": true,
+      "status": "accepted"
+    },
+    "updated_at_iso": "2026-09-28T15:06:55.553Z",
+    "status": "admitted_no_spend",
+    "updated_at": {
+      "_seconds": 1790608015,
+      "_nanoseconds": 589000000
+    }
+  },
+  "credential_lease_id": "policy-registry-lease-28baf7bf78b6d126ab364a5fb8ff3466b7aba5d80d97257"
+}
