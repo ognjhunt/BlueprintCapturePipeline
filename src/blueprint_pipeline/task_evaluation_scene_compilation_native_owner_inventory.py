@@ -4,6 +4,8 @@ from __future__ import annotations
 from . import task_evaluation_scene_source_family_inventory as prior
 from . import task_evaluation_scene_compilation_owner_contracts as c
 from . import task_evaluation_scene_compilation_owner_preparations as preparation
+from . import task_evaluation_scene_compilation_owner_outputs as outputs
+from . import task_evaluation_scene_compilation_native_owners as owners
 from .task_evaluation_scene_lineage_budget import RetainedEmissionBudget, RetainedEmissionBudgetError
 from .task_evaluation_scene_compilation_owner_contracts import SceneCompilationOwnerInventoryError
 
@@ -55,10 +57,12 @@ def _join(intent_id, seed, downstream, source, bridge, roots, routes, metadata):
     context.references()
     old = prior._join(intent_id, seed, downstream, source, roots, routes, metadata, emission_budget=sink)
     observations = preparation.inventory(context)
+    output_observations = outputs.inventory(context)
+    output_observations.extend(owners.inventory(context))
     result = {'schema_version': 'task_evaluation_scene_compilation_native_owner_inventory.v1',
         'scope': 'supplied_retained_compilation_native_owner_metadata', 'status': 'kept_unresolved', 'intent_id': intent_id,
         'source_family_inventory': old, 'preparation_handoff_observations': observations,
-        'compilation_native_owner_observations': context.rows(),
+        'compilation_native_owner_observations': output_observations,
         'raw_versions': context.rows(p for p in context.raw if p['role'] in ROLES),
         'declared_lexical_members': context.members, 'raw_reference_obligations': context.obligations,
         'remote_reference_obligations': context.remote, 'structural_join_obligations': context.structural,

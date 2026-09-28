@@ -162,3 +162,16 @@ def test_intake_original_pending_path_survives_retained_completed_envelope_copy(
     change(args, 'native_preparation_results', {'episode_compilation_queue_receipt_digest': receipt['receipt_digest']}, 'result_digest')
     result = api().join_retained_scene_compilation_native_owner_inventory(**args)
     assert result['preparation_handoff_observations'][0]['pre_handoff_binding_verified']
+
+
+@pytest.mark.parametrize('retained_pre', [False, True])
+@pytest.mark.parametrize('edit', [{'run_id': 'foreign'}, {'team_namespace': 'foreign'}, {'source_commit': 'c'*40},
+    {'configured_scene_revision_digest': 'sha256:'+'e'*64}])
+def test_available_parent_metadata_refuses_independently_of_missing_compilation(retained_pre, edit):
+    args = fixture(retained_pre=retained_pre)
+    args['downstream_records']['compilation_envelopes'] = []
+    position = 1 if retained_pre else 0
+    if retained_pre and 'configured_scene_revision_digest' in edit:
+        edit = {'run_id': 'foreign'}
+    change(args, 'native_preparation_results', edit, 'result_digest', position=position)
+    refuses(args)

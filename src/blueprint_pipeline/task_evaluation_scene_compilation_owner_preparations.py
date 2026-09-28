@@ -160,18 +160,48 @@ def _revision(context, revisions, request, compilation, final, proof):
     return True
 
 
+
+def _available_parent(context, row, by_filename):
+    value, proof = row
+    for parent in by_filename.get(PurePosixPath(proof['path']).name, []):
+        request = parent[0]['request']
+        c.require(all(value[a] == request[b] for a, b in (('preparation_id', 'preparation_id'), ('run_id', 'run_id'),
+            ('team_namespace', 'team_namespace'), ('source_commit', 'expected_production_commit'))), 'preparation_parent_invalid')
+        revision = context.selected(request.get('scene', {}).get('configured_revision'), proof, {'configured_revisions'})
+        if value['status'] == FINAL:
+            c.require(value.get('run_mode') == request['run_mode'] and value.get('configured_scene_revision_digest')
+                == request['task'].get('configured_scene_revision_digest'), 'preparation_revision_invalid')
+        if revision is not None:
+            metadata = revision[0]
+            c.require(metadata.get('status') == 'configured' and c.matches(metadata.get('source_commit'), c.COMMIT)
+                and metadata.get('scene_identity') == request['scene']['identity']
+                and metadata.get('task_template', {}).get('identity') == request['task']['identity']
+                and metadata['revision_digest'] == request['task'].get('configured_scene_revision_digest'), 'revision_binding_invalid')
+            bundle = metadata.get('configured_scene_bundle')
+            c.require(isinstance(bundle, dict), 'revision_bundle_invalid')
+            declared = [r for r in value['references'] if r['contract_path'] == 'scene.configured_revision.configured_scene_bundle']
+            c.require(len(declared) == 1 and {k: declared[0][k] for k in ('uri', 'digest', 'size_bytes')} == bundle,
+                'revision_bundle_invalid')
+            if value['status'] == FINAL:
+                c.require(value.get('configured_scene_bundle_digest') == bundle['digest'], 'revision_bundle_invalid')
+
 def inventory(context):
     envelopes, compilations = _envelopes(context), _compilations(context)
     receipts = _receipts(context, compilations)
     revisions = context.known('configured_revisions')
     for revision in revisions:
         context.metadata(revision)
+    by_filename = {}
+    for parents in envelopes.values():
+        for parent in parents:
+            by_filename.setdefault(PurePosixPath(parent[1]['path']).name, []).append(parent)
     results, finals, observations = {}, [], context.rows()
     for role in ('native_preparation_results', 'preparation_results'):
         for row in context.known(role, 'task_evaluation_launch_preparation_result.v1', 'result_digest'):
             if role == 'preparation_results' and row[0].get('status') != FINAL:
                 continue  # Old scene result interpretation is kept verbatim.
             if _result(context, row):
+                _available_parent(context, row, by_filename)
                 results.setdefault((row[0]['preparation_id'], row[0]['result_digest']), []).append(row)
                 if row[0]['status'] == FINAL:
                     finals.append(row)
