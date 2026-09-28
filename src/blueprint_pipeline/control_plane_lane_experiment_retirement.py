@@ -27,7 +27,7 @@ _LOCK = ".experiment-authority.lock"
 _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
-_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|head-prepared|authority-pending|action|manifest|reservation|retiring-head|retired-head))?\.json\Z")
+_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|reservation|retiring-head|retired-head))?\.json\Z")
 _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
@@ -234,3 +234,17 @@ def run_registered_experiment_action(action_id, *, expected_action_intent,
     from .control_plane_lane_experiment_actions import run_action
     return run_action(action_id, expected_action_intent=expected_action_intent,
         installed_config_path=installed_config_path, now=now, _pins_root=_pins_root)
+
+
+def issue_experiment_restore_intent(intent_id, *, principal, owner, lease_ttl_seconds, expires_at_epoch,
+        installed_config_path="/etc/blueprint-operator-door/door.json", now=time.time):
+    from .control_plane_lane_experiment_restore import issue_restore
+    return issue_restore(intent_id, principal=principal, owner=owner, lease_ttl_seconds=lease_ttl_seconds,
+        expires_at_epoch=expires_at_epoch, installed_config_path=installed_config_path, now=now)
+
+
+def restore_registered_experiment(action_id, *, expected_restore_intent,
+        installed_config_path="/etc/blueprint-operator-door/door.json", now=time.time, _pins_root=None):
+    from .control_plane_lane_experiment_restore import restore
+    return restore(action_id, expected_restore_intent=expected_restore_intent,
+        installed_config_path=installed_config_path, now=now, pins_root=_pins_root)

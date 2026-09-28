@@ -38,6 +38,7 @@ ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "semantic_pretraining": 3 * GIB,
     "cpu_prestage": 6 * GIB,
     "g1_checkpoint_cache": 32 * GIB,
+    "experiment_restore": 256 * 1024 * 1024,
 }
 ROLE_NAME_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 

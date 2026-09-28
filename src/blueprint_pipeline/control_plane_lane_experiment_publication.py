@@ -18,19 +18,20 @@ from .control_plane_lane_owner_target_io import _TargetFiles, _typed
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _require
 
 _NAMES = {
-    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|producer-completion|completion-head|head-prepared|authority-pending|action|reservation|retiring-head|retired-head))?\.json",
+    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|reservation|retiring-head|retired-head))?\.json",
     "manifest": r"[0-9a-f]{32}\.manifest\.json",
     "event": r"e-[0-9]{5}\.json",
     "birth": r"[0-9a-f]{32}\.birth\.json",
     "authority": r"authority-[0-9]{8}-[0-9a-f]{32}\.json",
     "head": r"HEAD\.json",
+    "certificate": r"restoration-[0-9a-f]{64}\.json",
     "lease": r"\.lane-scratch\.v1\.json",
     "marker": r"\.registered-experiment\.v1\.json",
 }
 _MODES = dict(manifest=0o600, event=0o600, private=0o600, birth=0o640, authority=0o640, head=0o640,
-              lease=0o600, marker=0o600)
+              lease=0o600, marker=0o600, certificate=0o640)
 _CAPS = dict(manifest=1048576, event=32768, private=32768, birth=32768, authority=32768, head=4096,
-             lease=8192, marker=4096)
+             lease=8192, marker=4096, certificate=8192)
 
 
 class _BirthFiles(_TargetFiles):
@@ -184,8 +185,8 @@ def _publish(files, parent, name, payload, *, kind, blueprint_gid=0, _expected_h
     files.budget.charge("output_bytes", len(payload))
     files.location(parent)
     info = os.fstat(parent)
-    _require(info.st_uid == 0 and info.st_gid == (blueprint_gid if kind in ("birth", "authority", "head") else 0)
-             and stat.S_IMODE(info.st_mode) == (0o750 if kind in ("birth", "authority", "head") else 0o700),
+    _require(info.st_uid == 0 and info.st_gid == (blueprint_gid if kind in ("birth", "authority", "head", "certificate") else 0)
+             and stat.S_IMODE(info.st_mode) == (0o750 if kind in ("birth", "authority", "head", "certificate") else 0o700),
              "experiment_publication_parent_unsafe")
     try:
         os.stat(name, dir_fd=parent, follow_symlinks=False)

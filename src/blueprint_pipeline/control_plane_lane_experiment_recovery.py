@@ -184,10 +184,12 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
     return previous, logical, allocated, {p: v[1] for p, v in changed.items()}, count, completed
 
 
-def retired(files, config, action, expected, target, rows, entry, marker):
+def retired(files, config, action, expected, target, rows, entry, marker, *, _retained_store=None):
     from . import control_plane_lane_experiment_actions as code
     files._operation_path = str(Path(config.experiment_record_store) / 'operations' / action['action_id'])
-    store = issuance._store(files, config.experiment_record_store)
+    store = issuance._store(files, config.experiment_record_store) if _retained_store is None else _retained_store
+    files.location(store)
+    files.proof(store)
     operations = code._directory(files, store, 'operations')
     operation = code._directory(files, operations, action['action_id'])
     files.proof(operation)
