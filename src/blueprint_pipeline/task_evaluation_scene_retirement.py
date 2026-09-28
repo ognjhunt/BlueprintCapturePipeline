@@ -30,6 +30,8 @@ from .task_evaluation_scene_retirement_intent_receipt import publish_pending_rec
 from .task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
 from . import task_evaluation_scene_retirement_recovery as recovery
 from .task_evaluation_scene_retirement_declared_bytes import verify_declared_bytes as _verify_declared_bytes, verify_publication_rows
+from .task_evaluation_scene_retirement_reference_transfer import validate_current_reference_transfer
+from .task_evaluation_scene_lineage_budget import _Rows
 
 
 _LIFETIME='scene_retirement_lifetime.v1'
@@ -177,7 +179,7 @@ def _installed_cohort(policy, allowance):
 
 def _plan_members(plan, consent, allowance=None):
     rows=plan.get('measured_members')
-    _require(type(rows) is list and len(rows)<=10000,'scene_retirement_members_unproven')
+    _require(type(rows) in (list,_Rows) and len(rows)<=10000,'scene_retirement_members_unproven')
     selected=consent['members']
     _require(selected,'scene_retirement_members_unproven')
     roots=[Path(member['canonical_path']) for member in selected]
@@ -233,18 +235,22 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
              'scene_retirement_owner_changed')
     _plan_members(fresh,consent,allowance)
     _installed_cohort(policy,allowance)
-    observation=fresh.get('reference_observation',{})
-    _require(not observation.get('blockers') and observation.get('child_scopes')
-             and all(row.get('complete') is True for row in observation['child_scopes']),
-             'scene_retirement_reference_scope_unproven')
     _require(not fresh.get('reference_keeps') and not fresh.get('other_owner_capture_keeps'),
              'scene_retirement_reference_protected')
-    # The scoped historical observer intentionally cannot clear unsupported
-    # runtime/settlement/reopen lifetimes. Those protections cannot be waived by
-    # consent, source hashes, expiry or an empty queue.
-    _require(not observation.get('record_dispositions') and not observation.get('protections'),
-             'scene_retirement_reference_closure_unproven')
+    fresh['reference_transfer']=validate_current_reference_transfer(fresh,allowance)
+    _current_readers(policy,allowance)
     return fresh
+
+
+def _current_readers(policy,allowance):
+    from . import task_evaluation_scene_retirement_supervisor as native
+    allowance.tick()
+    callback=getattr(native,'require_current_reader_closure',None)
+    _require(callable(callback),'scene_retirement_reader_closure_unproven')
+    # Native admission must raise for every unknown/manual/old/HTTP gap.
+    # No source catalogue, policy flag or diagnostic observation can replace it.
+    callback(policy,allowance)
+    allowance.tick()
 
 
 def _resume_current_references(policy,consent,retained,allowance,now,monotonic):
@@ -264,11 +270,8 @@ def _resume_current_references(policy,consent,retained,allowance,now,monotonic):
         _context(context,budget)
         observation=observe(context,now(),budget,sink)
         allowance.tick()
-        _require(not observation.get('blockers') and observation.get('child_scopes')
-                 and all(row.get('complete') is True for row in observation['child_scopes']),
-                 'scene_retirement_reference_scope_unproven')
-        _require(not observation.get('record_dispositions') and not observation.get('protections'),
-                 'scene_retirement_reference_closure_unproven')
+        validate_current_reference_transfer(dict(retained,reference_observation=observation),allowance)
+        _current_readers(policy,allowance)
     finally:
         budget.close()
 

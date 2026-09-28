@@ -25,12 +25,13 @@ def test_native_intent_provenance_preserves_exact_raw_owner_tuple(monkeypatch,ch
         reference['size_bytes']+=1
     fresh=dict(schema_version='task_evaluation_scene_lifecycle_plan.v1',
         finished_observation={'status':'completed'},historical_lineage={},selected_intent_provenance=proof,
-        reference_observation={'blockers':[],'child_scopes':[{'complete':True}],
+        reference_observation={'blockers':[],'child_scopes':[{'child':name,'complete':True} for name in ('pins','primary_queues','auxiliary_queues')],
                                'record_dispositions':[],'protections':[]},
         reference_keeps=[],other_owner_capture_keeps=[])
     monkeypatch.setattr(engine,'build_scene_lifecycle_plan',lambda **kwargs:fresh)
     monkeypatch.setattr(engine,'_plan_members',lambda *args:None)
     monkeypatch.setattr(engine,'_installed_cohort',lambda *args:None)
+    monkeypatch.setattr(engine,'_current_readers',lambda *args:None,raising=False)
     allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
     consent={'intent_id':args['intent_id'],'intent_raw_ref':reference}
     retained={'schema_version':'task_evaluation_scene_lifecycle_plan.v1',
