@@ -55,11 +55,12 @@ def _unsafe(root: Path) -> bool:
 
 
 def _walk(child: Path) -> tuple[os.stat_result, list[tuple[os.stat_result, Path]]] | None:
-    """The child's own lstat and every regular file under its ``prepared-references``, by name
-    relative to the child, or None for a child that is gone.
+    """The child's own lstat and every regular file with two or more links under its
+    ``prepared-references``, by name relative to the child, or None for a child that is gone.
 
-    A link is never followed and a directory on another device than the child's is never
-    entered; nothing reached through a linked directory counts, and an entry that vanishes
+    A file with one link can only be one replay's, which the per-replay rule takes, so it is
+    never mapped. A link is never followed and a directory on another device than the child's is
+    never entered; nothing reached through a linked directory counts, and an entry that vanishes
     while it is walked names nothing.
     """
 
@@ -77,13 +78,14 @@ def _walk(child: Path) -> tuple[os.stat_result, list[tuple[os.stat_result, Path]
         directories[:] = [name for name in directories if retention._directory_on(here / name, device)]
         if any(p.is_symlink() for p in (here, *here.parents) if p != child.parent):
             continue
+        relative = here.relative_to(child)
         for name in names:
             try:
                 info = os.lstat(here / name)
             except OSError:
                 continue
-            if stat.S_ISREG(info.st_mode):
-                found.append((info, (here / name).relative_to(child)))
+            if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                found.append((info, relative / name))
     return itself, found
 
 

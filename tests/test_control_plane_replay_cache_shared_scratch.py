@@ -350,9 +350,11 @@ def test_shared_group_off_the_holders_device_or_over_counted_is_kept(tmp_path, m
     parent_root = tmp_path / "scene-configuration-activations"
     first = _replay(parent_root, "scene-841007-preparation", "parent-a-1")
     second = _replay(parent_root, "scene-841012-preparation", "parent-b-1")
+    third = _replay(parent_root, "scene-841019-preparation", "parent-c-1")
     mounted = _store_blob(tmp_path, b"a file mounted into both replays" * 20)
-    counted = _store_blob(tmp_path, b"a file seen twice through a bind mount" * 20)
-    names = [*_linked(mounted, first), *_linked(mounted, second), *_linked(counted, first), *_linked(counted, second)]
+    counted = _store_blob(tmp_path, b"a file seen once too often through a bind mount" * 20)
+    names = [*_linked(mounted, first), *_linked(mounted, second),
+             *_linked(counted, first), *_linked(counted, second), *_linked(counted, third)]
     sizes = {blob: blob.stat().st_size for blob in (mounted, counted)}
     _moved(mounted, counted)
     real_lstat = os.lstat
@@ -361,7 +363,7 @@ def test_shared_group_off_the_holders_device_or_over_counted_is_kept(tmp_path, m
         info = real_lstat(path, *args, **kwargs)
         if Path(path).name == mounted.name:
             return _OnDevice(info, info.st_dev + 1)
-        return _Reported(info, st_nlink=1) if Path(path).name == counted.name else info
+        return _Reported(info, st_nlink=2) if Path(path).name == counted.name else info
 
     monkeypatch.setattr(os, "lstat", lstat)
     block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
@@ -956,3 +958,24 @@ def test_a_replay_replaced_just_as_apply_opens_it_is_refused(tmp_path, monkeypat
 
     assert block["kept_by_reason"] == {"recheck_failed:path_changed": {"groups": 1, "bytes": size}}
     assert block["removed_groups"] == 0 and all(path.exists() for path in names)
+
+
+def test_a_single_link_file_is_left_to_the_per_replay_rule(tmp_path, monkeypatch) -> None:
+    """A file with one link can only be one replay's, so the shared plan never maps it: even one seen
+    in two replays (a bind mount of the same filesystem keeps its st_dev) is neither planned nor
+    reported as shared, and stays with the per-replay rule, which takes each replay's own."""
+
+    from tests.test_completed_replay_cache_retention import _Reported
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    seen_once = {path.name for path in names}
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        return _Reported(info, st_nlink=1) if Path(path).name in seen_once else info
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    block = _tick(tmp_path, parent_root)["replay_caches"]["shared_scratch"]
+
+    assert (block["candidate_groups"], block["kept_by_reason"], block["holders_by_gate"]) == (0, {}, {})
