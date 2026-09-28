@@ -42,6 +42,8 @@ from typing import Any
 
 from . import completed_replay_cache_retention as retention
 
+#: Per-row detail kept in a report, as the terminal pin phase keeps it; every counter covers every group.
+MAX_ROWS = 200
 _TYPE_WORD = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
@@ -168,6 +170,20 @@ def plan_shared_scratch(
 def _first_path(group: dict[str, Any], holders: Sequence[dict[str, Any]]) -> str:
     index, name = group["names"][0]
     return str(holders[index]["path"] / name)
+
+
+def _row(group: dict[str, Any], holders: Sequence[dict[str, Any]], reason: str | None = None) -> dict[str, Any]:
+    """A report row for one group: its first name, how many names and holders it has, its links and size."""
+
+    row = {"path": _first_path(group, holders), "name_count": len(group["names"]),
+           "holder_count": len({index for index, _name in group["names"]}), "nlink": group["nlink"],
+           "size_bytes": group["size_bytes"]}
+    return {"reason": reason, **row} if reason else row
+
+
+def _capped(block: dict[str, Any], key: str, rows: Sequence[dict[str, Any]]) -> None:
+    block[key] = list(rows[:MAX_ROWS])
+    block[f"omitted_{key}_count"] = max(0, len(rows) - MAX_ROWS)
 
 
 def _by_holder(group: dict[str, Any]) -> list[tuple[int, list[Path]]]:
@@ -327,10 +343,19 @@ def reclaim_shared_scratch(
         "removed_groups": 0,
         "removed_bytes": 0,
     }
+    kept = list(plan["kept"])
     if apply:
         result = apply_shared_scratch(plan, process_root=process_root)
         block["removed_groups"] = len(result["removed"])
         block["removed_bytes"] = sum(group["size_bytes"] for group in result["removed"])
+    by_reason: dict[str, dict[str, int]] = {}
+    for group, reason in kept:
+        counted = by_reason.setdefault(reason, {"groups": 0, "bytes": 0})
+        counted["groups"] += 1
+        counted["bytes"] += group["size_bytes"]
+    block["kept_by_reason"] = dict(sorted(by_reason.items()))
+    _capped(block, "candidates", [_row(group, plan["holders"]) for group in plan["candidates"]])
+    _capped(block, "kept", [_row(group, plan["holders"], reason) for group, reason in kept])
     return block
 
 

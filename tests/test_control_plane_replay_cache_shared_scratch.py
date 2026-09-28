@@ -205,3 +205,36 @@ def test_shared_scratch_is_plan_only_until_its_own_opt_in(tmp_path, monkeypatch)
     assert (block["enabled"], block["status"], block["live_readers_checked"]) == (True, "applied", True)
     assert block["removed_bytes"] == phase["removed_bytes"] == phase["candidate_bytes"] == size
     assert not any(path.exists() for path in names)
+
+
+def _stamped(blob: Path, seconds: float) -> Path:
+    os.utime(blob, ns=(int(seconds * 10**9), int(seconds * 10**9)))
+    return blob
+
+
+def test_shared_group_newer_than_a_holders_report_is_kept(tmp_path) -> None:
+    """Every replay holding a name must have written its report after the inode last changed, as
+    the per-replay rule requires of its own: a file written after any holder's report is not what
+    that replay left behind. The gate is not newer, so an inode exactly as old as a report goes."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    early = _replay(parent_root, "scene-841007-preparation", "parent-a-1", closed_seconds_ago=7100)
+    late = _replay(parent_root, "scene-841012-preparation", "parent-b-1", closed_seconds_ago=5000)
+    other = _replay(parent_root, "scene-841019-preparation", "parent-c-1", closed_seconds_ago=7100)
+    newer = _stamped(_store_blob(tmp_path, b"changed after the early report" * 20), NOW - 7099)
+    as_old = _stamped(_store_blob(tmp_path, b"exactly as old as the reports" * 20), NOW - 7100)
+    kept_names = [*_linked(newer, early, "prep-a/newer.usd"), *_linked(newer, late)]
+    gone_names = [*_linked(as_old, early), *_linked(as_old, other)]
+    sizes = {blob: blob.stat().st_size for blob in (newer, as_old)}
+    _moved(newer, as_old)
+
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"newer_than_report": {"groups": 1, "bytes": sizes[newer]}}
+    assert block["kept"] == [{"reason": "newer_than_report", "path": str(kept_names[0]), "name_count": 3,
+                              "holder_count": 2, "nlink": 3, "size_bytes": sizes[newer]}]
+    assert block["candidates"] == [{"path": str(gone_names[0]), "name_count": 2, "holder_count": 2, "nlink": 2,
+                                    "size_bytes": sizes[as_old]}]
+    assert (block["omitted_kept_count"], block["omitted_candidates_count"]) == (0, 0)
+    assert block["removed_bytes"] == sizes[as_old]
+    assert all(path.exists() for path in kept_names) and not any(path.exists() for path in gone_names)
