@@ -8,7 +8,8 @@ import stat
 import pytest
 
 from blueprint_pipeline.control_plane_disk_usage import allocated_bytes
-from tests.test_owner_target_version_descriptors import enrolled, files
+from tests.test_owner_target_version_descriptors import enrolled as enrolled
+from tests.test_owner_target_version_descriptors import files
 
 
 def measured(path, expected, monkeypatch=None):
