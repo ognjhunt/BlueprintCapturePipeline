@@ -100,10 +100,10 @@ def load_authority(consent_path, *, action, now):
     _require(action in {'retire','restore'},'scene_retirement_action_invalid')
     policy=access._policy()
     _require(policy is not None,'scene_retirement_disabled')
-    policy_path=os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE']
+    policy_path=access._policy_path()
     # _policy has already proved installed UID/ancestry and 0644 reader format;
     # bind precisely those raw bytes and refuse a changed installed document.
-    raw=access._bytes(policy_path,protected=True)
+    raw=access._bytes(policy_path,protected=True,required_mode=0o644)
     _require(_document(raw)==policy,'scene_retirement_policy_changed')
     scopes=_scopes(policy)
     allowed_private=_strings(policy['private_archive_allowed_classes'],maximum=64)

@@ -407,13 +407,15 @@ def test_actual_participant_uses_installed_fence_without_environment(tmp_path, m
     if role == 'completed-review-reader':
         from blueprint_pipeline import artifixer_completed_training_reuse as existing
         monkeypatch.setattr(existing, '_read', lambda *args: entered.append(args))
-        operation = lambda: existing.stage_completed_review(source_root=member, output_root=tmp_path / 'out')
+        def operation():
+            return existing.stage_completed_review(source_root=member, output_root=tmp_path / 'out')
     else:
         from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as existing
         monkeypatch.setattr(existing, '_publish_locked', lambda *args, **kwargs: entered.append(args))
-        operation = lambda: existing.publish_scene_configuration_submission(
-            manifest_path=member / 'manifest.json', receipt_path=member / 'publication.json',
-            expected_source_commit='a' * 40, lock_root=tmp_path / 'publisher-locks')
+        def operation():
+            return existing.publish_scene_configuration_submission(
+                manifest_path=member / 'manifest.json', receipt_path=member / 'publication.json',
+                expected_source_commit='a' * 40, lock_root=tmp_path / 'publisher-locks')
     with access.exclusive_scene_access():
         monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
         with pytest.raises(access.SceneRetirementAccessError, match='generation_unavailable'):

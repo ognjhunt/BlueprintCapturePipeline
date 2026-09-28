@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
 
+_INSTALLED_POLICY = Path('/etc/blueprint/scene-retirement-policy.json')
 _POLICY_UID = 0
 _SERVICE_IDENTITY = None
 _MAX_JSON_BYTES = 64 * 1024
@@ -137,9 +138,12 @@ def _pairs(pairs):
     return result
 
 
-def _bytes(path, *, protected=False):
+def _bytes(path, *, protected=False, required_mode=None):
     with _opened(path, protected=protected) as (fd, before):
         _require(0 < before.st_size <= _MAX_JSON_BYTES)
+        if required_mode is not None:
+            _require(stat.S_IMODE(before.st_mode) == required_mode,
+                     'scene_retirement_policy_binding_unproven')
         raw = os.read(fd, _MAX_JSON_BYTES + 1)
         _require(len(raw) == before.st_size and len(raw) <= _MAX_JSON_BYTES)
         after = os.fstat(fd)
@@ -181,11 +185,25 @@ def _read(path, *, protected=False):
     return _document(_bytes(path, protected=protected))
 
 
-def _policy():
+def _policy_path():
+    # Reader, publisher and root action use the same installation. An omitted
+    # EnvironmentFile must not bypass it; a foreign path cannot choose a fence.
     selected = os.environ.get('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
-    if not selected:
+    fixed = str(_INSTALLED_POLICY)
+    _require(selected in (None, '', fixed), 'scene_retirement_policy_binding_unproven')
+    try:
+        os.stat(fixed, follow_symlinks=False)
+    except FileNotFoundError:
+        _require(not selected, 'scene_retirement_policy_binding_unproven')
         return None
-    value = _read(selected, protected=True)
+    return fixed
+
+
+def _policy():
+    selected = _policy_path()
+    if selected is None:
+        return None
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
     _require(set(value) in (_POLICY_KEYS, _POLICY_KEYS | {'reference_context'})
              and value['schema_version'] == 'scene_retirement_policy.v1'
              and type(value['enabled']) is bool)
@@ -262,8 +280,6 @@ def scene_participant(*path_arguments):
         signature = inspect.signature(function)
         @functools.wraps(function)
         def admitted(*args, **kwargs):
-            if not os.environ.get('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE'):
-                return function(*args, **kwargs)
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
             values = bound.arguments
