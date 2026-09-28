@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import time
@@ -162,6 +163,30 @@ def _verify(runtime, rows, boot, boot_row, deadline):
     _require(observed == rows and _read(boot, deadline) == boot_row)
 
 
+def dependency_root(venv):
+    """Derive the SDK directory without executing a service-owned Python."""
+    try:
+        venv = Path(venv)
+        config = venv / 'pyvenv.cfg'
+        fd = _open(config, directory=False)
+        try:
+            before = os.fstat(fd)
+            _require(0 < before.st_size <= 4096)
+            raw = os.read(fd, 4097)
+            _require(len(raw) == before.st_size and _identity(os.fstat(fd)) == _identity(before)
+                     and _identity(config.lstat()) == _identity(before))
+        finally:
+            os.close(fd)
+        versions = re.findall(r'^version\s*=\s*(\d+)\.(\d+)\.\d+\s*$', raw.decode('ascii'), re.MULTILINE)
+        _require(len(versions) == 1 and tuple(map(int, versions[0])) == sys.version_info[:2])
+        sdk = venv / f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages'
+        fd = _open(sdk, directory=True)
+        os.close(fd)
+        return sdk
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ValueError(_ERROR) from exc
+
+
 def prepare(source, dependencies):
     """Copy exact protected inputs; no policy, consent, generation or flag writes."""
     try:
@@ -201,9 +226,12 @@ def main(argv=None):
     _require(os.getuid() == os.geteuid() == 0 and sys.flags.isolated and sys.flags.no_site)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', required=True, type=Path)
-    parser.add_argument('--dependencies', required=True, type=Path)
+    sdk = parser.add_mutually_exclusive_group(required=True)
+    sdk.add_argument('--dependencies', type=Path)
+    sdk.add_argument('--venv', type=Path)
     arguments = parser.parse_args(argv)
-    print(json.dumps(prepare(arguments.source, arguments.dependencies), sort_keys=True))
+    dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
+    print(json.dumps(prepare(arguments.source, dependencies), sort_keys=True))
     return 0
 
 
