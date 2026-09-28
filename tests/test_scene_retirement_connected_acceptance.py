@@ -90,16 +90,16 @@ def _rebase_complete_graph(args, anchor, changes, *, requests=None, immutable_pa
                 value = value.replace(old, new)
         return value
 
-    def visit(value):
+    def visit(value, *, allow_replacement=True):
         if isinstance(value, str):
             return text(value)
         if isinstance(value, list):
             return [visit(item) for item in value]
         if not isinstance(value, dict):
             return value
-        replacement = (requests or {}).get(canonical_digest(value))
+        replacement = (requests or {}).get(canonical_digest(value)) if allow_replacement else None
         if replacement is not None:
-            return copy.deepcopy(replacement)
+            return visit(copy.deepcopy(replacement), allow_replacement=False)
         changed = {key: visit(item) for key, item in value.items()}
         if complete_identities:
             for key in ('identity','scene_identity','task_identity','output_identity','subject_identity'):
@@ -203,7 +203,9 @@ def _add_current_sam(args, owned_current_task):
     previous_pair = args['seed_records']['preparation_envelopes'][0]
     previous = json.loads(previous_pair[1])
     parent = copy.deepcopy(previous)
-    parent['request']['runtime'] = old_parent['request']['runtime']
+    parent['request']['runtime']['mounts'] = old_parent['request']['runtime']['mounts']
+    for mount in parent['request']['runtime']['mounts']:
+        mount.update(mode='read_only',container_path='/inputs/sam31-plan.json')
     parent['request_digest'] = canonical_digest(parent['request'])
     parent = seal(parent, 'envelope_digest')
     path = args['roots']['preparation_queue_root'] + '/completed/prep-1-' + parent['request_digest'][7:] + '.json'
@@ -263,12 +265,12 @@ def _complete_current_requests(args):
                     for role in ('publisher_terms','human_authority_record')],'source_bytes_redistributable':False})
         body.setdefault('construction',{'mode':'reuse_configured_scene'})
         task=body['task']
-        artifact=task.pop('artifact',None)
+        task.pop('artifact',None)
         if body['preparation_id']=='native-prep':
             task.update(binding_mode='reuse_configured_template',subject={'mode':'configured_scene_object'})
         else:
             task.update(binding_mode='define_configuration_template',subject={'mode':'configured_scene_object'},
-                definition=artifact or dict(leaf),success_criteria=dict(leaf),execution=dict(leaf))
+                definition=dict(leaf),success_criteria=dict(leaf),execution=dict(leaf))
         body['sensors']={'configuration':dict(leaf)}
         body.setdefault('runtime',{}).update(health_protocol=dict(leaf))
         body['runtime'].setdefault('mounts',[])
@@ -321,9 +323,9 @@ def _complete_current_requests(args):
                     row['contract_path']='task.definition'
                     refs['task.definition']=row
                 for contract,remote in leaves(request):
-                    refs.setdefault(contract,dict(contract_path=contract,**remote,
+                    refs[contract]=dict(contract_path=contract,**remote,
                         materialized_path=args['roots']['preparation_input_root']+'/'+value['preparation_id']+'/'+remote['digest'][7:],
-                        content_addressed_reuse=False,full_byte_service_account_readback_passed=True))
+                        content_addressed_reuse=False,full_byte_service_account_readback_passed=True)
                 value.update(references=list(refs.values()),reference_count=len(refs),
                     unique_object_count=len({(r['digest'],r['size_bytes']) for r in refs.values()}),content_addressed_reuse_count=0)
                 value['result_digest']=canonical_digest(value,digest_field='result_digest')
@@ -348,7 +350,8 @@ def _complete_current_requests(args):
         args['seed_records']['activation_envelopes'][i]=(name.replace('/pending/','/prepared/'),raw)
     local=args['roots']['preparation_input_root']+'/native-prep/'+revision_ref['digest'][7:]
     args['bridge_records']['configured_revisions']=[(local,native_revision[1])]
-    args['retained_metadata_roots'].append(args['roots']['preparation_input_root'])
+    if args['roots']['preparation_input_root'] not in args['retained_metadata_roots']:
+        args['retained_metadata_roots'].append(args['roots']['preparation_input_root'])
     return args
 
 
@@ -421,7 +424,29 @@ def _native_fixture_records(args):
             assert existing[path] == raw, 'materialized fixture conflicts with retained raw bytes'
         else:
             args['source_records']['opaque_evidence'].append((path, raw))
-    return _rebase_complete_graph(args, '/retained', maps)
+    result = _rebase_complete_graph(args, '/retained', maps)
+    # Content-addressed materialization can converge multiple contract paths
+    # onto one physical object; retain one exact record, never drop variants.
+    result['source_records']['opaque_evidence'] = list(dict.fromkeys(result['source_records']['opaque_evidence']))
+    count_maps={}
+    for group in ('seed_records','bridge_records'):
+        for role,rows in result[group].items():
+            for i,(path,raw) in enumerate(rows if role not in ('intent','projection') else []):
+                value=json.loads(raw)
+                if value.get('schema_version')!='task_evaluation_launch_preparation_result.v1':
+                    continue
+                old=value['result_digest']
+                from blueprint_pipeline.task_evaluation_scene_compilation_owner_preparations import HANDOFF,PRE
+                def preimage(record):
+                    return dict({k:v for k,v in record.items() if k not in HANDOFF|{'result_digest'}},status=PRE)
+                prior_inverse=canonical_digest(preimage(value),digest_field='result_digest')
+                value['unique_object_count']=len({(r['digest'],r['size_bytes']) for r in value['references']})
+                value['content_addressed_reuse_count']=sum(r['content_addressed_reuse'] for r in value['references'])
+                value['result_digest']=canonical_digest(value,digest_field='result_digest')
+                count_maps[old]=value['result_digest']
+                count_maps[prior_inverse]=canonical_digest(preimage(value),digest_field='result_digest')
+                rows[i]=(path,json.dumps(value,sort_keys=True).encode())
+    return _rebase_complete_graph(result,'/retained',count_maps)
 
 
 def _complete_installed_queue_layouts(context):
@@ -492,7 +517,10 @@ def _authentic_connected_graph(base, monkeypatch):
         replacements[canonical_digest(task)] = owned_task(task, prior_value if task['expected_production_commit'] == 'a'*40 else actual,
             prior_owner if task['expected_production_commit'] == 'a'*40 else owner,
             prior_birth if task['expected_production_commit'] == 'a'*40 else birth)
-    changes = _add_current_sam(args, own_current)
+    current_changes = _add_current_sam(args, own_current)
+    args = _rebase_complete_graph(args,'/retained',current_changes)
+    args = _native_fixture_records(args)
+    changes={}
     changes.update({old_intent['intent_digest']: actual['intent_digest'],
                     old_intent['task_content_digest']: actual['task_content_digest'],
                     canonical_digest(old_intent['request']): canonical_digest(actual['request']),
