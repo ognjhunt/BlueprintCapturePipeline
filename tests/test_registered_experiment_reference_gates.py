@@ -209,6 +209,8 @@ def test_native_installed_uri_resolution_observes_actual_selected_source_before_
         installation_receipt_digest="receipt",
         publisher_intake_sha256="intake",
     )
+    source.path.parent.mkdir(parents=True)
+    source.path.write_bytes(b"payload")
     mapping = InstalledSourceBindings({"https://publisher.example/pinned": source})
     monkeypatch.setattr(
         Path, "open", lambda *args, **kwargs: pytest.fail("resolved registered payload opened")
