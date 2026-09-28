@@ -1296,7 +1296,7 @@ def run_storage_gc(
         "apply": apply,
         "opt_in": {
             "evidence_offload": bool(offload_enabled),
-            "result_residue_offload": bool(result_residue_offload_enabled),  # TODO(10c-merge): summary OPT_INS
+            "result_residue_offload": bool(result_residue_offload_enabled),
             "scene_workspace_retirement": bool(scene_workspace_retirement_enabled),
             "replay_cache_retention": bool(replay_cache_retention_enabled),
             "extended_pin_proofs": bool(extended_pin_proofs_enabled),

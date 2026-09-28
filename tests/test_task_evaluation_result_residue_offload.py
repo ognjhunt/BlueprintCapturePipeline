@@ -844,6 +844,7 @@ def test_summary_reports_residue_candidates_offloads_retained_reasons_and_opt_in
                 for reason in sorted(BY_DESIGN)}
 
     planned = _tick(ready, pins, queue, apply=False)
+    assert build_storage_gc_summary(planned)["opt_in"]["result_residue_offload"] is False
     phase = build_storage_gc_summary(planned)["phases"]["result_residue_offload"]
 
     assert phase == {
@@ -859,6 +860,7 @@ def test_summary_reports_residue_candidates_offloads_retained_reasons_and_opt_in
     applied = _tick(ready, pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
                     result_residue_offload_enabled=True)
     summary = build_storage_gc_summary(applied)
+    assert summary["opt_in"]["result_residue_offload"] is True
     phase = summary["phases"]["result_residue_offload"]
     # This tick offloaded the waiting run's bulk artifact first, so its residue followed in the same tick.
     assert (phase["status"], phase["enabled"]) == ("applied", True)

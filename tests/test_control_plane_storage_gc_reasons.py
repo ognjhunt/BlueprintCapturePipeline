@@ -279,7 +279,7 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert summary["source_report_digest"] == report["report_digest"]
     assert summary["opt_in"] == {
         "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False,
-        "extended_pin_proofs": False}
+        "extended_pin_proofs": False, "result_residue_offload": False}
     assert (summary["phase_errors"], summary["skipped_roots"]) == ([], [str(absent_scratch)])
     sizes = {run.name: sum(p.stat().st_size for p in run.rglob("*") if p.is_file())
              for run in (queued, hot, registry_run)}
@@ -396,7 +396,7 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     # A report written before the tick recorded its opt-ins does not claim they were off.
     assert summary["opt_in"] == {
         "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None,
-        "extended_pin_proofs": None}
+        "extended_pin_proofs": None, "result_residue_offload": None}
 
 
 def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:

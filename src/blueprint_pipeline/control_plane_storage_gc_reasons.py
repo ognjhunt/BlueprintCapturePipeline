@@ -230,7 +230,10 @@ PHASES = (
     "replay_caches",
     "scene_workspaces",
 )
-OPT_INS = ("evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "extended_pin_proofs")
+OPT_INS = (
+    "evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "extended_pin_proofs",
+    "result_residue_offload",
+)
 _REMOVED_KEYS = ("removed_bytes", "offloaded_bytes", "retired_bytes")
 _MAX_REASONS = 50
 _MAX_FAILURES = 20
