@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash'])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'lease_lane_lock'])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -131,6 +131,21 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         allocations.append((args, kwargs))
         return reservation
     monkeypatch.setattr(restore, 'reserve_control_plane_disk', reserve)
+    if certificate_case == 'lease_lane_lock':
+        import fcntl
+        import os
+        actual_truncate = restore.os.ftruncate
+        lease_inode = (target / '.lane-scratch.v1.json').stat().st_ino
+        def truncate_under_lane_lock(fd, size):
+            if os.fstat(fd).st_ino == lease_inode:
+                lock = os.open(target.parent.parent / '.lane-scratch.lock', os.O_RDWR | os.O_NOFOLLOW)
+                try:
+                    with pytest.raises(BlockingIOError):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(lock)
+            return actual_truncate(fd, size)
+        monkeypatch.setattr(restore.os, 'ftruncate', truncate_under_lane_lock)
     arguments = dict(expected_restore_intent=grant['restore_intent'], installed_config_path=value[0],
         now=lambda: 2902, _pins_root=value[0].parent / 'pins')
     if certificate_case == 'activation_crash':
