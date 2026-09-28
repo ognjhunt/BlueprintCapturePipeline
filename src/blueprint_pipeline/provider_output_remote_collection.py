@@ -34,7 +34,7 @@ Refusals return ``status: "blocked"`` with one stable code, and the adapter
 then continues exactly as after a failed download (SSH recovery when a size
 marker was logged): a missing object (``provider_output_not_ready``, HTTP 404),
 any transport failure (a 412 or changed ETag, a truncated or malformed range,
-the deadline), an object with no ETag to pin, and an inspected JSON member over
+the deadline, a URL the transfer policy refuses), an object with no ETag to pin, and an inspected JSON member over
 the read cap (``provider_output_inspected_member_over_read_cap``). An inspection
 that saw any transport failure is discarded, never reported: the path
 inspection falls back from an unreadable top-level result to a nested cell
@@ -53,6 +53,7 @@ from .provider_output_range_transport import (
     ProviderOutputRangeReader,
     ProviderOutputTransportError,
 )
+from .safe_outbound_http import SafeOutboundHttpError
 from .vast_structured_policy_canary_inspection import (
     STRUCTURED_POLICY_CANARY_MEMBER,
     inspect_structured_policy_canary_archive,
@@ -175,6 +176,10 @@ class RemoteProviderOutputCollector:
             inspection, structured = self._inspect(reader, output_path)
         except (ProviderOutputTransportError, _RemoteCollectionRefusal) as exc:
             return self._blocked(str(exc), type(exc).__name__, reader, output_path)
+        except SafeOutboundHttpError:
+            # The transfer policy refused the URL itself (not https, credentials in
+            # it); its message names the host, so only the typed code is kept.
+            return self._blocked("provider_output_transport_failed", "SafeOutboundHttpError", reader, output_path)
         self.observation = {"size_bytes": reader.identity["size_bytes"],
                             "etag": reader.identity["etag"]}
         return {

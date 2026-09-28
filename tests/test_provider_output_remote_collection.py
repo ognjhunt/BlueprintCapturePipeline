@@ -229,3 +229,17 @@ def test_collector_refuses_invalid_limits():
                     {"maximum_archive_bytes": True}):
         with pytest.raises(ValueError, match="^provider_output_remote_collection_limits_invalid$"):
             RemoteProviderOutputCollector(expected_video_count=0, **options)
+
+
+@pytest.mark.parametrize("url", ["http://storage.example.invalid/run.zip?X-Amz-Signature=SECRET_DO_NOT_RECORD",
+                                 "https://user:secret@storage.example.invalid/run.zip"])
+def test_a_url_the_transfer_policy_refuses_is_a_typed_transport_failure(tmp_path, url):
+    store = RangeStore(quick10_shaped_archive(cells=1).archive)
+    collector = RemoteProviderOutputCollector(maximum_archive_bytes=store.object.size, expected_video_count=0,
+                                              opener=store.opener)
+
+    transfer = collector(url=url, output_path=tmp_path / OUTPUT_NAME, minimum_free_bytes=0)
+
+    assert (transfer["status"], transfer["blockers"]) == ("blocked", ["provider_output_transport_failed"])
+    assert store.requests == [] and collector.observation is None
+    assert SECRET not in json.dumps(transfer) and "storage.example" not in json.dumps(transfer)
