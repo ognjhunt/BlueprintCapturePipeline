@@ -282,3 +282,48 @@ def test_source_refresh_reuses_identical_protected_sdk_generation(tmp_path, monk
     assert second["dependencies_root"] == first["dependencies_root"]
     after = sdk.stat()
     assert (before.st_dev, before.st_ino, before.st_mtime_ns) == (after.st_dev, after.st_ino, after.st_mtime_ns)
+
+
+def _sdk_wheel_fixture(source, directory):
+    import hashlib
+    import zipfile
+    directory.mkdir()
+    artifact = directory / 'fixture_sdk-1.0-py3-none-any.whl'
+    with zipfile.ZipFile(artifact, 'w') as wheel:
+        wheel.writestr('fixture_sdk/__init__.py', 'value = 1\n')
+        wheel.writestr('fixture_sdk-1.0.dist-info/METADATA', 'Metadata-Version: 2.1\nName: fixture-sdk\nVersion: 1.0\n')
+        wheel.writestr('fixture_sdk-1.0.dist-info/WHEEL', 'Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    (source / 'uv.lock').write_text(
+        'version = 1\n[[package]]\nname = "blueprint-capture-pipeline"\nversion = "2.0.0"\n'
+        'source = { editable = "." }\ndependencies = [{ name = "fixture-sdk" }]\n'
+        '[[package]]\nname = "fixture-sdk"\nversion = "1.0"\nsource = { registry = "https://pypi.org/simple" }\n'
+        'wheels = [{ url = "https://files.pythonhosted.org/' + artifact.name + '", hash = "sha256:' + digest + '", size = ' + str(artifact.stat().st_size) + ' }]\n')
+    return artifact
+
+
+def test_actual_locked_sdk_build_extracts_full_production_closure_without_executing(tmp_path, monkeypatch):
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    selected = module.build_sdk(source, wheelhouse=wheel.parent)
+    sdk = Path(selected['dependencies_root'])
+    assert (sdk / 'fixture_sdk/__init__.py').read_bytes() == b'value = 1\n'
+    assert selected['packages'] == [{'name': 'fixture-sdk', 'version': '1.0'}]
+    assert selected['system_python_abi'] == f'{sys.version_info.major}.{sys.version_info.minor}'
+    assert selected['authority_issued'] is False and selected['cleanup_enabled'] is False
+    assert not list(sdk.rglob('*.pyc'))
+
+
+@pytest.mark.parametrize('failure', ['tampered-wheel', 'missing-transitive'])
+def test_locked_sdk_missing_or_foreign_artifacts_refuse_before_publication(tmp_path, monkeypatch, failure):
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    if failure == 'tampered-wheel':
+        wheel.write_bytes(wheel.read_bytes() + b'foreign')
+    else:
+        text = (source / 'uv.lock').read_text()
+        (source / 'uv.lock').write_text(text.replace('name = "fixture-sdk"\nversion', 'dependencies = [{ name = "missing-sdk" }]\nname = "fixture-sdk"\nversion'))
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.build_sdk(source, wheelhouse=wheel.parent)
+    assert not (module._BOOT_ROOT / 'CURRENT.json').exists()
+    assert not (module._BOOT_ROOT / 'continuous_bootstrap.py').exists()
