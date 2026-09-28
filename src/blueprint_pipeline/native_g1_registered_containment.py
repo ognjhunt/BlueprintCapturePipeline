@@ -433,7 +433,7 @@ def _producer_main(bootstrap, target):
     use = RegisteredExperimentUse.admit(target, _producer_bootstrap_path=bootstrap)
     try:
         _unit_membership(use.entry["intent_id"])
-        result = run_g1_development_pair(request_paths=[path for path, *_ in use._producer_requests],
+        result = run_g1_development_pair(request_paths=[Path(path) for path, *_ in use._producer_requests],
                                        output_dir=target, mode="local", _registered_use=use)
         _require(result["status"] == "completed_development_only", "experiment_producer_failed")
         return result
