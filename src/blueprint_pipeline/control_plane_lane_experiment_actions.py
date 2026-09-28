@@ -107,7 +107,7 @@ def _lease(files, target, entry):
 
 def _target(files, config, entry, *, lock=True):
     root = config.lane_scratch_work_root if entry["root"] == "work" else config.lane_scratch_inputs_root
-    target = Path(root) / "g1" / entry["name"]
+    target = Path(root) / entry["lane"] / entry["name"]
     parent, _ = files.parent(target / scratch.LEASE_FILE)
     info = os.fstat(parent)
     _require(stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino)
@@ -379,6 +379,8 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         lease, _ = _lease(files, target, entry)
         _require(lease["released_at_epoch"] is None and issued >= lease["expires_at_epoch"], "experiment_not_expired")
         origin = _birth(files, public, entry, gid)
+        _require(origin["participant_profile"] != "arena_owner_review.v1" or action == "owner_review",
+                 "experiment_action_profile_unsupported")
         if action == "delete":
             _require(origin["participant_profile"] == "local_root_disposable.v1" and lease["class_intent"] == "scratch"
                      and lease["cleanup"] == "delete", "experiment_delete_ineligible")
@@ -400,20 +402,22 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         files._issue_policy = policy_selector
         action_id = _issue_selection(files, config, entry, current[0]['record'], store,
             principal=principal, owner=owner, action=action, expiry=expires_at_epoch)
-        from . import control_plane_lane_experiment_acquisition as acquisition
-        acquisition.begin(files, config, store, action_id, entry, role='issue')
-        manifest = _manifest(files, target, target_fd, binding=entry, hash_payload=False)
-        files.budget.measure(manifest, cap=1048576 - 100)
-        _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
-        files.phase('finalize')
-        manifest_raw = _encoded(manifest, "manifest_digest", 1048576)
-        _require(owners._matches(action_id, owners._CONSENT_ID) and action_id != intent_id,
-                 "experiment_action_invalid")
-        occupied = issuance._capacity(files, store, adding_registration=False)
-        _require(occupied + len(manifest_raw) + 8 * 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES,
-                 "experiment_store_full")
-        manifest_selector = _publish(files, store, action_id + ".manifest.json", manifest_raw, kind="manifest")
-        acquisition.completed(files, manifest_selector, len(manifest["members"]))
+        manifest_selector = None
+        if action != "owner_review":
+            from . import control_plane_lane_experiment_acquisition as acquisition
+            acquisition.begin(files, config, store, action_id, entry, role='issue')
+            manifest = _manifest(files, target, target_fd, binding=entry, hash_payload=False)
+            files.budget.measure(manifest, cap=1048576 - 100)
+            _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
+            files.phase('finalize')
+            manifest_raw = _encoded(manifest, "manifest_digest", 1048576)
+            _require(owners._matches(action_id, owners._CONSENT_ID) and action_id != intent_id,
+                     "experiment_action_invalid")
+            occupied = issuance._capacity(files, store, adding_registration=False)
+            _require(occupied + len(manifest_raw) + 8 * 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES,
+                     "experiment_store_full")
+            manifest_selector = _publish(files, store, action_id + ".manifest.json", manifest_raw, kind="manifest")
+            acquisition.completed(files, manifest_selector, len(manifest["members"]))
         value = dict(schema_version=ACTION_SCHEMA, intent_id=intent_id, action_id=action_id, issuer_uid=0,
             principal=principal, owner=owner, generation=entry["generation"], birth=entry["birth"],
             target_identity=entry["target_identity"], lease=entry["lease"], completion=entry["completion"],
@@ -454,6 +458,12 @@ def _read_action(files, config, action_id, expected, issued):
              and action["action_digest"] == canonical_digest(action, digest_field="action_digest")
              and _epoch(action["issued_at_epoch"]) and _epoch(action["expires_at_epoch"])
              and action["issued_at_epoch"] <= issued < action["expires_at_epoch"], "experiment_action_invalid")
+    _require(action["action"] in ("delete", "offload", "owner_review")
+             and (action["manifest"] is None if action["action"] == "owner_review" else
+                  type(action["manifest"]) is dict and set(action["manifest"]) == {"sha256", "size_bytes"}
+                  and _valid_digest(action["manifest"]["sha256"])
+                  and type(action["manifest"]["size_bytes"]) is int
+                  and 0 < action["manifest"]["size_bytes"] <= _MANIFEST_LIMIT), "experiment_action_invalid")
     policy_raw, policy_record = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
                                           protected=True, mode=0o600)
     _require(issuance._selector(policy_raw, files.budget) == action["policy"], "experiment_policy_changed")
