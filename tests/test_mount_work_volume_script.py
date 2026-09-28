@@ -27,7 +27,11 @@ INPUTS_TREE = STATE / "task-evaluation-inputs"
 # Work roots that are bulk by nature: the handoff spool, which holds every
 # scene's raw capture, and native run work.
 BULK_WORK_ROOTS = frozenset(
-    {STATE / "pubsub-handoffs", STATE / "pipeline-control-plane" / "native-g1-team-campaign-work"}
+    {
+        STATE / "pubsub-handoffs",
+        STATE / "pipeline-control-plane" / "native-g1-team-campaign-work",
+        STATE / "pipeline-control-plane" / "native-g1-team-policy-work",
+    }
 )
 
 
