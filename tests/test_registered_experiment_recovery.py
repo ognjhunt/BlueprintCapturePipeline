@@ -139,3 +139,18 @@ def test_terminal_replay_rejects_modified_receipt_instead_of_reporting_freed_byt
     with pytest.raises(ValueError, match='experiment_operation_invalid'):
         code.run_action(action['action_id'], expected_action_intent=action['action_intent'],
             installed_config_path=retirement_installation[0], now=lambda: 2900, _pins_root=None)
+
+
+def test_actual_terminal_replay_accounts_160_members_under_finite_event_fds(retirement_installation):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_actions as code
+    grant, _, target = _born_scratch(retirement_installation)
+    for index in range(160):
+        (target / f'member-{index:03d}').write_bytes(b'x')
+    action = _issue_action(retirement_installation, grant)
+    first = _gc(retirement_installation)['registered_experiments']['outcomes'][0]
+    assert first['decision'] == 'retired', first
+    second = code.run_action(action['action_id'], expected_action_intent=action['action_intent'],
+        installed_config_path=retirement_installation[0], now=lambda:2900, _pins_root=None)
+    assert second['decision'] == 'retired' and second['receipt'] == first['receipt']
+    assert second['removed_logical_bytes'] == first['removed_logical_bytes']
+    assert len(list(target.iterdir())) == 2
