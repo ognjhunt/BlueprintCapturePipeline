@@ -537,14 +537,14 @@ def test_residue_streams_without_a_local_archive(tmp_path, monkeypatch) -> None:
         return reserve_control_plane_disk(*args, **{**kwargs, "disk_usage": lambda _: SimpleNamespace(
             total=100 * 1024**3, free=80 * 1024**3)})
 
-    real_mkstemp = residue.tempfile.mkstemp
+    real_mkstemp = evidence.tempfile.mkstemp
 
     def no_archive(*args, **kwargs):
         assert ".residue-" not in kwargs.get("prefix", ""), "the stream path must not stage a tar"
         return real_mkstemp(*args, **kwargs)
 
     monkeypatch.setattr(evidence, "reserve_control_plane_disk", reserve)
-    monkeypatch.setattr(residue.tempfile, "mkstemp", no_archive)
+    monkeypatch.setattr(evidence.tempfile, "mkstemp", no_archive)
 
     result = residue.offload_result_residue(
         run_root=f.run, apply=True, ack=residue.APPLY_ACK, hot_window_seconds=2 * DAY, now=lambda: NOW,
@@ -579,7 +579,8 @@ def test_readback_failure_or_changed_member_keeps_files(tmp_path) -> None:
 
     lied = _offload(f, publisher=lying)
     assert (lied["status"], lied["retained_reason"]) == ("retained", "publication_failed")
-    assert lied["failure"]["error_type"] == "ResultResidueOffloadError"
+    # The whole-run offload's own publication check refused it.
+    assert lied["failure"] == {"error_type": "ControlPlaneEvidenceOffloadError", "errno": None, "stage": "publish"}
     assert _local_files(f.run) == before and not f.pointer.exists()
     assert not [path for path in f.evidence.iterdir() if path.name.startswith(".")]
 
@@ -1397,3 +1398,63 @@ def test_a_run_added_twice_in_a_tick_is_planned_once(tmp_path) -> None:
     tick.add(f.evidence / ".." / f.evidence.name / f.run.name, bulk)
 
     assert [row["run"] for row in tick.phase()["runs"]] == [f.run.name]
+
+
+def test_both_offloads_publish_through_one_helper(tmp_path, monkeypatch) -> None:
+    """Whole-run evidence offload and the residue pack, reserve, publish and check the readback
+    through one helper, so neither can drift from the other."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    plain = tmp_path / "launches" / "run-9"
+    plain.mkdir(parents=True)
+    (plain / "launch_receipt.json").write_text("{}", encoding="utf-8")
+    (plain / "stage.log").write_text("a line\n", encoding="utf-8")
+    _age(plain)
+    published: list[str] = []
+    real = evidence.publish_archive
+
+    def recording(directory, **kwargs):
+        published.append(kwargs["filename"])
+        return real(directory, **kwargs)
+
+    monkeypatch.setattr(evidence, "publish_archive", recording)
+    assert _offload(f)["status"] == "applied"
+    manifest = evidence.build_evidence_offload_manifest(
+        evidence_roots=[plain.parent], hot_window_seconds=0, now=lambda: NOW, classifier=lambda *a, **k: None)
+    applied = evidence.apply_evidence_offload(manifest, ack=evidence.EXECUTE_ACK, publisher=f.publisher,
+                                              now=lambda: NOW)
+
+    assert applied["offloaded_count"] == 1 and not plain.exists()
+    assert published == ["residue.tar", "evidence.tar"]
+
+
+def test_the_names_a_cut_short_group_lost_are_the_ones_it_unlinked(tmp_path, monkeypatch) -> None:
+    """``_remove_group`` unlinks a store-copy name last, whatever order the names sort in, so the
+    names a failed group removal took are the ones it reports unlinking, not a prefix of them."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    digest = hashlib.sha256(b"a store-shaped name").hexdigest()
+    store_name = f.run / "prepared-references" / "content-addressed" / "sha256" / digest
+    store_name.parent.mkdir(parents=True)
+    os.link(f.run / "logs" / "worker.log", store_name)
+    os.link(f.run / "logs" / "worker.log", f.run / "zzz.log")
+    _age(f.run)
+    real_unlink = os.unlink
+
+    def sticky(path, *args, **kwargs):
+        if kwargs.get("dir_fd") is not None and os.fspath(path) == digest:
+            raise PermissionError(1, "Operation not permitted")
+        return real_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "unlink", sticky)
+        result = _offload(f)
+
+    kept = store_name.relative_to(f.run).as_posix()
+    assert _changed(result["skipped"]) == [{"relative_path": kept, "reason": "unlink_failed:PermissionError"}]
+    assert "member_vanished" not in result["skipped_by_reason"]
+    # Every name went but the store-shaped one: the three groups' other names.
+    assert result["offloaded_count"] == len(RESIDUE) + 1
+    assert not (f.run / "logs" / "worker.log").exists() and not (f.run / "zzz.log").exists()
+    assert json.loads(f.pointer.read_text(encoding="utf-8"))["kept"] == [
+        {"relative_path": kept, "reason": "unlink_failed:PermissionError"}]

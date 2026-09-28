@@ -221,11 +221,6 @@ def build_evidence_offload_manifest(
     return manifest
 
 
-def _pack(directory: Path, archive_path: Path) -> list[dict[str, Any]]:
-    with archive_path.open('wb') as stream:
-        return _pack_stream(directory, stream)
-
-
 def _walked_members(directory: Path) -> Iterator[tuple[Path, str]]:
     """Every regular file under ``directory`` in sorted walk order, never through a link."""
 
@@ -369,6 +364,79 @@ def _archive_footprint(directory: Path) -> int:
     return size
 
 
+def publish_archive(
+    directory: Path,
+    *,
+    filename: str,
+    staging_prefix: str,
+    publisher: Callable[..., Mapping[str, Any]] | None = None,
+    stream_publisher: Callable[..., Mapping[str, Any]] | None = None,
+    members: Sequence[str] | None = None,
+    identities: Mapping[str, Sequence[int]] | None = None,
+    archive_bytes: Callable[[], int] | None = None,
+) -> tuple[list[dict[str, Any]], str, int, dict[str, Any], Any]:
+    """Pack ``directory`` (every regular file, or exactly ``members``) and publish it with a full readback.
+
+    Returns the packed members, the archive's digest and size, the verified
+    reference and the disk reservation, which the caller releases once its
+    pointer is written. Without a file ``publisher`` the tar stream is hashed,
+    then streamed to ``stream_publisher`` (the configured scene store's by
+    default): no archive touches the disk and only the pointer needs headroom.
+    A file ``publisher`` gets the archive staged beside ``directory`` as
+    ``<staging_prefix>*.tar``, reserved at ``archive_bytes()``
+    (``_archive_footprint`` by default) and removed once published. A reference
+    whose digest, size, readback or URI does not match is refused
+    (``control_plane_evidence_offload_publication_mismatch``).
+    """
+
+    root = directory.parent
+
+    def pack(stream):
+        return _pack_stream(directory, stream, members=members, identities=identities)
+
+    reservation = archive = None
+    try:
+        if publisher is None:
+            # Compute the exact tar identity without creating an archive on disk.
+            sink = _HashingSink()
+            packed = pack(sink)
+            digest, size = "sha256:" + sink.digest.hexdigest(), sink.size
+            pointer_bytes = len(json.dumps(packed, indent=2).encode()) + 65536
+            reservation = reserve_control_plane_disk(
+                "evidence_offload", target_root=root, expected_bytes=max(1024 * 1024, 2 * pointer_bytes),
+                reservation_root=DEFAULT_RESERVATION_ROOT)
+            reference = dict((stream_publisher or publish_configured_scene_stream)(
+                write_stream=pack, digest=digest, size_bytes=size, filename=filename, artifact_kind=ARTIFACT_KIND))
+        else:
+            # Compatibility for explicit file-based publishers and isolated tests.
+            reservation = reserve_control_plane_disk(
+                "evidence_offload", target_root=root,
+                expected_bytes=archive_bytes() if archive_bytes is not None else _archive_footprint(directory),
+                reservation_root=DEFAULT_RESERVATION_ROOT)
+            descriptor, archive_name = tempfile.mkstemp(prefix=staging_prefix, suffix=".tar", dir=root)
+            os.close(descriptor)
+            archive = Path(archive_name)
+            with archive.open("wb") as stream:
+                packed = pack(stream)
+            digest, size = _sha256(archive), archive.stat().st_size
+            reference = dict(publisher(path=archive, artifact_kind=ARTIFACT_KIND))
+        if (
+            reference.get("digest") != digest
+            or reference.get("size_bytes") != size
+            or reference.get("full_byte_service_account_readback_passed") is not True
+            or not isinstance(reference.get("uri"), str)
+        ):
+            raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_publication_mismatch")
+        return packed, digest, size, reference, reservation
+    except BaseException:
+        if reservation is not None:
+            reservation.release()
+        raise
+    finally:
+        if archive is not None:
+            archive.unlink(missing_ok=True)
+
+
 def _members_unchanged(directory: Path, members: Sequence[Mapping[str, Any]]) -> bool:
     """Reopen exact packed bytes immediately before local eviction."""
     try:
@@ -464,46 +532,11 @@ def apply_evidence_offload(
         ):
             skipped.append({"name": name, "reason": "candidate_changed"})
             continue
-        archive_path = None
         reservation = None
         try:
-            if publisher is None:
-                # Compute the exact tar identity without creating an archive on disk.
-                # Only the small pointer/manifest needs local write headroom.
-                sink = _HashingSink()
-                members = _pack_stream(directory, sink)
-                digest, size = 'sha256:' + sink.digest.hexdigest(), sink.size
-                pointer_bytes = len(json.dumps(members, indent=2).encode()) + 65536
-                reservation = reserve_control_plane_disk(
-                    "evidence_offload", target_root=root,
-                    expected_bytes=max(1024 * 1024, 2 * pointer_bytes),
-                    reservation_root=DEFAULT_RESERVATION_ROOT,
-                )
-                reference = dict(stream_publisher(
-                    write_stream=lambda stream: _pack_stream(directory, stream),
-                    digest=digest, size_bytes=size, filename='evidence.tar', artifact_kind=ARTIFACT_KIND))
-            else:
-                # Compatibility for explicit file-based publishers and isolated tests.
-                reservation = reserve_control_plane_disk(
-                    "evidence_offload", target_root=root,
-                    expected_bytes=_archive_footprint(directory),
-                    reservation_root=DEFAULT_RESERVATION_ROOT,
-                )
-                descriptor, archive_name = tempfile.mkstemp(prefix=f".{name}.offload-", suffix=".tar", dir=root)
-                os.close(descriptor)
-                archive_path = Path(archive_name)
-                members = _pack(directory, archive_path)
-                digest = _sha256(archive_path)
-                size = archive_path.stat().st_size
-                reference = dict(publisher(path=archive_path, artifact_kind=ARTIFACT_KIND))
-            if (
-                reference.get("digest") != digest
-                or reference.get("size_bytes") != size
-                or reference.get("full_byte_service_account_readback_passed") is not True
-            ):
-                raise ControlPlaneEvidenceOffloadError(
-                    "control_plane_evidence_offload_publication_mismatch"
-                )
+            members, digest, size, reference, reservation = publish_archive(
+                directory, filename="evidence.tar", staging_prefix=f".{name}.offload-",
+                publisher=publisher, stream_publisher=stream_publisher)
             if (_has_result_registry(directory)
                     or not _candidate_still_sealed(directory, row, abandoned_after, now)
                     or (protection_checker is not None and protection_checker(directory))
@@ -546,8 +579,6 @@ def apply_evidence_offload(
             skipped.append({"name": name, "reason": f"offload_failed:{type(exc).__name__}"})
             continue
         finally:
-            if archive_path is not None:
-                archive_path.unlink(missing_ok=True)
             if reservation is not None:
                 reservation.release()
         offloaded.append({"name": name, "uri": reference["uri"], "digest": digest, "size_bytes": size,
@@ -663,5 +694,6 @@ __all__ = [
     "TERMINAL_RECEIPT_NAMES",
     "apply_evidence_offload",
     "build_evidence_offload_manifest",
+    "publish_archive",
     "restore_offloaded_evidence",
 ]

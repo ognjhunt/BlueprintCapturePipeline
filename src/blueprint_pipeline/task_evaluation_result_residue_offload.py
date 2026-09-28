@@ -106,10 +106,10 @@ be read) the whole run stays (``plan_failed``).
   which have no registry.
 
 **Mechanics.** Apply takes the per-artifact offload's exclusive run lock
-(``artifacts/result_delivery/.offload.lock``) without waiting, reserves disk for
-the staging the way the offloads do, and packs exactly the members with
-``_pack_stream`` through the same content-addressed publisher and full readback
-as ``apply_evidence_offload``; the packer opens each member without following a
+(``artifacts/result_delivery/.offload.lock``) without waiting, then packs and
+publishes exactly the members through ``publish_archive``, the helper
+``apply_evidence_offload`` publishes with (disk reservation, content-addressed
+publisher, full readback); the packer opens each member without following a
 link or blocking and requires the planned inode, so nothing else can reach the
 archive. Only after a verified upload, with the registry
 and the run unchanged and still unprotected, does it write the digest-bound
@@ -146,7 +146,6 @@ import json
 import os
 import secrets
 import stat
-import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
@@ -657,59 +656,21 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def _publish(root: Path, names: list[str], members: Sequence[Mapping[str, Any]], publisher, stream_publisher):
-    """Pack exactly ``names`` and publish them with full readback, as the whole-run offload does.
+    """Pack exactly ``names`` and publish them through the whole-run offload's own helper.
 
     Returns the packed member rows, the archive digest and size, the verified
     reference and the disk reservation, which the caller releases.
     """
 
-    reservation = archive = None
     # Each member must still be the regular file the plan listed when it is packed.
     identities = {name: (group["dev"], group["inode"]) for group in members for name in group["relative_paths"]}
-    try:
-        if publisher is None:
-            # Hash the exact tar stream without an archive on disk; only the pointer needs headroom.
-            sink = evidence._HashingSink()
-            packed = evidence._pack_stream(root, sink, members=names, identities=identities)
-            digest, size = "sha256:" + sink.digest.hexdigest(), sink.size
-            pointer_bytes = len(json.dumps(packed, indent=2).encode()) + 65536
-            reservation = evidence.reserve_control_plane_disk(
-                "evidence_offload", target_root=root.parent, expected_bytes=max(_MIB, 2 * pointer_bytes),
-                reservation_root=evidence.DEFAULT_RESERVATION_ROOT)
-            reference = dict((stream_publisher or evidence.publish_configured_scene_stream)(
-                write_stream=lambda stream: evidence._pack_stream(root, stream, members=names, identities=identities),
-                digest=digest, size_bytes=size, filename="residue.tar", artifact_kind=evidence.ARTIFACT_KIND))
-        else:
-            # Explicit file publishers stage the archive beside the run, sized per inode plus headers.
-            footprint = _MIB + sum(
-                group["size_bytes"] + sum(8192 + 4 * len(name.encode()) for name in group["relative_paths"])
-                for group in members)
-            reservation = evidence.reserve_control_plane_disk(
-                "evidence_offload", target_root=root.parent, expected_bytes=footprint,
-                reservation_root=evidence.DEFAULT_RESERVATION_ROOT)
-            descriptor, archive_name = tempfile.mkstemp(prefix=f".{root.name}.residue-", suffix=".tar",
-                                                        dir=root.parent)
-            os.close(descriptor)
-            archive = Path(archive_name)
-            with archive.open("wb") as stream:
-                packed = evidence._pack_stream(root, stream, members=names, identities=identities)
-            digest, size = evidence._sha256(archive), archive.stat().st_size
-            reference = dict(publisher(path=archive, artifact_kind=evidence.ARTIFACT_KIND))
-        if (
-            reference.get("digest") != digest
-            or reference.get("size_bytes") != size
-            or reference.get("full_byte_service_account_readback_passed") is not True
-            or not isinstance(reference.get("uri"), str)
-        ):
-            raise ResultResidueOffloadError("result_residue_publication_mismatch")
-        return packed, digest, size, reference, reservation
-    except BaseException:
-        if reservation is not None:
-            reservation.release()
-        raise
-    finally:
-        if archive is not None:
-            archive.unlink(missing_ok=True)
+    # An explicit file publisher's archive is staged beside the run, sized per inode plus headers.
+    footprint = _MIB + sum(
+        group["size_bytes"] + sum(8192 + 4 * len(name.encode()) for name in group["relative_paths"])
+        for group in members)
+    return evidence.publish_archive(
+        root, filename="residue.tar", staging_prefix=f".{root.name}.residue-", publisher=publisher,
+        stream_publisher=stream_publisher, members=names, identities=identities, archive_bytes=lambda: footprint)
 
 
 def _still_there(held, name: Path) -> bool:
@@ -728,23 +689,21 @@ def _remove_members(held, group, names, *, sha256):
     """Remove one planned group: the reason it stopped (or None), the names it removed, and the
     names that vanished without it.
 
-    ``_remove_group`` rechecks every name, then unlinks them in order and stops at
-    the first unlink that fails. So after ``unlink_failed`` the names before the
-    first one still listed were removed here (offloaded: restore brings them
-    back). Any other name that is missing, after any failure, went without this
-    offload: its directory or itself moved or was removed (``member_vanished``).
-    Only the names still listed are kept.
+    ``_remove_group`` rechecks every name, then unlinks them and stops at the first
+    unlink that fails; the names it reports unlinking were removed here (offloaded:
+    restore brings them back). Any other name that is missing, after any failure,
+    went without this offload: its directory or itself moved or was removed
+    (``member_vanished``). Only the names still listed are kept.
     """
 
-    reason = held_files._remove_group(held, group, names, changed="member_changed", sha256=sha256)
+    unlinked: list[Path] = []
+    reason = held_files._remove_group(held, group, names, changed="member_changed", sha256=sha256,
+                                      unlinked=unlinked)
     if reason is None:
         return None, list(names), []
-    listed = [_still_there(held, name) for name in names]
-    removed = 0
-    if reason.startswith("unlink_failed:"):
-        removed = next((index for index, there in enumerate(listed) if there), len(names))
-    vanished = [name for name, there in zip(names[removed:], listed[removed:]) if not there]
-    return reason, list(names[:removed]), vanished
+    removed = set(unlinked)
+    vanished = [name for name in names if name not in removed and not _still_there(held, name)]
+    return reason, unlinked, vanished
 
 
 def _evict(root: Path, members: Sequence[Mapping[str, Any]], sha_by_name: Mapping[str, str], row) -> list[dict]:

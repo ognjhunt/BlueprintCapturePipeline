@@ -464,7 +464,7 @@ def _remove_empty_directories(held, root):
     return skipped
 
 
-def _remove_group(held, group, names, *, changed, sha256=None):
+def _remove_group(held, group, names, *, changed, sha256=None, unlinked=None):
     """Recheck every name of a planned inode group through held descriptors, then unlink every name.
 
     The group's planned device, each of its names' devices now, and the file opened to hash
@@ -473,7 +473,8 @@ def _remove_group(held, group, names, *, changed, sha256=None):
     inode, those names all of its links, its size and mtime unchanged and, with ``sha256``,
     its bytes that digest; otherwise the group is a ``changed`` skip. One failed check keeps
     every name, and a store name goes last, so a removal cut short leaves a group the next
-    plan still recognises.
+    plan still recognises. Each name it unlinks is appended to ``unlinked`` when given, so a
+    caller knows exactly which names an ``unlink_failed`` removal already took.
     """
     if group.get("dev") != held.device:
         return "cross_device"
@@ -511,6 +512,8 @@ def _remove_group(held, group, names, *, changed, sha256=None):
             os.unlink(name.name, dir_fd=directory)
         except OSError as exc:
             return f"unlink_failed:{type(exc).__name__}"
+        if unlinked is not None:
+            unlinked.append(name)
     return None
 
 
