@@ -152,3 +152,13 @@ def test_available_episode_mode_contradicts_destination_probe_even_when_adapter_
         'destination_native_probe_request_path': probe['path'], 'destination_native_probe_request_digest': probe['digest'],
         'destination_native_probe_request_document_digest': probe['request_digest']}, 'result_digest', family='downstream_records')
     refuses(args)
+
+
+def test_reused_compilation_result_extension_keeps_new_output_bindings_unproven():
+    args = fixture()
+    change(args, 'compilation_results', {'future_writer_extension': True}, 'result_digest', family='downstream_records')
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    row = next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'compilation_output')
+    assert not row['adapter_metadata_binding_verified'] and not row['compiler_output_metadata_binding_verified']
+    assert any(r['role'] == 'compilation_results' and r['reason'] == 'unsupported_retained_field_set'
+        for r in result['structural_join_obligations'])

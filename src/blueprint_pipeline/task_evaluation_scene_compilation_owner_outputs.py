@@ -185,8 +185,8 @@ def inventory(context):
                 context.missing('destination_probe', 'raw_size_unavailable', [proof], probe_path,
                     {'sha256': value['destination_native_probe_request_digest'], 'canonical_digest': value['destination_native_probe_request_document_digest']})
         context.member(packet['path'], 'compiled_episode_packet', packet, sources)
-        observations.append(c.observation(row, kind='compilation_output', adapter_metadata_binding_verified=bool(adapter_rows) and selector[1] not in context.unproven_adapter_seals,
-            compiler_output_metadata_binding_verified=bool(output_rows) and value['compiler_output_digest'] not in context.unproven_output_seals, source_provenance=sources))
+        observations.append(c.observation(row, kind='compilation_output', adapter_metadata_binding_verified=bool(adapter_rows) and context.supported(row) and selector[1] not in context.unproven_adapter_seals,
+            compiler_output_metadata_binding_verified=bool(output_rows) and context.supported(row) and value['compiler_output_digest'] not in context.unproven_output_seals, source_provenance=sources))
         results.setdefault((value['compilation_id'], value['result_digest']), []).append(row)
     context.compilation_results, context.adapter_results = results, adapters
     return observations

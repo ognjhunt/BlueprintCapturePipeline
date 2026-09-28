@@ -185,3 +185,100 @@ def test_standalone_available_attempt_contradiction_refuses_without_activation_e
     args['bridge_records']['native_activation_envelopes'] = []
     owner_change(args, lambda v: v['scene_attempt_binding'].update(runtime_digest='sha256:'+'1'*64), standalone=True)
     refuses(args)
+
+
+def rebind_activation_final(args):
+    final = json.loads(args['bridge_records']['native_preparation_results'][0][1])
+    path, raw = args['bridge_records']['native_activation_envelopes'][0]
+    value = json.loads(raw)
+    value['request']['preparation']['result_digest'] = final['result_digest']
+    value['request_digest'] = canonical_digest(value['request'])
+    name = filename(value['request']['activation_id'], value['request_digest'])
+    args['bridge_records']['native_activation_envelopes'] = [pair(path.rsplit('/', 1)[0]+'/'+name, seal(value, 'envelope_digest'))]
+    path, raw = args['bridge_records']['native_activation_results'][0]
+    value = json.loads(raw)
+    value['preparation_result_digest'] = final['result_digest']
+    args['bridge_records']['native_activation_results'] = [pair(path.rsplit('/', 1)[0]+'/'+name, seal(value, 'result_digest'))]
+
+
+@pytest.mark.parametrize('role,field', [('native_activation_envelopes', 'envelope_digest'),
+    ('native_preparation_envelopes', 'envelope_digest'), ('native_preparation_results', 'result_digest'),
+    ('native_activation_results', 'result_digest'), ('native_owner_records', 'owner_attempt_digest'),
+    ('compilation_intake_receipts', 'receipt_digest')])
+def test_finite_new_wrapper_extensions_keep_proofs_and_affected_bindings_unproven(role, field):
+    args = fixture()
+    change(args, role, {'future_writer_extension': {'keeps_until_owner_approval': True}}, field)
+    if role == 'compilation_intake_receipts':
+        receipt = json.loads(args['bridge_records'][role][0][1])
+        change(args, 'native_preparation_results', {'episode_compilation_queue_receipt_digest': receipt['receipt_digest']}, 'result_digest')
+        rebind_activation_final(args)
+    elif role == 'native_preparation_results':
+        rebind_activation_final(args)
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert any(r['role'] == role and r['reason'] == 'unsupported_retained_field_set' for r in result['structural_join_obligations'])
+    assert any(r['role'] == role for r in result['raw_versions'])
+    owner = next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')
+    if role == 'native_activation_results':
+        assert not owner['profile_metadata_binding_verified']
+    elif role == 'compilation_intake_receipts':
+        assert not result['preparation_handoff_observations'][0]['pre_handoff_binding_verified']
+    else:
+        assert not owner['owner_metadata_binding_verified']
+
+
+def test_unsupported_native_envelope_still_checks_available_known_owner_contradictions():
+    args = fixture(standalone=False, profile=False)
+    change(args, 'native_activation_envelopes', {'future_writer_extension': True}, 'envelope_digest')
+    owner_change(args, lambda v: v['scene_attempt_binding'].update(runtime_digest='sha256:'+'1'*64))
+    refuses(args)
+
+
+def test_finite_native_activation_request_extension_is_protected_without_deep_validation():
+    args = fixture()
+    path, raw = args['bridge_records']['native_activation_envelopes'][0]
+    value = json.loads(raw)
+    value['request']['future_writer_extension'] = {'protected': True}
+    value['request_digest'] = canonical_digest(value['request'])
+    name = filename(value['request']['activation_id'], value['request_digest'])
+    args['bridge_records']['native_activation_envelopes'] = [pair(path.rsplit('/', 1)[0]+'/'+name, seal(value, 'envelope_digest'))]
+    path, raw = args['bridge_records']['native_activation_results'][0]
+    args['bridge_records']['native_activation_results'] = [(path.rsplit('/', 1)[0]+'/'+name, raw)]
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert any(r['reason'] == 'unsupported_retained_field_set' and r['source_provenance'][0].get('json_pointer') == '/request'
+        for r in result['structural_join_obligations'])
+    assert not next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')['owner_metadata_binding_verified']
+
+
+def test_finite_embedded_owner_extension_is_protected_with_known_profile_fields_still_checked():
+    args = fixture()
+    owner_change(args, lambda v: v.update(future_writer_extension={'protected': True}))
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert not next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')['owner_metadata_binding_verified']
+    assert any(r['reason'] == 'unsupported_retained_field_set' for r in result['structural_join_obligations'])
+
+
+def test_reused_compilation_envelope_extension_protects_new_handoff_interpretation_only():
+    args = fixture()
+    path, raw = args['downstream_records']['compilation_envelopes'][0]
+    value = seal(dict(json.loads(raw), future_writer_extension={'protected': True}), 'envelope_digest')
+    name = value['compilation_id']+'-'+value['envelope_digest'][7:]+'.json'
+    new_path = path.rsplit('/', 1)[0]+'/'+name
+    args['downstream_records']['compilation_envelopes'] = [pair(new_path, value)]
+    change(args, 'compilation_intake_receipts', {'envelope_digest': value['envelope_digest'], 'queue_path': new_path}, 'receipt_digest')
+    intake = json.loads(args['bridge_records']['compilation_intake_receipts'][0][1])
+    change(args, 'native_preparation_results', {'episode_compilation_queue_envelope_digest': value['envelope_digest'],
+        'episode_compilation_queue_receipt_digest': intake['receipt_digest']}, 'result_digest')
+    rebind_activation_final(args)
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert not result['preparation_handoff_observations'][0]['pre_handoff_binding_verified']
+    assert any(r['role'] == 'compilation_envelopes' and r['reason'] == 'unsupported_retained_field_set'
+        for r in result['structural_join_obligations'])
+
+
+def test_reused_native_activation_result_extension_cannot_promote_profile():
+    args = fixture()
+    change(args, 'native_activation_results', {'future_writer_extension': True}, 'result_digest')
+    args['downstream_records']['activation_results'] = args['bridge_records']['native_activation_results']
+    args['bridge_records']['native_activation_results'] = []
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert not next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')['profile_metadata_binding_verified']

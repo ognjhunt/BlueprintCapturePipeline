@@ -22,18 +22,21 @@ def filename(activation_id, request_digest):
 
 def _owner(context, row):
     value, proof = row
-    c.require(set(value) == RECORD_FIELDS and value.get('schema_version') == c.SCHEMAS['native_owner_records'][0], 'owner_record_invalid')
+    c.require(RECORD_FIELDS <= set(value) and value.get('schema_version') == c.SCHEMAS['native_owner_records'][0], 'owner_record_invalid')
     c.seal(row, 'owner_attempt_digest')
+    context.fields(row, RECORD_FIELDS)
     c.require(all(c.matches(value.get(k), c.OWNER_ID) for k in ('scene_attempt_id', 'scene_id', 'task_id', 'team_namespace'))
         and value.get('phase') in {'construction', 'destination', 'controls'}
         and all(c.matches(value.get(k)) for k in ('scene_intent_digest', 'runtime_source_bundle_digest')), 'owner_record_invalid')
     binding = value.get('scene_attempt_binding')
-    c.require(isinstance(binding, dict) and set(binding) == BINDING_FIELDS
+    c.require(isinstance(binding, dict) and BINDING_FIELDS <= set(binding)
         and binding.get('schema_version') == 'task_evaluation_scene_attempt_binding.v1'
         and all(c.matches(binding.get(k), c.OWNER_ID) for k in ('intent_id', 'attempt_id'))
         and c.matches(binding.get('source_commit'), c.COMMIT)
         and all(c.matches(binding.get(k)) for k in ('intent_digest', 'runtime_digest', 'input_digest'))
         and binding['attempt_id'] == value['scene_attempt_id'] and binding['intent_digest'] == value['scene_intent_digest'], 'owner_binding_invalid')
+    if set(binding) != BINDING_FIELDS:
+        context.fields(row, set(value) - {'scene_attempt_binding'})
     intent = context.decoded['intent'][0][0]
     c.require(binding['intent_id'] == context.intent_id and binding['intent_digest'] == intent['intent_digest']
         and value['task_id'] == intent['request']['task']['task_id'], 'owner_intent_invalid')
@@ -65,7 +68,8 @@ def _available_owner(context, row, request, native_rows, originals, standalone):
     sources = context.provenance((proof,))
     exact_path = c.child(context.roots['activation_output_root'], request['activation_id'], 'scene_owner_attempt.json')
     for stored in standalone.get(exact_path, []):
-        c.require(stored[0] == owner, 'owner_copy_invalid')
+        c.require(all(stored[0][k] == owner[k] for k in RECORD_FIELDS - {'scene_attempt_binding', 'owner_attempt_digest'})
+            and all(stored[0]['scene_attempt_binding'][k] == binding[k] for k in BINDING_FIELDS), 'owner_copy_invalid')
     sources += context.provenance(r[1] for r in standalone.get(exact_path, []))
     for native in native_rows:
         preparation = native[0]['request']
@@ -103,7 +107,9 @@ def _available_owner(context, row, request, native_rows, originals, standalone):
     sources += context.provenance(r[1] for r in original_rows)
     if not original_links or not original_rows:
         context.canonical('original_scene_configuration_request', binding['input_digest'], proof)
-    return bool(available_attempt and original_links and original_rows and native_rows), sources
+    known_wrappers = [row, *native_rows, *standalone.get(exact_path, [])]
+    return bool(available_attempt and original_links and original_rows and native_rows
+        and all(context.supported(r) for r in known_wrappers)), sources
 
 
 def _envelopes(context):
@@ -117,6 +123,7 @@ def _envelopes(context):
             and c.matches(envelope.get('request_digest')) and envelope['request_digest'] == c.canonical_digest(request)
             and all(envelope.get(k) is False for k in ('provider_mutation_performed_inside_intake', 'catalog_mutation_performed_inside_intake',
                 'standing_authorization_published_inside_intake', 'paid_execution_requested')), 'activation_envelope_invalid')
+        context.fields((request, dict(proof, json_pointer='/request')), c.NATIVE_ACTIVATION_REQUEST_FIELDS)
         preparation = request.get('preparation')
         c.require(isinstance(preparation, dict) and c.matches(preparation.get('preparation_id'), c.ID)
             and all(c.matches(preparation.get(k)) for k in ('request_digest', 'result_digest')), 'activation_preparation_invalid')
@@ -154,6 +161,7 @@ def _results(context, envelopes):
                     'catalog_mutation_performed', 'standing_authorization_published'))
                 and all(value.get(k) is False for k in ('provider_mutation_performed', 'paid_execution_requested'))
                 and isinstance(value.get('blockers'), list), 'activation_result_invalid')
+            context.fields(row, c.FIELD_SETS['native_activation_results'])
             name = PurePosixPath(proof['path']).name
             for envelope in envelopes.get(name, []):
                 request = envelope[0]['request']
@@ -215,22 +223,25 @@ def inventory(context):
             sources += owner_sources
             sources += context.provenance(dict(v[1], json_pointer='/request/authorization/scene_owner_attempt',
                 seal_field='owner_attempt_digest', seal_digest=owner['owner_attempt_digest']) for v in versions[1:])
-            matched_profiles = False
+            matched_profiles, supported_results = False, True
             for result in results.get(name, []):
+                supported_results = supported_results and context.supported(result)
                 profile_rows = profiles.get((result[0]['profile_id'], result[0]['profile_digest']), [])
                 for profile in profile_rows:
                     c.require(profile[0]['source_commit'] == request['expected_production_commit']
-                        and all(profile[0].get(k) == owner[k] for k in OWNER_FIELDS), 'owner_profile_invalid')
+                        and all(profile[0].get(k) == owner[k] for k in OWNER_FIELDS - {'scene_attempt_binding'})
+                        and isinstance(profile[0].get('scene_attempt_binding'), dict)
+                        and all(profile[0]['scene_attempt_binding'].get(k) == owner['scene_attempt_binding'][k] for k in BINDING_FIELDS), 'owner_profile_invalid')
                 matched_profiles = matched_profiles or bool(profile_rows)
                 sources += context.provenance(r[1] for r in profile_rows)
                 sources += context.provenance((result[1],))
                 if not profile_rows:
                     context.canonical('launch_profile', result[0]['profile_digest'], result[1])
-            bound = bound and bool(final_rows)
+            bound = bound and bool(final_rows) and all(context.supported(r) for r in (*versions, *final_rows))
             if bound:
                 context.member(c.child(context.roots['activation_output_root'], request['activation_id']), 'native_activation_workspace',
                     {'activation_id': request['activation_id'], 'intent_id': context.intent_id, 'attempt_id': owner['scene_attempt_id']}, sources)
             observations.append(c.observation(envelope, kind='native_owner', owner_metadata_binding_verified=bound,
-                profile_metadata_binding_verified=bool(matched_profiles) and bound, source_provenance=sources,
+                profile_metadata_binding_verified=bool(matched_profiles) and bound and supported_results, source_provenance=sources,
                 configured_payload_to_runtime_bundle_equivalence_verified=False))
     return observations

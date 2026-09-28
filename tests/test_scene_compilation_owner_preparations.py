@@ -192,3 +192,38 @@ def test_source_shaped_blocked_native_result_keeps_partial_history_but_refuses_p
         result = api().join_retained_scene_compilation_native_owner_inventory(**args)
         assert any(r['reason'] == 'blocked_retained_preparation' for r in result['structural_join_obligations'])
         assert not result['preparation_handoff_observations']
+
+
+def test_unselected_configured_revision_extension_is_explicitly_protected_without_deep_strict_dictionaries():
+    args = fixture()
+    args['bridge_records']['native_preparation_envelopes'] = []
+    args['bridge_records']['native_preparation_results'] = []
+    args['bridge_records']['compilation_intake_receipts'] = []
+    args['downstream_records']['compilation_envelopes'] = []
+    change(args, 'configured_revisions', {'future_writer_extension': {'protected': True}}, 'revision_digest')
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert any(r['role'] == 'configured_revisions' and r['reason'] == 'unsupported_retained_field_set'
+        for r in result['structural_join_obligations'])
+
+
+def test_finite_native_preparation_request_extension_is_protected():
+    args = fixture()
+    path, raw = args['bridge_records']['native_preparation_envelopes'][0]
+    value = json.loads(raw)
+    value['request']['future_writer_extension'] = {'protected': True}
+    value['request_digest'] = canonical_digest(value['request'])
+    name = value['request']['preparation_id']+'-'+value['request_digest'][7:]+'.json'
+    args['bridge_records']['native_preparation_envelopes'] = [pair(path.rsplit('/', 1)[0]+'/'+name, seal(value, 'envelope_digest'))]
+    args['bridge_records']['native_preparation_results'] = []
+    args['bridge_records']['compilation_intake_receipts'] = []
+    args['downstream_records']['compilation_envelopes'] = []
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert any(r['reason'] == 'unsupported_retained_field_set' and r['source_provenance'][0].get('json_pointer') == '/request'
+        for r in result['structural_join_obligations'])
+
+
+def test_unsupported_preparation_envelope_preserves_known_intake_flag_refusal():
+    args = fixture()
+    change(args, 'native_preparation_envelopes', {'future_writer_extension': True,
+        'provider_mutation_performed_inside_intake': True}, 'envelope_digest')
+    refuses(args)

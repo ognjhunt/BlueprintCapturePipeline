@@ -6,13 +6,8 @@ from pathlib import PurePosixPath
 from . import task_evaluation_scene_compilation_owner_contracts as c
 
 STATES = {'pending', 'processing', 'awaiting_source_preparation', 'awaiting_capacity', 'materialized', 'completed', 'blocked'}
-BASE = {'schema_version', 'status', 'preparation_id', 'run_id', 'team_namespace', 'source_commit', 'reference_count',
-    'unique_object_count', 'content_addressed_reuse_count', 'references', 'full_byte_service_account_readback_passed',
-    'service_account', 'service_account_uid', 'provider_mutation_performed', 'catalog_mutation_performed',
-    'paid_execution_requested', 'observed_at_iso', 'result_digest'}
-HANDOFF = {'run_mode', 'configured_scene_revision_digest', 'configured_scene_bundle_digest', 'episode_compilation_id',
-    'episode_compilation_queue_envelope_digest', 'episode_compilation_queue_receipt_digest',
-    'customer_supplied_prebuilt_episode_packet', 'construction_packet_materialized', 'automatic_progression_required'}
+BASE = c.PREPARATION_BASE_FIELDS
+HANDOFF = c.PREPARATION_HANDOFF_FIELDS
 PRE = 'inputs_materialized_awaiting_construction_adapter'
 FINAL = 'queued_for_production_episode_compilation'
 
@@ -63,6 +58,10 @@ def _envelopes(context):
                 and c.matches(value.get('request_digest')) and value['request_digest'] == c.canonical_digest(request)
                 and request.get('construction', {}).get('mode') == 'reuse_configured_scene'
                 and request.get('task', {}).get('binding_mode') == 'reuse_configured_template', 'preparation_request_invalid')
+            context.fields(row, c.FIELD_SETS['native_preparation_envelopes'])
+            context.fields((request, dict(proof, json_pointer='/request')), c.NATIVE_PREPARATION_REQUEST_FIELDS)
+            c.require(all(field not in value or value[field] is False for field in
+                ('provider_mutation_performed_inside_intake', 'catalog_mutation_performed_inside_intake')), 'preparation_intake_scope_invalid')
             stem = request['preparation_id']+'-'+value['request_digest'][7:]+'.json'
             route = _route(context, proof['path'])
             c.require(proof['path'] in {c.child(route['queue_root'], state, stem) for state in STATES}, 'preparation_path_invalid')
@@ -263,7 +262,9 @@ def inventory(context):
                               'pre_handoff_raw_binding_invalid')
                 sources += context.provenance(p[1] for p in retained)
                 strength = 'retained_raw_and_derived_metadata' if retained else 'derived_metadata_inverse'
-                verified = True
+                verified = all(context.supported(p) for group in (versions, candidates, parent_rows, intake_rows) for p in group)
+                if not verified:
+                    strength = None
                 if 'policy_run_plan' in inverse:
                     context.missing('policy_run_plan', 'policy_semantics_deferred', [proof])
             else:
