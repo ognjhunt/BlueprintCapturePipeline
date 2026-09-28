@@ -1,6 +1,4 @@
 """Full compact decode accounting only; these supplied records grant no action."""
-import json
-
 import pytest
 
 from blueprint_pipeline import control_plane_lane_experiment_actions as actions
