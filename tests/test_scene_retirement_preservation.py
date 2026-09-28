@@ -150,3 +150,32 @@ def test_restore_archive_reader_uses_native_precharged_bytes_once_with_same_orig
     assert reader.read(len(raw))==raw
     reader.verify()
     assert transport.origins==[allowance] and allowance.counts['remote_bytes']==len(raw)
+
+
+@pytest.mark.parametrize('invalid',['chunk','archive-size'])
+def test_native_remote_reader_is_closed_immediately_on_engine_refusal(invalid):
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance,read_archive_chunks
+    from blueprint_pipeline.task_evaluation_scene_retirement_restore import _ArchiveReader
+    allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0)
+    class NativeSource:
+        def __init__(self):
+            self.closed=False
+        def __iter__(self):
+            return self
+        def __next__(self):
+            return b'x'*(1024*1024+1) if invalid=='chunk' else b'wrong-size'
+        def close(self):
+            self.closed=True
+    source=NativeSource()
+    class Transport:
+        def read_archive_charged(self,uri,selected):
+            assert selected is allowance
+            return source
+    with pytest.raises(ValueError):
+        if invalid=='chunk':
+            next(read_archive_chunks(Transport(),'s3://private-fixture/retained.tar',allowance))
+        else:
+            reader=_ArchiveReader(Transport(),{'uri':'s3://private-fixture/retained.tar','size_bytes':1,
+                'sha256':'sha256:'+'a'*64},allowance)
+            reader.read(1)
+    assert source.closed
