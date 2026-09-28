@@ -40,7 +40,10 @@ accounting remains unknown, since its total does not separate blocked bytes from
 actionable bytes. Older summaries that omit the residue switch cannot prove an
 enabled phase is actionable. Releasing cache pins frees no bytes itself: any
 eligible files are counted by derived-directory cleanup, without adding pin
-counts to the forecast.
+counts to the forecast. These counters describe logical local eviction, not
+measured filesystem free space or a promise that retained runs will fit the next
+tick's publication cap. Any deferred or skipped residue leaves its forecast
+unknown.
 
 ## Grow or reclaim
 
