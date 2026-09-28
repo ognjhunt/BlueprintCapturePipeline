@@ -65,6 +65,18 @@ validates the observation projection before forwarding it and retains its
 signed terminal cleanup receipt after the session. No callback means the
 original synthetic-only behavior.
 
+`ControlledSandboxFactory` provides that concrete plan-to-executor handoff.
+Configure its frozen `ControlledSandboxConfiguration` with the exact release,
+worker, proxy image, security profiles, registry allowlist and private receipt
+directory. Its admission resolver retrieves the retained receipt for the owned
+job and exact post-packaging contract; a customer-supplied receipt is not an
+authority source. A separate upstream authorizer must approve execution before
+any container mutation. The factory generates a unique attempt, builds the
+existing runsc plan, obtains independently signed boot evidence for that exact
+attempt, and invokes the measured sandbox executor. It passes job context to the
+scene-access authorizer after qualification and retains a separate terminal
+receipt for each attempt. Missing authorities or boot evidence fail closed.
+
 ## Model handoff
 
 Configure `PrivateModelImageBuilder` on a dedicated trusted builder with the
