@@ -2,14 +2,13 @@
 #   src/blueprint_pipeline/task_evaluation_scene_retirement_supervisor.py
 """New worker startup is fenced before import; this is not old-process clearance."""
 import importlib
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from test_scene_retirement_real_participants import access_fixture
+from tests.test_scene_retirement_real_participants import access_fixture
 
 
 WORKER = 'blueprint_pipeline.task_evaluation_scene_progression'
@@ -138,4 +137,3 @@ def test_installed_known_worker_uses_startup_fence(unit, worker):
     exec_start = next(line for line in text.splitlines() if line.startswith('ExecStart='))
     assert ('-m blueprint_pipeline.task_evaluation_scene_retirement_supervisor --worker '
             'blueprint_pipeline.' + worker + ' --') in exec_start
-
