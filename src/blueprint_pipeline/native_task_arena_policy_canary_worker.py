@@ -1297,6 +1297,7 @@ def _aggregate_isolated_cell_results(
     child_results: list[Mapping[str, Any]],
     output_root: Path,
     construction_lineage_mode: str,
+    archive_members: Mapping[str, Mapping[str, Any]] | None = None,  # control-plane adoption only
 ) -> dict[str, Any]:
     candidate_ids = tuple(str(value) for value in inputs["candidate_ids"])
     if len(child_results) != len(inputs["cells"]):
@@ -1379,9 +1380,8 @@ def _aggregate_isolated_cell_results(
         "matrix_digest": inputs.get("matrix_digest") or _digest(inputs["cells"]),
         "result_digest": "",
     }
-    telemetry_index, telemetry_artifacts = _write_policy_canary_telemetry(
-        output_root, result["episodes"]
-    )
+    telemetry_index, telemetry_artifacts = _write_policy_canary_telemetry(output_root, result["episodes"], **(
+        {"archive_members": archive_members} if archive_members is not None else {}))
     result["telemetry"] = telemetry_index
     from blueprint_pipeline.policy_paired_summary import paired_summary
     result["frozen_cells"] = [{key: cell[key] for key in ("cell_id", "seed", "family", "partition", "cell_spec_digest", "resolved_scenario_digest") if key in cell} for cell in inputs["cells"]]
