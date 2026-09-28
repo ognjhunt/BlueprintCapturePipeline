@@ -451,3 +451,91 @@ def test_continuous_loaded_command_accepts_actual_active_systemd_status(tmp_path
     row['ExecStart'] = row['ExecStart'].replace('status=0 }', 'status=0/0 }')
     observed = module._exact_continuous_unit(row, 'blueprint_pipeline.live_pipeline_intake_service', native)
     assert observed['loaded_exec_start'] == row['ExecStart']
+
+
+def retained_core_fixture(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    module = supervisor()
+    script = Path(__file__).parents[1] / 'scripts/scene_retirement_continuous_bootstrap.py'
+    spec = importlib.util.spec_from_file_location('retained_core_native_loader_fixture', script)
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    main = sys.modules['__main__']
+    monkeypatch.setattr(main, '__file__', str(module._BOOTSTRAP), raising=False)
+    monkeypatch.setattr(main, '_SourceOnly', bootstrap._SourceOnly, raising=False)
+    values, identities, bundle = bootstrap._RetainedSources(), {}, {}
+    for filename in bootstrap._CORE:
+        name = 'blueprint_pipeline' if filename == '__init__.py' else 'blueprint_pipeline.' + filename[:-3]
+        path = tmp_path / filename
+        path.write_bytes(b'# exact retained core source\n')
+        path.chmod(0o644)
+        raw, identity = path.read_bytes(), bootstrap._identity(path.stat())
+        values[name], identities[name] = (path, raw), identity
+        bundle[name] = dict(path=str(path), raw=raw, identity=list(identity))
+    from types import MappingProxyType
+    values.identities = MappingProxyType(identities)
+    loader = bootstrap._SourceOnly(values)
+    for name in values:
+        monkeypatch.setitem(sys.modules, name, SimpleNamespace(__spec__=SimpleNamespace(loader=loader)))
+    return module, access, bundle, loader
+
+
+def test_startup_current_core_equals_native_bootstrap_retained_bytes_and_identity(tmp_path, monkeypatch):
+    module, _, bundle, _ = retained_core_fixture(tmp_path, monkeypatch)
+    module._require_preloaded_core(bundle)
+
+
+@pytest.mark.parametrize('change', ['raw', 'inode'])
+def test_startup_cannot_claim_current_core_changed_after_root_load(tmp_path, monkeypatch, change):
+    module, access, bundle, _ = retained_core_fixture(tmp_path, monkeypatch)
+    row = bundle['blueprint_pipeline.task_evaluation_scene_retirement_access']
+    if change == 'raw':
+        row['raw'] = b'# a different current reader\n'
+    else:
+        row['identity'][1] += 1
+    with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
+        module._require_preloaded_core(bundle)
+
+
+def test_startup_refuses_loader_lookalike_before_reading_its_evidence(tmp_path, monkeypatch):
+    module, access, bundle, _ = retained_core_fixture(tmp_path, monkeypatch)
+    class Lookalike:
+        @property
+        def values(self):
+            pytest.fail('unproved loader evidence callback must not run')
+    sys.modules['blueprint_pipeline.task_evaluation_scene_retirement_access'].__spec__.loader = Lookalike()
+    with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
+        module._require_preloaded_core(bundle)
+
+
+def test_platform_exact_notfound_row_has_no_process_authority(monkeypatch):
+    module = supervisor()
+    unit = 'systemd-timesyncd.service'
+    monkeypatch.setattr(module, '_OS_UNITS', {unit: '/usr/lib/systemd/systemd-timesyncd'})
+    row = dict(Id=unit, LoadState='not-found', ActiveState='inactive', SubState='dead',
+               MainPID='0', ControlPID='0', ControlGroup='', FragmentPath='', DropInPaths='')
+    monkeypatch.setattr(module, '_query_native', lambda *args:
+                        ('\n'.join(key + '=' + value for key, value in row.items()) + '\n').encode())
+    native = module._NativeObservation(SimpleNamespace(tick=lambda: None))
+    observed = module._platform_rows(native)
+    assert observed == {unit: row | {'ExecStart': ''}}
+    assert module._platform_processes(observed, {}, native) == set()
+
+
+@pytest.mark.parametrize('change', ['loaded', 'missing-pid'])
+def test_platform_missing_native_fields_cannot_clear_loaded_or_unknown_pid(monkeypatch, change):
+    module = supervisor()
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    unit = 'systemd-timesyncd.service'
+    monkeypatch.setattr(module, '_OS_UNITS', {unit: '/usr/lib/systemd/systemd-timesyncd'})
+    row = dict(Id=unit, LoadState='not-found', ActiveState='inactive', SubState='dead',
+               MainPID='0', ControlPID='0', ControlGroup='', FragmentPath='', DropInPaths='')
+    if change == 'loaded':
+        row['LoadState'] = 'loaded'
+    else:
+        row.pop('MainPID')
+    monkeypatch.setattr(module, '_query_native', lambda *args:
+                        ('\n'.join(key + '=' + value for key, value in row.items()) + '\n').encode())
+    native = module._NativeObservation(SimpleNamespace(tick=lambda: None))
+    with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
+        module._platform_rows(native)
