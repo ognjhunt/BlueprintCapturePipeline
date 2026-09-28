@@ -883,3 +883,71 @@ qualification occurred in this slice. The paired dispatch admission refusal
 remains until exact VM system/image/bootstrap/allocation integration is complete.
 Full four built-ins, learned GPU execution for all delivery modes, actual private
 URL and final merge/push/deployment/settlement remain required by the full goal.
+
+## Reviewed VM transport slice before canonical allocation
+
+ADP-050 Day28 / ADP-060 owner extension. The canonical Vast probe still assumes
+/isaac-sim/python.sh on the host; a real VM needs system Python transport before
+the sealed portable host runtime can start. Add an opt-in VM script builder to
+the existing probe constructor, limited to selected G1 paired bundles and exact
+bundle SHA. Its standalone stdlib runner must observe a root Linux/x86_64 VM
+(systemd PID1, no detected container, KVM/QEMU), load only the provider's allowlisted
+startup variables without sourcing/evaluating /etc/environment, use bounded curl
+downloads, verify exact ZIP/dependency SHA and safe regular-file extraction into
+new private root-owned staging, then execute the sealed VM host entrypoint.
+
+Before pulling images or running a policy observe Docker/NVIDIA runtime, the
+driver floor and installed archive sandbox features. Pull only the exact pinned
+simulator/profile images from hash-bound inputs. Preserve all regular output
+bytes, including files above100MB, excluding only the transported archive's
+extracted execution-input directory. Retain typed transport diagnostics and a
+terminal receipt even on failure; upload only through the existing signed PUT
+transport. Full score, closure, output and billing verification remains external.
+
+Official [Vast VM docs](https://github.com/vast-ai/docs/blob/main/linux-virtual-machines.mdx)
+require a shebang for On-start scripts and describe environment values written
+to /etc/environment. Repair _create_payload so both short and compressed VM
+scripts have an outer Bash shebang and remain under the safe inline size ceiling.
+Normal container creation retains its existing payload behavior.
+
+Test first: short/compressed startup scripts, malformed VM kind/flags/SHA,
+non-evaluated environment values, traversal/links/duplicates/special ZIP members,
+changed downloads, private fresh staging, missing/foreign VM identity,
+missing Docker/features/driver, approved mode/pinned images, exact dependency
+binding, full >100MB evidence retention, transient input exclusion and terminal
+failure packaging. Fixtures never assert actual VM/GPU qualification or spend.
+
+Design review: transport stays inside the canonical adapter's probe path, no
+alternative allocator, provider or public VM flag. This does not install or
+qualify missing VM system components. Keep paired dispatch refused until the
+pinned system bootstrap and full canonical offer/create/watchdog path are ready.
+Accepted for focused test-first implementation.
+
+Transport review follow-up: preserve the adapter's byte-count and blocked markers,
+and write the ZIP at its existing `/workspace/adp_arena_provider_runtime_output.zip`
+SSH-recovery location using an exclusive regular-file copy. The execution staging
+root remains new/private; an existing recovery target or unsafe workspace refuses
+publication. Test the same marker bytes, unchanged ZIP, existing-target refusal,
+and execute the embedded runner with isolated system Python, not only `bash -n`.
+
+### VM transport verification checkpoint
+
+The first transport/startup batch passed 48 cases; transport plus existing SSH
+recovery passed 60. The expanded batch covered 94 distinct cases, including all
+six sealed provider import-closure and 19 policy lifecycle cases: 90 passed,
+four newly added test cases failed because an overwrite assertion was inserted
+in the wrong test function. That test-only placement was corrected; all 34
+transport cases then passed in 1.33s. Runtime source was unchanged between those
+two runs. The three shebang cases and exclusive recovery publication case were
+observed red before their implementations. Changed-file Ruff and diff checks pass.
+
+The embedded stdlib runner was executed with `-I -B -S --help`; this proves source
+startup without Blueprint packages, not a VM, system stack, GPU or learned episode.
+All external commands in episode tests remain explicit fixtures. Paired dispatch
+remains refused until complete VM system/bootstrap/allocation integration.
+
+Fresh read-only storage observation: work available 11,136,524,288B; root available
+16,114,515,968B. Selected-policy collection still requires 32,000,000,000B. Release
+identity remains 4a59c6bb668ac53ca9cc3440fcc57b21242d3612; both inspected campaign
+services are inactive/MainPID0. This does not establish provider-zero or billing.
+No GPU allocation, deployment, system-package installation or data deletion.

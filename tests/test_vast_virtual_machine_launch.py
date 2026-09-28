@@ -1,6 +1,9 @@
 """Vast VM contracts in the existing adapter; no API calls or paid allocation."""
 
 import pytest
+import subprocess
+
+from blueprint_pipeline.vast_args_payload_transport import VAST_ARGS_STR_SAFE_MAX_BYTES
 
 from blueprint_pipeline import vast_provider_adapter as adapter
 
@@ -88,3 +91,19 @@ def test_normal_create_remains_container_without_vm_flag():
                                       probe_script="true", disk_gb=20)
     assert "vm" not in payload
     assert adapter._create_request_summary(payload, secret_values=())["virtual_machine"] is False
+
+
+@pytest.mark.parametrize("padding", [0, 16000, 90000])
+def test_vm_onstart_is_an_executable_shebang_even_after_compression(tmp_path, padding):
+    script = "#" + "padding" * padding + "\nprintf 'VM_TRANSPORT_FIXTURE\\n'\nexit 7\n"
+    payload = adapter._create_payload(
+        image=IMAGE, label="test", launch_mode="ssh_direct", probe_script=script,
+        disk_gb=120, virtual_machine=True, selected_offer=adapter._offer_summary(_offer()))
+    assert payload["onstart"].startswith("#!/usr/bin/env bash\n")
+    assert len(payload["onstart"].encode()) <= VAST_ARGS_STR_SAFE_MAX_BYTES
+    executable = tmp_path / "onstart"
+    executable.write_text(payload["onstart"])
+    executable.chmod(0o700)
+    result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 7
+    assert result.stdout == "VM_TRANSPORT_FIXTURE\n"

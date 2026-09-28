@@ -184,7 +184,7 @@ from .vast_provider_output_recovery import (
     recover_provider_output_before_teardown,
 )
 from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress
-from .vast_args_payload_transport import args_mode_command, onstart_mode_script
+from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
 
@@ -4303,9 +4303,15 @@ def _create_payload(
             wrapped_script, force_compression=bool(private_startup_env)
         )
     else:
+        vm_header = "#!/usr/bin/env bash\n" if virtual_machine else ""
         payload["onstart"] = onstart_mode_script(
-            resolved_probe_script, force_compression=bool(private_startup_env)
+            resolved_probe_script, force_compression=(bool(private_startup_env) or
+                bool(vm_header) and len((vm_header + resolved_probe_script).encode()) > VAST_ARGS_STR_SAFE_MAX_BYTES)
         )
+        if vm_header:
+            payload["onstart"] = vm_header + payload["onstart"]
+            if len(payload["onstart"].encode()) > VAST_ARGS_STR_SAFE_MAX_BYTES:
+                raise ValueError("vast_vm_onstart_exceeds_safe_inline_command_size")
         if launch_mode == "jupyter_direct":
             payload["use_jupyter_lab"] = True
             payload["jupyter_dir"] = "/workspace"
@@ -4321,7 +4327,16 @@ def _probe_shell_script(
     enable_blueprint_bundle: bool = False,
     provider_bundle_kind: str = "isaac",
     expected_provider_bundle_sha256: str | None = None,
+    virtual_machine: bool = False,
 ) -> str:
+    if type(virtual_machine) is not bool:
+        raise ValueError("virtual_machine_flag_invalid")
+    if virtual_machine:
+        if (provider_bundle_kind != "native_g1_team_policy" or not enable_blueprint_bundle
+                or enable_isaac_smoke or expected_provider_bundle_sha256 is None):
+            raise ValueError("vm_transport_probe_contract_invalid")
+        from .native_g1_team_vm_transport import vm_probe_script
+        return vm_probe_script(expected_provider_bundle_sha256, heartbeat_url)
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if expected_provider_bundle_sha256 is not None and re.fullmatch(
