@@ -1348,7 +1348,10 @@ def _search_payload(
     min_compute_cap: int = 0,
     max_compute_cap: int = 0,
     required_provider_disk_gb: int = 0,
+    require_virtual_machine: bool = False,
 ) -> dict[str, Any]:
+    if type(require_virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
     payload: dict[str, Any] = {
         "limit": limit,
         "type": "on-demand",
@@ -1357,6 +1360,8 @@ def _search_payload(
         "rented": {"eq": False},
         "num_gpus": {"eq": 1},
     }
+    if require_virtual_machine:
+        payload["vms_enabled"] = {"eq": True}
     if max_hourly_rate is not None:
         payload["dph_total"] = {"lte": max_hourly_rate}
     # ``gpu_ram`` is MEGABYTES at this endpoint. A gigabyte value is not
@@ -1529,6 +1534,15 @@ def _offer_storage_hourly_rate(
     return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
 
 
+def _virtual_machine_capability(value: Any) -> bool | None:
+    """Preserve unknown capability; accept only explicit provider booleans/0/1."""
+    if type(value) is bool:
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def _offer_summary(
     offer: Mapping[str, Any],
     *,
@@ -1617,6 +1631,9 @@ def _offer_summary(
             )
         ),
         "num_gpus": offer.get("num_gpus"),
+        # VM capability is independent of GPU/driver support. Do not interpret
+        # provider strings or a missing field as explicit capability proof.
+        "vms_enabled": _virtual_machine_capability(offer.get("vms_enabled")),
         "reliability": offer.get("reliability"),
         "verified": offer.get("verified"),
         "rentable": offer.get("rentable"),
@@ -1669,6 +1686,7 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "known_model_vram_cap_mb": offer.get("known_model_vram_cap_mb"),
         "gpu_ram_normalization": offer.get("gpu_ram_normalization"),
         "num_gpus": offer.get("num_gpus"),
+        "vms_enabled": _virtual_machine_capability(offer.get("vms_enabled")),
         "reliability": offer.get("reliability"),
         "verified": offer.get("verified"),
         "rentable": offer.get("rentable"),
@@ -1945,7 +1963,10 @@ def _select_offer(
     max_live_minutes: int = 0,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    require_virtual_machine: bool = False,
 ) -> dict[str, Any] | None:
+    if type(require_virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
     allowed_countries = normalize_vast_country_allowlist(
@@ -1964,6 +1985,7 @@ def _select_offer(
         item
         for item in summaries
         if item["ask_contract_id"]
+        and (not require_virtual_machine or item["vms_enabled"] is True)
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
@@ -4219,7 +4241,22 @@ def _create_payload(
     private_startup_env: Mapping[str, str] | None = None,
     image_login: str | None = None,
     template_hash_id: str | None = None,
+    virtual_machine: bool = False,
+    selected_offer: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if type(virtual_machine) is not bool:
+        raise ValueError("vast_virtual_machine_flag_invalid")
+    if virtual_machine and (
+        not isinstance(image, str)
+        or re.fullmatch(r"docker\.io/vastai/kvm@sha256:[0-9a-f]{64}", image) is None
+        or launch_mode != "ssh_direct"
+        or template_hash_id is not None
+        or not isinstance(selected_offer, Mapping)
+        or selected_offer.get("vms_enabled") is not True
+        or type(selected_offer.get("ask_contract_id")) is not int
+        or selected_offer["ask_contract_id"] <= 0
+    ):
+        raise ValueError("vast_virtual_machine_create_contract_invalid")
     payload: dict[str, Any] = {
         "label": label,
         "disk": disk_gb,
@@ -4228,6 +4265,10 @@ def _create_payload(
         "cancel_unavail": True,
         "env": dict(env or {}),
     }
+    if virtual_machine:
+        # This helper remains behind canonical admission. The public allocator
+        # has no VM option until its host/bootstrap/worker integration is ready.
+        payload["vm"] = True
     if image:
         payload["image"] = image
     if _string(template_hash_id):
@@ -5684,6 +5725,7 @@ def _create_request_summary(
         "label": payload.get("label"),
         "disk_gb": payload.get("disk"),
         "runtype": payload.get("runtype"),
+        "virtual_machine": payload.get("vm") is True,
         "target_state": payload.get("target_state"),
         "cancel_unavail": payload.get("cancel_unavail"),
         "template_hash_present": bool(_string(payload.get("template_hash_id"))),

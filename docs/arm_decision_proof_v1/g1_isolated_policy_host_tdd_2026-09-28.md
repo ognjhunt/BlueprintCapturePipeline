@@ -160,3 +160,80 @@ not rechecked. The VM launch/bootstrap/integration, three delivery modes on
 actual scored episodes, full four built-ins, working private URL and final
 merge/push/deployment remain required. This transport increment does not remove
 the current container/archive preallocation refusal.
+
+## Next reviewed slice: native VM offer/create contracts
+
+Checked the existing Vast `_search_payload`, `_offer_summary`, `_select_offer`,
+`_create_payload`, receipt redaction and the canonical G1 paid dispatch.
+The shared search/select/create helpers currently have no VM capability field.
+Add opt-in `require_virtual_machine` to search/select and `virtual_machine`
+plus the selected offer to payload construction. Default container behavior
+must remain unchanged. Search must filter `vms_enabled eq true`; selection
+must independently require explicit provider `true` or integer `1`, while
+still applying all current GPU/driver/disk/cost/geography predicates. Missing,
+string or false values are not VM capability proof. Creation must require
+that offer, SSH-direct mode, no hidden template defaults and an immutable
+fully qualified `docker.io/vastai/kvm@sha256:` image, and set `vm: true`.
+Receipts record the host type, without restoring raw bootstrap/secrets.
+
+Red-first cases cover provider filter, capability variants, default behavior,
+disk/hourly-rate predicates, immutable image/SSH/template/offer rejection and
+redacted explicit-VM payload. These are the adapter's existing launch helpers,
+not another provider launcher or a standalone planner. Keep VM execution
+unexposed at the canonical allocator/CLI until host bootstrap, bundle and
+actual worker integration pass; the G1 container/archive refusal remains.
+
+Metadata-only registry observation: the official documented `ubuntu_terminal`
+tag resolved at `https://registry-1.docker.io/v2/vastai/kvm/manifests/ubuntu_terminal`
+to `docker.io/vastai/kvm@sha256:28dc36f977d4a078ee410caf08f595d91f95185a00e0d4e7970c2d11f7358738`.
+The returned manifest bytes independently hash to that digest. Declared
+compressed layer bytes sum to 2,981,311,243; this is not expanded disk size or
+GPU/runtime qualification. No blobs were downloaded; no image authority or
+runtime approval is inferred. Verify platform/guest/runtime inputs before
+admitting this candidate. Design review accepts this opt-in helper slice and
+preserves the full remaining runtime and user-facing objective.
+
+### Implemented VM helper slice and next host dependency gate
+
+The existing search/select/create functions now implement these opt-in
+contracts. Selection and retained offer summaries preserve explicit true,
+false and unknown VM capability. `_create_request_summary` records the
+explicit VM request while keeping bootstrap bodies redacted. The canonical
+allocator and public CLI still expose no VM option, and the default adapter
+invocations still use container behavior. No paid dispatch predicate was
+relaxed. The new tests were red before implementation and red again for
+dropped VM capability in retained summaries and for converting unknown data
+to false. Final **32 focused tests pass in 3.44s**: 21 VM contract cases plus
+11 existing launch/driver/VRAM/disk/transfer/geography/redaction cases,
+including the actual adapter's fake-provider create/poll/teardown flow.
+Changed-file Ruff and diff checks pass. The real repository-wide static
+`scripts/verify_paid_resource_allocator.py` reports
+`paid_resource_allocator_verification=passed`; no new paid launcher exists.
+
+Registry config metadata also independently verified
+`sha256:2b2425c36395f4e9ec63926f522c01864a6ac66205d072dfab7763385459ac51`,
+declaring Linux/amd64 and 13 layers. This does not establish the guest Python,
+GPU driver or runtime capabilities. The existing G1 runtime review binds
+CPython 3.12 wheels; they must not be installed into an assumed host Python.
+For a separately verified Python 3.10 host, metadata-only candidates are:
+
+| Host-only package | Wheel | SHA-256 | Declared bytes |
+| --- | --- | --- | --- |
+| NumPy 1.26.4 | `numpy-1.26.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl` | `ffa75af20b44f8dba823498024771d5ac50620e6915abac414251bd971b4529f` | 18,240,889 |
+| RFC8785 0.1.4 | `rfc8785-0.1.4-py3-none-any.whl` | `520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48` | 9,240 |
+
+Primary metadata: `https://pypi.org/pypi/numpy/1.26.4/json` and
+`https://pypi.org/pypi/rfc8785/0.1.4/json`. Exact existing owner approvals in
+`docs/runtime_dependency_license_policy.json` expire 2027-08-15 and
+2027-08-23 respectively. No package bytes were downloaded/installed, no
+approval record changed, and the complete host import/provisioning closure
+is not yet proven. These candidate host versions do not replace the
+simulator's NumPy 2.3.1 or model dependencies. Next integration must bind and
+verify the actual host ABI, its approved bytes, Docker/bubblewrap/GPU devices,
+and simulator/relay lifetime before exposing a VM paid launch.
+
+Current previous-head 3f96d7e35 CI 36378803566 impacted job108790383058 is
+green; all four full-suite shards remain live at this checkpoint. Work disk
+still has 11,136,303,104 available bytes; no fresh provider-zero assertion.
+VM helper tests/pinned metadata alone do not meet any scored-episode, media,
+private URL, merge or deployment completion requirement.
