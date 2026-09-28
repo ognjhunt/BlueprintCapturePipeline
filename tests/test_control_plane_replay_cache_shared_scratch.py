@@ -927,3 +927,30 @@ def test_a_replay_opened_through_an_ancestor_swapped_for_a_link_is_refused(tmp_p
     assert block["kept_by_reason"] == {"recheck_failed:path_changed": {"groups": 1, "bytes": size}}
     assert block["removed_groups"] == 0
     assert (moved / names[0].relative_to(activation)).stat().st_nlink == len(names)
+
+
+def test_a_replay_replaced_just_as_apply_opens_it_is_refused(tmp_path, monkeypatch) -> None:
+    """The replay apply holds must be the one the plan walked and apply rechecked, by st_dev and inode,
+    not merely what its path names by then. A replay moved aside just as apply opens it, its scratch
+    inputs moved into a new directory at its path, keeps every group it holds as path_changed, and
+    none of their names goes."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    first = names[0].parents[3]
+    aside = first.with_name(first.name + "-aside")
+    real_held = retention._HeldChild
+
+    class Replaced(real_held):
+        def __init__(self, base, name):
+            if not aside.exists():
+                # The replay stays allocated aside, so the new directory gets another inode number.
+                first.rename(aside)
+                first.mkdir()
+                (aside / "prepared-references").rename(first / "prepared-references")
+            super().__init__(base, name)
+
+    monkeypatch.setattr(retention, "_HeldChild", Replaced)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:path_changed": {"groups": 1, "bytes": size}}
+    assert block["removed_groups"] == 0 and all(path.exists() for path in names)

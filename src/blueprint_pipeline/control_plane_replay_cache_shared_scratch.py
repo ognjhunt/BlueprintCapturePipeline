@@ -280,7 +280,13 @@ def _unlink_in(holder: dict[str, Any], pending: Sequence[tuple[int, list[Path]]]
     stopped: dict[int, str] = {}
     went = False
     try:
-        if not held.named_by(child):
+        try:
+            # What it names now through no link, and the very directory the plan walked and apply rechecked.
+            opened = os.fstat(held.directory(()))
+            same = held.named_by(child) and (opened.st_dev, opened.st_ino) == (holder["device"], holder["inode"])
+        except OSError as exc:
+            return {position: _failure(exc) for position, _names in pending}, False
+        if not same:
             return {position: "path_changed" for position, _names in pending}, False
         for position, names in pending:
             group = candidates[position]
