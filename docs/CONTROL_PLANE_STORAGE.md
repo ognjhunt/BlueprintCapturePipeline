@@ -652,9 +652,11 @@ their candidates as `queue_unreadable`, while a row that merely moved between
 states mid-read is found where it went. Every queue read
 (`control_plane_storage_references.queue_reference_text`) opens each row without
 following a link or waiting for a writer and requires the regular file its
-lstat saw. The strict reader (`strict=True`, which the result residue offload
-reads its queues with too) fails on any row it cannot read, one swapped for a
-link, a FIFO or another file mid-read included; the original reader, which the
+lstat saw; a row replaced between the two (the dispatcher claims a row by
+replacing it onto an empty placeholder in `processing/`) is read once more. The
+strict reader (`strict=True`, which the result residue offload reads its queues
+with too) fails on any row it cannot read, one swapped for a link, a FIFO or
+another file mid-read included; the original reader, which the
 other storage GC checks use, skips such a row, so a FIFO in a queue directory
 never hangs a tick. Planning and the releases each read the
 launch queue and the preparation queue's ended envelopes once (twice over,

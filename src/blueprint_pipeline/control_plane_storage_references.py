@@ -34,6 +34,10 @@ class QueueReferenceUnreadable(ValueError):
     """A queue root, state directory or row that cannot be read proves nothing about what it names."""
 
 
+class _RowReplaced(QueueReferenceUnreadable):
+    """The name held another file when it was opened than when its lstat was taken."""
+
+
 def queue_reference_text(
     queue_roots: Sequence[str | Path],
     states: Sequence[str] | Mapping[str, Sequence[str]] | None = QUEUE_STATES,
@@ -137,9 +141,19 @@ def _row_text(path: Path) -> str:
 
     The row must be a regular file within the size limit when its lstat is
     taken, and is then read by ``_read_row``. The strict reader raises what this
-    refuses; the original reader skips it.
+    refuses; the original reader skips it. A name that held another file when it
+    was opened is read once more: the dispatcher claims a row by creating an
+    empty placeholder in ``processing/`` and replacing the row onto it, so a read
+    between the two sees the name change once. A second change still refuses it.
     """
 
+    try:
+        return _checked_row_text(path)
+    except _RowReplaced:
+        return _checked_row_text(path)
+
+
+def _checked_row_text(path: Path) -> str:
     try:
         observed = path.lstat()
         if stat.S_ISLNK(observed.st_mode):
@@ -173,7 +187,7 @@ def _read_row(path: Path, observed: os.stat_result) -> str:
     with os.fdopen(descriptor, "rb") as stream:
         opened = os.fstat(stream.fileno())
         if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
-            raise QueueReferenceUnreadable("queue_row_changed")
+            raise _RowReplaced("queue_row_changed")
         raw = stream.read(MAX_QUEUE_MESSAGE_BYTES + 1)
     if len(raw) > MAX_QUEUE_MESSAGE_BYTES:
         raise QueueReferenceUnreadable("queue_row_oversized")

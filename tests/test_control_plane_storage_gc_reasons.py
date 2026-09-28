@@ -556,12 +556,13 @@ def test_the_reasons_read_references_without_reaching_into_the_gc() -> None:
 
 
 @pytest.mark.parametrize("swap,code", [
-    ("fifo", "queue_row_changed"), ("link", "queue_row_linked"), ("file", "queue_row_changed")])
+    # Read once more after the swap, the FIFO is seen for what it is; a file swapped again is not read.
+    ("fifo", "queue_row_not_regular"), ("link", "queue_row_linked"), ("file", "queue_row_changed")])
 def test_a_queue_row_swapped_after_its_lstat_fails_the_strict_read(tmp_path, monkeypatch, swap, code) -> None:
     """The strict reader opens each row without following a link or waiting for a writer, and what
     it opened must be the regular file the row's lstat saw. A row swapped for a FIFO, a link or
-    another file in between refuses the read, instead of hanging the tick or reading a file whose
-    kind and size were never checked."""
+    another file in between (and again when it is read once more) refuses the read, instead of
+    hanging the tick or reading a file whose kind and size were never checked."""
 
     from blueprint_pipeline import control_plane_storage_references as references
 
@@ -639,6 +640,47 @@ def test_a_fifo_queue_row_never_blocks_the_original_reader(tmp_path, monkeypatch
         text = references.queue_reference_text([queue])
 
     assert text == '{"name": "named-b"}\n{"name": "named-c"}'
+
+
+@pytest.mark.parametrize("replacements,refused", [(1, False), (2, True)])
+def test_a_row_claimed_while_it_is_read_is_read_again_once(tmp_path, monkeypatch, replacements, refused) -> None:
+    """The dispatcher claims a row by creating an empty placeholder in processing/ and replacing the
+    pending row onto it (``task_evaluation_launch_dispatcher``'s ``claim``). A strict read that took
+    the placeholder's lstat then opens the row: the name changed once, so the row is read again
+    instead of failing the read. A name that changes again on the second read still fails it."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    for state in ("pending", "processing"):
+        (queue / state).mkdir(parents=True)
+    row = json.dumps({"activation_id": "claimed-run"})
+    (queue / "pending" / "row.json").write_text(row, encoding="utf-8")
+    placeholder = queue / "processing" / "row.json"
+    os.close(os.open(placeholder, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    real_lstat = Path.lstat
+    replaced: list[int] = []
+
+    def lstat_then_claim(self):
+        observed = real_lstat(self)
+        if self == placeholder and len(replaced) < replacements:
+            replaced.append(1)
+            if len(replaced) == 1:
+                os.replace(queue / "pending" / "row.json", placeholder)  # the claim lands
+            else:
+                fresh = queue / "rewritten.json.tmp"
+                fresh.write_text(row, encoding="utf-8")
+                os.replace(fresh, placeholder)
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", lstat_then_claim)
+    if refused:
+        with pytest.raises(references.QueueReferenceUnreadable, match="queue_row_changed"):
+            references.queue_reference_text([queue], strict=True)
+    else:
+        # Read in pending before the claim, and in processing after it.
+        assert references.queue_reference_text([queue], strict=True).count("claimed-run") == 2
+    assert len(replaced) == replacements
 
 
 def test_the_summary_copies_only_the_offloads_own_stages() -> None:
