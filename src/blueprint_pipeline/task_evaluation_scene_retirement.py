@@ -24,6 +24,8 @@ from .task_evaluation_scene_retirement_journal import SceneJournal, publish_reco
 from .task_evaluation_scene_retirement_mutation import detach_and_remove, inventory_digest
 from .task_evaluation_scene_retirement_preservation import ActionAllowance, preserve_members
 from .task_evaluation_scene_retirement_restore import restore_preserved_members
+from .task_evaluation_scene_retirement_metadata import retain_metadata_closure
+from .task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt
 from .task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
 
 
@@ -221,12 +223,14 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                          'scene_retirement_inventory_changed')
                 _require(member['class'] in consent['private_archive_classes'],
                          'scene_retirement_private_archive_denied')
+            closure=retain_metadata_closure(preserved,policy,generations,token,allowance)
             initial=dict(schema_version='scene_retirement_journal.v1',intent_id=consent['intent_id'],
                 intent_raw_ref=consent['intent_raw_ref'],plan_raw_ref=consent['plan_raw_ref'],
                 consent_raw_ref=authority['consent_raw_ref'],policy_sha256=consent['policy_sha256'],
                 cohort_sha256=consent['cohort_sha256'],status='pending',members=consent['members'],
-                generations=generations,preserved=preserved)
+                generations=generations,preserved=preserved,metadata_closure_raw_ref=closure)
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
+            pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
             for index,generation in enumerate(generations):
                 event=journal.append('retiring',member_key=str(index),evidence={
                     'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][index]['inventory_sha256']})
@@ -243,8 +247,13 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             snapshot=journal.retired_snapshot(dict(initial,status='retired',members=consent['members'],
                                                    outcomes=outcomes,generations=generations))
             receipt=dict(schema_version='scene_retirement_receipt.v1',status='retired',intent_id=consent['intent_id'],
-                token=token,members=outcomes,retired_journal_raw_ref=snapshot,fresh_remote_readback_verified=True)
-            receipt['intent_receipt_path']=_intent_receipt(policy,consent['intent_id'],receipt,allowance)
+                token=token,members=outcomes,retired_journal_raw_ref=snapshot,fresh_remote_readback_verified=True,
+                removed_allocated_bytes=sum(row['removed_allocated_bytes'] for row in outcomes),
+                logical_bytes=sum(row['logical_bytes'] for row in outcomes),
+                planned_unique_allocated_bytes=preserved['unique_allocated_bytes'],
+                metadata_closure_raw_ref=closure)
+            receipt['intent_receipt_raw_ref']=publish_terminal_receipt(policy,consent,pending,receipt,allowance)
+            receipt['intent_receipt_path']=receipt['intent_receipt_raw_ref']['path']
             return receipt
     except access.SceneRetirementAccessError as error:
         code=str(error) if str(error).startswith('scene_retirement_') and len(str(error))<=128 else 'scene_retirement_action_unproven'

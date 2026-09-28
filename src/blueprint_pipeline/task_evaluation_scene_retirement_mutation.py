@@ -94,6 +94,7 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
         directories={row['relative_path']:row for row in preserved['directories'] if row['member_index']==member_index}
         directory_ids={'':tuple(member['physical_identity']),**{
             name:tuple(row['physical_identity']) for name,row in directories.items()}}
+        removed_allocated=0
         for row in files:
             relative=Path(row['relative_path'])
             parent_relative='' if str(relative.parent)=='.' else str(relative.parent)
@@ -120,6 +121,8 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
                          'scene_retirement_payload_changed')
                 os.unlink(relative.name,dir_fd=leaf_fd)
                 removed[key]=removed_count+1
+                if info.st_nlink==1:
+                    removed_allocated+=row['allocated_bytes']
                 allowance.tick()
                 _current_parent(leaf_parent,leaf_fd,expected)
                 os.fsync(leaf_fd)
@@ -145,6 +148,12 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
         _current_parent(source.parent,parent,parent_identity)
         os.fsync(parent)
         outcome=dict(outcome='removed',canonical_path=str(source),detached_path=str(destination),
-                     generation_id=generation_id,inventory_sha256=evidence['inventory_sha256'])
+                     generation_id=generation_id,inventory_sha256=evidence['inventory_sha256'],
+                     logical_bytes=sum(row['size_bytes'] for row in files),
+                     apparent_bytes=sum(row['size_bytes'] for row in files),
+                     unique_allocated_bytes=sum(row['allocated_bytes'] for row in {
+                         tuple(item['physical_identity'][:2]):item for item in files}.values()),
+                     removed_allocated_bytes=removed_allocated,removed_file_count=len(files),
+                     allocation_method='observed_file_st_blocks_512_last_union_link_unlinked')
         outcome['event_raw_ref']=journal.append('member_removed',member_key=str(member_index),evidence=outcome)
         return outcome
