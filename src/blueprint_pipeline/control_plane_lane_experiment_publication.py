@@ -18,7 +18,7 @@ from .control_plane_lane_owner_target_io import _TargetFiles, _typed
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _require
 
 _NAMES = {
-    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed))?\.json",
+    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|head-prepared|authority-pending))?\.json",
     "birth": r"[0-9a-f]{32}\.birth\.json",
     "authority": r"authority-[0-9]{8}-[0-9a-f]{32}\.json",
     "head": r"HEAD\.json",
@@ -124,6 +124,7 @@ class _Record:
     published: bool = False
     mode: int = 0o600
     gid: int = 0
+    previous: object = None
 
 
 def _guard(files, state, *, cleanup=False):
@@ -140,11 +141,28 @@ def _guard(files, state, *, cleanup=False):
     if state.published:
         _require(owners._metadata(os.stat(state.name, dir_fd=state.parent, follow_symlinks=False))
                  == owners._metadata(opened), "experiment_publication_failed")
+    elif state.previous is not None:
+        previous = state.previous
+        files.proof(previous.fd)
+        _require(previous.parent == state.parent and previous.name == state.name
+                 and owners._metadata(os.fstat(previous.fd)) == owners._metadata(previous.info)
+                 == owners._metadata(os.stat(state.name, dir_fd=state.parent, follow_symlinks=False)),
+                 "experiment_head_changed")
+    else:
+        try:
+            os.stat(state.name, dir_fd=state.parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise OwnerTargetVersionError("experiment_publication_destination_exists")
 
 
-def _publish(files, parent, name, payload, *, kind, blueprint_gid=0):
+def _publish(files, parent, name, payload, *, kind, blueprint_gid=0, _expected_head=None):
     _require(kind in _NAMES and isinstance(name, str) and re.fullmatch(_NAMES[kind], name)
              and isinstance(payload, bytes) and 0 < len(payload) <= _CAPS[kind], "experiment_publication_invalid")
+    _require(_expected_head is None or kind == "head" and isinstance(_expected_head, owners._Acquired)
+             and _expected_head.name == "HEAD.json" and _expected_head.parent == parent,
+             "experiment_publication_invalid")
     files.budget.charge("output_bytes", len(payload))
     files.location(parent)
     info = os.fstat(parent)
@@ -154,12 +172,13 @@ def _publish(files, parent, name, payload, *, kind, blueprint_gid=0):
     try:
         os.stat(name, dir_fd=parent, follow_symlinks=False)
     except FileNotFoundError:
-        pass
+        _require(_expected_head is None, "experiment_head_changed")
     else:
-        raise OwnerTargetVersionError("experiment_publication_destination_exists")
+        _require(_expected_head is not None, "experiment_publication_destination_exists")
+        files.verify_record(_expected_head)
     temp = ".target-version-" + secrets.token_hex(16) + ".tmp"
     fd = files.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, parent=parent)
-    state = _Record(parent, fd, temp, name, files.proof(fd))
+    state = _Record(parent, fd, temp, name, files.proof(fd), previous=_expected_head)
     try:
         while state.size < len(payload):
             _guard(files, state)
@@ -176,11 +195,19 @@ def _publish(files, parent, name, payload, *, kind, blueprint_gid=0):
         _guard(files, state)
         os.fsync(fd)
         _guard(files, state)
-        os.link(temp, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
-        state.published, state.links = True, 2
-        _guard(files, state)
-        os.unlink(temp, dir_fd=parent)
-        state.present, state.links = False, 1
+        if _expected_head is None:
+            os.link(temp, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+            state.published, state.links = True, 2
+            _guard(files, state)
+            os.unlink(temp, dir_fd=parent)
+            state.present, state.links = False, 1
+        else:
+            # Exact old HEAD was proved above under the real authority EX lock.
+            # Immutable versions and the prepared private head survive this CAS.
+            os.rename(temp, name, src_dir_fd=parent, dst_dir_fd=parent)
+            state.present, state.published = False, True
+            if _expected_head in files.records:
+                files.records.remove(_expected_head)
         _guard(files, state)
         os.fsync(parent)
         _guard(files, state)

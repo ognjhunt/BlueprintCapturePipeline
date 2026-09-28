@@ -15,6 +15,7 @@ from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch as scratch
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_lane_experiment_publication import _BirthFiles, _publish
+from .control_plane_lane_experiment_authority import _current
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .decision_evidence_contracts import canonical_digest
@@ -147,15 +148,16 @@ def _create(files, intent_id, expected, config_path, issued):
         pass
     else:
         raise OwnerTargetVersionError("experiment_creation_already_claimed")
-    # This first birth slice refuses an existing authority rather than overwriting
-    # it. The connected updater is added with its own CAS red-first acceptance.
-    try:
-        os.stat("HEAD.json", dir_fd=public, follow_symlinks=False)
-    except FileNotFoundError:
-        pass
-    else:
-        raise OwnerTargetVersionError("experiment_authority_update_required")
-    issuance._capacity(files, store)
+    previous = _current(files, public, gid)
+    if previous is not None:
+        _require(previous[1]["state"] == "enabled" and previous[1]["policy"] == intent["policy"]
+                 and len(previous[1]["enrollments"]) < 100
+                 and all(row["intent_id"] != intent_id for row in previous[1]["enrollments"]),
+                 "experiment_authority_update_refused")
+    occupied = issuance._capacity(files, store, adding_registration=False)
+    # Reserve the complete finite birth before its first durable claim. Actual
+    # encoded records remain charged; this does not reserve payload or archive.
+    _require(occupied + 8 * 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
     operation_id = secrets.token_hex(16)
     _, claim_bytes = _event(files, intent, operation_id, "creation_claim",
         dict(intent=expected, root=intent["root"], lane="g1", name=intent["name"]), 0, None, issued)
@@ -215,17 +217,20 @@ def _create(files, intent_id, expected, config_path, issued):
              target_identity=stage_identity, lease=composer.lease_selector, principal=intent["principal"], policy=intent["policy"]),
         3, publication, issued)
     correspondence = _publish(files, store, intent_id + ".correspondence.json", correspondence_bytes, kind="private")
-    epoch = secrets.token_hex(16)
+    epoch = previous[0]["authority_epoch_id"] if previous is not None else secrets.token_hex(16)
+    version = previous[0]["version"] + 1 if previous is not None else 0
     entry = dict(intent_id=intent_id, generation=intent["generation"], birth=birth, target_identity=stage_identity,
         lease=composer.lease_selector, owner=intent["owner"], root=intent["root"], lane="g1", name=intent["name"],
         state="active", completion=None, restoration=None, operation_id=None, expires_at_epoch=intent["expires_at_epoch"])
     _, authority_bytes = _encode(files, dict(schema_version="control_plane_lane_experiment_authority.v1",
-        authority_epoch_id=epoch, version=0, previous_record=None, state="enabled", issued_at_epoch=issued,
-        expires_at_epoch=projection_expiry, policy=intent["policy"], enrollments=[entry]), "authority_digest")
-    authority_name = "authority-00000000-" + epoch + ".json"
+        authority_epoch_id=epoch, version=version, previous_record=previous[0]["record"] if previous is not None else None,
+        state="enabled", issued_at_epoch=issued, expires_at_epoch=projection_expiry, policy=intent["policy"],
+        enrollments=sorted((previous[1]["enrollments"] if previous is not None else []) + [entry],
+                           key=lambda row: row["intent_id"])), "authority_digest")
+    authority_name = f"authority-{version:08d}-{epoch}.json"
     authority = _publish(files, public, authority_name, authority_bytes, kind="authority", blueprint_gid=gid)
     _, head_bytes = _encode(files, dict(schema_version="control_plane_lane_experiment_head.v1",
-        authority_epoch_id=epoch, version=0, record_name=authority_name, record=authority), "head_digest", 4096)
+        authority_epoch_id=epoch, version=version, record_name=authority_name, record=authority), "head_digest", 4096)
     files.location(stage)
     for name, selector, cap in ((scratch.LEASE_FILE, composer.lease_selector, scratch.MAX_LEASE_BYTES),
                                 (_MARKER, marker, 4096)):
@@ -233,9 +238,22 @@ def _create(files, intent_id, expected, config_path, issued):
         _require(issuance._selector(raw, files.budget) == selector, "experiment_stage_changed")
         files.verify_record(record)
     files.verify()
-    head = _publish(files, public, "HEAD.json", head_bytes, kind="head", blueprint_gid=gid)
+    prepared_head = _publish(files, store, intent_id + ".head-prepared.json", head_bytes, kind="private")
+    previous_head = None
+    if previous is not None:
+        files.verify_record(previous[2])
+        files.proof(previous[2].fd)
+        os.lseek(previous[2].fd, 0, os.SEEK_SET)
+        previous_head = issuance._selector(files.read_bytes(previous[2].fd, 4096), files.budget)
+        files.verify_record(previous[2])
+    _, pending_bytes = _event(files, intent, operation_id, "authority_pending",
+        dict(authority=authority, prepared_head=prepared_head, previous_head=previous_head), 4, correspondence, issued)
+    pending = _publish(files, store, intent_id + ".authority-pending.json", pending_bytes, kind="private")
+    files.verify()
+    head = _publish(files, public, "HEAD.json", head_bytes, kind="head", blueprint_gid=gid,
+                    _expected_head=previous[2] if previous is not None else None)
     _, completed_bytes = _event(files, intent, operation_id, "birth_completed",
-        dict(birth=birth, authority=authority, head=head), 4, correspondence, issued)
+        dict(birth=birth, authority=authority, head=head), 5, pending, issued)
     _publish(files, store, intent_id + ".completed.json", completed_bytes, kind="private")
     return dict(path=str(Path(root) / "g1" / intent["name"]), generation=intent["generation"], birth=birth)
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import secrets
 import sys
 import time
@@ -24,6 +25,9 @@ from .decision_evidence_contracts import canonical_digest
 CREATION_SCHEMA = "control_plane_lane_experiment_creation_intent.v1"
 _LOCK = ".experiment-authority.lock"
 _MAX_INTENT = 32768
+MAX_EXPERIMENT_REGISTRATIONS = 256
+MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
+_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|head-prepared|authority-pending))?\.json\Z")
 _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
@@ -88,8 +92,8 @@ def _store(files, path):
     return parent
 
 
-def _capacity(files, parent):
-    count, total = 0, 0
+def _capacity(files, parent, *, adding_registration=True):
+    count, total, records = 0, 0, 0
     files.slot()
     with os.scandir(parent) as entries:
         for item in entries:
@@ -100,11 +104,15 @@ def _capacity(files, parent):
             if item.name == _LOCK:
                 _require(info.st_size == 0, "experiment_store_unsafe")
                 continue
-            _require(item.name.endswith(".json") and owners._matches(item.name[:-5], owners._CONSENT_ID),
-                     "experiment_store_unsafe")
-            count += 1
+            match = _STORE_NAME.fullmatch(item.name)
+            _require(match is not None, "experiment_store_unsafe")
+            records += 1
+            if match.group(2) is None:
+                count += 1
             total += info.st_size
-            _require(count < 256 and 0 < info.st_size <= _MAX_INTENT and total <= owners.MAX_STORE_BYTES,
+            _require(records <= MAX_EXPERIMENT_REGISTRATIONS * 8
+                     and count <= MAX_EXPERIMENT_REGISTRATIONS - int(adding_registration)
+                     and 0 < info.st_size <= _MAX_INTENT and total <= MAX_EXPERIMENT_STORE_BYTES,
                      "experiment_store_full")
     files.budget.tick()
     return total
@@ -148,7 +156,7 @@ def _issue(files, *, installed_config_path, principal, owner, root, reference_va
     payload = owners._encoded(record, files.budget, cap=_MAX_INTENT)
     parent = _store(files, config.experiment_record_store)
     occupied = _capacity(files, parent)
-    _require(occupied + len(payload) <= owners.MAX_STORE_BYTES, "experiment_store_full")
+    _require(occupied + len(payload) <= MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
     files.verify_record(policy_record)
     files.verify()
     published = _publish_owned_metadata(files, parent, intent_id + ".json", payload,
