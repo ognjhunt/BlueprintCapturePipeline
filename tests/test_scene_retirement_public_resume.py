@@ -44,8 +44,13 @@ def fresh_action(tmp_path,monkeypatch):
     consent=tmp_path/'resume-consent.json'
     consent.write_text(json.dumps(scope))
     consent.chmod(0o600)
-    monkeypatch.setattr(engine,'_current_plan',lambda *args: {})
-    monkeypatch.setattr(engine,'_resume_current_references',lambda *args: None,raising=False)
+    # Replay-only isolation supplies a complete empty reference-stage result;
+    # production admission still performs the real scans and native closure.
+    monkeypatch.setattr(engine,'_current_plan',lambda *args: {'reference_observation':{
+        'blockers':[], 'child_scopes':[{'child':name,'complete':True}
+            for name in ('pins','primary_queues','auxiliary_queues')],
+        'record_dispositions':[], 'protections':[]}})
+    monkeypatch.setattr(engine,'_resume_current_references',lambda *args,**kwargs: None,raising=False)
     # No assertion of unknown process absence: this test only exercises replay.
     monkeypatch.setattr(engine,'_installed_cohort',lambda *args: None)
     return engine,policy,scope,consent,transport

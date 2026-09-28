@@ -236,8 +236,10 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
              'scene_retirement_owner_changed')
     _plan_members(fresh,consent,allowance)
     _installed_cohort(policy,allowance)
-    _require(not fresh.get('reference_keeps') and not fresh.get('other_owner_capture_keeps'),
+    _require(not fresh.get('other_owner_capture_keeps'),
              'scene_retirement_reference_protected')
+    # Every intersecting local keep must be retained by an exact selected proof;
+    # this is pending preservation, never global reference/reader clearance.
     fresh['reference_transfer']=validate_current_reference_transfer(fresh,allowance)
     _current_readers(policy,allowance)
     return fresh
@@ -254,7 +256,7 @@ def _current_readers(policy,allowance):
     allowance.tick()
 
 
-def _resume_current_references(policy,consent,retained,allowance,now,monotonic):
+def _resume_current_references(policy,consent,retained,allowance,now,monotonic,*,preserved):
     from .control_plane_reference_budget import ReferenceCollectionBudget
     from .task_evaluation_scene_lineage_budget import RetainedEmissionBudget
     from .task_evaluation_scene_lifecycle_plan import _context
@@ -271,7 +273,8 @@ def _resume_current_references(policy,consent,retained,allowance,now,monotonic):
         _context(context,budget)
         observation=observe(context,now(),budget,sink)
         allowance.tick()
-        validate_current_reference_transfer(dict(retained,reference_observation=observation),allowance)
+        validate_current_reference_transfer(dict(retained,reference_observation=observation),allowance,
+                                            preserved=preserved)
         _current_readers(policy,allowance)
     finally:
         budget.close()
@@ -356,7 +359,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             resumed=recovery.select_retirement(policy,authority,allowance)
             if resumed is not None and type(resumed) is tuple:
                 journal,pending,initial=resumed
-                _resume_current_references(policy,consent,retained,allowance,now,monotonic)
+                _resume_current_references(policy,consent,retained,allowance,now,monotonic,
+                                           preserved=initial['preserved'])
                 generations=recovery.resumed_generations(sys.modules[__name__],policy,consent,journal,initial)
                 published_objects=initial.get('declared_byte_verification',{}).get('published_objects',[])
                 recovery.reserve_phase(journal,initial['preserved'],readback=True,published_objects=published_objects)
@@ -412,6 +416,9 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                     remote_bytes=preserved['archive']['size_bytes']+1)
                 _consume(preserved,transport,allowance)
             verified_bytes=_verify_declared_bytes(fresh,preserved,transport,allowance,verify_remote=False)
+            verified_references=validate_current_reference_transfer(fresh,allowance,preserved=preserved)
+            _require(verified_references['archive_inventory_verified'] is True,
+                     'scene_retirement_reference_closure_unproven')
             recovery.preparation_escrow(policy,preparation,allowance,phase='finalize',
                 local_bytes=2*sum(row['size_bytes'] for row in preserved['files']),
                 remote_bytes=sum(row['size_bytes']+1 for row in verified_bytes['published_objects']))
@@ -427,7 +434,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 consent_raw_ref=authority['consent_raw_ref'],policy_sha256=consent['policy_sha256'],
                 cohort_sha256=consent['cohort_sha256'],status='pending',members=consent['members'],
                 generations=generations,preserved=preserved,metadata_closure_raw_ref=closure,
-                action_allowance=allowance.checkpoint(),declared_byte_verification=verified_bytes)
+                action_allowance=allowance.checkpoint(),declared_byte_verification=verified_bytes,
+                reference_transfer=verified_references)
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
             pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
             def complete_records():
