@@ -109,3 +109,44 @@ def test_raising_initial_action_clock_is_fixed_refusal_and_cannot_reset_object()
         value.__init__(expires_at=1000,now=lambda:200,monotonic=fault)
     with pytest.raises(ValueError,match='scene_retirement_allowance_already_initialized'):
         value.__init__(expires_at=1000,now=lambda:200,monotonic=lambda:0)
+
+
+class ChargedMemoryTransport(MemoryTransport):
+    """Test the explicit installed-reader contract, not a safety flag."""
+    def __init__(self,members,allowance):
+        super().__init__(members)
+        self.allowance=allowance
+        self.origins=[]
+    def read_archive(self,uri):
+        pytest.fail('native charged reader was bypassed')
+    def read_archive_charged(self,uri,allowance):
+        assert allowance is self.allowance
+        self.origins.append(allowance)
+        for chunk in MemoryTransport.read_archive(self,uri):
+            allowance.charge('remote_bytes',len(chunk))
+            yield chunk
+
+
+def test_preservation_uses_native_precharged_reader_with_one_origin_and_no_double_charge(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members,ActionAllowance
+    members=fixture_members(tmp_path)
+    allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0)
+    transport=ChargedMemoryTransport(members,allowance)
+    result=preserve_members(members,transport=transport,allowance=allowance,token='1'*32)
+    assert transport.origins==[allowance]
+    assert allowance.counts['remote_bytes']==2*result['archive']['size_bytes']
+
+
+def test_restore_archive_reader_uses_native_precharged_bytes_once_with_same_origin():
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    from blueprint_pipeline.task_evaluation_scene_retirement_restore import _ArchiveReader
+    allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0)
+    transport=ChargedMemoryTransport([],allowance)
+    raw=b'actual bounded remote bytes'*17
+    uri='s3://private-fixture/retained.tar'
+    transport.objects[uri]=raw
+    reader=_ArchiveReader(transport,{'uri':uri,'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(),
+                                     'size_bytes':len(raw)},allowance)
+    assert reader.read(len(raw))==raw
+    reader.verify()
+    assert transport.origins==[allowance] and allowance.counts['remote_bytes']==len(raw)
