@@ -6,6 +6,8 @@ import argparse
 import math
 import os
 import stat
+import fcntl
+import subprocess
 import re
 import sys
 import time
@@ -19,6 +21,7 @@ from .control_plane_leased_scratch import LeasedScratchDirectory
 
 INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
 LANE_ROOT = INPUTS_ROOT / "lanes"
+REGISTERED_CHAIN_PATH = Path("/opt/blueprint/task-evaluation-control-plane/scripts/arena_construction_launch_chain.sh")
 _TAG = re.compile(r"r[0-9]{1,6}\Z")
 # The checked-in fire script records refusals through r32. Later tags must
 # have a sealed lease; a marker in a loose folder cannot grant access.
@@ -117,6 +120,56 @@ def _mkdir_registered_arena(use, relative):
             files.finish()
         finally:
             files.budget.close()
+
+
+
+def run_registered_arena_chain(tag, *, previous_tag, now=time.time):
+    """Fixed direct shell lifetime; descendant/provider completeness is unknown."""
+    from .control_plane_lane_experiment_publication import _BirthFiles
+    from .control_plane_lane_owner_target_versions import _require
+    from .control_plane_reference_budget import ReferenceCollectionBudget
+    _require(isinstance(previous_tag, str) and re.fullmatch(r"r[1-9][0-9]{0,5}", previous_tag),
+             "experiment_arena_selection_invalid")
+    use = admit_registered_arena_attempt(tag, now=now)
+    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    try:
+        # Root-owned fixed installed code, never a caller-selected command.
+        _, source = files.read(REGISTERED_CHAIN_PATH, cap=1048576, protected=True)
+        use.check()
+        files.verify_record(source)
+        env = dict(os.environ, CUR=tag, PREV=previous_tag,
+                   BLUEPRINT_REGISTERED_ARENA_FD=str(use.fd))
+        child = subprocess.run(["/bin/bash", str(REGISTERED_CHAIN_PATH), "--registered-child"],
+                               env=env, pass_fds=(use.fd,), check=False)
+        files.verify_record(source)
+        use.check()
+        _require(type(child.returncode) is int, "experiment_arena_child_failed")
+        return child.returncode
+    finally:
+        try:
+            files.finish()
+        finally:
+            files.budget.close()
+            use.close()
+
+
+def _verify_arena_parent(use, fd):
+    """Check an inherited target handle without adopting or closing its token."""
+    from .control_plane_lane_owner_target_versions import _require
+    use.check()
+    _require(type(fd) is int and fd >= 0, "experiment_arena_parent_invalid")
+    observed = os.fstat(fd)
+    expected = use.entry["target_identity"]
+    _require(stat.S_ISDIR(observed.st_mode) and (observed.st_dev, observed.st_ino) == (expected["dev"], expected["ino"]),
+             "experiment_arena_parent_invalid")
+    # The guard binds this lock operation to the independently selected current
+    # directory. The inherited token is never entered into an owned registry.
+    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    after = os.fstat(fd)
+    _require((after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode))
+             == (observed.st_dev, observed.st_ino, stat.S_IFMT(observed.st_mode)),
+             "experiment_arena_parent_invalid")
+    use.check()
 
 
 def _paths(tag: str, *, inputs_root: Path, lane_root: Path) -> tuple[Path, Path, str]:
@@ -271,7 +324,7 @@ def mkdir_arena_payload(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "resolve", "mkdir-payload"))
+    parser.add_argument("action", choices=("prepare", "resolve", "mkdir-payload", "registered-prepare", "registered-mkdir", "verify-parent", "run-chain"))
     parser.add_argument("--tag", required=True)
     parser.add_argument("--owner")
     reference = parser.add_mutually_exclusive_group()
@@ -280,11 +333,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ttl-seconds", type=int)
     parser.add_argument("--writable", action="store_true")
     parser.add_argument("--relative")
+    parser.add_argument("--prev")
+    parser.add_argument("--parent-fd", type=int)
     args = parser.parse_args(argv)
-    if args.action == "mkdir-payload" and args.relative is None:
+    if args.action in ("mkdir-payload", "registered-mkdir") and args.relative is None:
         parser.error("mkdir-payload requires --relative")
     try:
-        if args.action == "prepare":
+        if args.action == "run-chain":
+            return run_registered_arena_chain(args.tag, previous_tag=args.prev)
+        if args.action in ("registered-prepare", "registered-mkdir", "verify-parent"):
+            use = admit_registered_arena_attempt(args.tag)
+            try:
+                if args.action == "verify-parent":
+                    _verify_arena_parent(use, args.parent_fd)
+                    path = use.path
+                elif args.action == "registered-prepare":
+                    path = prepare_arena_attempt(args.tag, _registered_use=use)
+                else:
+                    path = mkdir_arena_payload(args.tag, args.relative, _registered_use=use)
+            finally:
+                use.close()
+        elif args.action == "prepare":
             path = prepare_arena_attempt(
                 args.tag, owner=args.owner, run_ref=args.run_ref, scene_ref=args.scene_ref,
                 ttl_seconds=args.ttl_seconds,
@@ -294,8 +363,9 @@ def main(argv: list[str] | None = None) -> int:
                                        run_ref=args.run_ref, scene_ref=args.scene_ref)
         else:
             path = resolve_arena_attempt(args.tag, writable=args.writable)
-    except ArenaScratchError as exc:
-        print(str(exc), file=sys.stderr)
+    except (ArenaScratchError, OSError, ValueError) as exc:
+        code = str(exc) if not isinstance(exc, OSError) else "arena_scratch_io_failed"
+        print(code if re.fullmatch(r"[a-z][a-z0-9_]{0,127}", code) else "arena_scratch_refused", file=sys.stderr)
         return 2 if str(exc) == "arena_scratch_missing" else 3
     print(path)
     return 0

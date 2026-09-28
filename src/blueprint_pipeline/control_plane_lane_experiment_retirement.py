@@ -407,6 +407,10 @@ def _command_parser():
     parser = _FixedCommandParser(prog="registered-experiment", allow_abbrev=False)
     commands = parser.add_subparsers(dest="operation", required=True, parser_class=_FixedCommandParser)
     commands.add_parser("prepare", allow_abbrev=False)
+    recover = commands.add_parser("recover-arena-issue", allow_abbrev=False)
+    recover.add_argument("tag")
+    recover.add_argument("--principal", required=True)
+    recover.add_argument("--owner", required=True)
     for operation in ("issue-create", "create", "issue-action", "apply", "issue-restore", "restore", "bootstrap", "run"):
         command = commands.add_parser(operation, allow_abbrev=False)
         if operation != "issue-create":
@@ -453,6 +457,8 @@ def _dispatch_fixed_command(arguments):
     if operation == "prepare":
         return prepare_registered_experiment_state(installed_config_path=INSTALLED_CONFIG_PATH)
     fixed = {"installed_config_path": INSTALLED_CONFIG_PATH, "now": lambda: time.time()}
+    if operation == "recover-arena-issue":
+        return recover_arena_issue(arguments.tag, principal=arguments.principal, owner=arguments.owner, **fixed)
     if operation == "issue-create":
         requests = []
         for path, digest, size in arguments.request:

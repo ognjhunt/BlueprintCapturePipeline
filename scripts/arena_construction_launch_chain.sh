@@ -9,6 +9,15 @@ set -euo pipefail
 : "${CUR:?set CUR=<this attempt tag, e.g. r11>}"
 CP=/opt/blueprint/task-evaluation-control-plane
 PY=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+# Every new attempt is root-registered first. The fixed parent retains current
+# target SH through the direct shell; external descendants remain owner-review.
+if [ "${1:-}" != "--registered-child" ]; then
+  exec env PYTHONPATH="$CP/src" "$PY" -m blueprint_pipeline.control_plane_arena_scratch \
+    run-chain --tag "$CUR" --prev "$PREV"
+fi
+: "${BLUEPRINT_REGISTERED_ARENA_FD:?fixed registered parent required}"
+env PYTHONPATH="$CP/src" "$PY" -m blueprint_pipeline.control_plane_arena_scratch \
+  verify-parent --tag "$CUR" --parent-fd "$BLUEPRINT_REGISTERED_ARENA_FD" >/dev/null
 RUN="sudo -u blueprint env PYTHONPATH=$CP/src $PY"
 E=/var/lib/blueprint/task-evaluation-inputs
 P=$($RUN -m blueprint_pipeline.control_plane_arena_scratch resolve --tag "$PREV")
@@ -34,15 +43,9 @@ echo "prev run: $RPREV"
 echo "commit:   $COMMIT"
 echo "audit:    $AUD"
 echo "avoidlist: $AVOIDLIST"
-# A new attempt needs an operator-supplied owner, run or scene reference, and
-# expiry. Retrying a sealed attempt (or a proven historical folder) keeps its
-# original path and single-write receipts.
-ARENA_PREPARE_ARGS=()
-[ -z "${ARENA_SCRATCH_OWNER:-}" ] || ARENA_PREPARE_ARGS+=(--owner "$ARENA_SCRATCH_OWNER")
-[ -z "${ARENA_SCRATCH_RUN_REF:-}" ] || ARENA_PREPARE_ARGS+=(--run-ref "$ARENA_SCRATCH_RUN_REF")
-[ -z "${ARENA_SCRATCH_SCENE_REF:-}" ] || ARENA_PREPARE_ARGS+=(--scene-ref "$ARENA_SCRATCH_SCENE_REF")
-[ -z "${ARENA_SCRATCH_TTL_SECONDS:-}" ] || ARENA_PREPARE_ARGS+=(--ttl-seconds "$ARENA_SCRATCH_TTL_SECONDS")
-A=$($RUN -m blueprint_pipeline.control_plane_arena_scratch prepare --tag "$CUR" "${ARENA_PREPARE_ARGS[@]}")
+# The root-selected current birth, owner and expiry are immutable authority;
+# shell environment owner/TTL text cannot register another experiment.
+A=$($RUN -m blueprint_pipeline.control_plane_arena_scratch registered-prepare --tag "$CUR")
 cd $CP
 
 echo "== 0. predecessor provider zero"
@@ -109,7 +112,7 @@ if [ -d $A/arena_packet/$TASK ]; then
 else
   # hardlink the predecessor's sealed packet: identical inodes are the strongest
   # possible statement that the staged bytes did not change, and it costs no disk
-  $RUN -m blueprint_pipeline.control_plane_arena_scratch mkdir-payload --tag "$CUR" --relative arena_packet "${ARENA_PREPARE_ARGS[@]}" >/dev/null
+  $RUN -m blueprint_pipeline.control_plane_arena_scratch registered-mkdir --tag "$CUR" --relative arena_packet >/dev/null
   sudo -u blueprint cp -al $P/arena_packet/$TASK $A/arena_packet/$TASK
   echo "  hardlinked from $PREV"
 fi
