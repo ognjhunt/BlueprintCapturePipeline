@@ -55,6 +55,7 @@ from .control_plane_disk_budget import (
     reserve_control_plane_disk,
     target_device,
 )
+from .control_plane_disk_usage import tree_usage
 from .task_evaluation_scene_configuration_provider_artifacts import (
     PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO,
     PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT,
@@ -348,6 +349,8 @@ class SceneConfigurationOutputAdmission:
         self._publication: tuple[dict[str, Any], dict[str, Any], Path] | None = None
         self._publication_error: Exception | None = None
         self._deferred_hold_refused = False
+        #: What the hold already covered when the output's footprint began.
+        self._covered_before_output = 0
 
     # -- before allocation -------------------------------------------------
 
@@ -431,13 +434,24 @@ class SceneConfigurationOutputAdmission:
         return record
 
     def hold_before_allocation(self) -> None:
-        """Take a hold deferred behind a CPU prefix; refuse typed if it no longer fits.
+        """Start the output's footprint here, taking a hold deferred behind a CPU prefix.
 
-        A refusal raises ``SceneConfigurationOutputHoldRefused`` before the
-        adapter is entered; the lane then seals ``refused_hold_result``.
+        A deferred hold that no longer fits raises ``SceneConfigurationOutputHoldRefused``
+        before the adapter is entered; the lane then seals ``refused_hold_result``.
         """
 
-        if not self.measured or self.record.get("hold") != _HOLD_DEFERRED:
+        if not self.measured:
+            return None
+        if self.hold is not None:
+            # Held since admission: staging and any prefix archives written
+            # since then stay covered by the hold, but the footprint the role's
+            # history learns is the output's alone, from here on.
+            self._covered_before_output = max(
+                0, tree_usage(self.job).allocated_bytes - self.hold.baseline_bytes
+            )
+            self.hold.bind_workspace(self.job, fresh=True)
+            return None
+        if self.record.get("hold") != _HOLD_DEFERRED:
             return None
         # What the prefix left behind is on the volume now; the ledger sees it.
         blocker = self._take_hold(DEFERRED_HOLD_PHASE, expected_bytes=self.hold_bytes)
@@ -547,7 +561,8 @@ class SceneConfigurationOutputAdmission:
                 disk_usage=self._disk_usage,
                 workspace=self.job,
                 workload=WORKLOAD,
-                # The job's growth from here on is this output's whole footprint.
+                # Rebased on the output alone right before the adapter, so its
+                # growth from there is this output's whole footprint.
                 fresh=True,
             )
         except ControlPlaneDiskBudgetError as exc:
@@ -598,7 +613,10 @@ class SceneConfigurationOutputAdmission:
             archive_path, maximum_archive_bytes=maximum_archive_bytes
         )
         held = self.hold.expected_bytes if self.hold is not None else None
-        used = self.hold.sample() if self.hold is not None else None
+        used = (
+            None if self.hold is None
+            else self._covered_before_output + int(self.hold.sample() or 0)
+        )
         remaining = 0 if held is None else max(0, held - int(used or 0))
         growth = max(0, requirement["required_bytes"] - remaining)
         record: dict[str, Any] = {

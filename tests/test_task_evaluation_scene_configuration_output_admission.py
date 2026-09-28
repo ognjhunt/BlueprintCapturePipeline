@@ -1059,6 +1059,36 @@ def test_prefix_residue_is_admitted_up_front_or_refused_before_any_prefix(
     assert _ledger_rows(lane.ledger) == []
 
 
+@pytest.mark.parametrize("shares", [True, False])
+def test_the_learned_footprint_is_the_output_alone(tmp_path, monkeypatch, shares) -> None:
+    """Staging files and a prefix's archives are not the output's footprint.
+
+    A hold taken at admission still covers them, but the sample the role's
+    history learns from starts right before the adapter, as a deferred hold does.
+    """
+
+    lane = _harness(tmp_path, monkeypatch)
+    work = tmp_path / "prestage-work"
+    work.mkdir()
+    if not shares:
+        real_device = admission.target_device
+        monkeypatch.setattr(
+            admission, "target_device", lambda path: -1 if Path(path) == work else real_device(path)
+        )
+    residue = 32 * MIB
+    _install_prestage(lane, monkeypatch, work, residue_bytes=residue, elsewhere=not shares)
+
+    result = lane.run(cpu_prestage_stage_limit="stage-2")
+
+    assert result["status"] == "completed", result["blockers"]
+    [sample] = _history(lane.ledger)
+    assert sample["outcome"] == "completed" and sample["fresh"] is True
+    assert 0 < sample["observed_bytes"] < residue
+    covered = result["provider_output_disk_capacity"]["before_extraction"]["hold_bytes_used"]
+    # Only a hold that was holding the prefix's archives still accounts for them.
+    assert (covered >= residue) is (not shares)
+
+
 def test_up_front_prefix_need_is_what_the_prestage_reserves(tmp_path) -> None:
     receipt, _job = _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
 
