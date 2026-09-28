@@ -86,13 +86,15 @@ def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
         return original(self)
 
     monkeypatch.setattr(work._ActionFiles, 'slot', observed)
+    # The maximum member domain needs the authenticated one-hour policy grant,
+    # not this tiny fixture's usual ten-minute grant; all native clocks remain.
     action = root.issue_experiment_action_intent(intent_id, principal='operator', owner='owner',
-        action='offload', expires_at_epoch=3500, installed_config_path=setup[0], now=lambda: 2900)
+        action='offload', expires_at_epoch=6500, installed_config_path=setup[0], now=lambda: 2900)
     outcome = _gc(setup)['registered_experiments']['outcomes'][0]
     assert outcome['action_id'] == action['action_id']
     assert outcome['decision'] == 'retired', outcome
     selected = root.issue_experiment_restore_intent(intent_id, principal='operator', owner='owner',
-        lease_ttl_seconds=600, expires_at_epoch=3400, installed_config_path=setup[0], now=lambda: 2901)
+        lease_ttl_seconds=600, expires_at_epoch=6500, installed_config_path=setup[0], now=lambda: 2901)
     restored = root.restore_registered_experiment(selected['action_id'],
         expected_restore_intent=selected['restore_intent'], installed_config_path=setup[0], now=lambda: 2901)
     assert restored['decision'] == 'restored', restored
