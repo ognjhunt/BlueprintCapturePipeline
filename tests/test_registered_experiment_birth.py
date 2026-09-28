@@ -122,3 +122,42 @@ def test_second_actual_issuance_and_birth_updates_current_head_without_losing_fi
     assert all(row["state"] == "active" for row in authority["enrollments"])
     assert Path(born_first["path"]).is_dir() and Path(born_second["path"]).is_dir()
     assert (public / old_head["record_name"]).is_file()
+
+
+def test_missing_existing_head_never_bootstraps_a_new_authority(installation, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_birth as code
+    public = prepare(installation)
+    monkeypatch.setattr(code, "_blueprint_identity", lambda: (0, 0))
+    monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: None)
+    first = issue(installation)
+    birth(installation, first)
+    (public / "HEAD.json").unlink()
+    second = issue(installation)
+    with pytest.raises(ValueError, match="experiment_authority_missing"):
+        birth(installation, second)
+    assert not (installation[2] / (second["intent_id"] + ".claim.json")).exists()
+
+
+def test_current_head_substitution_preserves_foreign_bytes_before_cas(installation, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_birth as code
+    from blueprint_pipeline import control_plane_lane_experiment_publication as publication
+    public = prepare(installation)
+    monkeypatch.setattr(code, "_blueprint_identity", lambda: (0, 0))
+    monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: None)
+    birth(installation, issue(installation))
+    second = issue(installation)
+    original = publication._guard
+    changed = False
+    def guard(files, state, **kwargs):
+        nonlocal changed
+        if state.previous is not None and not changed:
+            foreign = public / "foreign.json"
+            foreign.write_bytes(b"FOREIGN")
+            foreign.chmod(0o640)
+            os.rename(foreign, public / "HEAD.json")
+            changed = True
+        return original(files, state, **kwargs)
+    monkeypatch.setattr(publication, "_guard", guard)
+    with pytest.raises(ValueError, match="experiment_head_changed"):
+        birth(installation, second)
+    assert changed and (public / "HEAD.json").read_bytes() == b"FOREIGN"
