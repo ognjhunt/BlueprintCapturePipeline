@@ -100,3 +100,28 @@ def test_shared_malformed_json_is_still_typed(raw):
     with pytest.raises((d.CensusDecisionError, b.ReferenceCollectionBudgetError)):
         d.validate_census_annotations(raw, b'{}', now=1000, allowed_roots=('/work',),
                                      _work_budget=b.ReferenceCollectionBudget(monotonic=lambda: 0))
+
+
+@pytest.mark.parametrize('value', [True, False, 0, -1, 10**400, 100001, 1.0, '10'])
+def test_constructor_rejects_invalid_strict_cumulative_ceiling(value):
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
+    with pytest.raises(ReferenceCollectionBudgetError, match='reference_budget_parameters_invalid'):
+        ReferenceCollectionBudget(monotonic=lambda:0, values_limit=value)
+
+
+def test_strict_ceiling_is_shared_by_lexical_and_measure_visits():
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
+    budget=ReferenceCollectionBudget(monotonic=lambda:0, values_limit=2)
+    budget.measure([1])
+    with pytest.raises(ReferenceCollectionBudgetError,match='reference_values_limit'):
+        budget.preflight('{}')
+    assert budget.counts['values']==2
+
+
+def test_default_and_explicit_ceiling_follow_reduced_native_cap(monkeypatch):
+    from blueprint_pipeline import control_plane_reference_budget as module
+    monkeypatch.setattr(module,'MAX_VALUES',3)
+    assert module.ReferenceCollectionBudget(monotonic=lambda:0).limits['values']==3
+    assert module.ReferenceCollectionBudget(monotonic=lambda:0, values_limit=2).limits['values']==2
+    with pytest.raises(module.ReferenceCollectionBudgetError):
+        module.ReferenceCollectionBudget(monotonic=lambda:0, values_limit=4)

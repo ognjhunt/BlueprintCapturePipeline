@@ -206,3 +206,75 @@ def test_reused_numeric_descriptor_is_not_closed_but_others_finish(tmp_path, mon
     # Restore the actual still-owned test descriptor: the production registry
     # correctly cannot infer that an injected foreign token belongs to this test.
     oldclose(fd)
+
+
+def test_protected_ancestor_same_inode_permission_drift_refuses(tmp_path, monkeypatch):
+    import stat
+
+    path = tmp_path / "private" / "x"
+    path.parent.mkdir(mode=0o700)
+    path.write_bytes(b"{}")
+    path.chmod(0o600)
+    original = c._protected
+
+    def simulated_root(info, **kwargs):
+        # UID/GID are supplied by a hermetic root fixture; mode/type are real.
+        from types import SimpleNamespace
+
+        data = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+        data.update(st_uid=0, st_gid=0)
+        if stat.S_ISDIR(info.st_mode) and info.st_ino != path.parent.stat().st_ino:
+            data["st_mode"] = stat.S_IFDIR | 0o755
+        original(SimpleNamespace(**data), **kwargs)
+
+    monkeypatch.setattr(c, "_protected", simulated_root)
+    f = files()
+    try:
+        f.read(path, cap=8, protected=True, mode=0o600)
+        path.parent.chmod(0o777)
+        with pytest.raises(c.OwnerCensusConsentError):
+            f.verify()
+    finally:
+        f.finish()
+
+
+def test_registry_rejects_invalid_budget_before_io(monkeypatch):
+    monkeypatch.setattr(os, "open", lambda *a, **k: pytest.fail("invalid budget open"))
+    with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_options_invalid"):
+        c._Files(object())
+
+
+def test_initial_root_named_security_is_rechecked(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    p = tmp_path / "x"
+    p.write_bytes(b"{}")
+    f = files()
+    f.read(p, cap=8)
+    old = os.stat
+
+    def changed(path, *args, **kw):
+        info = old(path, *args, **kw)
+        if path == "/":
+            data = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            data["st_ino"] += 1
+            return SimpleNamespace(**data)
+        return info
+
+    monkeypatch.setattr(os, "stat", changed)
+    try:
+        with pytest.raises(c.OwnerCensusConsentError, match="owner_consent_record_changed"):
+            f.verify()
+    finally:
+        f.finish()
+
+
+def test_root_owned_blueprint_group_ancestor_is_safe_but_private_store_requires_root_group():
+    import stat
+    from types import SimpleNamespace
+
+    ancestor = SimpleNamespace(st_uid=0, st_gid=42, st_mode=stat.S_IFDIR | 0o2750, st_nlink=2)
+    c._protected(ancestor, directory=True)
+    with pytest.raises(c.OwnerCensusConsentError):
+        c._protected(ancestor, directory=True, mode=0o700)
+    c._protected(SimpleNamespace(st_uid=0, st_gid=42, st_mode=stat.S_IFREG | 0o640, st_nlink=1))

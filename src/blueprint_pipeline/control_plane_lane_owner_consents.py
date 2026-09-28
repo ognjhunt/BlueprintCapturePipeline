@@ -5,6 +5,7 @@ import errno
 import math
 import os
 import re
+import secrets
 import stat
 from pathlib import Path
 from typing import NamedTuple
@@ -251,8 +252,12 @@ def _metadata(info):
             info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
+def _security(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+
+
 def _protected(info, *, directory=False, mode=None):
-    _require(info.st_uid == 0 and not info.st_mode & 0o022
+    _require(info.st_uid == 0 and (mode is None or info.st_gid == 0) and not info.st_mode & 0o022
              and (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
              and (directory or info.st_nlink == 1)
              and (mode is None or stat.S_IMODE(info.st_mode) == mode), 'owner_consent_store_unsafe')
@@ -261,6 +266,9 @@ def _protected(info, *, directory=False, mode=None):
 class _Files:
     """Invocation-owned descriptors; no finalizer consults an expired budget."""
     def __init__(self, budget, *, raw_cap=None):
+        from .control_plane_reference_budget import ReferenceCollectionBudget
+        _require(type(budget) is ReferenceCollectionBudget, "owner_consent_options_invalid")
+        self.anchors = []
         self.budget, self.raw_cap = budget, raw_cap
         self.owned, self.edges, self.records = {}, [], []
         self.unresolved = 0
@@ -328,15 +336,17 @@ class _Files:
             raise OwnerCensusConsentError('owner_consent_options_invalid') from None
         self.budget.charge('roots')
         fd = self.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        root_info = os.fstat(fd)
         if protected:
-            _protected(os.fstat(fd), directory=True)
+            _protected(root_info, directory=True)
+        self.anchors.append((fd, _security(root_info), protected))
         for name in Path(text).parts[1:-1]:
             self.budget.charge('entries')
             child = self.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, parent=fd)
             info = os.fstat(child)
             if protected:
                 _protected(info, directory=True)
-            self.edges.append((fd, name, child, (info.st_dev, info.st_ino)))
+            self.edges.append((fd, name, child, _security(info), protected))
             fd = child
         return fd, Path(text).name
 
@@ -387,12 +397,474 @@ class _Files:
         self.budget.tick()
 
     def verify(self):
-        for parent, name, fd, expected in self.edges:
+        for fd, expected, protected in self.anchors:
+            self.budget.charge("entries")
+            opened = os.fstat(fd)
+            named_root = os.stat("/", follow_symlinks=False)
+            _require(_security(named_root) == expected == _security(opened), "owner_consent_record_changed")
+            if protected:
+                _protected(opened, directory=True)
+        for parent, name, fd, expected, protected in self.edges:
             self.budget.charge('entries')
             named = os.stat(name, dir_fd=parent, follow_symlinks=False)
             opened = os.fstat(fd)
-            _require((named.st_dev, named.st_ino) == expected == (opened.st_dev, opened.st_ino)
+            _require(_security(named) == expected == _security(opened)
                      and stat.S_ISDIR(named.st_mode), 'owner_consent_record_changed')
+            if protected:
+                _protected(named, directory=True)
+                _protected(opened, directory=True)
         for record in self.records:
             self.budget.charge('entries')
             self.verify_record(record)
+
+
+INSTALLED_PACKAGE_ROOT = Path('/opt/blueprint/operator-door')
+_STORE_LOCK = '.owner-consents.lock'
+MAX_CONSUMPTION_RAW = 576 * 1024
+
+
+def _roots(config, budget):
+    roots = []
+    for text in (config.lane_scratch_work_root, config.lane_scratch_inputs_root):
+        budget.charge('roots')
+        try:
+            path = retained._path(text, _work_budget=budget)
+        except retained.CensusDecisionError:
+            raise OwnerCensusConsentError('owner_consent_config_invalid') from None
+        _require(path.name == 'lanes', 'owner_consent_config_invalid')
+        roots.append(path.parent)
+    _require(roots[0] != roots[1] and roots[0] not in roots[1].parents
+             and roots[1] not in roots[0].parents, 'owner_consent_config_invalid')
+    return tuple(roots)
+
+
+def _installed_config(files, path):
+    """Load only acquired protected bytes from the fixed installed config bridge."""
+    import sys
+    import types
+    config_raw, _ = files.read(path, cap=MAX_POLICY_BYTES, protected=True)
+    package = INSTALLED_PACKAGE_ROOT / 'operator_door'
+    try:
+        files.read(package / '__init__.py', cap=MAX_POLICY_BYTES, protected=True)
+        source, acquired = files.read(package / 'config.py', cap=MAX_POLICY_BYTES, protected=True)
+    except OwnerCensusConsentError as error:
+        if error.code in ('owner_consent_io_failed', 'owner_consent_store_unsafe'):
+            raise OwnerCensusConsentError('owner_consent_installed_bridge_invalid') from None
+        raise
+    files.verify()
+    name = '_blueprint_owner_installed_' + secrets.token_hex(8)
+    module = types.ModuleType(name)
+    module.__file__ = str(package / 'config.py')
+    sys.modules[name] = module
+    try:
+        files.budget.tick()
+        exec(compile(source, module.__file__, 'exec'), module.__dict__)
+        files.budget.tick()
+        _require(module.__file__ == str(package / 'config.py')
+                 and callable(getattr(module, 'config_from_mapping', None)),
+                 'owner_consent_installed_bridge_invalid')
+        mapping = retained._document(config_raw, MAX_POLICY_BYTES, _work_budget=files.budget)
+        config = module.config_from_mapping(mapping, _work_budget=files.budget)
+    except (SyntaxError, UnicodeError, ImportError, AttributeError):
+        raise OwnerCensusConsentError('owner_consent_installed_bridge_invalid') from None
+    except retained.CensusDecisionError:
+        raise OwnerCensusConsentError('owner_consent_config_invalid') from None
+    except ValueError as error:
+        if type(error).__name__ == 'DoorConfigError':
+            raise OwnerCensusConsentError('owner_consent_config_invalid') from None
+        raise
+    finally:
+        sys.modules.pop(name, None)
+    files.verify_record(acquired)
+    _require(config.owner_census_decisions_enabled == 1, 'owner_consent_disabled')
+    _roots(config, files.budget)
+    return config
+
+
+def _store(files, config, consent_id, *, lock=False):
+    parent, _ = files.parent(Path(config.owner_consent_store) / (consent_id + '.json'), protected=True)
+    _protected(os.fstat(parent), directory=True, mode=0o700)
+    if lock:
+        import fcntl
+        fd = files.open(_STORE_LOCK, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, parent=parent)
+        info = os.fstat(fd)
+        _protected(info, mode=0o600)
+        _require(info.st_size == 0, 'owner_consent_store_unsafe')
+        files.records.append(_Acquired(fd, parent, _STORE_LOCK, info))
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise OwnerCensusConsentError('owner_consent_store_busy') from None
+        # Close-only release: all owned descriptors finish after publication.
+    return parent
+
+
+def _capacity(files, parent):
+    count, records, occupied = 0, 0, 0
+    with os.scandir(parent) as entries:
+        for entry in entries:
+            files.budget.charge('entries')
+            count += 1
+            _require(count <= MAX_STORE_RECORDS + 1, 'owner_consent_store_full')
+            info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+            _protected(info, mode=0o600)
+            _require(entry.name == _STORE_LOCK or (entry.name.endswith('.json')
+                     and _matches(entry.name[:-5], _CONSENT_ID)), 'owner_consent_store_unsafe')
+            if entry.name != _STORE_LOCK:
+                records += 1
+                _require(records < MAX_STORE_RECORDS, 'owner_consent_store_full')
+            else:
+                _require(info.st_size == 0, 'owner_consent_store_unsafe')
+            _require(0 <= info.st_size <= MAX_RECORD_BYTES, 'owner_consent_store_unsafe')
+            occupied += info.st_size
+            _require(occupied <= MAX_STORE_BYTES, 'owner_consent_store_full')
+    files.budget.tick()
+    return occupied
+
+
+def _encoded(record, budget, *, cap=MAX_RECORD_BYTES):
+    budget.available('output_bytes', budget.measure(record, cap=cap - 1) + 1)
+    result = retained.encode_validation_report(record, _work_budget=budget)
+    _require(len(result) <= cap, 'owner_consent_resource_exhausted')
+    budget.charge('output_bytes', len(result))
+    return result
+
+
+def _clean_temp(parent, name, identity):
+    try:
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    _require(stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity,
+             'owner_consent_publication_failed')
+    os.unlink(name, dir_fd=parent)
+
+
+def _publish(files, parent, name, payload, *, mode=0o600, immutable=True):
+    temporary = '.consent-' + secrets.token_hex(16) + '.tmp'
+    fd = files.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    parent=parent, mode=mode)
+    initial = os.fstat(fd)
+    identity = (initial.st_dev, initial.st_ino)
+    owned = True
+    try:
+        os.fchmod(fd, mode)
+        offset = 0
+        while offset < len(payload):
+            files.budget.tick()
+            count = os.write(fd, memoryview(payload)[offset:])
+            _require(count > 0, 'owner_consent_publication_failed')
+            offset += count
+        files.budget.tick()
+        os.fsync(fd)
+        files.verify()
+        current = os.stat(temporary, dir_fd=parent, follow_symlinks=False)
+        _require(stat.S_ISREG(current.st_mode) and current.st_nlink == 1
+                 and (current.st_dev, current.st_ino) == identity
+                 and (os.fstat(fd).st_dev, os.fstat(fd).st_ino) == identity,
+                 'owner_consent_publication_failed')
+        files.budget.tick()
+        if immutable:
+            os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+            _clean_temp(parent, temporary, identity)
+        else:
+            os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        owned = False
+        os.fsync(parent)
+        files.verify()
+        published = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        _require((published.st_dev, published.st_ino) == identity and published.st_nlink == 1,
+                 'owner_consent_publication_failed')
+    except OSError:
+        raise OwnerCensusConsentError('owner_consent_publication_failed') from None
+    finally:
+        if owned:
+            _clean_temp(parent, temporary, identity)
+
+
+def _issue(census_path, annotations_path, *, census_sha256, census_size_bytes,
+           annotations_sha256, annotations_size_bytes, principal, selected_paths,
+           expires_at_epoch, installed_config_path, now, budget, files):
+    _require(os.geteuid() == 0, 'owner_consent_issuer_required')
+    config = _installed_config(files, installed_config_path)
+    policy_raw, _ = files.read(config.lane_owner_policy_file, cap=MAX_POLICY_BYTES, protected=True, mode=0o600)
+    census = retained.read_census_input(census_path, _work_budget=budget, _descriptors=files)
+    annotations = retained.read_census_input(annotations_path, _work_budget=budget, _descriptors=files)
+    consent_id = secrets.token_hex(16)
+    record = _build_consent(census_bytes=census, annotation_bytes=annotations,
+        census_sha256=census_sha256, census_size_bytes=census_size_bytes,
+        annotations_sha256=annotations_sha256, annotations_size_bytes=annotations_size_bytes,
+        policy_bytes=policy_raw, principal=principal, selected_paths=selected_paths,
+        expires_at_epoch=expires_at_epoch, now=now, allowed_roots=_roots(config, budget),
+        consent_id=consent_id, budget=budget)
+    parent = _store(files, config, consent_id, lock=True)
+    occupied = _capacity(files, parent)
+    _require(MAX_STORE_RECORDS > 0, 'owner_consent_store_full')
+    payload = _encoded(record, budget)
+    _require(occupied + len(payload) <= MAX_STORE_BYTES, 'owner_consent_store_full')
+    files.verify()
+    _publish(files, parent, consent_id + '.json', payload)
+    return dict(schema_version=CONSENT_SCHEMA, status='owner_consent_issued', consent_id=consent_id,
+                expected_sha256=retained._digest(payload, _work_budget=budget), expected_size_bytes=len(payload),
+                expires_at_epoch=expires_at_epoch, selected_count=record['selected_count'],
+                consent_metadata_published=True, execution_authorized=False,
+                target_generation_bound=False, requires_fresh_reference_check=True, mutations=0)
+
+
+def issue_owner_consent(census_path, annotations_path, *, census_sha256, census_size_bytes,
+                        annotations_sha256, annotations_size_bytes, principal, selected_paths,
+                        expires_at_epoch, installed_config_path, now, monotonic):
+    """Root-admin attests finite intent; immutable metadata grants no target action."""
+    from .control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
+    try:
+        budget = ReferenceCollectionBudget(monotonic=monotonic)
+    except ReferenceCollectionBudgetError as error:
+        raise OwnerCensusConsentError("owner_consent_resource_exhausted") from error
+    files = _Files(budget)
+    try:
+        budget.tick()
+        return _issue(census_path, annotations_path, census_sha256=census_sha256,
+            census_size_bytes=census_size_bytes, annotations_sha256=annotations_sha256,
+            annotations_size_bytes=annotations_size_bytes, principal=principal,
+            selected_paths=selected_paths, expires_at_epoch=expires_at_epoch,
+            installed_config_path=installed_config_path, now=now, budget=budget, files=files)
+    except ReferenceCollectionBudgetError as error:
+        raise OwnerCensusConsentError('owner_consent_resource_exhausted') from error
+    except (OSError, TypeError, UnicodeError):
+        raise OwnerCensusConsentError('owner_consent_io_failed') from None
+    finally:
+        try:
+            files.finish()
+        finally:
+            budget.close()
+
+
+_CONSENT_FIELDS = frozenset({'schema_version', 'consent_id', 'issuer_kind', 'issuer_uid', 'principal',
+    'policy_sha256', 'policy_size_bytes', 'issued_at_epoch', 'expires_at_epoch', 'census', 'annotations',
+    'inventory_count', 'selected_count', 'scope', 'decisions', 'execution_authorized',
+    'target_generation_bound', 'requires_fresh_reference_check', 'mutations', 'consent_digest'})
+
+
+def _record(raw, consent_id, policy_raw, roots, now, budget):
+    code = 'owner_consent_record_invalid'
+    try:
+        value = retained._document(raw, MAX_RECORD_BYTES, _work_budget=budget)
+    except retained.CensusDecisionError:
+        raise OwnerCensusConsentError(code) from None
+    _require(set(value) == _CONSENT_FIELDS and value['schema_version'] == CONSENT_SCHEMA
+             and value['consent_id'] == consent_id
+             and value['issuer_kind'] == 'local_root_administrative_attestation'
+             and type(value['issuer_uid']) is int and value['issuer_uid'] == 0
+             and value['scope'] == _SCOPE and _matches(value['principal'], _PRINCIPAL)
+             and value['execution_authorized'] is False and value['target_generation_bound'] is False
+             and value['requires_fresh_reference_check'] is True
+             and type(value['mutations']) is int and value['mutations'] == 0, code)
+    issued, expires = value['issued_at_epoch'], value['expires_at_epoch']
+    _require(_number(issued) and _number(expires) and issued < expires and issued <= now, code)
+    _require(now < expires, 'owner_consent_record_expired')
+    for key in ('census', 'annotations'):
+        budget.charge('entries')
+        identity = value[key]
+        _require(isinstance(identity, dict) and set(identity) == {'sha256', 'size_bytes'}
+                 and _matches(identity['sha256'], _DIGEST) and _counter(identity['size_bytes'], positive=True)
+                 and identity['size_bytes'] <= retained.MAX_JSON_BYTES, code)
+    _require(_matches(value['policy_sha256'], _DIGEST)
+             and _counter(value['policy_size_bytes'], positive=True)
+             and value['policy_size_bytes'] <= MAX_POLICY_BYTES, code)
+    _require(value['policy_size_bytes'] == len(policy_raw)
+             and value['policy_sha256'] == retained._digest(policy_raw, _work_budget=budget),
+             'owner_consent_policy_changed')
+    policy = _policy(policy_raw, value['principal'], budget)
+    rows = value['decisions']
+    _require(isinstance(rows, list) and 0 < len(rows) <= MAX_SELECTED
+             and _counter(value['selected_count'], positive=True) and value['selected_count'] == len(rows)
+             and _counter(value['inventory_count'], positive=True)
+             and len(rows) <= value['inventory_count'] <= retained.MAX_ROWS, code)
+    seen = set()
+    for pair in rows:
+        budget.charge('facts')
+        _require(isinstance(pair, dict) and set(pair) == {'decision', 'census_row'}, code)
+        row, decision = pair['census_row'], pair['decision']
+        _row(row, roots, budget, code)
+        _decision(decision, row, roots, issued, budget, code)
+        _require(row['path'] not in seen, code)
+        seen.add(row['path'])
+        _authorize(decision, policy, expires, issued)
+    _require(_matches(value['consent_digest'], _DIGEST), code)
+    budget.available('output_bytes', budget.measure(value, cap=MAX_RECORD_BYTES))
+    budget.tick()
+    _require(canonical_digest(value, digest_field='consent_digest') == value['consent_digest'], code)
+    budget.tick()
+    return value
+
+
+def _reread(files, acquired, original, cap):
+    files.verify_record(acquired)
+    os.lseek(acquired.fd, 0, os.SEEK_SET)
+    raw = files.read_bytes(acquired.fd, cap)
+    files.verify_record(acquired)
+    _require(raw == original, 'owner_consent_record_changed')
+
+
+def _report(consent_id, *, expected_sha256, expected_size_bytes, installed_config_path, now, budget, files, _publication=None):
+    _require(os.geteuid() == 0, 'owner_consent_issuer_required')
+    _require(_matches(consent_id, _CONSENT_ID) and _matches(expected_sha256, _DIGEST)
+             and _counter(expected_size_bytes, positive=True) and expected_size_bytes <= MAX_RECORD_BYTES
+             and _number(now), 'owner_consent_options_invalid')
+    config = _installed_config(files, installed_config_path)
+    policy_raw, policy_input = files.read(config.lane_owner_policy_file, cap=MAX_POLICY_BYTES,
+                                          protected=True, mode=0o600)
+    _store(files, config, consent_id)
+    raw, record_input = files.read(Path(config.owner_consent_store) / (consent_id + '.json'),
+                                    cap=MAX_RECORD_BYTES, protected=True, mode=0o600)
+    _require(len(raw) == expected_size_bytes and retained._digest(raw, _work_budget=budget) == expected_sha256,
+             'owner_consent_record_changed')
+    record = _record(raw, consent_id, policy_raw, _roots(config, budget), now, budget)
+    rows, measured = [], 1024
+    for pair in record['decisions']:
+        budget.charge('facts')
+        requirements = ['target_generation_unbound', 'fresh_reference_inventory_required',
+                        'consumer_participation_unproven', 'retirement_admission_unproven']
+        action = pair['decision']['action']
+        if action in ('offload', 'delete'):
+            requirements.append('offload_restore_receipts_required')
+        if action == 'register':
+            requirements.append('registration_not_applied')
+        projected = pair | {'unmet_requirements': requirements}
+        measured += budget.measure(projected, cap=MAX_RECORD_BYTES - measured) + 2
+        _require(measured <= MAX_RECORD_BYTES, 'owner_consent_resource_exhausted')
+        budget.retain(projected)
+        rows.append(projected)
+    files.verify()
+    _reread(files, policy_input, policy_raw, MAX_POLICY_BYTES)
+    _reread(files, record_input, raw, MAX_RECORD_BYTES)
+    files.verify()
+    result = dict(schema_version=REPORT_SCHEMA, status='owner_consent_observed', consent_id=consent_id,
+        consent_sha256=expected_sha256, consent_size_bytes=expected_size_bytes, principal=record['principal'],
+        principal_source='protected_root_consent', requestor_context_verified=False, expires_at_epoch=record['expires_at_epoch'],
+        inventory_count=record['inventory_count'], selected_count=record['selected_count'], decisions=rows,
+        scope=_SCOPE, execution_authorized=False, target_generation_bound=False,
+        requires_fresh_reference_check=True, general_reference_inventory_complete=False,
+        consumer_fence_checked=False, retirement_admission_checked=False, candidate_bytes=None,
+        estimated_reclaimable_bytes=None, eta_seconds=None, mutations=0, blockers=[])
+    budget.measure(result, cap=MAX_RECORD_BYTES)
+    if _publication is not None:
+        return _publish_reports(files, config, result, _publication)
+    return result
+
+
+def _run_report(consent_id, *, expected_sha256, expected_size_bytes, installed_config_path, now, monotonic, publication=None):
+    """One budget from installed acquisition through optional public publication."""
+    from .control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
+    try:
+        budget = ReferenceCollectionBudget(monotonic=monotonic, values_limit=10_000)
+    except ReferenceCollectionBudgetError as error:
+        raise OwnerCensusConsentError("owner_consent_resource_exhausted") from error
+    files = _Files(budget, raw_cap=MAX_CONSUMPTION_RAW)
+    try:
+        budget.tick()
+        return _report(consent_id, expected_sha256=expected_sha256, expected_size_bytes=expected_size_bytes,
+                       installed_config_path=installed_config_path, now=now, budget=budget, files=files, _publication=publication)
+    except ReferenceCollectionBudgetError as error:
+        raise OwnerCensusConsentError('owner_consent_resource_exhausted') from error
+    except (OSError, TypeError, UnicodeError):
+        raise OwnerCensusConsentError('owner_consent_io_failed') from None
+    finally:
+        try:
+            files.finish()
+        finally:
+            budget.close()
+
+
+
+def report_owner_consent(consent_id, *, expected_sha256, expected_size_bytes, installed_config_path, now, monotonic):
+    """Observe retained root consent against current policy, without target IO."""
+    return _run_report(consent_id, expected_sha256=expected_sha256, expected_size_bytes=expected_size_bytes,
+                       installed_config_path=installed_config_path, now=now, monotonic=monotonic)
+
+
+def _public_parent(files, config, path):
+    parent, name = files.parent(path, protected=True)
+    _protected(os.fstat(parent), directory=True)
+    _require(stat.S_IMODE(os.fstat(parent).st_mode) == 0o755, 'owner_consent_publication_failed')
+    try:
+        current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        current = None
+    if current is not None:
+        _protected(current)
+        _require(current.st_nlink == 1 and stat.S_IMODE(current.st_mode) == 0o644,
+                 'owner_consent_publication_failed')
+        for source in files.records:
+            files.budget.charge('entries')
+            _require((current.st_dev, current.st_ino) != (source.info.st_dev, source.info.st_ino),
+                     'owner_consent_publication_failed')
+    return parent, name
+
+
+def _publish_reports(files, config, report, publication):
+    directory, request_id = publication
+    _require(isinstance(request_id, str) and len(request_id) <= 80
+             and re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-owner-census-decision-[0-9a-f]{8}', request_id)
+             and directory == str(Path(config.spool_root) / 'results'), 'owner_consent_options_invalid')
+    report_path = Path(directory) / (request_id + '.owner-census.json')
+    parent, name = _public_parent(files, config, report_path)
+    payload = _encoded(report, files.budget)
+    _publish(files, parent, name, payload, mode=0o644, immutable=False)
+    summary = dict(schema='blueprint_operator_door_outcome.v1', status=report['status'], code=None, exit_code=0,
+        consent_id=report['consent_id'], consent_sha256=report['consent_sha256'],
+        consent_size_bytes=report['consent_size_bytes'], selected_count=report['selected_count'],
+        inventory_count=report['inventory_count'], expires_at_epoch=report['expires_at_epoch'], blockers=[],
+        result=str(report_path), result_sha256=retained._digest(payload, _work_budget=files.budget),
+        result_size_bytes=len(payload), execution_authorized=False, target_generation_bound=False,
+        general_reference_inventory_complete=False, consumer_fence_checked=False, mutations=0,
+        candidate_bytes=None, eta_seconds=None)
+    parent, name = _public_parent(files, config, Path(directory) / (request_id + '.outcome.json'))
+    _publish(files, parent, name, _encoded(summary, files.budget, cap=8192), mode=0o644, immutable=False)
+    return summary
+
+
+def _refusal(error):
+    blockers = [error.code]
+    cause = error.__cause__
+    from .control_plane_reference_budget import ReferenceCollectionBudgetError
+    if isinstance(cause, ReferenceCollectionBudgetError):
+        blockers.append(cause.code)
+    return dict(schema_version=REPORT_SCHEMA, status='refused', blockers=blockers, complete=False,
+                execution_authorized=False, target_generation_bound=False,
+                general_reference_inventory_complete=False, consumer_fence_checked=False,
+                requires_fresh_reference_check=True, candidate_bytes=None, eta_seconds=None, mutations=0)
+
+
+def main(argv=None):
+    """Fixed report CLI; issuance belongs to the existing census command."""
+    import argparse
+    import json
+    import time
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            raise OwnerCensusConsentError('owner_consent_options_invalid')
+    parser = Parser(allow_abbrev=False)
+    parser.add_argument('mode', choices=['report'])
+    parser.add_argument('--consent-id', required=True)
+    parser.add_argument('--expected-sha256', required=True)
+    parser.add_argument('--expected-size-bytes', required=True, type=int)
+    parser.add_argument('--door-config', default='/etc/blueprint-operator-door/door.json')
+    parser.add_argument('--results-dir')
+    parser.add_argument('--request-id')
+    try:
+        args = parser.parse_args(argv)
+        _require((args.results_dir is None) == (args.request_id is None), 'owner_consent_options_invalid')
+        publication = None if args.results_dir is None else (args.results_dir, args.request_id)
+        report = _run_report(args.consent_id, expected_sha256=args.expected_sha256,
+            expected_size_bytes=args.expected_size_bytes, installed_config_path=args.door_config,
+            now=time.time(), monotonic=time.monotonic, publication=publication)
+    except OwnerCensusConsentError as error:
+        print(json.dumps(_refusal(error), sort_keys=True, separators=(',', ':')))
+        return 1
+    print(json.dumps(report, sort_keys=True, separators=(',', ':'), ensure_ascii=False))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
