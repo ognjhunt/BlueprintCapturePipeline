@@ -20,7 +20,9 @@ only the pointer's run: its directory name, and its run id when the registry
 still names one. The names of one inode (a ``group`` in the pointer) come back
 as hard links of one restored file, each only when the pointer gives it that
 file's digest and size (``group_member_differs`` otherwise). Every directory it creates an entry in is
-fsynced, and the receipt is written whatever happens once the pointer verified.
+fsynced, and once the pointer verified the receipt is written whether the pass
+succeeds or fails with an error. An interrupt (Ctrl-C, ``SystemExit``) leaves no
+receipt, but the pointer stays ``restoring``, so a rerun continues and writes it.
 """
 
 from __future__ import annotations
@@ -242,11 +244,12 @@ def restore_result_residue(
     ``conflict`` and the rest still come back. The run's offload lock is held
     throughout; the pointer is rewritten ``restoring`` before the first member is
     placed, and ``restored`` once the pass is done. A pointer already
-    ``restoring`` (a pass cut short) is continued. The receipt is written beside
-    the pointer whatever happens once the pointer verified, with the digest of
-    the pointer it started from; a failure (the archive cannot be fetched or does
-    not verify, or the pointer cannot be rewritten) is recorded in it and then
-    raised.
+    ``restoring`` (a pass cut short) is continued. Once the pointer verified, the
+    receipt is written beside it whether the pass succeeds or fails with an
+    error, with the digest of the pointer it started from; a failure (the archive
+    cannot be fetched or does not verify, or the pointer cannot be rewritten) is
+    recorded in it and then raised. An interrupt (Ctrl-C, ``SystemExit``) writes no
+    receipt; the pointer then says ``restoring`` and a rerun continues.
     """
 
     unresolved = Path(run_root).expanduser()
