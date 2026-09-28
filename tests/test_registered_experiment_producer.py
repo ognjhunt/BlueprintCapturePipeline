@@ -53,8 +53,10 @@ def test_actual_registered_pair_and_worker_preflight_output_holds_target_sh(inst
     monkeypatch.setattr(consumer, "AUTHORITY_ROOT", installation[2].parents[1] / "experiment-authority")
     monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
     monkeypatch.setattr(pair, "LANE_SCRATCH_ROOTS", (root,))
+    from blueprint_pipeline import control_plane_scratch_lifetime as lifetime
+    monkeypatch.setattr(lifetime, "LANE_ROOTS", consumer.LANE_ROOTS)
     use = consumer.RegisteredExperimentUse.admit(Path(born["path"]), expected_birth=born["birth"],
-        expected_generation=born["generation"], now=lambda: 1200)
+        expected_generation=born["generation"], now=lambda: 1200, _producer_request_paths=paths)
     entered = []
     def preflight(request):
         entered.append(True)
@@ -78,3 +80,53 @@ def test_actual_registered_pair_and_worker_preflight_output_holds_target_sh(inst
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:
         os.close(fd)
+
+
+def _registered_fixture(installation, tmp_path, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_birth as issuer
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+    prepare(installation)
+    paths, _ = _paired_requests(tmp_path)
+    selectors = tuple((path, {"sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                             "size_bytes": path.stat().st_size}) for path in paths)
+    grant = issue(installation, participant_profile="g1_local_prelaunch_block.v1", request_records=selectors)
+    monkeypatch.setattr(issuer, "_blueprint_identity", lambda: (0, 0))
+    monkeypatch.setattr(os, "fchown", lambda *a: None)
+    born = birth(installation, grant)
+    monkeypatch.setattr(consumer, "LANE_ROOTS", tuple(Path(installation[1][key]) for key in
+                        ("lane_scratch_work_root", "lane_scratch_inputs_root")))
+    monkeypatch.setattr(consumer, "AUTHORITY_ROOT", installation[2].parents[1] / "experiment-authority")
+    monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
+    return consumer, Path(born["path"]), born, paths
+
+
+@pytest.mark.parametrize("fault", ["expired", "wrong_generation", "changed_request"])
+def test_failed_real_admission_releases_target_sh(installation, tmp_path, monkeypatch, fault):  # noqa: F811
+    consumer, target, born, paths = _registered_fixture(installation, tmp_path, monkeypatch)
+    if fault == "changed_request":
+        paths[0].write_bytes(b"{}")
+    with pytest.raises(ValueError):
+        consumer.RegisteredExperimentUse.admit(target, expected_birth=born["birth"],
+            expected_generation="f" * 32 if fault == "wrong_generation" else born["generation"],
+            now=lambda: 2900 if fault == "expired" else 1200, _producer_request_paths=paths)
+    fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(fd)
+
+
+def test_plain_read_admission_is_not_root_producer_permission(installation, tmp_path, monkeypatch):  # noqa: F811
+    consumer, target, born, paths = _registered_fixture(installation, tmp_path, monkeypatch)
+    with consumer.RegisteredExperimentUse.admit(target, expected_birth=born["birth"], now=lambda: 1200) as use:
+        with pytest.raises(ValueError, match="experiment_producer_authority_required"):
+            use.authorize_g1_pair(paths)
+
+
+def test_admitted_producer_rechecks_original_request_before_payload(installation, tmp_path, monkeypatch):  # noqa: F811
+    consumer, target, born, paths = _registered_fixture(installation, tmp_path, monkeypatch)
+    with consumer.RegisteredExperimentUse.admit(target, expected_birth=born["birth"],
+             now=lambda: 1200, _producer_request_paths=paths) as use:
+        paths[0].write_bytes(b"{}")
+        with pytest.raises(ValueError, match="experiment_producer_request_changed"):
+            use.authorize_g1_pair(paths)

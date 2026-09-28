@@ -422,6 +422,7 @@ def _run_g1_development_pair(
     provider_run_root: Path | None = None,
     cooperating_lifetime: bool = False,
     lifetime_stack: ExitStack,
+    _registered_use: Any = None,
 ) -> dict[str, Any]:
     """Execute in catalog order; stop on an infrastructure block to limit spend."""
 
@@ -447,7 +448,7 @@ def _run_g1_development_pair(
         *(Path(request[field]).expanduser() for request in requests for field in PATH_FIELDS),
     ]
     if (
-        not output.is_absolute() or output.exists() or output.is_symlink()
+        not output.is_absolute() or (output.exists() and _registered_use is None) or output.is_symlink()
         or output.resolve() != output
         or any(
             output.resolve().is_relative_to(path.resolve())
@@ -463,7 +464,11 @@ def _run_g1_development_pair(
     lane_root = next((root for root in LANE_SCRATCH_ROOTS if output.is_relative_to(root)), None)
     scratch_metadata = (scratch_owner, scratch_run_ref, scratch_ttl_seconds)
     lifetime = None
-    if lane_root is not None:
+    if _registered_use is not None:
+        if mode != "local" or local_runner is not run_g1_development_worker or _registered_use.path != output:
+            raise ValueError("experiment_consumer_participation_unproven")
+        lifetime = lifetime_stack.enter_context(_registered_use)
+    elif lane_root is not None:
         relative = output.relative_to(lane_root)
         if len(relative.parts) != 2 or relative.parts[0] != "g1":
             raise ValueError("g1_pair_lane_scratch_output_invalid")
@@ -516,7 +521,8 @@ def _run_g1_development_pair(
         try:
             if mode == "local":
                 worker = local_runner(request=request, output_dir=attempt_root,
-                                      **({"scratch_lifetime": lifetime} if lifetime is not None else {}))
+                                      **({"scratch_lifetime": lifetime} if lifetime is not None else {}),
+                                      **({"_registered_use": _registered_use} if _registered_use is not None else {}))
                 result_path = attempt_root / RESULT_FILENAME
                 episode_path = attempt_root / "episode" / EPISODE_FILENAME
             elif mode == "subprocess":
@@ -684,15 +690,21 @@ def run_g1_development_pair(
     scratch_owner: str | None = None, scratch_run_ref: str | None = None,
     scratch_ttl_seconds: int | None = None, provider_run_root: Path | None = None,
     cooperating_lifetime: bool = False,
+    _registered_use: Any = None,
 ) -> dict[str, Any]:
     """Hold an explicitly enrolled target through every coordinator output access."""
+    from .control_plane_lane_experiment_consumer import require_registered_use
+    require_registered_use(output_dir, _registered_use, LANE_SCRATCH_ROOTS)
+    if _registered_use is not None:
+        _registered_use.authorize_g1_pair(request_paths)
     with ExitStack() as lifetime_stack:
         return _run_g1_development_pair(
             request_paths=request_paths, output_dir=output_dir, mode=mode, source_receipt_path=source_receipt_path,
             source_packet_path=source_packet_path, policy_runtime_root=policy_runtime_root,
             worker_launcher=worker_launcher, local_runner=local_runner, scratch_owner=scratch_owner,
             scratch_run_ref=scratch_run_ref, scratch_ttl_seconds=scratch_ttl_seconds,
-            provider_run_root=provider_run_root, cooperating_lifetime=cooperating_lifetime, lifetime_stack=lifetime_stack)
+            provider_run_root=provider_run_root, cooperating_lifetime=cooperating_lifetime, lifetime_stack=lifetime_stack,
+            _registered_use=_registered_use)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

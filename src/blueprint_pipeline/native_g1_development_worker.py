@@ -459,9 +459,15 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) 
 
 
 def run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
-                              scratch_lifetime: Any = None) -> dict[str, Any]:
+                              scratch_lifetime: Any = None, _registered_use: Any = None) -> dict[str, Any]:
     """Admit optional cooperating ownership before the worker's first path access."""
-    from .control_plane_scratch_lifetime import worker_output_lifetime
+    from .control_plane_scratch_lifetime import worker_output_lifetime, LANE_ROOTS
+    from .control_plane_lane_experiment_consumer import require_registered_use
+    require_registered_use(output_dir, _registered_use, LANE_ROOTS)
+    if _registered_use is not None and scratch_lifetime is not _registered_use:
+        raise ValueError("experiment_consumer_authority_required")
+    if _registered_use is not None:
+        _registered_use.authorize_worker(request, output_dir)
     with worker_output_lifetime(output_dir, scratch_lifetime):
         return _run_g1_development_worker(request=request, output_dir=output_dir)
 
