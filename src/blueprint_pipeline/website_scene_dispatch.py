@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .task_evaluation_scene_retirement_access import scene_participant, birth_scene_member
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_public_scene_attempt_factory import record, RELEASE_SCHEMA
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
@@ -90,6 +91,7 @@ def resolve_website_source(*, intent, config):
                             materializer=materialize_website_attempt)
 
 
+@scene_participant('intent_path', 'source_binding_path', 'output_root')
 def materialize_website_attempt(*, intent_path, source_binding_path, machinery_path,
                                release_binding_path, output_root, attempt_id, now=None):
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
@@ -114,6 +116,9 @@ def materialize_website_attempt(*, intent_path, source_binding_path, machinery_p
     task = {"scene_intent_authority": record(intent_path), **binding["references"]}
     output = safe_path(output_root)
     require(output.is_absolute() and not output.is_relative_to(Path(release["repo_root"])), "website_factory_output_invalid")
+    birth_scene_member(output, owner_intent_id=intent['intent_id'],
+        owner_raw_ref=record(intent_path),
+        birth_request_raw_ref=record(preparation_attempt_path(Path(intent_path).parent, attempt_id)), now=now)
     submission = output / "submission"
     materialize_website_submission(task=task, expected_production_commit=release["source_commit"],
         **{key + "_path": checked_file(release[key]["path"], release[key])

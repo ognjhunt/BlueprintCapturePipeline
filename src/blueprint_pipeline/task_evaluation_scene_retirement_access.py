@@ -123,7 +123,7 @@ def _pairs(pairs):
     return result
 
 
-def _read(path, *, protected=False):
+def _bytes(path, *, protected=False):
     with _opened(path, protected=protected) as (fd, before):
         _require(0 < before.st_size <= _MAX_JSON_BYTES)
         raw = os.read(fd, _MAX_JSON_BYTES + 1)
@@ -131,6 +131,10 @@ def _read(path, *, protected=False):
         after = os.fstat(fd)
         _require((after.st_size, after.st_mtime_ns, after.st_ctime_ns, _identity(after))
                  == (before.st_size, before.st_mtime_ns, before.st_ctime_ns, _identity(before)))
+    return raw
+
+
+def _document(raw):
     # Lexical nesting is checked before allocating a decoded JSON graph.
     depth = 0
     quoted = escaped = False
@@ -157,6 +161,10 @@ def _read(path, *, protected=False):
         raise SceneRetirementAccessError('scene_retirement_access_unsafe') from exc
     _require(type(value) is dict)
     return value
+
+
+def _read(path, *, protected=False):
+    return _document(_bytes(path, protected=protected))
 
 
 def _policy():
@@ -247,3 +255,9 @@ def scene_participant(*path_arguments):
                 return function(*args, **kwargs)
         return admitted
     return decorate
+
+
+def birth_scene_member(path, *, owner_intent_id, owner_raw_ref, birth_request_raw_ref, now=None):
+    from .task_evaluation_scene_retirement_generations import birth_member
+    return birth_member(path, owner_intent_id=owner_intent_id, owner_raw_ref=owner_raw_ref,
+                        birth_request_raw_ref=birth_request_raw_ref, now=now)
