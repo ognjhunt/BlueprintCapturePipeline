@@ -408,8 +408,25 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
     token=journal.token
     removed=recovery.removed_inode_counts(journal) if resumed else {}
     cache_generations=_cache_generations(policy,initial,journal,allowance)
-    # Preflight the complete auxiliary suffix before any folder is detached.
-    journal.preflight(_cache_remove_records(initial))
+    # Preflight ONE remaining folder+cache suffix, never separate allowances
+    # that each fit while their combined retained events exceed the journal.
+    def remaining_records():
+        existing=set()
+        for event in journal.events:
+            allowance.tick()
+            existing.add((event['event'],event['member_key'],event['evidence'].get('relative_path')))
+        def records():
+            for index,generation in enumerate(generations):
+                yield 'retiring',str(index),{'generation_id':generation['generation_id'],
+                    'inventory_sha256':consent['members'][index]['inventory_sha256']}
+                with _opened(Path(consent['members'][index]['canonical_path']).parent,directory=True) as (_,info):
+                    yield from removal_records(preserved,index,generation['generation_id'],journal,_identity(info))
+            yield from _cache_remove_records(initial)
+        for event,key,evidence in records():
+            allowance.tick()
+            if (event,key,evidence.get('relative_path')) not in existing:
+                yield event,key,evidence
+    journal.preflight(remaining_records())
     for index,generation in enumerate(cache_generations):
         if generation['state'] in {'active','restored-active'}:
             event=journal.append('retiring',member_key='cache-'+str(index),
@@ -568,6 +585,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                                  'scene_retirement_generation_changed')
                     with _opened(Path(consent['members'][index]['canonical_path']).parent,directory=True) as (_,info):
                         yield from removal_records(preserved,index,generation['generation_id'],journal,_identity(info))
+                yield from _cache_remove_records(initial)
             journal.preflight(complete_records())
             recovery.reserve_phase(journal,preserved)
             for index,generation in enumerate(generations):
