@@ -79,3 +79,37 @@ def test_path_component_and_anchor_caps_precede_open(tmp_path, monkeypatch):
         m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path / '..')])
     with pytest.raises(m.AcquisitionError):
         m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)] * 5)
+
+
+@pytest.mark.parametrize('repeat', ['stat', 'read_json'])
+def test_repeated_observation_cannot_refresh_first_raw_identity(tmp_path, repeat):
+    m = module()
+    file = tmp_path / 'owner.json'
+    file.write_bytes(b'{"version":1}')
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        assert reader.read_json(str(file)) == b'{"version":1}'
+        file.write_bytes(b'{"version":2}')  # Same inode and size; first bytes stay bound.
+        with pytest.raises(m.AcquisitionError, match='metadata_changed'):
+            getattr(reader, repeat)(str(file))
+
+
+def test_repeated_listing_cannot_refresh_first_membership(tmp_path):
+    m = module()
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        assert reader.entries(str(tmp_path)) == ()
+        (tmp_path / 'new.json').write_bytes(b'{}')
+        with pytest.raises(m.AcquisitionError, match='metadata_changed'):
+            reader.entries(str(tmp_path))
+
+
+def test_recursive_directory_cap_is_checked_before_each_open(tmp_path, monkeypatch):
+    m = module()
+    monkeypatch.setattr(m, 'MAX_DIRECTORIES', 1)
+    real_open, calls = m.os.open, []
+    def observed_open(*args, **kwargs):
+        calls.append(args[0])
+        return real_open(*args, **kwargs)
+    monkeypatch.setattr(m.os, 'open', observed_open)
+    with pytest.raises(m.AcquisitionError, match='directories_limit'):
+        m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)])
+    assert calls == ['/']

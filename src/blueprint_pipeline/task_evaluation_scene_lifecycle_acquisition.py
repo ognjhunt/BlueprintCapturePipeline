@@ -97,10 +97,17 @@ class Acquisition:
         else:
             parent, _, name = absolute.rpartition('/')
             parent_fd, _ = self._directory(parent or '/')
+            require(len(self.directories) < MAX_DIRECTORIES, 'directories_limit')
             fd, info = self._open(name, DIR_FLAGS, parent_fd)
-            self.observations[absolute] = (parent_fd, name, identity(info))
+            self._observe(absolute, parent_fd, name, info)
         self.directories[absolute] = fd, info
         return fd, info
+
+    def _observe(self, value, parent, name, info):
+        observed = parent, name, identity(info)
+        require(value not in self.observations or self.observations[value] == observed,
+                'metadata_changed')
+        self.observations.setdefault(value, observed)
 
     def _parent(self, value):
         value = path(value, self.budget)
@@ -114,7 +121,7 @@ class Acquisition:
         self.budget.tick()
         info = os.stat(name, dir_fd=parent, follow_symlinks=False)
         self.budget.tick()
-        self.observations[value] = parent, name, identity(info)
+        self._observe(value, parent, name, info)
         return info
 
     def entries(self, value):
@@ -130,7 +137,10 @@ class Acquisition:
                 names.append(entry.name)
         self.budget.tick()
         names.sort()
-        self.memberships[value] = fd, tuple(names), identity(info)
+        observed = fd, tuple(names), identity(info)
+        require(value not in self.memberships or self.memberships[value] == observed,
+                'metadata_changed')
+        self.memberships.setdefault(value, observed)
         return tuple(names)
 
     def read_json(self, value):
@@ -160,7 +170,7 @@ class Acquisition:
             named = os.stat(name, dir_fd=parent, follow_symlinks=False)
             require(count == before.st_size and identity(before) == identity(after) == identity(named),
                     'metadata_changed')
-            self.observations[value] = parent, name, identity(before)
+            self._observe(value, parent, name, before)
             self.budget.available('raw_bytes', 0)
             payload = b''.join(pieces)
             self.budget.tick()
