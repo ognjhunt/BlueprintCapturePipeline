@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import time
@@ -17,7 +18,7 @@ from . import control_plane_lane_scratch as scratch
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_lane_experiment_authority import _current, _read
 from .control_plane_lane_experiment_publication import _BirthFiles, _publish
-from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require
+from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require, _valid_digest
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .decision_evidence_contracts import canonical_digest
 
@@ -191,6 +192,52 @@ def _manifest(files, target, target_fd, *, binding, hash_payload=True):
     rows.sort(key=lambda row: row[0])
     return dict(schema_version=MANIFEST_SCHEMA, members=rows, logical_bytes=logical, allocated_bytes=allocated,
                 **{key: binding[key] for key in ("generation", "birth", "target_identity", "lease", "completion")})
+
+
+def _manifest_record(files, raw, binding):
+    """Finite compact decoder; the supplied binding is independently selected."""
+    value = retained._document(raw, 1048576, _work_budget=files.budget)
+    fields = {'schema_version', 'generation', 'birth', 'target_identity', 'lease', 'completion',
+              'members', 'logical_bytes', 'allocated_bytes', 'manifest_digest'}
+    _require(type(value) is dict and set(value) == fields and value['schema_version'] == MANIFEST_SCHEMA
+             and value['manifest_digest'] == canonical_digest(value, digest_field='manifest_digest')
+             and all(value[key] == binding[key] for key in ('generation', 'birth', 'target_identity', 'lease', 'completion'))
+             and type(value['members']) is list and len(value['members']) <= 4096
+             and all(type(value[key]) is int and 0 <= value[key] <= 128 * 1024**3
+                     for key in ('logical_bytes', 'allocated_bytes')), 'experiment_manifest_invalid')
+    seen, directories, logical = set(), set(), 0
+    for row in value['members']:
+        files.budget.charge('values', 11)
+        _require(type(row) is list and len(row) == 5, 'experiment_manifest_invalid')
+        path, kind, identity, token, digest = row
+        _require(type(path) is str and 0 < len(path.encode('utf-8')) <= 1024 and '\x00' not in path
+                 and kind in ('file', 'directory') and type(identity) is str and len(identity) <= 64
+                 and type(token) is str and len(token) <= 160, 'experiment_manifest_invalid')
+        parts = Path(path).parts
+        _require(parts and len(parts) <= 16 and not Path(path).is_absolute() and str(Path(path)) == path
+                 and all(part not in ('.', '..') and len(part.encode('utf-8')) <= 255 for part in parts)
+                 and parts[0] not in _METADATA and path not in seen, 'experiment_manifest_invalid')
+        _require(all(str(Path(*parts[:index])) in directories for index in range(1, len(parts))),
+                 'experiment_manifest_invalid')
+        ids, metadata = identity.split(':'), token.split(':')
+        _require(len(ids) == 3 and ids[2] == ('r' if kind == 'file' else 'd') and len(metadata) == 7
+                 and all(re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', item)
+                         and int(item) <= (1 << 64) - 1 for item in ids[:2] + metadata),
+                 'experiment_manifest_invalid')
+        numbers = tuple(map(int, metadata))
+        _require(int(ids[1]) > 0 and numbers[0] <= 0o7777 and numbers[1] <= (1 << 32)-1
+                 and numbers[2] <= (1 << 32)-1 and 0 < numbers[3] <= (1 << 32)-1
+                 and numbers[4] <= 128 * 1024**3
+                 and (digest is None if kind == 'directory' else numbers[3] == 1 and _valid_digest(digest)),
+                 'experiment_manifest_invalid')
+        if kind == 'file':
+            logical += numbers[4]
+            _require(logical <= 128 * 1024**3, 'experiment_manifest_invalid')
+        else:
+            directories.add(path)
+        seen.add(path)
+    _require(logical == value['logical_bytes'], 'experiment_manifest_invalid')
+    return value
 
 
 def _context(files, config_path, issued):
@@ -450,7 +497,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
             manifest_raw, _ = files.read(Path(config.experiment_record_store) / (action_id + ".manifest.json"),
                                         cap=1048576, protected=True, mode=0o600)
             _require(issuance._selector(manifest_raw, files.budget) == action["manifest"], "experiment_manifest_changed")
-            saved_manifest = retained._document(manifest_raw, 1048576, _work_budget=files.budget)
+            saved_manifest = _manifest_record(files, manifest_raw, entry)
             from . import control_plane_lane_experiment_recovery as recovery
             target, target_fd = _target(files, config, entry)
             _lease(files, target, entry)
@@ -480,7 +527,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         manifest_raw, _ = files.read(Path(config.experiment_record_store) / (action_id + ".manifest.json"),
                                     cap=1048576, protected=True, mode=0o600)
         _require(issuance._selector(manifest_raw, files.budget) == action["manifest"], "experiment_manifest_changed")
-        manifest = retained._document(manifest_raw, 1048576, _work_budget=files.budget)
+        manifest = _manifest_record(files, manifest_raw, entry)
         _require(manifest["schema_version"] == MANIFEST_SCHEMA and manifest["manifest_digest"]
                  == canonical_digest(manifest, digest_field="manifest_digest"), "experiment_manifest_invalid")
         _require(len(manifest["members"]) <= 4096, "experiment_manifest_limit")

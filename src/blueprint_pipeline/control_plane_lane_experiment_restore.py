@@ -79,6 +79,7 @@ def issue_restore(intent_id, *, principal, owner, lease_ttl_seconds, expires_at_
         prior_selector = issuance._selector(prior_raw, files.budget)
         manifest_raw, manifest = _document(files, store_path / (old_operation + '.manifest.json'), 1048576,
                                             selector=prior['manifest'])
+        manifest = actions._manifest_record(files, manifest_raw, prior)
         rows = sorted(manifest['members'], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         retired, _, _ = recovery.retired(files, config, prior, prior_selector, target, rows, entry, original['marker'], _retained_store=store)
         ready_path = store_path / 'operations' / old_operation / 'e-00001.json'
@@ -438,6 +439,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                  'experiment_restore_selection_invalid')
         manifest_raw, manifest = _document(files, store_path / (selection['original_operation_id'] + '.manifest.json'), 1048576,
                                             selector=selection['manifest'])
+        manifest = actions._manifest_record(files, manifest_raw, prior)
         rows = sorted(manifest['members'], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         public = birth._authority_lock(files, config.experiment_authority_root, gid)
         refreshed = _current(files, public, gid)
