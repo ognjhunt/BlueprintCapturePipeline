@@ -721,7 +721,7 @@ def _use_chunks(self, path, *, role):
 
 
 def _use_chunks_checked(self, path, *, role):
-    _require(role in ("verify", "wam_hash", "upload", "preverify", "fill_hash"), "needed_cache_role_invalid")
+    _require(role in ("verify", "wam_hash", "upload", "preverify", "existing_hash", "fill_hash"), "needed_cache_role_invalid")
     row = self.row(path)
     with self.payload_open(row) as (fd, parent, name, before):
         offset = 0
@@ -780,7 +780,7 @@ def _use_materialize(self, *, inventory_path, candidate_id, output_dir, verify_o
                      "needed_cache_payload_missing")
             self.download_file(row)
         else:
-            self.hash_file(self._root / row["relative_path"], role="verify" if verify_only else "preverify")
+            self.hash_file(self._root / row["relative_path"], role="verify" if verify_only else "existing_hash")
         result.append({key: row[key] for key in ("relative_path", "sha256", "size_bytes")})
     candidate = next(c for c in self._inventory["candidates"] if c["candidate_id"] == candidate_id)
     return dict(status="checkpoint_bytes_verified", candidate_id=candidate_id,
@@ -1281,7 +1281,7 @@ def _finish_fill(use, intent, intent_ref, operation, fill_ref, moment):
 def fill_needed_checkpoint_cache(intent_id, *, expected_sha256, expected_size_bytes,
         installed_config_path=_DEFAULT_CONFIG, now=time.time, monotonic=time.monotonic):
     _require(os.geteuid() == 0, "needed_cache_root_required")
-    reservation, use, status = None, None, "failed"
+    reservation, use, status, fill_ref = None, None, "failed", None
     expected = dict(sha256=expected_sha256, size_bytes=expected_size_bytes)
     try:
         with _metadata(monotonic) as files:
@@ -1361,6 +1361,8 @@ def fill_needed_checkpoint_cache(intent_id, *, expected_sha256, expected_size_by
         finally:
             if reservation is not None:
                 reservation.release(outcome=status)
+            if status == "failed" and fill_ref is not None and use is not None and use._closed:
+                _failed_fill_terminal(use, intent, expected, operation, fill_ref, reservation, now(), monotonic)
 
 
 def update_needed_checkpoint_cache_authority(*, operation, intent_id=None,
@@ -1519,3 +1521,146 @@ def _renew_allocation(files, root, rows):
                     total += info.st_blocks*512
     _require(observed == set(expected), 'needed_cache_payload_missing')
     return total
+
+def _failed_fill_terminal(use, intent, intent_ref, operation, fill_ref, reservation, moment, monotonic):
+    """Post-cleanup observation only; cannot promote payload/current authority."""
+    _require(use._closed and not use._files.owned and not use._files.unresolved
+             and reservation.released, 'needed_cache_cleanup_incomplete')
+    with _metadata(monotonic) as files:
+        target, _ = files.parent(use._root / scratch.LEASE_FILE)
+        info = os.fstat(target)
+        _require(use._birth['target_identity'] == dict(dev=info.st_dev, ino=info.st_ino, type='directory'),
+                 'needed_cache_target_changed')
+        try:
+            fcntl.flock(target, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise NeededCheckpointCacheError('needed_cache_busy') from None
+        _lock(files, target, '.needed-cache-writer.lock', 0o640, fcntl.LOCK_EX)
+        _authority_parent(files, use._layout['config'], fcntl.LOCK_SH)
+        store = _private_store(files, use._layout['config'])
+        # No response/worker remains: transfer's joined executor/context escaped before close.
+        _record_event(files, store, intent, intent_ref, operation, 'operation_terminal', fill_ref, moment,
+            operation_raw_sha256=fill_ref['sha256'], operation_raw_size_bytes=fill_ref['size_bytes'],
+            outcome='failed', fixed_code=use._failure or 'needed_cache_fill_failed', process_identity=_process_identity(),
+            threads_joined=True, owned_fd_closed=True, unresolved_fd_count=0, reservation_release_observed=True)
+
+
+def _prior_closed_fill(files, layout, intent, entry):
+    """Authenticated finite operation history, never infer closure from missing metadata."""
+    store = _private_store(files, layout['config'])
+    _, count = _store_capacity(files, store)
+    _require(count+12 <= 256, 'needed_cache_store_full')
+    operations, terminals = [], []
+    with os.scandir(store) as records:
+        for item in records:
+            files.budget.charge('entries')
+            if item.name == _STORE_LOCK:
+                continue
+            raw, acquired = files.read(layout['private'] / item.name, cap=32768, protected=True, mode=0o600)
+            value = retained._document(raw, 32768, _work_budget=files.budget)
+            files.verify_record(acquired)
+            files.close(acquired.fd)
+            files.records.remove(acquired)
+            if value.get('intent_id') != intent['intent_id']:
+                continue
+            schema = value.get('schema_version')
+            if schema not in ('control_plane_needed_cache_operation.v1',
+                              'control_plane_needed_cache_operation_terminal.v1'):
+                continue
+            _require(value.get('event_digest') == canonical_digest(value, digest_field='event_digest')
+                     and value.get('generation') == entry['generation']
+                     and value.get('target') == entry['target'], 'needed_cache_operation_invalid')
+            if schema.endswith('_operation.v1') and value.get('operation_kind') in ('fill', 'resume'):
+                _require(value.get('prior_birth_raw_sha256') == entry['birth_raw_sha256']
+                         and value.get('prior_birth_raw_size_bytes') == entry['birth_raw_size_bytes']
+                         and owners._number(value.get('recorded_at_epoch')), 'needed_cache_operation_invalid')
+                operations.append((value, _raw(raw)))
+            elif schema.endswith('_terminal.v1'):
+                terminals.append(value)
+    _require(bool(operations), 'needed_cache_prior_operation_unproven')
+    operations.sort(key=lambda row: row[0]['recorded_at_epoch'])
+    last, selector = operations[-1]
+    _require(len(operations) == 1 or operations[-2][0]['recorded_at_epoch'] < last['recorded_at_epoch'],
+             'needed_cache_prior_operation_ambiguous')
+    matches = [t for t in terminals if t.get('operation_raw_sha256') == selector['sha256']
+               and t.get('operation_raw_size_bytes') == selector['size_bytes']
+               and t.get('operation_id') == last['operation_id']]
+    _require(len(matches) == 1, 'needed_cache_prior_operation_unproven')
+    terminal = matches[0]
+    _require(terminal.get('outcome') in ('completed', 'failed') and terminal.get('threads_joined') is True
+             and terminal.get('owned_fd_closed') is True and type(terminal.get('unresolved_fd_count')) is int
+             and terminal['unresolved_fd_count'] == 0 and terminal.get('reservation_release_observed') is True
+             and terminal.get('process_identity') == last.get('process_identity'),
+             'needed_cache_prior_operation_unproven')
+    return selector
+
+
+def resume_needed_checkpoint_cache(intent_id, *, expected_sha256, expected_size_bytes,
+        installed_config_path=_DEFAULT_CONFIG, now=time.time, monotonic=time.monotonic):
+    """Same authentic birth/absolute expiry; read-only proof precedes miss reservation."""
+    _require(os.geteuid() == 0, 'needed_cache_root_required')
+    expected = dict(sha256=expected_sha256, size_bytes=expected_size_bytes)
+    reservation, use, status, fill_ref = None, None, 'failed', None
+    with _metadata(monotonic) as files:
+        layout = _read_layout(files, installed_config_path)
+        _require(layout['config'].needed_checkpoint_cache_creation_enabled is True, 'needed_cache_creation_disabled')
+        intent, inventory, rows, _ = _read_intent(files, layout, intent_id, expected, now())
+        target = layout['root'] / 'g1-checkpoint' / intent['name']
+    try:
+        use = NeededCheckpointCacheUse.open_registered(target, mode='fill', installed_config_path=installed_config_path,
+                                                       now=now, monotonic=monotonic)
+        with _metadata(monotonic) as files:
+            _authority_parent(files, layout['config'], fcntl.LOCK_SH)
+            prior = _prior_closed_fill(files, layout, intent, use._entry)
+        present = []
+        for row in rows:
+            use.check()
+            try:
+                os.stat(target / row['relative_path'], follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            use.hash_file(target / row['relative_path'], role='preverify')
+            present.append(row['relative_path'])
+        use._resources = derive_checkpoint_flow_resources(inventory, 'resume', present_paths=present)
+        unit = os.statvfs(target).f_frsize
+        _require(type(unit) is int and 0 < unit <= 4096, 'needed_cache_allocation_unit_unsupported')
+        need = sum(((r['size_bytes']+unit-1)//unit)*unit for r in rows if r['relative_path'] not in present)+_QUANTUM
+        allocated = sum(os.stat(target / r, follow_symlinks=False).st_blocks*512 for r in present)
+        _require(need+allocated <= intent['size_budget_bytes'], 'needed_cache_owner_budget_exceeded')
+        use.check()
+        reservation = reserve_control_plane_disk('g1_checkpoint_cache', target_root=layout['root'],
+            expected_bytes=need, minimum_bytes=need, workspace=target, fresh=False, evictor=None)
+        use._reservation = reservation
+        operation = secrets.token_hex(16)
+        with keep_reservation_live(reservation) as health:
+            use._health = health
+            use.check()
+            with _metadata(monotonic) as files:
+                _authority_parent(files, layout['config'], fcntl.LOCK_SH)
+                store = _private_store(files, layout['config'])
+                _read_intent(files, layout, intent_id, expected, now())
+                fill_ref = _record_event(files, store, intent, expected, operation, 'operation', prior, now(),
+                    operation_kind='resume', process_identity=_process_identity(), stage_name=None, stage_parent_identity=None,
+                    prior_birth_raw_sha256=use._entry['birth_raw_sha256'], prior_birth_raw_size_bytes=use._entry['birth_raw_size_bytes'],
+                    reservation_id=reservation.token, planned_miss_bytes=need, metadata_allowance_bytes=_QUANTUM,
+                    transfer_deadline_epoch=use._deadline, verification_raw_sha256=prior['sha256'],
+                    verification_raw_size_bytes=prior['size_bytes'], verified_present_files_digest=canonical_digest({'files': present}),
+                    verification_phase_id=operation, long_controller_deadline_epoch=use._deadline)
+            from .native_g1_checkpoint_cache import _fetcher
+            from .native_g1_development_pair import PAIR_ORDER
+            for candidate in PAIR_ORDER:
+                _fetcher().materialize_candidate(inventory_path=layout['inventory'], candidate_id=candidate,
+                                                output_dir=target, _cache_use=use)
+            ready = _finish_fill(use, intent, expected, operation, fill_ref, now())
+            status = 'completed'
+            return dict(status='cache_ready', path=str(target), generation=intent['generation'],
+                        target_ready_observed=True, ready=ready, resource_counters=use.resource_counters)
+    finally:
+        try:
+            if use is not None:
+                use.close()
+        finally:
+            if reservation is not None:
+                reservation.release(outcome=status)
+            if status == 'failed' and fill_ref is not None and use is not None and use._closed:
+                _failed_fill_terminal(use, intent, expected, operation, fill_ref, reservation, now(), monotonic)
