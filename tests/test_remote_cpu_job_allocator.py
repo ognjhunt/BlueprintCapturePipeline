@@ -10,26 +10,40 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import stat
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline import remote_cpu_job_allocator as allocator
+from blueprint_pipeline import task_evaluation_configured_scene_object_store as object_store
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import remote_cpu_job_lease as leases
 from blueprint_pipeline import remote_cpu_job_records as records
-from blueprint_pipeline.cloud_run_jobs_client import allocation_binding
+from blueprint_pipeline.cloud_run_jobs_client import GcsTransportBucket, allocation_binding
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.paid_resource_admission import PAID_LANE_ADMISSION_SCHEMA_VERSION
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    PaidResourceAdmissionBlocked,
+)
+from blueprint_pipeline.task_evaluation_configured_scene_object_store import (
+    TaskEvaluationConfiguredSceneObjectStoreError as ObjectStoreError,
+)
 from tests.remote_cpu_allocator_fakes import (
     B2_BUCKET,
+    CAS,
     JOB,
+    OBJECT_PREFIX,
     T0,
     TRANSPORT_BUCKET,
     WORST_CASE_USD,
+    RecordingArtifactStore,
     RemoteCpuWorld,
     remote_cpu_config,
     standing_authority,
 )
+from tests.remote_cpu_fakes import FakeClock, FakeGcsError
 
 
 def _consumption(world: RemoteCpuWorld, descriptor: dict) -> Path:
@@ -269,3 +283,211 @@ def test_non_us_config_or_b2_region_is_refused(tmp_path: Path, monkeypatch) -> N
     refused = world.run("dispatch", descriptor=descriptor)
     assert "remote_cpu_object_store_region_not_us" in refused["blockers"]
     world.assert_untouched()
+
+
+def _transport(world: RemoteCpuWorld, descriptor: dict) -> tuple[str, int, dict]:
+    lease = world.lease(descriptor)
+    name = lease["transport_object"].removeprefix(f"gs://{TRANSPORT_BUCKET}/")
+    generation = lease["transport_generation"]
+    return name, generation, json.loads(world.bucket.reader().get(name, generation=generation))
+
+
+def test_presigned_puts_exist_only_after_admission_and_expire_at_the_hard_deadline(tmp_path: Path,
+                                                                                   monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch, with_authority=False)
+    world.record_environment()
+    descriptor = world.descriptor()
+    assert world.run("dispatch", descriptor=descriptor)["status"] == "blocked"
+    world.assert_untouched()
+    # Without the grant bound to this attempt the mint presigns nothing and writes nothing.
+    binding = "sha256:" + "b" * 64
+    for grant in (None, allocator.admit_remote_cpu_job(blockers=[], binding={"x": 1}, execute=True)[1]):
+        with pytest.raises(PaidResourceAdmissionBlocked):
+            allocator.mint_transport(grant=grant, binding_digest=binding, descriptor=descriptor,
+                                     bucket=world.bucket, object_store=world.runtime.object_store, now=T0)
+    world.assert_untouched()
+
+    world.write_authority(standing_authority())
+    assert world.run("dispatch", descriptor=descriptor)["admission"]["status"] == "admitted"
+    lease = world.lease(descriptor)
+    hard, fetch_end = T0 + 600 + 1800 + 120, T0 + 600 + 300 + 120
+    assert (lease["write_urls_expire_at_epoch"], lease["read_urls_expire_at_epoch"]) == (hard, fetch_end)
+    assert lease["deadlines"]["hard_deadline_epoch"] == hard
+    staging = descriptor["outputs"]["staging_prefix"].removeprefix(f"s3://{B2_BUCKET}/")
+    puts = [(key, seconds) for method, key, seconds in world.store.presigned if method == "put_object"]
+    gets = [(key, seconds) for method, key, seconds in world.store.presigned if method == "get_object"]
+    assert sorted(key.removeprefix(staging) for key, _ in puts) == [
+        "blobs.tar", "heartbeat.json", "index.json", "receipt.json"]
+    assert {seconds for _, seconds in puts} == {2520} and {seconds for _, seconds in gets} == {1020}
+    assert sorted(key for key, _ in gets) == sorted([
+        *(item["uri"].removeprefix(f"s3://{B2_BUCKET}/") for item in descriptor["inputs"]),
+        descriptor["code"]["source_archive"]["uri"].removeprefix(f"s3://{B2_BUCKET}/"), staging + "receipt.json"])
+
+    _, _, transport = _transport(world, descriptor)
+    assert transport["schema_version"] == "remote_cpu_job_transport.v1" and transport["descriptor"] == descriptor
+    heartbeat, source = transport["outputs"]["heartbeat.json"], transport["source_archive"]["url"]
+    world.clock.now = fetch_end - 1
+    assert world.store.request("GET", source).status != 403
+    assert world.store.request("PUT", heartbeat, body=b"{}").status == 200
+    world.clock.now = fetch_end
+    assert world.store.request("GET", source).status == 403
+    world.clock.now = hard - 1
+    assert world.store.request("PUT", heartbeat, body=b"{}").status == 200
+    world.clock.now = hard
+    assert world.store.request("PUT", heartbeat, body=b"{}").status == 403
+
+
+def test_transport_is_read_only_at_its_generation(tmp_path: Path, monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    world.record_environment()
+    descriptor = world.descriptor()
+    world.run("dispatch", descriptor=descriptor)
+    name, generation, transport = _transport(world, descriptor)
+    assert name.startswith(f"transport/{descriptor['job_id']}/{descriptor['attempt_id']}-")
+    reader = world.bucket.reader()
+    assert not any(hasattr(reader, verb) for verb in ("create", "delete", "list", "exists"))
+    assert transport["descriptor"]["descriptor_digest"] == descriptor["descriptor_digest"]
+    with pytest.raises(FakeGcsError) as other_generation:
+        reader.get(name, generation=generation + 1)
+    assert other_generation.value.code == 404
+    # Create-if-absent: the same name is never overwritten in place ...
+    with pytest.raises(FakeGcsError) as overwrite:
+        world.bucket.create(name, b"{}", if_generation_match=0)
+    assert overwrite.value.code == 412
+    # ... and a replacement takes a new generation, so the worker's pinned read fails.
+    world.bucket.delete(name, generation=generation)
+    assert world.bucket.create(name, b"{}", if_generation_match=0) != generation
+    with pytest.raises(FakeGcsError):
+        reader.get(name, generation=generation)
+    lease_text = (world.root / "leases" / f"{descriptor['job_id']}.json").read_text(encoding="utf-8")
+    assert "X-Amz-" not in lease_text and "https://" not in lease_text
+
+    # The production adapter creates only if absent and reads and deletes only at a generation.
+    calls: list[tuple] = []
+
+    class Blob:
+        def __init__(self, blob_name: str, generation: int | None) -> None:
+            self.name, self.pinned, self.generation = blob_name, generation, None
+
+        def upload_from_string(self, data: bytes, *, content_type: str, if_generation_match: int | None) -> None:
+            calls.append(("create", self.name, if_generation_match, content_type))
+            self.generation = 1234
+
+        def download_as_bytes(self) -> bytes:
+            calls.append(("get", self.name, self.pinned))
+            return b"{}"
+
+        def exists(self) -> bool:
+            calls.append(("exists", self.name, self.pinned))
+            return False
+
+        def delete(self) -> None:
+            calls.append(("delete", self.name, self.pinned))
+
+    class Client:
+        def __init__(self, *, project: str, credentials: object) -> None:
+            calls.append(("client", project))
+
+        def bucket(self, bucket_name: str):
+            calls.append(("bucket", bucket_name))
+            return type("Bucket", (), {"blob": staticmethod(lambda blob_name, generation=None: Blob(blob_name, generation))})()
+
+    from google.cloud import storage
+
+    monkeypatch.setattr(storage, "Client", Client)
+    bucket = GcsTransportBucket(TRANSPORT_BUCKET, credentials=object(), project="blueprint-8c1ca")
+    assert bucket.create("transport/x.json", b"{}", if_generation_match=0) == 1234
+    assert bucket.get("transport/x.json", generation=1234) == b"{}"
+    assert bucket.exists("transport/x.json", generation=1234) is False
+    bucket.delete("transport/x.json", generation=1234)
+    assert calls == [("client", "blueprint-8c1ca"), ("bucket", TRANSPORT_BUCKET),
+                     ("create", "transport/x.json", 0, "application/json"), ("get", "transport/x.json", 1234),
+                     ("exists", "transport/x.json", 1234), ("delete", "transport/x.json", 1234)]
+
+
+def test_no_url_reaches_host_disk_or_logs(tmp_path: Path, monkeypatch, caplog, capsys) -> None:
+    caplog.set_level(logging.DEBUG)
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    world.record_environment()
+    descriptor = world.descriptor()
+    world.run("dispatch", descriptor=descriptor, execute=False)
+    world.run("dispatch", descriptor=descriptor)
+    world.run("dispatch", descriptor=descriptor)
+    _, _, transport = _transport(world, descriptor)
+    assert "X-Amz-Signature=" in json.dumps(transport)  # the authority exists, but only in its GCS object
+
+    captured = capsys.readouterr()
+    texts = {"log": caplog.text, "stdout": captured.out, "stderr": captured.err}
+    for path in sorted(tmp_path.rglob("*")):
+        if path.is_file():
+            texts[str(path.relative_to(tmp_path))] = path.read_bytes().decode("utf-8", "replace")
+    assert any(name.startswith("remote-cpu-jobs/leases/") for name in texts)
+    for name, text in texts.items():
+        assert "X-Amz-" not in text and "backblazeb2" not in text and "https://" not in text, name
+
+
+def test_object_store_writes_name_only_attempt_staging_and_promote_server_side(tmp_path: Path, monkeypatch) -> None:
+    store = RecordingArtifactStore(clock=FakeClock(T0), bucket=B2_BUCKET, max_copy_bytes=1024, min_part_bytes=256)
+    job_id = "rcj-ec-" + "a" * 24
+    staging = f"{OBJECT_PREFIX}/remote-cpu/staging/{job_id}/{job_id}-a1-{'b' * 32}/"
+    key = staging.removeprefix(f"s3://{B2_BUCKET}/")
+    for uri in (f"{CAS}/remote-cpu-output/sha256/{'c' * 64}/blobs.tar", staging.replace(B2_BUCKET, "other-bucket") + "x",
+                staging.replace("/staging/", "/stage/") + "x", staging + "nested/x", staging + "..", staging + "x?versionId=1",
+                staging.replace(f"{job_id}-a1", "rcj-ec-" + "f" * 24 + "-a1") + "x"):
+        with pytest.raises(ObjectStoreError) as refused:
+            object_store.presign_remote_cpu_put(staging_uri=uri, expires_in_seconds=60, client=store, bucket=B2_BUCKET)
+        assert str(refused.value) == "remote_cpu_object_name_invalid"
+        with pytest.raises(ObjectStoreError):
+            object_store.copy_remote_cpu_staging_to_cas(
+                staging_uri=uri, digest="sha256:" + "c" * 64, size_bytes=1, etag='"e"', artifact_kind="remote-cpu-output",
+                filename="blobs.tar", client=store, bucket=B2_BUCKET)
+    for prefix in (f"{CAS}/", staging + "x", staging.rstrip("/")):
+        with pytest.raises(ObjectStoreError):
+            object_store.delete_remote_cpu_staging_versions(staging_prefix=prefix, client=store, bucket=B2_BUCKET)
+    assert store.presigned == [] and store.operations == []
+
+    # Promotion is a server-side copy guarded by the staging ETag; above the single-copy limit it is
+    # UploadPartCopy.  Either way no byte crosses the host.
+    promoted = {}
+    for name, data in (("index.json", b"i" * 100), ("blobs.tar", bytes(range(256)) * 12)):
+        etag = store.put_object(Bucket=B2_BUCKET, Key=key + name, Body=data)["ETag"]
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        arguments = {"staging_uri": staging + name, "digest": digest, "size_bytes": len(data),
+                     "artifact_kind": "remote-cpu-output", "filename": name, "client": store, "bucket": B2_BUCKET,
+                     "single_copy_limit": 1024, "part_bytes": 1024}
+        with pytest.raises(ObjectStoreError) as changed:
+            object_store.copy_remote_cpu_staging_to_cas(etag='"stale"', **arguments)
+        assert str(changed.value) == "remote_cpu_staging_changed"
+        moved = (store.bytes_sent_to_client, store.bytes_received_from_client)
+        reference = object_store.copy_remote_cpu_staging_to_cas(etag=etag, **arguments)
+        assert (store.bytes_sent_to_client, store.bytes_received_from_client) == moved
+        assert (reference["status"], reference["uri"]) == ("copied", f"{CAS}/remote-cpu-output/sha256/{digest[7:]}/{name}")
+        cas_key = reference["uri"].removeprefix(f"s3://{B2_BUCKET}/")
+        assert store.head_object(Bucket=B2_BUCKET, Key=cas_key)["Metadata"] == {"sha256": digest[7:]}
+        assert store.get_object(Bucket=B2_BUCKET, Key=cas_key)["Body"].read() == data
+        assert object_store.copy_remote_cpu_staging_to_cas(etag=etag, **arguments)["status"] == "already_present"
+        promoted[name] = cas_key
+    assert ("CopyObject", B2_BUCKET, promoted["index.json"]) in store.operations
+    assert ("CompleteMultipartUpload", B2_BUCKET, promoted["blobs.tar"]) in store.operations
+
+    # A plain delete only hides a B2 object; every version and marker goes, page by page.
+    store.delete_object(Bucket=B2_BUCKET, Key=key + "index.json")
+    deleted = object_store.delete_remote_cpu_staging_versions(staging_prefix=staging, client=store, bucket=B2_BUCKET,
+                                                              page_size=1)
+    assert (deleted["versions_deleted"], deleted["versions_remaining"], deleted["listing_complete"]) == (3, 0, True)
+    listing = store.list_object_versions(Bucket=B2_BUCKET, Prefix=key)
+    assert listing["Versions"] == [] and listing["DeleteMarkers"] == []
+    assert all(store.head_object(Bucket=B2_BUCKET, Key=cas_key) for cas_key in promoted.values())
+
+    # The production client sends and validates flexible checksums only when an API requires them.
+    settings = tmp_path / "b2"
+    settings.mkdir()
+    for name, value in {"ACCESS_KEY_ID": "id", "SECRET_ACCESS_KEY": "secret", "BUCKET": B2_BUCKET,
+                        "ENDPOINT_URL": "https://s3.us-west-004.backblazeb2.com", "REGION": "us-west-004"}.items():
+        (settings / name).write_text(value, encoding="utf-8")
+        (settings / name).chmod(0o600)
+        monkeypatch.setenv(f"BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_{name}_FILE", str(settings / name))
+    client, bucket, region = object_store.remote_cpu_object_store()
+    assert (bucket, region) == (B2_BUCKET, "us-west-004")
+    assert client.meta.config.request_checksum_calculation == "when_required"
+    assert client.meta.config.response_checksum_validation == "when_required"

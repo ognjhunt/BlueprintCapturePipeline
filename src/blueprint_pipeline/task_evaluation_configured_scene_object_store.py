@@ -958,6 +958,217 @@ def read_configured_scene_object(
     return payload
 
 
+REMOTE_CPU_STAGING_KEY_PREFIX = f"{DEFAULT_KEY_PREFIX}/remote-cpu/staging/"
+REMOTE_CPU_ARTIFACT_KINDS = frozenset(
+    {"remote-cpu-input", "remote-cpu-output", "remote-cpu-source", "remote-cpu-sentinel"}
+)
+_REMOTE_CPU_ATTEMPT = re.compile(r"(rcj-[a-z]{2}-[0-9a-f]{24})/\1-a[1-9][0-9]{0,2}-[0-9a-f]{32}")
+_MAX_SINGLE_COPY_BYTES = 5 * 1024**3
+_COPY_PART_BYTES = 512 * 1024**2
+
+
+def _remote_cpu_key(uri: str, *, bucket: str, cas: bool = False, prefix: bool = False) -> str:
+    """The key of one object in one attempt's staging prefix (or that prefix), or of one CAS object.
+
+    Every remote-CPU write authority names ``…/remote-cpu/staging/<job>/<attempt>/<name>`` and
+    nothing else; only a presigned GET may also name a content-addressed input.
+    """
+
+    parsed = urlsplit(str(uri or ""))
+    key = parsed.path.lstrip("/")
+    if cas:
+        parts = key.removeprefix(LARGE_ARTIFACT_KEY_PREFIX + "/").split("/")
+        valid = (key.startswith(LARGE_ARTIFACT_KEY_PREFIX + "/") and len(parts) == 4 and parts[1] == "sha256"
+                 and re.fullmatch(r"[0-9a-f]{64}", parts[2]) is not None
+                 and all(_SAFE_KEY_COMPONENT.fullmatch(part) for part in (parts[0], parts[3])))
+    else:
+        parts = key.removeprefix(REMOTE_CPU_STAGING_KEY_PREFIX).split("/")
+        valid = (key.startswith(REMOTE_CPU_STAGING_KEY_PREFIX) and len(parts) == 3
+                 and _REMOTE_CPU_ATTEMPT.fullmatch("/".join(parts[:2])) is not None
+                 and (parts[2] == "" if prefix else _SAFE_KEY_COMPONENT.fullmatch(parts[2]) is not None))
+    if parsed.scheme != "s3" or parsed.netloc != bucket or parsed.query or parsed.fragment or not valid:
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_object_name_invalid")
+    return key
+
+
+def _remote_cpu_presign(client: Any, method: str, *, key: str, bucket: str, expires_in_seconds: int,
+                        **params: Any) -> str:
+    if (not isinstance(expires_in_seconds, int) or isinstance(expires_in_seconds, bool)
+            or not 1 <= expires_in_seconds <= 7 * 24 * 60 * 60):
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_presign_expiration_invalid")
+    try:
+        return str(client.generate_presigned_url(
+            method, Params={"Bucket": bucket, "Key": key, **params}, ExpiresIn=expires_in_seconds,
+            HttpMethod="PUT" if method == "put_object" else "GET"))
+    except Exception:  # noqa: BLE001 - the refusal is typed and never carries a URL
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_presign_failed") from None
+
+
+def presign_remote_cpu_put(*, staging_uri: str, expires_in_seconds: int, client: Any, bucket: str) -> str:
+    """A PUT URL for one object of one attempt's staging prefix, and nothing else."""
+
+    key = _remote_cpu_key(staging_uri, bucket=bucket)
+    return _remote_cpu_presign(client, "put_object", key=key, bucket=bucket, expires_in_seconds=expires_in_seconds)
+
+
+def presign_remote_cpu_get(*, uri: str, expires_in_seconds: int, client: Any, bucket: str) -> str:
+    """A GET URL for one content-addressed input or one object of an attempt's staging prefix."""
+
+    try:
+        key = _remote_cpu_key(uri, bucket=bucket, cas=True)
+    except TaskEvaluationConfiguredSceneObjectStoreError:
+        key = _remote_cpu_key(uri, bucket=bucket)
+    return _remote_cpu_presign(client, "get_object", key=key, bucket=bucket,
+                               expires_in_seconds=expires_in_seconds, ResponseCacheControl="no-store, max-age=0")
+
+
+def read_remote_cpu_staging_object(*, staging_uri: str, maximum_size_bytes: int, client: Any,
+                                   bucket: str) -> bytes | None:
+    """One staging object's bytes (a heartbeat or a receipt), or ``None`` while it does not exist."""
+
+    key = _remote_cpu_key(staging_uri, bucket=bucket)
+    try:
+        body = client.get_object(Bucket=bucket, Key=key)["Body"]
+    except Exception as exc:  # noqa: BLE001 - provider exception shapes vary
+        if _object_missing(exc):
+            return None
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_staging_read_failed") from None
+    chunks, size = [], 0
+    try:
+        while size <= maximum_size_bytes:
+            chunk = body.read(maximum_size_bytes + 1 - size)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
+    if size > maximum_size_bytes:
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_staging_object_too_large")
+    return b"".join(chunks)
+
+
+def _precondition_failed(exc: Exception) -> bool:
+    response = getattr(exc, "response", {})
+    response = response if isinstance(response, dict) else {}
+    status = int((response.get("ResponseMetadata") or {}).get("HTTPStatusCode") or 0)
+    return status == 412 or str((response.get("Error") or {}).get("Code") or "") == "PreconditionFailed"
+
+
+def _server_side_copy(client: Any, *, bucket: str, source: str, key: str, size: int, etag: str,
+                      metadata: Mapping[str, str], single_copy_limit: int, part_bytes: int) -> None:
+    copy_source = {"Bucket": bucket, "Key": source}
+    common = {"Metadata": dict(metadata), "ContentType": "application/octet-stream"}
+    if size <= single_copy_limit:
+        client.copy_object(Bucket=bucket, Key=key, CopySource=copy_source, CopySourceIfMatch=etag,
+                           MetadataDirective="REPLACE", **common)
+        return
+    upload_id = client.create_multipart_upload(Bucket=bucket, Key=key, **common)["UploadId"]
+    try:
+        parts = []
+        for number, start in enumerate(range(0, size, part_bytes), start=1):
+            end = min(start + part_bytes, size) - 1
+            response = client.upload_part_copy(
+                Bucket=bucket, Key=key, UploadId=upload_id, PartNumber=number, CopySource=copy_source,
+                CopySourceRange=f"bytes={start}-{end}", CopySourceIfMatch=etag)
+            parts.append({"PartNumber": number, "ETag": response["CopyPartResult"]["ETag"]})
+        client.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id,
+                                         MultipartUpload={"Parts": parts})
+    except BaseException:
+        try:
+            client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+        except Exception:  # noqa: BLE001 - keep the copy failure; B2 lifecycle removes the parts
+            pass
+        raise
+
+
+def copy_remote_cpu_staging_to_cas(
+    *, staging_uri: str, digest: str, size_bytes: int, etag: str, artifact_kind: str, filename: str,
+    client: Any, bucket: str, single_copy_limit: int = _MAX_SINGLE_COPY_BYTES, part_bytes: int = _COPY_PART_BYTES,
+) -> dict[str, Any]:
+    """Promote one staging object into CAS server-side (plan 14 §9); no byte crosses the host.
+
+    ``CopyObject`` (``UploadPartCopy`` above the single-copy limit) replaces the metadata with the
+    digest and is guarded by the staging ETag, so a changed staging object is
+    ``remote_cpu_staging_changed``.  An existing CAS object must already carry the same identity.
+    The collector still owes the one streaming readback of the promoted bytes.
+    """
+
+    source = _remote_cpu_key(staging_uri, bucket=bucket)
+    if (artifact_kind not in REMOTE_CPU_ARTIFACT_KINDS or _SAFE_KEY_COMPONENT.fullmatch(str(filename)) is None
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(digest)) is None or not isinstance(size_bytes, int)
+            or isinstance(size_bytes, bool) or size_bytes < 1 or not isinstance(etag, str) or not etag):
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_promotion_invalid")
+    hexdigest = digest.removeprefix("sha256:")
+    key = f"{LARGE_ARTIFACT_KEY_PREFIX}/{artifact_kind}/sha256/{hexdigest}/{filename}"
+    copied = False
+    try:
+        try:
+            head = client.head_object(Bucket=bucket, Key=key)
+        except Exception as exc:  # noqa: BLE001 - provider exception shapes vary
+            if not _object_missing(exc):
+                raise
+            _server_side_copy(client, bucket=bucket, source=source, key=key, size=size_bytes, etag=etag,
+                              metadata={"sha256": hexdigest}, single_copy_limit=single_copy_limit,
+                              part_bytes=part_bytes)
+            copied = True
+            head = client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:  # noqa: BLE001 - typed, never echoing the provider message
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "remote_cpu_staging_changed" if _precondition_failed(exc)
+            else f"remote_cpu_promotion_failed:{type(exc).__name__}") from None
+    metadata = head.get("Metadata") if isinstance(head.get("Metadata"), dict) else {}
+    if int(head.get("ContentLength") or -1) != size_bytes or metadata.get("sha256") != hexdigest:
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_promotion_identity_mismatch")
+    return {
+        "schema_version": "remote_cpu_cas_promotion.v1", "status": "copied" if copied else "already_present",
+        "artifact_kind": artifact_kind, "uri": f"s3://{bucket}/{key}", "digest": digest, "size_bytes": size_bytes,
+        "remote_identity_verified": True, "full_byte_service_account_readback_passed": False,
+        "bytes_through_host": 0,
+    }
+
+
+def delete_remote_cpu_staging_versions(*, staging_prefix: str, client: Any, bucket: str,
+                                       page_size: int = 1000) -> dict[str, Any]:
+    """Delete every version and delete marker under one attempt's staging prefix, then list again.
+
+    B2 only hides an object deleted without a version id, so neither a HEAD 404 nor a plain
+    delete proves absence: the proof is a complete ``ListObjectVersions`` that comes back empty.
+    """
+
+    prefix = _remote_cpu_key(staging_prefix, bucket=bucket, prefix=True)
+
+    def listing() -> tuple[list[tuple[str, str]], int]:
+        entries, pages, markers = [], 0, {}
+        while True:
+            page = client.list_object_versions(Bucket=bucket, Prefix=prefix, MaxKeys=page_size, **markers)
+            pages += 1
+            for row in [*(page.get("Versions") or []), *(page.get("DeleteMarkers") or [])]:
+                if not str(row.get("Key") or "").startswith(prefix) or not row.get("VersionId"):
+                    raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_staging_listing_invalid")
+                entries.append((row["Key"], row["VersionId"]))
+            if not page.get("IsTruncated"):
+                return entries, pages
+            markers = {"KeyMarker": page["NextKeyMarker"], "VersionIdMarker": page["NextVersionIdMarker"]}
+            if pages >= 100_000:
+                raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_staging_listing_unbounded")
+
+    try:
+        entries, _ = listing()
+        for key, version in entries:
+            client.delete_object(Bucket=bucket, Key=key, VersionId=version)
+        remaining, pages = listing()
+    except TaskEvaluationConfiguredSceneObjectStoreError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - typed, never echoing the provider message
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            f"remote_cpu_staging_delete_failed:{type(exc).__name__}") from None
+    return {"versions_deleted": len(entries), "versions_remaining": len(remaining), "listing_complete": True,
+            "listing_pages": pages}
+
+
 def main(argv: list[str] | None = None) -> int:
     """Materialize one verified configured-scene artifact from a JSON reference."""
 
@@ -991,13 +1202,19 @@ __all__ = [
     "DEFAULT_KEY_PREFIX",
     "EXTERNAL_LAYER_ARTIFACT_KIND",
     "LARGE_ARTIFACT_KEY_PREFIX",
+    "REMOTE_CPU_STAGING_KEY_PREFIX",
     "TaskEvaluationConfiguredSceneObjectStoreError",
     "configured_scene_object_store_publisher",
+    "copy_remote_cpu_staging_to_cas",
+    "delete_remote_cpu_staging_versions",
     "materialize_configured_scene_artifact",
     "presign_configured_scene_artifact",
+    "presign_remote_cpu_get",
+    "presign_remote_cpu_put",
     "publish_configured_scene_artifact",
     "publish_runtime_source_external_layers",
     "read_configured_scene_object",
+    "read_remote_cpu_staging_object",
     "remote_cpu_object_store",
     "validate_configured_scene_object_store_configuration",
 ]

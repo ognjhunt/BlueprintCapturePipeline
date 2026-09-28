@@ -46,11 +46,13 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     build_paid_lane_admission,
     require_paid_resource_admission,
+    require_paid_resource_admission_grant,
 )
 from .remote_cpu_job_contract import (
     CONFIG_SCHEMA_VERSION,
     MAX_ATTEMPTS_CAP,
     STAGES,
+    TRANSPORT_SCHEMA_VERSION,
     RemoteCpuContractError,
     record_bytes,
     validate_descriptor,
@@ -64,6 +66,8 @@ from .spend_authority_consumption_root import (
 )
 from .task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError,
+    presign_remote_cpu_get,
+    presign_remote_cpu_put,
     remote_cpu_object_store,
 )
 
@@ -82,6 +86,8 @@ SETTLED_DIRECTORY = "remote-cpu-settled"
 LEDGER_LOCK = "remote-cpu.lock"
 DAY_SECONDS = 86400
 GIB = 1024**3
+# The worker's write authority: one presigned PUT per staging object (plan 14 §4, §6).
+STAGING_OBJECTS = ("blobs.tar", "index.json", "receipt.json", "heartbeat.json")
 # Plan 14 §3/§10: fetch 300 s + stage 900 s + seal/upload 420 s + a 180 s margin fill the 1800 s task.
 STAGE_LIMITS: Mapping[str, Any] = {
     "phase_seconds": {"fetch": 300, "stage": 900, "seal_upload": 420}, "start_allowance_seconds": 600,
@@ -435,6 +441,54 @@ def admit_remote_cpu_job(*, blockers: list[str], binding: Mapping[str, Any],
     return admission, grant
 
 
+def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: str, descriptor: Mapping[str, Any],
+                   bucket: Any, object_store: tuple[Any, str, str], now: float) -> dict[str, Any]:
+    """Presign one admitted attempt's transport and write it create-if-absent (plan 14 §4).
+
+    GETs for the inputs, the source archive and the receipt expire when the fetch window closes;
+    the PUTs for the staging objects expire at the attempt's hard deadline.  The transport exists
+    only in memory and in its GCS object; the caller learns the object name, its generation and
+    the two expiries, and records them on the lease before the attempt may dispatch.
+    """
+
+    require_paid_resource_admission_grant(grant, resource_class=RESOURCE_CLASS, allocation_binding_digest=binding_digest,
+                                          require_allocation_binding=True)
+    client, b2_bucket, limits = object_store[0], object_store[1], descriptor["limits"]
+    write_expiry = leases.hard_deadline_epoch(now, limits)
+    read_expiry = (float(now) + limits["start_allowance_seconds"] + limits["phase_seconds"]["fetch"]
+                   + leases.HARD_DEADLINE_GRACE_SECONDS)
+    reads, writes = math.floor(read_expiry - float(now)), math.floor(write_expiry - float(now))
+    staging, archive = descriptor["outputs"]["staging_prefix"], descriptor["code"]["source_archive"]
+
+    def get(uri: str) -> str:
+        return presign_remote_cpu_get(uri=uri, expires_in_seconds=reads, client=client, bucket=b2_bucket)
+
+    transport = {
+        "schema_version": TRANSPORT_SCHEMA_VERSION, "descriptor": dict(descriptor),
+        "inputs": [{"materialize_at": item["materialize_at"], "digest": item["digest"],
+                    "size_bytes": item["size_bytes"], "url": get(item["uri"])} for item in descriptor["inputs"]],
+        "source_archive": {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])},
+        "receipt_url": get(staging + "receipt.json"),
+        "outputs": {name: presign_remote_cpu_put(staging_uri=staging + name, expires_in_seconds=writes, client=client,
+                                                 bucket=b2_bucket) for name in STAGING_OBJECTS},
+        "read_urls_expire_at_epoch": read_expiry, "write_urls_expire_at_epoch": write_expiry,
+    }
+    name = f"transport/{descriptor['job_id']}/{descriptor['attempt_id']}-{secrets.token_hex(16)}.json"
+    payload = json.dumps(transport, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    generation = bucket.create(name, payload, if_generation_match=0)
+    return {"transport_object": f"gs://{bucket.name}/{name}", "transport_generation": int(generation),
+            "write_urls_expire_at_epoch": write_expiry, "read_urls_expire_at_epoch": read_expiry}
+
+
+def _discard_transport(bucket: Any, transport: Mapping[str, Any]) -> None:
+    """Best effort: a transport that never reached its lease must not outlive this process's refusal."""
+
+    try:
+        bucket.delete(transport["transport_object"].split("/", 3)[3], generation=transport["transport_generation"])
+    except Exception:  # noqa: BLE001 - the bucket's one-day lifecycle rule is the backstop
+        pass
+
+
 def _admission_view(admission: Mapping[str, Any]) -> dict[str, Any]:
     return {name: admission[name] for name in ("schema_version", "status", "resource_class", "blockers",
                                                "allocation_binding", "allocation_binding_digest")}
@@ -550,7 +604,20 @@ def _dispatch(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
             binding_digest=admission["allocation_binding_digest"], now=action.now)
         if consumption["status"] != "consumed":
             return {**result, "status": "blocked", "blockers": consumption["blockers"]}
-    return {**result, "status": "admitted"}
+        try:
+            transport = mint_transport(grant=grant, binding_digest=admission["allocation_binding_digest"],
+                                       descriptor=descriptor, bucket=runtime.transport_bucket,
+                                       object_store=runtime.object_store, now=action.now)
+        except Exception as exc:  # noqa: BLE001 - nothing ran; the consumed attempt now falls back
+            return {**result, "status": "blocked", "blockers": [f"remote_cpu_transport_mint_failed:{type(exc).__name__}"]}
+        try:
+            leases.transition(action.root, job_id, attempt_id=attempt_id, to_state="dispatching", now=action.now,
+                              updates=transport)
+        except RemoteCpuContractError:
+            _discard_transport(runtime.transport_bucket, transport)
+            raise
+    return {**result, "status": "dispatching", "transport_object": transport["transport_object"],
+            "transport_generation": transport["transport_generation"]}
 
 
 def _run_action(args: argparse.Namespace, runtime: RemoteCpuRuntime, now: float) -> dict[str, Any]:
