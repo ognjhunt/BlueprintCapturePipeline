@@ -54,8 +54,9 @@ def test_owner_bound_publication_gets_fresh_full_byte_readback_without_host_sour
     allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
     seen=[]
     class Transport:
-        def read_published_object_charged(self,uri,selected):
+        def read_published_object_charged(self,uri,selected,*,expected_size_bytes):
             assert selected is allowance
+            assert expected_size_bytes==len(objects[uri])
             seen.append(uri)
             raw=objects[uri]+(b'wrong' if corrupt else b'')
             selected.charge('remote_bytes',len(raw))
@@ -70,3 +71,57 @@ def test_owner_bound_publication_gets_fresh_full_byte_readback_without_host_sour
         assert set(seen)==set(objects)
         assert allowance.counts['remote_bytes']==sum(map(len,objects.values()))
     assert not any(row['uri'] in seen for row in publication['host_only_source_objects'])
+
+
+def test_declared_dictionary_bound_precedes_exposing_its_semantics():
+    from blueprint_pipeline.task_evaluation_scene_retirement_declared_bytes import _objects
+    allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
+    source=_objects(dict.fromkeys(range(10001)),allowance)
+    with pytest.raises(ValueError,match='scene_retirement_declared_reference_limit'):
+        next(source)
+
+
+@pytest.mark.parametrize('bad_digest',[False,True])
+def test_published_iterator_cleanup_is_typed_and_preserves_incoming_refusal(bad_digest):
+    from blueprint_pipeline.task_evaluation_scene_retirement_declared_bytes import verify_publication_rows
+    allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
+    class Stream:
+        def __iter__(self):
+            return self
+        def __next__(self):
+            if getattr(self,'done',False):
+                raise StopIteration
+            self.done=True
+            allowance.charge('remote_bytes',1)
+            return b'x'
+        def close(self):
+            raise RuntimeError('private provider token must not escape')
+    class Transport:
+        def read_published_object_charged(self,uri,selected,*,expected_size_bytes):
+            return Stream()
+    digest='sha256:'+hashlib.sha256(b'x').hexdigest()
+    if bad_digest:
+        digest='sha256:'+'a'*64
+    reason='scene_retirement_published_readback_unproven' if bad_digest else 'scene_retirement_remote_cleanup_unproven'
+    with pytest.raises(ValueError,match=reason) as caught:
+        verify_publication_rows([dict(uri='s3://blueprint/task-evaluation/production-inputs/fixture/a',
+                                     digest=digest,size_bytes=1)],Transport(),allowance)
+    assert 'private provider' not in str(caught.value)
+
+
+def test_resume_reserves_publication_bytes_before_persisting_or_entering_readback():
+    from blueprint_pipeline.task_evaluation_scene_retirement_recovery import reserve_phase
+    allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
+    observed=[]
+    class Journal:
+        def __init__(self):
+            self.allowance=allowance
+        def preflight(self,events):
+            observed.append(('preflight',dict(allowance.counts)))
+        def append(self,*args,**kwargs):
+            observed.append(('append',dict(allowance.counts)))
+            assert kwargs['evidence']['action_allowance']['counts']['remote_bytes']==7
+    reserve_phase(Journal(),{'archive':{'size_bytes':2}},readback=True,
+                  published_objects=[dict(size_bytes=2),dict(size_bytes=3)])
+    assert observed==[(kind,dict(local_bytes=0,archive_bytes=0,remote_bytes=7))
+                      for kind in ('preflight','append')]
