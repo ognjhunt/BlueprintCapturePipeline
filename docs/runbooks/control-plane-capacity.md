@@ -67,3 +67,54 @@ permission.
    Send a bounded test alert and confirm delivery to that person. An empty route
    is itself visible as `operator_alert_route_unconfigured` in the capacity
    summary.
+
+## Review retained experiment-folder decisions
+
+A retained census can be annotated and validated locally without inspecting its
+current target folders. Prepare UTF-8 JSON with
+`schema_version: control_plane_lane_scratch_annotations.v1`, a `census_digest`
+of `sha256:` plus the SHA-256 of the **exact retained census file bytes**, and a
+`decisions` list. Every inventory row needs one decision with its exact `path`
+and an explicit `owner`; owner guesses are not approval.
+
+Example decision shapes (replace identifiers and the absolute expiry):
+
+```json
+[
+  {"path":"/mnt/blueprint-work/experiment-a","action":"keep","owner":"nijel","expires_at_epoch":1800000000},
+  {"path":"/mnt/blueprint-work/experiment-b","action":"register","owner":"nijel","lane":"ops","name":"experiment-b","reason":"retention_review","class_intent":"cache","cleanup":"owner_review","ttl_seconds":86400,"run_ref":"run-1","size_budget_bytes":4096},
+  {"path":"/mnt/blueprint-work/experiment-c","action":"offload","owner":"nijel","reason":"retention_review"},
+  {"path":"/mnt/blueprint-work/experiment-d","action":"delete","owner":"nijel","reason":"retention_review"}
+]
+```
+
+Keep expiry must be in the future and no more than 14 days away. Registration
+requires explicit TTL no greater than 14 days and exactly one `run_ref` or
+`scene_ref`; caches need a positive integer size budget. Existing
+`lanes/<lane>/<name>` paths must match registration metadata. Offload and delete
+proposals are refused when any retained reference is present. A historical path
+outside that lane layout remains a proposal; registration validation does not
+relocate it.
+
+```bash
+python3 scripts/lane_scratch_census.py \
+  --validate-census retained-census.json --annotations annotations.json \
+  --json-out validated-decisions.json
+```
+
+`--work-root` and `--inputs-root` may supply explicit lexical containment roots.
+Scan/reference options are refused in this mode. Inputs must be bounded regular
+files with no linked ancestors or parent traversal. Lexical inventory paths and
+allowed roots are bounded to 4096 UTF-8 bytes and 64 components; these are parser
+resource limits, not current filesystem or `PATH_MAX` proof. The complete census must
+have consistent counts, measurements and reference accounting. Malformed,
+incomplete, ambiguous or digest-mismatched inputs produce a small typed refusal;
+the optional artifact is written only after validation succeeds and cannot alias
+either input. Stdout and the artifact contain the same bounded JSON bytes.
+
+The report records `mutations: 0`, `execution_authorized: false` and
+`requires_fresh_reference_check: true`. It authenticates neither an annotator nor
+current filesystem/reference state. It issues no lease, pointer, cleanup ACK or
+reclaimed-byte forecast. Applying decisions, registering old folders, enabling
+cleanup and preserving/restoring evidence remain separately reviewed execution
+gates after the merged reference/pin proofs; this command frees no bytes.

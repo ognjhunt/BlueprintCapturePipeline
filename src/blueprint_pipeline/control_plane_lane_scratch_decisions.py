@@ -8,6 +8,8 @@ import json
 import math
 import os
 import stat
+import secrets
+from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -17,6 +19,8 @@ from .control_plane_lane_scratch import (
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_ROWS = 10_000
+MAX_PATH_BYTES = 4096
+MAX_PATH_COMPONENTS = 64
 INVENTORY_SCHEMA = "control_plane_lane_scratch_census.v1"
 ANNOTATIONS_SCHEMA = "control_plane_lane_scratch_annotations.v1"
 VALIDATION_SCHEMA = "control_plane_lane_scratch_decision_validation.v1"
@@ -51,49 +55,99 @@ def _bound(value: int) -> int:
     return value
 
 
-def read_census_input(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> bytes:
-    """Read a bounded regular input through no-follow ancestor descriptors."""
-    limit = _bound(max_bytes)
+@contextmanager
+def _opened_parent(path: Path):
+    if ".." in Path(path).parts:
+        _refuse("census_input_unsafe")
     absolute = Path(os.path.abspath(path))
-    descriptors: list[int] = []
-    try:
+    with ExitStack() as descriptors:
         directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        descriptors.append(directory)
+        descriptors.callback(os.close, directory)
         for component in absolute.parts[1:-1]:
             directory = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                 dir_fd=directory)
-            descriptors.append(directory)
-        descriptor = os.open(absolute.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                             dir_fd=directory)
-        descriptors.append(descriptor)
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            _refuse("census_input_unsafe")
-        if before.st_size > limit:
-            _refuse("census_input_too_large")
-        pieces = []
-        remaining = limit + 1
-        while remaining:
-            part = os.read(descriptor, min(65536, remaining))
-            if not part:
-                break
-            pieces.append(part)
-            remaining -= len(part)
-        payload = b"".join(pieces)
-        after = os.fstat(descriptor)
-        if len(payload) > limit:
-            _refuse("census_input_too_large")
-        def identity(info):
-            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-        if len(payload) != before.st_size or identity(before) != identity(after):
-            _refuse("census_input_unsafe")
-        return payload
+            descriptors.callback(os.close, directory)
+        yield directory, absolute.name
+
+
+def read_census_input_record(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> tuple[bytes, tuple[int, int]]:
+    """Read bounded input bytes and retain their inode identity for artifact alias checks."""
+    limit = _bound(max_bytes)
+    try:
+        with _opened_parent(path) as (directory, name):
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                before = os.fstat(descriptor)
+                if not stat.S_ISREG(before.st_mode):
+                    _refuse("census_input_unsafe")
+                if before.st_size > limit:
+                    _refuse("census_input_too_large")
+                pieces = []
+                remaining = limit + 1
+                while remaining:
+                    part = os.read(descriptor, min(65536, remaining))
+                    if not part:
+                        break
+                    pieces.append(part)
+                    remaining -= len(part)
+                payload = b"".join(pieces)
+                after = os.fstat(descriptor)
+                if len(payload) > limit:
+                    _refuse("census_input_too_large")
+
+                def identity(info):
+                    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+                if len(payload) != before.st_size or identity(before) != identity(after):
+                    _refuse("census_input_unsafe")
+                return payload, (before.st_dev, before.st_ino)
+            finally:
+                os.close(descriptor)
+    except CensusDecisionError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CensusDecisionError("census_input_unsafe") from exc
     except OSError as exc:
         code = "census_input_unsafe" if exc.errno in (errno.ELOOP, errno.ENOTDIR) else "census_input_unreadable"
         raise CensusDecisionError(code) from exc
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+
+
+def read_census_input(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> bytes:
+    """Read a bounded regular input through no-follow ancestor descriptors."""
+    return read_census_input_record(path, max_bytes=max_bytes)[0]
+
+
+def write_census_validation_report(path: Path, payload: bytes, *, input_paths, input_identities) -> None:
+    """Publish only a report, using one retained parent for alias checking and writing."""
+    if len(payload) > MAX_JSON_BYTES:
+        _refuse("census_validation_output_too_large")
+    if os.path.abspath(path) in {os.path.abspath(source) for source in input_paths}:
+        _refuse("census_input_unsafe")
+    try:
+        with _opened_parent(path) as (directory, name):
+            try:
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                current = None
+            if current is not None and (not stat.S_ISREG(current.st_mode)
+                                       or (current.st_dev, current.st_ino) in input_identities):
+                _refuse("census_input_unsafe")
+            temporary = f".{name}.{secrets.token_hex(8)}.tmp"
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=directory)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+    except (OSError, TypeError, ValueError) as exc:
+        raise CensusDecisionError("census_input_unsafe") from exc
 
 
 def _document(payload: bytes, limit: int) -> dict[str, Any]:
@@ -132,8 +186,14 @@ def _number(value: Any) -> bool:
 
 
 def _path(value: Any) -> PurePosixPath:
+    try:
+        byte_count = len(value.encode("utf-8")) if isinstance(value, str) else 0
+    except UnicodeError as exc:
+        raise CensusDecisionError("census_row_ambiguous") from exc
     if (not isinstance(value, str) or not value.startswith("/") or value.startswith("//")
             or "<redacted>" in value or "\\" in value
+            or byte_count > MAX_PATH_BYTES
+            or value.count("/") > MAX_PATH_COMPONENTS
             or any(ord(character) < 32 or ord(character) == 127 for character in value)):
         _refuse("census_row_ambiguous")
     path = PurePosixPath(value)
@@ -183,7 +243,7 @@ def _inventory_rows(census: dict, roots: tuple[PurePosixPath, ...]) -> dict[str,
         if row["unreadable"] != 0:
             _refuse("census_inventory_incomplete")
         path = _path(row["path"])
-        if not any(root in path.parents for root in roots) or str(path) in indexed:
+        if path in roots or not any(root in path.parents for root in roots) or str(path) in indexed:
             _refuse("census_row_ambiguous")
         refs = row["references"]
         if (not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in known_refs for ref in refs)

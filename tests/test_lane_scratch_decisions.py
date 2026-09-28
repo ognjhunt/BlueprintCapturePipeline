@@ -294,3 +294,61 @@ def test_maximum_decision_rows_and_deterministic_path_order(monkeypatch):
     assert [d['path'] for d in result['decisions']] == ['/work/a', '/work/z']
     monkeypatch.setattr(module, 'MAX_ROWS', 1)
     _refused('census_inventory_invalid', census, annotations)
+
+
+@pytest.mark.parametrize('linked', [False, True])
+def test_reader_refuses_raw_parent_traversal_before_normalization(tmp_path, linked):
+    from blueprint_pipeline.control_plane_lane_scratch_decisions import CensusDecisionError, read_census_input
+    root = tmp_path / 'root'
+    root.mkdir()
+    (root / 'safe.json').write_bytes(b'{"wrong":true}')
+    nested = root / 'real' / 'nested'
+    nested.mkdir(parents=True)
+    (root / 'real' / 'safe.json').write_bytes(b'{"right":true}')
+    parent = root / 'linked' if linked else nested
+    if linked:
+        parent.symlink_to(nested, target_is_directory=True)
+    with pytest.raises(CensusDecisionError, match='^census_input_unsafe$'):
+        read_census_input(parent / '..' / 'safe.json')
+
+
+def test_lexical_path_resource_policy_has_small_injected_boundaries(monkeypatch):
+    from blueprint_pipeline import control_plane_lane_scratch_decisions as module
+    monkeypatch.setattr(module, 'MAX_PATH_BYTES', 16, raising=False)
+    monkeypatch.setattr(module, 'MAX_PATH_COMPONENTS', 3, raising=False)
+    for path in ('/work/'+'x'*11, '/work/a/b/c'):
+        census = _json(_inventory([_row(path)]))
+        _refused('census_row_ambiguous', census, _annotations(census, [_decision(path=path)]))
+    for path in ('/work/'+'x'*10, '/work/a/b'):
+        census = _json(_inventory([_row(path)]))
+        assert _validate(census, _annotations(census, [_decision(path=path)]))['decision_count'] == 1
+    census = _json(_inventory())
+    from blueprint_pipeline.control_plane_lane_scratch_decisions import CensusDecisionError
+    with pytest.raises(CensusDecisionError, match='census_row_ambiguous'):
+        module.validate_census_annotations(census, _annotations(census), now=1000,
+                                           allowed_roots=['/work/'+'x'*11])
+
+
+@pytest.mark.parametrize("roots", [("/work", "/work/nested"), ("/work/nested", "/work")])
+def test_target_cannot_equal_any_explicit_root_even_beneath_another(roots):
+    from blueprint_pipeline.control_plane_lane_scratch_decisions import CensusDecisionError, validate_census_annotations
+    path = '/work/nested'
+    census = _json(_inventory([_row(path)]))
+    with pytest.raises(CensusDecisionError, match='census_row_ambiguous'):
+        validate_census_annotations(census, _annotations(census, [_decision(path=path)]),
+                                    now=1000, allowed_roots=roots)
+    child = path + '/child'
+    census = _json(_inventory([_row(child)]))
+    assert validate_census_annotations(census, _annotations(census, [_decision(path=child)]),
+                                        now=1000, allowed_roots=roots)['decision_count'] == 1
+
+
+def test_malformed_unicode_root_and_nul_input_path_have_typed_refusals():
+    from pathlib import Path
+    from blueprint_pipeline import control_plane_lane_scratch_decisions as module
+    census = _json(_inventory())
+    with pytest.raises(module.CensusDecisionError, match='census_row_ambiguous'):
+        module.validate_census_annotations(census, _annotations(census), now=1000,
+                                           allowed_roots=['/work/\ud800'])
+    with pytest.raises(module.CensusDecisionError, match='census_input_unsafe'):
+        module.read_census_input(Path('/bad\x00path'))

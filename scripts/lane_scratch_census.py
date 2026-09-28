@@ -12,6 +12,7 @@ import json
 import os
 import secrets
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,11 +23,16 @@ from blueprint_pipeline.control_plane_lane_scratch_census import (  # noqa: E402
     build_census,
 )
 
+from blueprint_pipeline.control_plane_lane_scratch_decisions import (  # noqa: E402
+    CensusDecisionError, VALIDATION_SCHEMA, encode_validation_report,
+    read_census_input_record, validate_census_annotations, write_census_validation_report,
+)
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--work-root", type=Path, default=DEFAULT_WORK_ROOT)
-    parser.add_argument("--inputs-root", type=Path, default=DEFAULT_INPUTS_ROOT)
+    parser.add_argument("--work-root", default=str(DEFAULT_WORK_ROOT))
+    parser.add_argument("--inputs-root", default=str(DEFAULT_INPUTS_ROOT))
     parser.add_argument("--process-root", type=Path, default=Path("/proc"))
     parser.add_argument("--pins-root", type=Path,
                         default=Path("/var/lib/blueprint/pipeline-control-plane/storage-pins"))
@@ -40,6 +46,8 @@ def _parser() -> argparse.ArgumentParser:
     active.add_argument("--active-run-inventory-empty", action="store_true")
     parser.add_argument("--max-seconds", type=float, default=240.0)
     parser.add_argument("--json-out", type=Path)
+    parser.add_argument("--validate-census", type=Path)
+    parser.add_argument("--annotations", type=Path)
     return parser
 
 
@@ -78,14 +86,46 @@ def _write_json(path: Path, report: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
+
+def _validation_mode(args, argv: list[str]) -> int:
+    scan_options = {"--process-root", "--pins-root", "--release-link", "--queue-root",
+                    "--queue-inventory-empty", "--active-run-root", "--active-run-inventory-empty",
+                    "--max-seconds"}
+    try:
+        if (args.validate_census is None or args.annotations is None
+                or any(option.startswith(token.split("=", 1)[0])
+                       for token in argv if token.startswith("--") for option in scan_options)):
+            raise CensusDecisionError("census_annotations_invalid")
+        census, census_identity = read_census_input_record(args.validate_census)
+        annotations, annotation_identity = read_census_input_record(args.annotations)
+        report = validate_census_annotations(census, annotations, now=time.time(),
+                                            allowed_roots=(args.work_root, args.inputs_root))
+        payload = encode_validation_report(report)
+        if args.json_out is not None:
+            write_census_validation_report(args.json_out, payload,
+                input_paths=(args.validate_census, args.annotations),
+                input_identities=(census_identity, annotation_identity))
+    except CensusDecisionError as exc:
+        report = {"schema_version": VALIDATION_SCHEMA, "status": "refused", "blockers": [exc.code],
+                  "mutations": 0, "execution_authorized": False,
+                  "requires_fresh_reference_check": True}
+        print(encode_validation_report(report).decode("utf-8"), end="")
+        return 1
+    print(payload.decode("utf-8"), end="")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
-    args = parser.parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(arguments)
+    if args.validate_census is not None or args.annotations is not None:
+        return _validation_mode(args, arguments)
     if not 0 < args.max_seconds <= 240:
         parser.error("--max-seconds must be between 0 and 240")
     queue_roots = () if args.queue_inventory_empty else args.queue_root
     active_roots = () if args.active_run_inventory_empty else args.active_run_root
-    report = build_census(work_root=args.work_root, inputs_root=args.inputs_root,
+    report = build_census(work_root=Path(args.work_root), inputs_root=Path(args.inputs_root),
                           process_root=args.process_root, pins_root=args.pins_root,
                           queue_roots=queue_roots, release_link=args.release_link,
                           active_run_roots=active_roots, max_seconds=args.max_seconds)
