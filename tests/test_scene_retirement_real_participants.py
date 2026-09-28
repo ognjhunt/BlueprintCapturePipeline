@@ -41,6 +41,7 @@ def access_fixture(tmp_path, monkeypatch):
     policy.chmod(0o644)
     monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(policy))
     # Authority is a current-user hermetic fixture, never a production override.
+    monkeypatch.setattr(access, '_INSTALLED_POLICY', policy, raising=False)
     monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
     monkeypatch.setattr(access, '_SERVICE_IDENTITY', (os.getuid(),os.getgid()))
     return access, value, member
@@ -397,3 +398,48 @@ def test_actual_birth_cleans_owned_birth_gate_on_store_fsync_failure(tmp_path, m
             except OSError:
                 continue
             os.close(fd)
+
+
+@pytest.mark.parametrize('role', ['completed-review-reader', 'submission-publisher'])
+def test_actual_participant_uses_installed_fence_without_environment(tmp_path, monkeypatch, role):
+    access, _, member = access_fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
+    entered = []
+    if role == 'completed-review-reader':
+        from blueprint_pipeline import artifixer_completed_training_reuse as existing
+        monkeypatch.setattr(existing, '_read', lambda *args: entered.append(args))
+        operation = lambda: existing.stage_completed_review(source_root=member, output_root=tmp_path / 'out')
+    else:
+        from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as existing
+        monkeypatch.setattr(existing, '_publish_locked', lambda *args, **kwargs: entered.append(args))
+        operation = lambda: existing.publish_scene_configuration_submission(
+            manifest_path=member / 'manifest.json', receipt_path=member / 'publication.json',
+            expected_source_commit='a' * 40, lock_root=tmp_path / 'publisher-locks')
+    with access.exclusive_scene_access():
+        with pytest.raises(access.SceneRetirementAccessError, match='generation_unavailable'):
+            operation()
+    assert entered == []
+    assert 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE' not in os.environ
+
+
+def test_foreign_environment_cannot_redirect_actual_participant(tmp_path, monkeypatch):
+    access, _, member = access_fixture(tmp_path, monkeypatch)
+    foreign = tmp_path / 'foreign.json'
+    foreign.write_text('{}')
+    monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(foreign))
+    from blueprint_pipeline import artifixer_completed_training_reuse as existing
+    entered = []
+    monkeypatch.setattr(existing, '_read', lambda *args: entered.append(args))
+    with pytest.raises(access.SceneRetirementAccessError, match='policy_binding_unproven'):
+        existing.stage_completed_review(source_root=member, output_root=tmp_path / 'out')
+    assert entered == []
+
+
+def test_genuinely_absent_installed_policy_preserves_actual_reader(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    monkeypatch.setattr(access, '_INSTALLED_POLICY', tmp_path / 'absent.json', raising=False)
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', raising=False)
+    from blueprint_pipeline import artifixer_completed_training_reuse as existing
+    monkeypatch.setattr(existing, '_read', lambda *args: (_ for _ in ()).throw(StopFixture()))
+    with pytest.raises(StopFixture):
+        existing.stage_completed_review(source_root=tmp_path, output_root=tmp_path / 'out')
