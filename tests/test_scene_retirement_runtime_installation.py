@@ -122,3 +122,58 @@ def test_dependency_location_is_derived_without_executing_venv(tmp_path, monkeyp
     (venv / 'bin').mkdir()
     (venv / 'bin/python').write_text('raise AssertionError("must not execute service interpreter")')
     assert module.dependency_root(venv) == sdk
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_interrupted_owned_copy_resumes_without_overwriting_prefix(tmp_path, monkeypatch, partial):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    original = module._copy
+    failed = False
+    def interrupt(path, destination, expected, deadline):
+        nonlocal failed
+        if not failed:
+            failed = True
+            if partial:
+                module._mkdir(destination.parent)
+                destination.write_bytes(path.read_bytes()[:3])
+                destination.chmod(0o600)
+            else:
+                original(path, destination, expected, deadline)
+            raise OSError('simulated interrupted copy')
+        return original(path, destination, expected, deadline)
+    monkeypatch.setattr(module, '_copy', interrupt)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.prepare(source, deps)
+    assert not (module._BOOT_ROOT / 'continuous_bootstrap.py').exists()
+    monkeypatch.setattr(module, '_copy', original)
+    assert module.prepare(source, deps)['status'] == 'prepared'
+    assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py').read_bytes() == b'# trusted package\n'
+    assert module.prepare(source, deps)['status'] == 'already_prepared'
+
+
+@pytest.mark.parametrize('change', ['foreign-prefix', 'changed-input', 'extra-file'])
+def test_interrupted_install_never_adopts_foreign_or_changed_bytes(tmp_path, monkeypatch, change):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    original = module._copy
+    def interrupt(path, destination, expected, deadline):
+        module._mkdir(destination.parent)
+        destination.write_bytes(path.read_bytes()[:3])
+        destination.chmod(0o600)
+        raise OSError('simulated interrupted copy')
+    monkeypatch.setattr(module, '_copy', interrupt)
+    with pytest.raises(ValueError):
+        module.prepare(source, deps)
+    targets = [p for p in module._RUNTIME_ROOT.rglob('*') if p.is_file()]
+    assert len(targets) == 1
+    if change == 'foreign-prefix':
+        targets[0].write_bytes(b'foreign')
+    elif change == 'changed-input':
+        (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# changed source\n')
+    else:
+        (module._RUNTIME_ROOT / 'unowned').write_bytes(b'foreign')
+    before = {str(p): p.read_bytes() for p in module._RUNTIME_ROOT.rglob('*') if p.is_file()}
+    monkeypatch.setattr(module, '_copy', original)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.prepare(source, deps)
+    assert {str(p): p.read_bytes() for p in module._RUNTIME_ROOT.rglob('*') if p.is_file()} == before
+    assert not (module._BOOT_ROOT / 'continuous_bootstrap.py').exists()
