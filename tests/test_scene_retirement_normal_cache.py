@@ -408,7 +408,8 @@ def test_native_cache_union_metadata_refuses_a_second_owner_alias_before_payload
             cache_aliases=[dict(canonical_path=str(alias),digest='sha256:'+alias.name,size_bytes=6)])
 
 
-def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generations(tmp_path,monkeypatch):
+@pytest.mark.parametrize('mode',['complete','combined_journal_cap'])
+def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generations(tmp_path,monkeypatch,mode):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
     from blueprint_pipeline.task_evaluation_scene_retirement_mutation import inventory_digest
@@ -453,6 +454,18 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
             'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][0]['inventory_sha256']})
         generation=engine._transition(policy,generation,state='retiring',token=journal.token,journal_ref=event,
             inventory_sha256=consent['members'][0]['inventory_sha256'])
+        if mode=='combined_journal_cap':
+            from blueprint_pipeline import task_evaluation_scene_retirement_journal as journal_module
+            from blueprint_pipeline.task_evaluation_scene_retirement_mutation import removal_records
+            folder_rows=list(removal_records(preserved,0,generation['generation_id'],journal,
+                (root.parent.stat().st_dev,root.parent.stat().st_ino,root.parent.stat().st_mode)))
+            cache_rows=list(engine._cache_remove_records(initial))
+            monkeypatch.setattr(journal_module,'MAX_EVENTS',journal.sequence+max(len(folder_rows),len(cache_rows)))
+            with pytest.raises(ValueError,match='scene_retirement_journal_limit'):
+                engine._finish_retirement(policy,consent,initial,journal,pending,[generation],[],allowance)
+            assert root.is_dir() and all(Path(row['canonical_path']).is_file() for row in consent['cache_objects'])
+            assert all(json.loads(file.read_bytes())['state']=='active' for file,_ in caches)
+            return
         receipt=engine._finish_retirement(policy,consent,initial,journal,pending,[generation],[],allowance)
     assert receipt['status']=='retired' and not root.exists()
     assert all(not Path(row['canonical_path']).exists() for row in consent['cache_objects'])
