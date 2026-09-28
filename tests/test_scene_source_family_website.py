@@ -314,3 +314,76 @@ def test_handoff_own_reference_positive_size_validates_without_registration():
     change(args, 'website_handoffs', lambda r: r['source_registration'].update(size_bytes=0), 'digest')
     args['source_records']['website_registrations'] = []
     refuses(args)
+
+
+@pytest.mark.parametrize('edit', [
+    lambda h: h.update(preparation_path='/retained/pubsub/foreign/preparation.json'),
+    lambda h: h.update(preparation_digest='sha256:' + 'f'*64),
+    lambda h: h['runtime_inputs'].update(path='/retained/pubsub/foreign/runtime_inputs.json'),
+    lambda h: h['runtime_inputs'].update(digest='sha256:' + 'f'*64),
+])
+def test_handoff_available_edges_validate_without_registration_bytes(edit):
+    args = fixture(website=True)
+    change(args, 'website_handoffs', edit, 'digest')
+    args['source_records']['website_registrations'] = []
+    refuses(args)
+
+
+def test_status_only_error_runtime_handoff_is_legal_protected_history():
+    args = fixture(website=True)
+    change(args, 'website_handoffs', {'runtime_inputs': {'status': 'awaiting_inputs'}}, 'digest')
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert result['source_family_complete'] is False
+
+
+@pytest.mark.parametrize('target', ['original', 'context'])
+def test_development_original_and_context_available_selector_contradictions_refuse(target):
+    args = fixture(website=True, development=True)
+    if target == 'original':
+        path, raw = args['source_records']['website_preparations'][1]
+        value = json.loads(raw)
+        value['status'] = 'needs_input'
+        args['source_records']['website_preparations'][1] = pair(path, seal(value, 'digest'))
+    else:
+        change(args, 'website_preparations', lambda p: p['development_test'].update(task_context_digest='sha256:' + 'f'*64), 'digest')
+    args['source_records']['website_registrations'] = []
+    refuses(args)
+
+
+@pytest.mark.parametrize('edit', [
+    lambda r: r['host_only_source_objects'][0].update(size_bytes=True),
+    lambda r: r['host_only_source_objects'][0].update(relative_path='../bad'),
+    lambda r: r['host_only_source_objects'][0].update(publication_allowed=True),
+    lambda r: r['host_only_source_objects'].append(dict(r['host_only_source_objects'][0])),
+])
+def test_host_only_publication_own_rows_refuse_without_manifest(edit):
+    args = publication_fixture(host_only=True)
+    change(args, 'submission_publications', edit, 'receipt_digest')
+    args['seed_records']['source_submissions'] = args['seed_records']['source_submissions'][:1]
+    args['seed_records']['factories'] = []
+    refuses(args)
+
+
+def test_copied_manifest_provenance_selected_by_exact_factory_path_is_permutation_stable():
+    args = publication_fixture()
+    path, raw = args['seed_records']['source_submissions'][1]
+    # The old child deliberately refuses foreign submissions, so its own valid
+    # independent historical attempt carries the byte-identical manifest copy.
+    from tests.test_scene_source_attempt_lineage import fixture as historical
+    extra = historical('website', attempt_id='other-attempt')
+    for old, new in (('attempt_records', 'attempts'), ('snapshot_records', 'source_snapshots'),
+                     ('factory_records', 'factories'), ('submission_records', 'source_submissions')):
+        args['seed_records'][new] += extra[old]
+    other_manifest_path = extra['submission_records'][1][0]
+    args['seed_records']['source_submissions'][-1] = (other_manifest_path, raw)
+    other_request = args['seed_records']['source_submissions'][0]
+    args['seed_records']['source_submissions'][-2] = (extra['submission_records'][0][0], other_request[1])
+    factory_path, factory_raw = args['seed_records']['factories'][-1]
+    factory = json.loads(factory_raw)
+    factory.update(submission_manifest=ref(args['seed_records']['source_submissions'][-1]),
+                   submission_request=ref(args['seed_records']['source_submissions'][-2]))
+    args['seed_records']['factories'][-1] = pair(factory_path, seal(factory, 'factory_digest'))
+    first = api().join_retained_scene_source_family_inventory(**args)
+    assert first['publication_observations'][0]['historical_publication_binding_verified']
+    args['seed_records']['source_submissions'].reverse()
+    assert first == api().join_retained_scene_source_family_inventory(**args)

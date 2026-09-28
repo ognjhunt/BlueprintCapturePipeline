@@ -40,6 +40,7 @@ def capture(context, old):
     for value, proof in rows['website_handoffs']:
         if value.get('source_registration') is not None:
             context.selected(value['source_registration'], proof, {'website_registrations'})
+    _available_capture_edges(context, rows)
     intent = context.decoded['intent'][0][0]
     registrations = context.known('website_registrations', 'website_scene_source_registration.v1', 'registration_digest')
     bindings = context.known('website_bindings', 'website_scene_source_binding.v1', 'binding_digest')
@@ -166,8 +167,57 @@ def _handoff_edges(context, handoff, selected):
             c.require(value.get('preparation_digest') == preparation[0]['digest'], 'handoff_preparation_invalid')
     runtime = value.get('runtime_inputs')
     if selected['runtime_inputs'] and runtime is not None:
-        c.require(isinstance(runtime, dict) and runtime.get('path') == selected['runtime_inputs'][1]['path']
-            and runtime.get('digest') == selected['runtime_inputs'][0]['digest'], 'handoff_runtime_invalid')
+        c.require(isinstance(runtime, dict), 'handoff_runtime_invalid')
+        if 'path' in runtime:
+            c.require(runtime['path'] == selected['runtime_inputs'][1]['path'], 'handoff_runtime_invalid')
+        if 'digest' in runtime:
+            c.require(runtime['digest'] == selected['runtime_inputs'][0]['digest'], 'handoff_runtime_invalid')
+
+
+def _available_capture_edges(context, rows):
+    indexes = {role: {} for role in rows}
+    for role, supplied in rows.items():
+        for row in supplied:
+            indexes[role].setdefault(row[1]['path'], []).append(row)
+    for row in rows['website_preparations']:
+        value, proof = row
+        development = value.get('development_test')
+        if development is None:
+            continue
+        c.require(isinstance(development, dict), 'development_preparation_invalid')
+        _, base = _layout(context, row)
+        for field, role, expected, seal in (
+            ('source_preparation_digest', 'website_preparations', c.child(base, 'preparation.json'), 'digest'),
+            ('task_context_digest', 'website_task_contexts', c.child(base, 'development_test', 'task_context.json'), 'context_digest')):
+            if field in development:
+                c.require(c.matches(development[field]), 'development_preparation_invalid')
+                candidates = indexes[role].get(expected, [])
+                if candidates:
+                    c.require(any(r[0][seal] == development[field] for r in candidates), 'development_preparation_invalid')
+                else:
+                    context.missing(role, 'development_selector_unavailable', [proof], expected, {'digest': development[field]})
+    for row in rows['website_handoffs']:
+        value, proof = row
+        _, base = _layout(context, row)
+        original = c.child(base, 'preparation.json')
+        if 'preparation_path' in value:
+            c.require(value['preparation_path'] == original, 'handoff_preparation_invalid')
+        if 'preparation_digest' in value:
+            c.require(c.matches(value['preparation_digest']), 'handoff_preparation_invalid')
+            candidates = indexes['website_preparations'].get(original, [])
+            if candidates:
+                c.require(any(r[0]['digest'] == value['preparation_digest'] for r in candidates), 'handoff_preparation_invalid')
+        runtime = value.get('runtime_inputs')
+        if runtime is not None:
+            c.require(isinstance(runtime, dict), 'handoff_runtime_invalid')
+            expected_paths = (c.child(base, 'native', 'runtime_inputs.json'), c.child(base, 'development_test', 'runtime_inputs.json'))
+            if 'path' in runtime:
+                c.require(runtime['path'] in expected_paths, 'handoff_runtime_invalid')
+            if 'digest' in runtime:
+                c.require(c.matches(runtime['digest']), 'handoff_runtime_invalid')
+                candidates = indexes['website_runtime_inputs'].get(runtime.get('path'), [])
+                if candidates:
+                    c.require(any(r[0]['digest'] == runtime['digest'] for r in candidates), 'handoff_runtime_invalid')
 
 
 def _manifest(context, row):
@@ -210,11 +260,14 @@ def publication(context, old):
         schema = row[0].get('schema_version')
         if schema == 'task_evaluation_scene_configuration_submission_manifest.v1' and 'files' in row[0]:
             inventory, prefix = _manifest(context, row)
-            manifests[(row[1]['sha256'], row[0]['manifest_digest'])] = row, inventory, prefix
+            manifests.setdefault((row[1]['sha256'], row[0]['manifest_digest']), []).append((row, inventory, prefix))
         elif schema == 'task_evaluation_launch_preparation_request.v1':
             requests.setdefault(c.canonical_digest(row[0]), []).append(row)
-    for row, inventory, _ in manifests.values():
+    for copies in manifests.values():
+      for row, inventory, _ in copies:
         for request in requests.get(row[0]['request_digest'], []):
+            if request[1]['path'].rsplit('/', 1)[0] != row[1]['path'].rsplit('/', 1)[0]:
+                continue
             stack = [request[0]]
             while stack:
                 item = stack.pop()
@@ -249,10 +302,24 @@ def publication(context, old):
                 and uri not in seen_uris and relative not in seen_paths, 'publication_inventory_invalid')
             seen_uris.add(uri)
             seen_paths.add(relative)
+        host_seen = set()
+        for item in value['host_only_source_objects']:
+            c.require(isinstance(item, dict) and set(item) == {'relative_path', 'uri', 'digest', 'size_bytes', 'publication_allowed'},
+                      'publication_host_source_invalid')
+            relative = c.relative(item['relative_path'])
+            c.require(relative.startswith('source/') and isinstance(item['uri'], str) and len(item['uri']) <= 4096
+                and item['uri'].startswith(('https://', 'gs://', 's3://')) and not any(ch.isspace() for ch in item['uri'])
+                and c.matches(item['digest']) and type(item['size_bytes']) is int and item['size_bytes'] > 0
+                and item['publication_allowed'] is False and relative not in host_seen, 'publication_host_source_invalid')
+            host_seen.add(relative)
         workspace = proof['path'].rsplit('/', 1)[0]
         c.require(proof['path'].endswith('/publication.json') and c.under(proof['path'], c.child(context.roots['factory_output_root'], context.intent_id)),
                   'publication_path_invalid')
-        selected = manifests.get((value['manifest_sha256'], value['manifest_digest']))
+        factory_rows = context.by_path['factories'].get(c.child(workspace, 'factory.json'), [])
+        factory_ref = factory_rows[0][0].get('submission_manifest') if len(factory_rows) == 1 else None
+        copies = manifests.get((value['manifest_sha256'], value['manifest_digest']), [])
+        selected_rows = [r for r in copies if factory_ref == {k: r[0][1][k] for k in ('path', 'sha256', 'size_bytes')}]
+        selected = selected_rows[0] if len(selected_rows) == 1 else None
         if selected:
             manifest, inventory, prefix = selected
             c.require(all(value[k] == manifest[0][k] for k in ('source_commit', 'input_namespace', 'request_digest')), 'publication_binding_invalid')
@@ -271,7 +338,6 @@ def publication(context, old):
             retained = value.get('host_only_source_objects')
             c.require(isinstance(retained, list) and retained == [r for r in manifest[0]['files'] if not r['publication_allowed']],
                       'publication_host_source_invalid')
-        factory_rows = context.by_path['factories'].get(c.child(workspace, 'factory.json'), [])
         exact_factory = selected is not None and len(factory_rows) == 1 and factory_rows[0][0].get('submission_manifest') == {
             k: selected[0][1][k] for k in ('path', 'sha256', 'size_bytes')}
         unique = exact_factory and workspace in bound
