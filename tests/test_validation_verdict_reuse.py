@@ -425,3 +425,22 @@ def test_a_validation_ending_during_another_ones_restore_leaves_no_finished_trac
     threading.settrace(before)
     assert waited == {"older saw the resolution": True} and older_ended.is_set()
     assert leaked is before
+
+
+@pytest.mark.usefixtures("_single_threaded_verdict_persistence")
+def test_an_unexpected_dependency_error_refuses_persistence_and_raises_into_no_thread(monkeypatch):
+    """Only a few error types were caught: any other one deriving a dependency, such as the
+    AttributeError of a test double replacing find_spec, escaped from the tracer into the traced code
+    of whichever thread the validation was tracing."""
+    from blueprint_pipeline import validation_code_dependencies
+
+    assert store.executed_code_identity(store.verdict_root)[1]  # this run persists its code
+
+    def broken(frame, module):
+        raise AttributeError("'object' object has no attribute 'origin'")
+
+    monkeypatch.setattr(validation_code_dependencies, "frame_dependencies", broken)
+    in_owner = store.executed_code_identity(store.verdict_root)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        in_worker = store.executed_code_identity(lambda: pool.submit(store.verdict_root).result())
+    assert in_owner == in_worker == (store.verdict_root(), None)

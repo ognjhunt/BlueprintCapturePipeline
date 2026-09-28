@@ -141,7 +141,7 @@ def executed_code_identity(run, *, always=()):
                     dependencies = {module} | frame_dependencies(frame, module)
                     for collector in _DEPENDENCIES.get():
                         collector.update(dependencies)
-                except (OSError, ValueError, ImportError, SyntaxError):
+                except Exception:  # refuses persistence; never raises into the traced code
                     failures.append(True)
                     for collector in collectors:
                         collector.add("")
