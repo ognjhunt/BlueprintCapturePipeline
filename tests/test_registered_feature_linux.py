@@ -845,6 +845,7 @@ def _linux_contained_roundtrip():
             "control_plane_lane_experiment_consumer",
             "control_plane_lane_scratch",
             "control_plane_lane_scratch_retention",
+            "native_g1_development_pair",
             "native_g1_registered_containment",
         ):
             path = installed / "blueprint_pipeline" / (name + ".py")
