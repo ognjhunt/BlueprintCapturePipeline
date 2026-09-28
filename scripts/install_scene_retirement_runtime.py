@@ -12,6 +12,8 @@ import fcntl
 import hashlib
 import json
 import math
+import selectors
+import signal
 import importlib.util
 import os
 from pathlib import Path
@@ -618,6 +620,24 @@ def _sdk_file(path, expected, deadline):
     return path
 
 
+def _sdk_space(path, required, deadline):
+    _require(type(required) is int and 0 <= required <= _MAX_BYTES and time.monotonic() <= deadline)
+    available = os.statvfs(_nearest(path))
+    _require(available.f_bavail * available.f_frsize >= required + _FREE_FLOOR)
+
+
+def _sdk_existing_size(path, expected_size):
+    if not path.exists() and not path.is_symlink():
+        return 0
+    fd = _open(path, directory=False, partial=True)
+    try:
+        original = os.fstat(fd)
+        _require(original.st_size <= expected_size)
+        return original.st_size
+    finally:
+        os.close(fd)
+
+
 def _sdk_partial(path, expected_size):
     if path.exists() or path.is_symlink():
         check = _open(path, directory=False, partial=True)
@@ -664,11 +684,12 @@ def _sdk_artifact(row, wheelhouse, deadline):
     if wheelhouse is not None:
         return _sdk_file(Path(wheelhouse) / name, row, deadline)
     directory = _sdk_root() / 'wheel-artifacts' / row['hash'][7:]
-    _mkdir(directory)
     path = directory / name
     if path.exists() or path.is_symlink():
         return _sdk_file(path, row, deadline)
     partial = directory / (name + '.pending')
+    _sdk_space(directory.parent, row['size'] - _sdk_existing_size(partial, row['size']), deadline)
+    _mkdir(directory)
     claim = directory / (name + '.download.json')
     value = _encoded({'schema': 'scene-retirement-sdk-download.v1', 'url': url, 'size': row['size'], 'hash': row['hash']})
     if partial.exists() or partial.is_symlink():
@@ -748,17 +769,23 @@ def _wheel_entries(path, deadline):
 
 def _sdk_extract(root, rows, deadline):
     _require(len(rows) <= _MAX_FILES and sum(row['size'] for row in rows.values()) <= _MAX_BYTES)
+    required = 0
+    for name, row in rows.items():
+        target = root / name
+        partial = target if 'source' in row or target.exists() or target.is_symlink() else target.with_name(target.name + '.pending')
+        required += row['size'] - _sdk_existing_size(partial, row['size'])
+    _sdk_space(root.parent, required, deadline)
     _mkdir(root)
     for name, row in sorted(rows.items()):
         _require(time.monotonic() <= deadline)
         target = root / name
         _mkdir(target.parent)
         expected = {key: row[key] for key in ('size', 'sha256', 'mode')}
-        if target.exists() or target.is_symlink():
-            _require(_read(target, deadline) == expected)
-            continue
         if 'source' in row:
             _copy(Path(row['source']), target, expected, deadline)
+            continue
+        if target.exists() or target.is_symlink():
+            _require(_read(target, deadline) == expected)
             continue
         _require('archive' in row)
         fd = _open(Path(row['archive']), directory=False)
@@ -915,13 +942,51 @@ def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_chec
         environment.update({'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': '', 'GIT_PROTOCOL_FROM_USER': '0'})
     if ssh is not None:
         environment['GIT_SSH_COMMAND'] = ssh
-    value = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                           timeout=max(.001, min(30, deadline - time.monotonic())), check=False,
-                           env=environment)
-    _require(value.returncode == 0 and len(value.stdout) <= cap and len(value.stderr) <= 4096
-             and time.monotonic() <= deadline
-             and _identity(executable.lstat()) == _identity(before))
-    return value.stdout
+    _require(type(cap) is int and 0 <= cap <= _MAX_BYTES)
+    invocation_deadline = min(deadline, time.monotonic()+30)
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, env=environment, start_new_session=True)
+    output, errors = bytearray(), bytearray()
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, (output,cap))
+            selector.register(process.stderr, selectors.EVENT_READ, (errors,4096))
+            while selector.get_map():
+                _require(time.monotonic() <= invocation_deadline)
+                for key, _ in selector.select(min(.1,max(0,invocation_deadline-time.monotonic()))):
+                    buffer, limit = key.data
+                    raw = os.read(key.fd,min(65536,limit+1-len(buffer)))
+                    if not raw:
+                        selector.unregister(key.fileobj)
+                    else:
+                        _require(len(buffer)+len(raw) <= limit)
+                        buffer.extend(raw)
+        _require(process.wait(timeout=max(.001,invocation_deadline-time.monotonic())) == 0
+                 and time.monotonic() <= deadline
+                 and _identity(executable.lstat()) == _identity(before))
+        return bytes(output)
+    except subprocess.SubprocessError as exc:
+        raise ValueError(_ERROR) from exc
+    finally:
+        # The direct child remains unreaped until this owned process-group kill.
+        # Fixed Git/SSH children cannot survive a quota/deadline refusal.
+        if process.returncode is None:
+            try:
+                os.killpg(process.pid,signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                # Some local OS policies deny group signals. The retained
+                # direct child can still be killed/joined; this aborted
+                # acquisition never publishes SDK or deployment success.
+                process.kill()
+        try:
+            process.wait(timeout=5)
+        finally:
+            try:
+                process.stdout.close()
+            finally:
+                process.stderr.close()
 
 
 def _sdk_fetch_contracts(commit, deadline):
