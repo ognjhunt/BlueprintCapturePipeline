@@ -130,9 +130,30 @@ def derive_checkpoint_flow_resources(inventory, flow, *, present_paths=()):
 
 def require_cache_use(value):
     # Reject duck objects, native subclasses, reload classes and partial exact instances BEFORE any callback.
-    _require(type(value) is NeededCheckpointCacheUse and getattr(value, "_initialized", None) is _USE_TOKEN,
+    _require(type(value) is NeededCheckpointCacheUse, "needed_cache_use_invalid")
+    state = object.__getattribute__(value, "__dict__")
+    required = {"_initialized", "_closed", "_files", "_root_fd", "_root", "_layout", "_entry", "_birth",
+                "_sources", "_rows", "_inventory", "_gid", "_mode", "_authority_epoch", "_authority_version",
+                "_writer", "_now", "_monotonic", "_origin", "_last", "_deadline", "_failure", "_lock",
+                "_counts", "_windows", "_checks", "_health", "_reservation", "_resources",
+                "_native_pending", "_native_unknown"}
+    _require(required <= state.keys() and state.get("_initialized") is _USE_TOKEN,
              "needed_cache_use_invalid")
-    _require(not value._closed, "needed_cache_use_closed")
+    _require(type(state["_closed"]) is bool and type(state["_files"]) is _PayloadFiles
+             and type(state["_root"]) is type(Path("/")) and type(state["_root_fd"]) is int
+             and state["_root_fd"] >= 0 and type(state["_sources"]) in (list, tuple)
+             and type(state["_rows"]) is list and type(state["_mode"]) is str
+             and state["_mode"] in ("read", "fill")
+             and all(type(state[k]) is dict for k in ("_layout", "_entry", "_birth", "_inventory",
+                                                    "_counts", "_windows", "_resources"))
+             and all(type(state[k]) is int and state[k] >= 0 for k in
+                     ("_gid", "_checks", "_authority_version", "_native_pending", "_native_unknown"))
+             and all(type(state[k]) in (int, float) and math.isfinite(state[k]) for k in
+                     ("_origin", "_last", "_deadline"))
+             and callable(state["_now"]) and callable(state["_monotonic"])
+             and (state["_failure"] is None or type(state["_failure"]) is str),
+             "needed_cache_use_invalid")
+    _require(not state["_closed"], "needed_cache_use_closed")
     return value
 
 

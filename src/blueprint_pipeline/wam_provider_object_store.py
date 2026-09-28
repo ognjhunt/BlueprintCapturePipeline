@@ -1810,12 +1810,17 @@ def _upload_registered_checkpoint_file(client, *, bucket, key, expected, row, us
         completed = True
     finally:
         # Close/join owned local work even after a sticky current-authority refusal.
-        stream.close()
-        if not completed:
-            try:
-                client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
-            except Exception:
-                use._failure = use._failure or "needed_cache_upload_cleanup_unresolved"
+        try:
+            stream.close()
+        except Exception:
+            use._failure = use._failure or "needed_cache_upload_cleanup_unresolved"
+            raise
+        finally:
+            if not completed:
+                try:
+                    client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+                except Exception:
+                    use._failure = use._failure or "needed_cache_upload_cleanup_unresolved"
 
 
 def _stage_registered_runtime_dependency(*, job_dir, dependency_path, expected_sha256, key_prefix,
