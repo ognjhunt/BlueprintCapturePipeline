@@ -275,3 +275,61 @@ def test_restore_cache_alias_never_overwrites_even_same_bytes(tmp_path,monkeypat
         with pytest.raises(ValueError,match='scene_retirement_cache_restore_conflict'):
             restore_preserved_members(preserved,transport=transport,journal=journal)
     assert alias.read_bytes()==data and alias.stat().st_ino==original
+
+
+def cache_action_consent(tmp_path,monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import stage_launch_preparation_request
+    _,policy,value,payloads,queue,inputs,proofs=owner_submission(tmp_path,monkeypatch)
+    source=cache.publish_preparation_storage_authority(queue_root=queue,request=value,now=101,**proofs)
+    queued=stage_launch_preparation_request(value=value,queue_root=queue,submitted_by='scene-progression')
+    cache.enroll_preparation_storage(queue_path=queued['queue_path'],input_root=inputs,now=101)
+    worker.materialize_preparation_references(request=value,input_root=inputs/value['preparation_id'],
+        content_store_root=inputs/'content-addressed'/'sha256',allowed_uri_prefixes=['s3://blueprint-production-inputs/'],
+        service_account=SERVICE_ACCOUNT,source_commit=value['expected_production_commit'],fetcher=fetcher(payloads))
+    generation_path=next(path for path in Path(policy['generation_store']).glob('*.json')
+        if json.loads(path.read_bytes()).get('schema_version')=='scene_content_generation.v1')
+    generation=json.loads(generation_path.read_bytes())
+    owner=json.loads(Path(proofs['intent_raw_ref']['path']).read_bytes())
+    policy['principals']=[dict(principal_id='operator',actions=['retire','restore'],
+        owner_intent_ids=[owner['intent_id']],private_archive_classes=[])]
+    _sealed_file(tmp_path/'policy.json',policy,'policy_digest',mode=0o644)
+    plan=tmp_path/'plan.json'
+    plan.write_text('{}')
+    consent=dict(schema_version='scene_retirement_consent.v1',consent_id='a'*32,principal_id='operator',
+        intent_id=owner['intent_id'],intent_raw_ref=proofs['intent_raw_ref'],plan_raw_ref=_raw(plan),
+        retired_journal_raw_ref=None,policy_sha256=_raw(tmp_path/'policy.json')['sha256'],
+        cohort_sha256=__import__('blueprint_pipeline.task_evaluation_scene_retirement_authority',fromlist=['cohort_digest']).cohort_digest(policy['consumer_cohort']),
+        action='retire',created_at=100,expires_at=200,members=[],private_archive_classes=[],
+        cache_objects=[dict(canonical_path=generation['canonical_path'],digest=generation['digest'],
+            size_bytes=generation['size_bytes'],generation_id=generation['generation_id'],
+            generation_raw_ref=_raw(generation_path),source_raw_ref=source)],terminal_pin_refs=[])
+    path=tmp_path/'consent.json'
+    _sealed_file(path,consent,'consent_digest',mode=0o600)
+    return path,consent
+
+
+def test_cache_consent_is_bound_to_actual_generation_and_same_authenticated_owner(tmp_path,monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_authority import load_authority
+    path,consent=cache_action_consent(tmp_path,monkeypatch)
+    result=load_authority(path,action='retire',now=lambda:101)
+    assert result['consent']['cache_objects']==consent['cache_objects']
+
+
+@pytest.mark.parametrize('field',['canonical_path','digest','generation_id','source_raw_ref'])
+def test_cache_consent_cannot_select_free_or_foreign_cache_authority(tmp_path,monkeypatch,field):
+    from blueprint_pipeline.task_evaluation_scene_retirement_authority import load_authority
+    path,consent=cache_action_consent(tmp_path,monkeypatch)
+    row=consent['cache_objects'][0]
+    if field=='source_raw_ref':
+        row[field]=consent['intent_raw_ref']
+    elif field=='canonical_path':
+        row[field]=str(tmp_path/'foreign-store'/'a'*64)
+    elif field=='digest':
+        row[field]='sha256:'+'a'*64
+    else:
+        row[field]='f'*32
+    _sealed_file(path,consent,'consent_digest',mode=0o600)
+    with pytest.raises(ValueError):
+        load_authority(path,action='retire',now=lambda:101)
