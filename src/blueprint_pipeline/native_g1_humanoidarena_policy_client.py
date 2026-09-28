@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -28,6 +29,11 @@ ROBOT_TYPE = "unitree_g1_refpose_v3_1"
 IMAGE_SHAPE = (480, 640, 3)
 MAX_ACTION_CHUNK = 64
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_FIRST_INFERENCE_TIMEOUT_SECONDS = 600.0
+
+
+class NativeG1PolicyQueryTimeout(TimeoutError):
+    """A missing action response, with no endpoint or observation disclosure."""
 
 
 def build_semantic_v3_infer_request(
@@ -85,6 +91,7 @@ class NativeG1HumanoidArenaPolicyClient:
         *,
         base_url: str,
         timeout_seconds: float = 30.0,
+        first_inference_timeout_seconds: float | None = None,
         transport: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None,
     ) -> None:
         parsed = urllib.parse.urlparse(base_url)
@@ -98,10 +105,18 @@ class NativeG1HumanoidArenaPolicyClient:
             or (parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"})
         ):
             raise ValueError("g1_policy_endpoint_invalid")
-        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0 or timeout_seconds > 120:
+        if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+                or timeout_seconds <= 0 or timeout_seconds > 120):
+            raise ValueError("g1_policy_timeout_invalid")
+        first = timeout_seconds if first_inference_timeout_seconds is None else first_inference_timeout_seconds
+        if (type(first) not in (int, float) or not math.isfinite(first)
+                or not 0 < first <= MAX_FIRST_INFERENCE_TIMEOUT_SECONDS):
             raise ValueError("g1_policy_timeout_invalid")
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.first_inference_timeout_seconds = first
+        self._completed_inference_count = 0
+        self.inference_timing_receipt: dict[str, Any] | None = None
         self._transport = transport or self._post_json
         self.candidate_policy_queried = False
 
@@ -114,7 +129,11 @@ class NativeG1HumanoidArenaPolicyClient:
             method="POST",
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(request, timeout=self.timeout_seconds) as response:
+        timeout = (
+            self.first_inference_timeout_seconds
+            if path == "/infer" and self._completed_inference_count == 0 else self.timeout_seconds
+        )
+        with opener.open(request, timeout=timeout) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ValueError("g1_policy_response_oversized")
@@ -137,6 +156,27 @@ class NativeG1HumanoidArenaPolicyClient:
         payload = build_semantic_v3_infer_request(
             front_rgb=front_rgb, observation_state=observation_state, task=task
         )
-        response = self._transport("/infer", payload)
-        self.candidate_policy_queried = True
-        return validate_semantic_v3_infer_response(response)
+        first = self._completed_inference_count == 0
+        phase = "first_inference" if first else "steady_inference"
+        allowance = self.first_inference_timeout_seconds if first else self.timeout_seconds
+        started = time.monotonic()
+        status = "failed"
+        try:
+            response = self._transport("/infer", payload)
+            actions = validate_semantic_v3_infer_response(response)
+            self._completed_inference_count += 1
+            self.candidate_policy_queried = True
+            status = "returned_valid_action"
+            return actions
+        except TimeoutError as exc:
+            status = "timeout"
+            raise NativeG1PolicyQueryTimeout(f"g1_policy_{phase}_timeout:{allowance:g}s") from exc
+        finally:
+            self.inference_timing_receipt = {
+                "schema_version": "native_g1_policy_inference_timing.v1", "status": status,
+                "phase": phase, "timeout_seconds": allowance,
+                "elapsed_seconds": max(0.0, time.monotonic() - started),
+                "completed_inference_count": self._completed_inference_count,
+                "automatic_retries": 0,
+            }
+            print("BLUEPRINT_G1_POLICY_QUERY_TIMING:" + json.dumps(self.inference_timing_receipt), flush=True)

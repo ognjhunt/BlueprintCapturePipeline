@@ -96,6 +96,66 @@ def test_unclassified_roots_are_reported(tmp_path):
     assert survey["unclassified_roots"][0]["root"] == str(base / "mystery")
 
 
+def test_orphan_scratch_summary_counts_unique_bytes_and_newest_mtime(tmp_path):
+    volume = tmp_path / "work"
+    orphan = volume / "loose-run"
+    orphan.mkdir(parents=True)
+    data = orphan / "data.bin"
+    data.write_bytes(b"x" * 4096)
+    (orphan / "same.bin").hardlink_to(data)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"z" * 9000)
+    (orphan / "outside-link").symlink_to(outside)
+    os.utime(data, (1234, 1234))
+    os.utime(orphan, (1200, 1200))
+    survey = survey_usage([str(volume)], aliases={str(volume): "/mnt/blueprint-work"},
+                          statvfs=_statvfs(), mountinfo=str(tmp_path / "no-mountinfo"))
+    [row] = survey["orphan_scratch_roots"]
+    assert row["root"] == "/mnt/blueprint-work/loose-run"
+    assert row["allocated_bytes"] == sum(
+        _allocated(path) for path in (orphan, data, orphan / "outside-link")
+    )
+    assert survey["hardlinks"]["duplicate_names_skipped"] == 1
+    assert row["newest_mtime_epoch"] >= 1234
+    assert survey["orphan_scratch_bytes"] == row["allocated_bytes"]
+    assert survey["orphan_scratch_count"] == 1
+
+
+def test_unleased_lane_folder_remains_unclassified(tmp_path):
+    from blueprint_pipeline.control_plane_lane_scratch import create_lane_scratch
+
+    volume = tmp_path / "work"
+    lane_root = volume / "lanes"
+    lane_root.mkdir(parents=True)
+    registered = create_lane_scratch("g1", "registered", root=lane_root, owner="agent-a",
+                                     run_ref="run-1", reason="diagnostic", class_intent="scratch",
+                                     cleanup="owner_review", ttl_seconds=3600)
+    (registered / "keep.bin").write_bytes(b"k" * 4096)
+    orphan = lane_root / "g1" / "unleased"
+    orphan.mkdir()
+    (orphan / "blob.bin").write_bytes(b"b" * 4096)
+    (orphan / ".lane-scratch.v1.json").symlink_to(registered / ".lane-scratch.v1.json")
+    survey = survey_usage([str(volume)], aliases={str(volume): "/mnt/blueprint-work"},
+                          statvfs=_statvfs(), mountinfo=str(tmp_path / "no-mountinfo"))
+    assert any(row["root"] == "/mnt/blueprint-work/lanes/g1/unleased"
+               for row in survey["orphan_scratch_roots"])
+    assert any(row["owner"] == "lane:g1" and row["storage_class"] == "lane_scratch"
+               for row in survey["top_owners"])
+
+
+def test_orphan_scratch_rows_are_bounded_without_losing_the_total(tmp_path):
+    volume = tmp_path / "work"
+    volume.mkdir()
+    for index in range(60):
+        (volume / f"loose-{index:02d}").mkdir()
+    survey = survey_usage([str(volume)], aliases={str(volume): "/mnt/blueprint-work"},
+                          statvfs=_statvfs(), mountinfo=str(tmp_path / "no-mountinfo"))
+    assert survey["orphan_scratch_count"] == 60
+    assert len(survey["orphan_scratch_roots"]) == 50
+    assert survey["orphan_scratch_bytes"] > sum(row["allocated_bytes"]
+                                                for row in survey["orphan_scratch_roots"])
+
+
 def test_scene_workspaces_are_owned_by_their_scene(tmp_path):
     base = tmp_path / "var/lib/blueprint"
     scene = base / "pubsub-handoffs/bucket/scenes/site-capture-1/captures/c1/raw"
@@ -276,6 +336,35 @@ def test_default_table_classification_matches_classify_path(tmp_path):
     assert roots["/var/lib/blueprint/pipeline-control-plane/new-thing"] == "unclassified"
     owners = {row["owner"] for row in pruned["top_owners"]}
     assert {"store:prepared-references", "scene:s", "run:run-1"} <= owners
+
+
+def test_work_volume_lane_and_orphan_paths_keep_their_physical_owner(tmp_path):
+    volume = tmp_path / "blueprint-work"
+    for relative in (
+        "lanes/agent-a/job-1/output.bin",
+        "g1-unregistered/cache.bin",
+        "task-evaluation-inputs/prepared-references/cache.bin",
+    ):
+        path = volume / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 4096)
+    aliases = {
+        str(volume) + source[len("/mnt/blueprint-work"):]: target
+        for source, target in usage_module.DEFAULT_SURVEY_ALIASES.items()
+    }
+    aliases.setdefault(str(volume), "/mnt/blueprint-work")
+
+    survey = survey_usage([str(volume)], aliases=aliases, statvfs=_statvfs(),
+                          mountinfo=str(tmp_path / "no-mountinfo"))
+
+    assert any(row["storage_class"] == "lane_scratch" and row["owner"] == "lane:agent-a"
+               for row in survey["top_owners"])
+    assert any(row["root"] == "/mnt/blueprint-work/g1-unregistered"
+               for row in survey["unclassified_roots"])
+    assert all(row["root"] != "/mnt/blueprint-work/lanes"
+               for row in survey["unclassified_roots"])
+    assert any(row["root"] == "/var/lib/blueprint/task-evaluation-inputs/prepared-references"
+               and row["storage_class"] == "cache" for row in survey["top_roots"])
 
 
 def test_non_utf8_filename_is_escaped_in_the_report(tmp_path, monkeypatch):

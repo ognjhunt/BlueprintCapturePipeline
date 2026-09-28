@@ -30,6 +30,7 @@ unauthorized or missing scope; 4 network error; 5 server error.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
@@ -48,7 +49,7 @@ DEFAULT_URL = "https://paperclip.tryblueprint.io/api/live-pipeline/operator/v1"
 DEFAULT_TOKEN_FILE = "~/.blueprint-secrets/operator_door_token"
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
-_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored"}
+_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released"}
 
 
 class DoorError(Exception):
@@ -208,6 +209,15 @@ def _percent(value: Any) -> str:
     return f"{value * 100:.1f}%"
 
 
+def _utc(value: Any) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "-"
+    try:
+        return dt.datetime.fromtimestamp(value, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return "-"
+
+
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
     widths = [max(len(cell) for cell in column) for column in zip(headers, *rows)]
     return ["  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip()
@@ -228,6 +238,9 @@ _USAGE_TABLES = (
                   str(row.get("root"))]),
     ("unclassified_roots", ["unclassified root", "allocated"],
      lambda row: [str(row.get("root")), _size(row.get("allocated_bytes"))]),
+    ("orphan_scratch_roots", ["unowned scratch", "allocated", "newest change"],
+     lambda row: [str(row.get("root")), _size(row.get("allocated_bytes")),
+                  _utc(row.get("newest_mtime_epoch"))]),
 )
 
 
@@ -248,6 +261,9 @@ def _print_usage(status: dict[str, Any]) -> int:
     lines = [header]
     if usage.get("error"):
         lines.append(f"last survey attempt: {usage['error']}")
+    if isinstance(usage.get("orphan_scratch_bytes"), int) and isinstance(usage.get("orphan_scratch_count"), int):
+        lines.append(f"unowned scratch: {_size(usage['orphan_scratch_bytes'])} "
+                     f"in {usage['orphan_scratch_count']} folders")
     for key, headers, cells in _USAGE_TABLES:
         rows = [cells(row) for row in usage.get(key) or [] if isinstance(row, dict)]
         if rows:
@@ -269,6 +285,16 @@ def _hold_duration(value: str) -> int:
     seconds = int(match.group(1)) * {"h": 3600, "m": 60, "s": 1}[match.group(2)]
     if not 60 <= seconds <= 86400:
         raise argparse.ArgumentTypeError("hold duration must be between 60s and 24h")
+    return seconds
+
+
+def _scratch_duration(value: str) -> int:
+    match = re.fullmatch(r"([0-9]+)([dhms])", value)
+    if match is None:
+        raise argparse.ArgumentTypeError("lease duration must be 2d, 12h, 90m, or 3600s")
+    seconds = int(match.group(1)) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[match.group(2)]
+    if not 0 < seconds <= 14 * 86400:
+        raise argparse.ArgumentTypeError("lease duration must be at most 14 days")
     return seconds
 
 
@@ -330,6 +356,22 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("scene_id")
     restore.add_argument("--bucket", required=True)
     _add_wait(restore, 2 * 3600 + 600)
+    scratch = commands.add_parser("lane-scratch", help="inspect or end an owned lane scratch lease")
+    scratch_actions = scratch.add_subparsers(dest="scratch_action", required=True)
+    for action in ("ls", "renew", "release"):
+        sub = scratch_actions.add_parser(action)
+        sub.add_argument("lane")
+        if action != "ls":
+            sub.add_argument("name")
+            sub.add_argument("--owner", required=True)
+            sub.add_argument("--digest", required=True)
+        sub.add_argument("--root", choices=("work", "inputs"), required=True)
+        if action == "ls":
+            sub.add_argument("--limit", type=int, default=50)
+            sub.add_argument("--offset", type=int, default=0)
+        elif action == "renew":
+            sub.add_argument("--for", dest="ttl_seconds", type=_scratch_duration, required=True)
+        _add_wait(sub, 120)
     request = commands.add_parser("request")
     request.add_argument("id")
     _add_wait(request, 3 * 3600)
@@ -385,6 +427,15 @@ def run(args: argparse.Namespace) -> int:
     elif command == "restore-scene-workspace":
         return _submit({"kind": "restore-scene-workspace", "scene_id": args.scene_id,
                         "bucket": args.bucket}, args)
+    elif command == "lane-scratch":
+        body = {"kind": "lane-scratch", "action": args.scratch_action, "root": args.root, "lane": args.lane}
+        if args.scratch_action == "ls":
+            body.update(limit=args.limit, offset=args.offset)
+        else:
+            body.update(name=args.name, owner=args.owner, expected_digest=args.digest)
+            if args.scratch_action == "renew":
+                body["ttl_seconds"] = args.ttl_seconds
+        return _submit(body, args)
     elif command == "request":
         if args.wait:
             return _wait(args.id, timeout=args.timeout, poll=args.poll)

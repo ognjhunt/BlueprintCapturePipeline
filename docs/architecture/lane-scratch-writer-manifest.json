@@ -1,0 +1,86 @@
+{
+  "schema_version": "lane_scratch_writer_manifest.v1",
+  "sources": [
+    {
+      "path": "src/blueprint_pipeline/control_plane_lane_scratch.py",
+      "sha256": "72fdeca8a63b93c2af948db83590139fff1863c57fb5b9c85c6d05d2d4a1d726",
+      "responsibility": "constructor",
+      "output_class": "lane_scratch",
+      "admission_method": "atomic sealed lease publication",
+      "characterization_tests": [
+        "tests/test_control_plane_lane_scratch.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": []
+    },
+    {
+      "path": "src/blueprint_pipeline/control_plane_leased_scratch.py",
+      "sha256": "9e36969189b6cfd521a15c8627d631d759b0fa65f57fa055c43ae87b791ce890",
+      "responsibility": "constructor",
+      "output_class": "lane_scratch",
+      "admission_method": "retained descriptor publication and exact active lease",
+      "characterization_tests": [
+        "tests/test_leased_scratch_directory.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": []
+    },
+    {
+      "path": "src/blueprint_pipeline/control_plane_arena_scratch.py",
+      "sha256": "35c348a8f9d2c67ad60e3f7782604bd70990afb0dab84cfc074bb04d9d7db0aa",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "validated arena evidence lease and descriptor capability",
+      "characterization_tests": [
+        "tests/test_control_plane_arena_scratch.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": [
+        "Recorded r1-r32 folders remain read-only under the existing proof rules; never silently register or write them."
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/native_g1_development_pair.py",
+      "sha256": "7df6a5ea00b8a19bb5d50cdc08698e0184f557d2bd5cc4435ea0e32d35b27bdb",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "atomic lease before new lane output; descriptor capability for lane diagnostics",
+      "characterization_tests": [
+        "tests/test_native_g1_development_pair.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": [
+        "Non-host/provider outputs retain existing admission; every existing output remains refused."
+      ]
+    },
+    {
+      "path": "scripts/arena_construction_launch_chain.sh",
+      "sha256": "9d3fe27ddc43006039afb001f8a64ff471812adc79822d01a7a54ac80d8f48ca",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "prepare admitted arena attempt then mkdir-payload CLI",
+      "characterization_tests": [
+        "tests/test_arena_construction_launch_scripts.py",
+        "tests/test_control_plane_arena_scratch.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": [
+        "Historical predecessor folders are resolved read-only; cp and subsequent file writes are outside the descriptor guarantee."
+      ]
+    },
+    {
+      "path": "scripts/install_live_pipeline_control_plane.sh",
+      "sha256": "a74031c63524148156a5efca8d12e52f9fa81b7fecf095bf3d4a6f8aa0e1aeb3",
+      "responsibility": "parent_provisioning",
+      "output_class": "container",
+      "admission_method": "mounted volume preflight then bounded install -d",
+      "characterization_tests": [
+        "tests/test_lane_scratch_install_wiring.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": [
+        "Provisioning lane parents does not register or authorize historical scratch."
+      ]
+    }
+  ]
+}

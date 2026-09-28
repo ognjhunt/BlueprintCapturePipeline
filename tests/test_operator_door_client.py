@@ -84,6 +84,26 @@ def test_whoami_prints_identity_json(door: dict[str, Any]) -> None:
     assert code == 0 and json.loads(out) == {"name": "cloud", "scopes": ["deploy", "operate", "read"]}
 
 
+def test_lane_scratch_client_submits_bounded_commands(door: dict[str, Any]) -> None:
+    digest = "sha256:" + "a" * 64
+    def submitted(out: str) -> dict[str, Any]:
+        request_id = json.loads(out)["id"]
+        path = door["state"] / "requests" / "pending" / f"{request_id}.json"
+        return json.loads(path.read_text(encoding="utf-8"))["request"]
+
+    code, out = _run("lane-scratch", "ls", "g1", "--root", "work", "--limit", "10", "--offset", "20")
+    assert code == 0
+    assert submitted(out) == {"kind": "lane-scratch", "action": "ls", "lane": "g1",
+                              "root": "work", "limit": 10, "offset": 20}
+    code, out = _run("lane-scratch", "renew", "g1", "run-1", "--root", "inputs", "--owner", "agent-1",
+                     "--digest", digest, "--for", "2d")
+    assert code == 0
+    assert submitted(out)["ttl_seconds"] == 172800
+    code, out = _run("lane-scratch", "release", "g1", "run-1", "--root", "work", "--owner", "agent-1",
+                     "--digest", digest)
+    assert code == 0 and submitted(out)["action"] == "release"
+
+
 def test_unauthorized_exits_3(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", "x" * 40)
     assert _run("whoami")[0] == 3
@@ -222,6 +242,10 @@ def test_usage_prints_the_capacity_usage_as_tables(door: dict[str, Any]) -> None
             "top_owners": [{"owner": "scene:site-capture-1", "root": "/var/lib/blueprint/pubsub-handoffs",
                             "storage_class": "work", "allocated_bytes": 12 * 1024**3}],
             "unclassified_roots": [{"root": "/var/lib/blueprint/something-new", "allocated_bytes": 2 * 1024**2}],
+            "orphan_scratch_bytes": 6 * 1024**3, "orphan_scratch_count": 3,
+            "orphan_scratch_roots": [{"root": "/mnt/blueprint-work/loose-run",
+                                      "allocated_bytes": 4 * 1024**3,
+                                      "newest_mtime_epoch": 1_700_000_000}],
         },
     }), encoding="utf-8")
     code, out = _run("usage")
@@ -231,6 +255,9 @@ def test_usage_prints_the_capacity_usage_as_tables(door: dict[str, Any]) -> None
     assert any(line.split() == ["/", "150.0", "GiB", "145.0", "GiB", "130.0", "GiB", "96.7%"] for line in lines)
     assert any(line.split()[:3] == ["scene:site-capture-1", "work", "12.0"] for line in lines)
     assert any(line.split() == ["/var/lib/blueprint/something-new", "2.0", "MiB"] for line in lines)
+    assert "unowned scratch: 6.0 GiB in 3 folders" in out
+    assert "/mnt/blueprint-work/loose-run" in out
+    assert "2023-11-14T22:13:20Z" in out
     assert "{" not in out
 
 

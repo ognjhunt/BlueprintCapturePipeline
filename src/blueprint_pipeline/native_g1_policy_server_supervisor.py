@@ -240,6 +240,17 @@ def start_g1_policy_server(
         Path(preflight_inputs["checkpoint_root"]),
     )
     require_policy_tokenizer_reference(policy_dir, str(preflight["candidate_id"]))
+    policy_config = json.loads((policy_dir / "config.json").read_text(encoding="utf-8"))
+    compile_model = policy_config.get("compile_model", False)
+    if type(compile_model) is not bool:
+        raise ValueError("g1_server_compile_configuration_invalid")
+    first_timeout = 600 if policy_config.get("type") == "pi05" and compile_model else 30
+    timeout_policy = {
+        "schema_version": "native_g1_policy_inference_timeout_policy.v1",
+        "policy_type": policy_config.get("type"), "compile_model": compile_model,
+        "first_inference_timeout_seconds": first_timeout, "steady_timeout_seconds": 30,
+        "automatic_retries": 0,
+    }
     python = python_executable.expanduser().resolve(strict=True)
     if not python.is_file():
         raise ValueError("g1_server_python_unavailable")
@@ -256,7 +267,10 @@ def start_g1_policy_server(
             stderr=subprocess.STDOUT, start_new_session=True,
         )
     try:
-        client = client_factory(base_url=f"http://{LOOPBACK_HOST}:{port}")
+        client = client_factory(
+            base_url=f"http://{LOOPBACK_HOST}:{port}",
+            **({"first_inference_timeout_seconds": first_timeout} if first_timeout != 30 else {}),
+        )
         deadline = time.monotonic() + startup_timeout_seconds
         while time.monotonic() < deadline:
             if process.poll() is not None:
@@ -288,6 +302,7 @@ def start_g1_policy_server(
                             "loaded_checkpoint_identity_observed": False,
                             "inference_observed": False,
                             "task_outcome_observed": False,
+                            "inference_timeout_policy": timeout_policy,
                         }
                         receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
                         return NativeG1PolicyServerLease(

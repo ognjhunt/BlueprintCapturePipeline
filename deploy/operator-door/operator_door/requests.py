@@ -52,6 +52,7 @@ _SCOPES = {
     # runs no new code, and the module deletes nothing it cannot restore.
     "retire-scene-workspace": "operate",
     "restore-scene-workspace": "operate",
+    "lane-scratch": "operate",
 }
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
@@ -63,6 +64,8 @@ _REQUEST_ID = re.compile(
 _UNIT_ACTIONS = ("start", "reset-failed", "stop", "restart")
 _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
 _HOLD_OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}\Z")
+_LANE_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
+_LEASE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # Timers that protect money or cleanup are never paused through the door.
 _SAFETY_CRITICAL = re.compile(
     r"spend-guard|watchdog|teardown|reaper|provider-zero|"
@@ -104,6 +107,12 @@ def _hold_unit(unit: Any) -> str:
     if _SAFETY_CRITICAL.search(unit):
         raise RequestRefused("unit_safety_critical")
     return unit
+
+
+def _lane_part(value: Any, field: str) -> str:
+    if not isinstance(value, str) or _LANE_PART.fullmatch(value) is None:
+        raise RequestRefused(f"lane_scratch_{field}_invalid")
+    return value
 
 
 def validate_request(body: dict[str, Any]) -> dict[str, Any]:
@@ -154,6 +163,40 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if kind == "door-upgrade":
         _only(body, ("kind", "commit"))
         return {"kind": kind, "commit": _commit(body)}
+    if kind == "lane-scratch":
+        action = body.get("action")
+        if action == "ls":
+            _only(body, ("kind", "action", "root", "lane", "limit", "offset"))
+        elif action in ("renew", "release"):
+            _only(body, ("kind", "action", "root", "lane", "name", "owner", "expected_digest",
+                         "ttl_seconds") if action == "renew" else
+                  ("kind", "action", "root", "lane", "name", "owner", "expected_digest"))
+        else:
+            raise RequestRefused("lane_scratch_action_invalid")
+        root = body.get("root")
+        if root not in ("work", "inputs"):
+            raise RequestRefused("lane_scratch_root_invalid")
+        normalized = {"kind": kind, "action": action, "root": root,
+                      "lane": _lane_part(body.get("lane"), "lane")}
+        if action == "ls":
+            limit, offset = body.get("limit", 50), body.get("offset", 0)
+            if type(limit) is not int or not 1 <= limit <= 100:
+                raise RequestRefused("lane_scratch_limit_invalid")
+            if type(offset) is not int or not 0 <= offset <= 10000:
+                raise RequestRefused("lane_scratch_offset_invalid")
+            return {**normalized, "limit": limit, "offset": offset}
+        normalized["name"] = _lane_part(body.get("name"), "name")
+        normalized["owner"] = _lane_part(body.get("owner"), "owner")
+        digest = body.get("expected_digest")
+        if not isinstance(digest, str) or _LEASE_DIGEST.fullmatch(digest) is None:
+            raise RequestRefused("lane_scratch_digest_invalid")
+        normalized["expected_digest"] = digest
+        if action == "renew":
+            ttl = body.get("ttl_seconds")
+            if type(ttl) is not int or not 0 < ttl <= 14 * 86400:
+                raise RequestRefused("lane_scratch_ttl_invalid")
+            normalized["ttl_seconds"] = ttl
+        return normalized
     if kind == "retire-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket", "apply"))
         scene_id = body.get("scene_id")

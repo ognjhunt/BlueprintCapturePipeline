@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from blueprint_pipeline.control_plane_storage_roots import STORAGE_ROOTS
+from blueprint_pipeline.control_plane_disk_usage import DEFAULT_SURVEY_ALIASES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "deploy" / "host" / "mount_work_volume.sh"
@@ -161,6 +162,16 @@ def _volume_roots() -> list[PurePosixPath]:
     return [STATE / rel for rel in _script_array("ROOTS")] + [
         PurePosixPath(path) for path in _script_array("ABSOLUTE_ROOTS")
     ]
+
+
+def test_usage_aliases_cover_exactly_the_bound_volume_roots() -> None:
+    prefix = "/mnt/blueprint-work/"
+    aliases = {source.removeprefix(prefix): target for source, target in DEFAULT_SURVEY_ALIASES.items()
+               if source != prefix + "workspace"}
+    assert set(aliases) == set(_script_array("ROOTS"))
+    assert all(target == "/var/lib/blueprint/" + root for root, target in aliases.items())
+    assert DEFAULT_SURVEY_ALIASES[prefix + "workspace"] == "/workspace"
+    assert "/mnt/blueprint-work" not in DEFAULT_SURVEY_ALIASES
 
 
 def _may_write_under(service: Path, roots: list[PurePosixPath]) -> bool:

@@ -46,7 +46,9 @@ from typing import Any
 
 from . import control_plane_disk_budget as disk_budget
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT
-from .control_plane_disk_usage import SURVEY_SCHEMA_VERSION, sanitize_public_survey, survey_usage
+from .control_plane_disk_usage import (
+    SURVEY_SCHEMA_VERSION, is_orphan_scratch_root, sanitize_public_survey, survey_usage,
+)
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
@@ -59,6 +61,8 @@ SUMMARY_FILENAME = "summary.json"
 SUMMARY_MAX_BYTES = 128 * 1024
 DEFAULT_SURVEY_INTERVAL_SECONDS = 60 * 60
 USAGE_UNCLASSIFIED_ALERT_BYTES = 1024**3
+ORPHAN_SCRATCH_AGGREGATE_PAGE_BYTES = 5 * 1024**3
+ORPHAN_SCRATCH_SINGLE_PAGE_BYTES = 2 * 1024**3
 USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
 USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
@@ -85,6 +89,7 @@ PAGE_ALERT_CODES = frozenset({
     "floor_within_three_days", "admission_refused", "critical_admission_refused",
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
     "reclaim_ineffective",
+    "orphan_scratch_large",
 })
 
 
@@ -720,6 +725,12 @@ def usage_projection(
             "unclassified_roots": list(survey.get("unclassified_roots") or [])[
                 :USAGE_PROJECTED_UNCLASSIFIED_ROOTS
             ],
+            "orphan_scratch_bytes": survey.get("orphan_scratch_bytes"),
+            "orphan_scratch_count": survey.get("orphan_scratch_count"),
+            "orphan_scratch_largest_bytes": survey.get("orphan_scratch_largest_bytes"),
+            "orphan_scratch_roots": list(survey.get("orphan_scratch_roots") or [])[
+                :USAGE_PROJECTED_UNCLASSIFIED_ROOTS
+            ],
         }
     if error:
         projection["error"] = error
@@ -727,16 +738,27 @@ def usage_projection(
 
 
 def usage_alerts(survey: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Warnings from a survey: large unclassified roots and poorly attributed mounts."""
+    """Warnings and one owner page for large unregistered scratch."""
 
     def number(value: Any) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
 
     alerts: list[dict[str, Any]] = []
+    total = survey.get("orphan_scratch_bytes")
+    count = survey.get("orphan_scratch_count")
+    largest = survey.get("orphan_scratch_largest_bytes")
+    has_scratch_summary = all(type(value) is int and value >= 0 for value in (total, count, largest))
+    if has_scratch_summary and (total > ORPHAN_SCRATCH_AGGREGATE_PAGE_BYTES
+                                or largest > ORPHAN_SCRATCH_SINGLE_PAGE_BYTES):
+        alerts.append({"code": "orphan_scratch_large", "allocated_bytes": total,
+                       "count": count, "largest_bytes": largest})
     for row in survey.get("unclassified_roots") or []:
         size = row.get("allocated_bytes") if isinstance(row, Mapping) else None
+        root = row.get("root") if isinstance(row, Mapping) else None
+        if has_scratch_summary and isinstance(root, str) and is_orphan_scratch_root(root):
+            continue  # one aggregate page; raw scratch folder names stay out of alerts
         if number(size) and size > USAGE_UNCLASSIFIED_ALERT_BYTES:
-            alerts.append({"code": "usage_unclassified_root", "root": row.get("root"), "allocated_bytes": size})
+            alerts.append({"code": "usage_unclassified_root", "root": root, "allocated_bytes": size})
     for row in survey.get("mounts") or []:
         fraction = row.get("attributed_fraction") if isinstance(row, Mapping) else None
         if number(fraction) and fraction < USAGE_ATTRIBUTION_ALERT_FRACTION:
@@ -752,6 +774,7 @@ _SUMMARY_MOUNT_KEYS = (
 _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
     "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
+    "largest_bytes",
     "top_retained_reasons",
 )
 
@@ -880,6 +903,9 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
         summary = f"{first.get('mount')}: floor in {float(first.get('days_until_floor') or 0):.1f} days"
     elif first.get("code") == "volume_growth_blocked":
         summary = f"{first.get('mount')}: volume growth blocked ({first.get('reason')})"
+    elif first.get("code") == "orphan_scratch_large":
+        gib = float(first.get("allocated_bytes") or 0) / GIB
+        summary = f"control plane: {gib:.1f} GiB unowned scratch in {first.get('count')} folders"
     ineffective = next(
         (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
     )

@@ -167,7 +167,8 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
 
 
 @pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh", "door-hold-expire.sh",
-                                    "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh", "install.sh"])
+                                    "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
+                                    "door-lane-scratch.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
 
@@ -310,6 +311,19 @@ def test_retirement_outcome_follows_the_module_status(retire_env: dict[str, str]
     assert (done_rc, outcome["status"], outcome["code"], outcome["exit_code"]) == (rc, status, code, rc)
     assert outcome["scene_id"] == "site-capture-1"
     assert outcome["result"] == f"{retire_env['DOOR_RESULTS_DIR']}/{RETIRE_ID}.retirement.json"
+    assert not any(call.startswith(("git ", "systemctl ")) for call in calls)
+
+
+def test_lane_scratch_script_uses_the_active_release_and_exact_lease_arguments(retire_env: dict[str, str]) -> None:
+    request_id = "20260926T120000Z-lane-scratch-0000abcd"
+    values = {**retire_env, "DOOR_SCRATCH_ROOT": "/mnt/blueprint-work/lanes", "DOOR_SCRATCH_ACTION": "release",
+              "DOOR_SCRATCH_LANE": "g1", "DOOR_SCRATCH_NAME": "run-1", "DOOR_SCRATCH_OWNER": "agent-1",
+              "DOOR_SCRATCH_EXPECTED_DIGEST": "sha256:" + "a" * 64,
+              "FAKE_RETIREMENT": '{"status":"released"}'}
+    rc, outcome, calls = _run("door-lane-scratch.sh", values, DOOR_REQUEST_ID=request_id)
+    assert rc == 0 and outcome["status"] == "released"
+    assert any("-m blueprint_pipeline.control_plane_lane_scratch_door release" in call for call in calls)
+    assert any("--root /mnt/blueprint-work/lanes" in call for call in calls)
     assert not any(call.startswith(("git ", "systemctl ")) for call in calls)
 
 
