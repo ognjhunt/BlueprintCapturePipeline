@@ -7,8 +7,11 @@ root, verifying its digest and size, and records a receipt beside the pointer as
 ``<run>.residue-restore.v1.json``. It holds the run's offload lock
 (``artifacts/result_delivery/.offload.lock``) for its whole pass, so no tick can
 resume an eviction while members come back, and it refuses to start while a tick
-holds it (``result_residue_restore_locked``). Once its pass is done it rewrites
-the pointer ``restored``: the pointer stays, and no tick offloads the run again.
+holds it (``result_residue_restore_locked``). Before it places the first member
+it rewrites the pointer ``restoring``, so a pass cut short (an exception, a
+crash, Ctrl-C) leaves a pointer no tick resumes or offloads; rerunning the
+restore continues it. Once a pass is done it rewrites the pointer ``restored``:
+the pointer stays, and no tick offloads the run again.
 
 It never overwrites: a member whose path holds a different file, or whose place
 cannot be reached (its directory became a file or a link), is a typed conflict
@@ -237,10 +240,13 @@ def restore_result_residue(
     member already in place with the same bytes is ``already_present``; a
     different file at its path, or a place it cannot reach, is a typed
     ``conflict`` and the rest still come back. The run's offload lock is held
-    throughout, and a pass that finishes rewrites the pointer ``restored``. The
-    receipt is written beside the pointer whatever happens once the pointer
-    verified; a failure (the archive cannot be fetched or does not verify, or
-    the pointer cannot be rewritten) is recorded in it and then raised.
+    throughout; the pointer is rewritten ``restoring`` before the first member is
+    placed, and ``restored`` once the pass is done. A pointer already
+    ``restoring`` (a pass cut short) is continued. The receipt is written beside
+    the pointer whatever happens once the pointer verified, with the digest of
+    the pointer it started from; a failure (the archive cannot be fetched or does
+    not verify, or the pointer cannot be rewritten) is recorded in it and then
+    raised.
     """
 
     unresolved = Path(run_root).expanduser()
@@ -256,6 +262,8 @@ def restore_result_residue(
 
 def _restore_locked(root: Path, materializer: Callable[..., Any] | None, now: Callable[[], float]) -> dict[str, Any]:
     pointer = _read_pointer(root)
+    pointer_path = root.parent / f"{root.name}{POINTER_SUFFIX}"
+    state = pointer.get("state", "offloaded")
     run_id = _registry_run_id(root)
     if run_id is not None and run_id != pointer.get("run_id"):
         raise ResultResidueOffloadError("result_residue_restore_run_mismatch")
@@ -296,6 +304,9 @@ def _restore_locked(root: Path, materializer: Callable[..., Any] | None, now: Ca
             for relative in sorted(expected):
                 member = expected[relative]
                 groups.setdefault(member.get("group", ("alone", relative)), []).append(member)
+            if state not in ("restoring", "restored"):
+                # From here on no tick may resume an eviction or offload the run, however this pass ends.
+                _write_json(pointer_path, pointer_with_state(pointer, "restoring"))
             root_fd = os.open(root, _DIRECTORY_FLAGS)
             try:
                 for members in groups.values():
@@ -309,11 +320,11 @@ def _restore_locked(root: Path, materializer: Callable[..., Any] | None, now: Ca
             shutil.rmtree(staging, ignore_errors=True)
         if reservation is not None:
             reservation.release()
-    if failure is None and pointer.get("state") != "restored":
+    if failure is None and state != "restored":
         try:
             # An operator brought the run back: no tick may evict it again, or resume an eviction.
-            _write_json(root.parent / f"{root.name}{POINTER_SUFFIX}", pointer_with_state(pointer, "restored"))
-        except Exception as exc:  # noqa: BLE001 - recorded in the receipt, then raised
+            _write_json(pointer_path, pointer_with_state(pointer, "restored"))
+        except Exception as exc:  # noqa: BLE001 - recorded in the receipt, then raised; the pointer says restoring
             failure = exc
     receipt: dict[str, Any] = {
         "schema_version": RESTORE_SCHEMA_VERSION,

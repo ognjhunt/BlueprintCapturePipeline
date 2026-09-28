@@ -98,8 +98,9 @@ def test_the_service_owner_is_given_each_file_last(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(restore, "_adopt_owner", recording)
     residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
         store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
-    # One (utime, adopt) pair per restored file, then the rewritten pointer's and the receipt's own.
-    assert order == ["utime", "adopt"] * len(RESIDUE) + ["adopt", "adopt"]
+    # The pointer rewritten restoring first, one (utime, adopt) pair per restored file, then the
+    # pointer rewritten restored and the receipt.
+    assert order == ["adopt"] + ["utime", "adopt"] * len(RESIDUE) + ["adopt", "adopt"]
 
 
 def _materializer(f):

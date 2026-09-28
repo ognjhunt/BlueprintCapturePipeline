@@ -1763,3 +1763,54 @@ def test_a_pointer_written_before_the_tick_takes_the_lock_stops_a_new_offload(tm
     assert (result["status"], result["retained_reason"], result["offloaded_count"]) == (
         "retained", "already_offloaded", 0)
     assert f.client.upload_count == 2  # the fixture's bulk artifact and the one residue archive
+
+
+@pytest.mark.parametrize("interruption", ["mid_pass", "final_rewrite"])
+def test_an_interrupted_restore_is_never_undone_by_a_tick(tmp_path, monkeypatch, interruption) -> None:
+    """Code review of 10d: a restore wrote ``restored`` only once every member was placed, so a pass
+    cut short (an exception, a failed final rewrite, a crash) left the crash's ``evicting`` pointer,
+    and the next applying tick evicted what the restore had put back. Restore now writes
+    ``restoring`` under the lock before it places anything: a tick keeps such a run and evicts
+    nothing, and rerunning the restore finishes it ``restored``."""
+
+    from blueprint_pipeline import task_evaluation_result_residue_restore as restore
+
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    real_group, real_write = restore._restore_group, restore._write_json
+    groups: list[int] = []
+
+    def cut_after_first_group(*args, **kwargs):
+        groups.append(1)
+        if len(groups) == 2:
+            raise RuntimeError("restore killed mid-pass")
+        return real_group(*args, **kwargs)
+
+    def refusing_restored(path, value):
+        if Path(path).name.endswith(residue.POINTER_SUFFIX) and value.get("state") == "restored":
+            raise OSError(28, "No space left on device")
+        return real_write(path, value)
+
+    with monkeypatch.context() as patched:
+        if interruption == "mid_pass":
+            patched.setattr(restore, "_restore_group", cut_after_first_group)
+        else:
+            patched.setattr(restore, "_write_json", refusing_restored)
+        with pytest.raises((RuntimeError, OSError)):
+            _restore(f)
+
+    placed = {relative: (f.run / relative).read_bytes() for relative in RESIDUE if (f.run / relative).exists()}
+    assert "logs/worker.log" in placed  # the member the crash had evicted came back before the cut
+    assert json.loads(f.pointer.read_text(encoding="utf-8"))["state"] == "restoring"
+    planned = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+    ticked = _offload(f)
+    for row in (planned, ticked):
+        assert (row["status"], row["retained_reason"], row.get("resume")) == ("retained", "restoring", None)
+    assert {relative: (f.run / relative).read_bytes() for relative in placed} == placed
+
+    finished = _restore(f)
+
+    assert finished["status"] == "restored"
+    assert {relative: (f.run / relative).read_bytes() for relative in RESIDUE} == RESIDUE
+    assert json.loads(f.pointer.read_text(encoding="utf-8"))["state"] == "restored"
+    assert _offload(f)["retained_reason"] == "restored"

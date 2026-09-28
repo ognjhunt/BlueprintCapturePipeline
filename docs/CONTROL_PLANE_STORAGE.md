@@ -743,17 +743,20 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `run_changed_or_active`, `pointer_failed`, `nothing_evicted` (every member
   stayed, so the pointer was withdrawn and the next tick tries again),
   `pointer_invalid` (a pointer that does not verify leaves the run alone),
-  `already_offloaded`, `restored` (an operator restored the run, and no tick
-  offloads it again without a new decision) or `pointer_changed` (the pointer a
-  tick read before its lock is gone or another one once it holds the lock)).
+  `already_offloaded`, `restoring` (an operator's restore is under way or was
+  cut short; rerun it to finish), `restored` (an operator restored the run, and
+  no tick offloads it again without a new decision) or `pointer_changed` (the
+  pointer a tick read before its lock is gone or another one once it holds the
+  lock)).
   An applying tick reads the pointer again once it holds the run lock and goes
   on only while it is unchanged (still absent, or the same `evicting` pointer
   by digest); otherwise it keeps the run for the state the pointer is in now and
   writes nothing, so a restore that lands between the two reads is never undone.
   The pointer records its eviction
   `state`: `evicting` from before the first unlink until eviction is over, then
-  `offloaded` (a pointer without a state reads as `offloaded`), and `restored`
-  once a restore finished. A pointed run reports the listed members still local
+  `offloaded` (a pointer without a state reads as `offloaded`), `restoring` from
+  before a restore places its first member, and `restored` once a restore
+  finished. A pointed run reports the listed members still local
   (`pointed_remaining_count`, `pointed_remaining_bytes`, totalled per phase); only
   when a crash left an `evicting` pointer does an applying tick resume (`resume`).
   It first checks with a HEAD request, reading no bytes, that the pointer's
@@ -816,7 +819,11 @@ run name, and its run id where the registry still names one. It always writes
 archive could not be fetched or verified. It holds the run's
 `artifacts/result_delivery/.offload.lock` for its whole pass, so no tick resumes
 an eviction while members come back, and refuses to start while a tick holds it
-(`result_residue_restore_locked`). A pass that finishes rewrites the pointer
+(`result_residue_restore_locked`). Before it places the first member it
+rewrites the pointer `restoring`, so a pass cut short (an exception, a crash,
+Ctrl-C, a failed final rewrite) leaves a pointer no tick resumes or offloads;
+rerunning the restore continues it. The receipt names the pointer it started
+from (`pointer_digest`). A pass that finishes rewrites the pointer
 `restored`: the pointer stays, and no tick offloads the run again.
 
 The manual single-root form

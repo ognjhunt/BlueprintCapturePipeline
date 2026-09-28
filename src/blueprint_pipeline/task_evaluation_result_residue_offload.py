@@ -133,8 +133,9 @@ the pointer's, keeping the rest and settling the pointer ``offloaded``; it
 publishes nothing, never withdraws that pointer, and evicts nothing until a HEAD
 request finds the pointer's archive with its size and digest
 (``archive_unverified``). Only an ``evicting`` pointer is resumed: an ``offloaded`` one (or one
-without a state) is ``already_offloaded``, and a run an operator restored is
-``restored`` and is never offloaded again without a new decision. The gates
+without a state) is ``already_offloaded``, a run whose restore is under way or
+was cut short is ``restoring``, and a run an operator restored is ``restored``;
+neither is offloaded again without a new decision. The gates
 read the pointer before the run lock, so an applying tick reads it again once it
 holds the lock and goes on only while it is unchanged (still absent, or the same
 ``evicting`` pointer by digest); otherwise it keeps the run for the pointer's
@@ -186,12 +187,16 @@ from .task_evaluation_result_artifact_store import (
 REPORT_SCHEMA_VERSION = "control_plane_result_residue_offload.v1"
 PHASE_SCHEMA_VERSION = "control_plane_result_residue_offload_phase.v1"
 POINTER_SCHEMA_VERSION = "control_plane_result_residue_pointer.v1"
-#: A pointer's eviction state: members are being evicted behind it, eviction is over, or an operator
-#: restored the run. A pointer without one is read as ``offloaded``, so nothing resumes behind it.
-POINTER_STATES = ("evicting", "offloaded", "restored")
+#: A pointer's eviction state: members are being evicted behind it, eviction is over, an operator's
+#: restore is putting them back (or was cut short), or it restored the run. A pointer without one is
+#: read as ``offloaded``, so nothing resumes behind it; only ``evicting`` is ever resumed.
+POINTER_STATES = ("evicting", "offloaded", "restoring", "restored")
 #: Why a run with a pointer in each state is kept; an ``evicting`` pointer is resumed only while it is
 #: the one the tick first read (else ``pointer_changed``).
-_POINTER_STATE_REASONS = {"evicting": "pointer_changed", "offloaded": "already_offloaded", "restored": "restored"}
+_POINTER_STATE_REASONS = {
+    "evicting": "pointer_changed", "offloaded": "already_offloaded", "restoring": "restoring",
+    "restored": "restored",
+}
 RESTORE_SCHEMA_VERSION = "control_plane_result_residue_restore_receipt.v1"
 POINTER_SUFFIX = evidence.RESIDUE_POINTER_SUFFIX
 RESTORE_RECEIPT_SUFFIX = evidence.RESIDUE_RESTORE_SUFFIX
