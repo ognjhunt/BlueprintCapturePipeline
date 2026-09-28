@@ -120,6 +120,10 @@ class _ActionFiles(_BirthFiles):
         self.check_long()
         _require(_epoch(deadline), 'experiment_work_deadline')
         self.deadline_epoch = min(self.deadline_epoch, deadline)
+        # Preserve the original owner's remaining duration even if wall time
+        # subsequently stalls. A later retry cannot mint another duration.
+        self.deadline_monotonic = min(self.deadline_monotonic,
+            self.controller_origin + max(0, deadline - self.controller_epoch))
         self.check_long()
 
     def _end(self):
