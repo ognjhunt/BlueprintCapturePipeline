@@ -130,7 +130,7 @@ def test_actual_arena_selector_admits_same_live_target_sh(retirement_installatio
     born = birth(setup, grant)
     monkeypatch.setattr(consumer, "AUTHORITY_ROOT", setup[2].parents[1] / "experiment-authority")
     monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
-    use = arena.admit_registered_arena_attempt("r33", now=lambda: 1002)
+    use = arena.admit_registered_arena_attempt("r33", now=lambda: 1102)
     try:
         assert use.path == Path(born["path"]) and use.entry["intent_id"] == grant["intent_id"]
         foreign = os.open(use.path, os.O_RDONLY | os.O_DIRECTORY)
@@ -164,3 +164,63 @@ def test_reserved_arena_lease_never_enters_legacy_mutation(retirement_installati
             now=lambda: 1002,
         )
     assert (target / scratch.LEASE_FILE).read_bytes() == original
+
+
+def test_expired_hardlinked_arena_owner_review_is_actual_gc_keep(
+    retirement_installation, monkeypatch
+):
+    import os
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from tests.test_registered_experiment_retirement_flow import _gc
+
+    setup = retirement_installation
+    grant = _arena(setup)
+    born = birth(setup, grant)
+    target = Path(born["path"])
+    (target / "evidence").write_bytes(b"preserved")
+    os.link(target / "evidence", target / "copied-evidence")
+    before = {p.name: (p.stat().st_ino, p.read_bytes()) for p in target.iterdir()}
+    monkeypatch.setattr(
+        actions, "_manifest", lambda *a, **kw: pytest.fail("owner review inspected payload")
+    )
+    monkeypatch.setattr(
+        actions, "_hash_manifest", lambda *a, **kw: pytest.fail("owner review hashed payload")
+    )
+    selected = root.issue_experiment_action_intent(
+        grant["intent_id"],
+        principal="operator",
+        owner="owner",
+        action="owner_review",
+        expires_at_epoch=3500,
+        installed_config_path=setup[0],
+        now=lambda: 2900,
+    )
+    action = json.loads((setup[2] / (selected["action_id"] + ".action.json")).read_bytes())
+    assert action["manifest"] is None
+    outcome = _gc(setup)["registered_experiments"]["outcomes"][0]
+    assert outcome["action_id"] == selected["action_id"] and outcome["decision"] == "kept"
+    assert outcome["reason"] == "owner_review" and outcome["removed_logical_bytes"] == 0
+    assert {p.name: (p.stat().st_ino, p.read_bytes()) for p in target.iterdir()} == before
+
+
+@pytest.mark.parametrize("action", ["delete", "offload"])
+def test_arena_unknown_descendants_never_gain_removal_authority(retirement_installation, action):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+
+    setup = retirement_installation
+    grant = _arena(setup)
+    born = birth(setup, grant)
+    target = Path(born["path"])
+    (target / "payload").write_bytes(b"keep")
+    with pytest.raises(ValueError, match="experiment_action_profile_unsupported"):
+        root.issue_experiment_action_intent(
+            grant["intent_id"],
+            principal="operator",
+            owner="owner",
+            action=action,
+            expires_at_epoch=3500,
+            installed_config_path=setup[0],
+            now=lambda: 2900,
+        )
+    assert (target / "payload").read_bytes() == b"keep"
