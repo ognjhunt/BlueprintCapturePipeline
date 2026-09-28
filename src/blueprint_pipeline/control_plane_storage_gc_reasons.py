@@ -228,7 +228,7 @@ PHASES = (
     "scratch_directories",
     "workspace_bundles",
     "replay_caches",
-    "scene_workspaces", "lane_scratch",
+    "scene_workspaces", "lane_scratch", "registered_experiments",
 )
 OPT_INS = (
     "evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "replay_cache_shared_scratch",
@@ -438,6 +438,44 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
     }
 
 
+def _registered_action_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Measured completed removals; no private selectors or future byte forecast."""
+    rows = entry.get("outcomes")
+    valid = isinstance(rows, list) and len(rows) <= 2
+    rows = rows[:2] if isinstance(rows, list) else []
+    logical = allocated = 0
+    outcomes, kept = {}, {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            valid = False
+            continue
+        decision = _typed(row.get("decision"), "unrecognized_decision")
+        reason = _typed(row.get("reason"), "unrecognized_reason")
+        count = outcomes.get((decision, reason), 0)
+        outcomes[(decision, reason)] = count + 1
+        if decision == "kept":
+            kept[reason] = {"count": kept.get(reason, {"count": 0})["count"] + 1, "bytes": None}
+        amounts = (_integer(row.get("removed_logical_bytes")), _integer(row.get("removed_allocated_bytes")))
+        if any(amount is None for amount in amounts) or decision not in ("kept", "retired"):
+            valid = False
+        elif decision == "kept" and any(amounts):
+            valid = False
+        else:
+            logical += amounts[0]
+            allocated += amounts[1]
+    return {
+        "status": "applied" if entry.get("enabled") is True else "disabled",
+        "enabled": entry.get("enabled") if type(entry.get("enabled")) is bool else None,
+        "candidate_bytes": None,
+        "removed_or_offloaded_bytes": allocated if valid else None,
+        "removed_logical_bytes": logical if valid else None,
+        "removed_allocated_bytes": allocated if valid else None,
+        "retained_by_reason": kept,
+        "outcomes": [{"decision": decision, "reason": reason, "count": count}
+                     for (decision, reason), count in sorted(outcomes.items())],
+    }
+
+
 def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     """The door-readable projection of one tick's report: small, secret-free, and path-free.
 
@@ -457,6 +495,9 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     reason_totals: dict[str, int] = {}
     for key in PHASES:
         entry = report.get(key)
+        if key == "registered_experiments" and isinstance(entry, Mapping):
+            phases[key] = _registered_action_summary(entry)
+            continue
         if key == "lane_scratch" and isinstance(entry, Mapping):
             phases[key] = _lane_summary(entry)
             continue
