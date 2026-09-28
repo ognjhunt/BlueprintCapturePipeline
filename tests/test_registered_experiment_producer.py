@@ -82,14 +82,17 @@ def test_actual_registered_pair_and_worker_preflight_output_holds_target_sh(inst
         os.close(fd)
 
 
-def _registered_fixture(installation, tmp_path, monkeypatch):  # noqa: F811
+def _registered_fixture(installation, tmp_path, monkeypatch, *, profile='g1_local_prelaunch_block.v1'):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_birth as issuer
     from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
     prepare(installation)
     paths, _ = _paired_requests(tmp_path)
+    if profile == 'g1_local_contained_completed.v1':
+        for path in paths:
+            path.chmod(0o640)
     selectors = tuple((path, {"sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
                              "size_bytes": path.stat().st_size}) for path in paths)
-    grant = issue(installation, participant_profile="g1_local_prelaunch_block.v1", request_records=selectors)
+    grant = issue(installation, participant_profile=profile, request_records=selectors)
     monkeypatch.setattr(issuer, "_blueprint_identity", lambda: (0, 0))
     monkeypatch.setattr(os, "fchown", lambda *a: None)
     born = birth(installation, grant)
@@ -197,3 +200,73 @@ def test_real_completed_prelaunch_offload_intent_requires_exact_closure_record(
             expires_at_epoch=3500, installed_config_path=config, now=lambda: 2900)
         assert action['action_intent']['size_bytes'] > 0
         assert json.loads((installation[2] / (action['action_id'] + '.action.json')).read_bytes())['completion'] is not None
+
+
+def _contained_bootstrap(installation, tmp_path, monkeypatch):  # noqa: F811
+    """Genuine root-issued intent/birth and its fixed protected public publication."""
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    consumer, target, born, paths = _registered_fixture(
+        installation, tmp_path, monkeypatch, profile='g1_local_contained_completed.v1')
+    intent_id = target.name.removeprefix('registered-')
+    intent = installation[2] / (intent_id + '.json')
+    raw = intent.read_bytes()
+    root.issue_experiment_producer_bootstrap(intent_id,
+        expected_intent_sha256='sha256:' + hashlib.sha256(raw).hexdigest(),
+        expected_intent_size_bytes=len(raw), request_paths=paths,
+        installed_config_path=installation[0], now=lambda: 1200)
+    selected = consumer.AUTHORITY_ROOT / (intent_id + '.producer-bootstrap.json')
+    assert selected.is_file() and selected.stat().st_mode & 0o777 == 0o640
+    return consumer, target, born, paths, selected
+
+
+def test_actual_contained_public_bootstrap_admits_producer_without_private_records(
+        installation, tmp_path, monkeypatch):  # noqa: F811
+    consumer, target, born, paths, selected = _contained_bootstrap(installation, tmp_path, monkeypatch)
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    monkeypatch.setattr(os, 'geteuid', lambda: 1001)
+    original_read = consumer._BirthFiles.read
+    private = installation[2]
+    def public_only(files, path, *args, **kwargs):
+        assert not Path(path).is_relative_to(private), 'ordinary producer opened private intent'
+        assert Path(path) != installation[0], 'ordinary producer opened private door config'
+        return original_read(files, path, *args, **kwargs)
+    monkeypatch.setattr(consumer._BirthFiles, 'read', public_only)
+    monkeypatch.setattr(root, '_configuration', lambda *a: pytest.fail('private config used by ordinary producer'))
+    with consumer.RegisteredExperimentUse.admit(target, expected_birth=born['birth'],
+            expected_generation=born['generation'], now=lambda: 1200,
+            _producer_bootstrap_path=selected) as use:
+        use.authorize_g1_pair(paths)
+        assert len(use._producer_requests) == 2
+        fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+    assert use._closed and not use.files.owned and not use.files.unresolved
+
+
+@pytest.mark.parametrize('change', ['request', 'bootstrap', 'wrong_path'])
+def test_real_contained_bootstrap_cannot_refresh_or_replace_selected_producer_inputs(
+        installation, tmp_path, monkeypatch, change):  # noqa: F811
+    consumer, target, born, paths, selected = _contained_bootstrap(installation, tmp_path, monkeypatch)
+    if change == 'wrong_path':
+        supplied = selected.with_name('arbitrary-bootstrap.json')
+        supplied.write_bytes(selected.read_bytes())
+    else:
+        supplied = selected
+    use = None
+    try:
+        if change != 'wrong_path':
+            use = consumer.RegisteredExperimentUse.admit(target, now=lambda: 1200,
+                _producer_bootstrap_path=supplied)
+            (paths[0] if change == 'request' else selected).write_bytes(b'{}')
+            with pytest.raises(ValueError, match='experiment_'):
+                use.authorize_g1_pair(paths)
+        else:
+            with pytest.raises(ValueError, match='experiment_'):
+                consumer.RegisteredExperimentUse.admit(target, now=lambda: 1200,
+                    _producer_bootstrap_path=supplied)
+    finally:
+        if use is not None:
+            use.close()
