@@ -1322,6 +1322,13 @@ def run_storage_gc(
                                   replay_cache_shared_scratch_alert, extended_pin_proofs_alert) if alert]
     if alerts:
         report["alerts"] = alerts
+    def lifecycle_phase() -> Any:
+        from .task_evaluation_scene_retirement_cli import run_gc_phase
+        # Use the live clock for consent expiry throughout the action, never the
+        # tick's frozen observation. The fixed protected selector grants no
+        # authority without the same native engine's current proofs.
+        return run_gc_phase(apply=apply, now=now)
+    _isolated(report, "scene_lifecycle", lifecycle_phase)
     if result_residue_offload_alert:
         report.setdefault("alerts", []).append(result_residue_offload_alert)
     queue_present, _absent_queue_roots = _existing(queue_roots)

@@ -54,6 +54,8 @@ _SCOPES = {
     "restore-scene-workspace": "operate",
     "lane-scratch": "operate",
     "owner-census-decision": "operate",
+    "retire-scene": "operate",
+    "restore-scene": "operate",
 }
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
@@ -122,6 +124,20 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
+    if kind in {"retire-scene", "restore-scene"}:
+        fields = {"kind", "intent_id", "consent_id", "expected_sha256", "expected_size_bytes"}
+        if kind == "retire-scene":
+            fields.add("apply")
+        consent_id, digest, size = (body.get(key) for key in
+                                  ("consent_id", "expected_sha256", "expected_size_bytes"))
+        intent = body.get("intent_id")
+        if (set(body) != fields or not isinstance(intent, str) or not _SCENE_ID.fullmatch(intent)
+                or not isinstance(consent_id, str) or not re.fullmatch("[0-9a-f]{32}", consent_id)
+                or not isinstance(digest, str) or not _LEASE_DIGEST.fullmatch(digest)
+                or type(size) is not int or not 1 <= size <= 512 * 1024
+                or (kind == "retire-scene" and type(body["apply"]) is not bool)):
+            raise RequestRefused("scene_lifecycle_options_invalid")
+        return {key: body[key] for key in fields}
     if kind == "owner-census-decision":
         allowed = {"kind", "consent_id", "expected_sha256", "expected_size_bytes"}
         consent_id, digest, size = (body.get(k) for k in ("consent_id", "expected_sha256", "expected_size_bytes"))
