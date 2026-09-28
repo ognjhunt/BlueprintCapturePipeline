@@ -1,0 +1,50 @@
+"""Real retained accounting reopens exact metadata after member removal."""
+import hashlib
+import json
+from pathlib import Path
+import pytest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from tests.test_scene_retirement_real_participants import access_fixture
+
+
+def closure_fixture(tmp_path,monkeypatch):
+    access,policy,member=access_fixture(tmp_path,monkeypatch)
+    journal=Path(policy['journal_store']);journal.mkdir(mode=0o700)
+    token='2'*32
+    blob=journal/'original-launch.json'
+    raw=b'{"schema_version":"task_evaluation_launch_receipt.v1","status":"completed","paid_execution_requested":true}'
+    blob.write_bytes(raw);blob.chmod(0o600)
+    digest='sha256:'+hashlib.sha256(raw).hexdigest()
+    logical=member/'launch_receipt.json'
+    identity=member.stat()
+    generation=dict(schema_version='scene_member_generation.v1',canonical_path=str(member),
+        state='retired',generation_id='1'*32,retirement_token=token,dev=identity.st_dev,ino=identity.st_ino,mode=identity.st_mode)
+    generation['state_digest']=canonical_digest(generation,digest_field='state_digest')
+    path=Path(policy['generation_store'])/(hashlib.sha256(str(member).encode()).hexdigest()+'.json')
+    path.write_text(json.dumps(generation));path.chmod(0o600)
+    index=dict(schema_version='scene_retirement_metadata_closure.v1',token=token,members=[dict(
+        canonical_path=str(member),generation_id=generation['generation_id'])],rows=[dict(
+            logical_path=str(logical),sha256=digest,size_bytes=len(raw),retained_raw_ref=dict(
+                path=str(blob),sha256=digest,size_bytes=len(raw)))])
+    index['closure_digest']=canonical_digest(index,digest_field='closure_digest')
+    path=journal/(token+'.metadata.json');path.write_text(json.dumps(index));path.chmod(0o600)
+    member.rmdir()
+    return access,policy,logical,blob,raw
+
+
+def test_real_retained_accounting_reader_reopens_exact_original_metadata_under_lock(tmp_path,monkeypatch):
+    from blueprint_pipeline.control_plane_retained_receipt import read_receipt_bytes
+    access,_,logical,_,raw=closure_fixture(tmp_path,monkeypatch)
+    assert read_receipt_bytes(logical)==raw
+    with access.exclusive_scene_access():
+        with pytest.raises(ValueError):
+            read_receipt_bytes(logical)
+
+
+def test_missing_or_changed_metadata_clone_never_falls_back_to_other_owner_or_remote(tmp_path,monkeypatch):
+    from blueprint_pipeline.control_plane_retained_receipt import read_receipt_bytes
+    _,_,logical,blob,_=closure_fixture(tmp_path,monkeypatch)
+    blob.write_bytes(b'foreign-owner')
+    with pytest.raises(ValueError):
+        read_receipt_bytes(logical)
+    assert not logical.exists()
