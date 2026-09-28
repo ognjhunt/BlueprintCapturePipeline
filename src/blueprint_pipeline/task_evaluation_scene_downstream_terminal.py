@@ -118,7 +118,7 @@ def _validate(context):
                               and isinstance(value.get('result_status'), str), 'sync_invalid')
                 elif role == 'canary_offload_pointers':
                     c.seal(row, 'pointer_digest')
-                    c.require(value.get('status') == 'offloaded' and c.matches(value.get('directory'), c.ID)
+                    c.require(value.get('status') == 'offloaded' and c.matches(value.get('directory'), c.ACTIVATION_ID)
                               and p.name == value['directory'] + '.offloaded.v1.json'
                               and value.get('terminal_receipt') == 'dispatch_receipt.json'
                               and isinstance(value.get('uri'), str) and value['uri'].startswith('s3://') and '?' not in value['uri']
@@ -133,17 +133,29 @@ def _validate(context):
     # Validate every available exact projection edge, even when its dispatch
     # version is not the one selected by a terminal state.
     projection_raw = {(p['path'], p['sha256'], p['size_bytes']): v for v, p in context.decoded['canary_projections']}
+    sync_raw = {(p['path'], p['sha256'], p['size_bytes']): v for v, p in context.decoded['canary_syncs']}
     for value, proof in context.decoded['canary_dispatches']:
         if dispatch_types.get(proof['sha256'], (None, None))[1] != 'executed':
             continue
         ref = value.get('policy_canary_result_projection')
+        projection = None
         if isinstance(ref, dict):
             v = projection_raw.get(tuple(ref.get(k) for k in ('path', 'sha256', 'size_bytes')))
             if v is not None and v.get('schema_version') == SCHEMAS['canary_projections']:
+                projection = v
                 c.require(v.get('run_id') == value['run_id'] and v.get('projection_digest') == value.get('policy_canary_projection_digest')
                           and v.get('result_delivery_digest') == value.get('result_delivery_digest') and v.get('result_status') == value.get('status'), 'projection_binding_invalid')
+        ref = value.get('policy_canary_webapp_sync')
+        sync = sync_raw.get(tuple(ref.get(k) for k in ('path', 'sha256', 'size_bytes')))
+        if sync is not None and sync.get('schema_version') == SCHEMAS['canary_syncs']:
+            c.require(sync['run_id'] == value['run_id'] and sync['result_status'] == value['status']
+                      and sync['policy_canary_projection_digest'] == value.get('policy_canary_projection_digest')
+                      and sync.get('notification_delivery') == value.get('notification_delivery'), 'sync_binding_invalid')
+            if projection:
+                c.require(sync['status'] == 'succeeded'
+                          and all(sync[k] == projection[k] for k in ('request_digest', 'configuration_digest')), 'sync_binding_invalid')
     paths['_raw_index'] = {role: {(p['path'], p['sha256'], p['size_bytes']): (v, p)
-                                 for v, p in context.decoded[role]} for role in ('canary_projections', 'canary_syncs', 'provider_zero_receipts', 'allocator_results')}
+                                 for v, p in context.decoded[role]} for role in ('canary_projections', 'canary_syncs', 'provider_zero_receipts', 'allocator_results', 'canary_dispatches')}
     paths['_dispatch_index'] = {}
     for row in context.decoded['canary_dispatches']:
         value, proof = row
@@ -155,6 +167,7 @@ def _validate(context):
         for value, proof in context.decoded[role]:
             if value.get('schema_version') == SCHEMAS[role]:
                 paths['_path_runs'][role].setdefault(proof['path'], set()).add(value['run_id'])
+    paths['_archives'] = _archive_index(context, paths, pointers, dispatch_types)
     return paths, dispatch_types, pointers
 
 
@@ -166,46 +179,100 @@ def _raw_select(paths, role, ref, expected, copied):
     return [index[key] for key in sorted({(expected, ref['sha256'], ref['size_bytes']), (copied, ref['sha256'], ref['size_bytes'])}) if key in index]
 
 
-def _archive(context, paths, pointer_members, state, dispatch, projection, directory, sources):
-    canary = state['canary_run_root']
-    expected = canary + '.offloaded.v1.json'
-    candidates = [row for row in paths['canary_offload_pointers'].get(expected, [])
-                  if row[0].get('schema_version') == SCHEMAS['canary_offload_pointers']]
-    pointer_index = {}
-    for row in candidates:
-        pointer_index.setdefault(row[0]['pointer_digest'], []).append(row)
-    publications = [row for row in paths['terminal_publications'].get(c.child(directory, 'terminal_result_publication.json'), [])
-                    if row[0].get('schema_version') == SCHEMAS['terminal_publications']]
-    pairs = []
-    if publications:
-        for publication in publications:
-            selected = pointer_index.get(publication[0]['pointer_digest'], [])
-            if len(selected) != 1:
-                context.missing('publication_pointer_version', 'publication_pointer_version_unavailable' if not selected else 'publication_pointer_version_ambiguous',
-                                [publication[1]], expected, {'pointer_digest': publication[0]['pointer_digest']})
-            else:
-                pairs.append((selected[0], publication))
-    elif len(candidates) == 1:
-        pairs.append((candidates[0], None))
-        context.missing('terminal_publication', 'terminal_publication_unavailable', sources + [candidates[0][1]],
-                        c.child(directory, 'terminal_result_publication.json'))
-    else:
-        context.missing('canary_offload_pointer', 'canary_offload_pointer_unavailable_or_ambiguous' if candidates else 'canary_offload_pointer_unavailable', sources, expected)
-    bound = False
-    for (pointer, proof), publication in pairs:
-        member_index = pointer_members[proof['sha256']]
-        for name, row in ((PROJECTION_PATH, projection), ('dispatch_receipt.json', dispatch)):
-            member = member_index.get(name)
-            c.require(member is not None and all(member[k] == row[1][k] for k in ('sha256', 'size_bytes')), 'pointer_member_binding_invalid')
+def _archive_index(context, paths, pointer_members, dispatch_types):
+    """Validate each historical pair once; never compare it to an unrelated state."""
+    seals, paired, result, pointer_paths = {}, set(), {}, {}
+    for row in context.decoded['canary_offload_pointers']:
+        if row[0].get('schema_version') == SCHEMAS['canary_offload_pointers']:
+            seals.setdefault(row[0]['pointer_digest'], []).append(row)
+            pointer_paths.setdefault(row[1]['path'], []).append(row)
+    state_selectors = set()
+    for state, proof in context.decoded['terminal_states']:
+        if state.get('schema_version') == 'task_evaluation_scene_terminal_index_state.v1' and all(
+                isinstance(state.get(k), str) for k in ('canary_run_root', 'run_id', 'projection_digest', 'dispatch_receipt_digest')):
+            state_selectors.add((state['canary_run_root'], str(PurePosixPath(proof['path']).parent), state['run_id'],
+                                 state['projection_digest'], state['dispatch_receipt_digest']))
+
+    def add(pointer_row, publication):
+        pointer, proof = pointer_row
+        canary = proof['path'][:-len('.offloaded.v1.json')]
+        directory = str(PurePosixPath(publication[1]['path']).parent) if publication else None
+        sources = [proof] + ([publication[1]] if publication else [])
         if publication:
             value = publication[0]
-            c.require(value['run_id'] == state['run_id'] and value['digest'] == projection[0]['projection_digest']
-                      and value['archive_digest'] == pointer['digest'] and value.get('uri') == pointer['uri']
-                      and value['size_bytes'] == pointer['size_bytes'] and value['archive_member_count'] == pointer['member_count'], 'publication_binding_invalid')
-            sources.append(publication[1])
-        sources.append(proof)
-        bound = True
-    return bound
+            c.require(value['archive_digest'] == pointer['digest'] and value.get('uri') == pointer['uri']
+                      and value['size_bytes'] == pointer['size_bytes']
+                      and value['archive_member_count'] == pointer['member_count'], 'publication_binding_invalid')
+        selected = []
+        for role, name, copied in (('canary_projections', PROJECTION_PATH, 'policy_canary_result_projection.json'),
+                                   ('canary_dispatches', 'dispatch_receipt.json', 'dispatch_receipt.json')):
+            member = pointer_members[proof['sha256']].get(name)
+            c.require(member is not None, 'pointer_member_binding_invalid')
+            names = [c.child(canary, name)] + ([c.child(directory, copied)] if directory else [])
+            rows = [paths['_raw_index'][role][key] for path in names
+                    if (key := (path, member['sha256'], member['size_bytes'])) in paths['_raw_index'][role]]
+            selected.append(rows[0] if rows else None)
+        if not all(selected):
+            context.missing('archive_member_bytes', 'archive_member_bytes_unavailable', sources,
+                            selector={'pointer_digest': pointer['pointer_digest']})
+            return
+        projection, dispatch = selected
+        if (projection[0].get('schema_version') != SCHEMAS['canary_projections']
+                or dispatch_types.get(dispatch[1]['sha256'], (None, None))[1] != 'executed'):
+            context.missing('archive_member_identity', 'archive_member_identity_unproven', sources)
+            return
+        v, d = projection[0], dispatch[0]
+        c.require(d['run_id'] == v['run_id'] and d['policy_canary_projection_digest'] == v['projection_digest']
+                  and d['result_delivery_digest'] == v['result_delivery_digest'] and d['status'] == v['result_status']
+                  and all(d['policy_canary_result_projection'][k] == projection[1][k] for k in ('sha256', 'size_bytes')),
+                  'pointer_member_binding_invalid')
+        if publication:
+            c.require(publication[0]['run_id'] == v['run_id'] and publication[0]['digest'] == v['projection_digest'], 'publication_binding_invalid')
+            selector = (canary, directory, v['run_id'], v['projection_digest'], d['receipt_digest'])
+            if selector not in state_selectors:
+                context.missing('archive_terminal_state', 'archive_terminal_state_selector_unavailable',
+                                sources + [projection[1], dispatch[1]], selector={'projection_digest': v['projection_digest'],
+                                'dispatch_receipt_digest': d['receipt_digest'], 'run_id': v['run_id']})
+        key = (canary, directory, projection[1]['sha256'], dispatch[1]['sha256'])
+        result.setdefault(key, []).append(sources)
+
+    for publication in context.decoded['terminal_publications']:
+        if publication[0].get('schema_version') != SCHEMAS['terminal_publications']:
+            continue
+        selected = seals.get(publication[0]['pointer_digest'], [])
+        paired.update(row[1]['sha256'] for row in selected)
+        if len(selected) != 1:
+            context.missing('publication_pointer_version', 'publication_pointer_version_unavailable' if not selected else 'publication_pointer_version_ambiguous',
+                            [publication[1]], selector={'pointer_digest': publication[0]['pointer_digest']})
+        else:
+            add(selected[0], publication)
+    for rows in seals.values():
+        for row in rows:
+            if row[1]['sha256'] not in paired:
+                if len(pointer_paths[row[1]['path']]) == 1:
+                    add(row, None)
+                else:
+                    context.missing('terminal_publication', 'terminal_publication_selector_unavailable', [row[1]],
+                                    selector={'pointer_digest': row[0]['pointer_digest']})
+    return result
+
+
+def _archive(context, paths, state, dispatch, projection, directory, sources):
+    canary = state['canary_run_root']
+    key = (canary, directory, projection[1]['sha256'], dispatch[1]['sha256'])
+    paired = paths['_archives'].get(key, [])
+    fallback = paths['_archives'].get((canary, None, *key[2:]), []) if not paired else []
+    if paired or fallback:
+        for proofs in paired or fallback:
+            sources += proofs
+        if fallback:
+            context.missing('terminal_publication', 'terminal_publication_unavailable', sources,
+                            c.child(directory, 'terminal_result_publication.json'))
+        return True
+    context.missing('canary_offload_pointer', 'canary_offload_pointer_unavailable_or_ambiguous'
+                    if paths['canary_offload_pointers'].get(canary + '.offloaded.v1.json') else 'canary_offload_pointer_unavailable',
+                    sources, canary + '.offloaded.v1.json')
+    return False
 
 
 def terminal(context, launches):
@@ -259,9 +326,9 @@ def terminal(context, launches):
                     matches = _raw_select(paths, 'allocator_results', allocator, allocator['path'], allocator['path'])
                     if not matches:
                         reason = reason or 'allocator_result_bytes_unavailable'
+            elif kind != 'executed':
+                reason = 'terminal_execution_status_unproven'
             else:
-                if kind != 'executed':
-                    reason = 'terminal_execution_status_unproven'
                 projection_ref, sync_ref, zero_ref = (value.get(k) for k in ('policy_canary_result_projection', 'policy_canary_webapp_sync', 'provider_zero'))
                 selected = [_raw_select(paths, role, ref, c.child(canary, original), c.child(directory, copied))
                             for role, ref, original, copied in (
@@ -289,7 +356,7 @@ def terminal(context, launches):
                                   and all(sync.get(k) == v[k] for k in ('run_id', 'request_digest', 'configuration_digest', 'result_status'))
                                   and sync.get('policy_canary_projection_digest') == v['projection_digest']
                                   and sync.get('notification_delivery') == value.get('notification_delivery'), 'sync_binding_invalid')
-                    archive = _archive(context, paths, members, state, dispatch, projection, directory, sources)
+                    archive = _archive(context, paths, state, dispatch, projection, directory, sources)
                 if known_selected[2]:
                     c.require(selected[2][0][0].get('schema_version') == SCHEMAS['provider_zero_receipts']
                               and zero_ref.get('provider_zero_verified') is True, 'provider_zero_binding_invalid')

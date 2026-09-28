@@ -195,6 +195,10 @@ def launches(context, activations):
             observations.append(c.observation(row, reason='launch_receipt_canonicalization_unproven'))
             continue
         c.seal(row, 'receipt_digest', cross=True)
+        c.require(all(c.matches(value.get(k), c.LAUNCH_ID) for k in ('launch_id', 'run_id'))
+                  and c.matches(value.get('source_commit'), c.COMMIT), 'launch_receipt_invalid')
+        c.require(proof['path'] == c.child(context.roots['launch_execution_root'], value['launch_id'],
+                                        'launch_receipt.json'), 'launch_receipt_identity_invalid')
         for field in ('request_digest', 'launch_profile_digest'):
             c.require(c.matches(value.get(field)), 'launch_receipt_invalid')
         selected = requests.get(value['request_digest'], [])

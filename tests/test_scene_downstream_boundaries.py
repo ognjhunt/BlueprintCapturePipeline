@@ -322,3 +322,111 @@ def test_reference_length_contradicts_available_raw_identity_instead_of_missing(
         edit(args, 'canary_dispatches', lambda r: r['allocator_result'].update(size_bytes=r['allocator_result']['size_bytes'] + 1), 'receipt_digest', position=i)
     args['downstream_records']['terminal_states'] = []
     refuses(args)
+
+
+@pytest.mark.parametrize('changes', [
+    {'launch_id': False}, {'run_id': '../bad'}, {'source_commit': 'not-a-commit'},
+    {'launch_id': 'different-valid-launch'},
+])
+def test_receipt_own_identity_is_checked_without_request_or_progression(changes):
+    args = fixture()
+    args['downstream_records']['launch_requests'] = []
+    args['downstream_records']['launch_progressions'] = []
+    edit(args, 'launch_receipts', changes, 'receipt_digest', cross=True)
+    refuses(args)
+
+
+def test_unknown_dispatch_status_needs_no_executed_only_references():
+    args = terminal_fixture()
+    rows = args['downstream_records']
+    for i in (0, 1):
+        def unknown(value):
+            value['status'] = 'future_status'
+            for key in ('policy_canary_result_projection', 'policy_canary_webapp_sync', 'provider_zero'):
+                value.pop(key)
+        edit(args, 'canary_dispatches', unknown, 'receipt_digest', position=i)
+    edit(args, 'terminal_states', {'dispatch_receipt_digest': json.loads(rows['canary_dispatches'][0][1])['receipt_digest']}, 'state_digest')
+    result = api().join_retained_scene_downstream_inventory(**args)
+    assert any(r['reason'] == 'terminal_execution_status_unproven' for r in result['terminal_observations'])
+    assert not any(r['kind'] == 'canary_evidence_workspace' for r in result['lexical_members'])
+    assert len([r for r in result['raw_versions'] if r['role'] == 'canary_dispatches']) == 2
+
+
+@pytest.mark.parametrize('changes', [
+    {'notification_delivery': {'status': 'wrong'}}, {'request_digest': 'sha256:' + 'f' * 64},
+    {'configuration_digest': 'sha256:' + 'f' * 64}, {'status': 'failed'},
+])
+def test_available_bad_sync_refuses_without_any_terminal_state(changes):
+    args = terminal_fixture()
+    rows = args['downstream_records']
+    rows['terminal_states'] = []
+    for i, (path, raw) in enumerate(rows['canary_syncs']):
+        value = json.loads(raw)
+        value.update(changes)
+        rows['canary_syncs'][i] = pair(path, value)
+    for i in (0, 1):
+        edit(args, 'canary_dispatches', {'policy_canary_webapp_sync': ref(rows['canary_syncs'][0])}, 'receipt_digest', position=i)
+    refuses(args)
+
+
+def test_old_archive_uses_its_own_raw_versions_without_current_state():
+    args = terminal_fixture(pointer=True)
+    rows = args['downstream_records']
+    old_projection = json.loads(rows['canary_projections'][0][1])
+    old_projection['result_delivery_digest'] = 'sha256:' + 'f' * 64
+    old_projection = seal(old_projection, 'projection_digest', cross=True)
+    projection = pair(rows['canary_projections'][0][0], old_projection)
+    old_sync = json.loads(rows['canary_syncs'][0][1])
+    old_sync['policy_canary_projection_digest'] = old_projection['projection_digest']
+    sync = pair(rows['canary_syncs'][0][0], old_sync)
+    old_dispatch = json.loads(rows['canary_dispatches'][0][1])
+    old_dispatch.update(policy_canary_projection_digest=old_projection['projection_digest'],
+                        result_delivery_digest=old_projection['result_delivery_digest'],
+                        policy_canary_result_projection=ref(projection), policy_canary_webapp_sync=ref(sync))
+    dispatch = pair(rows['canary_dispatches'][0][0], seal(old_dispatch, 'receipt_digest'))
+    rows['canary_projections'].append(projection)
+    rows['canary_syncs'].append(sync)
+    rows['canary_dispatches'].append(dispatch)
+    pointer = json.loads(rows['canary_offload_pointers'][0][1])
+    pointer.update(uri='s3://evidence/old-raw-history.tar.gz', digest='sha256:' + 'e' * 64, size_bytes=90)
+    for member, proof in zip(pointer['members'], (ref(projection), ref(dispatch))):
+        member.update(sha256=proof['sha256'], size_bytes=proof['size_bytes'])
+    pointer = seal(pointer, 'pointer_digest')
+    rows['canary_offload_pointers'].append(pair(rows['canary_offload_pointers'][0][0], pointer))
+    publication = json.loads(rows['terminal_publications'][0][1])
+    publication.update(uri=pointer['uri'], archive_digest=pointer['digest'], size_bytes=90,
+                       pointer_digest=pointer['pointer_digest'], digest=old_projection['projection_digest'])
+    rows['terminal_publications'].append(pair(rows['terminal_publications'][0][0], seal(publication, 'publication_digest')))
+    result = api().join_retained_scene_downstream_inventory(**args)
+    current = next(r for r in result['terminal_observations'] if r.get('archive_binding_verified'))
+    assert current['status'] == 'matched_retained_bytes'
+    assert len([r for r in current['source_provenance'] if r['role'] == 'canary_offload_pointers']) == 1
+    assert len([r for r in result['raw_versions'] if r['role'] == 'canary_offload_pointers']) == 2
+    assert any(r['reason'] == 'archive_terminal_state_selector_unavailable' for r in result['structural_join_obligations'])
+    for role in ('canary_projections', 'canary_syncs', 'canary_dispatches', 'canary_offload_pointers', 'terminal_publications'):
+        rows[role].reverse()
+    assert api().join_retained_scene_downstream_inventory(**args) == result
+
+
+def test_ambiguous_pointer_document_seal_cannot_fallback_into_archive_proof():
+    args = terminal_fixture(pointer=True)
+    rows = args['downstream_records']
+    path, raw = rows['canary_offload_pointers'][0]
+    rows['canary_offload_pointers'].append((path, raw + b' '))
+    result = api().join_retained_scene_downstream_inventory(**args)
+    assert result['terminal_observations'][0]['archive_binding_verified'] is False
+    assert any(r['reason'] == 'publication_pointer_version_ambiguous' for r in result['structural_join_obligations'])
+
+
+def test_192_character_canary_folder_pointer_is_retained_without_promotion():
+    args = terminal_fixture(pointer=True)
+    rows = args['downstream_records']
+    rows['terminal_publications'] = []
+    directory = 'c' * 192
+    pointer = json.loads(rows['canary_offload_pointers'][0][1])
+    pointer['directory'] = directory
+    rows['canary_offload_pointers'] = [pair(args['roots']['policy_canary_root'] + '/' + directory + '.offloaded.v1.json',
+                                         seal(pointer, 'pointer_digest'))]
+    result = api().join_retained_scene_downstream_inventory(**args)
+    assert len([r for r in result['raw_versions'] if r['role'] == 'canary_offload_pointers']) == 1
+    assert result['terminal_observations'][0]['archive_binding_verified'] is False
