@@ -489,3 +489,72 @@ def test_locked_sdk_resumes_hash_bound_download_prefix_under_same_origin(tmp_pat
     result = module._sdk_artifact(row, None, deadline)
     assert result.read_bytes() == raw and result.stat().st_ino == inode
     assert not partial.exists() and len(requests) == 2
+
+
+def _deployer_runtime_fixture(monkeypatch, tmp_path):
+    import ast
+    import hashlib
+    import json
+    import re
+    import stat
+    import subprocess
+    tree = ast.parse((SCRIPT.parent / 'deploy_control_plane_commit.py').read_bytes())
+    definitions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+                   and node.name in {'_prepare_scene_retirement_runtime', '_bootstrap_scene_retirement_installer'}]
+    namespace = {'Path': Path, 'Any': object, 'os': os, 'hashlib': hashlib, 'json': json, 're': re,
+                 'stat': stat, 'subprocess': subprocess, 'time': __import__('time'),
+                 'ControlPlaneDeployError': ValueError,
+                 '_SCENE_RUNTIME_BOOT_ROOT': tmp_path / 'root-runtime', '_SCENE_RUNTIME_OWNER': os.getuid()}
+    exec(compile(ast.Module(body=definitions, type_ignores=[]), str(SCRIPT), 'exec'), namespace)
+    return namespace
+
+
+def test_first_upgrade_authenticates_installer_data_from_service_owned_release_before_execution(tmp_path, monkeypatch):
+    import subprocess
+    import hashlib
+    import json
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'authorized first upgrade'], check=True)
+    commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
+    signed = (source / 'scripts/install_scene_retirement_runtime.py').read_bytes()
+    (source / 'scripts/install_scene_retirement_runtime.py').write_bytes(b'raise RuntimeError("mutable checkout must never execute as root")\n')
+    # This is a genuinely writable/service-owned source ancestry. The bootstrap
+    # source must be authenticated Git DATA; root protection applies to output.
+    source.chmod(0o777)
+    namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    actual_run = subprocess.run
+    executed = []
+    def record_root_execution(command, **kwargs):
+        if command[:3] == ['/usr/bin/python3', '-I', '-S']:
+            fd = int(command[3].rsplit('/', 1)[1])
+            raw = os.pread(fd, 1024 * 1024, 0)
+            assert raw == signed
+            protected = namespace['_SCENE_RUNTIME_BOOT_ROOT'] / 'runtime_installer.py'
+            assert protected.read_bytes() == signed
+            assert not protected.stat().st_mode & 0o022
+            receipt = json.loads((protected.parent / 'runtime-installer.json').read_bytes())
+            assert receipt['sha256'] == 'sha256:' + hashlib.sha256(signed).hexdigest()
+            executed.append(raw)
+            value = {'status': 'prepared', 'source_commit': commit,
+                     'authority_issued': False, 'cleanup_enabled': False}
+            return subprocess.CompletedProcess(command, 0, json.dumps(value).encode(), b'')
+        return actual_run(command, **kwargs)
+    monkeypatch.setattr(subprocess, 'run', record_root_execution)
+    result = namespace['_prepare_scene_retirement_runtime'](source_repo=source, source_commit=commit)
+    assert result['source_commit'] == commit and executed == [signed]
+    assert not (namespace['_SCENE_RUNTIME_BOOT_ROOT'] / 'CURRENT.json').exists()
+
+
+def test_first_upgrade_unknown_fixed_installer_refuses_without_overwriting_or_execution(tmp_path, monkeypatch):
+    namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    root = namespace['_SCENE_RUNTIME_BOOT_ROOT']
+    root.mkdir()
+    helper = root / 'runtime_installer.py'
+    helper.write_bytes(b'unknown prior root helper')
+    before = helper.stat()
+    with pytest.raises(ValueError, match='deploy_scene_retirement_runtime_unproven'):
+        namespace['_prepare_scene_retirement_runtime'](source_repo=tmp_path, source_commit='1' * 40)
+    assert helper.read_bytes() == b'unknown prior root helper' and helper.stat().st_ino == before.st_ino
