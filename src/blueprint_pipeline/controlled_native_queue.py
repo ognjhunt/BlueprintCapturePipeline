@@ -73,6 +73,10 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
     profile = configured_profile(request)
     if profile is None:
         raise ValueError("controlled_native_task_profile_required")
+    modalities = [name for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin")
+                  if request.get("policy_package", {}).get(name)]
+    if len(modalities) != 1 or modalities[0] not in profile.get("allowed_modalities", []):
+        raise ValueError("controlled_native_policy_modality_not_configured")
     job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     if (job_dir / TERMINAL_FILENAME).exists():
         return
