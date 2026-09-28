@@ -89,6 +89,7 @@ def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
     action = root.issue_experiment_action_intent(intent_id, principal='operator', owner='owner',
         action='offload', expires_at_epoch=3500, installed_config_path=setup[0], now=lambda: 2900)
     outcome = _gc(setup)['registered_experiments']['outcomes'][0]
+    assert outcome['action_id'] == action['action_id']
     assert outcome['decision'] == 'retired', outcome
     selected = root.issue_experiment_restore_intent(intent_id, principal='operator', owner='owner',
         lease_ttl_seconds=600, expires_at_epoch=3400, installed_config_path=setup[0], now=lambda: 2901)
