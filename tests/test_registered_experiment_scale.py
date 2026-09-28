@@ -101,17 +101,21 @@ def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
     # Mac has less free space than the unchanged protected production floor.
     # Use actual native ledger/measurement/reservation/release with its explicit
     # finite disk model. The separate real Linux acceptance uses actual capacity.
-    monkeypatch.setattr(
-        restoration,
-        "reserve_control_plane_disk",
-        partial(
-            disk.reserve_control_plane_disk,
-            reservation_root=setup[0].parent / "actual-restore-ledger",
-            disk_usage=lambda _: SimpleNamespace(
-                total=64 * 1024**3, used=32 * 1024**3, free=32 * 1024**3
-            ),
+    native_reserve = partial(
+        disk.reserve_control_plane_disk,
+        reservation_root=setup[0].parent / "actual-restore-ledger",
+        disk_usage=lambda _: SimpleNamespace(
+            total=64 * 1024**3, used=32 * 1024**3, free=32 * 1024**3
         ),
     )
+    reservations = []
+
+    def actual_reserve(*args, **kwargs):
+        token = native_reserve(*args, **kwargs)
+        reservations.append(token)
+        return token
+
+    monkeypatch.setattr(restoration, "reserve_control_plane_disk", actual_reserve)
     # The maximum member domain needs the authenticated one-hour policy grant,
     # not this tiny fixture's usual ten-minute grant; all native clocks remain.
     action = root.issue_experiment_action_intent(
@@ -159,6 +163,9 @@ def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
             )
         raise
     assert restored["decision"] == "restored", restored
+    assert len(reservations) == 1 and reservations[0].released
+    assert reservations[0].path.parent == setup[0].parent / "actual-restore-ledger"
+    assert not reservations[0].path.exists()
     assert {
         str(path.relative_to(target)): path.read_bytes()
         for path in target.rglob("*")
