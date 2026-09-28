@@ -38,6 +38,8 @@ opt-in, and only then do its bytes join the phase's totals.
 from __future__ import annotations
 
 import os
+import sys
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -172,6 +174,8 @@ def reclaim_replay_caches(
             enabled=bool(enabled and shared_scratch_enabled), apply=shared_applies, check_readers=applying,
             process_root=process_root)
     except Exception as exc:  # noqa: BLE001 - the lookaheads' own passes stand
+        # The report records the type only; the traceback goes to the journal, as a failed phase's does.
+        traceback.print_exc(file=sys.stderr)
         if shared_applies:
             # Only a pass that would have removed makes the phase's totals incomplete; one that only
             # reports keeps its failure in its own block, and the retention switch's numbers stand.

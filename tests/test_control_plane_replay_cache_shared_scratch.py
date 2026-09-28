@@ -609,10 +609,11 @@ def test_shared_scratch_reports_each_directory_its_prune_kept(tmp_path, monkeypa
     assert not any(path.exists() for path in names)
 
 
-def test_a_shared_scan_that_fails_costs_no_lookahead_its_own_pass(tmp_path, monkeypatch) -> None:
+def test_a_shared_scan_that_fails_costs_no_lookahead_its_own_pass(tmp_path, monkeypatch, capsys) -> None:
     """The shared plan runs after every lookahead's own pass and is isolated from it: if it raises,
     what each replay held alone is still reclaimed, the phase records the failure by type as one of
-    its errors, and the summary then leaves the phase's candidate bytes unknown."""
+    its errors, the traceback goes to the journal as a failed phase's does, and the summary then
+    leaves the phase's candidate bytes unknown."""
 
     from blueprint_pipeline import control_plane_replay_cache_shared_scratch as shared
     from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
@@ -632,6 +633,8 @@ def test_a_shared_scan_that_fails_costs_no_lookahead_its_own_pass(tmp_path, monk
     assert phase["removed_bytes"] == len(b"{}" * 200) and not alone.exists()
     assert phase["shared_scratch"] == {"enabled": True, "status": "error", "error": "OSError"}
     assert phase["errors"] == [{"scope": "shared_scratch", "error": "OSError"}] and "phase_errors" not in tick
+    journal = capsys.readouterr().err
+    assert "Traceback" in journal and "OSError: [Errno 5] I/O error" in journal
     assert all(path.exists() for path in names)
     summary = reasons.build_storage_gc_summary(tick)["phases"]["replay_caches"]
     assert summary["candidate_bytes"] is None
