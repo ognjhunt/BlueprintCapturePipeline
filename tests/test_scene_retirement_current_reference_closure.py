@@ -106,3 +106,18 @@ def test_empty_complete_current_records_do_not_clear_unknown_processes(monkeypat
         engine._current_plan({'reference_context':context},{'intent_id':args['intent_id'],
             'intent_raw_ref':reference},{'schema_version':'task_evaluation_scene_lifecycle_plan.v1',
             'intent_id':args['intent_id'],'planner_context':context},allowance,lambda:200,lambda:0)
+
+
+def test_native_measurement_keep_rows_preserve_exact_protection_semantics(tmp_path):
+    from blueprint_pipeline import task_evaluation_scene_retirement as engine
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    sink=RetainedEmissionBudget(max_bytes=4096,max_rows=10,max_references=10)
+    path=str(tmp_path.resolve())
+    member={'canonical_path':path,'class':'host'}
+    row={'path':path,'status':'observed_scoped_metadata','storage_class':'host','keeps':sink.rows()}
+    engine._plan_members({'measured_members':sink.rows([row])},
+        {'members':[member],'private_archive_classes':['host']})
+    row['keeps'].append('external_hardlink_dependency')
+    with pytest.raises(ValueError,match='scene_retirement_shared_or_unresolved_member'):
+        engine._plan_members({'measured_members':[row]},
+            {'members':[member],'private_archive_classes':['host']})
