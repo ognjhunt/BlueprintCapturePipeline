@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -182,3 +183,93 @@ def test_installed_known_worker_uses_startup_fence(unit, worker):
     exec_start = next(line for line in text.splitlines() if line.startswith('ExecStart='))
     assert ('-m blueprint_pipeline.task_evaluation_scene_retirement_supervisor --worker '
             'blueprint_pipeline.' + worker + ' --') in exec_start
+
+
+def loaded_unit_fixture(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
+    module = supervisor()
+    unit = 'blueprint-task-evaluation-scene-progression.service'
+    source = Path(__file__).resolve().parents[1] / 'deploy' / 'systemd' / unit
+    installed = tmp_path / 'installed'
+    installed.mkdir()
+    target = installed / unit
+    target.write_bytes(source.read_bytes())
+    target.chmod(0o644)
+    monkeypatch.setattr(module, '_SYSTEMD_DIR', installed, raising=False)
+    monkeypatch.setattr(module, '_KNOWN_UNITS', {unit: 'task_evaluation_scene_progression'}, raising=False)
+    row = {
+        'Id': unit, 'LoadState': 'loaded', 'ActiveState': 'inactive',
+        'SubState': 'dead', 'MainPID': '0', 'ControlPID': '0', 'Job': '',
+        'NeedDaemonReload': 'no', 'FragmentPath': str(target), 'DropInPaths': '',
+        'ExecStart': next(line.split('=', 1)[1] for line in source.read_text().splitlines()
+                          if line.startswith('ExecStart=')),
+    }
+    def query(allowance):
+        return ('\n'.join(key + '=' + value for key, value in row.items()) + '\n').encode()
+    monkeypatch.setattr(module, '_query_systemd', query, raising=False)
+    return module, access, row, target
+
+
+def test_native_gate_observes_exact_loaded_idle_worker_without_global_clearance(tmp_path, monkeypatch):
+    module, _, row, _ = loaded_unit_fixture(tmp_path, monkeypatch)
+    result = module.require_inactive_known_workers(SimpleNamespace(tick=lambda: None))
+    assert result['scope'] == 'installed_known_worker_quiescence'
+    assert result['worker_units'] == [row['Id']]
+    assert result['unknown_readers_cleared'] is False
+    assert result['external_lifetimes_cleared'] is False
+
+
+@pytest.mark.parametrize('key,value', [
+    ('ActiveState', 'active'), ('ActiveState', 'activating'), ('SubState', 'running'),
+    ('MainPID', '23'), ('ControlPID', '42'), ('Job', '8'),
+    ('LoadState', 'not-found'), ('NeedDaemonReload', 'yes'),
+    ('DropInPaths', '/etc/systemd/system/unit.service.d/override.conf'),
+    ('ExecStart', '/usr/bin/python -m blueprint_pipeline.task_evaluation_scene_progression'),
+])
+def test_native_gate_keeps_old_active_or_unproven_loaded_worker(tmp_path, monkeypatch, key, value):
+    module, access, row, _ = loaded_unit_fixture(tmp_path, monkeypatch)
+    row[key] = value
+    with pytest.raises(access.SceneRetirementAccessError, match='worker_cohort_unproven'):
+        module.require_inactive_known_workers(SimpleNamespace(tick=lambda: None))
+
+
+def test_native_gate_refuses_installed_unit_drift(tmp_path, monkeypatch):
+    module, access, _, target = loaded_unit_fixture(tmp_path, monkeypatch)
+    target.write_text(target.read_text().replace('NoNewPrivileges=true', 'NoNewPrivileges=false'))
+    with pytest.raises(access.SceneRetirementAccessError, match='worker_cohort_unproven'):
+        module.require_inactive_known_workers(SimpleNamespace(tick=lambda: None))
+
+
+def test_native_gate_rechecks_loaded_state_after_fragment_proof(tmp_path, monkeypatch):
+    module, access, row, _ = loaded_unit_fixture(tmp_path, monkeypatch)
+    original = module._query_systemd
+    calls = []
+    def changed(allowance):
+        calls.append(1)
+        if len(calls) == 2:
+            row['MainPID'] = '23'
+        return original(allowance)
+    monkeypatch.setattr(module, '_query_systemd', changed)
+    with pytest.raises(access.SceneRetirementAccessError, match='worker_cohort_unproven'):
+        module.require_inactive_known_workers(SimpleNamespace(tick=lambda: None))
+    assert len(calls) == 2
+
+
+def test_native_gate_duplicate_loaded_property_is_refused(tmp_path, monkeypatch):
+    module, access, _, _ = loaded_unit_fixture(tmp_path, monkeypatch)
+    original = module._query_systemd
+    monkeypatch.setattr(module, '_query_systemd', lambda allowance: original(allowance) + b'MainPID=0\n')
+    with pytest.raises(access.SceneRetirementAccessError, match='worker_cohort_unproven'):
+        module.require_inactive_known_workers(SimpleNamespace(tick=lambda: None))
+
+
+def test_native_gate_lost_original_deadline_stops_before_loaded_query(tmp_path, monkeypatch):
+    module, access, _, _ = loaded_unit_fixture(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(module, '_query_systemd', lambda allowance: calls.append(1))
+    def expired():
+        raise access.SceneRetirementAccessError('scene_retirement_deadline')
+    with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_deadline'):
+        module.require_inactive_known_workers(SimpleNamespace(tick=expired))
+    assert calls == []
