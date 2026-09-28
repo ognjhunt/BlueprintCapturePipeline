@@ -60,7 +60,7 @@ def _path(value: Any) -> str:
     try:
         valid = (isinstance(value, str) and len(value) <= MAX_PATH_BYTES
                  and len(value.encode("utf-8")) <= MAX_PATH_BYTES and value.startswith("/")
-                 and not value.startswith("//") and not any(ord(c) < 32 or ord(c) == 127 or c == "\\" for c in value))
+                 and not value.startswith("//") and not any(ord(c) < 32 or ord(c) == 127 or c in "\\<>*" for c in value))
         parts = value[1:].split("/") if value != "/" else []
         valid = valid and len(parts) <= MAX_PATH_COMPONENTS and all(p not in {"", ".", ".."} for p in parts)
     except (UnicodeError, TypeError, AttributeError):
@@ -322,7 +322,7 @@ class _Observation:
                     try:
                         if lane == ".lane-scratch.lock":
                             value = self.call(os.stat, lane, dir_fd=fd, follow_symlinks=False)
-                            _require(stat.S_ISREG(value.st_mode), "lane_metadata_unsafe")
+                            _require(stat.S_ISREG(value.st_mode) and value.st_dev == initial.st_dev, "lane_metadata_unsafe")
                             self.named.append((fd, lane, _identity(value), None))
                             continue
                         _require(_ID.fullmatch(lane) is not None, "lane_entry_unknown")
@@ -405,7 +405,7 @@ class _Observation:
     def references(self) -> None:
         current = self.tick()
         try:
-            pins = observe_storage_pins(self.pins, observed_at_epoch=self.observed, monotonic=self.clock,
+            pins = observe_storage_pins(self.pins, observed_at_epoch=self.observed, monotonic=self.tick,
                                         time_budget_seconds=min(5.0, self.deadline - current))
         except (OSError, StoragePinObservationError):
             pins = None

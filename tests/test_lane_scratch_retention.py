@@ -174,6 +174,7 @@ def test_enabled_observation_uses_no_mutating_seam(roots, monkeypatch):
     {"enabled_requested": 1}, {"observed_at_epoch": True}, {"observed_at_epoch": 10**400},
     {"time_budget_seconds": 0}, {"time_budget_seconds": 11}, {"time_budget_seconds": True},
     {"pins_root": "/pins/../foreign"},
+    {"pins_root": "/pins/<foreign>"}, {"pins_root": "/pins/*"},
 ])
 def test_parameters_fail_with_fixed_typed_error(roots, changes):
     arguments = dict(lane_roots=(str(roots[0]),), pins_root=str(roots[1]),
@@ -537,3 +538,58 @@ from blueprint_pipeline import control_plane_lane_scratch_retention
 assert before == (producer.list_lane_scratch, legacy.load_storage_pins, inspect.signature(legacy.load_storage_pins))
 """], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+def test_pin_clock_is_guarded_by_the_shared_lane_deadline(roots, monkeypatch):
+    folder(roots)
+    expired = False
+    def pins(*args, monotonic, **kwargs):
+        nonlocal expired
+        expired = True
+        with pytest.raises(retention._Blocked) as blocked:
+            monotonic()
+        assert blocked.value.code == "lane_deadline_exceeded"
+        return SimpleNamespace(complete=False, protected_paths=())
+    monkeypatch.setattr(retention, "observe_storage_pins", pins)
+    result = observe(roots, monotonic=lambda: 10 if expired else 0)
+    safe(result)
+    assert not result["complete"] and result["rows"] == []
+    assert "lane_deadline_exceeded" in result["blockers"]
+
+
+def test_cross_device_root_lock_metadata_is_incomplete(roots, monkeypatch):
+    folder(roots)
+    (roots[0] / ".lane-scratch.lock").write_bytes(b"")
+    real = os.stat
+    def mounted(name, *args, **kwargs):
+        value = real(name, *args, **kwargs)
+        if name == ".lane-scratch.lock" and kwargs.get("dir_fd") is not None:
+            return SimpleNamespace(st_mode=value.st_mode, st_dev=value.st_dev + 1,
+                                   **{key: getattr(value, key) for key in dir(value)
+                                      if key.startswith("st_") and key not in {"st_mode", "st_dev"}})
+        return value
+    monkeypatch.setattr(os, "stat", mounted)
+    result = observe(roots)
+    safe(result)
+    assert not result["complete"] and result["logical_bytes"] is None
+    assert "lane_metadata_unsafe" in result["blockers"]
+
+
+@pytest.mark.parametrize("state", ["published", "renewed", "released"])
+def test_real_producer_publication_renewal_and_release_bytes_are_compatible(roots, state):
+    path = producer.create_lane_scratch("lane-1", "folder-1", owner="owner-1", reason="fixture",
+        class_intent="scratch", cleanup="owner_review", ttl_seconds=100,
+        scene_ref="scene-1", root=roots[0], now=lambda: 10)
+    before = json.loads((path / producer.LEASE_FILE).read_bytes())
+    common = dict(root=roots[0], lane="lane-1", name="folder-1", owner="owner-1",
+                  expected_digest=before["lease_digest"], now=lambda: 20)
+    if state == "renewed":
+        producer.renew_lane_scratch(**common, ttl_seconds=100)
+    elif state == "released":
+        producer.release_lane_scratch(**common)
+    expected = json.loads((path / producer.LEASE_FILE).read_bytes())
+    result = observe(roots)
+    safe(result)
+    assert result["complete"]
+    assert result["rows"][0]["lease_digest"] == expected["lease_digest"]
+    assert result["rows"][0]["lease_status"] == ("released" if state == "released" else "live")
