@@ -167,10 +167,12 @@ def test_shared_scratch_is_plan_only_until_its_own_opt_in(tmp_path, monkeypatch)
     switch does nothing without it or on a tick that does not apply. Until both are on and the tick
     applies, the phase plans and reports the shared groups with ``enabled`` saying whether the owner
     has enabled them, and they stay out of the phase's totals, which say what the tick reclaims. A
-    tick that does not apply sweeps no process table for them either, as the phase never does."""
+    tick that does not apply sweeps no process table and hashes no report for them either, as the
+    phase never does."""
 
     parent_root, names, size = _two_lookaheads(tmp_path)
-    real_index, real_reference = retention.process_reference_index, retention.active_reference
+    real_index, real_reference, real_sha = (
+        retention.process_reference_index, retention.active_reference, retention.file_sha)
 
     def refuse(*args, **_kwargs):
         raise AssertionError(f"swept the process table for {args[:1]} on a tick that only plans")
@@ -184,6 +186,7 @@ def test_shared_scratch_is_plan_only_until_its_own_opt_in(tmp_path, monkeypatch)
         applying = tick_applies and switches.get("replay_cache_retention_enabled", False)
         sweeps: list[object] = []
         monkeypatch.setattr(retention, "active_reference", refuse if not applying else real_reference)
+        monkeypatch.setattr(retention, "file_sha", refuse if not applying else real_sha)
         monkeypatch.setattr(retention, "process_reference_index", refuse if not applying else (
             lambda **kwargs: sweeps.append(kwargs) or real_index(**kwargs)))
         tick = _tick(tmp_path, parent_root, apply=tick_applies, ack=RUN_ACK if tick_applies else "", **switches)
@@ -200,6 +203,7 @@ def test_shared_scratch_is_plan_only_until_its_own_opt_in(tmp_path, monkeypatch)
 
     monkeypatch.setattr(retention, "active_reference", real_reference)
     monkeypatch.setattr(retention, "process_reference_index", real_index)
+    monkeypatch.setattr(retention, "file_sha", real_sha)
     phase = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
     block = phase["shared_scratch"]
     assert (block["enabled"], block["status"], block["live_readers_checked"]) == (True, "applied", True)
@@ -697,3 +701,25 @@ def test_a_directory_swapped_for_a_link_while_rechecking_removes_nothing(tmp_pat
     assert (victim / "sha256" / names[0].name).read_bytes() == b"evidence that is not the replay's"
     assert (content.with_name("content-addressed-moved") / "sha256" / names[0].name).stat().st_nlink == len(names)
     assert all(path.exists() for path in names[1:])
+
+
+@pytest.mark.parametrize("rewrite", ["same_mtime", "new_mtime"])
+def test_a_holders_report_rewritten_after_the_plan_keeps_the_group_whole(tmp_path, monkeypatch, rewrite) -> None:
+    """Apply requires each holder's report to be the one the plan read: the same path, mtime and
+    bytes, as the per-replay rule requires its report's digest. A report rewritten after the plan
+    keeps every group its replay holds, even one that still passes every gate under the same mtime."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    report = names[-1].parents[3] / "stage_replay_report.v1.json"
+    before = report.stat()
+
+    def rewritten() -> None:
+        report.write_text(json.dumps({**json.loads(report.read_text()), "row": {"status": "rewritten"}}))
+        mtime_ns = before.st_mtime_ns if rewrite == "same_mtime" else before.st_mtime_ns - 10**9
+        os.utime(report, ns=(before.st_atime_ns, mtime_ns))
+
+    _after_plan(monkeypatch, rewritten)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:holder_ineligible": {"groups": 1, "bytes": size}}
+    assert block["removed_groups"] == 0 and all(path.exists() for path in names)

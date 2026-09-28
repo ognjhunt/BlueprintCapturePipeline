@@ -20,8 +20,8 @@ group with names in two or more replays is a candidate when those names are all 
 replays and are every link it has, it is on the device of every replay holding it, and it is
 not newer than any of their reports.
 
-Apply first rechecks every replay holding a candidate (the same report, unchanged, no live
-reader), then unlinks a candidate's names one replay at a time through directory descriptors
+Apply first rechecks every replay holding a candidate (the same report, unchanged in path,
+mtime and digest, and no live reader), then unlinks a candidate's names one replay at a time through directory descriptors
 held from that replay down, rechecking each name before it goes: its device, inode, size and
 mtime, and a link count equal to the names still to go. A group's bytes count only when its
 last name goes. A recheck that fails stops the group; the names already unlinked were scratch
@@ -101,6 +101,15 @@ def _gate(child: Path, *, clock: float, minimum_closed_seconds: int) -> tuple[st
     return None, str(report), info.st_mtime_ns
 
 
+def _report_sha(report: str | None) -> str | None:
+    """The report's digest, or None when it cannot be read."""
+
+    try:
+        return None if report is None else retention.file_sha(Path(report))
+    except OSError:
+        return None
+
+
 def _kept_reason(group: dict[str, Any], holders: Sequence[dict[str, Any]]) -> str | None:
     holding = {index for index, _name in group["names"]}
     if any(holders[index]["device"] != group["dev"] for index in holding):
@@ -156,7 +165,13 @@ def plan_shared_scratch(
     for index in involved:
         gate, report, mtime_ns = _gate(holders[index]["path"], clock=now,
                                        minimum_closed_seconds=minimum_closed_seconds)
-        holders[index].update(gate=gate, report=report, report_mtime_ns=mtime_ns)
+        holders[index].update(gate=gate, report=report, report_mtime_ns=mtime_ns, report_sha256=None)
+        if check_readers and gate is None:
+            # What apply compares, as the per-replay rule compares its report's digest; a tick that
+            # only plans reads no byte.
+            holders[index]["report_sha256"] = _report_sha(report)
+            if holders[index]["report_sha256"] is None:
+                holders[index]["gate"] = "no_finished_report"
     if check_readers and any(holders[index]["gate"] is None for index in involved):
         referenced = retention.process_reference_index(process_root=process_root)
         for index in involved:
@@ -309,6 +324,7 @@ def apply_shared_scratch(plan: dict[str, Any], *, process_root: Path = Path("/pr
             gate, report, mtime_ns = _gate(holder["path"], clock=plan["clock"],
                                            minimum_closed_seconds=plan["minimum_closed_seconds"])
             verdicts[index] = (gate is None and (report, mtime_ns) == (holder["report"], holder["report_mtime_ns"])
+                               and _report_sha(report) == holder["report_sha256"]
                                and not referenced(holder["path"]))
         return verdicts[index]
 
