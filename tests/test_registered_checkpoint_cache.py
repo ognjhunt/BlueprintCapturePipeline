@@ -175,7 +175,7 @@ def test_wrong_private_authority_rejected_without_callbacks(tmp_path):
     assert calls == []
 
 
-def fill_cache(value, monkeypatch):
+def prepare_fill(value, monkeypatch):
     import io
     import os
     from urllib.parse import unquote
@@ -216,6 +216,12 @@ def fill_cache(value, monkeypatch):
         return result
     monkeypatch.setattr(cache, 'reserve_control_plane_disk', local_reserve, raising=False)
     grant = issue_cache(value)
+    return grant, fetcher, calls, reservations
+
+
+def fill_cache(value, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    grant, fetcher, calls, reservations = prepare_fill(value, monkeypatch)
     result = cache.fill_needed_checkpoint_cache(grant['intent_id'],
         expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
         installed_config_path=value['config'], now=lambda: 1100)
@@ -463,3 +469,86 @@ def test_ninth_fragment_failure_is_sticky_across_other_pinned_files(cache_instal
         with pytest.raises(ValueError, match='needed_cache_fragment_limit'):
             use.hash_file(target / list(value['payloads'])[1], role='wam_hash')
         assert len(observed) == 8
+
+
+def fail_partial_fill(value, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    grant, fetcher, calls, reservations = prepare_fill(value, monkeypatch)
+    actual = fetcher._open_https
+    def fail_third(url, **kwargs):
+        if len(calls) == 2:
+            raise OSError('fixture interrupted transfer')
+        return actual(url, **kwargs)
+    monkeypatch.setattr(fetcher, '_open_https', fail_third)
+    with pytest.raises(ValueError, match='needed_cache'):
+        cache.fill_needed_checkpoint_cache(grant['intent_id'],
+            expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
+            installed_config_path=value['config'], now=lambda: 1100)
+    assert reservations[0].released is True
+    monkeypatch.setattr(fetcher, '_open_https', actual)
+    return grant, fetcher, calls, reservations
+
+
+def test_partial_failure_has_truthful_terminal_before_same_generation_resume(cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, _, calls, reservations = fail_partial_fill(value, monkeypatch)
+    records = [json.loads(p.read_bytes()) for p in value['private'].glob('*.json')]
+    terminals = [r for r in records if r.get('schema_version') ==
+                 'control_plane_needed_cache_operation_terminal.v1' and r.get('outcome') == 'failed']
+    assert len(terminals) == 1
+    terminal = terminals[0]
+    assert terminal['threads_joined'] is True and terminal['owned_fd_closed'] is True
+    assert terminal['unresolved_fd_count'] == 0 and terminal['reservation_release_observed'] is True
+    birth_path = value['public'] / (grant['intent_id']+'.birth.json')
+    birth = birth_path.read_bytes()
+    target = Path(value['settings']['lane_scratch_work_root']) / 'g1-checkpoint/needed-models'
+    present = list(target.glob('candidate-*/*.bin'))
+    assert len(present) == 2
+    identities = {str(p): (p.stat().st_dev, p.stat().st_ino, p.read_bytes()) for p in present}
+    result = cache.resume_needed_checkpoint_cache(grant['intent_id'],
+        expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
+        installed_config_path=value['config'], now=lambda: 1200)
+    assert result['status'] == 'cache_ready' and result['generation'] == json.loads(birth)['generation']
+    assert birth_path.read_bytes() == birth and len(calls) == 24
+    assert len(reservations) == 2 and reservations[1].released is True
+    assert {str(p): (p.stat().st_dev, p.stat().st_ino, p.read_bytes()) for p in present} == identities
+    roles = result['resource_counters']['roles']
+    present_bytes = sum(len(x[2]) for x in identities.values())
+    assert roles['preverify']['bytes'] == roles['existing_hash']['bytes'] == present_bytes
+    assert roles['network']['bytes'] == roles['write']['bytes'] == roles['fill_hash']['bytes'] == (
+        sum(map(len, value['payloads'].values())) - present_bytes)
+
+
+def test_resume_proves_present_hash_before_any_missing_reservation_or_network(cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, fetcher, _, _ = fail_partial_fill(value, monkeypatch)
+    target = Path(value['settings']['lane_scratch_work_root']) / 'g1-checkpoint/needed-models'
+    present = next(target.glob('candidate-*/*.bin'))
+    damaged = bytearray(present.read_bytes())
+    damaged[0] ^= 1
+    present.write_bytes(damaged)
+    monkeypatch.setattr(cache, 'reserve_control_plane_disk', lambda *a, **kw: pytest.fail('reservation before present proof'))
+    monkeypatch.setattr(fetcher, '_open_https', lambda *a, **kw: pytest.fail('network before present proof'))
+    with pytest.raises(ValueError, match='needed_cache'):
+        cache.resume_needed_checkpoint_cache(grant['intent_id'],
+            expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
+            installed_config_path=value['config'], now=lambda: 1200)
+
+
+def test_resume_refuses_live_or_unproven_operation_without_terminal(cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, fetcher, _, _ = fail_partial_fill(value, monkeypatch)
+    # Removing authenticated cleanup evidence is never evidence that the old writer exited.
+    for path in value['private'].glob('*.json'):
+        row = json.loads(path.read_bytes())
+        if row.get('schema_version') == 'control_plane_needed_cache_operation_terminal.v1' and row.get('outcome') == 'failed':
+            path.unlink()
+    monkeypatch.setattr(cache, 'reserve_control_plane_disk', lambda *a, **kw: pytest.fail('reservation with unknown prior writer'))
+    monkeypatch.setattr(fetcher, '_open_https', lambda *a, **kw: pytest.fail('network with unknown prior writer'))
+    with pytest.raises(ValueError, match='needed_cache'):
+        cache.resume_needed_checkpoint_cache(grant['intent_id'],
+            expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
+            installed_config_path=value['config'], now=lambda: 1200)
