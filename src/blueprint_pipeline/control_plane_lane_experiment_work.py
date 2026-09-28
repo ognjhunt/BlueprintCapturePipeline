@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import stat
 import time
 from pathlib import Path
@@ -20,6 +21,21 @@ _PHASES = {'restore_checkpoint_manifest': (1, 100000), 'restore_checkpoint_compa
            'restore_admission': (1, 10000), 'restore_prepare': (1, 100000), 'restore_stage': (1, 100000), 'restore_stage_verify': (1, 100000), 'restore_union_finalize': (1, 100000), 'restore_directories': (256, 10000), 'restore_cleanup': (256, 10000), 'restore_batch': (256, 10000), 'finalize': (1, 100000)}
 _ROLES = frozenset({'issue_hash', 'archive_prehash', 'archive_stream', 'archive_digest_hash', 'archive_upload_hash', 'archive_digest_stream', 'archive_upload_stream', 'remove_hash', 'restore_read', 'restore_write', 'restore_validate', 'restore_stage_validate', 'restore_activation_validate', 'restore_checkpoint_validate'})
 _QUANTUM, _AGGREGATE = 1024 * 1024, 20 * 1024 * 1024
+_BOOT_PATH = Path('/proc/sys/kernel/random/boot_id')
+_CONTROLLER_FIELDS = frozenset({'boot_id', 'origin_monotonic', 'deadline_monotonic',
+                              'origin_epoch', 'deadline_epoch', 'last_monotonic', 'last_epoch'})
+
+
+def _controller_boot_id(files):
+    raw, record = files.read(_BOOT_PATH, cap=40, protected=True)
+    files.verify_record(record)
+    _require(re.fullmatch(rb'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\n', raw) is not None,
+             'experiment_work_boot_unknown')
+    value = raw[:-1].decode('ascii')
+    files.records.remove(record)
+    files.close(record.fd)
+    _require(record.fd not in files.owned and not files.unresolved, 'experiment_work_boot_unknown')
+    return value
 
 
 class _ActionFiles(_BirthFiles):
@@ -28,8 +44,11 @@ class _ActionFiles(_BirthFiles):
         self.controller_origin = monotonic()
         self.controller_epoch = now()
         self.last_clock = self.controller_origin
+        self.last_epoch = self.controller_epoch
         _require(_epoch(self.controller_origin) and _epoch(self.controller_epoch), 'experiment_work_clock_invalid')
         self.deadline_epoch = self.controller_epoch + 4 * 3600
+        self.deadline_monotonic = self.controller_origin + 4 * 3600
+        self.boot_id, self.controller_bound = None, False
         self.failure, self.phase_name = None, 'admission'
         self.phase_counts, self.phase_history = {'admission': 1}, []
         self.conserved = dict(raw_bytes=0, output_bytes=0)
@@ -43,12 +62,52 @@ class _ActionFiles(_BirthFiles):
         try:
             current, epoch = self.monotonic(), self.now()
             _require(_epoch(current) and _epoch(epoch) and self.last_clock <= current
-                     <= self.controller_origin + 4 * 3600 and epoch < self.deadline_epoch,
+                     <= self.controller_origin + 4 * 3600 and current < self.deadline_monotonic
+                     and self.last_epoch <= epoch < self.deadline_epoch,
                      'experiment_work_deadline')
             _require(not self.unresolved, 'experiment_work_descriptor_unproven')
             self.last_clock = current
+            self.last_epoch = epoch
         except ValueError:
             self.failure = 'experiment_work_refused'
+            raise OwnerTargetVersionError(self.failure) from None
+
+    def controller(self):
+        self.check_long()
+        if self.boot_id is None:
+            self.boot_id = _controller_boot_id(self)
+        self.check_long()
+        return dict(boot_id=self.boot_id, origin_monotonic=self.controller_origin,
+                    deadline_monotonic=self.deadline_monotonic, origin_epoch=self.controller_epoch,
+                    deadline_epoch=self.deadline_epoch, last_monotonic=self.last_clock,
+                    last_epoch=self.last_epoch)
+
+    def bind_controller(self, value):
+        """Restrict a NEW invocation to its authenticated original operation clock.
+
+        Callers select protected durable records under actual authority locks.
+        These numeric fields are not independent permission to use a target.
+        """
+        try:
+            _require(not self.controller_bound and isinstance(value, dict)
+                     and set(value) == _CONTROLLER_FIELDS
+                     and all(_epoch(value[key]) for key in _CONTROLLER_FIELDS - {'boot_id'})
+                     and isinstance(value['boot_id'], str), 'experiment_work_clock_invalid')
+            current = self.controller()
+            _require(value['boot_id'] == current['boot_id']
+                     and value['origin_monotonic'] <= value['last_monotonic'] <= current['last_monotonic']
+                     < value['deadline_monotonic'] <= value['origin_monotonic'] + 14400
+                     and value['origin_epoch'] <= value['last_epoch'] <= current['last_epoch']
+                     < value['deadline_epoch'] <= value['origin_epoch'] + 14400,
+                     'experiment_work_clock_invalid')
+            self.controller_origin = min(self.controller_origin, value['origin_monotonic'])
+            self.controller_epoch = min(self.controller_epoch, value['origin_epoch'])
+            self.deadline_monotonic = min(self.deadline_monotonic, value['deadline_monotonic'])
+            self.deadline_epoch = min(self.deadline_epoch, value['deadline_epoch'])
+            self.controller_bound = True
+            self.check_long()
+        except ValueError:
+            self.failure = self.failure or 'experiment_work_clock_invalid'
             raise OwnerTargetVersionError(self.failure) from None
 
     def bind_deadline(self, deadline):

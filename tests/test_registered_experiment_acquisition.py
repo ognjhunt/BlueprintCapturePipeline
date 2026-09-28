@@ -57,7 +57,7 @@ def test_durable_controller_cannot_gain_fresh_retry_deadline(monkeypatch, change
 
     mono, epoch = [1000.0], [2000.0]
     boot = "12345678-1234-1234-1234-123456789abc"
-    monkeypatch.setattr(work, "_controller_boot_id", lambda: boot, raising=False)
+    monkeypatch.setattr(work, "_controller_boot_id", lambda files: boot, raising=False)
     files = work._ActionFiles(monotonic=lambda: mono[0], now=lambda: epoch[0])
     original = dict(
         boot_id=boot,
