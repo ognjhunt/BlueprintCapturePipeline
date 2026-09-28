@@ -70,6 +70,40 @@ permission.
 
 ## Review retained experiment-folder decisions
 
+### Observe registered lane retention
+
+The optional `lane_scratch` phase observes registered folders beneath explicitly
+configured `/mnt/blueprint-work/lanes` and
+`/var/lib/blueprint/task-evaluation-inputs/lanes` parents. Configure at most two
+parents using repeated `--lane-scratch-root` arguments on the existing GC `run`
+command, or colon-separated `BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH_ROOTS`.
+There is no default lane-parent scan and no arbitrary-root override.
+
+`BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH` accepts empty/unset, `0` or `false`
+as false, and `1` or `true` as true (case-insensitive). The flag records a request
+for future activation: **this phase is always report-only**, even when it is
+true and the GC tick runs with `--apply` and its acknowledgement. It creates no
+lock file, releases no pin and deletes/offloads nothing. Invalid configuration
+produces a fixed local alert and an incomplete report.
+
+The private raw report retains sealed lease identities and reasons why every
+registered folder is kept. Unregistered folders are counted without traversing
+their payload. Measured logical and allocated footprints include the lease,
+deduplicate regular file inodes, exclude directory allocation and never predict
+freed disk space. Partial observation makes totals unknown. Strict pin matches
+can retain a folder; a complete ledger with no match still cannot clear queues,
+processes, consumers, owner approval, evidence policy or restore requirements.
+
+The door-readable summary projects typed counts and footprint fields without
+owners, folder names, paths, references or digests. Its candidate bytes remain
+null, removal bytes remain zero, and count-only lane reasons do not enter byte
+rankings or queue ETA. Expected lane incompleteness leaves other phase forecasts
+intact; an unexpected internal exception retains the tick's existing global
+phase-failure behavior. Enabling actual lane cleanup remains a later reviewed
+execution gate.
+
+### Validate retained decisions
+
 A retained census can be annotated and validated locally without inspecting its
 current target folders. Prepare UTF-8 JSON with
 `schema_version: control_plane_lane_scratch_annotations.v1`, a `census_digest`
