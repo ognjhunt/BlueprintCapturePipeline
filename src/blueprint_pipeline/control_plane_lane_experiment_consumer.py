@@ -20,7 +20,7 @@ from . import control_plane_lane_scratch as scratch
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_lane_experiment_authority import _current, _read
 from .control_plane_lane_experiment_publication import _BirthFiles
-from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require
+from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require, _valid_digest
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .control_plane_scratch_lifetime import LANE_ROOTS, LeasedScratchUse
 from .decision_evidence_contracts import canonical_digest
@@ -60,6 +60,35 @@ def require_registered_use(output, use, roots):
     elif use is not None:
         raise OwnerTargetVersionError("experiment_consumer_authority_required")
     return target
+
+
+def _restoration(files, public, entry, gid, issued):
+    """Readable root-owned projection; never requires private restore records."""
+    selected = entry["restoration"]
+    if selected is None:
+        return None
+    name = "restoration-" + selected["sha256"][7:] + ".json"
+    raw, record = _read(files, public, name, 8192, gid)
+    _require(len(raw) == selected["size_bytes"]
+             and retained._digest(raw, _work_budget=files.budget) == selected["sha256"],
+             "experiment_restoration_changed")
+    certificate = retained._document(raw, 8192, _work_budget=files.budget)
+    fields = {"schema_version", "restoration_id", "intent_id", "generation", "birth", "target_identity",
+              "new_lease", "manifest", "restored_at_epoch", "lease_expires_at_epoch", "certificate_digest"}
+    _require(set(certificate) == fields
+             and certificate["schema_version"] == "control_plane_lane_experiment_restoration_certificate.v1"
+             and certificate["certificate_digest"] == canonical_digest(certificate, digest_field="certificate_digest")
+             and all(certificate[key] == entry[key] for key in ("intent_id", "generation", "birth", "target_identity"))
+             and certificate["new_lease"] == entry["lease"]
+             and certificate["restoration_id"] == entry["operation_id"]
+             and _epoch(certificate["restored_at_epoch"])
+             and certificate["restored_at_epoch"] <= issued < certificate["lease_expires_at_epoch"] == entry["expires_at_epoch"],
+             "experiment_restoration_changed")
+    manifest = certificate["manifest"]
+    _require(type(manifest) is dict and set(manifest) == {"sha256", "size_bytes"}
+             and _valid_digest(manifest["sha256"]) and type(manifest["size_bytes"]) is int
+             and 0 < manifest["size_bytes"] <= 1048576, "experiment_restoration_changed")
+    return record
 
 
 class RegisteredExperimentUse(LeasedScratchUse):
@@ -111,6 +140,7 @@ class RegisteredExperimentUse(LeasedScratchUse):
                      and birth["birth_digest"] == canonical_digest(birth, digest_field="birth_digest")
                      and all(birth[key] == entry[key] for key in ("intent_id", "generation", "root", "lane", "name",
                                                                 "target_identity", "owner")), "experiment_birth_changed")
+            restoration_record = _restoration(files, public, entry, gid, issued)
             files.proof(lock)
             fcntl.flock(lock, fcntl.LOCK_UN)
             parent, _ = files.parent(target / scratch.LEASE_FILE)
@@ -137,6 +167,7 @@ class RegisteredExperimentUse(LeasedScratchUse):
             result.exclusive, result.now = False, now
             result.entry, result.birth, result._head_record, result._lease_record = entry, birth, head_record, lease_record
             result._birth_record, result._projection_expiry = birth_record, authority["expires_at_epoch"]
+            result._restoration_record = restoration_record
             result._started, result._checks = time.monotonic(), 0
             result._context_tokens = []
             result.identity = dict(root=str(root), lane="g1", name=target.name, owner=lease["owner"],
@@ -234,7 +265,10 @@ class RegisteredExperimentUse(LeasedScratchUse):
             files.proof(self._authority_lock)
             fcntl.flock(self._authority_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
             try:
-                for record in (self._head_record, self._lease_record, self._birth_record):
+                records = (self._head_record, self._lease_record, self._birth_record)
+                if self._restoration_record is not None:
+                    records += (self._restoration_record,)
+                for record in records:
                     files.location(record.parent, cleanup=True)
                     files.proof(record.fd)
                     _require(owners._metadata(os.fstat(record.fd)) == owners._metadata(record.info)
