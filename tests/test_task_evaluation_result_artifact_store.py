@@ -808,8 +808,11 @@ def test_download_of_an_archive_member_is_one_range_request_under_a_reservation(
 
     assert path.read_bytes() == (f.source / "episode-one.external.mp4").read_bytes()
     assert (record["sha256"], record["size_bytes"]) == (f.video["sha256"], f.video["size_bytes"])
-    # The ETag probe, then the member's record data: one range request.
-    assert f.streamed.store.ranges() == [(0, 0), (row["data_offset"], row["data_offset"] + row["compressed_size"] - 1)]
+    # The ETag probe, then one range request from the member's record data (it may carry the
+    # registered members after it, fetched ahead for the next download).
+    probe, (first, last) = f.streamed.store.ranges()
+    assert probe == (0, 0) and first == row["data_offset"]
+    assert last >= row["data_offset"] + row["compressed_size"] - 1
     assert f.reservations == [("result_artifact_download", f.video["size_bytes"] + 1024 * 1024)]
     assert path.parent.parent == f.cache and list(f.ledger.glob("*.json"))
     record["_artifact_cleanup"]()
@@ -856,3 +859,38 @@ def test_offload_counts_archive_members_as_remote(streamed_run):
     (f.root / "artifacts/result_delivery/archive_member_references.v1.json").unlink()
     with pytest.raises(offload.TaskEvaluationResultDeliveryError, match="^result_artifact_metadata_missing$"):
         offload.offload_result_artifacts(run_root=f.root, hot_window_seconds=0, minimum_size_bytes=1)
+
+
+def test_a_span_read_serves_followers_ahead_but_never_trusts_or_fails_on_a_bad_one(streamed_run, monkeypatch):
+    """A download fetches the registered members after it in the same range; a follower whose
+    bytes are not its index row's is not cached and does not fail the download that fetched it."""
+    from tests.provider_output_fixtures import RangeStore, serve_member_views
+
+    f = streamed_run
+    offload.clear_archive_member_cache()
+    registry = f.registry
+    telemetry = next(row for row in registry["artifacts"] if row["relative_path"] == "policy_canary_telemetry.jsonl")
+    video_row = f.streamed.rows["episode-one.external.mp4"]
+    telemetry_row = f.streamed.rows["policy_canary_telemetry.jsonl"]
+    first_member = min((video_row, telemetry_row), key=lambda row: row["data_offset"])
+    first, second = ((f.video, telemetry) if first_member is video_row else (telemetry, f.video))
+    second_row = telemetry_row if first_member is video_row else video_row
+
+    def download(artifact):
+        path, record = resolve_task_evaluation_result_artifact(
+            run_root=f.root, run_id=registry["run_id"], artifact_id=artifact["artifact_id"])
+        data = path.read_bytes()
+        record["_artifact_cleanup"]()
+        return data
+
+    assert download(first)
+    requests = len(f.streamed.store.requests)
+    assert download(second)  # served from the span the first download read
+    assert len(f.streamed.store.requests) == requests
+
+    offload.clear_archive_member_cache()
+    tampered = RangeStore(f.streamed.archive.patched(second_row["data_offset"], b"\xff\xff"))
+    serve_member_views(monkeypatch, tampered)
+    assert download(first)  # its own bytes check out
+    with pytest.raises(offload.TaskEvaluationResultDeliveryError, match="^result_artifact_archive_member_unreadable:"):
+        download(second)  # not cached, so read again, and refused

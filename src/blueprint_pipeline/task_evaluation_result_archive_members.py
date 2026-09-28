@@ -165,6 +165,35 @@ def load_archive_member_references(run_root: str | Path, registry: Mapping[str, 
     return value
 
 
+def archive_download_order(run_root: str | Path, artifact_ids: list[str]) -> list[str]:
+    """``artifact_ids`` with archive members first, in archive order; the rest as given.
+
+    A reader that downloads every artifact (the owner readback) then walks the
+    archive in order, so consecutive downloads share one coalesced range read
+    (``task_evaluation_result_artifact_store``). Without a references file
+    (download mode), or one that does not bind the registry, the order is
+    unchanged.
+    """
+    root = Path(run_root).resolve()
+    registry_path = root / "artifacts" / "result_delivery" / "artifact_registry.json"
+    if not (root / REFERENCES_RELATIVE_PATH).is_file() or not registry_path.is_file():
+        return list(artifact_ids)
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        members = (load_archive_member_references(root, registry) or {}).get("members") or {}
+        offsets = {}
+        for record in registry.get("artifacts") or []:
+            path = (Path(str(record["evidence_root"])) / str(record["relative_path"])).resolve()
+            entry = members.get(path.relative_to(root).as_posix())
+            if entry is not None:
+                offsets[record["artifact_id"]] = entry["data_offset"]
+    except (OSError, ValueError, KeyError, TypeError, ArchiveMemberReferenceError):
+        return list(artifact_ids)
+    position = {key: index for index, key in enumerate(artifact_ids)}
+    return sorted(artifact_ids, key=lambda key: (0, offsets[key], position[key]) if key in offsets
+                  else (1, position[key], 0))
+
+
 def archive_member_entry(references: Mapping[str, Any] | None, relative: str,
                          record: Mapping[str, Any]) -> dict | None:
     """The reference entry for run-relative ``relative`` when it names ``record``'s bytes."""
@@ -200,6 +229,7 @@ __all__ = [
     "REFERENCES_RELATIVE_PATH",
     "REFERENCES_SCHEMA",
     "ArchiveMemberReferenceError",
+    "archive_download_order",
     "archive_member",
     "archive_member_entry",
     "build_archive_member_references",
