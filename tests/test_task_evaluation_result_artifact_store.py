@@ -793,6 +793,8 @@ def streamed_run(tmp_path, monkeypatch):
     monkeypatch.setattr(offload, "reserve_control_plane_disk", reserve)
     cache = tmp_path / "cache"
     monkeypatch.setenv(offload.CACHE_ROOT_ENV, str(cache))
+    # Fixture archives are deterministic: another test's span read must not serve this one.
+    offload.clear_archive_member_cache()
     return SimpleNamespace(root=stream_root, streamed=streamed, registry=registry, video=video,
                            reservations=reservations, ledger=ledger, cache=cache,
                            source=tmp_path / "download/allocator/attempts/attempt_001/immutable_execution")
