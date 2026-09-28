@@ -43,6 +43,9 @@ plans before it mutates, and a tick applies nothing unless it runs with
 * **Replay caches** (``work`` class: activation lookaheads): the scratch inputs
   left in completed parent replays are removed by ``control_plane_replay_cache_gc``,
   which only plans until ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1``.
+  Scratch several lookaheads share also needs
+  ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1``; until then it is
+  only reported.
 
 Each phase runs isolated: an exception is recorded under its report key and the
 remaining phases still run. Evidence-hot roots, release worktrees, and runtime
@@ -79,6 +82,7 @@ from .control_plane_evidence_offload import (
 )
 from .control_plane_replay_cache_gc import (
     REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
+    replay_cache_shared_scratch_setting,
 )
 from .control_plane_storage_gc_reasons import (
     SUMMARY_FILENAME, WalkMeter, build_storage_gc_summary, count_retained, entry_bytes,
@@ -1269,6 +1273,8 @@ def run_storage_gc(
     replay_parent_roots: Sequence[str | Path] = (),
     replay_cache_retention_enabled: bool = False,
     replay_cache_retention_alert: str | None = None,
+    replay_cache_shared_scratch_enabled: bool = False,
+    replay_cache_shared_scratch_alert: str | None = None,
     extended_pin_proofs_enabled: bool = False,
     extended_pin_proofs_alert: str | None = None,
     standing_authorization_dir: str | Path | None = None,
@@ -1306,13 +1312,14 @@ def run_storage_gc(
             "result_residue_offload": bool(result_residue_offload_enabled),
             "scene_workspace_retirement": bool(scene_workspace_retirement_enabled),
             "replay_cache_retention": bool(replay_cache_retention_enabled),
+            "replay_cache_shared_scratch": bool(replay_cache_shared_scratch_enabled),
             "extended_pin_proofs": bool(extended_pin_proofs_enabled),
             "lane_scratch": lane_scratch_enabled if type(lane_scratch_enabled) is bool else False,
         },
         "skipped_roots": [],
     }
     alerts = [alert for alert in (scene_workspace_retirement_alert, replay_cache_retention_alert,
-                                  extended_pin_proofs_alert) if alert]
+                                  replay_cache_shared_scratch_alert, extended_pin_proofs_alert) if alert]
     if alerts:
         report["alerts"] = alerts
     if result_residue_offload_alert:
@@ -1492,9 +1499,10 @@ def run_storage_gc(
     if replay_present:
         _isolated(report, "replay_caches", lambda: reclaim_replay_caches(
             parent_roots=replay_present, apply=apply, enabled=replay_cache_retention_enabled,
-            now=clock, classifier=classifier))
-        if replay_cache_retention_alert and isinstance(report.get("replay_caches"), dict):
-            report["replay_caches"]["alerts"] = [replay_cache_retention_alert]
+            now=clock, classifier=classifier, shared_scratch_enabled=replay_cache_shared_scratch_enabled))
+        replay_alerts = [alert for alert in (replay_cache_retention_alert, replay_cache_shared_scratch_alert) if alert]
+        if replay_alerts and isinstance(report.get("replay_caches"), dict):
+            report["replay_caches"]["alerts"] = replay_alerts
     scene_present, absent = _existing(scene_workspace_roots)
     report["skipped_roots"].extend(absent)
     if scene_present:
@@ -1779,9 +1787,10 @@ def _run_main(argv: list[str]) -> int:
         print(f"storage_gc_alert:{residue_alert}", file=sys.stderr)
     retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
     replay_enabled, replay_alert = replay_cache_retention_setting()
+    shared_enabled, shared_alert = replay_cache_shared_scratch_setting()
     extended_enabled, extended_alert = extended_pin_proofs_setting()
     lane_roots, lane_enabled, lane_alert = _lane_settings(args)
-    for alert in (retirement_alert, replay_alert, extended_alert, lane_alert):
+    for alert in (retirement_alert, replay_alert, shared_alert, extended_alert, lane_alert):
         if alert:
             print(f"storage_gc_alert:{alert}", file=sys.stderr)
     report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
@@ -1824,6 +1833,8 @@ def _run_main(argv: list[str]) -> int:
         replay_parent_roots=args.replay_parent_root or _split_env(REPLAY_PARENT_ROOTS_ENV),
         replay_cache_retention_enabled=replay_enabled,
         replay_cache_retention_alert=replay_alert,
+        replay_cache_shared_scratch_enabled=shared_enabled,
+        replay_cache_shared_scratch_alert=shared_alert,
         extended_pin_proofs_enabled=extended_enabled,
         extended_pin_proofs_alert=extended_alert,
         lane_scratch_roots=lane_roots,
