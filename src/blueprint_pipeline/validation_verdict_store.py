@@ -49,11 +49,15 @@ _DEFAULT_CODE = object()
 # A finished validation's tracer -> the thread hook it replaced. The hook is process-wide and
 # validations in other threads end in any order, so a saved hook may belong to one already over.
 _ENDED_TRACERS = weakref.WeakKeyDictionary()
+_HOOK_LOCK = threading.Lock()  # guards the process hook's bookkeeping; tracers never take it
 
 
 def _live_hook(hook):
-    while hook in _ENDED_TRACERS:
-        hook = _ENDED_TRACERS[hook]
+    try:
+        while hook in _ENDED_TRACERS:
+            hook = _ENDED_TRACERS[hook]
+    except TypeError:  # an unhashable hook, such as a callable dataclass, is never a tracer of ours
+        return hook
     return hook
 
 
@@ -143,19 +147,22 @@ def executed_code_identity(run, *, always=()):
                         collector.add("")
         return None
 
-    previous, previous_threads = sys.gettrace(), threading.gettrace()
-    threading.settrace(tracer)
+    previous = sys.gettrace()
+    with _HOOK_LOCK:
+        previous_threads = threading.gettrace()
+        threading.settrace(tracer)
     sys.settrace(tracer)
     try:
         result = run()
     finally:
         sys.settrace(previous)
-        ended = True
-        _ENDED_TRACERS[tracer] = previous_threads
-        if threading.gettrace() is tracer:  # otherwise a later validation still running restores it
-            threading.settrace(_live_hook(previous_threads))
         _DEPENDENCIES.reset(token)
         _DATA_CACHE.reset(data_token)
+        with _HOOK_LOCK:
+            ended = True
+            _ENDED_TRACERS[tracer] = previous_threads
+            if threading.gettrace() is tracer:  # otherwise a later validation still running restores it
+                threading.settrace(_live_hook(previous_threads))
     if failures or "" in names:
         return result, None
     names.update(str(name) for name in always if str(name).startswith(PACKAGE))

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import contextvars
+from dataclasses import dataclass, field
 import hashlib
 import importlib.util
 import json
@@ -295,11 +297,17 @@ def test_a_thread_started_during_a_validation_is_not_traced_after_it(monkeypatch
         assert pool.submit(sys.gettrace).result() is not during
 
 
-def test_overlapping_validations_in_two_threads_restore_the_thread_hook():
+def _tool_hook(frame, event, arg):  # stands in for a tool's hook, such as coverage's or a debugger's
+    return None
+
+
+@pytest.mark.parametrize("hook", [None, _tool_hook], ids=["no hook", "a tool's hook"])
+def test_overlapping_validations_in_two_threads_restore_the_thread_hook(hook):
     """Two dispatcher workers validating at once ended out of order: the first restored the hook it
     saw, then the second restored the first one's finished tracer as the process-wide hook, which
     every thread started afterwards inherited."""
     before = threading.gettrace()
+    threading.settrace(hook)
     first_running, second_running, first_ended = threading.Event(), threading.Event(), threading.Event()
     waited = {}
 
@@ -321,4 +329,102 @@ def test_overlapping_validations_in_two_threads_restore_the_thread_hook():
     leaked = threading.gettrace()
     threading.settrace(before)  # keep a failure here from reaching later tests
     assert waited == {"second started": True, "first ended": True}  # they overlapped; the first ended first
+    assert leaked is hook
+
+
+def test_nested_validations_restore_each_hook_and_hand_a_worker_outward():
+    """An inner validation restores the enclosing one's tracer, for its thread and for new threads, and
+    a worker it started is handed to that tracer, which keeps refusing persistence. The outer one
+    restores a debugger's tracer and a tool's thread hook."""
+    seen = {}
+
+    def debugger(frame, event, arg):
+        return None
+
+    def outer():
+        seen["outer"] = sys.gettrace()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            seen["inner code"] = store.executed_code_identity(lambda: pool.submit(sys.gettrace).result())[1]
+            seen["after inner"] = [sys.gettrace(), threading.gettrace(), pool.submit(sys.gettrace).result()]
+        return "outer"
+
+    local_before, threads_before = sys.gettrace(), threading.gettrace()
+    sys.settrace(debugger)
+    threading.settrace(_tool_hook)
+    try:
+        result = store.executed_code_identity(outer)
+        after = [sys.gettrace(), threading.gettrace()]
+    finally:
+        sys.settrace(local_before)
+        threading.settrace(threads_before)
+    assert seen["after inner"] == [seen["outer"]] * 3 and seen["inner code"] is None
+    assert result == ("outer", None) and after == [debugger, _tool_hook]
+
+
+@dataclass
+class _ValueEqualHook:
+    """A thread hook compared by value, hence unhashable, as a tool's callable dataclass may be."""
+    threads: list = field(default_factory=list)
+
+    def __call__(self, frame, event, arg):
+        self.threads.append(threading.get_ident())
+
+
+def test_an_unhashable_thread_hook_is_restored_and_raises_into_no_thread():
+    """Resolving the saved hook hashed it: every validation raised TypeError from its finally, left its
+    dependency context set and its finished tracer installed, and that tracer raised into new threads."""
+    hook, before, context = _ValueEqualHook(), threading.gettrace(), contextvars.copy_context()
+    threading.settrace(hook)
+    started_after = []
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = context.run(store.executed_code_identity, lambda: pool.submit(lambda: "run").result())[0]
+            restored = threading.gettrace()
+            outlived = pool.submit(lambda: "worker").result()  # started inside the run, handed to the hook
+        thread = threading.Thread(target=lambda: started_after.append("thread"))
+        thread.start()
+        thread.join()
+    finally:
+        threading.settrace(before)
+    assert (result, outlived, started_after) == ("run", "worker", ["thread"])
+    assert restored is hook and context.get(store._DEPENDENCIES, ()) == ()
+
+
+def test_a_validation_ending_during_another_ones_restore_leaves_no_finished_tracer(monkeypatch):
+    """Forced ordering: the validation owning the hook resolved what to restore, the older one it had
+    replaced then ended, and the restore installed that finished tracer as the process-wide hook."""
+    before, resolve = threading.gettrace(), store._live_hook
+    started, older_running, resolving, older_ended = (threading.Barrier(2), threading.Event(),
+                                                      threading.Event(), threading.Event())
+    owner, waited = {}, {}
+
+    def paused(hook):
+        resolved = resolve(hook)
+        if threading.get_ident() == owner.get("thread") and not resolving.is_set():
+            resolving.set()
+            older_ended.wait(0.5)  # unserialized, the older validation ended right here
+        return resolved
+
+    monkeypatch.setattr(store, "_live_hook", paused)
+
+    def older():
+        started.wait(5)
+        waited["older saw the resolution"] = store.executed_code_identity(
+            lambda: (older_running.set(), resolving.wait(5))[1])[0]
+        older_ended.set()
+
+    def newer():
+        owner["thread"] = threading.get_ident()
+        started.wait(5)
+        older_running.wait(5)
+        store.executed_code_identity(lambda: None)
+
+    workers = [threading.Thread(target=older), threading.Thread(target=newer)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(10)
+    leaked = threading.gettrace()
+    threading.settrace(before)
+    assert waited == {"older saw the resolution": True} and older_ended.is_set()
     assert leaked is before
