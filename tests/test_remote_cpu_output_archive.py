@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import tarfile
 import zipfile
@@ -315,6 +316,29 @@ def test_landing_resume_accepts_identical_files_and_refuses_different_ones(tmp_p
     assert _reason(lambda: _land(index, RangeReader(data), final)) == (
         "remote_cpu_landing_conflict:native-arena-adapter/stray.json"
     )
+
+
+def test_landing_refuses_a_planted_directory_symlink_before_writing_through_it(tmp_path: Path) -> None:
+    index, data = _sealed(_tree(tmp_path / "worker"))
+    parent = tmp_path / "compiled-episodes"
+    parent.mkdir()
+    destination = parent / "prep-1"
+    with pytest.raises(archive.RemoteCpuArchiveError):
+        _land(index, RangeReader(data, fail_after=0), destination)
+    [landing] = list(parent.iterdir())
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    for planted in (ADAPTER, f"{ADAPTER}/runtime"):
+        shutil.rmtree(landing / ADAPTER, ignore_errors=True)
+        if planted != ADAPTER:
+            (landing / ADAPTER).mkdir(mode=0o700)
+        target = landing / planted
+        target.symlink_to(outside, target_is_directory=True)
+        assert _reason(lambda: _land(index, RangeReader(data), destination)) == (
+            f"remote_cpu_landing_conflict:{planted}"
+        )
+        assert list(outside.iterdir()) == [] and not destination.exists()
+        target.unlink()
 
 
 def test_landing_resolves_input_and_input_member_origins_from_host_copies(tmp_path: Path) -> None:

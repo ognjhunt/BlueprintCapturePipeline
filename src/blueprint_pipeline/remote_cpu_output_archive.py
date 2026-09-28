@@ -598,8 +598,14 @@ def land_subset(
         landing.mkdir(mode=0o700, exist_ok=True)
         shutil.rmtree(scratch, ignore_errors=True)
         scratch.mkdir(mode=0o700)
+        # Parents sort first, so every directory is checked before anything is placed inside it;
+        # an existing entry that is not a real directory (a planted symlink) is refused, never followed.
         for path in sorted(folders):
-            (landing / path).mkdir(mode=0o700, exist_ok=True)
+            folder = landing / path
+            if not os.path.lexists(folder):
+                folder.mkdir(mode=0o700)
+            elif not stat.S_ISDIR(os.lstat(folder).st_mode):
+                raise RemoteCpuArchiveError(f"remote_cpu_landing_conflict:{path}")
         assembly = _Assembly(reader=reader, offsets={row["blob"]: row["offset"] for row in value["blobs"]},
                              host_sources=host_sources, member_store=member_store, landing=landing, scratch=scratch)
         for row in entries:
