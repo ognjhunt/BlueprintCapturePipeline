@@ -254,3 +254,18 @@ def test_first_successful_fstat_cannot_adopt_or_close_reused_foreign_token(tmp_p
             if (info.st_dev, info.st_ino) == (expected_foreign.st_dev, expected_foreign.st_ino):
                 real_close(fd)
         real_close(original_foreign)
+
+
+def test_actual_shared_ancestor_metadata_change_refuses_without_fixture_projection(tmp_path):
+    """Success-fixture normalization must never weaken real ancestor checks."""
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_acquisition as m
+    parent = tmp_path.resolve()
+    anchor = parent / 'selected'
+    anchor.mkdir()
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    with m.Acquisition(budget, [str(anchor)]) as reader:
+        reader.entries(str(anchor))
+        (parent / 'unrelated-sibling').mkdir()
+        with pytest.raises(m.AcquisitionError, match='scene_lifecycle_metadata_changed'):
+            reader.verify()
+    assert reader.handles == {}

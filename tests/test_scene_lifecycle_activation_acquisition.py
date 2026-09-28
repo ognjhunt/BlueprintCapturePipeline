@@ -63,7 +63,7 @@ def acquired_fixture(base, activation):
 
 
 @pytest.mark.parametrize('activation', ['scene-short', 's'*192])
-def test_real_acquisition_and_same_budget_child_keep_full_scene_activation_identity(tmp_path, activation):
+def test_real_acquisition_and_same_budget_child_keep_full_scene_activation_identity(tmp_path, activation, monkeypatch):
     from blueprint_pipeline import task_evaluation_scene_downstream_inventory as child
     args, name = acquired_fixture(tmp_path.resolve(), activation)
     records = []
@@ -75,6 +75,8 @@ def test_real_acquisition_and_same_budget_child_keep_full_scene_activation_ident
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(raw)
                 records.append((role, path))
+    from tests.scene_lifecycle_fixture_support import stable_shared_ancestors
+    stable_shared_ancestors(monkeypatch, tmp_path)
     budget = ReferenceCollectionBudget(monotonic=lambda: 0)
     context = {'roots': args['roots'], 'retained_metadata_files': []}
     with Acquisition(budget, [str(tmp_path.resolve())]) as reader:

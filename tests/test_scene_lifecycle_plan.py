@@ -48,8 +48,10 @@ def run(context, intent_id):
                                       monotonic=lambda: 0)
 
 
-def test_real_history_acquired_and_finished_observed_without_cleanup_authority(tmp_path):
+def test_real_history_acquired_and_finished_observed_without_cleanup_authority(tmp_path, monkeypatch):
     context, intent_id = context_fixture(tmp_path, completed=True)
+    from tests.scene_lifecycle_fixture_support import stable_shared_ancestors
+    stable_shared_ancestors(monkeypatch, tmp_path)
     report = run(context, intent_id)
     assert report['schema_version'] == 'task_evaluation_scene_lifecycle_plan.v1'
     assert report['finished_observation']['status'] == 'completed'
@@ -103,6 +105,8 @@ def preparation_fixture(tmp_path):
 def test_measures_exact_preparation_member_without_opening_payload(tmp_path, monkeypatch):
     import os
     context, intent_id, member = preparation_fixture(tmp_path)
+    from tests.scene_lifecycle_fixture_support import stable_shared_ancestors
+    stable_shared_ancestors(monkeypatch, tmp_path)
     original = os.open
     def opened(name, *args, **kwargs):
         assert str(name) != 'payload.bin'
@@ -120,11 +124,13 @@ def test_measures_exact_preparation_member_without_opening_payload(tmp_path, mon
     assert row['action'] == 'KEEP' and row['exclusive_ownership_proven'] is False
 
 
-def test_hardlink_accounted_once_and_external_link_keeps_member(tmp_path):
+def test_hardlink_accounted_once_and_external_link_keeps_member(tmp_path, monkeypatch):
     import os
     context, intent_id, member = preparation_fixture(tmp_path)
     os.link(member / 'payload.bin', member / 'copy.bin')
     os.link(member / 'payload.bin', tmp_path / 'outside.bin')
+    from tests.scene_lifecycle_fixture_support import stable_shared_ancestors
+    stable_shared_ancestors(monkeypatch, tmp_path)
     report = run(context, intent_id)
     row = next(row for row in report['measured_members'] if row['path'] == str(member))
     assert row['observed_regular_names'] == 2
