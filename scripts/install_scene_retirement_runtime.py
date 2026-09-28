@@ -617,6 +617,40 @@ def _sdk_file(path, expected, deadline):
     return path
 
 
+def _sdk_partial(path, expected_size):
+    if path.exists() or path.is_symlink():
+        check = _open(path, directory=False, partial=True)
+        try:
+            original = os.fstat(check)
+            _require(original.st_size <= expected_size)
+            output = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                _require(_identity(os.fstat(output)) == _identity(original))
+            except BaseException:
+                os.close(output)
+                raise
+            return output, original
+        finally:
+            os.close(check)
+    output = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    return output, os.fstat(output)
+
+
+def _sdk_append_chunk(output, original, raw, offset, deadline):
+    _require(time.monotonic() <= deadline)
+    prior = min(len(raw), max(0, original.st_size - offset))
+    _require(os.pread(output, prior, offset) == raw[:prior])
+    current = os.fstat(output)
+    _require((current.st_dev, current.st_ino) == (original.st_dev, original.st_ino))
+    view = memoryview(raw)[prior:]
+    os.lseek(output, offset + prior, os.SEEK_SET)
+    while view:
+        _require(time.monotonic() <= deadline)
+        written = os.write(output, view)
+        _require(written > 0)
+        view = view[written:]
+
+
 def _sdk_artifact(row, wheelhouse, deadline):
     url = row['url']
     parsed = urllib.parse.urlsplit(url)
@@ -634,10 +668,13 @@ def _sdk_artifact(row, wheelhouse, deadline):
     if path.exists() or path.is_symlink():
         return _sdk_file(path, row, deadline)
     partial = directory / (name + '.pending')
-    _require(not partial.exists() and not partial.is_symlink())
-    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    claim = directory / (name + '.download.json')
+    value = _encoded({'schema': 'scene-retirement-sdk-download.v1', 'url': url, 'size': row['size'], 'hash': row['hash']})
+    if partial.exists() or partial.is_symlink():
+        _require(claim.exists() and _record_bytes(claim, deadline)[0] == value)
+    _record(claim, value, deadline)
+    fd, before = _sdk_partial(partial, row['size'])
     try:
-        before = os.fstat(fd)
         digest, count = hashlib.sha256(), 0
         with urllib.request.urlopen(url, timeout=min(30, max(.001, deadline - time.monotonic()))) as response:
             _require(response.status == 200 and urllib.parse.urlsplit(response.url).hostname == parsed.hostname)
@@ -649,12 +686,7 @@ def _sdk_artifact(row, wheelhouse, deadline):
                 count += len(chunk)
                 _require(count <= row['size'])
                 digest.update(chunk)
-                view = memoryview(chunk)
-                while view:
-                    _require(time.monotonic() <= deadline)
-                    size = os.write(fd, view)
-                    _require(size > 0)
-                    view = view[size:]
+                _sdk_append_chunk(fd, before, chunk, count - len(chunk), deadline)
         _require(count == row['size'] and digest.hexdigest() == row['hash'][7:]
                  and os.fstat(fd).st_ino == before.st_ino
                  and partial.lstat().st_ino == before.st_ino)
@@ -734,9 +766,7 @@ def _sdk_extract(root, rows, deadline):
             before = os.fstat(fd)
             with os.fdopen(os.dup(fd), 'rb') as retained, zipfile.ZipFile(retained) as archive:
                 temporary = target.with_name(target.name + '.pending')
-                _require(not temporary.exists() and not temporary.is_symlink())
-                output = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-                original = os.fstat(output)
+                output, original = _sdk_partial(temporary, row['size'])
                 count, digest = 0, hashlib.sha256()
                 with archive.open(row['member']) as body:
                     while True:
@@ -747,12 +777,7 @@ def _sdk_extract(root, rows, deadline):
                         count += len(raw)
                         _require(count <= row['size'])
                         digest.update(raw)
-                        view = memoryview(raw)
-                        while view:
-                            _require(time.monotonic() <= deadline)
-                            size = os.write(output, view)
-                            _require(size > 0)
-                            view = view[size:]
+                        _sdk_append_chunk(output, original, raw, count - len(raw), deadline)
                 _require(count == row['size'] and digest.hexdigest() == row['sha256']
                          and _identity(os.fstat(fd)) == _identity(before)
                          and _identity(Path(row['archive']).lstat()) == _identity(before)
@@ -885,6 +910,8 @@ def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_chec
     environment = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/nonexistent',
                    'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
                    'GIT_TERMINAL_PROMPT': '0'}
+    if raw_checkout:
+        environment.update({'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': '', 'GIT_PROTOCOL_FROM_USER': '0'})
     if ssh is not None:
         environment['GIT_SSH_COMMAND'] = ssh
     value = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
