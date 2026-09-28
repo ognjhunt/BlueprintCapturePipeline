@@ -224,3 +224,53 @@ def test_arena_unknown_descendants_never_gain_removal_authority(retirement_insta
             now=lambda: 2900,
         )
     assert (target / "payload").read_bytes() == b"keep"
+
+
+def test_actual_arena_payload_uses_same_current_lifetime_without_legacy_lease(
+    retirement_installation, monkeypatch
+):
+    from blueprint_pipeline import control_plane_arena_scratch as arena
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+
+    setup = retirement_installation
+    grant = _arena(setup)
+    born = birth(setup, grant)
+    monkeypatch.setattr(consumer, "AUTHORITY_ROOT", setup[2].parents[1] / "experiment-authority")
+    monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
+    use = arena.admit_registered_arena_attempt("r33", now=lambda: 1102)
+    monkeypatch.setattr(
+        arena.LeasedScratchDirectory,
+        "open",
+        lambda *a, **kw: pytest.fail("unproved legacy lease fallback"),
+    )
+    try:
+        assert arena.prepare_arena_attempt("r33", _registered_use=use) == Path(born["path"])
+        made = arena.mkdir_arena_payload("r33", "arena_packet/nested", _registered_use=use)
+        assert made.is_dir() and made == Path(born["path"]) / "arena_packet/nested"
+        use.now = lambda: 2800
+        with pytest.raises(ValueError, match="experiment_consumer_inactive"):
+            arena.mkdir_arena_payload("r33", "after-expiry", _registered_use=use)
+        assert not (Path(born["path"]) / "after-expiry").exists()
+    finally:
+        use.close()
+
+
+def test_unregistered_arena_new_writer_refuses_caller_owner_as_grant(retirement_installation):
+    from blueprint_pipeline import control_plane_arena_scratch as arena
+
+    setup = retirement_installation
+    inputs = Path(setup[1]["lane_scratch_inputs_root"]).parent
+    (inputs / "lanes/arena").mkdir(mode=0o750)
+    with pytest.raises(
+        arena.ArenaScratchError, match="arena_scratch_registered_authority_required"
+    ):
+        arena.prepare_arena_attempt(
+            "r33",
+            owner="owner",
+            run_ref="arena-launch-r33",
+            ttl_seconds=1800,
+            inputs_root=inputs,
+            lane_root=inputs / "lanes",
+            now=lambda: 1000,
+        )
+    assert not (inputs / "lanes/arena/arena-launch-r33").exists()
