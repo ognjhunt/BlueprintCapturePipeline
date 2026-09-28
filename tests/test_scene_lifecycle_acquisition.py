@@ -173,3 +173,26 @@ def test_scoped_directory_mount_boundary_refuses_before_descendant_retention(tmp
         with pytest.raises(m.AcquisitionError, match='mount_boundary'):
             reader.entries(str(child))
         assert str(child) not in reader.directories
+
+
+def test_cached_parent_descriptor_is_rechecked_before_child_metadata_access(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    m = module()
+    file = tmp_path/'owner.json'
+    file.write_text('{}')
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        fd, _ = reader.directories[str(tmp_path)]
+        original = m.os.fstat
+        def swapped(candidate):
+            info = original(candidate)
+            if candidate != fd:
+                return info
+            values = {name: getattr(info, name) for name in
+                      ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_nlink')}
+            values['st_ino'] += 1
+            return SimpleNamespace(**values)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(m.os, 'fstat', swapped)
+            scoped.setattr(m.os, 'stat', lambda *a, **k: pytest.fail('child used a substituted retained parent'))
+            with pytest.raises(m.AcquisitionError, match='metadata_changed'):
+                reader.stat(str(file))

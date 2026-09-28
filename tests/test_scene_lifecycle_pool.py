@@ -126,3 +126,49 @@ def test_unknown_selected_schema_keeps_raw_without_following_fictional_selectors
     assert all(not group for group in bridge.values())
     assert not seed['preparation_envelopes']
     assert any(p['path'] == pair[0] and p['status'] == 'kept_unsupported_schema' for p in protected)
+
+
+def test_native_and_scene_activation_roles_use_actual_lane_not_identifier_length():
+    from tests.test_scene_compilation_native_owner import fixture as native_fixture
+    args = native_fixture()
+    parent = args['bridge_records']['native_activation_envelopes'][0]
+    result = args['bridge_records']['native_activation_results'][0]
+    records = [decoded('intent', args['seed_records']['intent']),
+               decoded('activation_envelopes', parent), decoded('activation_results', result)]
+    _, downstream, _, bridge, _ = select(records, {'roots': args['roots'], 'retained_metadata_files':
+        [{'role': 'native_activation_envelopes', 'path': parent[0]}]}, args['intent_id'],
+        ReferenceCollectionBudget(monotonic=lambda: 0))
+    assert bridge['native_activation_results'] == [result] and not downstream['activation_results']
+    value = json.loads(parent[1])
+    value['request']['lane'] = 'future_lane'
+    unknown = parent[0], json.dumps(value).encode()
+    records[1] = decoded('activation_envelopes', unknown)
+    _, _, _, bridge, protected = select(records[:2], {'roots': args['roots'], 'retained_metadata_files':
+        [{'role': 'native_activation_envelopes', 'path': parent[0]}]}, args['intent_id'],
+        ReferenceCollectionBudget(monotonic=lambda: 0))
+    assert not bridge['native_activation_envelopes']
+    assert any(p['path'] == parent[0] and p['status'] == 'kept_activation_lane_unproven' for p in protected)
+
+
+def test_capture_metadata_discovery_uses_fixed_layout_not_payload_directories():
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_pool import Pool
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_acquisition import AcquisitionError
+    args = fixture()
+    root = args['roots']['pubsub_root']
+    observed, visited = [], []
+    layouts = {root: ('bucket',), root+'/bucket/scenes': ('scene-1',),
+               root+'/bucket/scenes/scene-1/captures': ('capture-1',)}
+    class Reader:
+        budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+        def entries(self, path):
+            visited.append(path)
+            return layouts.get(path, ())
+        def read_json(self, path):
+            observed.append(path)
+            raise AcquisitionError('scene_lifecycle_metadata_unavailable')
+    Pool(Reader(), {'roots': args['roots'], 'parent_routes': args['parent_routes'],
+         'retained_metadata_files': [], 'progression_config': None}, args['intent_id']).discovery()
+    prefix = root+'/bucket/scenes/scene-1/captures/capture-1/pipeline/website_scene_preparation/'
+    assert prefix+'handoff.json' in observed and prefix+'native/runtime_inputs.json' in observed
+    assert prefix+'development_test/preparation.json' in observed
+    assert all('/frames' not in path and '/videos' not in path for path in visited)

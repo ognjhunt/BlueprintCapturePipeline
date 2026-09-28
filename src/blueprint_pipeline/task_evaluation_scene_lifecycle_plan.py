@@ -97,6 +97,8 @@ def _finished(seed, decoded, context, intent_id, now, budget, scopes):
     extension_root = context['roots']['intent_root'] + '/' + intent_id + '/execution-window-extensions'
     observed = any(row['role'] == 'extensions' and row['path'] == extension_root
                    and row['status'] == 'observed_selected_layout' for row in _work_items(scopes, budget))
+    observed = observed and not any(row['role'] == 'extensions' and row['path'] == extension_root
+            and row['status'] == 'unsupported_layout' for row in _work_items(scopes, budget))
     return finished(seed['history'], decoded, context['roots'], intent_id, now, budget,
                     extensions_observed=observed)
 
@@ -136,6 +138,8 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
         pool.discovery()
         decoded = pool.decode()
         seed, downstream, source, bridge, protected = pool_module.select(decoded, context, intent_id, budget)
+        from .task_evaluation_scene_lifecycle_metadata import configuration
+        config_observation = configuration(decoded, context, budget)
         sink = RetainedEmissionBudget(max_bytes=MAX_OUTPUT_BYTES, max_rows=10_000, max_references=10_000, work_budget=budget)
         historical = native._join(intent_id, seed, downstream, source, bridge, context['roots'], context['parent_routes'],
                                   context['retained_metadata_roots'], emission_budget=sink, work_budget=budget)
@@ -144,14 +148,15 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
                   'scope': 'selected_exact_scene_metadata_and_measured_paths', 'observed_at_epoch': observed_at_epoch,
                   'intent_id': intent_id, 'selected_intent_provenance': seed_result['intent_provenance'],
                   'finished_observation': _finished(seed_result, decoded, context, intent_id, observed_at_epoch, budget, pool.scopes),
-                  'historical_lineage': historical, 'acquisition_scopes': sink.rows(pool.scopes),
+                  'historical_lineage': historical, 'configuration_observation': config_observation, 'acquisition_scopes': sink.rows(pool.scopes),
                   'unselected_metadata_protections': sink.rows(protected), 'family_obligations': _families(sink),
                   'measured_members': sink.rows(), 'sharing': sink.rows(), 'reference_keeps': sink.rows(),
                   'unique_observed_allocated_bytes': None, 'blockers': ['reference_and_consumer_lifetime_unproven'],
                   'mutations': 0, **{flag: False for flag in FALSE_FLAGS}}
+        sink.reserve_row(config_observation)
         from .task_evaluation_scene_lifecycle_measurement import measure
         result['measured_members'], result['sharing'], result['unique_observed_allocated_bytes'], _ = measure(
-            reader, historical, sink, result['family_obligations'])
+            reader, historical, sink, result['family_obligations'], context['roots'])
         result['family_obligations'] = sink.rows(result['family_obligations'])
         if context_anchor is not None:
             sink.reserve_row({'metadata_only': True, 'anchor_coalesced': context_anchor.coalesced})
@@ -162,6 +167,7 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
         result['reference_keeps'] = intersect(result['measured_members'], reference_result, budget, sink)
         result['planner_acquired_raw_bytes'] = reader.physical_read_bytes
         reader.verify()
+        _screen_output(result, budget)
         sink.check_document(result)
         native.c.retained.c.bounded_size(result, MAX_OUTPUT_BYTES, work_budget=budget)
         budget.tick()
@@ -230,6 +236,10 @@ def _screen_output(value, budget):
         elif isinstance(item, list):
             pending.append(iter((key, entry) for entry in item))
         elif isinstance(item, str) and isinstance(key, str) and (key == 'path' or key == 'uri' or key.endswith('_path')):
+            acquisition.require(len(item) <= 4096, 'output_identity_invalid')
+            from .control_plane_disk_usage import _CREDENTIAL_SHAPED_NAME
+            acquisition.require(_CREDENTIAL_SHAPED_NAME.search(item) is None, 'credential_shaped_output')
+            budget.tick()
             lowered = item.lower()
             acquisition.require(not any(marker in lowered for marker in
                 ('x-amz-', 'signature=', 'token=', 'credential=', 'password=', 'api_key=', 'secret=', 'access_key=')),

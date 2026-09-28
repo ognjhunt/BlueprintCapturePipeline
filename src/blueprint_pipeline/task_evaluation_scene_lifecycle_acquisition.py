@@ -120,7 +120,11 @@ class Acquisition:
 
     def _directory(self, absolute):
         if absolute in self.directories:
-            return self.directories[absolute]
+            fd, info = self.directories[absolute]
+            self.budget.tick()
+            require(identity(os.fstat(fd)) == identity(info), 'metadata_changed')
+            self.budget.tick()
+            return fd, info
         require(len(self.directories) < MAX_DIRECTORIES, 'directories_limit')
         if absolute == '/':
             fd, info = self._open('/', DIR_FLAGS)

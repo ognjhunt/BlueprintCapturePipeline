@@ -11,6 +11,7 @@ from . import task_evaluation_scene_preparation_lineage as retained
 from . import task_evaluation_scene_source_attempt_lineage as attempts
 from . import task_evaluation_scene_source_family_contracts as family_contracts
 from . import task_evaluation_scene_downstream_terminal as terminal_contracts
+from .task_evaluation_scene_compilation_native_owners import PHASES
 from .task_evaluation_scene_lifecycle_acquisition import AcquisitionError, require
 from .task_evaluation_scene_lineage_budget import _work_items, _work_parse
 
@@ -166,11 +167,29 @@ class Pool:
         self.rows('sam_results', roots['sam_queue_root'] + '/results', 'sam31-' + HEX + r'(?:\.conflict-' + HEX + r')?\.json')
         for child in self.names('sam_progress_groups', roots['sam_queue_root'] + '/progress', 'sam31-' + HEX):
             self.rows('sam_execution_progress', roots['sam_queue_root'] + '/progress/' + child, r'[0-9]{6,}\.json')
+        self.capture_metadata()
         self.fixed_families()
         for selector in self.context['retained_metadata_files']:
             self.read(selector['role'], selector['path'])
         if self.context['progression_config'] is not None:
             self.read('progression_config', self.context['progression_config'])
+
+    def capture_metadata(self):
+        root = self.context['roots']['pubsub_root']
+        for bucket in self.names('capture_buckets', root, ID):
+            scenes = root+'/'+bucket+'/scenes'
+            for scene in self.names('capture_scenes', scenes, ID):
+                captures = scenes+'/'+scene+'/captures'
+                for capture in self.names('capture_groups', captures, ID):
+                    base = captures+'/'+capture+'/pipeline/website_scene_preparation'
+                    for role, leaf in [('website_handoffs', 'handoff.json'),
+                                       ('website_preparations', 'preparation.json'),
+                                       ('website_preparations', 'development_test/preparation.json'),
+                                       ('website_runtime_inputs', 'native/runtime_inputs.json'),
+                                       ('website_runtime_inputs', 'development_test/runtime_inputs.json'),
+                                       ('website_task_contexts', 'task_context.json'),
+                                       ('website_task_contexts', 'development_test/task_context.json')]:
+                        self.read(role, base+'/'+leaf)
 
     def fixed_families(self):
         roots = self.context['roots']
@@ -252,7 +271,7 @@ def select(decoded, context, intent_id, budget):
     downstream = {role: [] for role in d.ROLES}
     source = {role: [] for role in native.prior.ROLES}
     bridge = {role: [] for role in native.ROLES}
-    raw_index, canonical, by_path, parent_modes = {}, {}, {}, {}
+    raw_index, canonical, by_path, parent_modes, activation_modes = {}, {}, {}, {}, {}
     explicit = {row['path'] for row in _work_items(context.get('retained_metadata_files', []), budget)}
     selected, frontier, protected = set(), [], []
     owner = context['roots']['intent_root'] + '/' + intent_id
@@ -269,6 +288,12 @@ def select(decoded, context, intent_id, budget):
             if isinstance(request, dict):
                 budget.charge('facts')
                 parent_modes.setdefault((str(PurePosixPath(row['path']).parent.parent), PurePosixPath(row['path']).name), set()).add(request.get('run_mode'))
+        if row['role'] == 'activation_envelopes' and supported(row):
+            request = row['value'].get('request')
+            if isinstance(request, dict):
+                budget.charge('facts')
+                activation_modes.setdefault((str(PurePosixPath(row['path']).parent.parent),
+                    PurePosixPath(row['path']).name), set()).add(request.get('lane'))
         if row['path'].startswith(owner + '/') or row['path'] in explicit:
             budget.charge('facts')
             frontier.append(index)
@@ -344,10 +369,22 @@ def select(decoded, context, intent_id, budget):
                 protected.append({'role': role, 'path': row['path'], 'sha256': row['sha256'],
                                   'size_bytes': len(row['raw']), 'status': 'kept_parent_mode_unproven'})
                 continue
-        elif role == 'activation_envelopes' and value.get('request', {}).get('lane') != 'task_evaluation_scene_configuration':
-            role = 'native_activation_envelopes'
-        elif role == 'activation_results' and value.get('lane') not in (None, 'task_evaluation_scene_configuration'):
-            role = 'native_activation_results'
+        elif role in {'activation_envelopes', 'activation_results'}:
+            request = value.get('request')
+            lane = request.get('lane') if isinstance(request, dict) and role == 'activation_envelopes' else value.get('lane')
+            p = PurePosixPath(row['path'])
+            modes = activation_modes.get((str(p.parent.parent), p.name), set())
+            if lane is None and len(modes) == 1:
+                lane = next(iter(modes))
+            if lane == 'task_evaluation_scene_configuration':
+                pass
+            elif lane in PHASES:
+                role = 'native_activation_envelopes' if role == 'activation_envelopes' else 'native_activation_results'
+            else:
+                budget.charge('facts')
+                protected.append({'role': role, 'path': row['path'], 'sha256': row['sha256'],
+                                  'size_bytes': len(row['raw']), 'status': 'kept_activation_lane_unproven'})
+                continue
         pair = row['path'], row['raw']
         budget.charge('facts')
         if role in {'intent', 'projection'}:

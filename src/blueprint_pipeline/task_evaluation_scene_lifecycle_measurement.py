@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import stat
+import re
 from pathlib import PurePosixPath
 
 from .task_evaluation_scene_lifecycle_acquisition import AcquisitionError, require
-from .control_plane_disk_usage import allocated_bytes
+from .control_plane_disk_usage import allocated_bytes, DEFAULT_SURVEY_ALIASES, BLUEPRINT_PREFIXES, _classification
+from .control_plane_storage_roots import classify_path
 from .task_evaluation_scene_lineage_budget import _work_items, _work_order
 
 KINDS = {
@@ -15,12 +17,12 @@ KINDS = {
     'preparation_projected_file': 'prepared_objects', 'prepared_cache_object': 'prepared_objects',
     'compiled_episode_packet': 'compilation_workspace', 'adapter_packet_root': 'compilation_workspace',
     'adapter_runtime_source_receipt': 'compilation_workspace',
-    'sam_execution_dependency': 'sam_current_child', 'launch_workspace': 'launch_canary_workspace',
+    'sam_execution_dependency': 'sam_current_child', 'sam_original_execution_dependency': 'sam_original_child', 'launch_workspace': 'launch_canary_workspace',
     'terminal_index_workspace': 'launch_canary_workspace', 'canary_evidence_workspace': 'launch_canary_workspace',
 }
 
 
-def members(historical, budget, sink):
+def members(historical, budget, sink, roots=None):
     source = historical['source_family_inventory']
     downstream = source['downstream_inventory']
     layers = [(historical, 'declared_lexical_members'), (source, 'lexical_members'),
@@ -47,7 +49,61 @@ def members(historical, budget, sink):
         sink.reserve_row(member)
         budget.charge('facts')
         indexed.setdefault(cache['path'], []).append(member)
+    if roots is not None:
+        verified = set()
+        for row in _work_items(source['adoption_observations'], budget):
+            if row['prefix_binding_verified']:
+                for proof in _work_items(row['source_provenance'], budget):
+                    budget.charge('facts')
+                    verified.add(proof_identity(proof))
+        for row in _work_items(source['original_phase_observations'], budget):
+            if not row['phase_binding_verified'] or not any(
+                    proof_identity(p) in verified for p in _work_items(row['source_provenance'], budget)):
+                continue
+            for proof in _work_items(row['selected_provenance'], budget):
+                if proof['role'] != 'sam_execution_receipts':
+                    continue
+                parent = PurePosixPath(proof['path']).parent
+                if (PurePosixPath(proof['path']).name != 'phase_execution_receipt.v1.json'
+                        or str(parent.parent.parent) != roots['sam_execution_root']
+                        or re.fullmatch('[0-9a-f]{64}', parent.parent.name) is None
+                        or re.fullmatch('sam31-[0-9a-f]{64}', parent.name) is None):
+                    continue
+                sink.available_occurrence()
+                member = {'path': str(parent), 'kind': 'sam_original_execution_dependency',
+                          'binding_strength': 'verified_original_prefix_receipt_dependency',
+                          'source_provenance': sink.reserve_provenance(
+                              p for group in (row['source_provenance'], row['selected_provenance'])
+                              for p in _work_items(group, budget)),
+                          'original_owner_transfer_authorized': False}
+                sink.reserve_row(member)
+                budget.charge('facts')
+                indexed.setdefault(str(parent), []).append(member)
     return indexed
+
+
+def proof_identity(proof):
+    return tuple(proof.get(field) for field in
+                 ('role', 'path', 'sha256', 'size_bytes', 'seal_field', 'seal_digest', 'json_pointer'))
+
+
+def classification(path, budget):
+    canonical = path
+    aliases = _work_order(budget, sorted, DEFAULT_SURVEY_ALIASES, key=len, reverse=True)
+    for alias in _work_items(aliases, budget):
+        if path == alias or path.startswith(alias+'/'):
+            canonical = DEFAULT_SURVEY_ALIASES[alias]+path[len(alias):]
+            break
+    budget.tick()
+    law = classify_path(canonical)
+    budget.tick()
+    storage_class, policy_parts = _classification(law, PurePosixPath(canonical).parts,
+        tuple(PurePosixPath(prefix).parts for prefix in _work_items(BLUEPRINT_PREFIXES, budget)))
+    budget.tick()
+    return {'storage_class': storage_class,
+            'storage_policy_root': str(PurePosixPath(*policy_parts)),
+            'storage_retention_note': law.note if law is not None else 'storage_policy_unproven',
+            'canonical_policy_path': canonical, 'storage_policy_allows_cleanup': False}
 
 
 def allocated(info):
@@ -56,9 +112,9 @@ def allocated(info):
     return allocated_bytes(info)
 
 
-def measure(reader, historical, sink, families):
+def measure(reader, historical, sink, families, roots=None):
     budget = reader.budget
-    declared = members(historical, budget, sink)
+    declared = members(historical, budget, sink, roots)
     ordered = _work_order(budget, sorted, declared)
     roots, parent_of = [], {}
     for path in _work_items(ordered, budget):
@@ -75,7 +131,9 @@ def measure(reader, historical, sink, families):
         sink.available_occurrence()
         budget.charge('facts')
         proofs = sink.reserve_provenance(proof for row in declared[root] for proof in row['source_provenance'])
-        row = {'path': root, 'kinds': _work_order(budget, sorted, {r['kind'] for r in declared[root]}),
+        policy = classification(root, budget)
+        row = {'path': root, **policy, 'physical_identity': None,
+               'metadata_binding_strengths': _work_order(budget, sorted, {r.get('binding_strength', 'pure_retained_metadata_member') for r in declared[root]}), 'kinds': _work_order(budget, sorted, {r['kind'] for r in declared[root]}),
                'status': 'observed_scoped_metadata', 'measured_allocated_bytes': None,
                'observed_allocated_bytes': 0, 'measured_logical_bytes': None, 'observed_logical_bytes': 0,
                'measured_apparent_bytes': None, 'observed_apparent_bytes': 0,
@@ -87,7 +145,12 @@ def measure(reader, historical, sink, families):
                'keeps': ['shared_content_object_not_exclusive'] if any(r['kind'] == 'prepared_cache_object' for r in declared[root]) else [], 'source_provenance': proofs}
         # Reserve conservative final numeric framing before any subtree access.
         # No allowance is refunded; emitted rows retain their ordinary charge.
+        if any(r['kind'] in {'sam_execution_dependency', 'sam_original_execution_dependency'} for r in declared[root]):
+            row['keeps'].append('sam_evidence_retention_policy_required')
+            if row['storage_class'] == 'cache':
+                row['keeps'].append('sam_evidence_cache_policy_conflict')
         numeric_frame = dict(row)
+        numeric_frame['physical_identity'] = [(1 << 128) - 1] * 3
         for key in ('measured_allocated_bytes', 'observed_allocated_bytes', 'measured_logical_bytes',
                     'observed_logical_bytes', 'measured_apparent_bytes', 'observed_apparent_bytes',
                     'observed_regular_names', 'observed_unique_regular_inodes'):
@@ -109,6 +172,7 @@ def measure(reader, historical, sink, families):
                 continue
             if root_device is None:
                 root_device = info.st_dev
+                row['physical_identity'] = [info.st_dev, info.st_ino, info.st_mode]
             if info.st_dev != root_device or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
                 complete = False
                 row['keeps'].append('cross_device_link_or_special_member')
