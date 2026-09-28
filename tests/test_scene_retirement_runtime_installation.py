@@ -682,3 +682,16 @@ def test_actual_locked_production_sdk_dependency_closure_includes_pubsub_grpc(tm
     selected = module._sdk_closure(lock['package'], (markers, None, None))
     names = {row['name'] for row in selected}
     assert {'google-cloud-pubsub', 'google-api-core', 'grpcio', 'grpcio-status', 'blueprint-contracts'} <= names
+
+
+def test_actual_locked_sdk_includes_cpu_control_plane_runtime_imports_without_gpu_extra(tmp_path, monkeypatch):
+    import tomllib
+    from packaging import markers
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    lock = tomllib.loads((Path(__file__).parents[1] / 'uv.lock').read_text())
+    selected = module._sdk_closure(lock['package'], (markers, None, None))
+    names = {row['name'] for row in selected}
+    assert {'opencv-python-headless', 'build123d', 'pycollada', 'trimesh'} <= names
+    # These are the root runtime's CPU import dependencies. No model/GPU
+    # operator is invoked by this administrative protected-runtime install.
+    assert not {'ultralytics', 'torch', 'nvidia-cuda-runtime-cu12'} & names
