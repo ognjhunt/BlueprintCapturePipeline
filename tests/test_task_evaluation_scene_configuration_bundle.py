@@ -90,6 +90,12 @@ def _stub_api_preparation_for_bundle_contracts(monkeypatch):
     monkeypatch.setattr(prep, "prepare_semantics_before_gpu", prepare)
 
 
+@pytest.fixture(autouse=True)
+def _ceiling_output_admission(monkeypatch):
+    """These lane runs pin today's ceiling admission, whatever the shell exports."""
+    monkeypatch.delenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION", raising=False)
+
+
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 

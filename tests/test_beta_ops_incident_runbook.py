@@ -12,7 +12,7 @@ DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "deploy.sh"
 def test_beta_ops_incident_runbook_covers_cross_repo_response() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
 
-    assert "Primary owner: `blueprint-cto`" in text
+    assert "Primary owner: the founder" in text
     assert "Pipeline owner: `pipeline-oncall`" in text
     assert "Escalation owner: Founder/CEO" in text
     assert "../Blueprint-WebApp/docs/beta-ops-incident-runbook-2026-07-08.md" in text

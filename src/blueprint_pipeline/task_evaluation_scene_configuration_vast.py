@@ -76,6 +76,10 @@ from .task_evaluation_scene_configuration_provider_artifacts import (
     _sha256,
     extract_provider_output_with_capacity_guard,
 )
+from .task_evaluation_scene_configuration_output_admission import (
+    SceneConfigurationOutputHoldRefused, open_scene_configuration_output_admission,
+    release_scene_configuration_output, releases_output_on_exit,
+)
 from .task_evaluation_scene_configuration_openai_runtime_scope import (
     MANAGED_GUARD_FILE_ENV,
     OPENAI_RUNTIME_FILE_ENVS as _OPENAI_RUNTIME_FILE_ENVS,
@@ -945,7 +949,7 @@ def _seal_live_terminal_result(
             "result_schema_version": RESULT_SCHEMA_VERSION,
         },
     )
-    return _seal_terminal_result(job, result)
+    return release_scene_configuration_output(job, _seal_terminal_result(job, result))
 
 
 def _close_watchdog_after_adapter(
@@ -1049,6 +1053,7 @@ def _recover_escaped_adapter_failure(
     return adapter, started_path_present
 
 
+@releases_output_on_exit
 def run_scene_configuration_vast(
     *,
     job_dir: str | Path,
@@ -1239,7 +1244,15 @@ def run_scene_configuration_vast(
     output_disk_requirements = _provider_output_disk_requirements(
         expected_upload_bytes
     )
-    preallocation_disk_capacity = _provider_output_disk_capacity(
+    # Ceiling unless BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured on a production
+    # website run; its ledger hold is released when the terminal result is sealed.
+    output_admission = open_scene_configuration_output_admission(
+        job=job, receipt=receipt, read_envelope=_portable_construction_envelope,
+        expected_upload_bytes=expected_upload_bytes, diagnostic_only=diagnostic_only,
+        retain_warm_session=retain_warm_session, api_pretraining=requires_api_pretraining,
+        cpu_prestage=bool(cpu_prestage_stage_limit), disk_usage_provider=disk_usage_provider)
+    preallocation_disk_capacity = output_admission.before_allocation(
+        _provider_output_disk_capacity,
         destination_directory=provider_run,
         required_free_bytes=output_disk_requirements[
             "required_free_bytes_before_download"
@@ -1524,6 +1537,7 @@ def run_scene_configuration_vast(
                 PREFIX_BYTES_ENV: str(cpu_prestage["capsule_bytes"]),
             })
             expected_download_bytes += int(cpu_prestage["capsule_bytes"])
+        output_admission.hold_before_allocation()
         with _authority_environment():
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
@@ -1593,6 +1607,8 @@ def run_scene_configuration_vast(
                     watchdog_handoff if retain_warm_session else None
                 ),
             )
+    except SceneConfigurationOutputHoldRefused:
+        pass  # sealed below, once staging is clean, as a typed $0 pre-allocation refusal
     except (OSError, RuntimeError, ValueError) as exc:
         if cpu_prestage_stage_limit and not cpu_prestage:
             write_json(job / "cpu_prestage_failure.json", {
@@ -1643,6 +1659,14 @@ def run_scene_configuration_vast(
             write_json(job / "cpu_prestage_object_store_cleanup.json", prestage_cleanup)
             if prestage_cleanup.get("all_objects_absent") is not True:
                 runtime_secret_cleanup_blockers.append("cpu_prestage_staging_cleanup_unproven")
+    if output_admission.hold_refused:
+        watchdog_close = close_independent_vast_watchdog(job_dir=job, handle=watchdog, instance_ids=[],
+            provider_teardown_completed=False, provider_allocation_impossible=True)
+        return _seal_live_terminal_result(job, output_admission.refused_hold_result(
+            authority=authority, consumption=consumption, api_pretraining=api_pretraining,
+            cpu_prestage=cpu_prestage, expected_download_bytes=expected_download_bytes, cleanup=cleanup,
+            cleanup_blockers=runtime_secret_cleanup_blockers, watchdog_close=watchdog_close),
+            receipt=receipt, scene_construction_queue_root=scene_construction_queue_root)
 
     if retain_warm_session and adapter.get("retained_owned") is True:
         from .task_evaluation_scene_configuration_warm_bootstrap import (  # noqa: PLC0415
@@ -1693,8 +1717,8 @@ def run_scene_configuration_vast(
     if not output_zip.is_file() and (job / "cpu_prestage_output.zip").is_file():
         output_zip = job / "cpu_prestage_output.zip"
     execution, blockers, extraction_disk_capacity = (
-        extract_provider_output_with_capacity_guard(
-            output_zip,
+        output_admission.extract(
+            extract_provider_output_with_capacity_guard, output_zip,
             job / "immutable_execution",
             maximum_archive_bytes=expected_upload_bytes,
             extractor=_extract_provider_output,
@@ -1705,16 +1729,14 @@ def run_scene_configuration_vast(
     provider_output_reference: dict[str, Any] = {}
     provider_output_remote_index: dict[str, Any] = {}
     provider_output_remote_index_path = job / "scene_artifact_remote_index.v1.json"
-    if execution and output_zip.is_file():
+    if output_admission.publishes(execution) and output_zip.is_file():
         try:
             (
                 provider_output_reference,
                 provider_output_remote_index,
                 provider_output_remote_index_path,
-            ) = _publish_provider_output_archive(
-                output_zip=output_zip,
-                job=job,
-                receipt=receipt,
+            ) = output_admission.durable_archive(
+                _publish_provider_output_archive, output_zip=output_zip, job=job, receipt=receipt,
             )
         except Exception as exc:  # noqa: BLE001 - object-store clients vary
             blockers.append(
@@ -1924,6 +1946,7 @@ def run_scene_configuration_vast(
             "before_allocation_and_staging": preallocation_disk_capacity,
             "before_extraction": extraction_disk_capacity,
         },
+        **output_admission.result_fields(),
         "stage_chain_result_digest": (
             execution.get(
                 "diagnostic_stage_chain" if diagnostic_only else "stage_chain"
