@@ -847,3 +847,29 @@ def test_a_transient_head_failure_on_resume_keeps_the_durable_receipt(world):
     again = world.resume()
     assert again["status"] == "completed", again["blockers"]
     assert _receipt_now(world)["durable_reference"] == first["durable_reference"]
+
+
+def test_a_redundant_witness_stands_only_with_the_primary_it_was_proven_against(paired_world):
+    world = paired_world
+    output, witness, _ = _paired()
+    world.stage("output", output)
+    world.stage("paired_witness", witness, etag='"witness-1"')
+    first, _ = world.promote(observation=_observed(output), cleanup=lambda: {"status": "blocked"})
+    assert first["witness"]["disposition"] == "redundant_with_promoted_output"
+    uploads = world.cas.uploads
+    world.resume(cleanup=lambda: {"status": "blocked"})  # the same durable primary: the proof stands
+    assert _receipt_now(world)["witness"]["disposition"] == "redundant_with_promoted_output"
+    assert world.cas.uploads == uploads
+    # B2 loses the output, and different (unindexable) bytes land at the staged output key.
+    _drop_from_b2(world, first["durable_reference"]["uri"])
+    late = build_zip([Entry("frames/0001.png", Zeros(256 * 1024)), Entry("a\\b.json", b"{}")])
+    world.stage("output", late, etag='"late"')
+
+    world.resume()
+
+    end = _receipt_now(world)
+    assert end["status"] == "promoted" and end["archive_sha256"] == virtual_sha256(late)
+    # The witness was redundant with the lost bytes, not these: it is promoted itself.
+    assert end["witness"]["disposition"] == "promoted"
+    assert [row["redundancy"]["status"] for row in end["staged_objects"]["paired_witness"]["versions"]] == [
+        "not_proven"]

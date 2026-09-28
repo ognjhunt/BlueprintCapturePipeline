@@ -555,7 +555,12 @@ class _Promotion:
             raise ProviderOutputPromotionError(str(exc)) from None
 
     def _prior_witness_versions(self, prior: Mapping | None) -> list[dict]:
-        """Prior witness versions that still stand: promoted copies that exist, redundancy with a durable output."""
+        """Prior witness versions that still stand.
+
+        A promoted copy stands while it exists; a redundancy proof stands only
+        with the durable primary it was proven against, never with other bytes
+        promoted since.
+        """
         section = (prior or {}).get("staged_objects", {}).get("paired_witness") if prior else None
         if not section or section.get("state") not in DURABLE_STATES:
             return []
@@ -565,7 +570,8 @@ class _Promotion:
             if reference is not None:
                 if self._still_durable(reference):
                     kept.append(row)
-            elif self.status == "promoted":
+            elif (self.status == "promoted" and self.primary
+                  and (row.get("redundancy") or {}).get("output_archive_sha256") == self.primary["archive_sha256"]):
                 kept.append(row)
         return kept
 
