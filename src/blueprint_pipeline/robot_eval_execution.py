@@ -2121,12 +2121,14 @@ def _normalize_policy_attempts(
         raw_attempts = [item for item in payload if isinstance(item, Mapping)]
 
     if not raw_attempts and modality == "high_level_skill_trace":
-        raw_attempts = [{"status": "completed", "actions": []}]
+        raw_attempts = [{"status": "submitted_unexecuted", "actions": [], "success": None,
+                         "evidence_scope": "submitted_skill_intent_only"}]
 
     attempts: List[Dict[str, Any]] = []
     if not observations:
         observations = [{"observation_id": "observation_1", "scenario_id": "", "task_id": ""}]
-    if modality == "high_level_skill_trace" and len(raw_attempts) == 1 and len(observations) > 1:
+    if (modality == "high_level_skill_trace" and len(raw_attempts) == 1 and len(observations) > 1
+            and raw_attempts[0].get("evidence_scope") != "submitted_skill_intent_only"):
         only = raw_attempts[0]
         has_explicit_scope = any(
             _string(only.get(key))
@@ -2187,7 +2189,7 @@ def _normalize_policy_attempts(
                 or "robot_team_policy",
                 "target": _string(raw.get("target") or raw.get("targetPoseId")) or None,
                 "status": status,
-                "success": bool(success),
+                "success": None if raw.get("evidence_scope") == "submitted_skill_intent_only" else bool(success),
                 "actions": raw.get("actions") if isinstance(raw.get("actions"), list) else [],
                 "skills": raw.get("skills") if isinstance(raw.get("skills"), list) else [],
                 "metrics": _mapping(raw.get("metrics")),
@@ -2208,6 +2210,7 @@ def _policy_run_coverage(
         {
             _string(attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId"))
             for attempt in attempts
+            if attempt.get("status") != "submitted_unexecuted"
             if _string(attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId"))
         }
     )
@@ -2341,7 +2344,15 @@ def _replay_reference_payload(
         sequence = (
             payload.get("ordered_skill_sequence") or payload.get("orderedSkillSequence") or []
         )
-        return {"attempts": [{"status": "completed", "skills": list(sequence), "success": True}]}
+        return {
+            "attempts": [{
+                "status": "submitted_unexecuted",
+                "skills": list(sequence),
+                "success": None,
+                "evidence_scope": "submitted_skill_intent_only",
+                "metrics": {"execution_evidence_available": False},
+            }]
+        }
     return None
 
 
