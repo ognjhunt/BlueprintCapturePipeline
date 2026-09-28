@@ -184,3 +184,57 @@ def test_terminal_scene_report_acquires_exact_members_once_with_unique_inode_byt
             assert proof['sha256'] == 'sha256:' + hashlib.sha256(raw).hexdigest()
             assert proof['size_bytes'] == len(raw)
     assert args['intent_id'] == report['intent_id']
+
+
+@pytest.mark.slow
+def test_actual_cli_connected_graph_keeps_one_budget_and_one_emission_sink(tmp_path, monkeypatch, capsys):
+    import json
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_cli as cli
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_plan as planner
+    args, context, _, payload = installed(tmp_path, full_connected_finished_scene())
+    file = tmp_path / 'context.json'
+    file.write_text(json.dumps(context))
+    stable_shared_ancestors(monkeypatch, tmp_path)
+    factory = cli.ReferenceCollectionBudget._for_scene_lifecycle_plan
+    initializer = planner.RetainedEmissionBudget.__init__
+    readers = planner.acquisition.Acquisition.__init__
+    opened = os.open
+    budgets, sinks, acquired, payload_opens = [], [], [], []
+    def fresh_budget(**kwargs):
+        budget = factory(**kwargs)
+        budgets.append(budget)
+        return budget
+    def shared_sink(self, **kwargs):
+        sinks.append(self)
+        return initializer(self, **kwargs)
+    def acquired_budget(self, budget, *a, **kw):
+        acquired.append(budget)
+        return readers(self, budget, *a, **kw)
+    def guarded(name, flags, *a, **kw):
+        if not flags & os.O_DIRECTORY and any(Path(path).name == str(name) for path in payload):
+            payload_opens.append(str(name))
+            pytest.fail('payload opened by connected CLI')
+        return opened(name, flags, *a, **kw)
+    monkeypatch.setattr(cli.ReferenceCollectionBudget, '_for_scene_lifecycle_plan', staticmethod(fresh_budget))
+    monkeypatch.setattr(planner.RetainedEmissionBudget, '__init__', shared_sink)
+    monkeypatch.setattr(planner.acquisition.Acquisition, '__init__', acquired_budget)
+    monkeypatch.setattr(os, 'open', guarded)
+    start = time.monotonic()
+    assert cli.main(['--intent-id', args['intent_id'], '--context-file', str(file.resolve()), '--now', '900000']) == 0
+    assert time.monotonic() - start < 30
+    report = json.loads(capsys.readouterr().out)
+    assert len(budgets) == len(acquired) == 1
+    assert acquired[0] is budgets[0]
+    # The already reviewed native per-child scopes all charge the ONE shared
+    # ancestor allowance. They are not separate grants or reset counters.
+    roots = [sink for sink in sinks if not sink.ancestors]
+    assert len(roots) == 1 and roots[0].used['rows'] > 0
+    assert all(sink.work_budget is budgets[0] for sink in sinks)
+    assert all(sink is roots[0] or roots[0] in sink.ancestors for sink in sinks)
+    assert budgets[0].closed and budgets[0].failure is None
+    assert budgets[0].limits['values'] == 1_000_000 and budgets[0].duration == 30
+    assert report['finished_observation']['status'] == 'completed'
+    assert report['context_acquisition']['metadata_only'] and report['context_acquisition']['anchor_coalesced']
+    assert 'historical_lineage' in report and len(report['measured_members']) >= 20
+    assert not payload_opens and report['action'] == 'KEEP' and report['mutations'] == 0
+    assert all(report[flag] is False for flag in planner.FALSE_FLAGS)

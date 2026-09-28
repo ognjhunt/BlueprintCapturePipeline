@@ -97,3 +97,60 @@ def test_scene_factory_rejects_existing_budget_arbitrary_cap_and_subclass():
         Budget._for_scene_lifecycle_plan(budget=Budget())
     with pytest.raises(TypeError):
         Budget._for_scene_lifecycle_plan(values_limit=2_000_000)
+
+
+def test_scene_deadline_refuses_next_stat_and_cleans_owned_descriptors(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_acquisition as module
+    current = [0]
+    budget = Budget._for_scene_lifecycle_plan(monotonic=lambda: current[0])
+    with module.Acquisition(budget, [str(tmp_path.resolve())]) as reader:
+        current[0] = 30
+        monkeypatch.setattr(module.os, 'stat', lambda *a, **k: pytest.fail('stat after scene deadline'))
+        with pytest.raises(ReferenceCollectionBudgetError, match='^reference_deadline_exceeded$'):
+            reader.stat(str(tmp_path / 'not-read.json'))
+    assert not reader.handles and budget.failure == 'reference_deadline_exceeded'
+
+
+@pytest.mark.parametrize('mode', ['native', 'reduced_scene'])
+def test_private_builder_never_extends_supplied_clock_or_value_policy(tmp_path, mode):
+    from tests.test_scene_lifecycle_plan import context_fixture
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import _build_scene_lifecycle_plan
+    context, intent = context_fixture(tmp_path, completed=True)
+    current = [0]
+    budget = (Budget(monotonic=lambda: current[0], values_limit=1) if mode == 'native'
+              else Budget._for_scene_lifecycle_plan(monotonic=lambda: current[0], time_budget_seconds=0.25))
+    if mode == 'reduced_scene':
+        budget._limits['values'] = 1
+    before = dict(budget.limits), budget.duration
+    result = _build_scene_lifecycle_plan(intent_id=intent, context=context, observed_at_epoch=900000, budget=budget)
+    assert result['blockers'] == ['reference_values_limit']
+    assert (dict(budget.limits), budget.duration) == before and budget.closed
+
+
+def test_deadline_before_final_publication_refuses_large_encoder(tmp_path, monkeypatch, capsys):
+    import json
+    from tests.test_scene_lifecycle_plan import context_fixture
+    from tests.scene_lifecycle_fixture_support import stable_shared_ancestors
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_cli as cli
+    current = [0]
+    context, intent = context_fixture(tmp_path, completed=True)
+    file = tmp_path / 'context.json'
+    file.write_text(json.dumps(context))
+    stable_shared_ancestors(monkeypatch, tmp_path)
+    measured, encoded, entered = Budget.measure, json.dumps, []
+    def expire_before_measure(self, value, **kwargs):
+        if isinstance(value, dict) and value.get('schema_version') == 'task_evaluation_scene_lifecycle_plan.v1':
+            entered.append(True)
+            current[0] = self.deadline
+        return measured(self, value, **kwargs)
+    def refuse_large_encoder(value, *args, **kwargs):
+        if isinstance(value, dict) and 'historical_lineage' in value:
+            pytest.fail('accepted report encoded after deadline')
+        return encoded(value, *args, **kwargs)
+    monkeypatch.setattr(Budget, 'measure', expire_before_measure)
+    monkeypatch.setattr(json, 'dumps', refuse_large_encoder)
+    assert cli.main(['--intent-id', intent, '--context-file', str(file.resolve()), '--now', '900000'],
+                    monotonic=lambda: current[0]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert entered and report['blockers'] == ['reference_deadline_exceeded']
+    assert 'historical_lineage' not in report and report['action'] == 'KEEP'
