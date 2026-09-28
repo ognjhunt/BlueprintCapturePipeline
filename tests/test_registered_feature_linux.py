@@ -380,6 +380,15 @@ def _fixture_producer(arguments):
 
     def preflight(**values):
         plan = json.loads(values["scene_plan_path"].read_bytes())
+        # The CPU-only toy model still has the real preflight receipt shape.
+        # Bind its candidate inventory to the actual tiny config bytes, using
+        # the native inventory's canonical file-list digest convention.
+        model = (root / "approved-inputs/policy/config.json").read_bytes()
+        files = [{"path": "config.json", "size_bytes": len(model),
+                  "sha256": "sha256:" + hashlib.sha256(model).hexdigest()}]
+        inventory_digest = "sha256:" + hashlib.sha256(json.dumps(
+            files, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest()
         return {
             "status": "staged_inputs_verified",
             "scene_plan_digest": plan["plan_digest"],
@@ -387,6 +396,7 @@ def _fixture_producer(arguments):
             "robot_id": "unitree_g1",
             "policy_role": "manipulation",
             "inventory_file_sha256": "sha256:" + "b" * 64,
+            "candidate_inventory_digest": inventory_digest,
         }
 
     worker.preflight_g1_shared_scene_run = preflight
