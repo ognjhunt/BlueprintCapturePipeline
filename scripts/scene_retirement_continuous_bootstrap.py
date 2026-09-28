@@ -14,9 +14,10 @@ import os
 from pathlib import Path
 import stat
 import sys
+from types import MappingProxyType
 
 
-_RUNTIME_ROOT = Path('/usr/lib/blueprint/scene-retirement-runtime')
+_RUNTIME_ROOT = Path('/mnt/blueprint-work/scene-retirement-runtime')
 _OWNER = 0
 _CORE = ('__init__.py', 'task_evaluation_scene_retirement_supervisor.py',
          'task_evaluation_scene_retirement_access.py', 'decision_evidence_contracts.py',
@@ -46,7 +47,7 @@ def _component(info, *, directory):
                  and 0 < info.st_size <= _MAX_SOURCE)
 
 
-def _source(path):
+def _source(path, *, retain_identity=False):
     """Retain protected ancestry descriptors through exact named source read."""
     _require(path.is_absolute() and '..' not in path.parts)
     descriptors = []
@@ -79,7 +80,7 @@ def _source(path):
         _require(len(raw) == before.st_size
                  and _identity(os.fstat(child)) == _identity(before)
                  and _identity(os.stat(path.name, dir_fd=fd, follow_symlinks=False)) == _identity(before))
-        return bytes(raw)
+        return (bytes(raw), _identity(before)) if retain_identity else bytes(raw)
     except OSError as exc:
         raise ValueError(_ERROR) from exc
     finally:
@@ -90,19 +91,28 @@ def _source(path):
             os.close(owned)
 
 
+class _RetainedSources(dict):
+    """Bytes and acquisition identities retained by the native root loader."""
+
+
 def _core_sources():
     package = _RUNTIME_ROOT / 'src/blueprint_pipeline'
-    values = {}
+    values = _RetainedSources()
+    identities = {}
     for name in _CORE:
         module = 'blueprint_pipeline' if name == '__init__.py' else 'blueprint_pipeline.' + name[:-3]
         path = package / name
-        values[module] = (path, _source(path))
+        raw, identity = _source(path, retain_identity=True)
+        values[module] = (path, raw)
+        identities[module] = identity
+    values.identities = MappingProxyType(identities)
     return values
 
 
 class _SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def __init__(self, values):
-        self.values = values
+        self.values = MappingProxyType(dict(values))
+        self.source_identities = MappingProxyType(dict(values.identities))
 
     def find_spec(self, fullname, path=None, target=None):
         if fullname not in self.values:
