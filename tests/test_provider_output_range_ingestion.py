@@ -347,3 +347,32 @@ def test_aggregate_result_has_separate_bounded_json_budget(tmp_path):
     with pytest.raises(ProviderOutputInventoryError, match="oversize"):
         verify_native_inventory(tmp_path, binding, members,
             maximum_json_bytes=identity_bytes, maximum_result_json_bytes=result_bytes - 1)
+
+
+def test_native_inventory_verifies_a_streamed_attempt_from_its_index_records(tmp_path, monkeypatch):
+    """A streamed attempt verifies its native inventory against the member index, digests without
+    bytes; the index lists rows (with ``size``), the verifier looks records up by path."""
+    from blueprint_pipeline.provider_output_native_inventory import (
+        ProviderOutputInventoryError, index_member_records, verify_native_inventory,
+    )
+    from tests.provider_output_fixtures import serve_member_views, stream_evidence_tree
+
+    source = tmp_path / "download"
+    with zipfile.ZipFile(io.BytesIO(_zip())) as archive:
+        archive.extractall(source)
+    streamed = stream_evidence_tree(source, tmp_path / "streamed" / "attempt_001")
+    serve_member_views(monkeypatch, streamed.store)
+    assert streamed.remote() == ["runtime/data.bin"]
+    binding = {"run_id": "run-1", "runtime_inputs_digest": "sha256:" + "1" * 64,
+               "identity_document": "runtime/identity.json", "result_document": "runtime/result.json"}
+
+    records = index_member_records(streamed.index)
+
+    assert records == {row["path"]: {"sha256": row["sha256"], "size_bytes": row["size"]}
+                       for row in streamed.index["members"] if row["kind"] == "file"}
+    result = verify_native_inventory(streamed.evidence, binding, records)
+    assert result["verified_native_file_count"] == 1
+    assert streamed.data_ranges() == []
+    records["runtime/data.bin"] = {**records["runtime/data.bin"], "sha256": "sha256:" + "0" * 64}
+    with pytest.raises(ProviderOutputInventoryError, match="^provider_output_native_artifact_digest_mismatch$"):
+        verify_native_inventory(streamed.evidence, binding, records)
