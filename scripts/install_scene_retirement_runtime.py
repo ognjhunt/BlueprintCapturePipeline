@@ -11,12 +11,16 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import importlib.util
 import os
 from pathlib import Path
 import re
 import stat
 import sys
 import time
+import urllib.parse
+import urllib.request
+import zipfile
 
 
 _OWNER = 0
@@ -598,6 +602,293 @@ def refresh(source, dependencies, *, expected_current):
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(_ERROR) from exc
 
+
+
+def _sdk_file(path, expected, deadline):
+    actual = _read(path, deadline)
+    _require(actual['sha256'] == expected['hash'].removeprefix('sha256:')
+             and actual['size'] == expected['size'])
+    return path
+
+
+def _sdk_artifact(row, wheelhouse, deadline):
+    url = row['url']
+    parsed = urllib.parse.urlsplit(url)
+    _require(parsed.scheme == 'https' and parsed.hostname == 'files.pythonhosted.org'
+             and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+             and type(row['size']) is int and 0 < row['size'] <= _MAX_BYTES
+             and re.fullmatch(r'sha256:[0-9a-f]{64}', row['hash']))
+    name = Path(parsed.path).name
+    _require(name.endswith('.whl'))
+    if wheelhouse is not None:
+        return _sdk_file(Path(wheelhouse) / name, row, deadline)
+    directory = _RUNTIME_ROOT / 'wheel-artifacts' / row['hash'][7:]
+    _mkdir(directory)
+    path = directory / name
+    if path.exists() or path.is_symlink():
+        return _sdk_file(path, row, deadline)
+    partial = directory / (name + '.pending')
+    _require(not partial.exists() and not partial.is_symlink())
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        before = os.fstat(fd)
+        digest, count = hashlib.sha256(), 0
+        with urllib.request.urlopen(url, timeout=min(30, max(.001, deadline - time.monotonic()))) as response:
+            _require(response.status == 200 and urllib.parse.urlsplit(response.url).hostname == parsed.hostname)
+            while True:
+                _require(time.monotonic() <= deadline)
+                chunk = response.read(min(1024 * 1024, row['size'] + 1 - count))
+                if not chunk:
+                    break
+                count += len(chunk)
+                _require(count <= row['size'])
+                digest.update(chunk)
+                view = memoryview(chunk)
+                while view:
+                    _require(time.monotonic() <= deadline)
+                    size = os.write(fd, view)
+                    _require(size > 0)
+                    view = view[size:]
+        _require(count == row['size'] and digest.hexdigest() == row['hash'][7:]
+                 and os.fstat(fd).st_ino == before.st_ino
+                 and partial.lstat().st_ino == before.st_ino)
+        os.fsync(fd)
+        os.fchmod(fd, 0o644)
+        _require(not path.exists() and not path.is_symlink())
+        os.rename(partial, path)
+    finally:
+        os.close(fd)
+    return _sdk_file(path, row, deadline)
+
+
+def _wheel_entries(path, deadline):
+    """Preflight/hash wheel payload without executing installer or .pth code."""
+    fd = _open(path, directory=False)
+    try:
+        first = os.fstat(fd)
+        rows = {}
+        with os.fdopen(os.dup(fd), 'rb') as retained, zipfile.ZipFile(retained) as archive:
+            infos = archive.infolist()
+            _require(len(infos) <= _MAX_FILES)
+            for info in infos:
+                _require(time.monotonic() <= deadline and not info.flag_bits & 1)
+                parts = Path(info.filename).parts
+                _require(parts and not info.filename.startswith('/') and '..' not in parts
+                         and '\\' not in info.filename and len(parts) <= 32)
+                mode = info.external_attr >> 16
+                _require(not stat.S_ISLNK(mode))
+                if info.is_dir():
+                    continue
+                name = info.filename
+                if parts[0].endswith('.data'):
+                    _require(len(parts) >= 3 and parts[1] in {'purelib', 'platlib', 'scripts', 'data', 'headers'})
+                    if parts[1] in {'scripts', 'data', 'headers'}:
+                        continue
+                    name = '/'.join(parts[2:])
+                _require(not name.endswith(('.pth', '.pyc', '.pyo')) and name not in rows
+                         and 0 <= info.file_size <= _MAX_BYTES)
+                digest, count = hashlib.sha256(), 0
+                with archive.open(info) as body:
+                    while True:
+                        _require(time.monotonic() <= deadline)
+                        raw = body.read(1024 * 1024)
+                        if not raw:
+                            break
+                        count += len(raw)
+                        _require(count <= info.file_size)
+                        digest.update(raw)
+                _require(count == info.file_size)
+                rows[name] = {'size': count, 'sha256': digest.hexdigest(), 'mode': 0o644,
+                              'archive': str(path), 'member': info.filename}
+        _require(_identity(os.fstat(fd)) == _identity(first)
+                 and _identity(path.lstat()) == _identity(first))
+        return rows
+    finally:
+        os.close(fd)
+
+
+def _sdk_extract(root, rows, deadline):
+    _require(len(rows) <= _MAX_FILES and sum(row['size'] for row in rows.values()) <= _MAX_BYTES)
+    _mkdir(root)
+    for name, row in sorted(rows.items()):
+        _require(time.monotonic() <= deadline)
+        target = root / name
+        _mkdir(target.parent)
+        expected = {key: row[key] for key in ('size', 'sha256', 'mode')}
+        if target.exists() or target.is_symlink():
+            _require(_read(target, deadline) == expected)
+            continue
+        _require('archive' in row)
+        fd = _open(Path(row['archive']), directory=False)
+        output = None
+        try:
+            before = os.fstat(fd)
+            with os.fdopen(os.dup(fd), 'rb') as retained, zipfile.ZipFile(retained) as archive:
+                temporary = target.with_name(target.name + '.pending')
+                _require(not temporary.exists() and not temporary.is_symlink())
+                output = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+                original = os.fstat(output)
+                count, digest = 0, hashlib.sha256()
+                with archive.open(row['member']) as body:
+                    while True:
+                        _require(time.monotonic() <= deadline)
+                        raw = body.read(1024 * 1024)
+                        if not raw:
+                            break
+                        count += len(raw)
+                        _require(count <= row['size'])
+                        digest.update(raw)
+                        view = memoryview(raw)
+                        while view:
+                            _require(time.monotonic() <= deadline)
+                            size = os.write(output, view)
+                            _require(size > 0)
+                            view = view[size:]
+                _require(count == row['size'] and digest.hexdigest() == row['sha256']
+                         and _identity(os.fstat(fd)) == _identity(before)
+                         and _identity(Path(row['archive']).lstat()) == _identity(before)
+                         and temporary.lstat().st_ino == original.st_ino)
+                os.fsync(output)
+                os.fchmod(output, 0o644)
+                _require(not target.exists() and not target.is_symlink())
+                os.rename(temporary, target)
+                _require(_read(target, deadline) == expected)
+        finally:
+            if output is not None:
+                os.close(output)
+            os.close(fd)
+
+
+def _sdk_marker_tools(packages, wheelhouse, deadline):
+    selected = [package for package in packages if package['name'] == 'packaging']
+    if not selected:
+        # Tiny dependency-free/pure-wheel fixtures do not require a parser.
+        _require(not any('marker' in edge for package in packages for edge in package.get('dependencies', ())))
+        return None
+    _require(len(selected) == 1)
+    wheels = [row for row in selected[0].get('wheels', ()) if row['url'].endswith('-py3-none-any.whl')]
+    _require(len(wheels) == 1)
+    path = _sdk_artifact(wheels[0], wheelhouse, deadline)
+    rows = _wheel_entries(path, deadline)
+    root = _RUNTIME_ROOT / 'sdk-tools' / wheels[0]['hash'][7:]
+    _sdk_extract(root, rows, deadline)
+    prefix = '_blueprint_verified_sdk_packaging_' + wheels[0]['hash'][7:]
+    _require(not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules))
+    spec = importlib.util.spec_from_file_location(prefix, root / 'packaging/__init__.py',
+                                                submodule_search_locations=[str(root / 'packaging')])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[prefix] = module
+    try:
+        spec.loader.exec_module(module)
+        return tuple(__import__(prefix + '.' + name, fromlist=[name]) for name in ('markers', 'tags', 'utils'))
+    except BaseException:
+        for name in tuple(sys.modules):
+            if name == prefix or name.startswith(prefix + '.'):
+                del sys.modules[name]
+        raise
+
+
+def _sdk_closure(packages, tools):
+    roots = [row for row in packages if row['name'] == 'blueprint-capture-pipeline'
+             and row.get('source') == {'editable': '.'}]
+    _require(len(roots) == 1)
+    selected, todo = {}, list(roots[0].get('dependencies', ()))
+    _require(todo)
+    seen_edges = 0
+    while todo:
+        edge = todo.pop()
+        seen_edges += 1
+        _require(seen_edges <= _MAX_FILES)
+        if 'marker' in edge:
+            _require(tools is not None)
+            if not tools[0].Marker(edge['marker']).evaluate({'extra': ''}):
+                continue
+        candidates = [row for row in packages if row['name'] == edge['name']
+                      and ('version' not in edge or edge['version'] == row['version'])
+                      and ('source' not in edge or edge['source'] == row.get('source'))]
+        if len(candidates) > 1 and tools is not None:
+            candidates = [row for row in candidates if any(tools[0].Marker(marker).evaluate({'extra': ''})
+                          for marker in row.get('resolution-markers', ()))]
+        _require(len(candidates) == 1)
+        row = candidates[0]
+        key = (row['name'], row['version'])
+        extra = edge.get('extra')
+        if key in selected and extra in selected[key][1]:
+            continue
+        previous = selected.get(key, (row, set()))[1]
+        previous.add(extra)
+        selected[key] = (row, previous)
+        todo.extend(row.get('dependencies', ()))
+        if extra is not None:
+            _require(extra in row.get('optional-dependencies', {}))
+            todo.extend(row['optional-dependencies'][extra])
+    _require(len({key[0] for key in selected}) == len(selected))
+    return [selected[key][0] for key in sorted(selected)]
+
+
+def _sdk_wheel(package, tools):
+    choices = []
+    tags = list(tools[1].sys_tags()) if tools is not None else None
+    for row in package.get('wheels', ()):
+        name = Path(urllib.parse.urlsplit(row['url']).path).name
+        if tools is None:
+            if name.endswith('-py3-none-any.whl'):
+                choices.append((0, row))
+        else:
+            wheel_name, version, _, wheel_tags = tools[2].parse_wheel_filename(name)
+            _require(str(wheel_name) == tools[2].canonicalize_name(package['name'])
+                     and str(version) == package['version'])
+            ranks = [index for index, tag in enumerate(tags) if tag in wheel_tags]
+            if ranks:
+                choices.append((min(ranks), row))
+    _require(choices)
+    return sorted(choices, key=lambda item: (item[0], item[1]['url']))[0][1]
+
+
+def build_sdk(source, *, wheelhouse=None):
+    """Build the locked base production closure for this system ABI, no setup.py."""
+    deadline = time.monotonic() + _MAX_SECONDS
+    try:
+        import tomllib
+        source = Path(source)
+        raw, _ = _record_bytes(source / 'uv.lock', deadline)
+        lock = tomllib.loads(raw.decode())
+        packages = lock['package']
+        _require(type(packages) is list and 0 < len(packages) <= 4096)
+        tools = _sdk_marker_tools(packages, wheelhouse, deadline)
+        selected = _sdk_closure(packages, tools)
+        rows = {}
+        for package in selected:
+            _require(time.monotonic() <= deadline)
+            # Git source has a separate pinned object-tree acquisition route.
+            _require('git' not in package.get('source', {}))
+            path = _sdk_artifact(_sdk_wheel(package, tools), wheelhouse, deadline)
+            for name, row in _wheel_entries(path, deadline).items():
+                _require(name not in rows)
+                rows[name] = row
+        manifest = {name: {key: row[key] for key in ('size', 'sha256', 'mode')}
+                    for name, row in rows.items()}
+        selection = {'schema': 'scene-retirement-sdk.v1', 'lock_sha256': hashlib.sha256(raw).hexdigest(),
+                     'system_python_abi': f'{sys.version_info.major}.{sys.version_info.minor}',
+                     'packages': [{'name': row['name'], 'version': row['version']} for row in selected],
+                     'rows': manifest}
+        raw_selection = _encoded(selection)
+        digest = hashlib.sha256(raw_selection).hexdigest()
+        root = _RUNTIME_ROOT / 'sdk-inputs' / digest
+        marker = _RUNTIME_ROOT / 'manifests' / ('sdk-input-' + digest + '.json')
+        if root.exists() or root.is_symlink():
+            _require(marker.exists() and _record_bytes(marker, deadline)[0] == raw_selection)
+        _mkdir(marker.parent)
+        _record(marker, raw_selection, deadline)
+        _sdk_extract(root, rows, deadline)
+        actual, sources = {}, {}
+        _tree(root, Path('.'), actual, sources, deadline)
+        _require(actual == manifest)
+        return {'dependencies_root': str(root), 'packages': selection['packages'],
+                'system_python_abi': selection['system_python_abi'], 'authority_issued': False,
+                'cleanup_enabled': False}
+    except (OSError, ValueError, KeyError, TypeError, ImportError, zipfile.BadZipFile) as exc:
+        raise ValueError(_ERROR) from exc
 
 def main(argv=None):
     _require(os.getuid() == os.geteuid() == 0 and sys.flags.isolated and sys.flags.no_site)
