@@ -671,6 +671,7 @@ def test_actual_child_log_refusal_still_finalizes_every_other_known_original(
         log=log,
         parent_proof=parent_proof,
         log_proof=log_proof,
+        parent_path=directory,
         log_name=log_path.name,
         handshake={},
     )

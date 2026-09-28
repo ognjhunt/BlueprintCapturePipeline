@@ -267,25 +267,40 @@ def _typed(info):
 
 class _ChildLifetime:
     """Parent-owned child and log; direct closure is not descendant clearance."""
-    def __init__(self, use, *, process, parent, log, parent_proof, log_proof, log_name, handshake):
+    def __init__(self, use, *, process, parent, log, parent_proof, log_proof, parent_path, log_name, handshake):
         self.use, self.process = use, process
         self.parent, self.log = parent, log
         self.parent_proof, self.log_proof = parent_proof, log_proof
+        self.parent_path = parent_path
         self.log_name, self.handshake, self.closed = log_name, handshake, False
+        parent_info, log_info = os.fstat(parent), os.fstat(log)
+        self.parent_security = (parent_info.st_uid, parent_info.st_gid, stat.S_IMODE(parent_info.st_mode))
+        self.log_security = (log_info.st_uid, log_info.st_gid, stat.S_IMODE(log_info.st_mode), log_info.st_nlink)
+        self.proof()
 
     def check(self):
         self.use.check()
         self.proof()
 
     def proof(self):
-        _require(_typed(os.fstat(self.parent)) == self.parent_proof
-                 and _typed(os.stat(self.log_name, dir_fd=self.parent, follow_symlinks=False)) == self.log_proof
-                 == _typed(os.fstat(self.log)), "experiment_child_log_changed")
+        parent_info, log_info = os.fstat(self.parent), os.fstat(self.log)
+        named_parent = os.stat(self.parent_path, follow_symlinks=False)
+        named_log = os.stat(self.log_name, dir_fd=self.parent, follow_symlinks=False)
+        _require(_typed(parent_info) == self.parent_proof == _typed(named_parent)
+                 and _typed(named_log) == self.log_proof == _typed(log_info)
+                 and (parent_info.st_uid, parent_info.st_gid, stat.S_IMODE(parent_info.st_mode)) == self.parent_security
+                 == (named_parent.st_uid, named_parent.st_gid, stat.S_IMODE(named_parent.st_mode))
+                 and (log_info.st_uid, log_info.st_gid, stat.S_IMODE(log_info.st_mode), log_info.st_nlink)
+                 == self.log_security == (named_log.st_uid, named_log.st_gid, stat.S_IMODE(named_log.st_mode), named_log.st_nlink)
+                 and self.log_security[2:] == (0o600, 1), "experiment_child_log_changed")
 
     def finish(self):
         _require(not self.closed and self.process.poll() is not None, "experiment_child_closure_unproven")
-        self.proof()
         failed = False
+        try:
+            self.proof()
+        except BaseException:
+            failed = True
         for fd, proof in ((self.log, self.log_proof), (self.parent, self.parent_proof)):
             try:
                 _require(_typed(os.fstat(fd)) == proof, "experiment_child_descriptor_changed")
@@ -378,7 +393,8 @@ def launch_policy_child(use, *, argv, log_path):
         os.close(read_fd)
         read_fd = None
         lifetime = _ChildLifetime(use, process=process, parent=parent, log=log,
-            parent_proof=parent_proof, log_proof=log_proof, log_name=log_path.name, handshake=expected)
+            parent_proof=parent_proof, log_proof=log_proof, parent_path=log_path.parent,
+            log_name=log_path.name, handshake=expected)
         lifetime.check()
         return process, lifetime
     except BaseException:
