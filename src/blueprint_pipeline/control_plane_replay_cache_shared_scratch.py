@@ -110,8 +110,9 @@ def _kept_reason(group: dict[str, Any], holders: Sequence[dict[str, Any]]) -> st
         return "linked_outside_lookaheads"
     if any(holders[index]["gate"] for index in holding):
         return "holder_ineligible"
-    if group["nlink"] != len(group["names"]):
-        return "not_all_links_in_eligible_lookaheads"
+    if group["nlink"] < len(group["names"]):
+        # Counted twice (a bind mount of the same filesystem keeps its st_dev): not to be trusted.
+        return "more_names_than_links"
     if any(group["mtime_ns"] > holders[index]["report_mtime_ns"] for index in holding):
         return "newer_than_report"
     return None
