@@ -262,6 +262,9 @@
     ],
     "src/blueprint_pipeline/task_evaluation_scene_configuration_vast.py": [
       "tests/test_task_evaluation_scene_configuration_diagnostic_vast.py"
+    ],
+    "src/blueprint_pipeline/pubsub_handoff_listener.py": [
+      "tests/test_pubsub_handoff_listener.py"
     ]
   },
   "claim_boundary": {
@@ -359,7 +362,8 @@
     "src/blueprint_pipeline/wam_generated_video_review.py": 2412,
     "src/blueprint_pipeline/task_evaluation_configured_controls_progression_worker.py": 2009,
     "src/blueprint_pipeline/task_evaluation_scene_configuration_artifixer_driver.py": 2322,
-    "src/blueprint_pipeline/task_evaluation_scene_configuration_vast.py": 2048
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_vast.py": 2048,
+    "src/blueprint_pipeline/pubsub_handoff_listener.py": 2663
   },
   "grandfathered_personal_path_files": [
     "docs/arm_decision_proof_v1/ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md",
@@ -464,6 +468,14 @@
       "src/blueprint_pipeline/vast_provider_adapter.py": 10420
     },
     "reason": "Reconcile already-merged protected-main growth (#1968, #1982, #2004 and earlier); no changes to these modules in the CPU prestage integration. Exact caps admit no further growth; decomposition remains required.",
+    "review_by_unchanged": "2026-10-12"
+  },
+  "baseline_adjustment_2026_09_28": {
+    "source_commit": "712ff6230",
+    "unchanged_module_line_counts": {
+      "src/blueprint_pipeline/pubsub_handoff_listener.py": 2663
+    },
+    "reason": "Reconcile already-merged Pub/Sub growth at exact current-main size. The company-policy changes do not modify this module; no further growth is admitted. The new intake route is decomposed rather than raising its budget.",
     "review_by_unchanged": "2026-10-12"
   }
 }

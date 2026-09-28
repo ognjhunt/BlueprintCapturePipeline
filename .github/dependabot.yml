@@ -32,6 +32,7 @@ updates:
 
   - package-ecosystem: docker
     directories:
+      - /deploy/docker/company_policy_synthetic
       - /deploy/docker/deepprivacy2
       - /deploy/docker/policy_ranking_openpi
       - /deploy/docker/reconstruction_worker

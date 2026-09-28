@@ -165,6 +165,7 @@ groot-libero = [
 # extra above; use the base LeRobot distribution plus its pure-Python model
 # surface for hermetic CPU collection/execution.
 groot-libero-cpu = [
+    "torchmetrics==1.9.0",
     "torch>=2.2.0",
     "torchvision>=0.17.0",
     "lerobot>=0.4.4,<0.5",
