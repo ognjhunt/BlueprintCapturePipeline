@@ -159,6 +159,10 @@ from .wam_provider_output import (
     probe_mp4_video,
     summarize_runtime_result,
 )
+from .vast_structured_policy_canary_inspection import (
+    inspect_structured_policy_canary_archive,
+    structured_policy_canary_summary,
+)
 from .retained_gpu_session_lifecycle import record_retained_gpu_state
 from .vast_retained_instance import (
     NATIVE_TASK_ARENA_WARM_RETENTION_MODE,
@@ -6837,109 +6841,13 @@ def _inspect_provider_runtime_output_zip(
 def _inspect_structured_policy_canary_output(path: Path | None) -> dict[str, Any]:
     """Validate a structured policy canary without requiring rollout video."""
 
-    blockers: list[str] = []
-    payload: dict[str, Any] = {}
     if path is None or not path.is_file():
-        blockers.append("structured_policy_canary_output_zip_missing")
-    else:
-        try:
-            with zipfile.ZipFile(path) as archive:
-                if "policy_structured_canary.json" not in archive.namelist():
-                    blockers.append("structured_policy_canary_member_missing")
-                else:
-                    value = json.loads(archive.read("policy_structured_canary.json"))
-                    payload = _mapping(value)
-        except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile):
-            blockers.append("structured_policy_canary_member_invalid")
-
-    native_action = payload.get("native_action")
-    wam_prefix = payload.get("wam_prefix_action")
-    executed_action = payload.get("executed_action")
-    commanded_joint = payload.get("commanded_next_joint_position")
-    commanded_gripper = payload.get("commanded_next_gripper_position")
-    endpoint = _mapping(payload.get("policy_endpoint_evidence"))
-    receipt = _mapping(payload.get("policy_request_receipt"))
-    server_metadata = _mapping(endpoint.get("server_metadata"))
-    if payload and payload.get("status") != "passed":
-        blockers.append("structured_policy_canary_status_not_passed")
-    if payload and endpoint.get("identity_verified") is not True:
-        blockers.append("structured_policy_canary_identity_not_verified")
-    if payload and endpoint.get("request_count") != 1:
-        blockers.append("structured_policy_canary_request_count_invalid")
-    native_shape_valid = bool(
-        isinstance(native_action, list)
-        and len(native_action) == 32
-        and all(isinstance(row, list) and len(row) == 8 for row in native_action)
-    )
-    if payload and not native_shape_valid:
-        blockers.append("structured_policy_canary_native_action_shape_invalid")
-    if (
-        payload
-        and native_shape_valid
-        and not all(
-            type(value) in {int, float} and math.isfinite(float(value))
-            for row in native_action
-            for value in row
-        )
-    ):
-        blockers.append("structured_policy_canary_native_action_not_finite")
-    if payload and not (
-        isinstance(wam_prefix, list)
-        and len(wam_prefix) == 16
-        and isinstance(native_action, list)
-        and wam_prefix == native_action[:16]
-    ):
-        blockers.append("structured_policy_canary_wam_prefix_invalid")
-    if payload and not (
-        isinstance(executed_action, list)
-        and len(executed_action) == 8
-        and isinstance(native_action, list)
-        and executed_action == native_action[:8]
-    ):
-        blockers.append("structured_policy_canary_executed_prefix_invalid")
-    if payload and not (
-        isinstance(native_action, list)
-        and len(native_action) == 32
-        and commanded_joint == native_action[7][:7]
-        and commanded_gripper == [native_action[7][7]]
-    ):
-        blockers.append("structured_policy_canary_commanded_state_invalid")
-    expected_receipt_shapes = {
-        "native_action_shape": [32, 8],
-        "wam_prefix_action_shape": [16, 8],
-        "executed_prefix_steps": 8,
-    }
-    for key, expected in expected_receipt_shapes.items():
-        if payload and receipt.get(key) != expected:
-            blockers.append(f"structured_policy_canary_receipt_{key}_invalid")
-    for key in (
-        "server_identity_sha256",
-        "observation_sha256",
-        "native_action_sha256",
-        "wam_prefix_action_sha256",
-        "executed_prefix_action_sha256",
-        "commanded_next_state_sha256",
-        "receipt_sha256",
-    ):
-        if payload and not re.fullmatch(r"[0-9a-f]{64}", _string(receipt.get(key))):
-            blockers.append(f"structured_policy_canary_receipt_{key}_invalid")
-
-    return {
-        "status": "passed" if payload and not blockers else "blocked",
-        "blockers": blockers,
-        "identity_verified": endpoint.get("identity_verified") is True,
-        "request_count": endpoint.get("request_count"),
-        "policy_id": server_metadata.get("policy_id"),
-        "model_revision": server_metadata.get("model_revision"),
-        "server_identity_sha256": receipt.get("server_identity_sha256"),
-        "observation_sha256": receipt.get("observation_sha256"),
-        "native_action_sha256": receipt.get("native_action_sha256"),
-        "wam_prefix_action_sha256": receipt.get("wam_prefix_action_sha256"),
-        "executed_prefix_action_sha256": receipt.get("executed_prefix_action_sha256"),
-        "commanded_next_state_sha256": receipt.get("commanded_next_state_sha256"),
-        "receipt_sha256": receipt.get("receipt_sha256"),
-        "raw_secret_values_recorded": False,
-    }
+        return inspect_structured_policy_canary_archive(None)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return inspect_structured_policy_canary_archive(archive)
+    except (OSError, zipfile.BadZipFile):
+        return structured_policy_canary_summary({}, ["structured_policy_canary_member_invalid"])
 
 
 def _structured_policy_canary_runtime_passed(
