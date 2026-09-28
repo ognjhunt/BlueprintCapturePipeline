@@ -394,20 +394,23 @@ def _source_progress(context, parents, observations):
                 c.require(isinstance(declared_adoption, dict) and declared_adoption.get('through_phase') in PHASES[2:]
                     and c.matches(declared_adoption.get('original_execution_commit'), c.COMMIT)
                     and isinstance(declared_adoption.get('original_phase_result_receipts'), list)
-                    and len(declared_adoption['original_phase_result_receipts']) <= 10, 'sam_final_adoption_invalid')
+                    and 1 <= len(declared_adoption['original_phase_result_receipts']) <= 10, 'sam_final_adoption_invalid')
                 _final_adoption(context, declared_adoption, nested, final)
                 start = PHASES.index(declared_adoption['through_phase']) + 1
-                for original_result in declared_adoption['original_phase_result_receipts']:
-                    context.selected(original_result, nested[1], {'sam_results'})
             c.require(len(receipts) == len(PHASES[start:]), 'sam_final_receipts_invalid')
             for phase, reference in zip(PHASES[start:], receipts):
                 result = context.selected(reference, nested[1], {'sam_results'})
                 if result and result[0].get('schema_version') == SCHEMAS['sam_results'][0]:
+                    if result[0].get('status') not in {'completed', 'failed'}:
+                        context.missing('sam_final_phase_result', 'unsupported_retained_status', [result[1]])
+                        continue
                     c.require(result[0].get('status') == 'completed' and result[0].get('source_commit') == final['source_commit']
                         and result[0].get('plan_digest') == final['plan_digest']
                         and result[0].get('parent_request_digest') == value['request_digest']
                         and result[0].get('phase') == phase, 'sam_final_receipts_invalid')
                     _final_aliases(final, result[0]['artifacts'])
+                    if phase == 'standard_splat_conversion':
+                        _final_aliases(final, {'standard_splat_conversion': result[0]['artifacts'].get('standard_splat_conversion_receipt')})
             observations.append(c.observation(nested, role='sam_final', plan_digest=final['plan_digest'],
                 parent_binding_verified=len(selected_parents) == 1 and len(branches[(value['request_digest'], value['sequence'])]) == 1))
         observations.append(c.observation(row, role='sam_source_progress', sequence=value['sequence'], progress_status=value['status']))
@@ -427,12 +430,28 @@ def _source_progress(context, parents, observations):
         observations.append(c.observation(row, role='sam_resume', wake_authorized=False))
 
 
-def _final_aliases(final, artifacts):
+def _final_aliases(final, artifacts, *, original=False):
     for name in EVIDENCE.intersection(artifacts):
+        if original and name == 'standard_splat_conversion':
+            continue  # An unavailable adoption can administratively rebind this.
         c.require(final['evidence'][name] == artifacts[name], 'sam_final_evidence_invalid')
 
 
 def _final_adoption(context, declared, nested, final):
+    references = declared['original_phase_result_receipts']
+    end = PHASES.index(declared['through_phase']) + 1
+    c.require(len(references) <= end, 'sam_final_adoption_invalid')
+    known_results = {}
+    for phase, reference in zip(PHASES[end-len(references):end], references):
+        result = context.selected(reference, nested[1], {'sam_results'})
+        if result:
+            if result[0].get('status') not in {'completed', 'failed'}:
+                context.missing('sam_final_original_result', 'unsupported_retained_status', [result[1]])
+                continue
+            c.require(result[0]['status'] == 'completed' and result[0]['source_commit'] == declared['original_execution_commit']
+                and result[0]['phase'] == phase, 'sam_final_original_result_invalid')
+            _final_aliases(final, result[0]['artifacts'], original=True)
+            known_results[tuple(reference[k] for k in ('path', 'sha256', 'size_bytes'))] = result
     selected = context.selected(declared.get('receipt'), nested[1], {'sam_adoptions'})
     if selected is None:
         return
@@ -449,7 +468,8 @@ def _final_adoption(context, declared, nested, final):
         and declared['original_phase_result_receipts'] == [r.get('result') for r in phase_rows], 'sam_final_adoption_invalid')
     artifacts = {}
     for phase in phase_rows:
-        result = context.selected(phase.get('result'), nested[1], {'sam_results'})
+        reference = phase['result']
+        result = known_results.get(tuple(reference[k] for k in ('path', 'sha256', 'size_bytes')))
         if result and result[0].get('status') == 'completed':
             artifacts.update(result[0]['artifacts'])
             if phase.get('phase') == 'standard_splat_conversion':

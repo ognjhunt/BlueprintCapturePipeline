@@ -127,7 +127,7 @@ def test_copied_job_paths_keep_semantic_identity_and_all_raw_versions():
     assert result['current_queue_ownership_clear'] is False
 
 
-def test_durable_final_is_nested_source_progress_and_preserves_json_pointer():
+def durable_final_fixture():
     from tests.test_scene_source_family_adoption import fixture as completed_fixture
     args = completed_fixture(through='segment_cutout')
     rows = args['source_records']
@@ -151,12 +151,38 @@ def test_durable_final_is_nested_source_progress_and_preserves_json_pointer():
     stem = request['preparation_id'] + '-' + parent['request_digest'][7:]
     rows['source_progress'] = [pair(args['roots']['preparation_queue_root'] + '/source-progress/' + stem +
         '/000001-' + progress['progress_digest'][7:] + '.json', progress)]
+    return args
+
+
+def test_durable_final_is_nested_source_progress_and_preserves_json_pointer():
+    args = durable_final_fixture()
+    rows = args['source_records']
     before = copy.deepcopy(args)
     result = api().join_retained_scene_source_family_inventory(**args)
     final_row = next(r for r in result['sam_observations'] if r['role'] == 'sam_final')
     assert final_row['source_provenance'][0]['json_pointer'] == '/advancement/sam31_preparation_result'
     assert args == before
     assert 'sam31_preparation_result' not in json.loads(rows['sam_parent_envelopes'][0][1])
+
+
+def test_selected_nested_final_future_stage_result_is_raw_and_unresolved():
+    args = durable_final_fixture()
+    rows = args['source_records']
+    change(args, 'sam_results', {'status': 'future_status', 'executor_result': {'status': 'future_status'}}, 'result_digest')
+    edit_adopted_final(args, lambda final: final['stage_result_receipts'].__setitem__(0, ref(rows['sam_results'][0])))
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert any(r['sha256'] == ref(rows['sam_results'][0])['sha256'] for r in result['raw_versions'])
+    assert any(r['role'] == 'sam_final_phase_result' and r['reason'] == 'unsupported_retained_status'
+               for r in result['structural_join_obligations'])
+
+
+def test_selected_nested_final_known_failed_stage_still_refuses_without_execution_receipt():
+    args = durable_final_fixture()
+    rows = args['source_records']
+    rows['sam_execution_receipts'], rows['sam_adoptions'] = [], []
+    change(args, 'sam_results', {'status': 'failed', 'artifacts': {}, 'executor_result': {'status': 'failed', 'artifacts': {}}}, 'result_digest')
+    edit_adopted_final(args, lambda final: final['stage_result_receipts'].__setitem__(0, ref(rows['sam_results'][0])))
+    refuses(args)
 
 
 @pytest.mark.parametrize('bad_path', ['not-a-child', 'wrong-receipt.json'])
@@ -383,6 +409,30 @@ def test_available_adoption_final_contradictions_refuse_without_current_parent(e
 def test_matching_adoption_final_retains_original_and_successor_evidence_without_current_parent():
     result = api().join_retained_scene_source_family_inventory(**adopted_final_fixture())
     assert any(r['role'] == 'sam_final' and not r['parent_binding_verified'] for r in result['sam_observations'])
+
+
+@pytest.mark.parametrize('edit', [
+    lambda f: f['completed_prefix_adoption'].update(original_execution_commit='c'*40),
+    lambda f: f['completed_prefix_adoption']['original_phase_result_receipts'].reverse(),
+    lambda f: f['evidence'].update(track_selection_review=f['evidence']['selection_inputs']),
+])
+def test_available_original_final_results_refuse_even_when_adoption_bytes_absent(edit):
+    args = adopted_final_fixture()
+    args['source_records']['sam_adoptions'] = []
+    edit_adopted_final(args, edit)
+    refuses(args)
+
+
+def test_selected_original_final_future_result_stays_raw_when_adoption_absent():
+    args = adopted_final_fixture()
+    rows = args['source_records']
+    rows['sam_adoptions'] = []
+    change(args, 'sam_results', {'status': 'future_status', 'executor_result': {'status': 'future_status'}}, 'result_digest')
+    edit_adopted_final(args, lambda f: f['completed_prefix_adoption']['original_phase_result_receipts'].__setitem__(0, ref(rows['sam_results'][0])))
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert any(r['sha256'] == ref(rows['sam_results'][0])['sha256'] for r in result['raw_versions'])
+    assert any(r['role'] == 'sam_final_original_result' and r['reason'] == 'unsupported_retained_status'
+               for r in result['structural_join_obligations'])
 
 
 def test_final_selected_adoption_through_phase_disagreement_refuses_with_results_absent():

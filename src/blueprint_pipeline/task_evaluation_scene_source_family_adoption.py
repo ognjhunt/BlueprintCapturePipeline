@@ -33,6 +33,9 @@ def _selected(context, reference, proof, role, schema):
     if row and role == 'sam_adoptions' and row[0].get('status') != 'verified_completed_prefix':
         context.missing(role, 'unsupported_retained_status', [row[1]])
         return None
+    if row and role == 'sam_results' and row[0].get('status') not in {'completed', 'failed'}:
+        context.missing(role, 'unsupported_retained_status', [row[1]])
+        return None
     if row and row[0].get('schema_version') == schema:
         return row
     if row:
@@ -167,6 +170,8 @@ class Graph:
             c.require(job[1]['path'] == c.child(context.roots['sam_queue_root'], 'completed', job[0]['child_id'] + '.json'), 'adoption_job_path_invalid')
             if parent:
                 c.require(job[0]['parent_preparation_id'] == parent[0]['request']['preparation_id'], 'adoption_job_parent_invalid')
+            c.require(all(job[0]['inputs'].get(name) == reference for name, reference in inputs.items()),
+                      'adoption_job_inputs_invalid')
             if inputs_available:
                 c.require(job[0]['inputs'] == inputs, 'adoption_job_inputs_invalid')
         if result:

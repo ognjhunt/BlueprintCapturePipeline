@@ -114,7 +114,8 @@ def test_available_original_phase_inputs_refuse_despite_unrelated_missing_prefix
 @pytest.mark.parametrize('missing', ['plan', 'profile', 'first_result'])
 def test_unreconstructible_original_input_map_stays_unresolved_without_empty_map_inference(missing):
     args = fixture()
-    change_phase_input_path(args, 1)
+    if missing == 'plan':
+        change_phase_input_path(args, 1)  # This host key is genuinely unavailable.
     rows = args['source_records']
     if missing == 'plan':
         rows['sam_plans'] = []
@@ -311,8 +312,8 @@ def inherited_fixture(*, through='calibrated_views'):
 def test_inherited_input_availability_is_independent_of_broader_prefix_proof(missing):
     args = inherited_fixture()
     rows = args['source_records']
-    change_phase_input_path(args, 3)  # First phase extending the inherited prefix.
     if missing == 'original_parent':
+        change_phase_input_path(args, 3)  # First phase extending the inherited prefix.
         rows['sam_parent_envelopes'].pop(0)
         refuses(args)
     else:
@@ -320,6 +321,51 @@ def test_inherited_input_availability_is_independent_of_broader_prefix_proof(mis
         result = api().join_retained_scene_source_family_inventory(**args)
         phase = next(r for r in result['original_phase_observations'] if r['phase'] == 'sam31_inputs')
         assert not phase['phase_binding_verified']
+
+
+@pytest.mark.parametrize('missing', ['profile', 'first_result'])
+def test_known_host_input_subset_cannot_be_hidden_by_other_unavailable_inputs(missing):
+    args = fixture()
+    change_phase_input_path(args, 0 if missing == 'profile' else 1)
+    if missing == 'profile':
+        args['source_records']['sam_profiles'] = []
+    else:
+        args['source_records']['sam_results'].pop(0)
+    refuses(args)
+
+
+def test_known_profile_input_subset_cannot_be_hidden_by_unavailable_plan():
+    args = fixture()
+    rows = args['source_records']
+    plan = json.loads(rows['sam_plans'][0][1])
+    profile_path, raw = rows['sam_profiles'][0]
+    profile = json.loads(raw)
+    profile['artifact_references'] = {'interiorgs_terms': dict(plan['host_inputs']['interiorgs_terms'],
+        path='/retained/metadata/copied-terms.txt')}
+    rows['sam_profiles'] = [pair(profile_path, seal(profile, 'profile_digest'))]
+    rows['sam_plans'] = []
+    change(args, 'sam_adoptions', {'source_profile': ref(rows['sam_profiles'][0])}, 'adoption_digest')
+    refuses(args)
+
+
+def test_selected_original_future_result_stays_raw_without_phase_promotion():
+    args = fixture()
+    rows = args['source_records']
+    change(args, 'sam_results', {'status': 'future_status', 'executor_result': {'status': 'future_status'}}, 'result_digest')
+    change(args, 'sam_adoptions', lambda a: a['phase_records'][0].update(result=ref(rows['sam_results'][0])), 'adoption_digest')
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert any(r['sha256'] == ref(rows['sam_results'][0])['sha256'] for r in result['raw_versions'])
+    phase = next(r for r in result['original_phase_observations'] if r['phase'] == 'source_selections')
+    assert not phase['phase_binding_verified']
+
+
+def test_selected_original_known_failed_result_still_refuses_without_execution_receipt():
+    args = fixture()
+    rows = args['source_records']
+    rows['sam_execution_receipts'] = []
+    change(args, 'sam_results', {'status': 'failed', 'artifacts': {}, 'executor_result': {'status': 'failed', 'artifacts': {}}}, 'result_digest')
+    change(args, 'sam_adoptions', lambda a: a['phase_records'][0].update(result=ref(rows['sam_results'][0])), 'adoption_digest')
+    refuses(args)
 
 
 @pytest.mark.parametrize('through,tracking_commit', [('calibrated_views', 'b'*40), ('sam31_tracking', 'a'*40)])
