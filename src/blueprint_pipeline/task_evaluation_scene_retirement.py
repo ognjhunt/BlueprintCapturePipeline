@@ -21,7 +21,7 @@ from .task_evaluation_scene_retirement_access import _canonical, _identity, _ope
 from .task_evaluation_scene_retirement_authority import load_authority, selected_document, load_document
 from .task_evaluation_scene_retirement_generations import _write, _sealed
 from .task_evaluation_scene_retirement_journal import SceneJournal, publish_record
-from .task_evaluation_scene_retirement_mutation import detach_and_remove, inventory_digest
+from .task_evaluation_scene_retirement_mutation import detach_and_remove, inventory_digest, removal_records
 from .task_evaluation_scene_retirement_preservation import ActionAllowance, preserve_members
 from .task_evaluation_scene_retirement_restore import restore_preserved_members
 from .task_evaluation_scene_retirement_metadata import retain_metadata_closure
@@ -254,6 +254,17 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 generations=generations,preserved=preserved,metadata_closure_raw_ref=closure)
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
             pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
+            def complete_records():
+                for index,generation in enumerate(generations):
+                    yield 'retiring',str(index),{
+                        'generation_id':generation['generation_id'],
+                        'inventory_sha256':consent['members'][index]['inventory_sha256']}
+                    with _opened(consent['members'][index]['canonical_path'],directory=True) as (_,info):
+                        _require(_identity(info)==tuple(preserved['members'][index]['physical_identity']),
+                                 'scene_retirement_generation_changed')
+                    with _opened(Path(consent['members'][index]['canonical_path']).parent,directory=True) as (_,info):
+                        yield from removal_records(preserved,index,generation['generation_id'],journal,_identity(info))
+            journal.preflight(complete_records())
             for index,generation in enumerate(generations):
                 event=journal.append('retiring',member_key=str(index),evidence={
                     'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][index]['inventory_sha256']})

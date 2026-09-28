@@ -110,6 +110,40 @@ def _leaf_plans(preserved,index,journal,generation_id):
     return plans
 
 
+def removal_records(preserved,index,generation_id,journal,parent_identity):
+    """Bound the complete native removal, including every future raw selector."""
+    from .task_evaluation_scene_retirement_journal import MAX_EVENTS
+    member=preserved['members'][index]
+    source=Path(member['path'])
+    destination=source.parent/('.scene-retirement-'+journal.token+'-'+str(index))
+    reference=dict(path=str(journal.directory/(journal.token+'.'+str(MAX_EVENTS)+'.json')),
+                   sha256='sha256:'+'f'*64,size_bytes=65536)
+    evidence=dict(canonical_path=str(source),detached_path=str(destination),generation_id=generation_id,
+                  pre_identity=member['physical_identity'],parent_identity=list(parent_identity),
+                  inventory_sha256=inventory_digest(preserved,index))
+    yield 'detach_planned',str(index),evidence
+    yield 'detached',str(index),dict(evidence,detach_plan_raw_ref=reference)
+    logical=allocated=count=0
+    unique={}
+    for row in preserved['files']:
+        journal.allowance.tick()
+        if row['member_index']!=index:
+            continue
+        logical+=row['size_bytes']
+        allocated+=row['allocated_bytes']
+        count+=1
+        unique[tuple(row['physical_identity'][:2])]=row['allocated_bytes']
+        yield 'leaf_unlink_planned',str(index),dict(canonical_path=str(source),relative_path=row['relative_path'],
+            generation_id=generation_id,physical_identity=row['physical_identity'],size_bytes=row['size_bytes'],
+            sha256=row['sha256'],nlink_before=row['snapshot'][-1])
+        yield 'leaf_unlinked',str(index),dict(relative_path=row['relative_path'],leaf_plan_raw_ref=reference,
+                                            absence_verified_after_interruption=False)
+    yield 'member_removed',str(index),dict(outcome='removed',canonical_path=str(source),detached_path=str(destination),
+        generation_id=generation_id,inventory_sha256=evidence['inventory_sha256'],logical_bytes=logical,
+        apparent_bytes=logical,unique_allocated_bytes=sum(unique.values()),removed_allocated_bytes=allocated,
+        removed_file_count=count,allocation_method='observed_file_st_blocks_512_last_union_link_unlinked')
+
+
 def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_inodes=None):
     """Internal: durable pre-detach proof, atomic no-replace and exact leaf union."""
     allowance=journal.allowance
@@ -125,6 +159,7 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
     _require(len(plans)<=1,'scene_retirement_journal_chain_unproven')
     with _opened(source.parent,directory=True) as (parent,parent_info):
         parent_identity=_identity(parent_info)
+        journal.preflight(removal_records(preserved,member_index,generation_id,journal,parent_identity))
         evidence=dict(canonical_path=str(source),detached_path=str(destination),generation_id=generation_id,
                       pre_identity=member['physical_identity'],parent_identity=list(parent_identity),
                       inventory_sha256=inventory_digest(preserved,member_index))

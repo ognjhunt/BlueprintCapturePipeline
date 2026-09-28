@@ -119,7 +119,8 @@ def test_resume_never_adopts_substituted_detach_inode(tmp_path,monkeypatch):
     destination=member.parent/('.scene-retirement-'+journal.token+'-0')
     parked=destination.with_name('unmodified-original-detach')
     destination.rename(parked)
-    destination.mkdir();(destination/'foreign.bin').write_bytes(b'new-generation')
+    destination.mkdir()
+    (destination/'foreign.bin').write_bytes(b'new-generation')
     with access.exclusive_scene_access(),pytest.raises(ValueError):
         detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
     assert (destination/'foreign.bin').read_bytes()==b'new-generation'

@@ -18,6 +18,8 @@ from .task_evaluation_scene_retirement_generations import _guard, _named, _new_f
 EVENTS={'detach_planned','detached','member_removed','retiring','retired','restoring',
         'restore_directory_created','restore_file_created','member_restored','restored-active','kept',
         'leaf_unlink_planned','leaf_unlinked'}
+MAX_EVENTS=10000
+MAX_JOURNAL_BYTES=32*1024*1024
 
 
 def _parent(directory,fd,expected):
@@ -147,7 +149,7 @@ class SceneJournal:
                         continue
                     sequence=name.removeprefix(token+'.').removesuffix('.json')
                     _require(sequence.isdecimal() and str(int(sequence))==sequence and name==token+'.'+sequence+'.json'
-                             and 0<int(sequence)<=10000 and len(sequences)<10000,
+                             and 0<int(sequence)<=MAX_EVENTS and len(sequences)<MAX_EVENTS,
                              'scene_retirement_journal_chain_unproven')
                     sequences.add(int(sequence))
             after=os.fstat(fd)
@@ -163,7 +165,7 @@ class SceneJournal:
                      and len(value['member_key'])<=128 and type(value.get('evidence')) is dict
                      and value.get('event_digest')==canonical_digest(value,digest_field='event_digest'),
                      'scene_retirement_journal_chain_unproven')
-            _require(result.bytes+reference['size_bytes']<=32*1024*1024,'scene_retirement_journal_limit')
+            _require(result.bytes+reference['size_bytes']<=MAX_JOURNAL_BYTES,'scene_retirement_journal_limit')
             result.events.append(dict(value,raw_ref=reference))
             result.sequence=sequence
             result.prior_ref=reference
@@ -171,15 +173,42 @@ class SceneJournal:
         allowance.tick()
         return result
 
+    def preflight(self,records):
+        """Prove the remaining complete operation fits before payload mutation.
+
+        The private journal has one EX-protected writer. Forecasts use the
+        largest supported sequence/ref widths and stream their framing rather
+        than retaining an encoded document or granting a second allowance.
+        Every actual append still checks these same limits independently.
+        """
+        count,total=self.sequence,self.bytes
+        encoder=json.JSONEncoder(sort_keys=True,separators=(',',':'),allow_nan=False)
+        for event,member_key,evidence in records:
+            self.allowance.tick()
+            count+=1
+            _require(count<=MAX_EVENTS and event in EVENTS and type(evidence) is dict,
+                     'scene_retirement_journal_limit')
+            value=dict(schema_version='scene_retirement_journal_event.v1',token=self.token,
+                       sequence=MAX_EVENTS,prior_event_sha256='sha256:'+'f'*64,event=event,
+                       member_key=member_key,evidence=evidence,event_digest='sha256:'+'f'*64)
+            size=0
+            for piece in encoder.iterencode(value):
+                self.allowance.tick()
+                size+=len(piece.encode('utf-8'))
+                _require(size<=65536 and total+size<=MAX_JOURNAL_BYTES,
+                         'scene_retirement_journal_limit')
+            total+=size
+        self.allowance.tick()
+
     def append(self,event,*,member_key,evidence):
         self.allowance.tick()
         _require(event in EVENTS and type(member_key) is str and len(member_key)<=128)
-        _require(type(evidence) is dict and self.sequence<10000,'scene_retirement_journal_limit')
+        _require(type(evidence) is dict and self.sequence<MAX_EVENTS,'scene_retirement_journal_limit')
         value=dict(schema_version='scene_retirement_journal_event.v1',token=self.token,
                    sequence=self.sequence+1,prior_event_sha256=self.prior_ref['sha256'],
                    event=event,member_key=member_key,evidence=evidence)
         value['event_digest']=canonical_digest(value,digest_field='event_digest')
-        maximum=min(65536,32*1024*1024-self.bytes)
+        maximum=min(65536,MAX_JOURNAL_BYTES-self.bytes)
         reference=publish_record(self.directory,self.token+'.'+str(value['sequence'])+'.json',
                                  value,maximum=maximum,allowance=self.allowance)
         self.sequence=value['sequence']
