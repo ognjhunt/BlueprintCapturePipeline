@@ -647,8 +647,8 @@ def _provider(**changes) -> dict:
         "staging_versions_deleted": 4,
         "staging_versions_remaining": 0,
         "staging_listing_complete": True,
-        "urls_expire_at_epoch": 1_999_999_000.0,
-        "named_objects_absent": False,
+        "write_urls_expire_at_epoch": 1_999_999_000.0,
+        "read_urls_expire_at_epoch": 1_999_999_000.0,
     }
     provider.update(changes)
     return provider

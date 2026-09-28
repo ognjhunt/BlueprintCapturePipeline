@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import re
 import secrets
@@ -53,11 +54,12 @@ TRANSITIONS: Mapping[str, frozenset[str]] = {
     "expired": frozenset({"fallback_host", "abandoned_dispatch"}),
 }
 STATES = frozenset(TRANSITIONS) | TERMINAL_STATES
-UPDATES = frozenset({"worker_identity", "transport_object", "transport_generation", "compute_zero", "teardown", "outcome"})
+# Recorded once, together, before an attempt may dispatch: the transport and its URL expiries.
+TRANSPORT_FIELDS = ("transport_object", "transport_generation", "write_urls_expire_at_epoch", "read_urls_expire_at_epoch")
+UPDATES = frozenset({"worker_identity", *TRANSPORT_FIELDS, "compute_zero", "teardown", "outcome"})
 _ATTEMPT_FIELDS = (
-    "attempt", "attempt_id", "descriptor_digest", "limits", "dispatch_started", "worker_identity",
-    "transport_object", "transport_generation", "compute_zero_proven", "provider_zero_proven",
-    "teardown_digest", "outcome",
+    "attempt", "attempt_id", "descriptor_digest", "limits", "dispatch_started", "worker_identity", *TRANSPORT_FIELDS,
+    "deadlines", "compute_zero_proven", "provider_zero_proven", "teardown_digest", "outcome",
 )
 _LEASE_KEYS = frozenset({
     *_ATTEMPT_FIELDS, "schema_version", "job_id", "stage", "queue_row", "execution", "transport_bucket", "state",
@@ -162,7 +164,7 @@ def _attempt(descriptor: Mapping[str, Any], config: Mapping[str, Any]) -> dict[s
         "descriptor_digest": descriptor["descriptor_digest"],
         "limits": {name: limits[name] for name in (
             "start_allowance_seconds", "task_timeout_seconds", "heartbeat_stale_seconds")},
-        "dispatch_started": False, "worker_identity": None, "transport_object": None, "transport_generation": None,
+        "dispatch_started": False, "worker_identity": None, **{name: None for name in TRANSPORT_FIELDS},
         "compute_zero_proven": False, "provider_zero_proven": False, "teardown_digest": None, "outcome": None,
         "state": "claimed", "deadlines": None, "heartbeat": None, "lease_expires_at_epoch": None,
     }
@@ -210,7 +212,11 @@ def claim_handoff(root: str | Path, *, descriptor: Mapping[str, Any], config: Ma
         return _write(path, marker, lease)
 
 
-def _apply_updates(lease: dict[str, Any], updates: Mapping[str, Any]) -> None:
+def _is_epoch(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
+
+
+def _apply_updates(lease: dict[str, Any], updates: Mapping[str, Any], now: float) -> None:
     unknown = sorted(set(updates) - UPDATES, key=str)
     if unknown:
         raise RemoteCpuLeaseError(f"remote_cpu_lease_update_invalid:{safe_label(unknown[0])}")
@@ -221,16 +227,19 @@ def _apply_updates(lease: dict[str, Any], updates: Mapping[str, Any]) -> None:
         if identity != worker_identity_for(lease["execution"], execution_name_of(identity)):
             raise RemoteCpuLeaseError("remote_cpu_lease_worker_identity_unbound")
         lease["worker_identity"] = identity
-    if {"transport_object", "transport_generation"} & set(updates):
-        name, generation = updates.get("transport_object"), updates.get("transport_generation")
+    if set(TRANSPORT_FIELDS) & set(updates):
+        transport = {name: updates.get(name) for name in TRANSPORT_FIELDS}
         pattern = (rf"gs://{re.escape(lease['transport_bucket'])}/transport/{lease['job_id']}/"
                    rf"{re.escape(lease['attempt_id'])}-[0-9a-f]{{32}}\.json")
-        if (not isinstance(name, str) or not re.fullmatch(pattern, name) or not isinstance(generation, int)
-                or isinstance(generation, bool) or generation < 1):
+        generation = transport["transport_generation"]
+        if (not isinstance(transport["transport_object"], str) or not re.fullmatch(pattern, transport["transport_object"])
+                or not isinstance(generation, int) or isinstance(generation, bool) or generation < 1
+                or not all(_is_epoch(transport[name]) for name in TRANSPORT_FIELDS[2:])):
             raise RemoteCpuLeaseError("remote_cpu_lease_transport_invalid")
-        if (lease["transport_object"], lease["transport_generation"]) not in {(None, None), (name, generation)}:
+        recorded = {name: lease[name] for name in TRANSPORT_FIELDS}
+        if any(value is not None for value in recorded.values()) and recorded != transport:
             raise RemoteCpuLeaseError("remote_cpu_lease_transport_immutable")
-        lease["transport_object"], lease["transport_generation"] = name, generation
+        lease.update(transport)
     if "compute_zero" in updates:
         evidence = updates["compute_zero"]
         proven = compute_zero_proven(evidence, worker_identity=lease["worker_identity"])
@@ -242,12 +251,16 @@ def _apply_updates(lease: dict[str, Any], updates: Mapping[str, Any]) -> None:
         lease["compute_zero_proven"] = True
     if "teardown" in updates:
         record = validate_teardown(updates["teardown"])
-        compute = record["compute_zero"]
+        if record["observed_at_epoch"] > float(now):
+            raise RemoteCpuLeaseError("remote_cpu_lease_teardown_observed_in_the_future")
+        compute, provider = record["compute_zero"], record["provider_zero"]
+        # The evidence must name this attempt's own transport and the URL expiries it recorded.
         claimed = (record["attempt_id"], record["descriptor_digest"], record["worker_identity"],
-                   compute["transport_object"], compute["transport_generation"])
+                   compute["transport_object"], compute["transport_generation"],
+                   provider["write_urls_expire_at_epoch"], provider["read_urls_expire_at_epoch"])
         targets = [attempt for attempt in [*lease["prior_attempts"], lease]
                    if (attempt["attempt_id"], attempt["descriptor_digest"], attempt["worker_identity"],
-                       attempt["transport_object"], attempt["transport_generation"]) == claimed]
+                       *(attempt[name] for name in TRANSPORT_FIELDS)) == claimed]
         if len(targets) != 1 or record["job_id"] != lease["job_id"]:
             raise RemoteCpuLeaseError("remote_cpu_lease_teardown_unbound")
         target = targets[0]
@@ -263,7 +276,7 @@ def _apply_updates(lease: dict[str, Any], updates: Mapping[str, Any]) -> None:
 def _enter(lease: dict[str, Any], state: str, now: float) -> None:
     if state == "dispatching":
         # Compute-zero needs the transport deleted at its generation, so it is on record before any run.
-        if lease["transport_object"] is None:
+        if any(lease[name] is None for name in TRANSPORT_FIELDS):
             raise RemoteCpuLeaseError("remote_cpu_lease_transport_missing")
         limits, started = lease["limits"], float(now)
         hard = hard_deadline_epoch(started, limits)
@@ -305,7 +318,7 @@ def transition(root: str | Path, job_id: str, *, attempt_id: str, to_state: str 
         state = lease["state"]
         if state in TERMINAL_STATES or (to_state not in {None, state} and to_state not in TRANSITIONS[state]):
             raise RemoteCpuLeaseError(f"remote_cpu_lease_transition_refused:{state}->{to_state or state}")
-        _apply_updates(lease, updates or {})
+        _apply_updates(lease, updates or {}, now)
         if to_state not in {None, state}:
             _enter(lease, to_state, now)
         return _write(path, marker, lease)

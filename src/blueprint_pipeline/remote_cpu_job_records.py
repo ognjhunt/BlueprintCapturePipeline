@@ -102,7 +102,7 @@ _COMPUTE_SPEC = {
 }
 _PROVIDER_SPEC = {
     "staging_versions_deleted": _is_count, "staging_versions_remaining": _is_count,
-    "staging_listing_complete": _flag, "urls_expire_at_epoch": _is_amount, "named_objects_absent": _flag,
+    "staging_listing_complete": _flag, "write_urls_expire_at_epoch": _is_amount, "read_urls_expire_at_epoch": _is_amount,
 }
 _TEARDOWN_SPEC = {
     "schema_version": _one_of(TEARDOWN_SCHEMA_VERSION), "job_id": _text, "attempt": _positive,
@@ -144,10 +144,11 @@ def compute_zero_proven(compute: Mapping[str, Any], *, worker_identity: str | No
 
 
 def _provider_zero(compute_zero: bool, provider: Mapping[str, Any], observed_at_epoch: float) -> bool:
-    # B2 only hides a deleted object, so the proof is an empty version listing; a URL is
-    # spent once it has expired or the object it names is gone.
+    # B2 only hides a deleted object, so the proof is an empty version listing.  Presigned GETs name
+    # durable inputs and cannot write, so only the attempt's PUTs count, and deleting staging does not
+    # revoke a PUT: only its expiry ends it.  The read expiry is recorded for audit alone.
     return bool(compute_zero and provider["staging_listing_complete"] and provider["staging_versions_remaining"] == 0
-                and (observed_at_epoch >= provider["urls_expire_at_epoch"] or provider["named_objects_absent"]))
+                and observed_at_epoch >= provider["write_urls_expire_at_epoch"])
 
 
 def teardown_record(

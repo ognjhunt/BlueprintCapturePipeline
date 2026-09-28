@@ -30,12 +30,18 @@ def _identity(descriptor: dict, name: str = EXECUTION) -> str:
     return contract.worker_identity_for(descriptor["execution"], name)
 
 
+def _transport_updates(config: dict, descriptor: dict, dispatched_at: float) -> dict:
+    # Every presigned URL expires at the hard deadline: dispatch + 600 + 1800 + 120 s.
+    return {"transport_object": _transport(config, descriptor), "transport_generation": 7,
+            "write_urls_expire_at_epoch": dispatched_at + 2520, "read_urls_expire_at_epoch": dispatched_at + 2520}
+
+
 def _dispatch(root: Path, config: dict, descriptor: dict, now: float, *, name: str = EXECUTION) -> None:
     if descriptor["attempt"] == 1:
         lease.claim_handoff(root, descriptor=descriptor, config=config, now=now)
     job, attempt = descriptor["job_id"], descriptor["attempt_id"]
     lease.transition(root, job, attempt_id=attempt, to_state="dispatching", now=now,
-                     updates={"transport_object": _transport(config, descriptor), "transport_generation": 7})
+                     updates=_transport_updates(config, descriptor, now))
     lease.transition(root, job, attempt_id=attempt, to_state="dispatched", now=now + 2,
                      updates={"worker_identity": _identity(descriptor, name)})
 
@@ -59,7 +65,7 @@ def _compute(descriptor: dict, config: dict, **changes) -> dict:
     return compute
 
 
-def _teardown(descriptor: dict, config: dict, *, now: float, outcome: str = "completed",
+def _teardown(descriptor: dict, config: dict, *, dispatched_at: float, now: float, outcome: str = "completed",
               name: str | None = EXECUTION) -> dict:
     compute = _compute(descriptor, config) if name else _compute(
         descriptor, config, execution_completed=False, executions_for_attempt=0)
@@ -67,7 +73,7 @@ def _teardown(descriptor: dict, config: dict, *, now: float, outcome: str = "com
         descriptor=descriptor, worker_identity=None if name is None else _identity(descriptor, name),
         outcome=outcome, compute=compute,
         provider={"staging_versions_deleted": 3, "staging_versions_remaining": 0, "staging_listing_complete": True,
-                  "urls_expire_at_epoch": now - 1, "named_objects_absent": False},
+                  "write_urls_expire_at_epoch": dispatched_at + 2520, "read_urls_expire_at_epoch": dispatched_at + 2520},
         observed_at_epoch=now,
     )
 
@@ -203,7 +209,7 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
     )
     assert lease.slots_in_use(root) == 0
     lease.transition(root, job, attempt_id=attempt, to_state="dispatching", now=T0 + 1,
-                     updates={"transport_object": _transport(config, first), "transport_generation": 7})
+                     updates=_transport_updates(config, first, T0 + 1))
     assert lease.slots_in_use(root) == 1
     _dispatch(root, config, other, T0 + 2)
     assert lease.slots_in_use(root) == 2
@@ -225,7 +231,7 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
     assert lease.slots_in_use(root) == 3
 
     lease.transition(root, job, attempt_id=second["attempt_id"], to_state=None, now=T0 + 5000,
-                     updates={"teardown": _teardown(first, config, now=T0 + 5000, outcome="expired:start_timeout",
+                     updates={"teardown": _teardown(first, config, dispatched_at=T0 + 1, now=T0 + 5000, outcome="expired:start_timeout",
                                                    name=None)})
     assert lease.slots_in_use(root) == 2
     assert _record(root, job)["prior_attempts"][0]["provider_zero_proven"] is True
@@ -236,7 +242,7 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
         root, other_job, attempt_id=other_attempt, to_state="completed", now=T0 + 5002, updates={"outcome": "completed"},
     ))
     done = lease.transition(root, other_job, attempt_id=other_attempt, to_state="completed", now=T0 + 5003,
-                            updates={"outcome": "completed", "teardown": _teardown(other, config, now=T0 + 5003)})
+                            updates={"outcome": "completed", "teardown": _teardown(other, config, dispatched_at=T0 + 2, now=T0 + 5003)})
     assert done["provider_zero_proven"] is True and done["teardown_digest"].startswith("sha256:")
     assert lease.slots_in_use(root) == 1
     assert not (root / "live" / other_job).exists() and (root / "live" / job).exists()
@@ -247,6 +253,66 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
     assert lease.slots_in_use(root) == contract.MAX_ATTEMPTS_CAP
     (root / "leases" / f"{job}.json").write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
     assert lease.slots_in_use(root) == contract.MAX_ATTEMPTS_CAP
+
+
+def test_provider_zero_waits_for_the_write_urls_the_lease_recorded(tmp_path: Path) -> None:
+    root, config = tmp_path / "remote-cpu-jobs", _config()
+    descriptor = _descriptor(config)
+    job, attempt = descriptor["job_id"], descriptor["attempt_id"]
+    _dispatch(root, config, descriptor, T0)
+    recorded = _record(root, job)
+    assert (recorded["write_urls_expire_at_epoch"], recorded["read_urls_expire_at_epoch"]) == (T0 + 2520, T0 + 2520)
+    assert "remote_cpu_lease_transport_immutable" in _reasons(lambda: lease.transition(
+        root, job, attempt_id=attempt, to_state=None, now=T0 + 3,
+        updates={**_transport_updates(config, descriptor, T0), "write_urls_expire_at_epoch": T0 + 10}))
+    lease.transition(root, job, attempt_id=attempt, to_state="collecting", now=T0 + 300)
+
+    # A fast success deletes staging at once, but its presigned PUTs stay usable until they expire.
+    early = _teardown(descriptor, config, dispatched_at=T0, now=T0 + 400)
+    assert early["compute_zero_proven"] is True and early["provider_zero_proven"] is False
+    lease.transition(root, job, attempt_id=attempt, to_state=None, now=T0 + 400, updates={"teardown": early})
+    assert _record(root, job)["compute_zero_proven"] is True and lease.slots_in_use(root) == 1
+    assert "remote_cpu_field_unexpected:provider.named_objects_absent" in _reasons(lambda: records.teardown_record(
+        descriptor=descriptor, worker_identity=_identity(descriptor), outcome="completed",
+        compute=_compute(descriptor, config), provider={**early["provider_zero"], "named_objects_absent": True},
+        observed_at_epoch=T0 + 400,
+    ))
+
+    # Evidence with any expiry but the one the lease recorded never frees the slot,
+    for dispatched_at in (T0 - 5000, T0 + 1):
+        bogus = _teardown(descriptor, config, dispatched_at=dispatched_at, now=T0 + 2600)
+        assert bogus["provider_zero_proven"] is True
+        assert "remote_cpu_lease_teardown_unbound" in _reasons(lambda: lease.transition(
+            root, job, attempt_id=attempt, to_state=None, now=T0 + 2600, updates={"teardown": bogus}))
+    # and neither does evidence observed after the transition's own clock.
+    proven = _teardown(descriptor, config, dispatched_at=T0, now=T0 + 2520)
+    assert proven["provider_zero_proven"] is True
+    assert "remote_cpu_lease_teardown_observed_in_the_future" in _reasons(lambda: lease.transition(
+        root, job, attempt_id=attempt, to_state="completed", now=T0 + 2519,
+        updates={"teardown": proven, "outcome": "completed"}))
+    assert lease.slots_in_use(root) == 1
+    lease.transition(root, job, attempt_id=attempt, to_state="completed", now=T0 + 2520,
+                     updates={"teardown": proven, "outcome": "completed"})
+    assert lease.slots_in_use(root) == 0
+
+    # A prior attempt keeps its deadlines and URL expiries, so its own teardown still binds.
+    again = tmp_path / "retry" / "remote-cpu-jobs"
+    _dispatch(again, config, descriptor, T0)
+    assert lease.expire_stale(again, now=T0 + 600) == [attempt]
+    lease.transition(again, job, attempt_id=attempt, to_state=None, now=T0 + 601,
+                     updates={"compute_zero": _compute(descriptor, config)})
+    second = _descriptor(config, attempt=2, nonce="f" * 32)
+    prior = lease.claim_handoff(again, descriptor=second, config=config, now=T0 + 602)["prior_attempts"][0]
+    assert prior["deadlines"] == {
+        "dispatch_started_at_epoch": T0, "start_by_epoch": T0 + 600, "hard_deadline_epoch": T0 + 2520}
+    assert (prior["write_urls_expire_at_epoch"], prior["read_urls_expire_at_epoch"]) == (T0 + 2520, T0 + 2520)
+    assert "remote_cpu_lease_teardown_unbound" in _reasons(lambda: lease.transition(
+        again, job, attempt_id=second["attempt_id"], to_state=None, now=T0 + 3000,
+        updates={"teardown": _teardown(descriptor, config, dispatched_at=T0 + 1, now=T0 + 3000)}))
+    assert lease.slots_in_use(again) == 1
+    lease.transition(again, job, attempt_id=second["attempt_id"], to_state=None, now=T0 + 3000,
+                     updates={"teardown": _teardown(descriptor, config, dispatched_at=T0, now=T0 + 3000)})
+    assert lease.slots_in_use(again) == 0
 
 
 class _NoPidOs:
