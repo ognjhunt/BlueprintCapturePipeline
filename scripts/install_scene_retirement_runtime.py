@@ -199,6 +199,16 @@ def _prefix(path, destination, expected, deadline, *, append=False):
 
 def _copy(path, destination, expected, deadline):
     _mkdir(destination.parent)
+    if destination.exists() or destination.is_symlink():
+        known = _open(destination, directory=False, partial=True)
+        try:
+            info = os.fstat(known)
+            complete = info.st_size == expected['size'] and stat.S_IMODE(info.st_mode) == expected['mode']
+        finally:
+            os.close(known)
+        if complete:
+            _require(_read(destination, deadline) == expected)
+            return  # Never chmod or write an already immutable generation leaf.
     if not destination.exists() and not destination.is_symlink():
         fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         os.close(fd)
@@ -391,6 +401,201 @@ def prepare(source, dependencies):
             return {'status': 'prepared', 'authority_issued': False, 'cleanup_enabled': False,
                     'files': len(rows), 'bytes': total}
     except (OSError, ValueError) as exc:
+        raise ValueError(_ERROR) from exc
+
+
+
+def _record_bytes(path, deadline, cap=16 * 1024**2):
+    fd = _open(path, directory=False)
+    try:
+        before = os.fstat(fd)
+        _require(0 < before.st_size <= cap)
+        raw = bytearray()
+        while len(raw) < before.st_size:
+            _require(time.monotonic() <= deadline)
+            block = os.read(fd, min(1024 * 1024, before.st_size - len(raw)))
+            _require(bool(block))
+            raw.extend(block)
+        _require(_identity(os.fstat(fd)) == _identity(before)
+                 == _identity(path.lstat()))
+        return bytes(raw), before
+    finally:
+        os.close(fd)
+
+
+def _selector(raw):
+    return {'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(), 'size_bytes': len(raw)}
+
+
+def _encoded(value):
+    raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    _require(0 < len(raw) <= 16 * 1024**2)
+    return raw
+
+
+def _record(path, raw, deadline, *, previous=None):
+    """Publish one owned immutable record or exact current CAS under installer EX."""
+    _require(0 < len(raw) <= 16 * 1024**2)
+    _mkdir(path.parent)
+    if path.exists() or path.is_symlink():
+        observed, info = _record_bytes(path, deadline)
+        if previous is None:
+            _require(observed == raw)
+            return
+        _require(_identity(info) == _identity(previous))
+    else:
+        _require(previous is None)
+    temporary = path.with_name(path.name + '.pending')
+    if not temporary.exists() and not temporary.is_symlink():
+        created = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        os.close(created)
+    fd = _open(temporary, directory=False, partial=True)
+    before = os.fstat(fd)
+    os.close(fd)
+    _require(before.st_size <= len(raw))
+    fd = os.open(temporary, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        _require(_identity(os.fstat(fd)) == _identity(before))
+        _require(os.read(fd, len(raw) + 1) == raw[:before.st_size])
+        view = memoryview(raw)[before.st_size:]
+        while view:
+            _require(time.monotonic() <= deadline)
+            count = os.write(fd, view[:1024 * 1024])
+            _require(0 < count <= len(view))
+            view = view[count:]
+        _require(_identity(temporary.lstat()) == _identity(os.fstat(fd)))
+        os.fsync(fd)
+        os.fchmod(fd, 0o644)
+        final = os.fstat(fd)
+        _require(_identity(temporary.lstat()) == _identity(final))
+        if previous is not None:
+            _require(_identity(path.lstat()) == _identity(previous))
+        else:
+            _require(not path.exists() and not path.is_symlink())
+        os.rename(temporary, path)
+        renamed = os.fstat(fd)
+        # This owned rename changes ctime on Linux/macOS. All other acquired
+        # fields remain exact, and the new name must identify this same FD.
+        _require(_identity(path.lstat()) == _identity(renamed)
+                 and _identity(renamed)[:-1] == _identity(final)[:-1])
+        parent = _open(path.parent, directory=True)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        os.close(fd)
+    _require(_record_bytes(path, deadline)[0] == raw)
+
+
+def _refresh_inputs(source, dependencies, deadline):
+    rows, sources, sdk_rows, sdk_sources = {}, {}, {}, {}
+    _tree(source / 'src/blueprint_pipeline', Path('src/blueprint_pipeline'), rows, sources, deadline)
+    _tree(source / 'deploy/systemd', Path('deploy/systemd'), rows, sources, deadline)
+    _tree(source / 'scripts', Path('scripts'), rows, sources, deadline)
+    _tree(dependencies, Path('.'), sdk_rows, sdk_sources, deadline)
+    _require(len(rows) + len(sdk_rows) <= _MAX_FILES
+             and sum(row['size'] for row in (*rows.values(), *sdk_rows.values())) <= _MAX_BYTES)
+    return rows, sources, sdk_rows, sdk_sources
+
+
+def _generation(kind, rows, sources, deadline):
+    digest = hashlib.sha256(_encoded(rows)).hexdigest()
+    parent = _RUNTIME_ROOT / ('generations' if kind == 'source' else 'sdk-generations')
+    generation = parent / digest
+    manifest = _RUNTIME_ROOT / 'manifests' / (kind + '-' + digest + '.json')
+    raw = _encoded({'schema': 'scene-retirement-runtime-generation.v1', 'kind': kind,
+                    'generation': digest, 'rows': rows})
+    if generation.exists() or generation.is_symlink():
+        _require(manifest.exists() and not manifest.is_symlink())
+        _require(_record_bytes(manifest, deadline)[0] == raw)
+        _partial_tree(generation, rows, sources, deadline)
+    else:
+        if parent.exists():
+            fd = _open(parent, directory=True)
+            try:
+                names = os.listdir(fd)
+                _require(len(names) < 32 and all(re.fullmatch('[0-9a-f]{64}', name) for name in names))
+            finally:
+                os.close(fd)
+        _record(manifest, raw, deadline)
+        _mkdir(generation)
+    for name, row in rows.items():
+        _copy(sources[name], generation / name, row, deadline)
+    observed, _ = {}, {}
+    _tree(generation, Path('.'), observed, {}, deadline)
+    _require(observed == rows)
+    return generation, digest
+
+
+def refresh(source, dependencies, *, expected_current):
+    """Select one verified source/SDK cohort; old generations remain immutable."""
+    try:
+        _require(type(expected_current) is dict and set(expected_current) == {'sha256', 'size_bytes'}
+                 and type(expected_current['sha256']) is str
+                 and re.fullmatch(r'sha256:[0-9a-f]{64}', expected_current['sha256'])
+                 and type(expected_current['size_bytes']) is int and 0 < expected_current['size_bytes'] <= 16 * 1024**2)
+        deadline = time.monotonic() + _MAX_SECONDS
+        source, dependencies = Path(source), Path(dependencies)
+        rows, sources, sdk_rows, sdk_sources = _refresh_inputs(source, dependencies, deadline)
+        boot_source = source / 'scripts/scene_retirement_continuous_bootstrap.py'
+        boot_row = _read(boot_source, deadline)
+        with _installation_lock():
+            current_path = _BOOT_ROOT / 'CURRENT.json'
+            selected_path = current_path if current_path.exists() or current_path.is_symlink() else _BOOT_ROOT / 'installation.json'
+            old_raw, old_info = _record_bytes(selected_path, deadline)
+            _require(_selector(old_raw) == expected_current)
+            old = json.loads(old_raw)
+            old_sdk = _RUNTIME_ROOT / 'dependencies'
+            if selected_path == current_path:
+                _require(type(old) is dict and old.get('schema') == 'scene-retirement-runtime-cohort.v1'
+                         and set(old) == {'schema', 'runtime_root', 'dependencies_root', 'source_digest', 'dependency_digest', 'bootstrap', 'previous'})
+                old_sdk = Path(old['dependencies_root'])
+                _require(old_sdk == _RUNTIME_ROOT / 'dependencies'
+                         or old_sdk.parent == _RUNTIME_ROOT / 'sdk-generations'
+                         and re.fullmatch('[0-9a-f]{64}', old_sdk.name))
+            else:
+                _require(type(old) is dict and old.get('schema') == 'scene-retirement-runtime-install.v1'
+                         and old.get('runtime') == str(_RUNTIME_ROOT))
+            # Only identical protected SDK bytes can be reused, with no relink or
+            # copied GB for each new source generation. Unknown SDKs refuse.
+            installed_sdk = {}
+            _tree(old_sdk, Path('.'), installed_sdk, {}, deadline)
+            required = sum(row['size'] for row in rows.values())
+            if installed_sdk != sdk_rows:
+                required += sum(row['size'] for row in sdk_rows.values())
+            available = os.statvfs(_nearest(_RUNTIME_ROOT.parent))
+            _require(available.f_bavail * available.f_frsize >= required + _FREE_FLOOR)
+            runtime, source_digest = _generation('source', rows, sources, deadline)
+            if installed_sdk == sdk_rows:
+                sdk = old_sdk
+                dependency_digest = hashlib.sha256(_encoded(sdk_rows)).hexdigest()
+            else:
+                sdk, dependency_digest = _generation('sdk', sdk_rows, sdk_sources, deadline)
+            boot = _BOOT_ROOT / 'continuous_bootstrap.py'
+            _require(boot.exists() and not boot.is_symlink())
+            # The selector binds exact bootstrap bytes. A crash in the executable
+            # update interval is a refusal, never permission to mix cohorts.
+            if _read(boot, deadline) != boot_row:
+                staged = _BOOT_ROOT / 'continuous_bootstrap.refresh.py'
+                _copy(boot_source, staged, boot_row, deadline)
+                os.replace(staged, boot)
+                parent = _open(_BOOT_ROOT, directory=True)
+                try:
+                    os.fsync(parent)
+                finally:
+                    os.close(parent)
+            _require(_read(boot, deadline) == boot_row)
+            _require(_record_bytes(selected_path, deadline)[0] == old_raw)
+            value = {'schema': 'scene-retirement-runtime-cohort.v1', 'runtime_root': str(runtime),
+                     'dependencies_root': str(sdk), 'source_digest': source_digest,
+                     'dependency_digest': dependency_digest, 'bootstrap': boot_row, 'previous': expected_current}
+            raw = _encoded(value)
+            _require(len(raw) <= 4096)
+            _record(current_path, raw, deadline, previous=old_info if selected_path == current_path else None)
+            return {'status': 'refreshed', 'runtime_root': str(runtime), 'dependencies_root': str(sdk),
+                    'current': _selector(raw), 'authority_issued': False, 'cleanup_enabled': False}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(_ERROR) from exc
 
 
