@@ -207,3 +207,54 @@ Six shared provider closure cases and nineteen lifecycle rehearsal cases passed.
 Changed-file Ruff passes. These are hermetic transport/worker proofs, not an
 admitted selected-policy launch or live inference proof. Canonical allocator,
 single-attempt queue, separate runtimes and owner result delivery remain next.
+
+## Admission checkpoint: protected endpoint credential resolution
+
+Observed blocker: the selected HTTPS worker accepts a protected credential
+file, but no controller resolver binds that file to the current team, exact
+profile and separately reviewed endpoint origin. Accepting a caller-supplied
+filesystem path would leave that authority boundary open.
+
+Small reversible implementation: an operator-owned private registry maps a
+secret reference to a fixed file beneath its own `credentials/` directory.
+Resolve only after reopening the existing intent/registry/operator approval;
+require an active unexpired entry matching owner, profile digest, secret
+reference and approved origin. Registry, directory and file permissions and
+ownership must be protected. Reject symlinks, traversal and multiply linked
+secret files; bound and validate token bytes without emitting them. Return a
+private file binding with a safe metadata projection. Reopen this binding at
+the mutation boundary; changed/revoked credentials must refuse allocation.
+This uses the existing Vast private-file transport, adds no secret service and
+does not alter the owner-approved provider stack.
+
+Red-first cases: exact current binding resolves; foreign owner/profile/origin,
+revocation, expiry, duplicate references, malformed registry or token, unsafe
+permissions, symlinked ancestors/files, traversal and hardlinks refuse. Real
+approval revocation after initial resolution also refuses. Receipts/repr/error
+text contain neither credential values nor credential file paths. The resolver
+does not allocate or contact the endpoint. Existing selected bundle/worker
+tests continue to prove their separate contracts.
+
+Agent design review, 2026-09-28: checked selected HTTPS client, operator approval
+validator, current authority loader, provider worker and Vast secret transport.
+Accepted for test-first implementation under ADP-050 Day 28; this is a required
+admission dependency, not a substitute for the remaining paid dispatch, paired
+runtime and live qualification requirements.
+
+Use this resolver in a selected dispatch-input preflight that reopens the
+sealed bundle and live authority, bounds launch budgets by the signed request,
+and holds the private credential binding apart from loggable metadata. Its
+mutation-boundary recheck must reject changed bundle bytes, valid but changed
+approval, secret replacement, revocation and authority expiry. OCI/archive
+must refuse a missing paired runtime here, before admission or staging, rather
+than first discovering it in the paid worker. Its status explicitly means
+inputs verified, not spend admitted; allocator/queue wiring remains required.
+
+Implementation verification: 63 cases in the combined selected credential,
+dispatch-input, bundle, provider-runtime, worker and supervisor run passed.
+One added valid-approval replacement case initially used the wrong canonical
+digest helper in its fixture. Corrected it to the approval contract's helper;
+the exact failed case then passed in isolation (64 unique cases verified).
+All six sealed provider import-closure and nineteen lifecycle rehearsal cases
+passed together. Changed-file Ruff passed. No new dependency, secret service,
+policy inference or GPU allocation was introduced by these checks.
