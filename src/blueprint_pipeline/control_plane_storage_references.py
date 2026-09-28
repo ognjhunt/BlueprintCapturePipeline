@@ -217,6 +217,8 @@ def settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[s
     The second element counts records that exist but could not be read.  A
     configured root that cannot be enumerated must never be silently treated as
     "nothing is referenced", so the caller protects all evidence for that tick.
+    Each record is read as a queue row is (``_row_text``), so a FIFO record
+    never blocks the read: it is counted, like a linked or oversized one.
     """
 
     chunks: list[str] = []
@@ -234,14 +236,11 @@ def settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[s
                 continue
             for path in paths:
                 try:
-                    if path.is_symlink() or path.stat().st_size > MAX_QUEUE_MESSAGE_BYTES:
-                        # A record we decline to read is a record whose references
-                        # we do not know.  Count it rather than skipping it, or a
-                        # symlinked or oversized record silently unprotects its run.
-                        unreadable += 1
-                        continue
-                    chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
+                    chunks.append(_row_text(path))
+                except (OSError, QueueReferenceUnreadable):
+                    # A record we decline to read is a record whose references we do not
+                    # know.  Count it rather than skipping it, or a symlinked, oversized
+                    # or FIFO record silently unprotects its run.
                     unreadable += 1
     return "\n".join(chunks), unreadable
 

@@ -678,7 +678,10 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `unsealed_no_window`, `unsealed_recent`, `hot`, or the first protection that
   holds, checked in this order: `protected_unreadable_settlement`,
   `protected_process`, `protected_process_inventory_unreadable`,
-  `protected_pin`, `protected_settlement`, `protected_queue`. A `/proc` entry
+  `protected_pin`, `protected_settlement`, `protected_queue`. A settlement
+  record the tick cannot read (a link, a FIFO, an oversized or non-UTF-8 file)
+  protects every run (`protected_unreadable_settlement`), and is read as a queue
+  row is, so a FIFO never blocks the tick. A `/proc` entry
   the tick cannot read protects the run (`protected_process_inventory_unreadable`)
   instead of failing the check. `protected_pin` carries `by_kind`: the kinds of
   the live pins holding each run, with the number of distinct pins holding each

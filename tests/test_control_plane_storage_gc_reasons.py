@@ -683,6 +683,27 @@ def test_a_row_claimed_while_it_is_read_is_read_again_once(tmp_path, monkeypatch
     assert len(replaced) == replacements
 
 
+def test_a_fifo_settlement_record_is_counted_unreadable_without_blocking(tmp_path) -> None:
+    """Every protection check reads the settlement records, and read them by name, so one FIFO
+    record blocked the tick. Each record is now read through the queue reader's descriptor: a FIFO
+    is refused without blocking and counted as unreadable, which already protects every run, and
+    the other records are still read."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    root = tmp_path / "settlements"
+    (root / "intent-1" / "attempts").mkdir(parents=True)
+    (root / "intent-1" / "preparations").mkdir()
+    os.mkfifo(root / "intent-1" / "attempts" / "a-fifo.json")
+    (root / "intent-1" / "attempts" / "b.json").write_text('{"run": "named-b"}', encoding="utf-8")
+    (root / "intent-1" / "preparations" / "c.json").write_text('{"run": "named-c"}', encoding="utf-8")
+
+    with _fails_instead_of_blocking(5):
+        text, unreadable = references.settlement_reference_text([root])
+
+    assert (text, unreadable) == ('{"run": "named-b"}\n{"run": "named-c"}', 1)
+
+
 def test_the_summary_copies_only_the_offloads_own_stages() -> None:
     """A failure's stage reaches the summary only if it is one of the result-artifact
     offload's stages; any other string, however typed it looks, is unrecognized."""
