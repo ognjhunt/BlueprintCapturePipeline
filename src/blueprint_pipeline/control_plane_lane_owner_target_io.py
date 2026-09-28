@@ -41,6 +41,7 @@ class _TargetFiles(owners._Files):
         self.target_owned = set()
         self.target_observations = []
         self.probe_owned, self.probe_groups = {}, []
+        self.bindings, self.acquired, self.publication_states = {}, {}, []
 
     def slot(self):
         self.budget.tick()
@@ -114,7 +115,9 @@ class _TargetFiles(owners._Files):
             except (OSError, OwnerTargetVersionError):
                 self.unresolved += 1
                 raise OwnerTargetVersionError("owner_target_descriptor_ownership_unproven") from None
-        self._adopt_named(fd, named, self.owned)
+        initial = self._adopt_named(fd, named, self.owned)
+        self.bindings[fd] = (parent, name, owners._security(named))
+        self.acquired[fd] = initial
         if target:
             self.target_owned.add(fd)
         return fd
