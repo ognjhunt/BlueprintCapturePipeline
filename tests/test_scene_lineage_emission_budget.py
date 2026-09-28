@@ -124,3 +124,44 @@ def test_native_measurement_receives_smaller_shared_remaining_allowance(monkeypa
     rows = downstream.OutputRows({'rows': 0, 'bytes': 0}, {'MAX_ROWS': 4, 'MAX_OUTPUT_BYTES': 128}, emission_budget=budget)
     rows.append({'a': 1})
     assert seen == [16]
+
+
+def sealed_row():
+    from blueprint_pipeline import task_evaluation_scene_downstream_contracts as downstream
+    value = {'schema_version': 'fixture.v1'}
+    value['result_digest'] = downstream.canonical_digest(value, digest_field='result_digest')
+    proof = {'role': 'fixture', 'path': '/retained/result.json', 'sha256': 'sha256:'+'a'*64,
+             'size_bytes': 1, 'seal_field': None, 'seal_digest': None}
+    return value, proof
+
+
+def test_proof_future_seal_growth_refuses_before_next_emission_or_child():
+    from blueprint_pipeline import task_evaluation_scene_downstream_contracts as downstream
+    c = budget_api()
+    row = sealed_row()
+    initial = downstream.bounded_size(row[1], 4096)
+    budget = c.RetainedEmissionBudget(max_bytes=initial, max_rows=4, max_references=4)
+    continued = []
+    with pytest.raises(c.RetainedEmissionBudgetError):
+        downstream.Context({'fixture': [row]}, {}, {'MAX_ROWS': 4, 'MAX_OUTPUT_BYTES': 4096},
+                           'intent', emission_budget=budget)
+        downstream.seal(row, 'result_digest')
+        continued.append('next child')
+    assert continued == [] and row[1]['seal_field'] is None
+
+
+def test_each_emitted_proof_alias_reserves_future_seal_bytes_without_changing_output():
+    from blueprint_pipeline import task_evaluation_scene_downstream_contracts as downstream
+    c = budget_api()
+    row = sealed_row()
+    budget = c.RetainedEmissionBudget(max_bytes=4096, max_rows=8, max_references=8)
+    context = downstream.Context({'fixture': [row]}, {}, {'MAX_ROWS': 8, 'MAX_OUTPUT_BYTES': 4096, 'MAX_REFERENCES': 8},
+                                 'intent', emission_budget=budget)
+    context.raw_ref({k: row[1][k] for k in ('path', 'sha256', 'size_bytes')}, row[1])
+    reserved = budget.used['bytes']
+    downstream.seal(row, 'result_digest')
+    actual = sum(downstream.bounded_size(value, 4096) for value in [*context.raw, *context.obligations])
+    assert reserved >= actual and budget.used['bytes'] == reserved
+    assert context.obligations[0]['source_provenance'][0] is row[1]
+    assert context.obligations[0]['matched_provenance'] is row[1]
+    assert row[1]['seal_field'] == 'result_digest'
