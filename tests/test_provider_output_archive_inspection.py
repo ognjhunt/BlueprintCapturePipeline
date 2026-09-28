@@ -16,6 +16,7 @@ import blueprint_pipeline.vast_provider_adapter as vpa
 from blueprint_pipeline.vast_structured_policy_canary_inspection import (
     STRUCTURED_POLICY_CANARY_MEMBER,
     inspect_structured_policy_canary_archive,
+    structured_policy_canary_summary,
 )
 from blueprint_pipeline.wam_provider_output import (
     inspect_provider_runtime_output_archive,
@@ -121,21 +122,27 @@ def _structured_payload() -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize("case", ["passing", "failing_shape", "member_missing", "member_invalid"])
+@pytest.mark.parametrize("case", ["passing", "failing_shape", "member_missing", "member_invalid",
+                                  "member_name_not_utf8"])
 def test_structured_canary_archive_inspection_equals_the_adapter_wrapper(tmp_path, case) -> None:
     payload = _structured_payload()
     if case == "failing_shape":
         payload["native_action"] = payload["native_action"][:31]
-    members = {
-        "passing": {STRUCTURED_POLICY_CANARY_MEMBER: json.dumps(payload).encode()},
-        "failing_shape": {STRUCTURED_POLICY_CANARY_MEMBER: json.dumps(payload).encode()},
-        "member_missing": {"other.json": b"{}"},
-        "member_invalid": {STRUCTURED_POLICY_CANARY_MEMBER: b"\xff{not json"},
-    }[case]
-    path = _zip(tmp_path / "policy-output.zip", members)
+    if case == "member_name_not_utf8":
+        path = _malformed(tmp_path, "bad_utf8_name")
+    else:
+        path = _zip(tmp_path / "policy-output.zip", {
+            "passing": {STRUCTURED_POLICY_CANARY_MEMBER: json.dumps(payload).encode()},
+            "failing_shape": {STRUCTURED_POLICY_CANARY_MEMBER: json.dumps(payload).encode()},
+            "member_missing": {"other.json": b"{}"},
+            "member_invalid": {STRUCTURED_POLICY_CANARY_MEMBER: b"\xff{not json"},
+        }[case])
 
-    with zipfile.ZipFile(path) as archive:
-        by_archive = inspect_structured_policy_canary_archive(archive)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            by_archive = inspect_structured_policy_canary_archive(archive)
+    except UnicodeDecodeError:  # zipfile refuses the directory itself: the unreadable verdict
+        by_archive = structured_policy_canary_summary({}, ["structured_policy_canary_member_invalid"])
 
     assert by_archive == vpa._inspect_structured_policy_canary_output(path)
     assert by_archive["status"] == ("passed" if case == "passing" else "blocked")
@@ -152,3 +159,64 @@ def test_structured_canary_wrapper_keeps_its_missing_and_unreadable_codes(tmp_pa
     corrupt = vpa._inspect_structured_policy_canary_output(tmp_path / "corrupt.zip")
     assert corrupt["status"] == "blocked"
     assert corrupt["blockers"] == ["structured_policy_canary_member_invalid"]
+
+
+def _malformed(tmp_path: Path, case: str) -> Path:
+    """Archives the default path must read exactly as the adapter did before the split."""
+    path = tmp_path / f"{case}.zip"
+    if case == "bad_utf8_name":  # a UTF-8-flagged member name whose bytes are not UTF-8
+        _zip(path, {TOP: b'{"status": "completed"}', STRUCTURED_POLICY_CANARY_MEMBER: b"{}", "a\u00e9.json": b"{}"})
+        path.write_bytes(path.read_bytes().replace("a\u00e9.json".encode(), b"a\xff\xfe.json"))
+    elif case == "not_zip":
+        path.write_bytes(b"this is not a zip archive")
+    elif case == "truncated":
+        _zip(path, {TOP: b'{"status": "completed"}', STRUCTURED_POLICY_CANARY_MEMBER: b"{}", "m.mp4": b"v" * 5000})
+        path.write_bytes(path.read_bytes()[:-30])
+    elif case == "member_invalid_json":
+        _zip(path, {STRUCTURED_POLICY_CANARY_MEMBER: b"\xff{not json"})
+    elif case == "member_crc_corrupt":
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr(STRUCTURED_POLICY_CANARY_MEMBER, b'{"status": "passed"}' * 20)
+        raw = bytearray(path.read_bytes())
+        raw[raw.find(b'"status"') + 2] ^= 0x01
+        path.write_bytes(bytes(raw))
+    elif case == "member_missing":
+        _zip(path, {TOP: b'{"status": "completed"}'})
+    return path  # "absent_file": nothing is written
+
+
+# The adapter's verdicts at 16d8551b4 on each archive, captured by running that
+# commit's code and pinned here as data: (structured blocker, path-inspection
+# status, path-inspection blockers). New code is compared with them, not with itself.
+BASE_VERDICTS = {
+    "bad_utf8_name": ("structured_policy_canary_member_invalid", "blocked",
+                      ["provider_runtime_output_zip_invalid:UnicodeDecodeError"]),
+    "not_zip": ("structured_policy_canary_member_invalid", "blocked",
+                ["provider_runtime_output_zip_invalid:BadZipFile"]),
+    "truncated": ("structured_policy_canary_member_invalid", "blocked",
+                  ["provider_runtime_output_zip_invalid:BadZipFile"]),
+    "member_invalid_json": ("structured_policy_canary_member_invalid", "completed", None),
+    "member_crc_corrupt": ("structured_policy_canary_member_invalid", "completed", None),
+    "member_missing": ("structured_policy_canary_member_missing", "completed", None),
+    "absent_file": ("structured_policy_canary_output_zip_missing", "missing", None),
+}
+
+
+def _base_unreadable(code: str) -> dict:
+    return {"status": "blocked", "blockers": [code], "identity_verified": False, "request_count": None,
+            "policy_id": None, "model_revision": None, "server_identity_sha256": None,
+            "observation_sha256": None, "native_action_sha256": None, "wam_prefix_action_sha256": None,
+            "executed_prefix_action_sha256": None, "commanded_next_state_sha256": None,
+            "receipt_sha256": None, "raw_secret_values_recorded": False}
+
+
+@pytest.mark.parametrize("case", sorted(BASE_VERDICTS))
+def test_default_path_verdicts_on_malformed_archives_are_the_base_adapter_s(tmp_path, case) -> None:
+    path = _malformed(tmp_path, case)
+    structured, status, blockers = BASE_VERDICTS[case]
+
+    assert vpa._inspect_structured_policy_canary_output(path) == _base_unreadable(structured)
+    inspected = inspect_provider_runtime_output_zip(path)
+    assert (inspected["status"], inspected.get("blockers")) == (status, blockers)
+    assert vpa._inspect_structured_policy_canary_output(None) == _base_unreadable(
+        "structured_policy_canary_output_zip_missing")

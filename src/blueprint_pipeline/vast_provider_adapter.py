@@ -6846,7 +6846,7 @@ def _inspect_structured_policy_canary_output(path: Path | None) -> dict[str, Any
     try:
         with zipfile.ZipFile(path) as archive:
             return inspect_structured_policy_canary_archive(archive)
-    except (OSError, zipfile.BadZipFile):
+    except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile):
         return structured_policy_canary_summary({}, ["structured_policy_canary_member_invalid"])
 
 
