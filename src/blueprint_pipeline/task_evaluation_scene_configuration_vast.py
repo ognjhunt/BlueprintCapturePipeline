@@ -76,6 +76,9 @@ from .task_evaluation_scene_configuration_provider_artifacts import (
     _sha256,
     extract_provider_output_with_capacity_guard,
 )
+from .task_evaluation_scene_configuration_output_admission import (
+    open_scene_configuration_output_admission, release_scene_configuration_output,
+)
 from .task_evaluation_scene_configuration_openai_runtime_scope import (
     MANAGED_GUARD_FILE_ENV,
     OPENAI_RUNTIME_FILE_ENVS as _OPENAI_RUNTIME_FILE_ENVS,
@@ -945,7 +948,7 @@ def _seal_live_terminal_result(
             "result_schema_version": RESULT_SCHEMA_VERSION,
         },
     )
-    return _seal_terminal_result(job, result)
+    return release_scene_configuration_output(job, _seal_terminal_result(job, result))
 
 
 def _close_watchdog_after_adapter(
@@ -1239,7 +1242,15 @@ def run_scene_configuration_vast(
     output_disk_requirements = _provider_output_disk_requirements(
         expected_upload_bytes
     )
-    preallocation_disk_capacity = _provider_output_disk_capacity(
+    # Ceiling unless BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured on a production
+    # website run; its ledger hold is released when the terminal result is sealed.
+    output_admission = open_scene_configuration_output_admission(
+        job=job, receipt=receipt, read_envelope=_portable_construction_envelope,
+        expected_upload_bytes=expected_upload_bytes, diagnostic_only=diagnostic_only,
+        retain_warm_session=retain_warm_session, api_pretraining=requires_api_pretraining,
+        cpu_prestage=bool(cpu_prestage_stage_limit), disk_usage_provider=disk_usage_provider)
+    preallocation_disk_capacity = output_admission.before_allocation(
+        _provider_output_disk_capacity,
         destination_directory=provider_run,
         required_free_bytes=output_disk_requirements[
             "required_free_bytes_before_download"
@@ -1524,6 +1535,7 @@ def run_scene_configuration_vast(
                 PREFIX_BYTES_ENV: str(cpu_prestage["capsule_bytes"]),
             })
             expected_download_bytes += int(cpu_prestage["capsule_bytes"])
+        output_admission.hold_before_allocation()
         with _authority_environment():
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
@@ -1693,8 +1705,8 @@ def run_scene_configuration_vast(
     if not output_zip.is_file() and (job / "cpu_prestage_output.zip").is_file():
         output_zip = job / "cpu_prestage_output.zip"
     execution, blockers, extraction_disk_capacity = (
-        extract_provider_output_with_capacity_guard(
-            output_zip,
+        output_admission.extract(
+            extract_provider_output_with_capacity_guard, output_zip,
             job / "immutable_execution",
             maximum_archive_bytes=expected_upload_bytes,
             extractor=_extract_provider_output,
@@ -1705,14 +1717,14 @@ def run_scene_configuration_vast(
     provider_output_reference: dict[str, Any] = {}
     provider_output_remote_index: dict[str, Any] = {}
     provider_output_remote_index_path = job / "scene_artifact_remote_index.v1.json"
-    if execution and output_zip.is_file():
+    if output_admission.publishes(execution) and output_zip.is_file():
         try:
             (
                 provider_output_reference,
                 provider_output_remote_index,
                 provider_output_remote_index_path,
-            ) = _publish_provider_output_archive(
-                output_zip=output_zip,
+            ) = output_admission.durable_archive(
+                _publish_provider_output_archive, output_zip=output_zip,
                 job=job,
                 receipt=receipt,
             )
@@ -1924,6 +1936,7 @@ def run_scene_configuration_vast(
             "before_allocation_and_staging": preallocation_disk_capacity,
             "before_extraction": extraction_disk_capacity,
         },
+        **output_admission.result_fields(),
         "stage_chain_result_digest": (
             execution.get(
                 "diagnostic_stage_chain" if diagnostic_only else "stage_chain"

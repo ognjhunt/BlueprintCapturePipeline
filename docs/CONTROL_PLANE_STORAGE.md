@@ -48,6 +48,7 @@ and never a host path.
 | `policy_canary_dispatch` | 2 GiB | the measured footprint | canary dispatcher queue boundary |
 | `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
 | `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
+| `scene_configuration_output` | 2 GiB | only with `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`, for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix on the same volume is checked up front as the larger of the two needs, and the hold is taken after the prefix releases. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
 
 The intake version endpoint reports `disk_headroom` with `refused_roles` and each
 role's `footprints` and `targets` (device, floor, reservations and available
@@ -135,7 +136,8 @@ Pid liveness is the primary liveness signal and the TTL only a backstop for a
 recycled pid. A job holds its reservation for at most its systemd unit's
 `TimeoutStartSec`, so each role's TTL outlives that timeout (a test pins this
 against `deploy/systemd`): `cpu_prestage` and `semantic_pretraining` 12 h,
-`stage_replay`, `policy_canary_dispatch` and `launch_dispatch` 6 h,
+`stage_replay`, `policy_canary_dispatch`, `launch_dispatch` and
+`scene_configuration_output` 6 h,
 `control_plane_deploy` and `evidence_offload` 4 h, every other role 2 h.
 
 The ledger directory is group-writable and root uses it too, so nothing in it
