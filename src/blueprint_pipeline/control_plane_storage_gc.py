@@ -1584,8 +1584,13 @@ def run_storage_gc(
     _isolated(report, "lane_scratch", lane_phase)
     def registered_experiment_phase() -> Any:
         from .control_plane_lane_experiment_actions import gc_actions
-        return gc_actions(installed_config_path=_experiment_config_path,
-            enabled=lane_scratch_enabled, apply=apply, pins_root=pins_root, now=clock)
+        try:
+            return gc_actions(installed_config_path=_experiment_config_path,
+                enabled=lane_scratch_enabled, apply=apply, pins_root=pins_root, now=clock)
+        except (OSError, ValueError):
+            # A missing/default-disabled installation is local KEEP evidence,
+            # never a reason to discard unrelated phases' reclaim forecasts.
+            return {"enabled": False, "outcomes": [], "blockers": ["experiment_configuration_unavailable"]}
 
     _isolated(report, "registered_experiments", registered_experiment_phase)
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")

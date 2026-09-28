@@ -319,9 +319,43 @@ def _directory(files, parent, name, *, create=False):
     return fd
 
 
-def _pin_fence(files, root, target, issued):
+
+def _reference_configuration(files, config, selected_root):
+    from .control_plane_storage_pins import PINS_ROOT_ENV
+    raw, record = files.read(config.experiment_gc_environment_file, cap=65536, protected=True)
+    _require(stat.S_IMODE(record.info.st_mode) in (0o600, 0o640), "experiment_reference_configuration_unsafe")
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeError:
+        raise OwnerTargetVersionError("experiment_reference_configuration_invalid") from None
+    _require(len(lines) <= 1024, "experiment_reference_configuration_limit")
+    files.budget.charge("values", len(lines))
+    selections = []
+    for line in lines:
+        key, separator, value = line.strip().partition("=")
+        if key.strip() != PINS_ROOT_ENV:
+            continue
+        _require(len(line.encode()) <= 8192, "experiment_reference_configuration_limit")
+        _require(separator and not selections, "experiment_reference_configuration_invalid")
+        value = value.strip()
+        if len(value) >= 2 and value[0] in ("'", '"') and value[-1] == value[0]:
+            value = value[1:-1]
+        _require(value and not any(character in value for character in ("\\", "$", "'", '"', "\n", "\r")),
+                 "experiment_reference_configuration_invalid")
+        try:
+            path = retained._path(value, _work_budget=files.budget)
+        except retained.CensusDecisionError:
+            raise OwnerTargetVersionError("experiment_reference_configuration_invalid") from None
+        selections.append(path)
+    _require(len(selections) == 1 and isinstance(selected_root, (str, Path))
+             and os.fspath(selected_root) == str(selections[0]), "experiment_reference_configuration_changed")
+    files.verify_record(record)
+    return issuance._selector(raw, files.budget)
+
+def _pin_fence(files, config, root, target, issued):
     """Exact same publisher authority directory, never a file-name lock."""
     from .control_plane_storage_pin_observation import observe_storage_pins
+    configuration = _reference_configuration(files, config, root)
     _require(isinstance(root, (str, Path)) and Path(root).is_absolute(), "experiment_reference_authority_missing")
     parent, _ = files.parent(Path(root) / ".reference-probe")
     initial = os.fstat(parent)
@@ -340,7 +374,7 @@ def _pin_fence(files, root, target, issued):
                  "experiment_pin_inventory_changed")
         _require(not any(Path(path) == target or target in Path(path).parents or Path(path) in target.parents
                          for path in row.paths), "experiment_pin_reference_present")
-    return dict(path=str(root), dev=initial.st_dev, ino=initial.st_ino), parent
+    return dict(configuration=configuration, root=str(root), identity=dict(dev=initial.st_dev, ino=initial.st_ino, type="directory")), parent
 
 
 def _event(files, directory, action, kind, body, index, previous, issued):
@@ -429,7 +463,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                  and lease["class_intent"] == "scratch" and lease["cleanup"] == "delete", "experiment_action_profile_unsupported")
         if _pins_root is None:
             return _outcome(action, "kept", "experiment_reference_authority_missing")
-        reference, reference_fd = _pin_fence(files, _pins_root, target, issued)
+        reference, reference_fd = _pin_fence(files, config, _pins_root, target, issued)
         public = birth_code._authority_lock(files, config.experiment_authority_root, gid)
         refreshed = _current(files, public, gid)
         _require(refreshed[0] == current[0] and entry["state"] == "active", "experiment_action_current_changed")
@@ -535,18 +569,18 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                     _require(len(actions) < 2, "experiment_gc_action_limit")
                     raw, _ = files.read(Path(config.experiment_record_store) / (entry["operation_id"] + ".action.json"),
                                         cap=32768, protected=True, mode=0o600)
-                    actions.append((entry["operation_id"], issuance._selector(raw, files.budget)))
+                    actions.append((entry["operation_id"], issuance._selector(raw, files.budget), entry["intent_id"]))
     finally:
         try:
             files.finish()
         finally:
             files.budget.close()
     outcomes = []
-    for action_id, expected in actions:
+    for action_id, expected, intent_id in actions:
         try:
             outcomes.append(run_action(action_id, expected_action_intent=expected,
                 installed_config_path=installed_config_path, now=now, _pins_root=pins_root))
         except ValueError as error:
-            outcomes.append(dict(action_id=action_id, decision="kept", reason=getattr(error, "code", "experiment_action_refused"),
+            outcomes.append(dict(action_id=action_id, intent_id=intent_id, decision="kept", reason=getattr(error, "code", "experiment_action_refused"),
                                  receipt=None, removed_logical_bytes=0, removed_allocated_bytes=0))
     return dict(enabled=True, outcomes=outcomes)
