@@ -315,6 +315,34 @@ def test_provider_zero_waits_for_the_write_urls_the_lease_recorded(tmp_path: Pat
     assert lease.slots_in_use(again) == 0
 
 
+def test_live_markers_are_durable_and_unreadable_leases_are_named(tmp_path: Path, monkeypatch) -> None:
+    root, config = tmp_path / "remote-cpu-jobs", _config()
+    descriptor = _descriptor(config)
+    job, attempt = descriptor["job_id"], descriptor["attempt_id"]
+    synced: list[Path] = []
+    real_fsync = lease.fsync_directory
+    monkeypatch.setattr(lease, "fsync_directory", lambda path: (synced.append(Path(path)), real_fsync(path))[1])
+
+    lease.claim_handoff(root, descriptor=descriptor, config=config, now=T0)
+    assert (root / "live" / job).exists() and synced.count(root / "live") == 1
+    lease.transition(root, job, attempt_id=attempt, to_state="awaiting_capacity", now=T0 + 1)
+    assert synced.count(root / "live") == 1
+    lease.transition(root, job, attempt_id=attempt, to_state="fallback_host", now=T0 + 2, updates={"outcome": "host"})
+    assert not (root / "live" / job).exists() and synced.count(root / "live") == 2
+    assert lease.slot_census(root) == {"slots_in_use": 0, "unreadable": []}
+
+    other = tmp_path / "other" / "remote-cpu-jobs"
+    _dispatch(other, config, descriptor, T0)
+    assert lease.slot_census(other) == {"slots_in_use": 1, "unreadable": []}
+    (other / "leases" / f"{job}.json").write_text("{}", encoding="utf-8")
+    (other / "live" / ".nfs000001").write_text("", encoding="utf-8")
+    (other / "live" / "X-Amz-Signature=SECRETSIG").write_text("", encoding="utf-8")
+    census = lease.slot_census(other)
+    assert census["slots_in_use"] == 3 * contract.MAX_ATTEMPTS_CAP == lease.slots_in_use(other)
+    assert [name for name in census["unreadable"] if not name.startswith("<key#")] == [".nfs000001", job]
+    assert len(census["unreadable"]) == 3 and "SECRETSIG" not in json.dumps(census)
+
+
 class _NoPidOs:
     def __getattr__(self, name: str):
         if name in {"getpid", "getppid", "kill"}:

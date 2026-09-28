@@ -22,7 +22,7 @@ import re
 import secrets
 import stat
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -135,8 +135,12 @@ def _write(path: Path, marker: Path, lease: dict[str, Any]) -> dict[str, Any]:
     if lease["state"] not in TERMINAL_STATES:
         # The marker precedes the lease, so a lease is never live without its marker.
         marker.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-        with suppress(FileExistsError):
+        try:
             os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o640))
+        except FileExistsError:
+            pass
+        else:
+            fsync_directory(marker.parent)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     try:
         with open(temporary, "xb") as stream:
@@ -149,7 +153,12 @@ def _write(path: Path, marker: Path, lease: dict[str, Any]) -> dict[str, Any]:
         temporary.unlink(missing_ok=True)
     fsync_directory(path.parent)
     if lease["state"] in TERMINAL_STATES:
-        marker.unlink(missing_ok=True)
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+        else:
+            fsync_directory(marker.parent)
     return lease
 
 
@@ -377,20 +386,29 @@ def live_leases(root: str | Path, *, now: float) -> list[dict[str, Any]]:
             if lease is not None and lease["state"] in LIVE_STATES and float(now) < lease["lease_expires_at_epoch"]]
 
 
-def slots_in_use(root: str | Path) -> int:
-    """Attempts that may have started an execution and are not yet provider-zero, live or not.
+def slot_census(root: str | Path) -> dict[str, Any]:
+    """Capacity with its evidence: ``slots_in_use`` and the live markers whose lease could not be read.
 
-    An unreadable lease is counted as holding every attempt it could have started.
+    A slot is held by every attempt that may have started an execution and is not yet provider-zero,
+    live or not.  An unreadable entry is charged every attempt it could have started, and named in
+    ``unreadable`` (redacted when URL- or credential-shaped) so a summary can surface it.
     """
 
-    total = 0
-    for _, lease, unreadable in _marked(root):
-        if unreadable:
-            total += MAX_ATTEMPTS_CAP
+    slots, unreadable = 0, []
+    for job_id, lease, broken in _marked(root):
+        if broken:
+            slots += MAX_ATTEMPTS_CAP
+            unreadable.append(safe_label(job_id))
         elif lease is not None:
-            total += sum(1 for attempt in [*lease["prior_attempts"], lease]
+            slots += sum(1 for attempt in [*lease["prior_attempts"], lease]
                          if attempt["dispatch_started"] and not attempt["provider_zero_proven"])
-    return total
+    return {"slots_in_use": slots, "unreadable": unreadable}
+
+
+def slots_in_use(root: str | Path) -> int:
+    """``slot_census(root)["slots_in_use"]``."""
+
+    return slot_census(root)["slots_in_use"]
 
 
 def expire_stale(root: str | Path, *, now: float) -> list[str]:
