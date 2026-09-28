@@ -172,3 +172,45 @@ def test_actual_preparation_only_authority_can_birth_without_paid_reservation(tm
     assert born['state']=='active'
     assert born['birth_request_raw_ref']['path'].endswith('/preparation-attempts/preparing-1.json')
     assert json.loads(Path(born['birth_request_raw_ref']['path']).read_bytes())['paid_authority_granted'] is False
+
+
+def test_preservation_includes_exact_consent_cache_alias_without_adopting_store_parent(tmp_path):
+    import os
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members,ActionAllowance
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    member=tmp_path/'owned-projection'
+    member.mkdir()
+    (member/'payload').write_bytes(b'normal-object')
+    store=tmp_path/'global-store'
+    store.mkdir()
+    digest='sha256:'+hashlib.sha256(b'normal-object').hexdigest()
+    alias=store/digest[7:]
+    os.link(member/'payload',alias)
+    result=preserve_members([member],transport=MemoryTransport([member]),token='a'*32,
+        allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0),
+        cache_aliases=[{'canonical_path':str(alias),'digest':digest,'size_bytes':13}])
+    assert result['cache_aliases'][0]['path']==str(alias)
+    assert result['cache_aliases'][0]['member_index']==0
+    assert result['cache_aliases'][0]['relative_path']=='payload'
+    assert result['members'][0]['path']==str(member)
+    assert str(store) not in [row['path'] for row in result['members']]
+    assert alias.exists() and member.exists()
+
+
+def test_cache_union_refuses_other_alias_before_upload(tmp_path):
+    import os
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members,ActionAllowance
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    member=tmp_path/'projection'
+    member.mkdir()
+    (member/'payload').write_bytes(b'normal-object')
+    alias=tmp_path/hashlib.sha256(b'normal-object').hexdigest()
+    os.link(member/'payload',alias)
+    other=tmp_path/'other-owner'
+    os.link(alias,other)
+    transport=MemoryTransport([member])
+    with pytest.raises(ValueError,match='scene_retirement_shared_inode'):
+        preserve_members([member],transport=transport,token='a'*32,
+            allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0),
+            cache_aliases=[{'canonical_path':str(alias),'digest':'sha256:'+alias.name,'size_bytes':13}])
+    assert not transport.objects and other.read_bytes()==b'normal-object'
