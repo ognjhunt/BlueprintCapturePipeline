@@ -269,3 +269,90 @@ def test_installer_stages_the_actual_whole_scene_script():
     source=(root/'deploy/operator-door/door-scene-lifecycle.sh').read_text()
     assert 'blueprint_pipeline.task_evaluation_scene_retirement_cli' in source
     assert 'DOOR_PLAN_PATH' not in source and 'DOOR_POLICY_PATH' not in source
+
+
+def test_native_charged_read_spends_same_allowance_before_body_read():
+    module=bridge()
+    client=Client()
+    budget=allowance()
+    client.data=b'abcdef'
+    seen=[]
+    class Body(io.BytesIO):
+        def read(self,size=-1):
+            if size!=1:
+                seen.append(budget.counts['remote_bytes'])
+            return super().read(size)
+    client.get_object=lambda **kw:dict(Body=Body(client.data),ContentLength=6)
+    transport=module.SceneArchiveTransport(client=client,bucket='private-artifacts')
+    transport.bind_allowance(budget)
+    uri='s3://private-artifacts/blueprint/arm-decision-proof-v1/scene-retirement/'+'1'*32+'.tar'
+    assert b''.join(transport.read_archive_charged(uri,budget))==b'abcdef'
+    assert seen==[6] and budget.counts['remote_bytes']==6
+    with pytest.raises(ValueError):
+        list(transport.read_archive_charged(uri,allowance()))
+
+
+def test_deadline_after_create_aborts_retained_owned_upload_before_parts():
+    module=bridge()
+    client=Client()
+    clock=[100]
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    budget=ActionAllowance(expires_at=200,now=lambda:clock[0],monotonic=lambda:0)
+    original=client.create_multipart_upload
+    def create(**kw):
+        result=original(**kw)
+        clock[0]=201
+        return result
+    client.create_multipart_upload=create
+    transport=module.SceneArchiveTransport(client=client,bucket='private-artifacts')
+    transport.bind_allowance(budget)
+    with pytest.raises(ValueError):
+        transport.put_archive('1'*32+'.tar',iter([b'x']))
+    assert client.calls==['create','abort']
+
+
+def test_native_sdk_failure_is_typed_without_provider_or_secret_text():
+    module=bridge()
+    client=Client()
+    def get(**kw):
+        raise RuntimeError('secret=private-token /private/host/path')
+    client.get_object=get
+    transport=module.SceneArchiveTransport(client=client,bucket='private-artifacts')
+    transport.bind_allowance(allowance())
+    uri='s3://private-artifacts/blueprint/arm-decision-proof-v1/scene-retirement/'+'1'*32+'.tar'
+    with pytest.raises(ValueError,match='^scene_retirement_transport_failure$'):
+        list(transport.read_archive(uri))
+
+
+@pytest.mark.slow
+def test_actual_installed_script_invokes_exact_engine_cli_and_writes_sanitized_outcome(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    root=Path(__file__).resolve().parents[1]
+    scripts=tmp_path/'installed'
+    scripts.mkdir()
+    for name in ('door-common.sh','door-scene-lifecycle.sh'):
+        shutil.copyfile(root/'deploy/operator-door'/name,scripts/name)
+    executable=tmp_path/'python'
+    executable.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
+        'with open(os.environ["TEST_ARGS"],"w") as f: json.dump(sys.argv[1:],f)\n'
+        'print(json.dumps({"status":"planned","mutations":0}))\n')
+    executable.chmod(0o700)
+    resultdir=tmp_path/'results'
+    resultdir.mkdir()
+    identity='20260928T180000Z-retire-scene-12345678'
+    environment=dict(os.environ,DOOR_REQUEST_ID=identity,DOOR_RESULTS_DIR=str(resultdir),
+        DOOR_SCENE_ACTION='retire',DOOR_SCENE_INTENT_ID='scene-1',DOOR_SCENE_CONSENT_ID='1'*32,
+        DOOR_SCENE_CONSENT_SHA256='sha256:'+'a'*64,DOOR_SCENE_CONSENT_SIZE_BYTES='101',
+        DOOR_SCENE_APPLY='0',DOOR_VENV_PYTHON=str(executable),DOOR_CONTROL_PLANE_REPO=str(root),
+        TEST_ARGS=str(tmp_path/'args.json'))
+    result=subprocess.run(['bash',str(scripts/'door-scene-lifecycle.sh')],env=environment,
+                          capture_output=True,text=True,timeout=10)
+    assert result.returncode==0, result.stderr+'\n'+(resultdir/(identity+'.log')).read_text()
+    import json
+    args=json.loads((tmp_path/'args.json').read_text())
+    assert args[:3]==['-m','blueprint_pipeline.task_evaluation_scene_retirement_cli','retire']
+    assert '--apply' not in args and '--intent-id' in args and '--consent-id' in args
+    outcome=json.loads((resultdir/(identity+'.outcome.json')).read_text())
+    assert outcome['status']=='planned' and outcome['intent_id']=='scene-1'
