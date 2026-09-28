@@ -600,14 +600,19 @@ the regular files by inode. A group whose names are all in one replay stays with
 the rule above. A group held by two or more replays goes when every replay
 holding it is eligible exactly as above, its names there are every link it has,
 it is on each holder's device, and it is not newer than any holder's report.
-Apply rechecks each holder (the same report, unchanged, no live reader), then
-unlinks the group one replay at a time through descriptors held from that replay
-down, checking each name's device, inode, size, mtime and a link count equal to
-the names still to go. Its bytes count once, when its last name goes. A failed
-recheck stops the group: the names already unlinked were scratch and stay
-unlinked, and the next tick plans the rest, as shared scratch while two replays
-hold it and by the rule above once one does. The directories left empty are
-pruned as above. No file's bytes are read.
+Apply first rechecks every holder: still the directory the plan walked (not a
+link to it), its report unchanged in path, mtime and sha256, and no live reader
+in one sweep of the process table. A group any of whose holders fails keeps every
+name. Apply then goes one replay at a time: just before a replay's removals it
+rechecks that replay again, in a fresh sweep, as the rule above does before each
+replay's, and unlinks its names through descriptors held from it down, checking
+each name's device, inode, size, mtime and a link count equal to the names still
+to go. A group's bytes count once, when its last name goes. A failed recheck
+stops the group: the names already unlinked were scratch and stay unlinked, the
+bytes live on in the names left, and the next tick plans the rest, as shared
+scratch while two replays hold it and by the rule above once one does. The
+directories left empty are pruned as above. No scratch file's bytes are read;
+only the holders' small reports are hashed, and only on a tick that applies.
 
 This removal needs its own `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1`
 beside the retention opt-in, on a tick that applies; either switch alone removes
