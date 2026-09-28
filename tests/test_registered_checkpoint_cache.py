@@ -696,3 +696,71 @@ def test_malformed_root_selected_birth_refuses_before_payload(cache_installation
         with cache.NeededCheckpointCacheUse.open_registered(Path(result['path']),
                 installed_config_path=value['config'], now=lambda: 1200):
             pytest.fail('malformed birth accepted as current read authority')
+
+
+@pytest.mark.parametrize('shape', ['empty', 'marker_only', 'marker_and_closed'])
+def test_partial_exact_authority_is_fixed_refusal_before_private_callbacks(tmp_path, shape):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline import native_g1_checkpoint_cache as native
+    partial = object.__new__(cache.NeededCheckpointCacheUse)
+    if shape != 'empty':
+        partial._initialized = cache._USE_TOKEN
+    if shape == 'marker_and_closed':
+        partial._closed = False
+    with pytest.raises(cache.NeededCheckpointCacheError, match='needed_cache_use_invalid'):
+        native.verify_local_g1_checkpoint_cache(tmp_path, _cache_use=partial)
+
+
+def test_temporary_readback_hash_has_eight_fragment_limit(cache_installation, monkeypatch):
+    import os
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, _, _, reservations = prepare_fill(value, monkeypatch)
+    actual, calls = os.pread, []
+    def tiny(fd, size, offset):
+        calls.append((fd, size, offset))
+        return actual(fd, min(size, 1), offset)
+    monkeypatch.setattr(os, 'pread', tiny)
+    with pytest.raises(cache.NeededCheckpointCacheError, match='needed_cache_fragment_limit'):
+        cache.fill_needed_checkpoint_cache(grant['intent_id'], expected_sha256=grant['intent']['sha256'],
+            expected_size_bytes=grant['intent']['size_bytes'], installed_config_path=value['config'], now=lambda: 1100)
+    assert len(calls) == 8 and reservations[0].released is True
+
+
+def test_known_owned_wam_upload_is_aborted_even_when_stream_close_raises(cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline import wam_provider_object_store as wam
+    value = cache_installation
+    _, result, _, _, _ = fill_cache(value, monkeypatch)
+    target = Path(result['path'])
+    events = []
+    class Client:
+        def create_multipart_upload(self, **kwargs):
+            events.append('create')
+            return {'UploadId': 'fixture-proved-upload'}
+        def upload_part(self, **kwargs):
+            events.append('part')
+            raise OSError('fixture part failed')
+        def complete_multipart_upload(self, **kwargs):
+            pytest.fail('completed after failed part')
+        def abort_multipart_upload(self, **kwargs):
+            assert kwargs['UploadId'] == 'fixture-proved-upload'
+            events.append('abort')
+    with cache.NeededCheckpointCacheUse.open_registered(target, installed_config_path=value['config'], now=lambda: 1200) as use:
+        actual = cache.NeededCheckpointCacheUse.chunks
+        class Stream:
+            def __init__(self, path, role):
+                self.generator = actual(use, path, role=role)
+            def __iter__(self):
+                return self
+            def __next__(self):
+                return next(self.generator)
+            def close(self):
+                self.generator.close()  # Actual original pinned FD is closed first.
+                raise OSError('fixture stream finalization failed')
+        monkeypatch.setattr(use, 'chunks', lambda path, *, role: Stream(path, role))
+        row = use._rows[0]
+        with pytest.raises((OSError, ValueError)):
+            wam._upload_registered_checkpoint_file(Client(), bucket='fixture', key='fixture-object',
+                expected=row['sha256'].removeprefix('sha256:'), row=row, use=use)
+        assert events == ['create', 'part', 'abort']
