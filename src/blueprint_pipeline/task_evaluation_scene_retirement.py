@@ -204,7 +204,8 @@ def _plan_members(plan, consent, allowance=None):
         # Shared scratch/release or an unselected external alias is not owned by
         # a consented parent. Positive keep reasons remain independent blockers.
         keeps=row.get('keeps',[])
-        _require(type(keeps) is list and all(type(reason) is str for reason in keeps),
+        _require(type(keeps) in (list,_Rows) and len(keeps)<=10000
+                 and all(type(reason) is str for reason in keeps),
                  'scene_retirement_shared_or_unresolved_member')
         # The actual authenticated owner scope supplies the explicit retention
         # decision; private preservation is still proved before any mutation.

@@ -8,6 +8,7 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_retirement_access import SceneRetirementAccessError, _canonical, _require
 from .task_evaluation_scene_retirement_authority import selected_document
 from .task_evaluation_scene_retirement_preservation import CHUNK
+from .task_evaluation_scene_lineage_budget import _Rows
 
 _SHA=re.compile(r'sha256:[0-9a-f]{64}\Z')
 _NAMESPACE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
@@ -30,9 +31,13 @@ def _objects(value,allowance):
             _require(len(stack)<64 and len(item)<=10000,'scene_retirement_declared_reference_limit')
             yield item
             stack.append(iter(item.values()))
-        elif type(item) is list:
+        elif type(item) in (list,_Rows):
             _require(len(stack)<64 and len(item)<=10000,'scene_retirement_declared_reference_limit')
             stack.append(iter(item))
+        elif isinstance(item,(dict,list,tuple,set)):
+            # Only the exact native retained-row container is an accepted
+            # collection extension. Foreign callbacks cannot hide obligations.
+            _require(False,'scene_retirement_declared_reference_invalid')
 
 
 def _selector(value,path_field='path',digest_field='sha256',size_field='size_bytes'):
