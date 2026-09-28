@@ -184,6 +184,32 @@ def _envelope(value: dict[str, Any], provenance: dict[str, Any], root: str,
     return request
 
 
+def _attempt(link: dict[str, Any], request: dict[str, Any], intent: dict[str, Any],
+             directory: str, remaining: dict[str, Any], sources: list[dict[str, Any]]) -> Any:
+    if "scene_configuration_attempt" not in link:
+        return None
+    reference = link["scene_configuration_attempt"]
+    path = _path(reference["path"])
+    _require(path in remaining, "attempt_missing")
+    value, provenance = remaining[path]
+    _require(reference["sha256"] == provenance["sha256"]
+             and reference["size_bytes"] == provenance["size_bytes"], "attempt_bytes_invalid")
+    _seal(value, provenance, "attempt_digest", cross=True)
+    attempt_id = "scene-configuration-" + link["request_digest"][7:31]
+    _require(value.get("schema_version") == "task_evaluation_scene_attempt.v1"
+             and value.get("intent_id") == intent["intent_id"]
+             and value.get("intent_digest") == intent["intent_digest"]
+             and value.get("source_commit") == link["expected_production_commit"]
+             and value.get("input_digest") == link["request_digest"]
+             and value.get("runtime_digest") == request["execution_adapter"]["runtime_source_bundle"]["digest"]
+             and value.get("provider") == "vast" and value.get("attempt_id") == attempt_id
+             and path == _child(directory, "attempts", attempt_id + ".json"), "attempt_identity_invalid")
+    del remaining[path]
+    sources.append(provenance)
+    return {k: value[k] for k in ("attempt_id", "input_digest", "runtime_digest", "source_commit",
+                                 "provider", "attempt_digest")}
+
+
 def join_scene_preparation_lineage(*, intent_id: str, intent_record: Any,
                                    preparation_links: Any, preparation_envelopes: Any,
                                    configuration_attempt_records: Any, roots: Any) -> dict[str, Any]:
@@ -211,16 +237,20 @@ def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
                for role, group in (("link", links), ("envelope", envelopes), ("attempt", attempts))]
     total = intent_provenance["size_bytes"] + sum(p["size_bytes"] for group in decoded for _, p in group)
     _require(total <= MAX_TOTAL_BYTES, "bytes_limit")
-    _require(not decoded[2], "attempt_unmatched")  # Activation proof is a subsequent focused slice.
+    remaining_attempts = {p["path"]: (value, p) for value, p in decoded[2]}
     grouped: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     directory = _child(roots["intent_root"], intent_id)
     for value, provenance in decoded[0]:
         link = _link(value, provenance, intent, directory)
-        _require(provenance["variant"] == "base", "attempt_missing")
         previous = grouped.get(link["preparation_id"])
         _require(previous is None or all(previous[0][k] == link[k] for k in _IDENTITY), "link_ambiguous")
-        _require(previous is None, "link_ambiguous")
-        grouped[link["preparation_id"]] = (link, [provenance])
+        if previous is None:
+            grouped[link["preparation_id"]] = (link, [provenance])
+        else:
+            _require(all(p["variant"] != provenance["variant"] for p in previous[1]), "link_ambiguous")
+            previous[1].append(provenance)
+            chosen = link if provenance["variant"] == "activation" else previous[0]
+            grouped[link["preparation_id"]] = (chosen, previous[1])
     remaining = {p["path"]: (value, p) for value, p in decoded[1]}
     rows = []
     for preparation_id, (link, sources) in grouped.items():
@@ -228,16 +258,18 @@ def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
                    if PurePosixPath(path).name == link["result_filename"]]
         _require(len(matches) == 1, "envelope_ambiguous")
         path, (envelope, provenance) = matches[0]
-        _envelope(envelope, provenance, roots["preparation_queue_root"], link, intent)
+        request = _envelope(envelope, provenance, roots["preparation_queue_root"], link, intent)
         del remaining[path]
         sources.append(provenance)
+        attempt = _attempt(link, request, intent, directory, remaining_attempts, sources)
         rows.append({**{k: link[k] for k in ("preparation_id", "request_digest", "expected_production_commit",
                                            "team_namespace", "scene_id", "task_id", "result_filename")},
                      "workspace_path": _child(roots["preparation_input_root"], preparation_id),
                      "source_provenance": sorted(sources, key=lambda p: (p["role"], p.get("variant", ""),
                                                                         p.get("queue_state", ""), p["path"])),
-                     "configuration_attempt": None})
+                     "configuration_attempt": attempt})
     _require(not remaining, "envelope_unmatched")
+    _require(not remaining_attempts, "attempt_unmatched")
     result = {"schema_version": "task_evaluation_scene_preparation_lineage.v1", "status": "joined",
               "scope": "supplied_retained_preparation_records", "intent_id": intent_id,
               "intent_digest": intent["intent_digest"], "intent_provenance": intent_provenance,
