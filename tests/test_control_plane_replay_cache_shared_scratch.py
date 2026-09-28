@@ -967,7 +967,8 @@ def test_a_replay_replaced_just_as_apply_opens_it_is_refused(tmp_path, monkeypat
 def test_a_single_link_file_is_left_to_the_per_replay_rule(tmp_path, monkeypatch) -> None:
     """A file with one link can only be one replay's, so the shared plan never maps it: even one seen
     in two replays (a bind mount of the same filesystem keeps its st_dev) is neither planned nor
-    reported as shared, and stays with the per-replay rule, which takes each replay's own."""
+    reported as shared. Single-link files are the per-replay rule's; this test checks only the
+    shared block."""
 
     from tests.test_completed_replay_cache_retention import _Reported
 
@@ -1046,6 +1047,7 @@ def test_a_lookahead_reached_through_a_link_is_never_walked(tmp_path) -> None:
     assert (block["candidate_groups"], block["kept_by_reason"], block["holders_by_gate"]) == (0, {}, {})
     assert {row["error"] for row in phase["errors"]} == {"ValueError"}
     assert all(path.exists() for path in names)
+
 
 def test_a_group_one_replay_holds_alone_stays_with_the_per_replay_rule(tmp_path) -> None:
     """A group whose every name sits in one replay, however many names it has there, is the per-replay
