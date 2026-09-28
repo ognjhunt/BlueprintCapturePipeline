@@ -991,7 +991,8 @@ def test_volume_admission_units_map_bulk_roles_to_their_writers() -> None:
         "launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,"
         "launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,"
         "policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,"
-        "handoff_staging=/var/lib/blueprint/pubsub-handoffs"
+        "handoff_staging=/var/lib/blueprint/pubsub-handoffs,"
+        "scene_configuration_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs"
     )
     for name in (
         "blueprint-pipeline-intake.service",

@@ -9,7 +9,7 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 
 from . import robot_eval_calibration as _calibration
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, write_json
@@ -2121,12 +2121,14 @@ def _normalize_policy_attempts(
         raw_attempts = [item for item in payload if isinstance(item, Mapping)]
 
     if not raw_attempts and modality == "high_level_skill_trace":
-        raw_attempts = [{"status": "completed", "actions": []}]
+        raw_attempts = [{"status": "submitted_unexecuted", "actions": [], "success": None,
+                         "evidence_scope": "submitted_skill_intent_only"}]
 
     attempts: List[Dict[str, Any]] = []
     if not observations:
         observations = [{"observation_id": "observation_1", "scenario_id": "", "task_id": ""}]
-    if modality == "high_level_skill_trace" and len(raw_attempts) == 1 and len(observations) > 1:
+    if (modality == "high_level_skill_trace" and len(raw_attempts) == 1 and len(observations) > 1
+            and raw_attempts[0].get("evidence_scope") != "submitted_skill_intent_only"):
         only = raw_attempts[0]
         has_explicit_scope = any(
             _string(only.get(key))
@@ -2187,7 +2189,9 @@ def _normalize_policy_attempts(
                 or "robot_team_policy",
                 "target": _string(raw.get("target") or raw.get("targetPoseId")) or None,
                 "status": status,
-                "success": bool(success),
+                "success": None if raw.get("evidence_scope") in {
+                    "submitted_skill_intent_only", "controlled_policy_execution_without_outcome"
+                } else bool(success),
                 "actions": raw.get("actions") if isinstance(raw.get("actions"), list) else [],
                 "skills": raw.get("skills") if isinstance(raw.get("skills"), list) else [],
                 "metrics": _mapping(raw.get("metrics")),
@@ -2208,6 +2212,7 @@ def _policy_run_coverage(
         {
             _string(attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId"))
             for attempt in attempts
+            if attempt.get("status") != "submitted_unexecuted"
             if _string(attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId"))
         }
     )
@@ -2341,7 +2346,15 @@ def _replay_reference_payload(
         sequence = (
             payload.get("ordered_skill_sequence") or payload.get("orderedSkillSequence") or []
         )
-        return {"attempts": [{"status": "completed", "skills": list(sequence), "success": True}]}
+        return {
+            "attempts": [{
+                "status": "submitted_unexecuted",
+                "skills": list(sequence),
+                "success": None,
+                "evidence_scope": "submitted_skill_intent_only",
+                "metrics": {"execution_evidence_available": False},
+            }]
+        }
     return None
 
 
@@ -2565,6 +2578,7 @@ def build_policy_execution_bundle(
     allow_policy_execution: bool = False,
     allow_reference_replay: bool = True,
     policy_execution_commands: Mapping[str, str] | None = None,
+    controlled_policy_executor: Callable[..., Mapping[str, Any]] | None = None,
     timeout_seconds: int = 120,
     generated_at: str,
 ) -> Dict[str, Any]:
@@ -2601,6 +2615,27 @@ def build_policy_execution_bundle(
                 "missing_inputs": [],
                 "claim_boundary": dict(CLAIM_BOUNDARY),
             }
+            continue
+        if payload.get("execution_profile") == "controlled_observation_v1":
+            # This path must never fall through to legacy Docker commands, full
+            # scene manifests or JSON reference replay. The executor is injected
+            # by the trusted simulator host, not selected by the request.
+            if not allow_policy_execution or not env_allows or controlled_policy_executor is None:
+                modality_results[modality] = {"status": "blocked_controlled_policy_executor",
+                    "execution_performed": False, "attempt_count": 0,
+                    "blockers": ["qualified_controlled_policy_executor_required"],
+                    "claim_boundary": dict(CLAIM_BOUNDARY)}
+                continue
+            result = controlled_policy_executor(modality=modality, payload=payload,
+                job_request=job_request, job_dir=resolved_job_dir, observations=observations)
+            attempts = _normalize_policy_attempts(payload=result, modality=modality,
+                observations=observations, generated_at=generated_at)
+            all_attempts.extend(attempts)
+            modality_results[modality] = {"status": result.get("status", "blocked"),
+                "execution_performed": result.get("execution_performed") is True,
+                "attempt_count": len(attempts), **_policy_run_coverage(attempts, required_run_ids),
+                "robot_policy_execution_proven": False,
+                "blockers": result.get("blockers", []), "claim_boundary": dict(CLAIM_BOUNDARY)}
             continue
         command_text = _command_from_payload(
             modality=modality,

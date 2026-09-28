@@ -479,6 +479,7 @@ def test_missing_robot_waits_for_team_without_blocking_scene_construction(tmp_pa
 # --- persisted byte digests + retained installed receipt (2026-09-13 controls tick cost) ---
 
 
+@pytest.mark.usefixtures("_single_threaded_verdict_persistence")
 def test_payload_digest_reuses_its_persisted_verdict_until_bytes_move(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
     payload = tmp_path / "payload"

@@ -15,7 +15,7 @@ import os
 import shlex
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV, LIVE_CODEX_SDK_ENV
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
@@ -1784,6 +1784,8 @@ def run_live_pipeline_control_plane(
     allow_cpu_preflight_render: bool | None = None,
     allow_training: bool | None = None,
     training_command: str | None = None,
+    allow_policy_execution: bool = False,
+    controlled_policy_executor: Callable[..., Mapping[str, Any]] | None = None,
     timeout_seconds: int | None = None,
     budget_usd: float | None = None,
     arena_scenario_count: int = 500,
@@ -2043,6 +2045,10 @@ def run_live_pipeline_control_plane(
                         allow_cpu_preflight_render=cpu_preflight_render_allowed,
                         allow_training=training_allowed,
                         training_command=training_command,
+                        # ADP-050/day 28: supplied by trusted worker startup;
+                        # request JSON cannot select a runtime or enable it.
+                        allow_policy_execution=allow_policy_execution,
+                        controlled_policy_executor=controlled_policy_executor,
                         timeout_seconds=resolved_timeout,
                         budget_usd=budget_usd,
                         arena_results_dir=arena_results_path,

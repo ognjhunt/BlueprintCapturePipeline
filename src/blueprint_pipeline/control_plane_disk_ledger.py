@@ -37,6 +37,10 @@ ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "stage_replay": 4 * GIB,
     "semantic_pretraining": 3 * GIB,
     "cpu_prestage": 6 * GIB,
+    # A website scene configuration's returned archive and its extraction.
+    # Measured admission holds the exact upload ceiling plus 512 MiB; this
+    # declared value only shapes projections until the history is measured.
+    "scene_configuration_output": 2 * GIB,
 }
 ROLE_NAME_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 
