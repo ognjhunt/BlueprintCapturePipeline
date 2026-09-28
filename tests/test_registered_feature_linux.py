@@ -353,6 +353,45 @@ def test_actual_root_blueprint_uid_cache_lifetime_and_revoke(tmp_path):
     )
 
 
+def _fixture_task_spec():
+    from tests.test_adp_task_scoring import _rigid_v2_spec
+    from tests.test_native_rigid_episode_telemetry import _spec
+    return _rigid_v2_spec() | _spec() | {
+        "task_kind": "rigid_pick_place", "prompt": "pick the box",
+        "start_pose_world": [1.1, 2.1, .8, 0., 0., 0., 1.],
+    }
+
+
+def test_toy_native_episode_has_complete_real_scoring_result(tmp_path, monkeypatch):
+    """Validate toy receipts through the real scoring/recording before Linux."""
+    from types import SimpleNamespace
+    from blueprint_pipeline import native_g1_joint_episode_environment as environment
+    from blueprint_pipeline import native_g1_run_preflight as preflight
+    from blueprint_pipeline import native_task_arena_readback as readback
+    from blueprint_pipeline.native_g1_shared_scene_episode import run_g1_built_scene_policy_episode
+    from tests.test_native_g1_shared_scene_episode import _Scene, _Policy, _Bridge
+    from tests.test_native_task_episode_environment import _RigidNativeReadback
+    scene = _Scene()
+    scene.plan = {**scene.plan, 'task_kind': 'rigid_pick_place', 'task_spec': _fixture_task_spec()}
+    scene.read_state = lambda: {'step_index': scene.step}
+    candidate = 'humanoidarena_dp_g1_dex3_sonic'
+    monkeypatch.setattr(environment, 'NativeG1JointEpisodeEnvironment', lambda **kw: scene)
+    monkeypatch.setattr(readback, 'NativeRigidTaskArenaReadback', lambda built: _RigidNativeReadback(
+        finger_separation_m=.08, grasp_frame_position_world_m=[1.1, 2.1, .9],
+        destination_scene_forbidden_contact_peak_force_n=0.))
+    monkeypatch.setattr(preflight, 'preflight_g1_shared_scene_run', lambda **kw: {
+        'status': 'staged_inputs_verified', 'robot_id': 'unitree_g1', 'candidate_id': candidate,
+        'scene_plan_digest': scene.plan['plan_digest'], 'policy_role': 'manipulation'})
+    result = run_g1_built_scene_policy_episode(
+        built=SimpleNamespace(plan=scene.plan), policy_client=_Policy(), sonic_bridge=_Bridge(),
+        candidate_id=candidate, max_steps=3, output_dir=tmp_path / 'episode', preflight_inputs={},
+        to_tensor=lambda value: value, make_action_tensor=lambda value, **kw: value)
+    assert result['status'] == 'development_only_scored_episode'
+    assert result['score']['status'] == 'scored'
+    assert result['ranking_eligible'] is False and result['physical_outcome_claimed'] is False
+    assert json.loads((tmp_path / 'episode/native_g1_score_attempt.v1.json').read_bytes())['status'] == 'scored'
+
+
 def _fixture_producer(arguments):
     """Fake CPU hardware/model, with the real native producer and child APIs."""
     from types import SimpleNamespace
@@ -454,7 +493,6 @@ def _linux_contained_phase(root):
     from blueprint_pipeline import native_g1_development_pair as pair
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from tests.test_native_g1_development_pair import _paired_requests, _seal_request
-    from tests.test_adp_task_scoring import _rigid_v2_spec
 
     # Disposable-runner diagnostic only: this fixed property allowlist contains
     # no Environment, credentials or request/private record bodies. Preserve the
@@ -526,7 +564,7 @@ def _linux_contained_phase(root):
     inputs.mkdir(mode=0o755)
     paths, plan = _paired_requests(inputs)
     plan.update(
-        task_spec=_rigid_v2_spec() | {"task_kind": "rigid_pick_place", "prompt": "pick the box"},
+        task_spec=_fixture_task_spec(),
         scenario={"seed": 19},
     )
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
