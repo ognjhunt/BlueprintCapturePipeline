@@ -234,7 +234,7 @@ def test_all_row_event_kinds_refuse_oversized_payload_before_publication(tmp_pat
         files.budget.close()
 
 
-def test_known_escaped_row_event_refusal_keeps_all_payload_before_unlink(retirement_installation):
+def test_escaped_row_size_keeps_payload(retirement_installation):
     from tests.test_registered_experiment_retirement_flow import _gc, _payload_snapshot
 
     setup = retirement_installation
@@ -242,10 +242,10 @@ def test_known_escaped_row_event_refusal_keeps_all_payload_before_unlink(retirem
     born = birth(setup, grant)
     target = Path(born['path'])
     directory = target
-    for number in range(3):
-        directory = directory / ('\\'*230 + str(number))
+    for number in range(15):
+        directory = directory / ('\\'*50 + f'{number:02d}')
         directory.mkdir()
-    payload = directory / ('\\'*230 + 'payload')
+    payload = directory / 'payload'
     payload.write_bytes(b'known event envelope refusal must preserve this')
     before = _payload_snapshot(target)
     action = _issue_action(setup, grant)
