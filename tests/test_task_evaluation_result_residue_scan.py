@@ -52,3 +52,29 @@ def test_every_way_a_kept_document_names_a_run_file_keeps_it() -> None:
     # Free text and JSON lines name files too.
     assert "logs/worker.log" in strings(b"see logs/worker.log, then retry\n")
     assert f"/x/{name}/a.bin" in strings(b'{"a": 1}\n{"b": "/x/' + name.encode() + b'/a.bin"}\n')
+
+
+def _tokens(raw: bytes, chunk: int = 1024 * 1024) -> set[str]:
+    import io
+
+    return set().union(*scan.stream_tokens(io.BytesIO(raw), chunk_bytes=chunk))
+
+
+def test_json_escapes_separate_tokens_instead_of_gluing_to_a_path() -> None:
+    """``\\n``, ``\\t`` and ``\\uXXXX`` before a path are separators, not part of it, even when a
+    chunk boundary cuts the escape; ``\\/`` still reads as ``/``."""
+
+    raw = b'{"a": "\\nlogs/a.log", "b": "\\tlogs/b.log", "c": "\\u0041logs/c.log", "d": "logs\\/d.log"}'
+    found = _tokens(raw)
+    assert {"logs/a.log", "logs/b.log", "logs/c.log", "logs/d.log"} <= found
+    assert not {"nlogs/a.log", "tlogs/b.log", "u0041logs/c.log"} & found
+    for chunk in range(3, 24):
+        assert {"logs/a.log", "logs/b.log", "logs/c.log", "logs/d.log"} <= _tokens(raw, chunk), chunk
+
+
+def test_a_path_ending_a_sentence_is_read_without_its_punctuation() -> None:
+    strings = {"logs/worker.log.", "provider/outputs.zip-", "work/state.npz~"}
+
+    named = set(scan.named_paths(strings, "episode_interpretation/notes.txt", "run-1"))
+
+    assert {"logs/worker.log", "provider/outputs.zip", "work/state.npz"} <= named

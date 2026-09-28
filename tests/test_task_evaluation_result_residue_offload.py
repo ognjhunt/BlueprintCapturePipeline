@@ -1269,3 +1269,73 @@ def test_a_pointer_that_does_not_verify_is_left_alone(tmp_path, monkeypatch) -> 
 
     assert (result["status"], result["retained_reason"]) == ("retained", "pointer_invalid")
     assert _local_files(f.run) == before
+
+
+@pytest.mark.parametrize("case", [
+    "relative_to_another_directory", "name_unsupported_document", "newer_document", "linked_outside_document",
+])
+def test_a_file_that_stays_is_searched_whatever_kept_it(tmp_path, case) -> None:
+    """Every file that stays is searched, whatever kept it, and a relative path is matched as a
+    tail of any file of the run, since it may be written relative to a directory the search
+    cannot guess."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    run, target = f.run, "logs/worker.log"
+    if case == "relative_to_another_directory":
+        (run / "preprovider_evidence" / "logs").mkdir(parents=True)
+        (run / "preprovider_evidence" / "logs" / "x.log").write_bytes(b"preprovider output")
+        (run / TERMINAL_RESULT).write_text(json.dumps({"log": "logs/x.log"}), encoding="utf-8")
+        target = "preprovider_evidence/logs/x.log"
+    elif case == "name_unsupported_document":
+        (run / "notes with spaces.txt").write_text("see logs/worker.log\n", encoding="utf-8")
+    elif case == "newer_document":
+        (run / "late.txt").write_text("see logs/worker.log\n", encoding="utf-8")
+    else:
+        (run / "work" / "linked.txt").write_text("see logs/worker.log\n", encoding="utf-8")
+        os.link(run / "work" / "linked.txt", tmp_path / "outside-link.txt")
+    _age(run)
+    if case == "newer_document":
+        os.utime(run / "late.txt", (OLD + DAY, OLD + DAY))
+
+    plan = residue.offload_result_residue(run_root=run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+
+    reasons = {row["relative_path"]: row["reason"] for row in plan["skipped"]}
+    assert reasons.get(target) == "receipt_referenced"
+    assert _offload(f)["status"] == "applied"
+    assert (run / target).exists()
+
+
+def test_a_directory_on_another_filesystem_keeps_the_whole_run(tmp_path, monkeypatch) -> None:
+    """A mounted directory is never entered, so whatever in it names a file is unknown."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    mounted = str(f.run / "work" / "stage")
+    real_lstat = os.lstat
+
+    def mounting(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if os.fspath(path) == mounted:
+            return os.stat_result((info.st_mode, info.st_ino, info.st_dev + 1, *tuple(info)[3:10]))
+        return info
+
+    monkeypatch.setattr(os, "lstat", mounting)
+    result = _offload(f)
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "plan_failed")
+    assert result["failure"]["error_type"] == "ResultResidueOffloadError"
+    assert not f.pointer.exists()
+
+
+def test_a_kept_document_that_cannot_be_read_keeps_the_whole_run(tmp_path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode")
+    f = _sealed_run(tmp_path / "canaries")
+    (f.run / TERMINAL_RESULT).chmod(0)
+    try:
+        result = _offload(f)
+    finally:
+        (f.run / TERMINAL_RESULT).chmod(0o644)
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "plan_failed")
+    assert result["failure"] == {"error_type": "ResultResidueOffloadError", "errno": None, "stage": "plan"}
+    assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))

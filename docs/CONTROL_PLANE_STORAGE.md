@@ -616,9 +616,9 @@ so each manifest (and its receipt) also records `walked_file_count` and
   the dispatcher would re-enter it), `dispatch_queue_unreadable` (a queue row
   that cannot be read keeps every run), `run_root_invalid`, `offload_locked`,
   `plan_failed` (what stays cannot be searched for what a reader reaches from
-  it: a directory that cannot be listed, a kept link that leaves the run, a
-  kept directory or file on another filesystem, or a file that cannot be
-  read), `deferred_tick_cap` (the tick's publications were used up),
+  it: a directory that cannot be listed or is on another filesystem, a kept
+  link that leaves the run, a kept file on another filesystem, or a file that
+  cannot be read), `deferred_tick_cap` (the tick's publications were used up),
   `publication_failed` (including a member swapped while it was packed),
   `run_changed_or_active`, `pointer_failed`, `nothing_evicted` (every member
   stayed, so the pointer was withdrawn and the next tick tries again) or
@@ -632,7 +632,7 @@ so each manifest (and its receipt) also records `walked_file_count` and
   reopened names, including scene-attempt recovery's `*.lease.json` and
   `pending_teardowns/*.json` ownership records), `symlink_target` and
   `receipt_referenced` (what the readers the module docstring surveys can
-  reach), `symlink`, `special_file`, `cross_device`, `newer_than_registry`,
+  reach from any file that stays, whatever kept it), `symlink`, `special_file`, `cross_device`, `newer_than_registry`,
   `linked_outside_residue` or `name_unsupported` (a name with a character the
   reference search does not read as part of a path) when the run is listed, and
   `member_changed`, `path_changed`, `cross_device`,

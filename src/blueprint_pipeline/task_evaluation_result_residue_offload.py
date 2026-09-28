@@ -31,21 +31,21 @@ depth; the ``READER_REOPENED_NAMES`` and everything under
 ``READER_REOPENED_DIRECTORIES``, at any depth (``reader_reopened``); and
 anything a reader can reach from what stays. That is the target of every link
 that stays inside the run, with everything under it (``symlink_target``), and
-every file that a kept or reached text document names by path, in any format
-(JSON, JSON lines or free text), absolutely, relative to the run, the evidence
-root or any directory above the document; each file so reached is searched in
-turn (``receipt_referenced``). The search streams each file a chunk at a time,
-whatever its size, reading every run of name characters as a candidate path; a
-binary (a NUL in its first 64 KiB) names nothing. A named directory keeps only
+every file that any file that stays names by path, whatever kept it and in any
+text format (JSON, JSON lines or free text): absolutely, relative to the run,
+the evidence root or any directory above the file, or as the tail of any path of
+the run; each file so reached is searched in turn (``receipt_referenced``). The
+search (``task_evaluation_result_residue_scan``) streams each file a chunk at a
+time, whatever its size; a binary (a NUL in its first 64 KiB) names nothing. A named directory keeps only
 what is named in it: the registry names every evidence root, the run root among
 them, and the surveyed readers reopen bound files, never a named directory's
 listing. A link, a special file, a file on another filesystem than the run root,
 one newer than the registry, one with a hard link outside the residue, or one
 whose name holds a character the search does not read as part of a path
 (``name_unsupported``) is a typed skip and stays. When what stays cannot be
-searched (a directory that cannot be listed, a kept link that leaves the run, a
-kept directory or file on another filesystem, a file that cannot be read) the
-whole run stays (``plan_failed``).
+searched (a directory that cannot be listed or is on another filesystem, a kept
+link that leaves the run, a kept file on another filesystem, a file that cannot
+be read) the whole run stays (``plan_failed``).
 
 **Reader survey** (2026-09-27): who reopens files inside a sealed run.
 
@@ -338,17 +338,26 @@ def _link_target(root: Path, relative: str) -> str | None:
         return None
 
 
+def _inode_groups(paths: Mapping[str, os.stat_result]) -> dict[tuple[int, int], tuple[os.stat_result, list[str]]]:
+    groups: dict[tuple[int, int], tuple[os.stat_result, list[str]]] = {}
+    for relative, info in paths.items():
+        groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(relative)
+    return groups
+
+
 def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registry_mtime_ns: int) -> list[dict]:
     """The run's residue as inode groups, each with every name it has; typed skips go on ``row``.
 
-    The walk never follows a link and never enters another filesystem. Nothing
-    kept by design is residue; nor is anything a reader reaches from a kept file:
-    the target of any link that stays inside the run, with everything under it
-    (``symlink_target``), and every file a kept or reached text document names
-    (``receipt_referenced``). A group is a candidate only when all of its links
-    are residue names, so removing them frees its blocks and nothing that stays
-    shares them. A directory that cannot be listed, a kept link that leaves the
-    run, or a kept directory or file on another filesystem raises: what a reader
+    The walk never follows a link and never enters a directory on another
+    filesystem. Nothing kept by design is residue, nor a group with a link
+    outside the residue; nor is anything a reader reaches from what stays: the
+    target of any link that stays inside the run, with everything under it
+    (``symlink_target``), and every file a searched file names
+    (``receipt_referenced``). Every regular file that stays is searched, whatever
+    kept it. A group is a candidate only when all of its links are residue names,
+    so removing them frees its blocks and nothing that stays shares them. A
+    directory that cannot be listed or is on another filesystem, a kept link that
+    leaves the run, or a kept file on another filesystem raises: what a reader
     reaches through it is unknown, so the whole run stays.
     """
 
@@ -377,10 +386,8 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
                     _skip(row, relative, "symlink", info.st_size)
                 continue
             if info.st_dev != device:
-                if kept:
-                    raise ResultResidueOffloadError("result_residue_kept_directory_unsearchable")
-                _skip(row, relative, "cross_device", 0)
-                continue
+                # Never entered: whatever it holds could name any file of the run.
+                raise ResultResidueOffloadError("result_residue_cross_device_directory")
             entered.append(name)
         directories[:] = entered
         for name in sorted(names):
@@ -395,7 +402,7 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
                 if by_design != "kept":
                     _skip(row, relative, by_design or "symlink", info.st_size)
                 continue
-            if stat.S_ISREG(info.st_mode) and info.st_dev == device:
+            if stat.S_ISREG(info.st_mode):
                 files[relative] = info
             if by_design is not None:
                 if stat.S_ISREG(info.st_mode):
@@ -418,11 +425,19 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
                 reason = "name_unsupported"
             if reason is not None:
                 _skip(row, relative, reason, info.st_size if reason != "special_file" else 0)
+                if reason != "special_file":
+                    documents.append(relative)  # it stays, so what it names stays too
                 continue
             candidates[relative] = info
     if unreadable:
         # A directory that could not be listed may hold a kept document naming any candidate.
         raise ResultResidueOffloadError("result_residue_directory_unreadable")
+    # A group with a link outside the residue stays whole, and is searched like everything that stays.
+    for _identity, (info, names) in _inode_groups(candidates).items():
+        if len(names) != info.st_nlink:
+            for relative in names:
+                _skip(row, relative, "linked_outside_residue", candidates.pop(relative).st_size)
+                documents.append(relative)
     listed = sorted(files)
     for link, kept in links:
         target = _link_target(root, link)
@@ -438,12 +453,10 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
     for relative in sorted(_receipt_references(root, documents, files)):
         if relative in candidates:
             _skip(row, relative, "receipt_referenced", candidates.pop(relative).st_size)
-    groups: dict[tuple[int, int], tuple[os.stat_result, list[str]]] = {}
-    for relative, info in candidates.items():
-        groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(relative)
     members = []
-    for (dev, inode), (info, names) in groups.items():
+    for (dev, inode), (info, names) in _inode_groups(candidates).items():
         if len(names) != info.st_nlink:
+            # Another name of its inode stays (it was reached), and holds the same bytes, already searched.
             for relative in names:
                 _skip(row, relative, "linked_outside_residue", info.st_size)
             continue
