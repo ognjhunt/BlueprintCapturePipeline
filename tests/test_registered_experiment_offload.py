@@ -197,3 +197,18 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         result = _read_result(target / candidate / 'native_g1_development_worker_result.v1.json',
             candidate_id=candidate, scene_plan_digest=value['scene_plan_digest'], request_digest=worker['request_digest'])
         assert result['status'] == 'blocked'
+
+
+def test_actual_issued_manifest_binds_exact_generation_and_compact_member_versions(expired_completed_evidence):
+    value, target, born, action, intent_id = expired_completed_evidence
+    payload = json.loads((value[2] / (action['action_id'] + '.action.json')).read_bytes())
+    manifest = json.loads((value[2] / (action['action_id'] + '.manifest.json')).read_bytes())
+    assert set(manifest) == {'schema_version', 'generation', 'birth', 'target_identity', 'lease',
+                             'completion', 'members', 'logical_bytes', 'allocated_bytes', 'manifest_digest'}
+    assert all(manifest[key] == payload[key] for key in ('generation', 'birth', 'target_identity', 'lease', 'completion'))
+    assert manifest['generation'] == born['generation'] and manifest['members']
+    for path, kind, identity, metadata, digest in manifest['members']:
+        info = (target/path).stat()
+        assert identity == f'{info.st_dev}:{info.st_ino}:' + ('r' if kind == 'file' else 'd')
+        assert int(metadata.split(':')[0]) == info.st_mode & 0o7777
+        assert digest is None if kind == 'directory' else digest.startswith('sha256:')
