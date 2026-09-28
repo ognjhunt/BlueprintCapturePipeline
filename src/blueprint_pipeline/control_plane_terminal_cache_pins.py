@@ -177,22 +177,25 @@ def _closure(identity, pins):
 
 
 def _partial_release(pins_root, now, identity, closure, error_type):
-    """What the ledger holds after a release raised: a partial release receipt when it recorded the pin, else {}.
+    """What the ledger holds after this tick's release raised: a partial release receipt when it recorded the pin.
 
     ``release_storage_pin`` writes the pin's release and then walks its
-    dependencies, so it can fail having recorded the pin. The receipt lists
-    every pin of the closure the ledger now shows released.
+    dependencies, so it can fail having recorded the pin. Only a release stamped
+    with this tick's own time is this tick's: one another worker recorded
+    meanwhile is not. The receipt lists every pin of the closure so stamped;
+    otherwise the answer is {}.
     """
 
     try:
-        status = {(p["kind"], p["owner_id"]): p["status"] for p in load_storage_pins(pins_root, now=lambda: now)}
+        stamped = {(p["kind"], p["owner_id"]) for p in load_storage_pins(pins_root, now=lambda: now)
+                   if p.get("released_at_epoch") == now}
     except Exception:  # noqa: BLE001 - a ledger that cannot be read is reported as the failure it is
         return {}
-    if status.get(identity) != "released":
+    if identity not in stamped:
         return {}
     return {"schema_version": "control_plane_storage_pin_release.v1", "kind": identity[0], "owner_id": identity[1],
             "status": "release_partial", "error_type": error_type,
-            "released": [{"kind": key[0], "owner_id": key[1]} for key in closure if status.get(key) == "released"]}
+            "released": [{"kind": key[0], "owner_id": key[1]} for key in closure if key in stamped]}
 
 
 def _process_checker(reference_checker):
@@ -340,7 +343,9 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
                 released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
                                                      owner_id=pin["owner_id"], now=lambda: now))
         except Exception as exc:  # noqa: BLE001 - one failed check or release never costs the tick or its report
-            partial = _partial_release(pins_root, now, identity, closure, type(exc).__name__)
+            # Only a failure in the release itself can have left this tick's release in the ledger.
+            partial = (_partial_release(pins_root, now, identity, closure, type(exc).__name__)
+                       if stage == "release_failed" else {})
             if partial:
                 released.append(partial)
             else:

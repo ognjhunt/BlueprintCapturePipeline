@@ -1278,6 +1278,45 @@ def test_a_release_that_raises_reports_what_the_ledger_says(tmp_path, monkeypatc
         assert [(row["reason"], row["error_type"]) for row in result["kept"]] == [("release_failed", "OSError")]
 
 
+@pytest.mark.parametrize("fails", ["in_release", "before_lock"])
+def test_a_pin_another_worker_released_during_an_edge_failure_is_not_counted(tmp_path, monkeypatch, fails) -> None:
+    """Code review of 10c: a failure anywhere at the edge credited this tick with any release the ledger
+    showed, including one another worker made meanwhile. Only a release the tick itself recorded, at its
+    own time, and only once it reached the release, is reported as a partial release."""
+
+    args = _args(tmp_path)
+    _prepared(_preparation_queue(tmp_path, args), "prep-x")
+    _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
+    real_release = terminal_pins.release_storage_pin
+
+    def another_worker_releases():
+        real_release(pins_root=args["pins_root"], kind="preparation", owner_id="prep-x", now=lambda: NOW + 5)
+
+    if fails == "in_release":
+        def release(**_kwargs):
+            another_worker_releases()
+            raise OSError(5, "Input/output error")
+
+        monkeypatch.setattr(terminal_pins, "release_storage_pin", release)
+    else:
+        calls = []
+
+        def checker(_path):
+            calls.append(1)
+            if len(calls) > 1:  # the edge's check, after planning's
+                another_worker_releases()
+                raise PermissionError(13, "Permission denied")
+            return False
+
+        args["reference_checker"] = checker
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert result["released"] == [] and result["released_count"] == 0
+    assert [(row["reason"], row["error_type"]) for row in result["kept"]] == [
+        {"in_release": ("release_failed", "OSError"), "before_lock": ("proof_error", "PermissionError")}[fails]]
+
+
 @pytest.mark.parametrize("fault", ["prepared_not_a_directory", "linked_envelope", "invalid_json"])
 def test_an_unreadable_envelope_is_not_a_missing_one(tmp_path, fault) -> None:
     args = _args(tmp_path)
