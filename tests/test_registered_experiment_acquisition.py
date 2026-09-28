@@ -118,3 +118,19 @@ def test_original_action_controller_initializes_once_before_any_reset_or_clock(s
     finally:
         files.finish()
         files.budget.close()
+
+
+def test_owner_expiry_also_restricts_original_monotonic_time_when_wall_clock_stalls():
+    from blueprint_pipeline import control_plane_lane_experiment_work as work
+
+    clock = [1000.0]
+    files = work._ActionFiles(monotonic=lambda: clock[0], now=lambda: 2000.0)
+    try:
+        files.bind_deadline(2060.0)
+        clock[0] = 1060.0
+        with pytest.raises(ValueError):
+            files.check_long()
+        assert files.failure is not None
+    finally:
+        files.finish()
+        files.budget.close()
