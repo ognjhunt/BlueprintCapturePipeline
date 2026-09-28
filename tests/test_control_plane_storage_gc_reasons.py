@@ -694,6 +694,8 @@ def test_the_summary_copies_only_the_offloads_own_stages() -> None:
          "error_type": "PermissionError", "errno": 1, "stage": "evict"},
         {"status": "retained", "run_directory": "run-b", "reason": "OSError",
          "error_type": "OSError", "errno": 5, "stage": "teleport"},
+        {"status": "retained", "run_directory": "run-c", "reason": "TaskEvaluationResultDeliveryError",
+         "error_type": "TaskEvaluationResultDeliveryError", "errno": None, "stage": "plan"},
         {"status": "applied", "candidate_bytes": 10, "offloaded_bytes": 0, "skipped": [
             {"relative_path": "evidence/a.mp4", "reason": "OSError", "error_type": "OSError",
              "errno": 28, "stage": "publish"}]},
@@ -702,14 +704,15 @@ def test_the_summary_copies_only_the_offloads_own_stages() -> None:
     phase = reasons.build_storage_gc_summary(
         {"status": "applied", "result_artifact_offload": rows})["phases"]["result_artifact_offload"]
 
-    assert OFFLOAD_STAGES == ("registry", "protection", "publish", "evict")
+    assert OFFLOAD_STAGES == ("registry", "plan", "protection", "publish", "evict")
     assert phase["retained_by_reason"] == {
         "offload_failed:evict": {"count": 1, "bytes": None},
         "offload_failed:unrecognized_stage": {"count": 1, "bytes": None},
+        "offload_failed:plan": {"count": 1, "bytes": None},
         "artifact_offload_failed:publish": {"count": 1, "bytes": None},
     }
     assert sorted((row["scope"], row["stage"]) for row in phase["failures"]) == [
-        ("artifact", "publish"), ("run", "evict"), ("run", "unrecognized_stage")]
+        ("artifact", "publish"), ("run", "evict"), ("run", "plan"), ("run", "unrecognized_stage")]
 
 
 def test_replay_scan_error_leaves_candidate_bytes_unknown() -> None:

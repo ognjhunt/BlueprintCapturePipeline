@@ -556,10 +556,12 @@ def _bulk_reason(bulk_result: Mapping[str, Any]) -> tuple[str | None, Mapping[st
     artifacts are remote.
 
     A run kept hot or protected keeps its residue for the same reason. One whose
-    registry the per-artifact offload refused (a G1 review has no delivery) is
-    ``registry_unsealed``, as the residue's own seal check would say, with that
-    failure's type, errno and stage. One whose bulk offload failed later or still
-    has candidates is ``bulk_offload_failed`` or ``bulk_not_remote``. An artifact
+    registry the per-artifact offload refused while reading and verifying it (its
+    ``registry`` stage: a G1 review has no delivery) is ``registry_unsealed``, as
+    the residue's own seal check would say. One whose bulk offload failed at any
+    later stage (``plan``: a registered file changed, a remote reference does not
+    verify) or still has candidates is ``bulk_offload_failed`` or
+    ``bulk_not_remote``. A failure keeps its type, errno and stage. An artifact
     already evicted counts as remote.
     """
 
@@ -567,10 +569,12 @@ def _bulk_reason(bulk_result: Mapping[str, Any]) -> tuple[str | None, Mapping[st
     if status == "retained_hot_or_active":
         reason = bulk_result.get("retained_reason")
         return (reason if isinstance(reason, str) else "protected"), None
+    failure = ({key: bulk_result.get(key) for key in ("error_type", "errno", "stage")}
+               if "error_type" in bulk_result else None)
     if status == "retained" and bulk_result.get("stage") == "registry":
-        return "registry_unsealed", {key: bulk_result.get(key) for key in ("error_type", "errno", "stage")}
+        return "registry_unsealed", failure
     if status not in ("dry_run", "applied"):
-        return "bulk_offload_failed", None
+        return "bulk_offload_failed", failure
     skipped = [skip for skip in bulk_result.get("skipped") or () if not (
         isinstance(skip, Mapping) and skip.get("reason") == "already_evicted")]
     if skipped or (status == "dry_run" and bulk_result.get("candidate_count") != 0):
@@ -1091,6 +1095,10 @@ def residue_row(
     """
 
     name = Path(run_root).name
+    unresolved = Path(run_root).expanduser()
+    if unresolved.is_symlink() or not unresolved.is_dir():
+        # The artifact store refuses it before reading the registry, at that stage.
+        return _retained(_new_row(name, apply=apply, now=now), "run_root_invalid")
     reason, failure = _bulk_reason(bulk_result)
     if reason:
         return _retained(_new_row(name, apply=apply, now=now), reason, failure=failure)

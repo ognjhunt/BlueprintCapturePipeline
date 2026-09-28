@@ -1504,7 +1504,52 @@ def test_a_run_whose_registry_does_not_seal_is_registry_unsealed(tmp_path) -> No
     failed = {"status": "retained", "reason": "OSError", "error_type": "OSError", "errno": 5, "stage": "publish"}
     later = residue.residue_row(f.run, failed, apply=False, hot_window_seconds=2 * DAY, protection_checker=None,
                                 publisher=None, now=lambda: NOW)
-    assert (later["retained_reason"], later.get("failure")) == ("bulk_offload_failed", None)
+    assert (later["retained_reason"], later["failure"]) == (
+        "bulk_offload_failed", {"error_type": "OSError", "errno": 5, "stage": "publish"})
+
+
+@pytest.mark.parametrize("damage", ["source_changed", "remote_reference_invalid"])
+def test_a_bulk_offload_that_failed_past_the_registry_is_not_registry_unsealed(tmp_path, damage) -> None:
+    """Code review of 10d: the artifact store's own checks after the seal (a registered file with
+    other bytes, a remote reference that does not verify, an alias conflict, a path outside the
+    run) also failed at the default ``registry`` stage, so their runs read ``registry_unsealed``.
+    They now fail at ``plan``: the run is ``bulk_offload_failed``, with the failure's type."""
+
+    f = _sealed_run(tmp_path / "canaries", bulk_remote=damage != "source_changed")
+    if damage == "source_changed":
+        (f.run / "evidence" / "review.mp4").write_bytes(b"w" * len(REGISTERED["evidence/review.mp4"][1]))
+    else:
+        [reference] = (f.run / "artifacts" / "result_delivery" / artifacts.REMOTE_DIRECTORY).glob("*.json")
+        value = json.loads(reference.read_text(encoding="utf-8"))
+        value["run_id"] = "another-run"
+        reference.chmod(0o640)
+        reference.write_text(json.dumps(value), encoding="utf-8")
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+
+    report = _tick(f, pins, queue, apply=False)
+
+    [bulk] = report["result_artifact_offload"]
+    assert (bulk["status"], bulk["stage"]) == ("retained", "plan")
+    [row] = report["result_residue_offload"]["runs"]
+    assert (row["status"], row["retained_reason"]) == ("retained", "bulk_offload_failed")
+    assert row["failure"] == {"error_type": "TaskEvaluationResultDeliveryError", "errno": None, "stage": "plan"}
+
+
+def test_a_linked_run_root_is_run_root_invalid_whatever_its_bulk_offload_says(tmp_path) -> None:
+    """The artifact store refuses a linked run root before it reads the registry, at its default
+    ``registry`` stage; the residue names it for what it is."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    alias = f.evidence / "alias"
+    alias.symlink_to(f.run)
+    refused = {"status": "retained", "reason": "TaskEvaluationResultDeliveryError",
+               "error_type": "TaskEvaluationResultDeliveryError", "errno": None, "stage": "registry"}
+
+    row = residue.residue_row(alias, refused, apply=False, hot_window_seconds=2 * DAY, protection_checker=None,
+                              publisher=None, now=lambda: NOW)
+
+    assert (row["status"], row["retained_reason"]) == ("retained", "run_root_invalid")
 
 
 def test_a_member_whose_name_the_search_cannot_read_stays(tmp_path) -> None:

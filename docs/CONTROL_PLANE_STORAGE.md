@@ -716,16 +716,17 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `omitted_kept_count`; every count covers every pin.
 - Result-artifact offload: a retained run says why in `retained_reason` (`hot`
   or its protection reason). A run whose offload raised records `error_type`,
-  `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
-  `evict`), and so does a skipped artifact. Messages and file names are never
-  recorded.
+  `errno` (for an `OSError`) and `stage` (`registry`, `plan`, `protection`,
+  `publish` or `evict`), and so does a skipped artifact. Messages and file names
+  are never recorded.
 - Result residue offload (`result_residue_offload`: `enabled`,
   `max_runs_per_tick`, `attempted_count`, its totals and a row per registry
   run): a retained run says why in `retained_reason` (`hot` or a protection
   reason, as its bulk offload kept it; `bulk_not_remote`,
-  `bulk_offload_failed`, `already_offloaded`, `registry_unsealed` (with the
-  failure's type, errno and stage, whether the residue or its bulk offload
-  refused the registry: a G1 review has no delivery),
+  `bulk_offload_failed` (its bulk offload failed past the registry, at `plan`
+  or later), `already_offloaded`, `registry_unsealed` (the residue or its bulk
+  offload refused the registry while reading and verifying it: a G1 review has
+  no delivery; either bulk reason keeps the failure's type, errno and stage),
   `dispatch_receipt_missing` (an operator run, whose continuation and download
   route keep reopening its files), `dispatch_receipt_invalid`,
   `dispatch_row_pending` (a pending or processing queue row names the run, and
