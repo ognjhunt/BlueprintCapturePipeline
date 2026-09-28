@@ -168,3 +168,56 @@ def test_entire_native_removal_journal_capacity_is_proved_before_detach(tmp_path
     assert (member/'nested'/'evidence.bin').read_bytes()==b'preserved-evidence'
     assert journal.sequence==0
     assert not (member.parent/('.scene-retirement-'+journal.token+'-0')).exists()
+
+
+@pytest.mark.parametrize('directory',['nested','member-root'])
+def test_resume_exact_empty_directory_removal_after_native_success_before_event(tmp_path,monkeypatch,directory):
+    import os
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
+    access,member,preserved,journal=setup_operation(tmp_path,monkeypatch)
+    original=os.rmdir
+    class Interrupted(RuntimeError):
+        pass
+    def remove_then_interrupt(name,*args,**kwargs):
+        result=original(name,*args,**kwargs)
+        selected=name=='nested' if directory=='nested' else name.startswith('.scene-retirement-')
+        if selected:
+            raise Interrupted()
+        return result
+    with monkeypatch.context() as patch:
+        patch.setattr(os,'rmdir',remove_then_interrupt)
+        with access.exclusive_scene_access(),pytest.raises(Interrupted):
+            detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+    resumed=SceneJournal.resume(journal.initial_ref,allowance=journal.allowance)
+    with access.exclusive_scene_access():
+        outcome=detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=resumed)
+    assert outcome['outcome']=='removed' and not member.exists()
+    assert outcome['removed_allocated_bytes']==preserved['unique_allocated_bytes']
+    assert not (member.parent/('.scene-retirement-'+journal.token+'-0')).exists()
+
+
+def test_resume_never_removes_substituted_planned_empty_directory(tmp_path,monkeypatch):
+    import os
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
+    access,member,preserved,journal=setup_operation(tmp_path,monkeypatch)
+    original=os.rmdir
+    class Interrupted(RuntimeError):
+        pass
+    def remove_then_interrupt(name,*args,**kwargs):
+        result=original(name,*args,**kwargs)
+        if name=='nested':
+            raise Interrupted()
+        return result
+    with monkeypatch.context() as patch:
+        patch.setattr(os,'rmdir',remove_then_interrupt)
+        with access.exclusive_scene_access(),pytest.raises(Interrupted):
+            detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+    destination=member.parent/('.scene-retirement-'+journal.token+'-0')
+    (destination/'nested').mkdir()
+    (destination/'nested'/'new.bin').write_bytes(b'new-generation')
+    resumed=SceneJournal.resume(journal.initial_ref,allowance=journal.allowance)
+    with access.exclusive_scene_access(),pytest.raises(ValueError):
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=resumed)
+    assert (destination/'nested'/'new.bin').read_bytes()==b'new-generation'
