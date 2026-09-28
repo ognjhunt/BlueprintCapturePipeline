@@ -82,6 +82,25 @@ def test_cpu_result_cannot_be_accepted_without_one_terminal_guest_receipt():
         probe.read_guest_result('BLUEPRINT_G1_VM_CPU_RESULT:{}\nBLUEPRINT_G1_VM_CPU_RESULT:{}')
 
 
+def test_optional_packages_only_replay_readonly_offline_apt_simulation():
+    source = probe.guest_probe_source(system_packages={
+        'implementation_commit': 'a' * 40, 'source_sha256': 'sha256:' + 'b' * 64,
+        'manifest_digest': 'sha256:' + 'c' * 64})
+    assert 'ro,nodev,nosuid,noexec' in source and '/dev/vdb' in source
+    assert 'offline_apt_simulation_command' in source
+    assert 'verify_system_packages' in source
+    assert 'runtime_installation_performed' in source
+    assert 'apt-get install' not in source and 'docker pull' not in source
+    compile(source, 'guest_cpu_probe.py', 'exec')
+
+
+def test_system_replay_rejects_unbound_package_source():
+    with pytest.raises(ValueError, match='g1_vm_cpu'):
+        probe.guest_probe_source(system_packages={
+            'implementation_commit': 'foreign', 'source_sha256': 'sha256:' + 'b' * 64,
+            'manifest_digest': 'sha256:' + 'c' * 64})
+
+
 @pytest.mark.parametrize("fault", [None, "layer", "base"])
 def test_replay_reverifies_existing_guest_bytes_without_copy_or_download(tmp_path, fault):
     layer, base = tmp_path / "layer.tar.gz", tmp_path / "base.qcow2"

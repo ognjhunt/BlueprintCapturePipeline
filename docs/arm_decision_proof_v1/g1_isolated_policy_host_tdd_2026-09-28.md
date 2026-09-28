@@ -1095,3 +1095,34 @@ cannot produce the retained command. The preparation explicitly retains
 owner_review_required=true and runtime_installation_performed=false.
 These fixtures do not establish APT dependency closure, actual package install,
 sandbox features, driver loading, CUDA or any paired-policy episode.
+
+### Reviewed exact-guest APT simulation replay
+
+Extend the existing bounded local CPU rehearsal with an optional, fully
+verified system-package preparation. Reopen every asset before making the
+NoCloud seed; reserve seed directory+ISO bytes in addition to existing bounds.
+Copy only the fixed preparation files and same-commit stdlib verifier, bind
+source SHA and manifest digest in the CPU receipt. Inside the networkless
+guest mount its read-only virtio seed as ro/nodev/nosuid/noexec, verify source
+SHA, both observation receipts, package manifest and every .deb again, then
+run ONLY the helper's fixed offline APT simulation. Retain exact exit/stdout/
+stderr with the existing guest diagnostic. No package maintainer script,
+driver configuration, reboot to a modified image, policy or GPU is run.
+
+Tests before build: baseline diagnostic stays unchanged; package replay has
+only read-only seed mount, same source/digest binding and fixed APT simulation;
+unsafe commit/hash inputs refuse generation. A CPU observation containing an
+APT failure is still an observed CPU result, not an installation success.
+Record the actual resolver output to decide the complete install/review packet,
+and keep dispatch refused. Accepted for same-guest data-only resolver replay.
+
+Replay checkpoint: both new guest-source binding cases were observed red before
+implementation. All32 package and CPU cases pass in0.73s; changed-file Ruff/diff
+pass. Actual public download-only acquisition verified all25 exact files and
+389,073,866 bytes in `/private/tmp/g1-vm-system-package-assets-b82d2e12e-20260928a`.
+No package code or maintainer script was executed. The optional replay reserves
+both seed-directory and ISO copies, verifies the same-commit verifier source
+and complete package preparation on host and guest, and records exact APT
+simulation output under the existing CPU-only observation. Actual APT replay
+is still unexecuted at this checkpoint; execute only after clean commit/push,
+fresh capacity and preparing all files against that immutable commit.

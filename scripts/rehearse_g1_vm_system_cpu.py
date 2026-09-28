@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -134,8 +135,8 @@ def download_layer(path):
         raise ValueError("g1_vm_cpu_download_binding_invalid")
 
 
-def guest_probe_source():
-    return '''import hashlib,json,os,platform,subprocess
+def guest_probe_source(*, system_packages=None):
+    source = '''import hashlib,json,os,platform,subprocess
 from pathlib import Path
 result={'schema_version':'g1_vm_guest_system_cpu_observation.v1','scope':'local_tcg_cpu_only',
  'gpu_runtime_qualified':False,'policy_inference_performed':False,'provider_mutation_performed':False,
@@ -158,6 +159,40 @@ with Path('/dev/ttyS0').open('w') as serial:
  serial.write('BLUEPRINT_G1_VM_CPU_RESULT:'+json.dumps(result,sort_keys=True)+'\\n');serial.flush()
 subprocess.run(['systemctl','poweroff'],timeout=30,check=False)
 '''
+    if system_packages is None:
+        return source
+    if (set(system_packages) != {'implementation_commit', 'source_sha256', 'manifest_digest'}
+            or re.fullmatch(r'[0-9a-f]{40}', system_packages['implementation_commit']) is None
+            or any(re.fullmatch(r'sha256:[0-9a-f]{64}', system_packages[key]) is None
+                   for key in ('source_sha256', 'manifest_digest'))):
+        raise ValueError('g1_vm_cpu_system_package_binding_invalid')
+    diagnostic = '''import runpy
+binding=__BINDING__
+result['system_packages']={**binding,'runtime_installation_performed':False,
+ 'gpu_runtime_qualified':False,'provider_mutation_performed':False}
+try:
+ root=Path('/run/blueprint-cpu-seed');root.mkdir(mode=0o700)
+ subprocess.run(['mount','-t','iso9660','-o','ro,nodev,nosuid,noexec','/dev/vdb',str(root)],
+  capture_output=True,text=True,timeout=30,check=True)
+ verifier=root/'system-package-verifier.py'
+ if 'sha256:'+hashlib.sha256(verifier.read_bytes()).hexdigest()!=binding['source_sha256']:
+  raise ValueError('system_package_verifier_digest_invalid')
+ helpers=runpy.run_path(str(verifier))
+ package_root=root/'system-packages'
+ manifest=helpers['verify_system_packages'](package_root,
+  expected_implementation_commit=binding['implementation_commit'])
+ if manifest['manifest_digest']!=binding['manifest_digest']:
+  raise ValueError('system_package_manifest_digest_invalid')
+ argv=helpers['offline_apt_simulation_command'](package_root,
+  expected_implementation_commit=binding['implementation_commit'])
+ child=subprocess.run(argv,capture_output=True,text=True,timeout=120,
+  env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C'})
+ result['probes']['offline_apt_simulation']={'exit_code':child.returncode,
+  'stdout':child.stdout[:262144],'stderr':child.stderr[:4096]}
+except Exception as error:
+ result['probes']['offline_apt_simulation']={'error_type':type(error).__name__}
+'''.replace('__BINDING__', repr(system_packages))
+    return source.replace('value=json.dumps(result,', diagnostic + 'value=json.dumps(result,', 1)
 
 
 def qemu_command(executable, overlay, seed):
@@ -201,7 +236,7 @@ def _stop(child):
             child.wait(timeout=20)
 
 
-def run(*, root, implementation_commit, retained_image_root=None):
+def run(*, root, implementation_commit, retained_image_root=None, system_package_root=None):
     if (not re.fullmatch(r"[0-9a-f]{40}", implementation_commit) or not root.is_absolute()
             or root.exists() or root.is_symlink() or root.parent.resolve() != root.parent):
         raise ValueError("g1_vm_cpu_fresh_stage_required")
@@ -211,7 +246,19 @@ def run(*, root, implementation_commit, retained_image_root=None):
     if head != implementation_commit or dirty:
         raise ValueError("g1_vm_cpu_immutable_source_required")
     required_assets = LAYER_BYTES + DISK_BYTES if retained_image_root is None else 0
-    require_capacity(root.parent, additional_bytes=required_assets + OVERLAY_LIMIT + LOG_LIMIT)
+    system_binding, system_module, system_bytes = None, None, 0
+    if system_package_root is not None:
+        module_path = checkout / 'src/blueprint_pipeline/native_g1_team_vm_system_packages.py'
+        spec = importlib.util.spec_from_file_location('g1_vm_system_packages', module_path)
+        system_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(system_module)
+        package_manifest = system_module.verify_system_packages(
+            system_package_root, expected_implementation_commit=implementation_commit)
+        system_bytes = sum(row['size_bytes'] for row in system_module.SYSTEM_PACKAGES.values()) + 262144
+        system_binding = {'implementation_commit': implementation_commit,
+                          'source_sha256': file_sha(module_path),
+                          'manifest_digest': package_manifest['manifest_digest']}
+    require_capacity(root.parent, additional_bytes=required_assets + 2 * system_bytes + OVERLAY_LIMIT + LOG_LIMIT)
     binaries = {name: shutil.which(name) for name in ("qemu-img", "qemu-system-x86_64", "hdiutil")}
     if not all(binaries.values()):
         raise ValueError("g1_vm_cpu_local_tools_missing")
@@ -221,6 +268,8 @@ def run(*, root, implementation_commit, retained_image_root=None):
               "scope": "local_tcg_cpu_only", "gpu_runtime_qualified": False,
               "policy_inference_performed": False, "provider_mutation_performed": False,
               "claim_ceiling": "development_only", "stage": "layer_download"}
+    if system_binding is not None:
+        result['system_packages'] = system_binding
     child = None
     try:
         if retained_image_root is None:
@@ -246,7 +295,14 @@ def run(*, root, implementation_commit, retained_image_root=None):
         result["stage"] = "seed_and_overlay"
         seed_root = root / "seed"
         seed_root.mkdir(mode=0o700)
-        source = guest_probe_source()
+        if system_package_root is not None:
+            shutil.copytree(system_package_root, seed_root / 'system-packages')
+            system_module.verify_system_packages(seed_root / 'system-packages',
+                                                 expected_implementation_commit=implementation_commit)
+            shutil.copyfile(module_path, seed_root / 'system-package-verifier.py')
+            if file_sha(seed_root / 'system-package-verifier.py') != system_binding['source_sha256']:
+                raise ValueError('g1_vm_cpu_system_package_source_changed')
+        source = guest_probe_source(system_packages=system_binding)
         encoded = base64.b64encode(source.encode()).decode()
         (seed_root / "meta-data").write_text("instance-id: g1-cpu-" + implementation_commit[:16] + "\nlocal-hostname: g1-cpu-inspection\n")
         (seed_root / "network-config").write_text("version: 2\nethernets: {}\n")
@@ -305,9 +361,11 @@ def main():
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--retained-image-root", type=Path)
+    parser.add_argument("--system-package-root", type=Path)
     parser.add_argument("--execute-local-cpu", action="store_true", required=True)
     args = parser.parse_args()
-    result = run(root=args.root, implementation_commit=args.implementation_commit, retained_image_root=args.retained_image_root)
+    result = run(root=args.root, implementation_commit=args.implementation_commit,
+                 retained_image_root=args.retained_image_root, system_package_root=args.system_package_root)
     return 0 if result["status"] == "guest_cpu_observed" else 1
 
 
