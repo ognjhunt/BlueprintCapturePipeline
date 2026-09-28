@@ -424,7 +424,8 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
     source=json.loads(Path(consent['cache_objects'][0]['source_raw_ref']['path']).read_bytes())
     request=json.loads(Path(source['submission_request_raw_ref']['path']).read_bytes())
     root=Path(consent['cache_objects'][0]['canonical_path']).parents[2]/request['preparation_id']
-    records=[(file,json.loads(file.read_bytes())) for file in Path(policy['generation_store']).glob('*.json')]
+    records=[(file,json.loads(file.read_bytes())) for file in Path(policy['generation_store']).glob('*.json')
+             if len(file.name)==69]
     generation=next(value for _,value in records if value.get('canonical_path')==str(root))
     caches=[(file,value) for file,value in records if value.get('schema_version')=='scene_content_generation.v1']
     consent['cache_objects']=[dict(canonical_path=value['canonical_path'],digest=value['digest'],
