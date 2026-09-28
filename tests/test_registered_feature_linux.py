@@ -779,6 +779,7 @@ def _linux_completed_gc_restore(
         expected_restore_intent=restore["restore_intent"],
         installed_config_path=value["config"],
         now=lambda: clock + 3,
+        _pins_root=pins,
     )
     assert outcome["decision"] == "restored", outcome
     assert target.stat().st_ino == original_inode
