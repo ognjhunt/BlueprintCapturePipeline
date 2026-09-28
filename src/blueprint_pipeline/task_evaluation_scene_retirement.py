@@ -192,7 +192,9 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
     allowance.tick()
     _require(fresh.get('finished_observation',{}).get('status') in _TERMINAL
              and 'historical_lineage' in fresh,'scene_retirement_not_finished')
-    _require(fresh.get('selected_intent_provenance')==consent['intent_raw_ref'],
+    provenance=fresh.get('selected_intent_provenance')
+    _require(type(provenance) is dict and provenance.get('role')=='intent'
+             and {key:provenance.get(key) for key in ('path','sha256','size_bytes')}==consent['intent_raw_ref'],
              'scene_retirement_owner_changed')
     _plan_members(fresh,consent,allowance)
     _installed_cohort(policy,allowance)
