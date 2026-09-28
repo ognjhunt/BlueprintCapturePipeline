@@ -101,3 +101,24 @@ def test_birth_current_authority_checks_precede_claim_or_folder(installation, mo
     assert not list(installation[2].glob("*.claim.json"))
     root = Path(installation[1]["lane_scratch_work_root"]) / "g1"
     assert list(root.iterdir()) == []
+
+
+def test_second_actual_issuance_and_birth_updates_current_head_without_losing_first(installation, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_birth as code
+    public = prepare(installation)
+    monkeypatch.setattr(code, "_blueprint_identity", lambda: (0, 0))
+    monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: None)
+    first = issue(installation)
+    born_first = birth(installation, first)
+    original = (public / "HEAD.json").read_bytes()
+    second = issue(installation)
+    born_second = birth(installation, second)
+    head = json.loads((public / "HEAD.json").read_bytes())
+    old_head = json.loads(original)
+    authority = json.loads((public / head["record_name"]).read_bytes())
+    assert head["version"] == 1 and head["authority_epoch_id"] == old_head["authority_epoch_id"]
+    assert authority["previous_record"] == old_head["record"]
+    assert {row["intent_id"] for row in authority["enrollments"]} == {first["intent_id"], second["intent_id"]}
+    assert all(row["state"] == "active" for row in authority["enrollments"])
+    assert Path(born_first["path"]).is_dir() and Path(born_second["path"]).is_dir()
+    assert (public / old_head["record_name"]).is_file()
