@@ -42,23 +42,11 @@ def install_protected_feature(root):
     owners.INSTALLED_PACKAGE_ROOT = package.parent
     state = root / "state"
     state.mkdir(mode=0o755)
+    (state / "requests").mkdir(mode=0o755)
     private = state / "requests/needed-checkpoint-cache-records"
-    private.mkdir(parents=True, mode=0o700)
-    private.parent.chmod(0o700)
     public = state / "needed-checkpoint-cache-registration"
-    public.mkdir(mode=0o755)
     authority = public / "authority"
-    authority.mkdir(mode=0o750)
     gid = grp.getgrnam("blueprint").gr_gid
-    os.chown(authority, 0, gid)
-    for parent, name, mode, selected_gid in (
-        (private, ".cache-store.lock", 0o600, 0),
-        (authority, ".authority.lock", 0o640, gid),
-    ):
-        path = parent / name
-        path.write_bytes(b"")
-        os.chown(path, 0, selected_gid)
-        path.chmod(mode)
     work = root / "work/lanes"
     work.mkdir(parents=True, mode=0o750)
     work.parent.chmod(0o755)
@@ -102,6 +90,39 @@ def install_protected_feature(root):
     )
     config.write_bytes(encoded(settings))
     config.chmod(0o600)
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as retirement
+
+    # This is a disposable compiled installation repin, before configuration is
+    # admitted. The real provisioner creates metadata only, with no enrollment,
+    # current HEAD, owner grant or flag mutation.
+    consumer.LANE_ROOTS = (work, Path(settings["lane_scratch_inputs_root"]))
+    prior_config = config.read_bytes()
+    prepared = retirement.prepare_registered_experiment_state(installed_config_path=config)
+    assert prepared == dict(decision="prepared", creation_enabled=False,
+                            retirement_enabled=False, cache_creation_enabled=True)
+    assert config.read_bytes() == prior_config
+    expected = (
+        (state, 0o755, 0), (state / "requests", 0o755, 0),
+        (private, 0o700, 0), (public, 0o755, 0), (authority, 0o750, gid),
+        (state / "requests/experiment-records", 0o700, 0),
+        (state / "experiment-authority", 0o750, gid),
+    )
+    for path, mode, group in expected:
+        info = path.stat()
+        assert info.st_uid == 0 and info.st_gid == group and info.st_mode & 0o777 == mode
+    for parent, name, mode, group in (
+        (private, ".cache-store.lock", 0o600, 0),
+        (authority, ".authority.lock", 0o640, gid),
+        (state / "requests/experiment-records", ".experiment-authority.lock", 0o600, 0),
+        (state / "experiment-authority", ".authority.lock", 0o640, gid),
+    ):
+        path = parent / name
+        info = path.stat()
+        assert info.st_uid == 0 and info.st_gid == group and info.st_mode & 0o777 == mode
+        assert info.st_nlink == 1 and path.read_bytes() == b""
+    assert not (public / "HEAD.json").exists()
+    assert not (state / "experiment-authority/HEAD.json").exists()
     return dict(
         config=config,
         settings=settings,
@@ -443,15 +464,6 @@ def _linux_contained_phase(root):
     gc_env.write_text("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=" + str(pins) + "\n")
     gc_env.chmod(0o600)
     private = root / "state/requests/experiment-records"
-    private.mkdir(mode=0o700)
-    (private / ".experiment-authority.lock").write_bytes(b"")
-    (private / ".experiment-authority.lock").chmod(0o600)
-    public = root / "state/experiment-authority"
-    public.mkdir(mode=0o750)
-    os.chown(public, 0, gid)
-    (public / ".authority.lock").write_bytes(b"")
-    (public / ".authority.lock").chmod(0o640)
-    os.chown(public / ".authority.lock", 0, gid)
     roots = (value["work"], root / "inputs/lanes")
     for lane_root in roots:
         if not lane_root.exists():
