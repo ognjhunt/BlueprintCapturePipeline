@@ -15,7 +15,8 @@ cannot be reached (its directory became a file or a link), is a typed conflict
 and the others are still restored. It needs no sealed or unchanged registry,
 only the pointer's run: its directory name, and its run id when the registry
 still names one. The names of one inode (a ``group`` in the pointer) come back
-as hard links of one restored file. Every directory it creates an entry in is
+as hard links of one restored file, each only when the pointer gives it that
+file's digest and size (``group_member_differs`` otherwise). Every directory it creates an entry in is
 fsynced, and the receipt is written whatever happens once the pointer verified.
 """
 
@@ -59,11 +60,17 @@ _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 class _Anchor(NamedTuple):
-    """A group's member already in place with the archive's bytes: its siblings link to it."""
+    """A group's member already in place with the archive's bytes: its siblings link to it.
+
+    It carries the digest and size the pointer records for it; a sibling the
+    pointer gives other bytes is never linked to it.
+    """
 
     directory: int
     name: str
     identity: tuple[int, int]
+    sha256: str
+    size_bytes: int
 
 
 def _registry_run_id(root: Path) -> str | None:
@@ -119,13 +126,20 @@ def _open_directory(root_fd: int, parts: tuple[str, ...], owner: os.stat_result,
 def _existing(directory: int, name: str, member: Mapping[str, Any]) -> tuple[str, _Anchor | None]:
     entry = _entry(directory, name)
     if entry is not None and _same_file(directory, name, entry, member):
-        return "already_present", _Anchor(directory, name, (entry.st_dev, entry.st_ino))
-    return "conflict", None
+        return "already_present", _Anchor(directory, name, (entry.st_dev, entry.st_ino), member["sha256"],
+                                          member["size_bytes"])
+    return "existing_file_differs", None
 
 
 def _link_sibling(anchor: _Anchor, directory: int, name: str, member) -> tuple[str, _Anchor | None]:
-    """Link ``name`` to the group's anchor, only while the anchor is still the file it placed."""
+    """Link ``name`` to the group's anchor, only while the anchor is still the file it placed.
 
+    The pointer must give the sibling the anchor's digest and size; otherwise it
+    is a ``group_member_differs`` conflict, and nothing is linked at its path.
+    """
+
+    if (member["sha256"], member["size_bytes"]) != (anchor.sha256, anchor.size_bytes):
+        return "group_member_differs", None
     current = _entry(anchor.directory, anchor.name)
     if current is None or not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != anchor.identity:
         raise ResultResidueOffloadError("result_residue_restore_anchor_changed")
@@ -172,7 +186,8 @@ def _write_member(archive: tarfile.TarFile, info: tarfile.TarInfo, directory: in
         except FileExistsError:
             return _existing(directory, name, member)
         os.fsync(directory)
-        return "restored", _Anchor(directory, name, (identity.st_dev, identity.st_ino))
+        return "restored", _Anchor(directory, name, (identity.st_dev, identity.st_ino), member["sha256"],
+                                   member["size_bytes"])
     finally:
         try:
             os.unlink(temporary, dir_fd=directory)
@@ -200,8 +215,8 @@ def _restore_group(root_fd, archive, infos, members, owner, outcomes, conflicts)
             except (OSError, ResultResidueOffloadError) as exc:
                 conflicts.append({"relative_path": relative, "reason": f"restore_failed:{type(exc).__name__}"})
                 continue
-            if outcome == "conflict":
-                conflicts.append({"relative_path": relative, "reason": "existing_file_differs"})
+            if outcome not in outcomes:
+                conflicts.append({"relative_path": relative, "reason": outcome})
                 continue
             outcomes[outcome].append(relative)
             anchor = anchor or placed

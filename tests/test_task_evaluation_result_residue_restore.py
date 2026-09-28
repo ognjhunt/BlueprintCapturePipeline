@@ -166,6 +166,31 @@ def test_restore_links_a_hard_link_group_again(tmp_path) -> None:
     assert all(path.read_bytes() == RESIDUE["logs/worker.log"] for path in linked)
 
 
+def test_a_group_sibling_the_pointer_gives_other_bytes_is_never_linked(tmp_path) -> None:
+    """The names of one inode come back as links of one restored file only when the pointer gives
+    them the same bytes. A sibling whose recorded digest differs from its anchor's is a typed
+    conflict, and nothing is linked at its path."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    os.link(f.run / "logs" / "worker.log", f.run / "logs" / "worker-copy.log")
+    _offload(f)
+    value = json.loads(f.pointer.read_text(encoding="utf-8"))
+    for member in value["members"]:
+        if member["relative_path"] == "logs/worker.log":  # the anchor is worker-copy.log, first by name
+            member["sha256"] = "sha256:" + "0" * 64
+    value["pointer_digest"] = canonical_digest(value, digest_field="pointer_digest")
+    f.pointer.chmod(0o640)
+    f.pointer.write_text(json.dumps(value), encoding="utf-8")
+
+    restored = restore.restore_result_residue(run_root=f.run, materializer=_materializer(f), now=lambda: NOW)
+
+    assert restored["status"] == "restored_with_conflicts"
+    assert restored["conflicts"] == [{"relative_path": "logs/worker.log", "reason": "group_member_differs"}]
+    assert (f.run / "logs" / "worker-copy.log").read_bytes() == RESIDUE["logs/worker.log"]
+    assert not (f.run / "logs" / "worker.log").exists()
+    assert (f.run / "logs" / "worker-copy.log").stat().st_nlink == 1
+
+
 def test_the_receipt_is_written_even_when_the_archive_cannot_be_fetched(tmp_path) -> None:
     f = _sealed_run(tmp_path / "canaries")
     _offload(f)

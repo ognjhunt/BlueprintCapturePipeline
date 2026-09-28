@@ -795,7 +795,9 @@ It verifies the archive and every member's digest and size, never overwrites a
 different file (`existing_file_differs`), and records a member it cannot place
 (its directory became a file or a link) as `restore_failed:<type>` while the
 rest still come back. It leaves the members the pointer lists as `kept` alone,
-links the names of one inode (a pointer `group`) back together, fsyncs every
+links the names of one inode (a pointer `group`) back together, but never a name
+the pointer gives other bytes than the file it would link to
+(`group_member_differs`), fsyncs every
 directory it adds an entry to, and needs no sealed registry: only the pointer's
 run name, and its run id where the registry still names one. It always writes
 `<name>.residue-restore.v1.json` beside the pointer, with a `failure` when the
