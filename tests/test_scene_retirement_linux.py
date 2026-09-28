@@ -40,6 +40,15 @@ def _native(command, *, timeout=30):
     return value.stdout
 
 
+def _checkout_git(source, *arguments):
+    # This hermetic job has already selected the exact immutable feature/lock
+    # checkout. Root reads its data without a global or wildcard trust change.
+    path = Path(source).resolve(strict=True)
+    assert path.is_dir() and not Path(source).is_symlink()
+    return ['/usr/bin/git', '--no-replace-objects', '-c', 'safe.directory='+str(path),
+            '-C', str(path), *arguments]
+
+
 def _copy_protected(source, target):
     shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyo'))
     for path in [target, *target.rglob('*')]:
@@ -180,8 +189,8 @@ def _enabled_sdk_native_phase():
     source = Path(os.environ['BLUEPRINT_NATIVE_SOURCE_ROOT'])
     commit = os.environ['BLUEPRINT_NATIVE_SOURCE_COMMIT']
     contracts_input = Path(os.environ['BLUEPRINT_NATIVE_CONTRACTS_ROOT'])
-    assert _native(['/usr/bin/git', '--no-replace-objects', '-C', str(source), 'rev-parse', 'HEAD']).strip() == commit
-    assert _native(['/usr/bin/git', '--no-replace-objects', '-C', str(contracts_input), 'rev-parse', 'HEAD']).strip() == '7708a4e4c5dedeeb39cc73d3f6869304de295b81'
+    assert _native(_checkout_git(source, 'rev-parse', 'HEAD')).strip() == commit
+    assert _native(_checkout_git(contracts_input, 'rev-parse', 'HEAD')).strip() == '7708a4e4c5dedeeb39cc73d3f6869304de295b81'
     sdk_inputs = _RUNTIME.with_name(_RUNTIME.name+'-sdk-inputs')
     unit = 'blueprint-pipeline-intake.service'
     unit_path = Path('/etc/systemd/system') / unit
@@ -217,10 +226,9 @@ def _enabled_sdk_native_phase():
         contracts.mkdir(mode=0o755)
         _copy_protected(contracts_input/'.git',contracts/'.git')
         installer = root/'installer.py'
-        blob = subprocess.check_output(['/usr/bin/git','--no-replace-objects','-C',str(source),
-            'cat-file','blob',commit+':scripts/install_scene_retirement_runtime.py'], env={'PATH':'/usr/bin:/bin','GIT_NO_LAZY_FETCH':'1','GIT_ALLOW_PROTOCOL':'','GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null'},timeout=10)
+        blob = subprocess.check_output(_checkout_git(source, 'cat-file', 'blob', commit+':scripts/install_scene_retirement_runtime.py'), env={'PATH':'/usr/bin:/bin','GIT_NO_LAZY_FETCH':'1','GIT_ALLOW_PROTOCOL':'','GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null'},timeout=10)
         assert 0 < len(blob) <= 1024*1024
-        oid = _native(['/usr/bin/git','--no-replace-objects','-C',str(source),'rev-parse',commit+':scripts/install_scene_retirement_runtime.py']).strip()
+        oid = _native(_checkout_git(source, 'rev-parse', commit+':scripts/install_scene_retirement_runtime.py')).strip()
         assert hashlib.sha1(b'blob '+str(len(blob)).encode()+b'\0'+blob).hexdigest() == oid
         installer.write_bytes(blob)
         installer.chmod(0o644)
