@@ -951,3 +951,56 @@ Fresh read-only storage observation: work available 11,136,524,288B; root availa
 identity remains 4a59c6bb668ac53ca9cc3440fcc57b21242d3612; both inspected campaign
 services are inactive/MainPID0. This does not establish provider-zero or billing.
 No GPU allocation, deployment, system-package installation or data deletion.
+
+## Reviewed image CPU preflight before enabling canonical VM allocation
+
+ADP-050 Day28 / ADP-060 owner extension. Fresh official registry read verifies
+Vast KVM manifest28dc36f9 and config2b2425c3, Linux/amd64. Its outer history copies
+`root/images/ubuntu.img`, but cannot prove guest Docker, NVIDIA or bwrap tools.
+Anonymous exact Isaac manifest pull is observed authorized; the outer KVM image
+login is therefore not a substitute for observing the guest. A bounded range
+read identifies guest disk5196152832B in compressed layer2633977898B, SHAde25e09c;
+that header observation is NOT whole-layer integrity proof.
+
+Smallest next preflight: reuse installed local QEMU in software TCG, download
+only that immutable public disk layer, verify whole compressed bytes and exact
+size, then stream-extract ONLY the fixed regular ubuntu.img into a fresh stage.
+Reject changed hashes, ambiguous/missing/duplicate/unsafe members and size drift;
+never run a supervisor/container or an arbitrary archive command. Require local
+free bytes for compressed+extracted disk+512MiB overlay+32MiB log+8GB remaining
+before download and recheck at extraction/boot. Preserve retained inputs and
+failed stages; no deletion or reuse of a modified base.
+
+Boot a qcow2 overlay with <=2GiB RAM/two CPUs, no acceleration beyond TCG, no
+network, no host mounts/device exposure, no captures/model data, and a NoCloud
+seed containing only a fixed read-only guest diagnostic. Inspect OS/kernel,
+installed driver/toolkit/Docker/bwrap packages, Docker runtime map and bwrap
+help; write an explicit CPU-only terminal observation to serial then power off.
+Do not install packages, upgrade drivers or simulate any score. Bound the child
+to15minutes, overlay512MiB/log32MiB and host8GB floor; terminate ONLY this child
+on a breached boundary. PID/resource receipt and fixed command must be retained.
+
+Test first: exact layer/disk binding and malformed tar rejection; insufficient
+capacity before fetch; exact networkless TCG command and bounded resources;
+guest diagnostics cannot mutate packages, call policies or contain private data.
+After focused tests and immutable commit/push, run the actual CPU boot and record
+what is installed/missing. Guest package identity does not prove actual NVIDIA
+hardware, driver loading, CUDA, policy inference or full VM provider admission.
+Use the result to implement the complete offline system bootstrap and canonical
+offer/create/watchdog path; paired dispatch stays refused until ready.
+
+Design review: source/asset/command boundaries and current17.3GB local capacity
+were inspected. Planned retained+maximum scratch fits with8GB remaining. This
+uses the existing authorized public Vast image and local installed QEMU; it is
+not Plan13b, a new paid CPU provider, or an alternate GPU allocator. Accepted
+for a focused test-first CPU preflight, with no changes to spend/storage gates.
+
+Implementation checkpoint:11 focused tests pass in0.41s for exact compressed
+layer/guest bytes, unsafe/duplicate tar members, capacity refusal, bounded TCG
+command, fixed non-policy diagnostics and absent/duplicate terminal rejection.
+Missing implementation was observed red before build. Changed-file Ruff/diff
+checks pass. The CPU rehearsal is still unexecuted at this checkpoint; these
+fixtures do not establish guest packages, CUDA, VM-provider or episode support.
+Guest boot follows only after clean immutable commit/push and a fresh local
+capacity check. Primary references: official Vast VM docs, cloud-init NoCloud
+CIDATA local drive, and QEMU invocation documentation.
