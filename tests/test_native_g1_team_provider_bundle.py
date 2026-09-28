@@ -257,9 +257,10 @@ def test_selected_bundle_entrypoints_import_in_isolated_provider_interpreter(tmp
         runtime_root = pathlib.Path(sys.argv[1])
         sys.path.insert(0, sys.argv[1])
         module = sys.argv[2]
-        if module.endswith('native_g1_team_policy_worker'):
+        if module.endswith(('native_g1_team_policy_worker', 'native_g1_team_vm_host')):
             import importlib
             importlib.import_module('blueprint_pipeline.native_g1_team_relay_runtime_session')
+            importlib.import_module('blueprint_pipeline.native_g1_team_vm_output')
         sys.argv = [module, '--help']
         try:
             runpy.run_module(module, run_name='__main__')
@@ -270,7 +271,8 @@ def test_selected_bundle_entrypoints_import_in_isolated_provider_interpreter(tmp
                 assert pathlib.Path(loaded.__file__).is_relative_to(runtime_root), name
     ''')
     for module in ("native_g1_team_provider_runtime", "native_g1_team_worker_supervisor",
-                   "native_g1_team_policy_worker", "native_task_runtime_source_provision"):
+                   "native_g1_team_policy_worker", "native_task_runtime_source_provision",
+                   "native_g1_team_vm_host"):
         result = subprocess.run(
             [sys.executable, "-I", "-c", script, str(runtime_root), "blueprint_pipeline." + module],
             cwd=tmp_path, capture_output=True, text=True, timeout=30,

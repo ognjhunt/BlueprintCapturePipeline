@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import tempfile
 import zipfile
+
+import pytest
 
 from blueprint_pipeline import native_g1_team_provider_runtime as runtime
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -79,3 +83,42 @@ def test_missing_credential_and_changed_scene_block_before_endpoint_contact(tmp_
     result = runtime.run_g1_team_provider_runtime(runtime_root=root, output_dir=other)
     assert result["status"] == "blocked"
     assert result["stage_reached"] == "input_verification"
+
+
+@pytest.mark.parametrize("fault", [None, "packet", "permissions", "missing", "https"])
+def test_guest_private_relay_rechecks_binding_before_selected_worker(tmp_path, monkeypatch, fault):
+    from blueprint_pipeline.native_g1_team_policy_relay import RelayBinding
+    from blueprint_pipeline.native_g1_team_relay_runtime_session import write_g1_team_relay_config
+
+    root, output, _ = _runtime(tmp_path, monkeypatch, endpoint=fault == "https")
+    packet = runtime.verify_g1_team_provider_inputs(root)["packet"]
+    profile = packet["request"]["policy_profile"]
+    called = []
+    def worker(**kwargs):
+        called.append(kwargs)
+        return {"status": "blocked", "result_digest": "sha256:" + "b" * 64}
+    monkeypatch.setattr(runtime, "run_supervised_g1_team_worker", worker)
+    with tempfile.TemporaryDirectory(prefix="g1-guest-relay-", dir=str(Path("/tmp").resolve())) as directory:
+        path = Path(directory) / "private.json"
+        binding = RelayBinding(
+            "sha256:" + "f" * 64 if fault == "packet" else packet["packet_digest"],
+            profile["profile_digest"], packet["trusted_setup"]["setup_digest"],
+            "container" if fault == "https" else profile["delivery"]["mode"],
+        )
+        if fault != "missing":
+            write_g1_team_relay_config(path=path, binding=binding,
+                                      socket_path=Path(directory) / "wire", secret="e" * 64)
+        if fault == "permissions":
+            path.chmod(0o644)
+        result = runtime.run_g1_team_provider_runtime(runtime_root=root, output_dir=output,
+                                                      policy_relay_config_path=path)
+        assert result["status"] == "blocked"
+        assert "e" * 64 not in json.dumps(result)
+        if fault is None:
+            assert len(called) == 1
+            assert called[0]["worker_arguments"]["policy_relay_config_path"] == path
+            assert called[0]["worker_arguments"]["credential_file_path"] is None
+            assert result["stage_reached"] == "supervised_worker"
+        else:
+            assert called == []
+            assert result["stage_reached"] == "policy_runtime_binding"

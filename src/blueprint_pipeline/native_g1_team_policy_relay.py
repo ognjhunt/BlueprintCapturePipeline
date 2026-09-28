@@ -18,6 +18,7 @@ import re
 import secrets
 import socket
 import stat
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
@@ -235,6 +236,9 @@ class G1PolicyRelayServer:
         parent = path.parent.stat()
         self._parent_inode = (parent.st_dev, parent.st_ino)
         self._inode, self._used = None, False
+        self._state_lock = threading.Lock()
+        self._stopped = False
+        self._peer = None
         self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             self._listener.bind(str(path))
@@ -247,7 +251,14 @@ class G1PolicyRelayServer:
             raise
 
     def close(self) -> None:
-        self._listener.close()
+        with self._state_lock:
+            self._stopped = True
+            self._listener.close()
+            if self._peer is not None:
+                try:
+                    self._peer.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
         try:
             parent = self.path.parent.stat()
             if (parent.st_dev, parent.st_ino) != self._parent_inode or self.path.resolve() != self.path:
@@ -270,8 +281,24 @@ class G1PolicyRelayServer:
         linked_digest = None
         status, failure = "failed", None
         try:
-            self._listener.settimeout(timeout)
-            peer, _ = self._listener.accept()
+            deadline = time.monotonic() + timeout
+            while True:
+                if self._stopped:
+                    raise ValueError("g1_relay_server_stopped")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("g1_relay_accept_timeout")
+                self._listener.settimeout(min(remaining, 0.25))
+                try:
+                    peer, _ = self._listener.accept()
+                    break
+                except socket.timeout:
+                    continue
+            with self._state_lock:
+                if self._stopped:
+                    peer.close()
+                    raise ValueError("g1_relay_server_stopped")
+                self._peer = peer
             self._listener.close()
             wire = JsonlSocket(peer, timeout_seconds=timeout)
             challenge = secrets.token_hex(32)

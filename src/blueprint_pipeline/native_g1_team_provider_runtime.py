@@ -25,9 +25,10 @@ from .native_g1_team_worker_supervisor import run_supervised_g1_team_worker
 
 
 CREDENTIAL_FILE_ENV = "BLUEPRINT_G1_TEAM_CREDENTIAL_FILE"
+POLICY_RELAY_FILE_ENV = "BLUEPRINT_G1_TEAM_PRIVATE_RELAY_CONFIG"
 
 
-def verify_g1_team_provider_inputs(runtime_root: Path) -> dict[str, Any]:
+def verify_g1_team_sealed_inputs(runtime_root: Path) -> dict[str, Any]:
     root = Path(runtime_root)
     if not root.is_absolute() or root.is_symlink() or not root.is_dir():
         raise ValueError("g1_team_provider_root_invalid")
@@ -62,6 +63,15 @@ def verify_g1_team_provider_inputs(runtime_root: Path) -> dict[str, Any]:
     publisher = verify_g1_publisher_source(root / "publisher-source")
     if {key: value for key, value in publisher.items() if key not in {"source_root", "receipt_digest"}} != manifest["publisher_source_identity"]:
         raise ValueError("g1_team_provider_publisher_binding_invalid")
+    assets = _sonic_assets(root / "inputs/sonic", _SONIC_INVENTORY)
+    return {"manifest": manifest, "packet": packet, "sonic_assets": assets}
+
+
+def verify_g1_team_provider_inputs(runtime_root: Path) -> dict[str, Any]:
+    inputs = verify_g1_team_sealed_inputs(runtime_root)
+    root = Path(runtime_root)
+    bundle_root = root.parent
+    manifest = inputs["manifest"]
     source = _json(root / "native_task_runtime_sources/native_task_runtime_source_packet.v1.json")
     provision = _json(bundle_root / "runtime_output/native_task_runtime_source_provisioning.v1.json")
     if (
@@ -71,12 +81,12 @@ def verify_g1_team_provider_inputs(runtime_root: Path) -> dict[str, Any]:
         or provision.get("source_packet_sha256") != manifest["runtime_source_packet"]["packet_sha256"]
     ):
         raise ValueError("g1_team_provider_provisioning_binding_invalid")
-    assets = _sonic_assets(root / "inputs/sonic", _SONIC_INVENTORY)
-    return {"manifest": manifest, "packet": packet, "sonic_assets": assets}
+    return inputs
 
 
 def run_g1_team_provider_runtime(
     *, runtime_root: Path, output_dir: Path, credential_file_path: Path | None = None,
+    policy_relay_config_path: Path | None = None,
 ) -> dict[str, Any]:
     """Produce a terminal provider receipt without claiming paid closeout."""
 
@@ -98,12 +108,20 @@ def run_g1_team_provider_runtime(
         manifest = inputs["manifest"]
         result["execution_packet_digest"] = manifest["execution_packet_digest"]
         result["stage_reached"] = "policy_runtime_binding"
-        if manifest["policy_runtime_required"]:
+        if manifest["policy_runtime_required"] and policy_relay_config_path is None:
             # A paid dispatcher must admit a separate policy runtime before it
             # allocates Isaac for these modes. Never fall back to nested Docker.
             result["blocker_code"] = "g1_team_provider_paired_policy_runtime_required"
             raise ValueError("g1_team_provider_paired_policy_runtime_required")
-        _credential(credential_file_path, required=True)
+        if policy_relay_config_path is not None:
+            from .native_g1_team_relay_runtime_session import read_g1_team_relay_config
+            packet = inputs["packet"]
+            read_g1_team_relay_config(
+                config_path=policy_relay_config_path, execution_packet_digest=packet["packet_digest"],
+                profile=packet["request"]["policy_profile"], trusted_setup=packet["trusted_setup"],
+                authenticated_owner=packet["request"]["owner"],
+            )
+        _credential(credential_file_path, required=not manifest["policy_runtime_required"])
         assets = {row["role"]: row for row in inputs["sonic_assets"]}
         root = Path(runtime_root)
         result["stage_reached"] = "supervised_worker"
@@ -122,6 +140,7 @@ def run_g1_team_provider_runtime(
                 "sonic_decoder": Path(assets["decoder"]["path"]),
                 "sonic_decoder_sha256": assets["decoder"]["sha256"],
                 "credential_file_path": credential_file_path, "max_steps": 3000,
+                **({"policy_relay_config_path": policy_relay_config_path} if policy_relay_config_path else {}),
             },
             output_dir=output / "selected-worker", worker_launcher=Path("/isaac-sim/python.sh"),
         )
@@ -150,9 +169,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     credential = os.environ.get(CREDENTIAL_FILE_ENV)
+    relay = os.environ.get(POLICY_RELAY_FILE_ENV)
     result = run_g1_team_provider_runtime(
         runtime_root=args.runtime_root, output_dir=args.output_dir,
         credential_file_path=Path(credential) if credential else None,
+        policy_relay_config_path=Path(relay) if relay else None,
     )
     print(json.dumps({"status": result["status"], "result_digest": result["result_digest"]}))
     return 0 if result["status"] == "completed_development_only" else 2

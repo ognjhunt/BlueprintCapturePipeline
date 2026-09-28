@@ -339,3 +339,110 @@ outputs, and canonical VM allocation under the existing budget/watchdog/teardown
 contracts. Container/archive preallocation refusal remains active until those
 pieces are qualified. Actual episodes for every required mode, all four built-ins,
 private URL, merge/push and deployment remain incomplete.
+
+## Reviewed outer-host supervision slice
+
+The actual provider input verifier currently requires the provisioning receipt
+produced inside Isaac. Factor its existing sealed-input checks from that later
+provisioning check, so the host can revalidate immutable packet, scene, publisher
+and SONIC bytes before launching a policy. The worker still requires the completed
+provisioning receipt and original operator approval/expiry.
+
+Use a host Python entry point with no provider-allocation API. Require Linux,
+root, x86_64, matching CPython 3.12, reviewed NumPy/RFC versions, functional
+NVIDIA Docker runtime, the existing Isaac driver floor and exact local simulator
+image. A full VM bootstrap/dependency admission remains a later integration gate.
+Keep current canonical container/archive preallocation refusal.
+
+Open the actual approved host NativeSession synchronously for synthetic inputs,
+then transfer its close ownership to one relay thread. Only the trusted simulator
+mounts the private runtime relay directory. Simulator image is the existing exact
+Isaac pin; bundle mount is read-only, with narrowly scoped writable provisioning
+and output mounts. No Docker socket/host root/host network reaches the simulator;
+the team launchers retain their existing networkless, mount-free profiles.
+Simulator bridge networking permits existing approved runtime provisioning.
+
+Use the existing supervised child runner for its real Docker CLI handle, bounded
+process-group timeout, quarantined log and exit receipt. On every path explicitly
+force-remove the uniquely named simulator container and inspect absence; a Docker
+CLI exit is insufficient. Stop the relay's active wire and join its sole close
+owner before any parent close attempt. A stopped listener must wake without waiting
+for the full startup timeout. Retain actual policy/relay/simulator close receipts,
+fixed error classes and a digest-bound host result; never retain private config or
+secret contents in the collected output. Cloud destruction/billing stay external.
+
+The transported provider runtime may use a bound private relay file for OCI/archive;
+without it the current refusal remains. HTTPS rejects private relay configuration.
+Reopen host NativeSession, original child teardown, transport receipt, simulator
+absence and CLI exit, plus the existing guest score/full-media verifier, before
+accepting a VM host result. Child receipt image/archive and query counts must match
+the immutable packet and actual guest episode. A correct guest result with missing
+or changed host cleanup evidence is blocked.
+
+Red-first tests: missing host module; fixed mount/image/argument security; real local
+JSONL policy and Unix relay with actual NativeSession closure; observed child exit,
+Docker removal/inspection failure, CLI timeout/nonzero exit, wrong packet, missing
+host/conformance/child receipt, changed digest, and server stop before connect or
+while blocked in socket read. Fake Docker metadata/simulator seams are explicitly
+local orchestration tests, not VM, device isolation or GPU qualification. Existing
+HTTPS/provider/bundle/relay behavior stays green. CLI and new host imports must reopen
+from the sealed bundle in an isolated interpreter before any paid integration.
+
+Design review checked existing image pin, provider provisioning path, staged archive
+binding, actual lease close methods, relay accept/request deadlines, supervised
+process handles and paid score/media verification. GPU devices for a noncontainer
+policy and complete host bootstrap remain required before that mode's paid admission;
+this host lifecycle slice must not claim those capabilities merely from metadata.
+
+### Implemented host lifecycle and evidence reopening
+
+The VM host now preflights CPython 3.12, NumPy 2.3.1, RFC8785 0.1.4,
+Linux/root/x86_64, local immutable policy/simulator images, NVIDIA Docker and
+the existing driver floor. This supersedes the earlier speculative CPython 3.10
+host candidate: that candidate never proved the package import closure and is
+not admitted by this host. No host dependencies were installed or downloaded.
+
+One actual NativeSession owns the host policy and one relay thread owns its
+closure during simulator execution. The existing child supervisor runs the
+fixed simulator Docker command; explicit Docker removal and absence inspection
+follow CLI exit, failure and timeout. Stopping the relay wakes both a 600-second
+accept wait and an active socket read. The private relay directory is removed
+after its thread terminates, and its secret/config are outside collected output.
+The guest provider rechecks the private file's packet/profile/setup/mode binding
+before the selected worker. Missing, foreign, nonprivate and HTTPS relay files
+fail before worker contact. The default paired-runtime admission refusal remains.
+
+The output verifier reopens guest scoring, lossless frames and both review videos,
+inner worker supervision/exit, actual host/guest conformance and session copies,
+relay query counts, original OCI/archive child cleanup, simulator absence and
+outer CLI exit. It rejects absent, changed or inconsistently linked evidence and
+does not assert provider teardown, posted billing, GPU qualification or public
+rights. The host CLI and verifier import from an extracted sealed bundle under
+an isolated provider interpreter.
+
+Verification: **92 passed in 81.25s** across VM host (25), Unix/JSONL relay (35),
+guest provider (8), isolated sealed bundle (1), and relay runtime session (23).
+The actual local JSONL processes, sockets, NativeSession/lease closure, deterministic
+task scorer, lossless frames and head/overview videos are exercised. Docker,
+VM platform and Isaac remain test doubles; the fixture score is `never_moved`,
+not a successful physical or GPU task. **25 required pre-paid tests passed in
+102.10s**: six provider-import closure cases and 19 policy-canary lifecycle
+rehearsals. Changed-file Ruff and diff checks pass.
+
+Committed predecessor `239f2c97` CI 36382156418 is terminal: impacted execution
+passed, but the overall required gate is red from full-suite shards. Inspected
+logs show three static import-isolation failures; materializer reachability,
+historical ledger, three SDK cost assertions and malformed nested JSON failures;
+listener line-budget and controls payload-cache failures. Shard 1's 6,354 tests
+passed, but its expected non-root Landlock skip fails the no-skips shard gate.
+The controls payload-cache test passes alone locally in 43.24s; suite/environment
+causality is not established. No full-suite rerun or SAGE production work began.
+
+Fresh read-only host observation at this checkpoint: work available bytes
+11,136,524,288; root available bytes 17,583,509,504. Work capacity is below the
+28,162,041,744-byte comparable four-trial collection forecast. This is not a
+fresh provider-zero or billing assertion. No paid allocation, deploy, merge or
+hand data deletion occurred in this slice. Still required: sealed host bootstrap,
+archive staging and GPU exposure, canonical VM allocator and collected-output
+integration, actual episodes for all required delivery modes/four built-ins,
+private result URL, final merge/push/deploy and official teardown/billing proof.

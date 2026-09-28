@@ -149,6 +149,42 @@ def test_idle_timeout_closes_owned_child(running):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("connected", [False, True])
+def test_host_stop_wakes_long_accept_or_read_and_reaps_owned_policy(connected):
+    with tempfile.TemporaryDirectory(prefix="g1-relay-stop-", dir=str(Path("/tmp").resolve())) as root:
+        server = relay.G1PolicyRelayServer(path=Path(root) / "wire", binding=BINDING, secret=SECRET)
+        sessions, results = [], []
+        def factory():
+            session = Session()
+            sessions.append(session)
+            return session
+        thread = threading.Thread(target=lambda: results.append(server.serve_one(
+            session_factory=factory, timeout_seconds=600)))
+        client = None
+        try:
+            thread.start()
+            if connected:
+                client = relay.G1PolicyRelayClient(path=server.path, binding=BINDING,
+                                                  secret=SECRET, timeout_seconds=1)
+            server.close()
+            thread.join(timeout=3)
+            assert not thread.is_alive(), "host stop waited for the 600-second wire deadline"
+            assert not server.path.exists()
+            assert len(results) == 1 and results[0]["failure_type"] is not None
+            assert results[0]["forwarded_request_count"] == 0
+            assert len(sessions) == int(connected)
+            assert all(s.closed == 1 and s.process.poll() is not None for s in sessions)
+            assert results[0]["policy_session_closed"] is connected
+        finally:
+            server.close()
+            if client is not None:
+                client._wire.close()
+            thread.join(timeout=3)
+            for session in sessions:
+                session.close()
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize("fault", ["profile", "setup", "status", "mode", "sealed"])
 def test_factory_conformance_mismatch_never_forwards_site_input(running, monkeypatch, fault):
     server, sessions, results, thread = running
