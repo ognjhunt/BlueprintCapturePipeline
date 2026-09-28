@@ -59,3 +59,20 @@ def test_actual_retire_api_refuses_changed_raw_plan_before_transport(tmp_path,mo
     result=retire_scene(plan,consent,transport=UntouchedTransport(),now=lambda:100,monotonic=lambda:0)
     assert result['status']=='kept' and result['reason']=='scene_retirement_raw_reference_changed'
     assert member.exists() and result['mutations']==0
+
+
+def test_installed_transport_binds_the_one_native_allowance_before_any_action_work(tmp_path,monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement import retire_scene
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    _,member,plan,consent=action_fixture(tmp_path,monkeypatch)
+    class BoundTransport(UntouchedTransport):
+        def __init__(self):
+            self.allowances=[]
+        def bind_allowance(self,allowance):
+            assert type(allowance) is ActionAllowance
+            allowance.tick()
+            self.allowances.append(allowance)
+    transport=BoundTransport()
+    result=retire_scene(plan,consent,transport=transport,now=lambda:100,monotonic=lambda:0)
+    assert result['status']=='kept' and member.exists()
+    assert len(transport.allowances)==1
