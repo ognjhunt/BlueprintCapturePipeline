@@ -212,6 +212,25 @@ class ProviderOutputMemberView:
         row = self._rows.get(self._path(relative))
         return dict(row) if row is not None else None
 
+    def relative(self, path: str | Path) -> str | None:
+        """The member path of ``path`` when it lies under the evidence root, else None."""
+        for candidate in (Path(path).absolute(), Path(path).resolve()):
+            try:
+                return candidate.relative_to(self.evidence_root).as_posix()
+            except ValueError:
+                continue
+        return None
+
+    def member_at(self, path: str | Path) -> dict | None:
+        """The index row of the file at ``path``, or None when it is no archive member."""
+        relative = self.relative(path)
+        if relative in (None, "."):
+            return None
+        try:
+            return self.member(relative)
+        except ProviderOutputMemberViewError:
+            return None
+
     def digest(self, relative: str) -> str | None:
         row = self.member(relative)
         return row["sha256"] if row is not None else None
@@ -263,32 +282,49 @@ class ProviderOutputMemberView:
         partial = target.parent / f".{target.name}.{uuid.uuid4().hex}.partial"
         try:
             with partial.open("xb") as sink:
-                digest, crc = hashlib.sha256(), [0]
-
-                def emit(data):
-                    sink.write(data)
-                    digest.update(data)
-                    crc[0] = zlib.crc32(data, crc[0])
-
-                inflater = MemberInflater(row["method"], row["size"], emit,
-                                          step_bytes=inflate_step_bytes(reader.block_bytes))
-                if row["compressed_size"]:
-                    reader.stream_to(inflater.feed, start=row["data_offset"],
-                                     end=row["data_offset"] + row["compressed_size"])
-                inflater.finish()
+                self._stream(row, reader, sink.write)
                 sink.flush()
                 os.fsync(sink.fileno())
-            if (crc[0] & 0xFFFFFFFF, "sha256:" + digest.hexdigest()) != (row["crc32"], row["sha256"]):
-                raise _refuse("provider_output_member_digest_mismatch")
             partial.chmod(0o440)
             os.link(partial, target)
         except FileExistsError:
             raise _refuse("provider_output_member_view_destination_exists") from None
-        except (ProviderOutputMemberIndexError, ProviderOutputTransportError) as exc:
-            raise _refuse(str(exc)) from None
         finally:
             partial.unlink(missing_ok=True)
         return {"path": str(target), "size_bytes": row["size"], "sha256": row["sha256"]}
+
+    def stream_member(self, relative: str, sink: Callable[[bytes], Any]) -> dict:
+        """Pass one member's inflated bytes to ``sink`` in order, with one range request.
+
+        The bytes are checked against the index's CRC-32 and SHA-256 as they
+        pass; a mismatch raises ``provider_output_member_digest_mismatch``
+        after the last chunk, so a caller that keeps what ``sink`` received
+        must discard it on any refusal. Returns the member's index row.
+        """
+        row = self._row(relative)
+        return self._stream(row, self._reader(), sink)
+
+    @staticmethod
+    def _stream(row: dict, reader, sink: Callable[[bytes], Any]) -> dict:
+        digest, crc = hashlib.sha256(), [0]
+
+        def emit(data):
+            sink(data)
+            digest.update(data)
+            crc[0] = zlib.crc32(data, crc[0])
+
+        try:
+            inflater = MemberInflater(row["method"], row["size"], emit,
+                                      step_bytes=inflate_step_bytes(reader.block_bytes))
+            if row["compressed_size"]:
+                reader.stream_to(inflater.feed, start=row["data_offset"],
+                                 end=row["data_offset"] + row["compressed_size"])
+            inflater.finish()
+        except (ProviderOutputMemberIndexError, ProviderOutputTransportError) as exc:
+            raise _refuse(str(exc)) from None
+        if (crc[0] & 0xFFFFFFFF, "sha256:" + digest.hexdigest()) != (row["crc32"], row["sha256"]):
+            raise _refuse("provider_output_member_digest_mismatch")
+        return row
 
 
 def _open_descriptor(path: Path, root: Path, presign, opener) -> ProviderOutputMemberView:

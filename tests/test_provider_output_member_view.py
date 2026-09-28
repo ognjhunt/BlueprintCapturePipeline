@@ -335,3 +335,28 @@ def test_view_reads_bytes_only_through_an_explicitly_configured_artifact_store(t
                        match="^provider_output_member_view_artifact_store_not_configured$"):
         view.read_member(FRAME, maximum_bytes=10**6)
     assert len(streamed.store.requests) == before
+
+
+def test_stream_member_passes_checked_bytes_by_one_range_and_member_at_maps_paths(tmp_path):
+    streamed = _streamed(tmp_path)
+    view = streamed.view()
+    frame = streamed.rows[FRAME]
+
+    assert view.member_at(streamed.evidence / FRAME) == frame
+    assert view.relative(streamed.evidence / FRAME) == FRAME
+    assert view.member_at(streamed.evidence) is None
+    assert view.member_at(tmp_path / "elsewhere.png") is None and view.relative(tmp_path) is None
+    assert view.member_at(streamed.evidence / "cell_runs/00") is None  # a directory is no member
+
+    chunks: list[bytes] = []
+    before = len(streamed.store.requests)
+    assert view.stream_member(FRAME, chunks.append) == frame
+    assert b"".join(chunks) == FRAME_BYTES
+    assert [entry["range"] for entry in streamed.store.requests[before:]] == [
+        (0, 0), (frame["data_offset"], frame["data_offset"] + frame["compressed_size"] - 1)]
+
+    tampered = RangeStore(streamed.archive.patched(frame["data_offset"] + 9, b"\xff"))
+    with pytest.raises(views.ProviderOutputMemberViewError, match="^provider_output_member_digest_mismatch$"):
+        streamed.view(opener=tampered.opener).stream_member(FRAME, lambda data: None)
+    with pytest.raises(views.ProviderOutputMemberViewError, match="^provider_output_member_view_member_absent$"):
+        view.stream_member("cell_runs/00/absent.png", lambda data: None)
