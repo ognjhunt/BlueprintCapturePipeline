@@ -734,3 +734,34 @@ def serve_member_views(monkeypatch, store: RangeStore) -> None:
         monkeypatch.setenv(name, "/nonexistent/test-only-artifact-store-setting")
     monkeypatch.setattr(views, "presign_configured_scene_artifact", lambda **kwargs: URL)
     monkeypatch.setattr(transport, "_open_with_policy", store.opener)
+
+
+def write_staged_absence_proof(attempt, *, promotion_status: str = "promoted", gated: bool = True):
+    """A staging dir under ``attempt`` whose objects a completed cleanup proved absent, plus its sealed proof.
+
+    Returns the proof path. ``gated=False`` writes a manifest without
+    ``output_promotion_required`` (download mode's).
+    """
+    from pathlib import Path
+
+    from blueprint_pipeline import provider_output_promotion_records as records
+    from blueprint_pipeline.wam_provider_object_store import SCHEMA_VERSION
+
+    staging = Path(attempt) / "object_store_staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    manifest = {"schema_version": SCHEMA_VERSION, "status": "completed",
+                "object_store": {"key_prefix": "blueprint/task"},
+                "bundle_key": "blueprint/task/job/bundles/sha256/" + "a" * 64 + ".zip",
+                "output_key": "blueprint/task/job/runpod_provider_runtime_output_" + "0" * 32 + ".zip",
+                **({"output_promotion_required": True} if gated else {})}
+    (staging / records.STAGING_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    keys = records.staged_object_keys(manifest)
+    cleanup = {"schema_version": records.CLEANUP_SCHEMA,
+               "staging_manifest_sha256": records.staging_manifest_sha256(staging), "status": "completed",
+               "blockers": [], "all_objects_absent": True, "all_ephemeral_objects_absent": True,
+               "exact_object_count": len(keys),
+               "objects": [{"key_sha256": records.key_sha256(key), "absence": {"absence_confirmed": True}}
+                           for _, key in keys]}
+    promotion = {"receipt_digest": "sha256:" + "1" * 64, "status": promotion_status} if gated else None
+    records.write_staged_object_absence_proof(staging_dir=staging, cleanup=cleanup, promotion=promotion)
+    return staging / records.ABSENCE_PROOF_FILENAME

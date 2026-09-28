@@ -1901,3 +1901,50 @@ def test_rejects_an_arena_attempt_root_outside_its_job_directory(
         )
 
     assert "terminal_result_invalid" in str(excinfo.value)
+
+
+def test_policy_canary_terminal_evidence_accepts_a_digest_bound_staged_object_absence_proof(
+    tmp_path: Path,
+) -> None:
+    """Review C2: a streamed canary whose lane sealed a deferred cleanup is billed once
+    resume proves every staged object absent, whatever its promotion did."""
+    from tests.provider_output_fixtures import write_staged_absence_proof
+
+    instance_id = 49_247_792
+    attempt = tmp_path / "allocator/attempts/attempt_001"
+    adapter = _write(attempt / "vast_provider_run/vast_provider_adapter_result.json",
+                     {"vast_instance_ids": [instance_id], "continuing_spend_from_this_run": False})
+    teardown = _write(attempt / "vast_provider_run/vast_teardown_manifest.json",
+                      {"vast_instance_ids": [instance_id], "continuing_spend_from_this_run": False,
+                       "runner_gpu_teardown_completed": True})
+    artifact = _write(attempt / "artifact_manifest.json", {"status": "blocked"})
+    _write(tmp_path / "post_teardown_global_provider_zero.json",
+           {"schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+            "provider_zero_verified": True, "live_instance_count": 0})
+    result_path = _write(tmp_path / "allocator_result.json", {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
+        "retry_cap": 0, "vast_instance_ids": [instance_id], "continuing_spend_from_this_run": False,
+        "independent_watchdog": {"status": "provider_terminal", "instance_ids": [instance_id],
+                                 "provider_absence_confirmed": True},
+        "attempt_root": str(attempt), "adapter_result_path": str(adapter),
+        "teardown_manifest_path": str(teardown), "artifact_manifest_path": str(artifact),
+        "all_staged_objects_absent": False,
+        "provider_closeout": {"provider_zero_confirmed": True, "warm_session_retained": False,
+                              "all_staged_objects_absent": False}})
+
+    with pytest.raises(VastOfficialBillingExtractionError, match="vast_official_terminal_result_invalid"):
+        billing._terminal_evidence(instance_id=instance_id, terminal_result_path=result_path)
+
+    proof = write_staged_absence_proof(attempt, promotion_status="failed")
+    evidence = billing._terminal_evidence(instance_id=instance_id, terminal_result_path=result_path)
+
+    assert evidence["terminal_status"] == "blocked" and evidence["provider_zero_verified"] is True
+    assert evidence["staged_object_absence_proof"]["path"] == str(proof)
+    assert evidence["staged_object_absence_proof"]["sha256"] == _sha256(proof)
+    # Re-validation re-derives the same evidence from the same immutable proof.
+    assert billing._terminal_evidence(instance_id=instance_id, terminal_result_path=result_path) == evidence
+    # A proof no longer bound to the staging manifest proves nothing.
+    manifest = attempt / "object_store_staging/wam_provider_object_store_staging_manifest.json"
+    manifest.write_text(manifest.read_text() + " ", encoding="utf-8")
+    with pytest.raises(VastOfficialBillingExtractionError, match="vast_official_terminal_result_invalid"):
+        billing._terminal_evidence(instance_id=instance_id, terminal_result_path=result_path)

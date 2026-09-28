@@ -19,6 +19,7 @@ from .policy_canary_partial_recovery import (
 from .policy_canary_recovered_output_adoption import (
     adopt_recovered_complete_result as _adopt_recovered_complete_result,
 )
+from .policy_canary_staged_object_absence import closeout_staged_objects
 
 import argparse
 import hashlib
@@ -616,11 +617,12 @@ def _join_session_closeout(
     episodes = value.get("episodes")
     instance_ids = _adapter_instance_ids(adapter, result_path=adapter_path)
     closeout = adapter.get("provider_closeout")
+    staged = closeout_staged_objects(adapter)  # the sealed flag, else resume's absence proof
     teardown_complete = (
         isinstance(closeout, Mapping)
         and closeout.get("provider_zero_confirmed") is True
         and closeout.get("warm_session_retained") is False
-        and closeout.get("all_staged_objects_absent") is True
+        and staged["absent"]
         and adapter.get("continuing_spend_from_this_run") is False
     )
     global_zero = (
@@ -644,6 +646,7 @@ def _join_session_closeout(
     value["status"] = (
         "completed_unqualified"
         if completed and len(instance_ids) == 1 and teardown_complete and global_zero
+        and not staged["blockers"]
         else "blocked"
     )
     blockers = [str(item) for item in value.get("blockers") or [] if str(item)]
@@ -655,6 +658,7 @@ def _join_session_closeout(
         blockers.append("policy_canary_teardown_incomplete")
     if not global_zero:
         blockers.append("policy_canary_global_provider_zero_unproven")
+    blockers.extend(staged["blockers"])
     value["blockers"] = sorted(set(blockers))
     value["result_digest"] = canonical_digest(value, digest_field="result_digest")
     return value
