@@ -50,6 +50,18 @@ and never a host path.
 | `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
 | `scene_configuration_output` | 2 GiB | only with `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`, for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix on the same volume is checked up front as the larger of the two needs, and the hold is taken after the prefix releases. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
 
+A measured output hold refused after the CPU prefix is sealed like one refused
+before staging: exactly `scene_configuration_provider_output_disk_budget_exceeded`,
+zero provider mutations, and the ledger's numbers at refusal time. Capacity recovery
+retries either one once the role's projection fits again, unless paid API
+pretraining already ran in that attempt (`recovery_withheld:
+api_pretraining_consumed`), which keeps the typed blocker without an automatic
+retry. After an extraction refusal the output stays durable, in B2 and as the local
+zip, but nothing recovers it automatically yet. The website publication reconciler
+and the publication-recovery CLI both require `configuration_completed: true`, which
+stays false by design until readers can fetch archive members on demand (plan
+13a.1, PR C). Nothing re-runs the provider or deletes the zip in that state.
+
 The intake version endpoint reports `disk_headroom` with `refused_roles` and each
 role's `footprints` and `targets` (device, floor, reservations and available
 bytes). `BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS` maps each bulk role to its
