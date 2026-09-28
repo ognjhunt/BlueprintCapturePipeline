@@ -787,20 +787,26 @@ def test_residue_setting_parses_like_other_opt_ins(raw) -> None:
     assert residue.result_residue_offload_setting({"BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD": "1"}) == (False, None)
 
 
+def _unit_environment(monkeypatch, values: dict[str, str]) -> None:
+    """The unit's environment and none of the shell's: every storage GC variable is cleared,
+    whatever it is, and only ``values`` are set."""
+
+    for name in [name for name in os.environ if name.startswith("BLUEPRINT_CONTROL_PLANE_GC_")]:
+        monkeypatch.delenv(name)
+    # The storage GC reads these too, outside that prefix.
+    for name in (gc_module.EVIDENCE_OFFLOAD_ENV, gc_module.EVIDENCE_HOT_WINDOW_ENV, gc_module.EVIDENCE_ABANDONED_AFTER_ENV,
+                 gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, gc_module.SCENE_BINDING_ROOT_ENV, gc_module.PINS_ROOT_ENV):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
 def test_invalid_residue_setting_only_plans_and_alerts(tmp_path, monkeypatch, capsys) -> None:
     f = _sealed_run(tmp_path / "canaries")
     queue = tmp_path / "queue"
     (queue / "pending").mkdir(parents=True)
-    for name in (gc_module.CONTENT_STORE_ROOTS_ENV, gc_module.DERIVED_ROOTS_ENV, gc_module.PLAN_ONLY_DERIVED_ROOTS_ENV,
-                 gc_module.SETTLEMENT_ROOTS_ENV, gc_module.SCRATCH_ROOTS_ENV, gc_module.WORKSPACE_BUNDLE_ROOTS_ENV,
-                 gc_module.SCENE_WORKSPACE_ROOTS_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS",
-                 gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION",
-                 gc_module.EVIDENCE_ABANDONED_AFTER_ENV):
-        monkeypatch.setenv(name, "")
-    monkeypatch.setenv(gc_module.QUEUE_ROOTS_ENV, str(queue))
-    monkeypatch.setenv(gc_module.EVIDENCE_ROOTS_ENV, str(f.evidence))
-    monkeypatch.setenv(gc_module.EVIDENCE_OFFLOAD_ENV, "1")
-    monkeypatch.setenv(residue.RESIDUE_OFFLOAD_ENV, "maybe")
+    _unit_environment(monkeypatch, {gc_module.QUEUE_ROOTS_ENV: str(queue), gc_module.EVIDENCE_ROOTS_ENV: str(f.evidence),
+                                     gc_module.EVIDENCE_OFFLOAD_ENV: "1", residue.RESIDUE_OFFLOAD_ENV: "maybe"})
     monkeypatch.setattr(gc_module, "require_storage_class", lambda *a, **k: None)
     # The bulk offload runs as the unit would; its publisher is the fixture's fake store.
     monkeypatch.setattr(artifacts, "_artifact_object_store_client", lambda: (f.client, BUCKET))
@@ -1100,17 +1106,9 @@ def test_the_residue_cap_reads_from_the_unit_environment(tmp_path, monkeypatch, 
     f = _sealed_run(tmp_path / "canaries")
     queue = tmp_path / "queue"
     (queue / "pending").mkdir(parents=True)
-    for name in (gc_module.CONTENT_STORE_ROOTS_ENV, gc_module.DERIVED_ROOTS_ENV, gc_module.PLAN_ONLY_DERIVED_ROOTS_ENV,
-                 gc_module.SETTLEMENT_ROOTS_ENV, gc_module.SCRATCH_ROOTS_ENV, gc_module.WORKSPACE_BUNDLE_ROOTS_ENV,
-                 gc_module.SCENE_WORKSPACE_ROOTS_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS",
-                 gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION",
-                 gc_module.EVIDENCE_ABANDONED_AFTER_ENV):
-        monkeypatch.setenv(name, "")
-    monkeypatch.setenv(gc_module.QUEUE_ROOTS_ENV, str(queue))
-    monkeypatch.setenv(gc_module.EVIDENCE_ROOTS_ENV, str(f.evidence))
-    monkeypatch.setenv(gc_module.EVIDENCE_OFFLOAD_ENV, "1")
-    monkeypatch.setenv(residue.RESIDUE_OFFLOAD_ENV, "1")
-    monkeypatch.setenv(residue.RESIDUE_MAX_RUNS_ENV, raw)
+    _unit_environment(monkeypatch, {gc_module.QUEUE_ROOTS_ENV: str(queue), gc_module.EVIDENCE_ROOTS_ENV: str(f.evidence),
+                                     gc_module.EVIDENCE_OFFLOAD_ENV: "1", residue.RESIDUE_OFFLOAD_ENV: "1",
+                                     residue.RESIDUE_MAX_RUNS_ENV: raw})
     monkeypatch.setattr(gc_module, "require_storage_class", lambda *a, **k: None)
     monkeypatch.setattr(artifacts, "_artifact_object_store_client", lambda: (f.client, BUCKET))
     # The unit's stream publisher, against the fixture's fake store.
@@ -1481,3 +1479,28 @@ def test_a_run_whose_registry_does_not_seal_is_registry_unsealed(tmp_path) -> No
     later = residue.residue_row(f.run, failed, apply=False, hot_window_seconds=2 * DAY, protection_checker=None,
                                 publisher=None, now=lambda: NOW)
     assert (later["retained_reason"], later.get("failure")) == ("bulk_offload_failed", None)
+
+
+def test_a_member_whose_name_the_search_cannot_read_stays(tmp_path) -> None:
+    """The search reads a path only as a run of name characters, so it cannot prove that no kept
+    document names a file whose name holds any other character: such a file stays
+    (``name_unsupported``), and is searched like everything that stays."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    unsupported = {"logs/worker log.txt": b"a spaced name\n", "logs/r\u00e9sum\u00e9.log": b"an accented name\n",
+                   "work/semi;colon.txt": b"see work/stage/state.npz\n"}
+    for relative, data in unsupported.items():
+        (f.run / relative).write_bytes(data)
+    _age(f.run)
+
+    plan = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+
+    reasons = {row["relative_path"]: row["reason"] for row in plan["skipped"]}
+    assert {relative: reasons.get(relative) for relative in unsupported} == dict.fromkeys(unsupported, "name_unsupported")
+    assert plan["skipped_by_reason"]["name_unsupported"] == {
+        "count": len(unsupported), "bytes": sum(len(data) for data in unsupported.values())}
+    assert reasons.get("work/stage/state.npz") == "receipt_referenced"
+    assert not any(scan.name_supported(relative) for relative in unsupported)
+    assert _offload(f)["status"] == "applied"
+    assert {relative: (f.run / relative).read_bytes() for relative in unsupported} == unsupported
+    assert (f.run / "work/stage/state.npz").read_bytes() == RESIDUE["work/stage/state.npz"]
