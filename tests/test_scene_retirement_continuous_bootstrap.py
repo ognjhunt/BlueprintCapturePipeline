@@ -62,6 +62,44 @@ def test_loader_retains_original_source_identity_after_path_changes(tmp_path, mo
     assert loader.source_identities[name] != module._identity(path.stat())
 
 
+@pytest.mark.parametrize('action', ['blueprint_pipeline.control_plane_storage_gc',
+                                  'blueprint_pipeline.task_evaluation_scene_retirement_cli'])
+def test_root_action_only_compiles_fixed_protected_entrypoints(tmp_path, monkeypatch, action):
+    module, package = fixture(tmp_path, monkeypatch)
+    (package / (action.split('.')[-1] + '.py')).write_bytes(b'def main(args): return 0\n')
+    values = module._action_sources(action)
+    assert values[action][1] == b'def main(args): return 0\n'
+    assert set(values) == set(module._core_sources()) | {action}
+
+
+@pytest.mark.parametrize('change', ['foreign-action', 'linked-action', 'writable-action'])
+def test_root_action_refuses_unknown_or_mutable_entrypoint(tmp_path, monkeypatch, change):
+    module, package = fixture(tmp_path, monkeypatch)
+    action = 'blueprint_pipeline.task_evaluation_scene_retirement_cli'
+    path = package / 'task_evaluation_scene_retirement_cli.py'
+    path.write_bytes(b'def main(args): return 0\n')
+    if change == 'foreign-action':
+        action = 'blueprint_pipeline.live_pipeline_intake_service'
+    elif change == 'linked-action':
+        foreign = tmp_path / 'foreign-action.py'
+        path.rename(foreign)
+        path.symlink_to(foreign)
+    else:
+        path.chmod(0o666)
+    with pytest.raises(ValueError, match='scene_retirement_bootstrap_unproven'):
+        module._action_sources(action)
+
+
+def test_gc_and_door_actions_use_the_same_fixed_isolated_root_entrypoint():
+    root = SCRIPT.parents[1]
+    unit = (root / 'deploy/systemd/blueprint-control-plane-storage-gc.service').read_text()
+    door = (root / 'deploy/operator-door/door-scene-lifecycle.sh').read_text()
+    assert 'exec /usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py --action-module blueprint_pipeline.control_plane_storage_gc run' in unit
+    assert '/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py' in door
+    assert '--action-module blueprint_pipeline.task_evaluation_scene_retirement_cli' in door
+    assert 'PYTHONPATH=src' not in door
+
+
 @pytest.mark.parametrize('change', ['linked-source', 'writable-source', 'linked-parent', 'writable-parent'])
 def test_root_import_refuses_mutable_or_linked_source(tmp_path, monkeypatch, change):
     module, package = fixture(tmp_path, monkeypatch)
