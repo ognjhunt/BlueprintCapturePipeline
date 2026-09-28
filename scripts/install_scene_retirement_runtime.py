@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -515,13 +516,12 @@ def _generation(kind, rows, sources, deadline):
         _require(_record_bytes(manifest, deadline)[0] == raw)
         _partial_tree(generation, rows, sources, deadline)
     else:
+        # The exact selected digest is the only generation examined. Prior
+        # immutable generations may still be executing; neither enumerate nor
+        # delete them and do not impose a permanent deploy-count ceiling.
         if parent.exists():
             fd = _open(parent, directory=True)
-            try:
-                names = os.listdir(fd)
-                _require(len(names) < 32 and all(re.fullmatch('[0-9a-f]{64}', name) for name in names))
-            finally:
-                os.close(fd)
+            os.close(fd)
         _record(manifest, raw, deadline)
         _mkdir(generation)
     for name, row in rows.items():
@@ -604,6 +604,12 @@ def refresh(source, dependencies, *, expected_current):
 
 
 
+def _sdk_root():
+    # Separate fixed protected input cache; initial prepare's exact runtime
+    # snapshot never adopts these staging artifacts as installed source.
+    return _RUNTIME_ROOT.with_name(_RUNTIME_ROOT.name + '-sdk-inputs')
+
+
 def _sdk_file(path, expected, deadline):
     actual = _read(path, deadline)
     _require(actual['sha256'] == expected['hash'].removeprefix('sha256:')
@@ -622,7 +628,7 @@ def _sdk_artifact(row, wheelhouse, deadline):
     _require(name.endswith('.whl'))
     if wheelhouse is not None:
         return _sdk_file(Path(wheelhouse) / name, row, deadline)
-    directory = _RUNTIME_ROOT / 'wheel-artifacts' / row['hash'][7:]
+    directory = _sdk_root() / 'wheel-artifacts' / row['hash'][7:]
     _mkdir(directory)
     path = directory / name
     if path.exists() or path.is_symlink():
@@ -718,6 +724,9 @@ def _sdk_extract(root, rows, deadline):
         if target.exists() or target.is_symlink():
             _require(_read(target, deadline) == expected)
             continue
+        if 'source' in row:
+            _copy(Path(row['source']), target, expected, deadline)
+            continue
         _require('archive' in row)
         fd = _open(Path(row['archive']), directory=False)
         output = None
@@ -770,7 +779,7 @@ def _sdk_marker_tools(packages, wheelhouse, deadline):
     _require(len(wheels) == 1)
     path = _sdk_artifact(wheels[0], wheelhouse, deadline)
     rows = _wheel_entries(path, deadline)
-    root = _RUNTIME_ROOT / 'sdk-tools' / wheels[0]['hash'][7:]
+    root = _sdk_root() / 'sdk-tools' / wheels[0]['hash'][7:]
     _sdk_extract(root, rows, deadline)
     prefix = '_blueprint_verified_sdk_packaging_' + wheels[0]['hash'][7:]
     _require(not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules))
@@ -845,7 +854,74 @@ def _sdk_wheel(package, tools):
     return sorted(choices, key=lambda item: (item[0], item[1]['url']))[0][1]
 
 
-def build_sdk(source, *, wheelhouse=None):
+def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024):
+    executable = Path('/usr/bin/git')
+    parent = _open(executable.parent, directory=True)
+    try:
+        before = os.stat(executable.name, dir_fd=parent, follow_symlinks=False)
+        _require(stat.S_ISREG(before.st_mode) and before.st_uid == 0
+                 and stat.S_IMODE(before.st_mode) == 0o755 and before.st_nlink >= 1)
+        binary = os.open(executable.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        try:
+            _require(_identity(os.fstat(binary)) == _identity(before))
+        finally:
+            os.close(binary)
+    finally:
+        os.close(parent)
+    fd = _open(checkout, directory=True)
+    os.close(fd)
+    _require(time.monotonic() <= deadline)
+    # No repository hook, external filter, replace-object or mutable user
+    # configuration can execute during the raw object read.
+    command = [str(executable), '--no-replace-objects', '-C', str(checkout),
+               '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', *arguments]
+    value = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                           timeout=max(.001, min(30, deadline - time.monotonic())), check=False,
+                           env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/nonexistent',
+                                'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
+                                'GIT_TERMINAL_PROMPT': '0'})
+    _require(value.returncode == 0 and len(value.stdout) <= cap and len(value.stderr) <= 4096
+             and time.monotonic() <= deadline
+             and _identity(executable.lstat()) == _identity(before))
+    return value.stdout
+
+
+def _sdk_git_rows(package, checkout, deadline):
+    source = package.get('source', {})
+    match = re.fullmatch(r'https://github\.com/ognjhunt/BlueprintContracts\.git\?rev=([0-9a-f]{40})#([0-9a-f]{40})', source.get('git', ''))
+    _require(package['name'] == 'blueprint-contracts' and match is not None and match[1] == match[2]
+             and checkout is not None)
+    checkout, commit = Path(checkout), match[1]
+    raw = _sdk_git_command(checkout, ['cat-file', 'commit', commit], deadline, cap=65536)
+    _require(hashlib.sha1(b'commit ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == commit)
+    output = _sdk_git_command(checkout, ['ls-tree', '-r', '-z', commit, '--',
+                              'src/blueprint_contracts', 'blueprint_contracts'], deadline, cap=4 * 1024**2)
+    items = output.rstrip(b'\0').split(b'\0')
+    _require(output.endswith(b'\0') and 0 < len(items) <= _MAX_FILES)
+    rows = {}
+    for item in items:
+        header, name = item.split(b'\t', 1)
+        mode, kind, digest = header.decode('ascii').split(' ')
+        _require(mode in {'100644', '100755'} and kind == 'blob' and re.fullmatch('[0-9a-f]{40}', digest))
+        name = name.decode('utf-8')
+        if name.startswith('src/'):
+            name = name[4:]
+        _require(name.startswith('blueprint_contracts/') and '..' not in Path(name).parts
+                 and name not in rows and not name.endswith(('.pth', '.pyc', '.pyo')))
+        size = _sdk_git_command(checkout, ['cat-file', '-s', digest], deadline, cap=32)
+        _require(size.strip().isdigit() and int(size) <= 1024 * 1024)
+        body = _sdk_git_command(checkout, ['cat-file', 'blob', digest], deadline, cap=int(size))
+        _require(len(body) == int(size) and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
+        path = _sdk_root() / 'git-inputs' / commit / name
+        _mkdir(path.parent)
+        _record(path, body, deadline)
+        rows[name] = {'size': len(body), 'sha256': hashlib.sha256(body).hexdigest(), 'mode': 0o644,
+                      'source': str(path)}
+    _require('blueprint_contracts/__init__.py' in rows)
+    return rows
+
+
+def build_sdk(source, *, wheelhouse=None, contracts_checkout=None):
     """Build the locked base production closure for this system ABI, no setup.py."""
     deadline = time.monotonic() + _MAX_SECONDS
     try:
@@ -860,10 +936,12 @@ def build_sdk(source, *, wheelhouse=None):
         rows = {}
         for package in selected:
             _require(time.monotonic() <= deadline)
-            # Git source has a separate pinned object-tree acquisition route.
-            _require('git' not in package.get('source', {}))
-            path = _sdk_artifact(_sdk_wheel(package, tools), wheelhouse, deadline)
-            for name, row in _wheel_entries(path, deadline).items():
+            if 'git' in package.get('source', {}):
+                entries = _sdk_git_rows(package, contracts_checkout, deadline)
+            else:
+                path = _sdk_artifact(_sdk_wheel(package, tools), wheelhouse, deadline)
+                entries = _wheel_entries(path, deadline)
+            for name, row in entries.items():
                 _require(name not in rows)
                 rows[name] = row
         manifest = {name: {key: row[key] for key in ('size', 'sha256', 'mode')}
@@ -874,8 +952,8 @@ def build_sdk(source, *, wheelhouse=None):
                      'rows': manifest}
         raw_selection = _encoded(selection)
         digest = hashlib.sha256(raw_selection).hexdigest()
-        root = _RUNTIME_ROOT / 'sdk-inputs' / digest
-        marker = _RUNTIME_ROOT / 'manifests' / ('sdk-input-' + digest + '.json')
+        root = _sdk_root() / 'sdk-inputs' / digest
+        marker = _sdk_root() / 'manifests' / ('sdk-input-' + digest + '.json')
         if root.exists() or root.is_symlink():
             _require(marker.exists() and _record_bytes(marker, deadline)[0] == raw_selection)
         _mkdir(marker.parent)
