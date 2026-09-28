@@ -212,7 +212,7 @@ def _build_scene(
     return built, binding
 
 
-def run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
     """Run one attempt and retain its own terminal receipt on every failure."""
 
     sealed = _request(request)
@@ -458,13 +458,51 @@ def run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) -
     return result
 
 
+def run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
+                              scratch_lifetime: Any = None) -> dict[str, Any]:
+    """Admit optional cooperating ownership before the worker's first path access."""
+    from .control_plane_scratch_lifetime import worker_output_lifetime
+    with worker_output_lifetime(output_dir, scratch_lifetime):
+        return _run_g1_development_worker(request=request, output_dir=output_dir)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--lifetime-fd", type=int)
+    parser.add_argument("--lifetime-input-fd", type=int)
+    parser.add_argument("--lifetime-output-fd", type=int)
     args = parser.parse_args(argv)
-    request = json.loads(args.request.read_text(encoding="utf-8"))
-    result = run_g1_development_worker(request=request, output_dir=args.output_dir)
+    descriptors = (args.lifetime_fd, args.lifetime_input_fd, args.lifetime_output_fd)
+    if any(value is not None for value in descriptors):
+        from .control_plane_g1_lifetime_adapter import adopt_worker_proof, read_message, write_message, HANDSHAKE_SECONDS
+        from time import monotonic
+        from .control_plane_scratch_lifetime import LeasedScratchUse
+        from .control_plane_lane_scratch import LaneScratchError
+        from contextlib import ExitStack
+        with ExitStack() as cleanup:
+            owner = LeasedScratchUse()
+            cleanup.callback(owner.close)
+            owner._take_all(descriptors)
+            if not all(type(value) is int and value >= 0 for value in descriptors) or len(set(descriptors)) != 3:
+                raise LaneScratchError("lane_scratch_handshake_invalid")
+            try:
+                request = json.loads(args.request.read_text(encoding="utf-8"))
+                sealed = _request(request)
+            except (OSError, ValueError, TypeError, RecursionError):
+                raise LaneScratchError("lane_scratch_handshake_invalid") from None
+            deadline = monotonic() + HANDSHAKE_SECONDS
+            proof = read_message(args.lifetime_input_fd, _deadline=deadline)
+            use = cleanup.enter_context(adopt_worker_proof(args.lifetime_fd, proof, output=args.output_dir,
+                                                           request_digest=sealed["request_digest"], _owner=owner))
+            write_message(args.lifetime_output_fd, {"status": "ready", "request_digest": sealed["request_digest"]})
+            if read_message(args.lifetime_input_fd, _deadline=deadline) != {"status": "proceed"}:
+                raise LaneScratchError("lane_scratch_handshake_invalid")
+            result = run_g1_development_worker(request=request, output_dir=args.output_dir, scratch_lifetime=use)
+    else:
+        request = json.loads(args.request.read_text(encoding="utf-8"))
+        result = run_g1_development_worker(request=request, output_dir=args.output_dir)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "completed_development_only" else 1
 

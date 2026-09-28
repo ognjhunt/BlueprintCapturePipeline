@@ -10,6 +10,7 @@ import errno
 import functools
 import json
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,7 +21,8 @@ from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
 from blueprint_pipeline.control_plane_storage_pins import live_pinned_paths, release_storage_pin, write_storage_pin
-from tests.test_completed_replay_cache_retention import _refuse_reading
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from tests.test_completed_replay_cache_retention import _fails_instead_of_blocking, _refuse_reading
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
 
 NOW = 30_000_000.0
@@ -39,10 +41,43 @@ def isolated_disk_ledger(tmp_path, monkeypatch):
                         tmp_path / "disk-reservations")
     # No process on this host references anything unless a test says so.
     monkeypatch.setattr(retention, "process_reference", lambda _root, **_kwargs: None)
+    monkeypatch.setattr(retention, "process_reference_index", lambda **_kwargs: lambda _root: False)
 
 
 def _noclass(*_args, **_kwargs) -> None:
     return None
+
+
+def test_lane_summary_is_typed_private_and_never_a_byte_forecast():
+    private = "PRIVATE_MARKER"
+    report = {"status": "applied", "observed_at_epoch": NOW, "opt_in": {"lane_scratch": True},
+        "lane_scratch": {"status": "report_only", "complete": True, "enabled_requested": True,
+            "apply_supported": False, "execution_authorized": False, "mutations": 0,
+            "registered_count": 2, "unregistered_count": 1, "observed_registered_count": 2,
+            "observed_unregistered_count": 1, "logical_bytes": 10, "allocated_bytes": 512,
+            "candidate_bytes": 999, "removed_bytes": 0, "rows": [{"owner": private, "root": "/" + private}],
+            "retained_by_reason": {"live_lease": {"count": 2, "bytes": 999}}, "error": private}}
+    summary = reasons.build_storage_gc_summary(report)
+    phase = summary["phases"]["lane_scratch"]
+    assert phase["mode"] == "report_only" and phase["complete"] is True
+    assert phase["apply_supported"] is phase["execution_authorized"] is False
+    assert phase["candidate_bytes"] is None and phase["removed_or_offloaded_bytes"] == 0
+    assert phase["registered_count"] == 2 and phase["logical_bytes"] == 10
+    assert phase["retained_by_reason"] == {"live_lease": {"count": 2, "bytes": None}}
+    assert summary["top_retained"] == summary["top_retained_reasons"] == []
+    assert private not in json.dumps(summary) and summary["opt_in"]["lane_scratch"] is True
+
+
+@pytest.mark.parametrize("value", [True, -1, "1", 1.5, None])
+def test_lane_summary_rejects_noninteger_negative_and_bool_footprints(value):
+    raw = {"status": "report_only", "complete": "yes", "mutations": value, "logical_bytes": value,
+           "allocated_bytes": value, "registered_count": value, "observed_registered_count": value,
+           "candidate_bytes": value, "removed_bytes": value}
+    phase = reasons.build_storage_gc_summary({"lane_scratch": raw})["phases"]["lane_scratch"]
+    assert phase["complete"] is None
+    for key in ("mutations", "logical_bytes", "allocated_bytes", "registered_count", "observed_registered_count"):
+        assert phase[key] is None
+    assert phase["candidate_bytes"] is phase["removed_or_offloaded_bytes"] is None
 
 
 def _cold_run(evidence: Path, name: str, *, size: int = 4096) -> Path:
@@ -134,6 +169,54 @@ def test_unreadable_process_inventory_protects_with_a_reason(tmp_path, monkeypat
     assert applied["evidence_offload"]["offloaded_count"] == 0
     assert applied["evidence_offload"]["retained_by_reason"] == planned["evidence_offload"]["retained_by_reason"]
     assert run.is_dir() and (run / "frames.bin").stat().st_size == 5000
+
+
+def test_protected_pin_evidence_names_pin_kinds(tmp_path) -> None:
+    """2026-09-27: evidence offload kept 17 runs (7.6 GB) as protected_pin and could not say
+    which pins held them. Each is now counted under the kinds of the pins that hold it, with
+    how many distinct pins hold that kind's runs, so the runs can be checked against the pin
+    proofs. No owner or path reaches the reasons."""
+
+    evidence = tmp_path / "launch-runs"
+    own = _cold_run(evidence, "run-secret-own", size=1000)
+    two = _cold_run(evidence, "run-secret-two", size=1100)
+    three = _cold_run(evidence, "run-secret-three", size=1200)
+    shared = _cold_run(evidence, "run-secret-shared", size=2000)
+    _cold_run(evidence, "run-secret-free", size=3000)
+    pins = tmp_path / "pins"
+    # Young pins: this tick's pin pass keeps them all, whatever their proofs.
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="run-secret-own", paths=[own], now=lambda: NOW)
+    # One pin holding two runs is one owner, not two.
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="act-secret-two", paths=[two, three],
+                      now=lambda: NOW)
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="act-secret-a", paths=[shared / "inputs"],
+                      now=lambda: NOW)
+    write_storage_pin(pins_root=pins, kind="preparation", owner_id="prep-secret-b", paths=[shared], now=lambda: NOW)
+
+    reason = reasons.evidence_protection_reason(
+        shared, settlement_roots=(), pins_root=pins, queue_roots=[], now=lambda: NOW)
+    report = run_storage_gc(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=pins,
+                            evidence_roots=[evidence], now=lambda: NOW, classifier=_noclass)
+
+    assert reason == reasons.PROTECTED_PIN and type(reason) is str
+    assert reasons.pin_protection(shared, pins_root=pins, now=lambda: NOW) == (
+        "activation+preparation", {("activation", "act-secret-a"), ("preparation", "prep-secret-b")})
+    size = {run.name: sum(path.stat().st_size for path in run.rglob("*") if path.is_file())
+            for run in (own, two, three, shared)}
+    by_kind = {"activation": {"count": 3, "bytes": size[own.name] + size[two.name] + size[three.name],
+                              "owner_count": 2},
+               "activation+preparation": {"count": 1, "bytes": size[shared.name], "owner_count": 2}}
+    manifest = report["evidence_offload"]
+    assert manifest["retained_by_reason"] == {"protected_pin": {
+        "count": 4, "bytes": sum(size.values()), "by_kind": by_kind}}
+    assert [row["name"] for row in manifest["candidates"]] == ["run-secret-free"]
+    summary = reasons.build_storage_gc_summary(report)
+    assert summary["phases"]["evidence_offload"]["retained_by_reason"]["protected_pin"]["by_kind"] == by_kind
+    assert "secret" not in json.dumps(manifest["retained_by_reason"]) + json.dumps(summary)
+    # A reason given no detail still counts as it always did.
+    plain: dict = {}
+    reasons.count_retained(plain, "protected_pin", 5)
+    assert plain == {"protected_pin": {"count": 1, "bytes": 5}}
 
 
 def test_pin_kinds_name_exactly_the_live_pinned_paths(tmp_path) -> None:
@@ -228,7 +311,11 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert (summary["status"], summary["observed_at_epoch"]) == ("applied", report["observed_at_epoch"])
     assert summary["source_report_digest"] == report["report_digest"]
     assert summary["opt_in"] == {
-        "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False}
+        "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False,
+        "extended_pin_proofs": False, "lane_scratch": False, "result_residue_offload": False}
+    # Both the report-only lane scratch phase and the residue offload phase reach the summary.
+    assert summary["phases"]["lane_scratch"]["mode"] == "report_only"
+    assert summary["phases"]["result_residue_offload"]["enabled"] is False
     assert (summary["phase_errors"], summary["skipped_roots"]) == ([], [str(absent_scratch)])
     sizes = {run.name: sum(p.stat().st_size for p in run.rglob("*") if p.is_file())
              for run in (queued, hot, registry_run)}
@@ -278,6 +365,41 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert "operator_door" in sys.modules
 
 
+def test_the_summary_counts_terminal_pin_candidates_releases_and_the_opt_in(tmp_path) -> None:
+    """The pin phase's summary named nothing but its status, with null retention. It now
+    counts the candidates and the pins released, says whether the extended proofs may
+    release, and counts why the rest were kept, naming no owner and no path."""
+
+    pins = tmp_path / "pins"
+    for owner, created in (("prep-secret-stale", NOW - 9 * 86400), ("prep-secret-young", NOW - 3600)):
+        write_storage_pin(pins_root=pins, kind="preparation", owner_id=owner, now=lambda created=created: created,
+                          paths=[f"/var/lib/blueprint/task-evaluation-inputs/prepared-references/{owner}"])
+    # The stale preparation's sealed envelope binds it to a release other than the running one.
+    preparations = tmp_path / "task-evaluation-launch-preparations"
+    envelope = {"schema_version": "task_evaluation_launch_preparation_envelope.v1", "request_digest": "sha256:" + "1" * 64,
+                "request": {"preparation_id": "prep-secret-stale", "expected_production_commit": "a" * 40},
+                "envelope_digest": ""}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    (preparations / "materialized").mkdir(parents=True)
+    (preparations / "materialized" / f"prep-secret-stale-{'1' * 64}.json").write_text(json.dumps(envelope), encoding="utf-8")
+    common = dict(content_store_roots=[], derived_roots=[], queue_roots=[preparations], pins_root=pins, now=lambda: NOW,
+                  classifier=_noclass, apply=True, ack=RUN_ACK, running_commit="b" * 40)
+
+    listed = reasons.build_storage_gc_summary(run_storage_gc(**common))
+    applied = reasons.build_storage_gc_summary(run_storage_gc(**common, extended_pin_proofs_enabled=True))
+
+    phase = {"status": "applied", "candidate_bytes": None, "removed_or_offloaded_bytes": None,
+             "retained_by_reason": {"pin_young": {"count": 1, "bytes": None}}, "candidate_count": 1}
+    assert listed["phases"]["terminal_cache_pins"] == {**phase, "released_count": 0, "enabled": False}
+    assert applied["phases"]["terminal_cache_pins"] == {**phase, "released_count": 1, "enabled": True}
+    assert (listed["opt_in"]["extended_pin_proofs"], applied["opt_in"]["extended_pin_proofs"]) == (False, True)
+    assert "secret" not in json.dumps(listed) + json.dumps(applied)
+    # A report from before the counts does not claim there were none.
+    older = reasons.build_storage_gc_summary({"status": "applied", "terminal_cache_pins": {
+        "status": "applied", "candidates": [], "released": [], "kept": []}})["phases"]["terminal_cache_pins"]
+    assert (older["candidate_count"], older["released_count"], older["enabled"]) == (None, None, None)
+
+
 def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     """However many reasons a phase reports, the summary keeps the largest, bounded, and a
     reason that is not a typed string (a path, say) is never copied into it."""
@@ -309,7 +431,8 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     assert "run-1" not in json.dumps(summary)
     # A report written before the tick recorded its opt-ins does not claim they were off.
     assert summary["opt_in"] == {
-        "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None}
+        "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None,
+        "extended_pin_proofs": None, "lane_scratch": None, "result_residue_offload": None}
 
 
 def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:
@@ -467,6 +590,158 @@ def test_the_reasons_read_references_without_reaching_into_the_gc() -> None:
         references.MAX_QUEUE_MESSAGE_BYTES, references.QUEUE_STATES, references.SETTLEMENT_RECORD_GLOBS)
 
 
+@pytest.mark.parametrize("swap,code", [
+    # Read once more after the swap, the FIFO is seen for what it is; a file swapped again is not read.
+    ("fifo", "queue_row_not_regular"), ("link", "queue_row_linked"), ("file", "queue_row_changed")])
+def test_a_queue_row_swapped_after_its_lstat_fails_the_strict_read(tmp_path, monkeypatch, swap, code) -> None:
+    """The strict reader opens each row without following a link or waiting for a writer, and what
+    it opened must be the regular file the row's lstat saw. A row swapped for a FIFO, a link or
+    another file in between (and again when it is read once more) refuses the read, instead of
+    hanging the tick or reading a file whose kind and size were never checked."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    row = queue / "pending" / "row.json"
+    row.write_text('{"name": "named"}', encoding="utf-8")
+    (tmp_path / "elsewhere.json").write_text('{"name": "elsewhere"}', encoding="utf-8")
+    held = iter(range(8))
+    real_lstat = Path.lstat
+
+    def lstat_then_swap(self):
+        observed = real_lstat(self)
+        if self == row and stat.S_ISREG(observed.st_mode):
+            # Every swapped-out inode stays allocated, so no new file can reuse its number (Linux
+            # reuses a freed inode number at once), on the first read and on the read once more.
+            os.link(row, tmp_path / f"held-{next(held)}.json")
+            row.unlink()
+            if swap == "fifo":
+                os.mkfifo(row)
+            elif swap == "link":
+                row.symlink_to(tmp_path / "elsewhere.json")
+            else:
+                row.write_text('{"name": "replaced"}', encoding="utf-8")
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", lstat_then_swap)
+    with _fails_instead_of_blocking(5), pytest.raises(references.QueueReferenceUnreadable, match=code):
+        references.queue_reference_text([queue], strict=True)
+
+
+def test_a_fifo_queue_row_fails_the_strict_read_as_not_regular(tmp_path) -> None:
+    """A row that is not a regular file refuses the strict read under its own code, and the read
+    never waits for a FIFO's writer."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    (queue / "processing").mkdir(parents=True)
+    os.mkfifo(queue / "processing" / "row.json")
+
+    with _fails_instead_of_blocking(5), pytest.raises(references.QueueReferenceUnreadable,
+                                                      match="queue_row_not_regular"):
+        references.queue_reference_text([queue], strict=True)
+
+
+@pytest.mark.parametrize("when", ["listed", "swapped_after_lstat"])
+def test_a_fifo_queue_row_never_blocks_the_original_reader(tmp_path, monkeypatch, when) -> None:
+    """Every original caller, the storage GC's protection checks among them, reads its queues
+    without ``strict``. That reader opened each row by name, so one FIFO row in a queue directory
+    blocked the tick until systemd stopped it. It now reads each row through the strict reader's
+    descriptor and skips a FIFO, as it skips every row it cannot read, and reads the others."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    (queue / "processing").mkdir()
+    fifo = queue / "pending" / "a-fifo.json"
+    (queue / "pending" / "b-row.json").write_text('{"name": "named-b"}', encoding="utf-8")
+    (queue / "processing" / "c-row.json").write_text('{"name": "named-c"}', encoding="utf-8")
+    if when == "listed":
+        os.mkfifo(fifo)
+    else:
+        fifo.write_text('{"name": "swapped"}', encoding="utf-8")
+        real_lstat = Path.lstat
+
+        def lstat_then_swap(self):
+            observed = real_lstat(self)
+            if self == fifo and stat.S_ISREG(observed.st_mode):
+                fifo.unlink()
+                os.mkfifo(fifo)
+            return observed
+
+        monkeypatch.setattr(Path, "lstat", lstat_then_swap)
+
+    with _fails_instead_of_blocking(5):
+        text = references.queue_reference_text([queue])
+
+    assert text == '{"name": "named-b"}\n{"name": "named-c"}'
+
+
+@pytest.mark.parametrize("replacements,refused", [(1, False), (2, True)])
+def test_a_row_claimed_while_it_is_read_is_read_again_once(tmp_path, monkeypatch, replacements, refused) -> None:
+    """The dispatcher claims a row by creating an empty placeholder in processing/ and replacing the
+    pending row onto it (``task_evaluation_launch_dispatcher``'s ``claim``). A strict read that took
+    the placeholder's lstat then opens the row: the name changed once, so the row is read again
+    instead of failing the read. A name that changes again on the second read still fails it."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    for state in ("pending", "processing"):
+        (queue / state).mkdir(parents=True)
+    row = json.dumps({"activation_id": "claimed-run"})
+    (queue / "pending" / "row.json").write_text(row, encoding="utf-8")
+    placeholder = queue / "processing" / "row.json"
+    os.close(os.open(placeholder, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    real_lstat = Path.lstat
+    replaced: list[int] = []
+
+    def lstat_then_claim(self):
+        observed = real_lstat(self)
+        if self == placeholder and len(replaced) < replacements:
+            replaced.append(1)
+            if len(replaced) == 1:
+                os.replace(queue / "pending" / "row.json", placeholder)  # the claim lands
+            else:
+                fresh = queue / "rewritten.json.tmp"
+                fresh.write_text(row, encoding="utf-8")
+                os.replace(fresh, placeholder)
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", lstat_then_claim)
+    if refused:
+        with pytest.raises(references.QueueReferenceUnreadable, match="queue_row_changed"):
+            references.queue_reference_text([queue], strict=True)
+    else:
+        # Read in pending before the claim, and in processing after it.
+        assert references.queue_reference_text([queue], strict=True).count("claimed-run") == 2
+    assert len(replaced) == replacements
+
+
+def test_a_fifo_settlement_record_is_counted_unreadable_without_blocking(tmp_path) -> None:
+    """Every protection check reads the settlement records, and read them by name, so one FIFO
+    record blocked the tick. Each record is now read through the queue reader's descriptor: a FIFO
+    is refused without blocking and counted as unreadable, which already protects every run, and
+    the other records are still read."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    root = tmp_path / "settlements"
+    (root / "intent-1" / "attempts").mkdir(parents=True)
+    (root / "intent-1" / "preparations").mkdir()
+    os.mkfifo(root / "intent-1" / "attempts" / "a-fifo.json")
+    (root / "intent-1" / "attempts" / "b.json").write_text('{"run": "named-b"}', encoding="utf-8")
+    (root / "intent-1" / "preparations" / "c.json").write_text('{"run": "named-c"}', encoding="utf-8")
+
+    with _fails_instead_of_blocking(5):
+        text, unreadable = references.settlement_reference_text([root])
+
+    assert (text, unreadable) == ('{"run": "named-b"}\n{"run": "named-c"}', 1)
+
+
 def test_the_summary_copies_only_the_offloads_own_stages() -> None:
     """A failure's stage reaches the summary only if it is one of the result-artifact
     offload's stages; any other string, however typed it looks, is unrecognized."""
@@ -478,6 +753,8 @@ def test_the_summary_copies_only_the_offloads_own_stages() -> None:
          "error_type": "PermissionError", "errno": 1, "stage": "evict"},
         {"status": "retained", "run_directory": "run-b", "reason": "OSError",
          "error_type": "OSError", "errno": 5, "stage": "teleport"},
+        {"status": "retained", "run_directory": "run-c", "reason": "TaskEvaluationResultDeliveryError",
+         "error_type": "TaskEvaluationResultDeliveryError", "errno": None, "stage": "plan"},
         {"status": "applied", "candidate_bytes": 10, "offloaded_bytes": 0, "skipped": [
             {"relative_path": "evidence/a.mp4", "reason": "OSError", "error_type": "OSError",
              "errno": 28, "stage": "publish"}]},
@@ -486,14 +763,15 @@ def test_the_summary_copies_only_the_offloads_own_stages() -> None:
     phase = reasons.build_storage_gc_summary(
         {"status": "applied", "result_artifact_offload": rows})["phases"]["result_artifact_offload"]
 
-    assert OFFLOAD_STAGES == ("registry", "protection", "publish", "evict")
+    assert OFFLOAD_STAGES == ("registry", "plan", "protection", "publish", "evict")
     assert phase["retained_by_reason"] == {
         "offload_failed:evict": {"count": 1, "bytes": None},
         "offload_failed:unrecognized_stage": {"count": 1, "bytes": None},
+        "offload_failed:plan": {"count": 1, "bytes": None},
         "artifact_offload_failed:publish": {"count": 1, "bytes": None},
     }
     assert sorted((row["scope"], row["stage"]) for row in phase["failures"]) == [
-        ("artifact", "publish"), ("run", "evict"), ("run", "unrecognized_stage")]
+        ("artifact", "publish"), ("run", "evict"), ("run", "plan"), ("run", "unrecognized_stage")]
 
 
 def test_replay_scan_error_leaves_candidate_bytes_unknown() -> None:

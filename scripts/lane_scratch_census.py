@@ -12,6 +12,7 @@ import json
 import os
 import secrets
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,11 +23,31 @@ from blueprint_pipeline.control_plane_lane_scratch_census import (  # noqa: E402
     build_census,
 )
 
+from blueprint_pipeline.control_plane_lane_scratch_decisions import (  # noqa: E402
+    CensusDecisionError, VALIDATION_SCHEMA, encode_validation_report,
+    read_census_input_record, validate_census_annotations, write_census_validation_report,
+)
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--work-root", type=Path, default=DEFAULT_WORK_ROOT)
-    parser.add_argument("--inputs-root", type=Path, default=DEFAULT_INPUTS_ROOT)
+
+class _CensusParser(argparse.ArgumentParser):
+    validation_mode = False
+    issuance_mode = False
+
+    def error(self, message: str) -> None:
+        if self.issuance_mode:
+            from blueprint_pipeline.control_plane_lane_owner_consents import OwnerCensusConsentError
+            raise OwnerCensusConsentError("owner_consent_options_invalid")
+        if self.validation_mode:
+            raise CensusDecisionError("census_annotations_invalid")
+        super().error(message)
+
+
+def _parser(*, validation_mode: bool = False, issuance_mode: bool = False) -> argparse.ArgumentParser:
+    parser = _CensusParser(description=__doc__)
+    parser.validation_mode = validation_mode
+    parser.issuance_mode = issuance_mode
+    parser.add_argument("--work-root", default=str(DEFAULT_WORK_ROOT))
+    parser.add_argument("--inputs-root", default=str(DEFAULT_INPUTS_ROOT))
     parser.add_argument("--process-root", type=Path, default=Path("/proc"))
     parser.add_argument("--pins-root", type=Path,
                         default=Path("/var/lib/blueprint/pipeline-control-plane/storage-pins"))
@@ -40,6 +61,18 @@ def _parser() -> argparse.ArgumentParser:
     active.add_argument("--active-run-inventory-empty", action="store_true")
     parser.add_argument("--max-seconds", type=float, default=240.0)
     parser.add_argument("--json-out", type=Path)
+    parser.add_argument("--validate-census", type=Path)
+    parser.add_argument("--annotations", type=Path)
+    parser.add_argument("--issue-owner-consent", action="store_true")
+    parser.add_argument("--census", type=Path)
+    parser.add_argument("--expected-census-sha256")
+    parser.add_argument("--expected-census-size-bytes", type=int)
+    parser.add_argument("--expected-annotations-sha256")
+    parser.add_argument("--expected-annotations-size-bytes", type=int)
+    parser.add_argument("--principal")
+    parser.add_argument("--selected-path", action="append")
+    parser.add_argument("--consent-expires-at-epoch", type=float)
+    parser.add_argument("--door-config", default="/etc/blueprint-operator-door/door.json")
     return parser
 
 
@@ -78,14 +111,102 @@ def _write_json(path: Path, report: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _validation_refusal(code: str) -> int:
+    report = {"schema_version": VALIDATION_SCHEMA, "status": "refused", "blockers": [code],
+              "mutations": 0, "execution_authorized": False,
+              "requires_fresh_reference_check": True}
+    print(encode_validation_report(report).decode("utf-8"), end="")
+    return 1
+
+
+def _validation_mode(args, argv: list[str]) -> int:
+    scan_options = {"--process-root", "--pins-root", "--release-link", "--queue-root",
+                    "--queue-inventory-empty", "--active-run-root", "--active-run-inventory-empty",
+                    "--max-seconds"}
+    try:
+        if (args.validate_census is None or args.annotations is None
+                or any(option.startswith(token.split("=", 1)[0])
+                       for token in argv if token.startswith("--") for option in scan_options)):
+            raise CensusDecisionError("census_annotations_invalid")
+        census, census_identity = read_census_input_record(args.validate_census)
+        annotations, annotation_identity = read_census_input_record(args.annotations)
+        report = validate_census_annotations(census, annotations, now=time.time(),
+                                            allowed_roots=(args.work_root, args.inputs_root))
+        payload = encode_validation_report(report)
+        if args.json_out is not None:
+            write_census_validation_report(args.json_out, payload,
+                input_paths=(args.validate_census, args.annotations),
+                input_identities=(census_identity, annotation_identity))
+    except CensusDecisionError as exc:
+        return _validation_refusal(exc.code)
+    print(payload.decode("utf-8"), end="")
+    return 0
+
+
+
+def _issue_mode(args, arguments):
+    from blueprint_pipeline.control_plane_lane_owner_consents import (
+        OwnerCensusConsentError, _run_issue, _refusal,
+    )
+    allowed = {"--issue-owner-consent", "--census", "--annotations", "--expected-census-sha256",
+               "--expected-census-size-bytes", "--expected-annotations-sha256", "--expected-annotations-size-bytes",
+               "--principal", "--selected-path", "--consent-expires-at-epoch", "--door-config"}
+    try:
+        if (args.census is None or args.annotations is None
+                or any(not any(option.startswith(token.split("=", 1)[0]) for option in allowed)
+                       for token in arguments if token.startswith("--"))):
+            raise OwnerCensusConsentError("owner_consent_options_invalid")
+        result = _run_issue(args.census, args.annotations,
+            census_sha256=args.expected_census_sha256, census_size_bytes=args.expected_census_size_bytes,
+            annotations_sha256=args.expected_annotations_sha256, annotations_size_bytes=args.expected_annotations_size_bytes,
+            principal=args.principal, selected_paths=args.selected_path, expires_at_epoch=args.consent_expires_at_epoch,
+            installed_config_path=args.door_config, now=time.time(), monotonic=time.monotonic, _encoded_stdout=True)
+    except OwnerCensusConsentError as error:
+        print(json.dumps(_refusal(error), sort_keys=True, separators=(",", ":")))
+        return 1
+    print(result.decode("utf-8"), end="")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = _parser()
-    args = parser.parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    validation_intent = any(option.startswith(token.split("=", 1)[0])
+                            for token in arguments if token.startswith("--") and len(token) > 2
+                            for option in ("--validate-census", "--annotations"))
+    issuance_options = ("--issue-owner-consent", "--census", "--expected-census-sha256",
+                        "--expected-census-size-bytes", "--expected-annotations-sha256",
+                        "--expected-annotations-size-bytes", "--principal", "--selected-path",
+                        "--consent-expires-at-epoch", "--door-config")
+    issuance_intent = any(option.startswith(token.split("=", 1)[0])
+                          for token in arguments if token.startswith("--") and len(token) > 2
+                          for option in issuance_options)
+    parser = _parser(validation_mode=validation_intent, issuance_mode=issuance_intent)
+    try:
+        args = parser.parse_args(arguments)
+    except CensusDecisionError as exc:
+        return _validation_refusal(exc.code)
+    except ValueError as error:
+        if not issuance_intent:
+            raise
+        from blueprint_pipeline.control_plane_lane_owner_consents import OwnerCensusConsentError, _refusal
+        if not isinstance(error, OwnerCensusConsentError):
+            raise
+        print(json.dumps(_refusal(error), sort_keys=True, separators=(",", ":")))
+        return 1
+    if args.issue_owner_consent:
+        return _issue_mode(args, arguments)
+    if issuance_intent:
+        from blueprint_pipeline.control_plane_lane_owner_consents import OwnerCensusConsentError, _refusal
+        print(json.dumps(_refusal(OwnerCensusConsentError("owner_consent_options_invalid")),
+                         sort_keys=True, separators=(",", ":")))
+        return 1
+    if args.validate_census is not None or args.annotations is not None:
+        return _validation_mode(args, arguments)
     if not 0 < args.max_seconds <= 240:
         parser.error("--max-seconds must be between 0 and 240")
     queue_roots = () if args.queue_inventory_empty else args.queue_root
     active_roots = () if args.active_run_inventory_empty else args.active_run_root
-    report = build_census(work_root=args.work_root, inputs_root=args.inputs_root,
+    report = build_census(work_root=Path(args.work_root), inputs_root=Path(args.inputs_root),
                           process_root=args.process_root, pins_root=args.pins_root,
                           queue_roots=queue_roots, release_link=args.release_link,
                           active_run_roots=active_roots, max_seconds=args.max_seconds)

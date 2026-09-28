@@ -273,6 +273,19 @@ def release_storage_pin(
     }
 
 
+def depends_on(pin: Mapping[str, Any], kind: str, owner_id: str) -> bool:
+    """Whether ``pin`` lists ``(kind, owner_id)`` among the pins it depends on.
+
+    The one reading of ``depends_on`` for the ledger: the release cascade here and
+    the terminal pin reconciliation both ask it.
+    """
+
+    return any(
+        dependency.get("kind") == kind and dependency.get("owner_id") == owner_id
+        for dependency in pin.get("depends_on") or []
+    )
+
+
 def _still_needed(
     pins_root: str | Path,
     *,
@@ -286,15 +299,15 @@ def _still_needed(
             continue
         if (str(pin["kind"]), str(pin["owner_id"])) in excluding:
             continue
-        for dependency in pin.get("depends_on") or []:
-            if dependency.get("kind") == kind and dependency.get("owner_id") == owner_id:
-                return True
+        if depends_on(pin, kind, owner_id):
+            return True
     return False
 
 
 __all__ = [
     "ControlPlaneStoragePinError",
     "DEFAULT_PINS_ROOT",
+    "depends_on",
     "DEFAULT_PIN_TTL_SECONDS",
     "PINS_ROOT_ENV",
     "PIN_KINDS",

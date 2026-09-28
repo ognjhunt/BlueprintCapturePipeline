@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_preparation_link_contract import (
+    LINK_SCHEMA,
+    validate_preparation_link,
+)
 from . import task_evaluation_scene_intake as intake
 from . import task_evaluation_configured_controls_continuation_provisioning as producer
 from .project_spend_reconciliation import validate_project_spend_reconciliation
@@ -23,7 +27,6 @@ from .task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError as _StoreError,
 )
 
-LINK_SCHEMA = "task_evaluation_scene_preparation_link.v1"
 CATALOG_SCHEMA = "task_evaluation_controls_robot_catalog.v1"
 CONFIG_ENV = "BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG"
 CONTENT_CATALOG_SCHEMA = "task_evaluation_controls_robot_content_catalog.v1"
@@ -91,32 +94,6 @@ def build_preparation_link(**fields: Any) -> dict[str, Any]:
     value = {"schema_version": LINK_SCHEMA, **fields}
     value["link_digest"] = canonical_digest(value, digest_field="link_digest")
     return validate_preparation_link(value)
-
-
-def validate_preparation_link(value: Mapping[str, Any]) -> dict[str, Any]:
-    _require(set(value) - {"scene_configuration_attempt"} == {"schema_version", "intent_id", "intent_digest", "preparation_id",
-        "request_digest", "expected_production_commit", "team_namespace", "scene_id", "task_id",
-        "result_filename", "link_digest"}, "link_fields_invalid")
-    _require(value["schema_version"] == LINK_SCHEMA and value["link_digest"] ==
-             canonical_digest(value, digest_field="link_digest"), "link_digest_invalid")
-    for key in ("intent_id", "preparation_id", "team_namespace", "scene_id", "task_id"):
-        _require(intake._identifier(value[key]), "link_identity_invalid")
-    for key in ("intent_digest", "request_digest"):
-        _require(isinstance(value[key], str) and intake._DIGEST.fullmatch(value[key]) is not None,
-                 "link_identity_invalid")
-    _require(isinstance(value["expected_production_commit"], str) and
-             intake._COMMIT.fullmatch(value["expected_production_commit"]) is not None,
-             "link_release_invalid")
-    expected = value["preparation_id"] + "-" + value["request_digest"].removeprefix("sha256:") + ".json"
-    _require(value["result_filename"] == expected, "link_filename_invalid")
-    if "scene_configuration_attempt" in value:
-        reference = value["scene_configuration_attempt"]
-        _require(isinstance(reference, Mapping) and set(reference) == {"path", "sha256", "size_bytes"}
-                 and isinstance(reference.get("path"), str) and Path(reference["path"]).is_absolute()
-                 and isinstance(reference.get("sha256"), str) and intake._DIGEST.fullmatch(reference["sha256"]) is not None
-                 and type(reference.get("size_bytes")) is int and reference["size_bytes"] > 0,
-                 "link_configuration_attempt_invalid")
-    return dict(value)
 
 
 def _persisted_digest(name: str, key: Mapping[str, Any], compute: Callable[[], Any]) -> Any:

@@ -1,0 +1,1292 @@
+"""Offload a sealed result run's residue: every file its registry neither delivers nor keeps.
+
+On 2026-09-27 the first storage GC summary showed evidence offload keeping 27
+result-registry runs, 12.94 GB, as ``result_registry``. Whole-run offload
+(``control_plane_evidence_offload``) skips every run with
+``artifacts/result_delivery/artifact_registry.json``: published downloads keep
+their registry and closure metadata. Per-artifact offload
+(``task_evaluation_result_artifact_store``) moves only registered ``BULK_ROLES``
+payloads of at least 64 KiB behind a private reference under
+``artifacts/result_delivery/remote_artifacts/``. Unregistered files (logs,
+intermediates, provider zips) and small or non-bulk registered files stayed
+forever. Once the eviction-lease fix let the per-artifact offload finish (3.5 GB,
+no failures), what remains of those runs is this residue.
+
+**When.** ``offload_result_residue`` acts only on a run that is sealed
+(``_sealed_registry``: completed_unqualified, blocked or cancelled, with sealed
+closure receipts) by the canary dispatcher (a digest-bound ``dispatch_receipt.json``
+for the registry's run) that no pending or processing queue row names, whose
+registry is older than the hot window, whose bulk
+artifacts are all remote (a dry run of ``offload_result_artifacts`` has no
+candidates), that nothing protects, that has no residue pointer yet, and whose
+root is a real directory. Anything else is a retained row with a typed
+``retained_reason``; nothing is published or removed.
+
+**Members** are the run's regular files, except: everything under
+``artifacts/result_delivery/`` (registry, delivery, projection, Website sync,
+remote references, locks); every path the registry records, bulk or not
+(receipts, manifests, scores, reports and the whole artifact inventory stay);
+any file named in ``TERMINAL_RECEIPT_NAMES`` or ``RETAINED_RECEIPTS``, at any
+depth; the ``READER_REOPENED_NAMES`` and everything under
+``READER_REOPENED_DIRECTORIES``, at any depth (``reader_reopened``); and
+anything a reader can reach from what stays. That is the target of every link
+that stays inside the run, with everything under it (``symlink_target``), and
+every file that any file that stays names by path, whatever kept it and in any
+text format (JSON, JSON lines or free text): absolutely, relative to the run,
+the evidence root or any directory above the file, or as the tail of any path of
+the run; each file so reached is searched in turn (``receipt_referenced``). The
+search (``task_evaluation_result_residue_scan``) streams each file a chunk at a
+time, whatever its size; a binary (a NUL in its first 64 KiB) names nothing. A named directory keeps only
+what is named in it: the registry names every evidence root, the run root among
+them, and the surveyed readers reopen bound files, never a named directory's
+listing. A link, a special file, a file on another filesystem than the run root,
+one newer than the registry, one with a hard link outside the residue, or one
+whose name holds a character the search does not read as part of a path
+(``name_unsupported``) is a typed skip and stays. When what stays cannot be
+searched (a directory that cannot be listed or is on another filesystem, a kept
+link that leaves the run, a kept file on another filesystem, a file that cannot
+be read) the whole run stays (``plan_failed``).
+
+**Reader survey** (2026-09-27): who reopens files inside a sealed run.
+
+* Only ``task-evaluation-policy-canaries`` runs carry a registry. The canary
+  dispatcher's runs seal with ``dispatch_receipt.json``; operator runs have
+  none, and G1 reviews have no ``delivery.json`` (``_sealed_registry`` refuses
+  them). Nothing reads ``episode-interpretation-backfills`` or
+  ``policy-canary-preprovider-audits`` runs, and no launch run has a registry.
+* Every two minutes the launch reconciler's canary terminal index reopens
+  ``dispatch_receipt.json``, the projection and Website sync under
+  ``artifacts/result_delivery/`` and ``post_teardown_global_provider_zero.json``;
+  it ``rglob``s ``preprovider_blocked.json`` and
+  ``no_provider_allocation_blocked.json`` across the whole canary root.
+* The WebApp download route (``live_pipeline_result_artifact_resolution``,
+  ``resolve_task_evaluation_result_artifact``) reopens the registry, its reader
+  lock, remote references and registered artifacts, and an operator run's
+  ``website-operator-registration.json``.
+* The existing-run continuation and ``finalize_operator_policy_canary`` reopen
+  an operator run's ``existing_run_continuation/`` and
+  ``operator_terminal_delivery/`` files and every file its intent records,
+  through record chains (setup, specs, nested file records, relocations) that
+  can pass through documents outside the run. The reference closure below
+  reads only documents inside the run, so an operator run, which has no
+  dispatch receipt, stays whole.
+* The canary dispatcher reopens ``dispatch_receipt.json`` after the seal, and
+  its blocked/stranded rescan and resume paths (allocator invocations, session
+  authority, pending and progress records, ``status_events.jsonl``) run only
+  while the receipt is missing. In queue mode, though, it runs a pending or
+  processing envelope whether or not the run is sealed: it reopens the run's
+  authority and records and rebuilds the bundle when its receipt is missing
+  (``allocator_result.json``, kept by name, stops any new spend). So a run that
+  a pending or processing row of a configured queue names stays whole
+  (``dispatch_row_pending``), and a row the storage GC's strict queue reader
+  refuses keeps every run (``dispatch_queue_unreadable``).
+* Official-billing re-validation reopens ``allocator_result.json`` (or
+  ``allocator-result.json``) and every ``terminal_execution_evidence`` path of
+  ``official_billing_reconciliation.json``; same-goal spend ledgers
+  (``paid_attempt_authority.validate_same_goal_spend_reconciliation``) reopen
+  and rehash every bound ``source_receipts`` path on each scene-progression
+  tick. The ledgers live outside the run, but every in-run file a canary entry
+  can bind (terminal result, teardown manifest, provider zero, official billing
+  response and source receipt, adapter result) is either kept by name or named
+  by absolute path in the run's own ``official_billing_reconciliation.json``
+  (``vast_official_billing_extractor`` records each one), which is searched, so
+  ``receipt_referenced`` keeps it. Scene-intent settlement records protect the
+  whole run (``protected_settlement``).
+* Scene-attempt recovery (``task_evaluation_scene_progression_recovery``) scans
+  every canary run for ``*.lease.json`` and ``pending_teardowns/*.json`` (or
+  ``pending-teardowns``) and counts each open record as an ambiguous-create
+  blocker, so those stay wherever they sit (``OWNERSHIP_RECORD_*``).
+* Rescoring, graded reports and interpretation closeout read
+  ``policy_canary_terminal_result.json``, the registered artifact inventory,
+  ``episode_interpretation_sources/`` and ``episode_interpretation/``.
+* Terminal cache pins, the evidence manifest, disk usage and release leases
+  only test existence. Stage replay, city-launch evidence, provider billing,
+  terminal resource release, release retention and the audit scripts read no
+  canary run; completed-prefix and completed-training reuse read launch runs,
+  which have no registry.
+
+**Mechanics.** Apply takes the per-artifact offload's exclusive run lock
+(``artifacts/result_delivery/.offload.lock``) without waiting, then packs and
+publishes exactly the members through ``publish_archive``, the helper
+``apply_evidence_offload`` publishes with (disk reservation, content-addressed
+publisher, full readback); the packer opens each member without following a
+link or blocking and requires the planned inode, so nothing else can reach the
+archive. Only after a verified upload, with the registry
+and the run unchanged and still unprotected, does it write the digest-bound
+pointer ``<run>.residue.v1.json`` beside the run (temporary file, fsync,
+``os.replace``, directory fsync) in state ``evicting``. Then it unlinks each member through directory
+descriptors held from the run root (``completed_replay_cache_retention``'s
+``_HeldChild`` and ``_remove_group``): device, inode, links, size and mtime are
+rechecked and its bytes hashed once, as the other offloads do, and a member that
+changed, moved or became a link is skipped and recorded in the pointer as
+``kept``; of a hard-linked group cut short, only the names still there are kept,
+and a name that went without the offload (its directory moved away) is
+``member_vanished``: neither offloaded nor kept, so restore brings it back.
+A pointer behind which nothing could be evicted is withdrawn (``nothing_evicted``)
+so the next tick tries again; otherwise, once eviction is over, the pointer is
+rewritten ``offloaded`` with what it kept. A crash during eviction leaves an
+``evicting`` pointer with members behind it: every later tick reports the listed
+members still local (``pointed_remaining_*``), and one that applies and passes
+every gate under the lock resumes (``resume``), evicting each listed member the
+pointer does not keep, still residue by a fresh plan, whose bytes still hash to
+the pointer's, keeping the rest and settling the pointer ``offloaded``; it
+publishes nothing, never withdraws that pointer, and evicts nothing until a HEAD
+request finds the pointer's archive with its size and digest
+(``archive_unverified``). Only an ``evicting`` pointer is resumed: an ``offloaded`` one (or one
+without a state) is ``already_offloaded``, a run whose restore is under way or
+was cut short is ``restoring``, and a run an operator restored is ``restored``;
+neither is offloaded again without a new decision. The gates
+read the pointer before the run lock, so an applying tick reads it again once it
+holds the lock and goes on only while it is unchanged (still absent, or the same
+``evicting`` pointer by digest); otherwise it keeps the run for the pointer's
+state now (``pointer_changed`` when it is gone or another) and writes nothing. A
+pointer that does not verify, or whose registry digest is not the run's, leaves
+the run alone (``pointer_invalid``). ``restore_result_residue``
+(``task_evaluation_result_residue_restore``) streams the archive back, verifies
+every member's digest and size, never overwrites a different file, and records a
+receipt beside the pointer. The reference search itself lives in
+``task_evaluation_result_residue_scan``.
+"""
+
+from __future__ import annotations
+
+import bisect
+import fcntl
+import functools
+import json
+import os
+import secrets
+import stat
+import time
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+from . import completed_replay_cache_retention as held_files
+from . import control_plane_evidence_offload as evidence
+from . import task_evaluation_configured_scene_object_store as scene_store
+from . import control_plane_storage_references as references
+from .control_plane_replay_cache_gc import _truthy_setting
+from .control_plane_retained_receipt import RETAINED_RECEIPTS
+from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_result_residue_scan import (
+    ResultResidueOffloadError,
+    name_supported as _name_supported,
+    receipt_references as _receipt_references,
+)
+from .task_evaluation_result_artifact_store import (
+    _remote_path,
+    _safe_path,
+    _sealed_registry,
+    offload_failure,
+    offload_result_artifacts,
+)
+
+REPORT_SCHEMA_VERSION = "control_plane_result_residue_offload.v1"
+PHASE_SCHEMA_VERSION = "control_plane_result_residue_offload_phase.v1"
+POINTER_SCHEMA_VERSION = "control_plane_result_residue_pointer.v1"
+#: A pointer's eviction state: members are being evicted behind it, eviction is over, an operator's
+#: restore is putting them back (or was cut short), or it restored the run. A pointer without one is
+#: read as ``offloaded``, so nothing resumes behind it; only ``evicting`` is ever resumed.
+POINTER_STATES = ("evicting", "offloaded", "restoring", "restored")
+#: Why a run with a pointer in each state is kept; an ``evicting`` pointer is resumed only while it is
+#: the one the tick first read (else ``pointer_changed``).
+_POINTER_STATE_REASONS = {
+    "evicting": "pointer_changed", "offloaded": "already_offloaded", "restoring": "restoring",
+    "restored": "restored",
+}
+RESTORE_SCHEMA_VERSION = "control_plane_result_residue_restore_receipt.v1"
+POINTER_SUFFIX = evidence.RESIDUE_POINTER_SUFFIX
+RESTORE_RECEIPT_SUFFIX = evidence.RESIDUE_RESTORE_SUFFIX
+APPLY_ACK = "offload-sealed-result-residue"
+RESIDUE_OFFLOAD_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD"
+RESIDUE_OFFLOAD_INVALID = "result_residue_offload_setting_invalid"
+#: Like scene workspace retirement, a tick attempts at most this many publications; the rest wait.
+RESIDUE_MAX_RUNS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_MAX_RUNS_PER_TICK"
+DEFAULT_MAX_RUNS_PER_TICK = 5
+DEFAULT_HOT_WINDOW_SECONDS = 172800
+RESULT_DELIVERY = "artifacts/result_delivery"
+DISPATCH_RECEIPT = "dispatch_receipt.json"
+#: File names a live reader reopens after the seal, wherever they sit in the run (see the survey).
+READER_REOPENED_NAMES = frozenset({
+    "policy_canary_terminal_result.json",
+    "post_teardown_global_provider_zero.json",
+    "official_billing_reconciliation.json",
+    "allocator_result.json",
+    "allocator-result.json",
+    "website-operator-registration.json",
+    "preprovider_blocked.json",
+    "no_provider_allocation_blocked.json",
+})
+#: Scene-attempt recovery (``task_evaluation_scene_progression_recovery.reconcile_ownership``)
+#: scans every canary run with ``rglob("*.lease.json")`` and ``glob("**/pending_teardowns/*.json")``
+#: (or ``pending-teardowns``) and counts an open record as a blocker: these stay wherever they sit.
+OWNERSHIP_RECORD_SUFFIX = ".lease.json"
+OWNERSHIP_RECORD_DIRECTORIES = frozenset({"pending_teardowns", "pending-teardowns"})
+#: Directories a live reader reopens whole, wherever they sit in the run: nothing under one is residue.
+READER_REOPENED_DIRECTORIES = frozenset({
+    "operator_terminal_delivery",
+    "existing_run_continuation",
+    "episode_interpretation",
+    "episode_interpretation_sources",
+})
+_KEPT_NAMES = frozenset({*evidence.TERMINAL_RECEIPT_NAMES, *RETAINED_RECEIPTS})
+#: A dispatch receipt larger than this is not the dispatcher's.
+_MAX_DISPATCH_RECEIPT_BYTES = 64 * 1024 * 1024
+_MAX_LISTED = 50
+_MIB = 1024 * 1024
+
+
+
+def result_residue_offload_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
+    """Whether residue offload may apply, and an alert when its setting is invalid.
+
+    Its own owner decision, parsed like every other storage GC opt-in: only
+    ``1``, ``true`` or ``yes`` enables it; any other value leaves it planning and
+    is reported. The evidence offload opt-in never enables it.
+    """
+
+    return _truthy_setting(environ, RESIDUE_OFFLOAD_ENV, RESIDUE_OFFLOAD_INVALID)
+
+
+def _new_row(name: str, *, apply: bool, now: Callable[[], float]) -> dict[str, Any]:
+    return {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "run": name,
+        "status": "applied" if apply else "dry_run",
+        "retained_reason": None,
+        "registry_digest": None,
+        # None until the run's members were listed.
+        "candidate_count": None,
+        "candidate_bytes": None,
+        "offloaded_count": 0,
+        "offloaded_bytes": 0,
+        "skipped": [],
+        "skipped_by_reason": {},
+        "omitted_skipped_count": 0,
+        "observed_at_epoch": float(now()),
+    }
+
+
+def _finished(row: dict[str, Any]) -> dict[str, Any]:
+    row["result_digest"] = canonical_digest(row, digest_field="result_digest")
+    return row
+
+
+def _retained(row: dict[str, Any], reason: str, *, failure: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    row["status"], row["retained_reason"] = "retained", str(reason)
+    if failure is not None:
+        row["failure"] = dict(failure)
+    return _finished(row)
+
+
+def _skip(row: dict[str, Any], relative: str, reason: str, size: int) -> None:
+    counted = row["skipped_by_reason"].setdefault(reason, {"count": 0, "bytes": 0})
+    counted["count"] += 1
+    counted["bytes"] += int(size)
+    if len(row["skipped"]) < _MAX_LISTED:
+        row["skipped"].append({"relative_path": relative, "reason": reason})
+    else:
+        row["omitted_skipped_count"] += 1
+
+
+def _registered_paths(root: Path, registry: Mapping[str, Any]) -> set[str]:
+    """Every path the registry records, relative to the run, as the artifact offload resolves it."""
+
+    paths = set()
+    for record in registry["artifacts"]:
+        evidence_root = Path(str(record.get("evidence_root") or ""))
+        relative = (evidence_root.relative_to(root) / str(record.get("relative_path") or "")).as_posix()
+        paths.add(relative)
+    return paths
+
+
+def _delivery_directories(root: Path) -> tuple[str, ...]:
+    # Remote references live wherever the artifact offload puts them.
+    remote = _remote_path(root, "residue").parent.relative_to(root).as_posix()
+    return tuple(sorted({RESULT_DELIVERY, remote}))
+
+
+def _under(relative: str, directories: Sequence[str]) -> bool:
+    return any(relative == directory or relative.startswith(directory + "/") for directory in directories)
+
+
+def _kept_directory(relative: str, delivery: Sequence[str]) -> bool:
+    """Whether nothing under the directory ``relative`` can be residue."""
+
+    return _under(relative, delivery) or not READER_REOPENED_DIRECTORIES.isdisjoint(PurePosixPath(relative).parts)
+
+
+def _kept_by_design(relative: str, delivery: Sequence[str], registered: set[str]) -> str | None:
+    """Why the file ``relative`` is never residue: ``kept`` (not reported) or ``reader_reopened``; else None."""
+
+    path = PurePosixPath(relative)
+    if _under(relative, delivery) or relative in registered or path.name in _KEPT_NAMES:
+        return "kept"
+    if (
+        path.name in READER_REOPENED_NAMES
+        or path.name.endswith(OWNERSHIP_RECORD_SUFFIX)
+        or (path.parent.name in OWNERSHIP_RECORD_DIRECTORIES and path.name.endswith(".json"))
+        or _kept_directory(str(path.parent), ())
+    ):
+        return "reader_reopened"
+    return None
+
+
+def _within(relative: str, paths: Sequence[str]) -> list[str]:
+    """``relative`` and everything under it, from sorted run-relative ``paths``."""
+
+    if relative == ".":
+        return list(paths)
+    index = bisect.bisect_left(paths, relative)
+    found = [relative] if index < len(paths) and paths[index] == relative else []
+    prefix = relative + "/"
+    for index in range(bisect.bisect_left(paths, prefix), len(paths)):
+        if not paths[index].startswith(prefix):
+            break
+        found.append(paths[index])
+    return found
+
+
+def _link_target(root: Path, relative: str) -> str | None:
+    """Where a link inside the run leads, relative to the run, or None when it leaves the run."""
+
+    target = Path(os.path.realpath(root / relative))
+    try:
+        return target.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def _inode_groups(paths: Mapping[str, os.stat_result]) -> dict[tuple[int, int], tuple[os.stat_result, list[str]]]:
+    groups: dict[tuple[int, int], tuple[os.stat_result, list[str]]] = {}
+    for relative, info in paths.items():
+        groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(relative)
+    return groups
+
+
+def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registry_mtime_ns: int) -> list[dict]:
+    """The run's residue as inode groups, each with every name it has; typed skips go on ``row``.
+
+    The walk never follows a link and never enters a directory on another
+    filesystem. Nothing kept by design is residue, nor a group with a link
+    outside the residue; nor is anything a reader reaches from what stays: the
+    target of any link that stays inside the run, with everything under it
+    (``symlink_target``), and every file a searched file names
+    (``receipt_referenced``). Every regular file that stays is searched, whatever
+    kept it. A group is a candidate only when all of its links are residue names,
+    so removing them frees its blocks and nothing that stays shares them. A
+    directory that cannot be listed or is on another filesystem, a kept link that
+    leaves the run, or a kept file on another filesystem raises: what a reader
+    reaches through it is unknown, so the whole run stays.
+    """
+
+    device = os.lstat(root).st_dev
+    delivery = _delivery_directories(root)
+    remote = _remote_path(root, "residue").parent.relative_to(root).as_posix()
+    candidates: dict[str, os.stat_result] = {}
+    files: dict[str, os.stat_result] = {}
+    documents: list[str] = []
+    links: list[tuple[str, bool]] = []
+    unreadable: list[OSError] = []
+    for directory, directories, names in os.walk(root, onerror=unreadable.append):
+        base = Path(directory)
+        relative_directory = base.relative_to(root)
+        entered = []
+        for name in sorted(directories):
+            relative = (relative_directory / name).as_posix()
+            try:
+                info = os.lstat(base / name)
+            except FileNotFoundError:
+                continue
+            kept = _kept_directory(relative, delivery)
+            if stat.S_ISLNK(info.st_mode):
+                links.append((relative, kept))
+                if not kept:
+                    _skip(row, relative, "symlink", info.st_size)
+                continue
+            if info.st_dev != device:
+                # Never entered: whatever it holds could name any file of the run.
+                raise ResultResidueOffloadError("result_residue_cross_device_directory")
+            entered.append(name)
+        directories[:] = entered
+        for name in sorted(names):
+            relative = (relative_directory / name).as_posix()
+            try:
+                info = os.lstat(base / name)
+            except FileNotFoundError:
+                continue
+            by_design = _kept_by_design(relative, delivery, registered)
+            if stat.S_ISLNK(info.st_mode):
+                links.append((relative, by_design is not None))
+                if by_design != "kept":
+                    _skip(row, relative, by_design or "symlink", info.st_size)
+                continue
+            if stat.S_ISREG(info.st_mode):
+                files[relative] = info
+            if by_design is not None:
+                if stat.S_ISREG(info.st_mode):
+                    if info.st_dev != device:
+                        raise ResultResidueOffloadError("result_residue_kept_document_unsearchable")
+                    # Remote references name only registered paths; everything else kept is searched.
+                    if not _under(relative, (remote,)):
+                        documents.append(relative)
+                if by_design == "reader_reopened":
+                    _skip(row, relative, by_design, info.st_size)
+                continue
+            reason = None
+            if not stat.S_ISREG(info.st_mode):
+                reason = "special_file"
+            elif info.st_dev != device:
+                reason = "cross_device"
+            elif info.st_mtime_ns > registry_mtime_ns:
+                reason = "newer_than_registry"
+            elif not _name_supported(relative):
+                reason = "name_unsupported"
+            if reason is not None:
+                _skip(row, relative, reason, info.st_size if reason != "special_file" else 0)
+                if reason != "special_file":
+                    documents.append(relative)  # it stays, so what it names stays too
+                continue
+            candidates[relative] = info
+    if unreadable:
+        # A directory that could not be listed may hold a kept document naming any candidate.
+        raise ResultResidueOffloadError("result_residue_directory_unreadable")
+    # A group with a link outside the residue stays whole, and is searched like everything that stays.
+    for _identity, (info, names) in _inode_groups(candidates).items():
+        if len(names) != info.st_nlink:
+            for relative in names:
+                _skip(row, relative, "linked_outside_residue", candidates.pop(relative).st_size)
+                documents.append(relative)
+    listed = sorted(files)
+    for link, kept in links:
+        target = _link_target(root, link)
+        if target is None:
+            if kept:
+                # A reader follows it out of the run, where nothing here can search what it names.
+                raise ResultResidueOffloadError("result_residue_kept_link_leaves_run")
+            continue
+        for path in _within(target, listed):
+            documents.append(path)
+            if path in candidates:
+                _skip(row, path, "symlink_target", candidates.pop(path).st_size)
+    for relative in sorted(_receipt_references(root, documents, files)):
+        if relative in candidates:
+            _skip(row, relative, "receipt_referenced", candidates.pop(relative).st_size)
+    members = []
+    for (dev, inode), (info, names) in _inode_groups(candidates).items():
+        if len(names) != info.st_nlink:
+            # Another name of its inode stays (it was reached), and holds the same bytes, already searched.
+            for relative in names:
+                _skip(row, relative, "linked_outside_residue", info.st_size)
+            continue
+        members.append({
+            "relative_paths": sorted(names), "dev": dev, "inode": inode, "nlink": info.st_nlink,
+            "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns, "mode": stat.S_IMODE(info.st_mode),
+        })
+    return sorted(members, key=lambda group: group["relative_paths"])
+
+
+def _dispatch_receipt_reason(root: Path, registry: Mapping[str, Any]) -> str | None:
+    """Why the run is not a sealed policy-canary dispatch, or None when it is.
+
+    Only the canary dispatcher seals a result run with ``dispatch_receipt.json``,
+    and after it nothing reopens the dispatcher's working files. An operator run
+    has a registry but no dispatch receipt, and its continuation, terminal
+    delivery and download route keep reopening its files, so it stays whole.
+    """
+
+    # The terminal index's own constants; that module is heavy, so it loads only when a run gets here.
+    from .task_evaluation_scene_terminal_reconciler import DISPATCH_RECEIPT_SCHEMA, POLICY_CANARY_RUN_KIND
+
+    path = root / DISPATCH_RECEIPT
+    if path.is_symlink() or not path.is_file():
+        return "dispatch_receipt_missing"
+    try:
+        if path.stat().st_size > _MAX_DISPATCH_RECEIPT_BYTES:
+            return "dispatch_receipt_invalid"
+        receipt = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return "dispatch_receipt_invalid"
+    # As index_policy_canary_terminal checks it: schema, digest, run kind and a run id, here the registry's.
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema_version") != DISPATCH_RECEIPT_SCHEMA
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
+        or receipt.get("run_kind") != POLICY_CANARY_RUN_KIND
+        or not isinstance(receipt.get("run_id"), str)
+        or not receipt["run_id"]
+        or receipt["run_id"] != registry.get("run_id")
+    ):
+        return "dispatch_receipt_invalid"
+    return None
+
+
+@dataclass(frozen=True)
+class QueueRows:
+    """The pending and processing rows of the configured queues, read once: their text, or
+    ``unreadable`` when one could not be read, since it might name any run."""
+
+    text: str = ""
+    unreadable: bool = False
+
+    def reason(self, run_name: str) -> str | None:
+        """``dispatch_row_pending`` when a row names the run, ``dispatch_queue_unreadable``, or None.
+
+        In queue mode the canary dispatcher runs a pending or processing envelope
+        whether or not its run is sealed, reopening the run's authority, bundle and
+        allocator records, so such a row keeps the whole run.
+        """
+
+        if self.unreadable:
+            return "dispatch_queue_unreadable"
+        return "dispatch_row_pending" if run_name in self.text else None
+
+
+def queue_snapshot(queue_roots: Sequence[str | Path]) -> QueueRows:
+    """Every pending or processing row of the configured queues, read by the storage GC's strict reader.
+
+    ``control_plane_storage_references.queue_reference_text`` reads each row
+    through a descriptor that follows no link and waits for no writer, and
+    refuses a linked, non-regular, oversized, unreadable or non-UTF-8 row or a
+    linked state directory: the snapshot is then ``unreadable``. A row moved to
+    another state between listing and reading is skipped where it was, so, as
+    its other strict callers do, the queues are read twice and the reads joined.
+    """
+
+    try:
+        return QueueRows(text="\n".join(
+            references.queue_reference_text(queue_roots, strict=True) for _read_pass in range(2)))
+    except references.QueueReferenceUnreadable:
+        return QueueRows(unreadable=True)
+
+
+def _bulk_reason(bulk_result: Mapping[str, Any]) -> tuple[str | None, Mapping[str, Any] | None]:
+    """Why a per-artifact offload result keeps the residue (and its failure), or None when its bulk
+    artifacts are remote.
+
+    A run kept hot or protected keeps its residue for the same reason. One whose
+    registry the per-artifact offload refused while reading and verifying it (its
+    ``registry`` stage: a G1 review has no delivery) is ``registry_unsealed``, as
+    the residue's own seal check would say. One whose bulk offload failed at any
+    later stage (``plan``: a registered file changed, a remote reference does not
+    verify) or still has candidates is ``bulk_offload_failed`` or
+    ``bulk_not_remote``. A failure keeps its type, errno and stage. An artifact
+    already evicted counts as remote.
+    """
+
+    status = bulk_result.get("status")
+    if status == "retained_hot_or_active":
+        reason = bulk_result.get("retained_reason")
+        return (reason if isinstance(reason, str) else "protected"), None
+    failure = ({key: bulk_result.get(key) for key in ("error_type", "errno", "stage")}
+               if "error_type" in bulk_result else None)
+    if status == "retained" and bulk_result.get("stage") == "registry":
+        return "registry_unsealed", failure
+    if status not in ("dry_run", "applied"):
+        return "bulk_offload_failed", failure
+    skipped = [skip for skip in bulk_result.get("skipped") or () if not (
+        isinstance(skip, Mapping) and skip.get("reason") == "already_evicted")]
+    if skipped or (status == "dry_run" and bulk_result.get("candidate_count") != 0):
+        return "bulk_not_remote", None
+    return None, None
+
+
+def _bulk_pending(root: Path, now: Callable[[], float]) -> tuple[str | None, Mapping[str, Any] | None]:
+    """Why the run's registered bulk artifacts are not all remote yet, or None when they are."""
+
+    try:
+        dry = offload_result_artifacts(run_root=root, apply=False, hot_window_seconds=0, now=now)
+    except Exception as exc:  # noqa: BLE001 - any failure keeps the residue
+        return "bulk_check_failed", offload_failure(exc, "registry")
+    if dry.get("status") != "dry_run" or dry.get("candidate_count") != 0:
+        return "bulk_not_remote", None
+    return None, None
+
+
+def _hold_offload_lock(root: Path, stack: ExitStack) -> bool:
+    """Take the per-artifact offload's exclusive run lock without waiting; False when it is held."""
+
+    path = _safe_path(root, f"{RESULT_DELIVERY}/.offload.lock")
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o660)
+    stack.callback(os.close, descriptor)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _adopt_owner(descriptor: int, owner: os.stat_result, *, mode: int) -> None:
+    """Set ``mode``, then give the file ``owner``'s user and group.
+
+    The storage GC is root with CAP_CHOWN but not CAP_FOWNER, so everything only
+    an owner may do happens first and the owner changes last.
+    """
+
+    os.fchmod(descriptor, mode)
+    current = os.fstat(descriptor)
+    if (current.st_uid, current.st_gid) != (owner.st_uid, owner.st_gid):
+        os.fchown(descriptor, owner.st_uid, owner.st_gid)
+
+
+def _write_json(path: Path, value: Mapping[str, Any]) -> None:
+    """Write ``value`` beside the run: temporary file, fsync, replace, directory fsync.
+
+    The file takes the evidence root's owner, like the whole-run pointer, so the
+    service user can read what the root GC wrote.
+    """
+
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    temporary = f".{path.name}.{secrets.token_hex(8)}.tmp"
+    try:
+        owner = os.fstat(directory)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             0o600, dir_fd=directory)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(value, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                _adopt_owner(stream.fileno(), owner, mode=0o440)
+                os.fsync(stream.fileno())
+            os.replace(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(directory)
+
+
+def _publish(root: Path, names: list[str], members: Sequence[Mapping[str, Any]], publisher, stream_publisher):
+    """Pack exactly ``names`` and publish them through the whole-run offload's own helper.
+
+    Returns the packed member rows, the archive digest and size, the verified
+    reference and the disk reservation, which the caller releases.
+    """
+
+    # Each member must still be the regular file the plan listed when it is packed.
+    identities = {name: (group["dev"], group["inode"]) for group in members for name in group["relative_paths"]}
+    # An explicit file publisher's archive is staged beside the run, sized per inode plus headers.
+    footprint = _MIB + sum(
+        group["size_bytes"] + sum(8192 + 4 * len(name.encode()) for name in group["relative_paths"])
+        for group in members)
+    return evidence.publish_archive(
+        root, filename="residue.tar", staging_prefix=f".{root.name}.residue-", publisher=publisher,
+        stream_publisher=stream_publisher, members=names, identities=identities, archive_bytes=lambda: footprint)
+
+
+def _still_there(held, name: Path) -> bool:
+    """Whether ``name`` is still listed; a name or directory that cannot be looked at counts as there."""
+
+    try:
+        os.stat(name.name, dir_fd=held.directory(name.parts[:-1]), follow_symlinks=False)
+    except FileNotFoundError:
+        return False  # the name, or a directory above it, is gone
+    except OSError:
+        return True
+    return True
+
+
+def _remove_members(held, group, names, *, sha256):
+    """Remove one planned group: the reason it stopped (or None), the names it removed, and the
+    names that vanished without it.
+
+    ``_remove_group`` rechecks every name, then unlinks them and stops at the first
+    unlink that fails; the names it reports unlinking were removed here (offloaded:
+    restore brings them back). Any other name that is missing, after any failure,
+    went without this offload: its directory or itself moved or was removed
+    (``member_vanished``). Only the names still listed are kept.
+    """
+
+    unlinked: list[Path] = []
+    reason = held_files._remove_group(held, group, names, changed="member_changed", sha256=sha256,
+                                      unlinked=unlinked)
+    if reason is None:
+        return None, list(names), []
+    removed = set(unlinked)
+    vanished = [name for name in names if name not in removed and not _still_there(held, name)]
+    return reason, unlinked, vanished
+
+
+def _evict(root: Path, members: Sequence[Mapping[str, Any]], sha_by_name: Mapping[str, str], row) -> list[dict]:
+    """Unlink every member group through held directory descriptors; the kept members, typed."""
+
+    kept: list[dict[str, str]] = []
+
+    def keep(group, reason, names=None):
+        for relative in names if names is not None else group["relative_paths"]:
+            kept.append({"relative_path": relative, "reason": reason})
+            _skip(row, relative, reason, group["size_bytes"])
+
+    try:
+        held = held_files._HeldChild(root.parent, root.name)
+    except OSError as exc:
+        for group in members:
+            keep(group, f"root_unavailable:{type(exc).__name__}")
+        return kept
+    try:
+        if not held.named_by(root):
+            for group in members:
+                keep(group, "path_changed")
+            return kept
+        for group in members:
+            digests = {sha_by_name[name] for name in group["relative_paths"]}
+            if len(digests) != 1:
+                # Its names were packed with different bytes: the archive holds no one version of it.
+                keep(group, "member_changed")
+                continue
+            names = [Path(name) for name in group["relative_paths"]]
+            reason, removed, vanished = held.item(
+                functools.partial(_remove_members, sha256=digests.pop()), group, names)
+            gone = {name.as_posix() for name in (*removed, *vanished)}
+            for name in vanished:
+                # Not removed here and not local: the pointer does not keep it, so restore brings it back.
+                _skip(row, name.as_posix(), "member_vanished", group["size_bytes"])
+            if reason:
+                keep(group, reason, [name for name in group["relative_paths"] if name not in gone])
+            row["offloaded_count"] += len(removed)
+            if len(removed) == len(names):
+                row["offloaded_bytes"] += group["size_bytes"]
+    finally:
+        held.close()
+    return kept
+
+
+def _withdraw(path: Path) -> None:
+    """Remove a pointer nothing was evicted behind, so the next tick plans its run again."""
+
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.unlink(path.name, dir_fd=directory)
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def offload_result_residue(
+    *,
+    run_root: str | Path,
+    apply: bool = False,
+    ack: str = "",
+    hot_window_seconds: int = DEFAULT_HOT_WINDOW_SECONDS,
+    protection_checker: Callable[[Path], bool | str | None] | None = None,
+    publisher: Callable[..., Mapping[str, Any]] | None = None,
+    stream_publisher: Callable[..., Mapping[str, Any]] | None = None,
+    queue_roots: Sequence[str | Path] = (),
+    now: Callable[[], float] = time.time,
+    bulk_result: Mapping[str, Any] | None = None,
+    queue_rows: QueueRows | None = None,
+    archive_verifier: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Plan, and with ``apply`` offload, one sealed result run's residue; see the module docstring.
+
+    Returns a digest-bound row: ``dry_run``, ``applied`` or ``retained`` with a
+    typed ``retained_reason``; the members it would move or moved
+    (``candidate_*``, ``offloaded_*``); and every member it left, as typed
+    ``skipped`` rows with ``skipped_by_reason`` counts and bytes. A failure
+    records ``failure`` (error type, errno and stage), never a message.
+
+    A plan may take the run's per-artifact offload result (``bulk_result``) and
+    the tick's ``queue_rows`` instead of checking them again; apply always checks
+    both again, the bulk artifacts under the run lock and the queues both before
+    and after publication. Before a resume evicts, ``archive_verifier`` (a HEAD
+    request by default) must find the pointer's archive.
+    """
+
+    if apply and ack != APPLY_ACK:
+        raise ResultResidueOffloadError("result_residue_offload_not_authorized")
+    if not isinstance(hot_window_seconds, int) or isinstance(hot_window_seconds, bool) or hot_window_seconds < 0:
+        raise ResultResidueOffloadError("result_residue_offload_window_invalid")
+    unresolved = Path(run_root).expanduser()
+    row = _new_row(unresolved.name, apply=apply, now=now)
+    if unresolved.is_symlink() or not unresolved.is_dir():
+        return _retained(row, "run_root_invalid")
+    root = unresolved.resolve()
+    pointer = root.parent / f"{root.name}{POINTER_SUFFIX}"
+    pointed: dict[str, Any] | None = None
+    if pointer.exists() or pointer.is_symlink():
+        try:
+            pointed = _read_pointer(root)
+        except Exception as exc:  # noqa: BLE001 - a pointer that does not verify is left alone
+            return _retained(row, "pointer_invalid", failure=offload_failure(exc, "pointer"))
+        _resumable, row["pointed_remaining_count"], row["pointed_remaining_bytes"] = _pointed_state(root, pointed)
+        state = pointed.get("state", "offloaded")
+        if state != "evicting":
+            # Eviction is over, or an operator restored the run: only a new decision offloads it again.
+            return _retained(row, _POINTER_STATE_REASONS[state])
+        # A crash during eviction left members behind the pointer: evict them, through every gate below.
+        row["resume"] = True
+    try:
+        registry, registry_path, registry_bytes = _sealed_registry(root)
+    except Exception as exc:  # noqa: BLE001 - an unsealed or unreadable run keeps its residue
+        return _retained(row, "registry_unsealed", failure=offload_failure(exc, "registry"))
+    row["registry_digest"] = registry["registry_digest"]
+    if pointed is not None and pointed["registry_digest"] != registry["registry_digest"]:
+        return _retained(row, "pointer_invalid")
+    receipt_reason = _dispatch_receipt_reason(root, registry)
+    if not receipt_reason:
+        rows = queue_rows if queue_rows is not None and not apply else queue_snapshot(queue_roots)
+        receipt_reason = rows.reason(root.name)
+    if receipt_reason:
+        return _retained(row, receipt_reason)
+    with ExitStack() as stack:
+        if apply and not _hold_offload_lock(root, stack):
+            return _retained(row, "offload_locked")
+        moved = _pointer_moved(root, pointer, pointed) if apply else None
+        if moved:
+            return _retained(row, moved)
+        registry_stat = registry_path.stat()
+        if float(now()) - registry_stat.st_mtime < hot_window_seconds:
+            return _retained(row, "hot")
+        if bulk_result is not None and not apply:
+            # A plan trusts the per-artifact offload this tick already ran for the run.
+            pending, failure = _bulk_reason(bulk_result)
+        else:
+            pending, failure = _bulk_pending(root, now)
+        if pending:
+            return _retained(row, pending, failure=failure)
+        verdict = protection_checker(root) if protection_checker is not None else None
+        if verdict:
+            return _retained(row, verdict if isinstance(verdict, str) else "protected")
+        try:
+            members = _plan_members(root, row, _registered_paths(root, registry), registry_stat.st_mtime_ns)
+        except Exception as exc:  # noqa: BLE001 - what a run's receipts name must be known
+            return _retained(row, "plan_failed", failure=offload_failure(exc, "plan"))
+        if pointed is not None:
+            # Only what is still residue goes: a kept document may name a member since the first plan.
+            residue_names = {name for group in members for name in group["relative_paths"]}
+            evictable: list[dict[str, Any]] = []
+            reached: list[str] = []
+            for group in _pointed_state(root, pointed)[0]:
+                if set(group["relative_paths"]) <= residue_names:
+                    evictable.append(group)
+                else:
+                    reached.extend(group["relative_paths"])
+            row["candidate_count"] = sum(len(group["relative_paths"]) for group in evictable)
+            row["candidate_bytes"] = sum(group["size_bytes"] for group in evictable)
+            if not apply:
+                return _finished(row)
+            try:
+                (archive_verifier or scene_store.verify_configured_scene_artifact)(
+                    reference=archive_reference(pointed["archive"]))
+            except Exception as exc:  # noqa: BLE001 - nothing is evicted behind an archive it cannot see
+                return _retained(row, "archive_unverified", failure=offload_failure(exc, "verify"))
+            return _resume(row, root, pointer, pointed, evictable, reached)
+        row["candidate_count"] = sum(len(group["relative_paths"]) for group in members)
+        row["candidate_bytes"] = sum(group["size_bytes"] for group in members)
+        if not apply or not members:
+            return _finished(row)
+        return _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
+                      protection_checker, publisher, stream_publisher, now, queue_roots)
+
+
+def _pointer_moved(root: Path, pointer: Path, seen: Mapping[str, Any] | None) -> str | None:
+    """Why the pointer, read again under the run lock, is not what the gates before the lock saw.
+
+    A restore or another tick may have written it since (a restore holds the
+    same lock, so not while this tick holds it). Acting on the stale copy would
+    evict what a restore put back. None while it is unchanged (still absent, or
+    the same ``evicting`` pointer by digest); otherwise the reason for the state
+    it is in now, ``pointer_changed`` when it is gone or another ``evicting``
+    pointer, or ``pointer_invalid``.
+    """
+
+    if not (pointer.exists() or pointer.is_symlink()):
+        return None if seen is None else "pointer_changed"
+    try:
+        current = _read_pointer(root)
+    except Exception:  # noqa: BLE001 - a pointer that does not verify is left alone
+        return "pointer_invalid"
+    state = current.get("state", "offloaded")
+    if seen is not None and state == "evicting" and current["pointer_digest"] == seen["pointer_digest"]:
+        return None
+    return _POINTER_STATE_REASONS[state]
+
+
+def _apply(row, root, pointer, registry, registry_path, registry_bytes, members, protection_checker,
+           publisher, stream_publisher, now, queue_roots) -> dict[str, Any]:
+    # Counted against the tick's cap whether or not the publication succeeds.
+    row["publication_attempted"] = True
+    identity = os.lstat(root)
+    names = [name for group in members for name in group["relative_paths"]]
+    modes = {name: group["mode"] for group in members for name in group["relative_paths"]}
+    # The names of one inode share a group, so restore links them again instead of copying.
+    groups = {name: index for index, group in enumerate(members) for name in group["relative_paths"]}
+    try:
+        packed, digest, size, reference, reservation = _publish(root, names, members, publisher, stream_publisher)
+    except Exception as exc:  # noqa: BLE001 - nothing was evicted
+        return _retained(row, "publication_failed", failure=offload_failure(exc, "publish"))
+    try:
+        row["archive"] = {"uri": reference["uri"], "sha256": digest, "size_bytes": size}
+        queued = queue_snapshot(queue_roots).reason(root.name)
+        if queued:
+            return _retained(row, queued)
+        current = os.lstat(root)
+        if (
+            registry_path.read_bytes() != registry_bytes
+            or (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino)
+            or pointer.exists()
+            or pointer.is_symlink()
+            or (protection_checker is not None and protection_checker(root))
+        ):
+            return _retained(row, "run_changed_or_active")
+        value: dict[str, Any] = {
+            "schema_version": POINTER_SCHEMA_VERSION,
+            "status": "offloaded",
+            # Until eviction is over: a tick finds an evicting pointer only after a crash, and resumes it.
+            "state": "evicting",
+            "run": root.name,
+            "run_id": registry.get("run_id"),
+            "registry_digest": registry["registry_digest"],
+            "archive": {**row["archive"], "artifact_kind": evidence.ARTIFACT_KIND},
+            "members": [{**member, "mode": modes[member["relative_path"]], "group": groups[member["relative_path"]]}
+                        for member in packed],
+            "kept": [],
+            "offloaded_at_epoch": float(now()),
+            "evidence_deleted": False,
+            "pointer_digest": "",
+        }
+        value["pointer_digest"] = canonical_digest(value, digest_field="pointer_digest")
+        try:
+            _write_json(pointer, value)
+        except Exception as exc:  # noqa: BLE001 - without a pointer nothing is evicted
+            return _retained(row, "pointer_failed", failure=offload_failure(exc, "pointer"))
+        row["pointer"] = pointer.name
+        kept = _evict(root, members, {member["relative_path"]: member["sha256"] for member in packed}, row)
+        # The archive is the only record of a vanished member's bytes: its pointer stays.
+        if row["offloaded_count"] == 0 and not row["skipped_by_reason"].get("member_vanished"):
+            try:
+                _withdraw(pointer)
+            except OSError as exc:
+                row["failure"] = offload_failure(exc, "pointer")
+            else:
+                del row["pointer"]
+                return _retained(row, "nothing_evicted")
+        _settle(row, pointer, value, kept)
+        return _finished(row)
+    finally:
+        reservation.release()
+
+
+def _read_pointer(root: Path) -> dict[str, Any]:
+    """The run's residue pointer, digest-verified and bound to this run, or a refusal."""
+
+    path = root.parent / f"{root.name}{POINTER_SUFFIX}"
+    if path.is_symlink() or not path.is_file():
+        raise ResultResidueOffloadError("result_residue_pointer_invalid")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != POINTER_SCHEMA_VERSION
+        or value.get("pointer_digest") != canonical_digest(value, digest_field="pointer_digest")
+        or value.get("run") != root.name
+        or not isinstance(value.get("archive"), dict)
+        or not isinstance(value.get("members"), list)
+        or not isinstance(value.get("kept"), list)
+        or value.get("state", "offloaded") not in POINTER_STATES
+    ):
+        raise ResultResidueOffloadError("result_residue_pointer_invalid")
+    for member in value["members"]:
+        parts = PurePosixPath(str(member.get("relative_path"))).parts
+        if (
+            not parts
+            or PurePosixPath(member["relative_path"]).is_absolute()
+            or any(part in {"", ".", ".."} for part in parts)
+            or not _name_supported(member["relative_path"])
+            or not isinstance(member.get("sha256"), str)
+            or not isinstance(member.get("size_bytes"), int)
+        ):
+            raise ResultResidueOffloadError("result_residue_pointer_invalid")
+    return value
+
+
+def _pointed_state(root: Path, value: Mapping[str, Any]) -> tuple[list[dict[str, Any]], int, int]:
+    """What a pointer's members left local: the groups still to evict, and every listed member still here.
+
+    A member still listed through no link, as a regular file on the run's device,
+    is local; one the pointer does not keep is to be evicted again, grouped by
+    inode as the plan grouped them. The count and bytes cover every listed member
+    still local, kept or not.
+    """
+
+    kept = {str(row.get("relative_path")) for row in value["kept"] if isinstance(row, Mapping)}
+    device = os.lstat(root).st_dev
+    groups: dict[tuple[int, int], tuple[os.stat_result, list[str]]] = {}
+    count = size = 0
+    for member in value["members"]:
+        relative = member["relative_path"]
+        path = root
+        try:
+            for part in PurePosixPath(relative).parts:
+                path = path / part
+                info = os.lstat(path)
+                if stat.S_ISLNK(info.st_mode):
+                    break
+            else:
+                if stat.S_ISREG(info.st_mode):
+                    count, size = count + 1, size + info.st_size
+                    if relative not in kept and info.st_dev == device:
+                        groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(relative)
+        except OSError:
+            continue  # gone, or no longer under a directory: not local
+    members = [
+        {"relative_paths": sorted(names), "dev": dev, "inode": inode, "nlink": info.st_nlink,
+         "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns}
+        for (dev, inode), (info, names) in groups.items()
+    ]
+    return sorted(members, key=lambda group: group["relative_paths"]), count, size
+
+
+def archive_reference(archive: Mapping[str, Any]) -> dict[str, Any]:
+    """The artifact-store reference of a pointer's archive, for its restore and its HEAD check."""
+
+    return {
+        "schema_version": "task_evaluation_scene_artifact_reference.v1",
+        "status": "remote_verified",
+        "artifact_kind": archive.get("artifact_kind", evidence.ARTIFACT_KIND),
+        "uri": archive["uri"],
+        "digest": archive["sha256"],
+        "size_bytes": archive["size_bytes"],
+        # A pointer is written only after a full remote readback.
+        "remote_identity_verified": True,
+        "full_byte_service_account_readback_passed": True,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def pointer_with_state(value: Mapping[str, Any], state: str, **fields: Any) -> dict[str, Any]:
+    """``value`` in ``state`` (with ``fields``), digest-bound again."""
+
+    changed = {**value, **fields, "state": state, "pointer_digest": ""}
+    changed["pointer_digest"] = canonical_digest(changed, digest_field="pointer_digest")
+    return changed
+
+
+def _settle(row: dict[str, Any], pointer: Path, value: Mapping[str, Any], kept: Sequence[Mapping[str, str]]) -> None:
+    """Rewrite the pointer ``offloaded`` once eviction is over, with every member it newly kept.
+
+    If the rewrite fails the pointer still says ``evicting``, and the next tick
+    resumes: it evicts what still matches the archive and settles it then.
+    """
+
+    known = {str(entry.get("relative_path")) for entry in value["kept"] if isinstance(entry, Mapping)}
+    added = [dict(entry) for entry in kept if entry["relative_path"] not in known]
+    try:
+        _write_json(pointer, pointer_with_state(value, "offloaded", kept=[*value["kept"], *added]))
+    except Exception as exc:  # noqa: BLE001 - kept members are still local; restore finds them
+        row["failure"] = offload_failure(exc, "pointer")
+
+
+def _resume(row: dict[str, Any], root: Path, pointer: Path, value: dict[str, Any],
+            members: Sequence[Mapping[str, Any]], reached: Sequence[str]) -> dict[str, Any]:
+    """Finish an eviction a crash cut short, under the run lock and every gate.
+
+    Only an ``evicting`` pointer whose archive a HEAD request still finds gets
+    here. Each listed member the pointer does not keep, still local and still
+    residue (``members``), goes only when its bytes still hash to the pointer's
+    (the archive's); any other is kept, and so is each member a reader can now
+    reach (``reached``: ``no_longer_residue``). The pointer is then rewritten
+    ``offloaded``. Nothing is published again, and the pointer is never
+    withdrawn: members evicted before the crash live only in its archive.
+    """
+
+    kept = [{"relative_path": name, "reason": "no_longer_residue"} for name in reached]
+    kept += _evict(root, members, {member["relative_path"]: member["sha256"] for member in value["members"]}, row)
+    _settle(row, pointer, value, kept)
+    _members, row["pointed_remaining_count"], row["pointed_remaining_bytes"] = _pointed_state(root, value)
+    return _finished(row)
+
+
+def restore_result_residue(**options: Any) -> dict[str, Any]:
+    """Bring a run's residue back: ``task_evaluation_result_residue_restore.restore_result_residue``."""
+
+    from .task_evaluation_result_residue_restore import restore_result_residue as restore
+
+    return restore(**options)
+
+
+def residue_row(
+    run_root: str | Path,
+    bulk_result: Mapping[str, Any],
+    *,
+    apply: bool,
+    hot_window_seconds: int,
+    protection_checker: Callable[[Path], bool | str | None] | None,
+    publisher: Callable[..., Mapping[str, Any]] | None,
+    now: Callable[[], float],
+    queue_roots: Sequence[str | Path] = (),
+    queue_rows: QueueRows | None = None,
+    archive_verifier: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """The storage GC's residue row for one registry run, given its per-artifact offload result.
+
+    Only a run whose bulk offload shows nothing left to move (``_bulk_reason``) is
+    handed to ``offload_result_residue``, with that result and the tick's
+    ``queue_rows``, which a plan uses instead of reading them again. An exception
+    is an ``error`` row with its type, errno and stage only.
+    """
+
+    name = Path(run_root).name
+    unresolved = Path(run_root).expanduser()
+    if unresolved.is_symlink() or not unresolved.is_dir():
+        # The artifact store refuses it before reading the registry, at that stage.
+        return _retained(_new_row(name, apply=apply, now=now), "run_root_invalid")
+    reason, failure = _bulk_reason(bulk_result)
+    if reason:
+        return _retained(_new_row(name, apply=apply, now=now), reason, failure=failure)
+    try:
+        return offload_result_residue(
+            run_root=run_root, apply=apply, ack=APPLY_ACK if apply else "", hot_window_seconds=hot_window_seconds,
+            protection_checker=protection_checker, publisher=publisher, now=now, queue_roots=queue_roots,
+            bulk_result=bulk_result, queue_rows=queue_rows, archive_verifier=archive_verifier)
+    except Exception as exc:  # noqa: BLE001 - one run never costs the others
+        return {"status": "error", "run": name, **offload_failure(exc, "residue")}
+
+
+class ResidueTick:
+    """One storage GC tick's residue phase: a row per registry run, and the phase entry.
+
+    ``add`` records each registry run with its per-artifact offload result, and
+    ``phase`` plans or offloads them. While applying it attempts at most
+    ``max_runs`` publications, counted whether they succeed or not, so a failing
+    publisher costs at most that many uploads a tick and no run is retried within
+    it. Every later run is only planned and reported as ``deferred_tick_cap`` with
+    its candidate bytes; its turn comes in a later tick. The runs are taken in
+    turn from a start that moves with each hour of the tick's clock (the timer
+    starts a tick an hour after the last one ended), so runs that keep failing
+    cannot starve the ones after them. The rows keep the runs' order.
+
+    A run is recorded once however often it is added (an evidence root listed
+    twice, or through a link), and the queues are read once for every plan of the
+    tick; an offload reads them again itself.
+    """
+
+    def __init__(self, *, applying: bool, enabled: bool, max_runs: int | None = None, **options):
+        max_runs = DEFAULT_MAX_RUNS_PER_TICK if max_runs is None else max_runs
+        if not isinstance(max_runs, int) or isinstance(max_runs, bool) or max_runs < 0:
+            raise ResultResidueOffloadError("result_residue_max_runs_invalid")
+        self.applying, self.enabled, self.max_runs, self.options = bool(applying), bool(enabled), max_runs, options
+        self.runs: dict[Any, tuple[str | Path, Mapping[str, Any]]] = {}
+        self.rows: list[dict[str, Any]] | None = None
+        self.attempted = 0
+
+    def add(self, run_root: str | Path, bulk_result: Mapping[str, Any]) -> None:
+        """Record one registry run and its per-artifact offload result for ``phase``, once."""
+
+        try:
+            info = os.lstat(Path(run_root).expanduser())
+            key: Any = (info.st_dev, info.st_ino)
+        except OSError:
+            key = str(run_root)  # its row says why it cannot be offloaded
+        self.runs.setdefault(key, (run_root, bulk_result))
+
+    def _process(self) -> list[dict[str, Any]]:
+        runs = list(self.runs.values())
+        rows: list[dict[str, Any]] = [{} for _run in runs]
+        if not runs:
+            return rows
+        queue_rows = queue_snapshot(self.options.get("queue_roots", ()))
+        start = int(float(self.options["now"]()) // 3600) % len(runs)
+        for index in [*range(start, len(runs)), *range(start)]:
+            run_root, bulk_result = runs[index]
+            applying = self.applying and self.attempted < self.max_runs
+            row = residue_row(run_root, bulk_result, apply=applying, queue_rows=queue_rows, **self.options)
+            if row.get("publication_attempted"):
+                self.attempted += 1
+            elif self.applying and not applying and row.get("status") == "dry_run" and row.get("candidate_count"):
+                row = _retained(row, "deferred_tick_cap")
+            rows[index] = row
+        return rows
+
+    def phase(self, *, alert: str | None = None) -> dict[str, Any]:
+        """Plan or offload every recorded run, once, and return the phase entry."""
+
+        if self.rows is None:
+            self.rows = self._process()
+        entry = residue_phase(self.rows, enabled=self.enabled, applying=self.applying, alert=alert)
+        entry["max_runs_per_tick"], entry["attempted_count"] = self.max_runs, self.attempted
+        return entry
+
+
+def residue_phase(
+    rows: Sequence[Mapping[str, Any]], *, enabled: bool, applying: bool, alert: str | None = None,
+) -> dict[str, Any]:
+    """The storage GC phase entry: what the residue offload planned, moved and kept, and why.
+
+    ``retained_by_reason`` counts each retained run under its reason (bytes null
+    unless its members were listed) and each skipped member under
+    ``member_skipped:<reason>`` with its bytes, the reason without the exception
+    type a run row adds to it. A run that raised is listed under ``errors`` and
+    makes ``candidate_bytes`` unknown in the summary.
+    """
+
+    retained: dict[str, dict[str, Any]] = {}
+    errors: list[dict[str, Any]] = []
+
+    def keep(reason: str, count: int, size: int | None) -> None:
+        counted = retained.setdefault(reason, {"count": 0, "bytes": 0})
+        counted["count"] += count
+        counted["bytes"] = None if size is None or counted["bytes"] is None else counted["bytes"] + size
+
+    for row in rows:
+        if row.get("status") == "error":
+            errors.append({key: row.get(key) for key in ("run", "error_type", "errno", "stage")})
+            keep("residue_offload_failed", 1, None)
+            continue
+        if row.get("status") == "retained":
+            keep(str(row.get("retained_reason")), 1, row.get("candidate_bytes"))
+        for reason, counted in (row.get("skipped_by_reason") or {}).items():
+            # ``recheck_failed:OSError`` counts as ``recheck_failed``: the summary copies only
+            # typed lower-case reasons, and the run row keeps the exception type.
+            keep(f"member_skipped:{reason.split(':', 1)[0]}", int(counted["count"]), int(counted["bytes"]))
+    phase: dict[str, Any] = {
+        "schema_version": PHASE_SCHEMA_VERSION,
+        "enabled": bool(enabled),
+        "status": "applied" if applying else "dry_run",
+        "run_count": len(rows),
+        "candidate_count": sum(int(row.get("candidate_count") or 0) for row in rows),
+        "candidate_bytes": sum(int(row.get("candidate_bytes") or 0) for row in rows),
+        "offloaded_count": sum(int(row.get("offloaded_count") or 0) for row in rows),
+        "offloaded_bytes": sum(int(row.get("offloaded_bytes") or 0) for row in rows),
+        # What pointed runs still hold locally: kept members, or ones a crash left to resume.
+        "pointed_remaining_bytes": sum(int(row.get("pointed_remaining_bytes") or 0) for row in rows),
+        "retained_by_reason": retained,
+        "runs": list(rows[:_MAX_LISTED]),
+        "omitted_runs_count": max(0, len(rows) - _MAX_LISTED),
+        "errors": errors[:_MAX_LISTED],
+        "omitted_errors_count": max(0, len(errors) - _MAX_LISTED),
+    }
+    if alert:
+        phase["alerts"] = [alert]
+    return phase
+
+
+__all__ = [
+    "APPLY_ACK",
+    "POINTER_SCHEMA_VERSION",
+    "POINTER_STATES",
+    "POINTER_SUFFIX",
+    "QueueRows",
+    "READER_REOPENED_DIRECTORIES",
+    "READER_REOPENED_NAMES",
+    "RESIDUE_MAX_RUNS_ENV",
+    "RESIDUE_OFFLOAD_ENV",
+    "RESIDUE_OFFLOAD_INVALID",
+    "RESTORE_RECEIPT_SUFFIX",
+    "ResidueTick",
+    "ResultResidueOffloadError",
+    "archive_reference",
+    "offload_result_residue",
+    "pointer_with_state",
+    "queue_snapshot",
+    "residue_phase",
+    "residue_row",
+    "restore_result_residue",
+    "result_residue_offload_setting",
+]

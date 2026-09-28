@@ -535,8 +535,12 @@ One tick runs nine phases in order:
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
    live queue references. Nothing is deleted.
-2. **Terminal cache pins** whose run is proven closed by archived-run evidence
-   are released. Only the pin ledger changes.
+2. **Terminal cache pins** whose run is proven closed are released: by the two
+   original proofs always, and by the extended proofs only with
+   `BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1` in the operator
+   environment file (until then they list candidates with `"enabled": false`).
+   Only the pin ledger changes. The proofs are described under
+   [Terminal cache pin proofs](#terminal-cache-pin-proofs).
 3. **Derived directories** under the configured `cache` roots are retired when
    no live pin names them, no pending or processing queue message mentions
    them, and they have been idle for an hour
@@ -556,7 +560,24 @@ One tick runs nine phases in order:
    to the artifact store under kind `control-plane-evidence` with full readback,
    replaced by `<name>.offloaded.v1.json` (URI, digest, size, per-member digests),
    and only then removed. Bytes are migrated, never deleted; the spend guard and
-   every other `evidence_hot` root are outside the tool's reach.
+   every other `evidence_hot` root are outside the tool's reach. A run with a
+   result registry is never removed whole: its registered bulk artifacts go
+   first, one by one, and once none is left locally a canary run sealed by its
+   `dispatch_receipt.json` has its **residue** (every file the registry neither
+   records nor keeps: logs, intermediates, provider zips) packed, published with
+   the same readback and pointed to by `<name>.residue.v1.json` before any of it
+   is removed (`task_evaluation_result_residue_offload`). The registry, the
+   delivery, the receipts, every registered file, every path a live reader
+   reopens and anything a reader can reach from those (a link's target inside
+   the run, any file a kept text document names) stay. This step only
+   plans until `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=1` is set as
+   well, and then attempts at most
+   `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_MAX_RUNS_PER_TICK` (default 5)
+   publications a tick, failed ones included; later runs wait
+   (`deferred_tick_cap`). Each hour's tick starts at another run, so runs that
+   keep failing never starve the ones after them. A plan reads the queues once
+   a tick and takes a run's bulk state from the per-artifact offload the tick
+   just ran; an offload checks both again under the run lock.
 7. **Scratch directories** idle for three days
    (`BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200`) are reaped by
    age alone: nothing references them.
@@ -567,6 +588,80 @@ One tick runs nine phases in order:
    reference, and remote-copy checks pass. This phase plans until
    `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
    detailed contract is below.
+
+### Terminal cache pin proofs
+
+The original proofs release an activation pin when every run that exists under
+its names (its id, and `<id>-launch` for a website `-activation-auto`
+activation) is archived behind a verified pointer (`archived_run`) or sealed by
+a terminal receipt without a result registry and idle past the hot window
+(`sealed_cold_run`). Until 10c they stopped at the first such name, so a
+website activation's sealed own directory could release the pin while its
+`<id>-launch` run was still going. The extended proofs, in the read-only
+`control_plane_pin_proofs` module, apply only with the opt-in:
+
+- `sealed_registry_run`: every run under the activation's evidence names
+  carries its terminal receipt and a result registry the artifact store accepts
+  as sealed, idle past the hot window, with no whole-run pointer. Without the
+  receipt the canary dispatcher can still recover a stranded delivery from the
+  launch set.
+- `activation_expired_unlaunched`, for a profile-authority activation only. A
+  policy-campaign activation publishes no standing authorization and
+  dispatches through the policy canary queue on the scene execution window, so
+  its pin is kept as `policy_campaign_activation_out_of_scope` until the canary
+  dispatcher releases it. The proof needs no run directory or pointer under any
+  of the activation's evidence names; its one sealed result in the activation
+  queue in a prepared status and older than 604,800 + 86,400 seconds (a shared
+  mutation window lives at most a week); and the standing authorization its
+  prepared envelope dates expired more than a day ago (launch admission checks
+  that authorization, and the request sets it with no maximum). A launch id the
+  WebApp or an operator chooses names no directory a search could guess, so it
+  also needs positive evidence of no launch: no record under
+  `<standing authorization dir>/consumed/<profile id>/` (the directory launch
+  admission records into, `BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR`
+  in the unit) and no row of the launch queue `task-evaluation-launches`, in any
+  state, naming the activation or its profile. For a profile without the
+  one-use standing authorization requirement, an operator's per-launch
+  handshake can still admit a launch after the authorization lapsed; if that
+  happens after the pin was released, the launch fails its input verification
+  rather than using missing inputs, which re-preparing recovers. The proof
+  accepts that risk only after both the window and the authorization lapsed and
+  neither record exists.
+- `unconsumed_stale_pin`: a preparation or compilation pin no live pin depends
+  on, created more than eight days ago, naming only `cache` paths, whose
+  preparation no activation can take any more: its one sealed envelope in the
+  preparation queue sits in `materialized/` bound to a release other than the
+  running one, or in `blocked/`. The activation worker verifies a preparation's
+  materialized inputs and never re-fetches them, and a materialized preparation
+  waits for its activation intent with no age limit. A rollback to that release
+  would make it activatable again.
+
+An activation's evidence names are its id, `<id>-launch` (configured-controls
+activations such as `<run>-controls` launch that way too) and the bounded
+launch id the launch paths derive for a long id, with their own function. An
+evidence root that is linked or unreadable keeps the pin, and so does a missing
+root whose parent is missing too (unmounted, say). A missing root whose parent
+is present and readable, with no linked ancestor, holds no runs: the unit marks
+two roots optional, and a host without them would otherwise never release.
+Every proof keeps the six-hour minimum pin age,
+the dependency closure's queue and process checks, and a re-derivation at the
+mutation edge. The extended proofs read queues strictly: they also count a row
+parked in a state that will still run (`LIVE_QUEUE_STATES`, such as a
+preparation awaiting its source preparation), and a row they cannot read keeps
+their candidates as `queue_unreadable`, while a row that merely moved between
+states mid-read is found where it went. Every queue read
+(`control_plane_storage_references.queue_reference_text`) opens each row without
+following a link or waiting for a writer and requires the regular file its
+lstat saw; a row replaced between the two (the dispatcher claims a row by
+replacing it onto an empty placeholder in `processing/`) is read once more. The
+strict reader (`strict=True`, which the result residue offload reads its queues
+with too) fails on any row it cannot read, one swapped for a link, a FIFO or
+another file mid-read included; the original reader, which the
+other storage GC checks use, skips such a row, so a FIFO in a queue directory
+never hangs a tick. Planning and the releases each read the
+launch queue and the preparation queue's ended envelopes once (twice over,
+unioned), and the process table is swept once for planning and once per
+release.
 
 **Why a tick kept what it kept.** On 2026-09-27 an applied tick with offload
 enabled reclaimed nothing, and its report could not say why. The derived and
@@ -583,14 +678,108 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `unsealed_no_window`, `unsealed_recent`, `hot`, or the first protection that
   holds, checked in this order: `protected_unreadable_settlement`,
   `protected_process`, `protected_process_inventory_unreadable`,
-  `protected_pin`, `protected_settlement`, `protected_queue`. A `/proc` entry
+  `protected_pin`, `protected_settlement`, `protected_queue`. A settlement
+  record the tick cannot read (a link, a FIFO, an oversized or non-UTF-8 file)
+  protects every run (`protected_unreadable_settlement`), and is read as a queue
+  row is, so a FIFO never blocks the tick. A `/proc` entry
   the tick cannot read protects the run (`protected_process_inventory_unreadable`)
-  instead of failing the check.
+  instead of failing the check. `protected_pin` carries `by_kind`: the kinds of
+  the live pins holding each run, with the number of distinct pins holding each
+  kind's runs (`owner_count`), so the runs can be checked against the pin proofs.
+- Terminal cache pins: every live pin is a candidate, with its `proof` and
+  whether it is `enabled`, or a `kept` row with a typed reason, counted in
+  `retained_counts`: `pin_young`, `pin_invalid` (no numeric creation time),
+  `active_reference`, `depended_on`, `reference_changed`, `pin_not_stale`,
+  `path_class_invalid`, the run reasons (`registry_unsealed`, `registry_hot`,
+  `run_not_sealed`, `run_hot`, `run_without_registry`, `run_pointer_present`,
+  `run_path_unsafe`, `evidence_root_unavailable`), the activation result
+  reasons (`activation_queue_unconfigured`, `activation_queue_unavailable`,
+  `activation_result_missing`, `activation_result_ambiguous`,
+  `activation_result_invalid`, `activation_result_not_prepared`,
+  `activation_result_not_stale`, `activation_envelope_missing`,
+  `activation_envelope_unreadable`, `activation_envelope_invalid`,
+  `activation_authorization_not_lapsed`,
+  `activation_authorization_consumed`, `standing_authorization_unavailable`,
+  `activation_launch_requested`, `launch_queue_unconfigured`,
+  `launch_queue_unavailable`, `policy_campaign_activation_out_of_scope`),
+  `queue_unreadable`, and the preparation reasons (`preparation_queue_unconfigured`,
+  `preparation_queue_unavailable`, `running_commit_unknown`,
+  `preparation_envelope_missing`, `preparation_envelope_ambiguous`,
+  `preparation_envelope_invalid`, `preparation_release_current`). A pin a
+  proof could not read is `proof_error`, and one whose release failed at the
+  mutation edge is `release_failed`, each with its `error_type`; neither costs
+  any other pin. A release that raised after the ledger recorded it is in
+  `released` with `status: release_partial`, listing what the ledger shows
+  released. At the mutation edge a proof that no longer holds keeps the pin
+  with the fresh derivation's own reason; one that holds differently, or a new
+  reference, is `reference_changed`. A pin released along with a dependent is
+  in that release receipt, not in `kept`. The report also counts candidates by proof and
+  released pins by kind, dependencies included. `candidates` and `kept` list
+  at most 200 rows each, with `omitted_candidates_count` and
+  `omitted_kept_count`; every count covers every pin.
 - Result-artifact offload: a retained run says why in `retained_reason` (`hot`
   or its protection reason). A run whose offload raised records `error_type`,
-  `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
-  `evict`), and so does a skipped artifact. Messages and file names are never
-  recorded.
+  `errno` (for an `OSError`) and `stage` (`registry`, `plan`, `protection`,
+  `publish` or `evict`), and so does a skipped artifact. Messages and file names
+  are never recorded.
+- Result residue offload (`result_residue_offload`: `enabled`,
+  `max_runs_per_tick`, `attempted_count`, its totals and a row per registry
+  run): a retained run says why in `retained_reason` (`hot` or a protection
+  reason, as its bulk offload kept it; `bulk_not_remote`,
+  `bulk_offload_failed` (its bulk offload failed past the registry, at `plan`
+  or later), `already_offloaded`, `registry_unsealed` (the residue or its bulk
+  offload refused the registry while reading and verifying it: a G1 review has
+  no delivery; either bulk reason keeps the failure's type, errno and stage),
+  `dispatch_receipt_missing` (an operator run, whose continuation and download
+  route keep reopening its files), `dispatch_receipt_invalid`,
+  `dispatch_row_pending` (a pending or processing queue row names the run, and
+  the dispatcher would re-enter it), `dispatch_queue_unreadable` (a queue row
+  the strict reader refuses keeps every run), `run_root_invalid`, `offload_locked`,
+  `plan_failed` (what stays cannot be searched for what a reader reaches from
+  it: a directory that cannot be listed or is on another filesystem, a kept
+  link that leaves the run, a kept file on another filesystem, or a file that
+  cannot be read), `deferred_tick_cap` (the tick's publications were used up),
+  `publication_failed` (including a member swapped while it was packed),
+  `run_changed_or_active`, `pointer_failed`, `nothing_evicted` (every member
+  stayed, so the pointer was withdrawn and the next tick tries again),
+  `pointer_invalid` (a pointer that does not verify leaves the run alone),
+  `already_offloaded`, `restoring` (an operator's restore is under way or was
+  cut short; rerun it to finish), `restored` (an operator restored the run, and
+  no tick offloads it again without a new decision) or `pointer_changed` (the
+  pointer a tick read before its lock is gone or another one once it holds the
+  lock)).
+  An applying tick reads the pointer again once it holds the run lock and goes
+  on only while it is unchanged (still absent, or the same `evicting` pointer
+  by digest); otherwise it keeps the run for the state the pointer is in now and
+  writes nothing, so a restore that lands between the two reads is never undone.
+  The pointer records its eviction
+  `state`: `evicting` from before the first unlink until eviction is over, then
+  `offloaded` (a pointer without a state reads as `offloaded`), `restoring` from
+  before a restore places its first member, and `restored` once a restore
+  finished. A pointed run reports the listed members still local
+  (`pointed_remaining_count`, `pointed_remaining_bytes`, totalled per phase); only
+  when a crash left an `evicting` pointer does an applying tick resume (`resume`).
+  It first checks with a HEAD request, reading no bytes, that the pointer's
+  archive is still there with its size and digest (`archive_unverified`
+  otherwise, and nothing moves), plans the run again, and evicts each listed
+  member the pointer does not keep that is still residue and whose bytes still
+  hash to the pointer's; a member a reader can now reach stays, recorded in the
+  pointer as kept (`no_longer_residue`). Then it settles the pointer `offloaded`.
+  Every file it left counts under
+  `member_skipped:<reason>` with its bytes: `reader_reopened` (the surveyed
+  reopened names, including scene-attempt recovery's `*.lease.json` and
+  `pending_teardowns/*.json` ownership records), `symlink_target` and
+  `receipt_referenced` (what the readers the module docstring surveys can
+  reach from any file that stays, whatever kept it), `symlink`, `special_file`, `cross_device`, `newer_than_registry`,
+  `linked_outside_residue` or `name_unsupported` (a name with a character the
+  reference search does not read as part of a path) when the run is listed, and
+  `member_changed`, `path_changed`, `cross_device`,
+  `recheck_failed` or `unlink_failed` for a packed member the pointer then
+  records as `kept` (the run row adds the exception type), or
+  `member_vanished` for one that went without the offload (restore brings it
+  back). The summary gives the phase's `enabled` flag too. Everything the phase
+  keeps lies inside evidence offload's `result_registry` bytes, so its reasons
+  never add to `top_retained` or `top_retained_reasons`.
 
 With `--report-out` the tick also writes `summary.json`
 (`control_plane_storage_gc_summary.v1`) beside `latest.json`, published the same
@@ -598,11 +787,12 @@ way (0644 in the 0755 directory). It holds the tick's status and
 `source_report_digest`, the opt-in flags, alerts, `phase_errors` and
 `skipped_roots`. Per phase it gives `candidate_bytes`,
 `removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
-phase counts without sizing. `retained_by_reason` is `{}` when a phase kept
-nothing and null when it does not say what it kept: an applied content-store,
-stranded-row, scratch or bundle receipt, a replay cache pass and the terminal
-pin pass carry no retained counts. An artifact already evicted is not counted as
-kept. `top_retained` lists the ten reasons that keep the
+phase counts without sizing, and the terminal pin phase also gives
+`candidate_count`, `released_count` and `enabled`. `retained_by_reason` is `{}`
+when a phase kept nothing and null when it does not say what it kept: an
+applied content-store, stranded-row, scratch or bundle receipt and a replay
+cache pass carry no retained counts. An artifact already evicted is not counted
+as kept. `top_retained` lists the ten reasons that keep the
 most bytes. It names no run, file or host path except the configured roots in
 `skipped_roots`, and stays under 256 KiB. If it cannot be built or written, the
 previous tick's `summary.json` is removed, so a stale summary never sits beside
@@ -613,6 +803,28 @@ A missing summary means read `latest.json`.
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;
 every member digest is verified before the directory is exposed.
+
+Restore a run's offloaded residue with
+`python -c 'from blueprint_pipeline.task_evaluation_result_residue_restore import restore_result_residue as r; print(r(run_root=...))'`.
+It verifies the archive and every member's digest and size, never overwrites a
+different file (`existing_file_differs`), and records a member it cannot place
+(its directory became a file or a link) as `restore_failed:<type>` while the
+rest still come back. It leaves the members the pointer lists as `kept` alone,
+links the names of one inode (a pointer `group`) back together, but never a name
+the pointer gives other bytes than the file it would link to
+(`group_member_differs`), fsyncs every
+directory it adds an entry to, and needs no sealed registry: only the pointer's
+run name, and its run id where the registry still names one. It always writes
+`<name>.residue-restore.v1.json` beside the pointer, with a `failure` when the
+archive could not be fetched or verified. It holds the run's
+`artifacts/result_delivery/.offload.lock` for its whole pass, so no tick resumes
+an eviction while members come back, and refuses to start while a tick holds it
+(`result_residue_restore_locked`). Before it places the first member it
+rewrites the pointer `restoring`, so a pass cut short (an exception, a crash,
+Ctrl-C, a failed final rewrite) leaves a pointer no tick resumes or offloads;
+rerunning the restore continues it. The receipt names the pointer it started
+from (`pointer_digest`). A pass that finishes rewrites the pointer
+`restored`: the pointer stays, and no tick offloads the run again.
 
 The manual single-root form
 `python -m blueprint_pipeline.control_plane_storage_gc --content-store-root <root>/sha256 [--apply --ack reap-unreferenced-content]`
@@ -814,3 +1026,47 @@ Default evidence offload now makes a deterministic hashing pass over a tar strea
 Restore supplies the complete artifact identity required by the actual downloader and checks every restored member. The regression uses the real download implementation, so a fixture cannot hide a missing reference field. The GC service can preserve pointer ownership and inspect active process references; ptrace and process-vm syscalls remain denied.
 
 New scene-preparation installations require a whole-chain capacity check before creating an attempt. A workspace that fits only the next stage waits for capacity before work starts. The existing stage reservations remain authoritative and account for competing work; this initial check is an admission forecast, not an additional reservation or a guarantee against untracked external disk writers. Already-started attempts can continue. Cloud-backed reclamation can recover space without needing archive-sized local scratch, allowing the automatic scene timer to retry admission.
+
+### Optional exact lane-reference report
+
+The GC `run` entry point accepts `--lane-reference-target` for one exact leased
+folder below an installed lane parent. It attaches bounded historical evidence
+at `lane_scratch.reference_collection`: selected queue raw identities, finite
+preparation/activation reference meanings, pin protections, selected config
+provenance and fixed Linux process-channel positives. Input JSON, environment
+and command text are not copied into the report. Missing, changed or unsupported
+sources remain explicit keeps. Default ticks do not collect this extra evidence.
+
+Resolved GC arguments and the collector's whitelisted environment are labelled
+`collector_process_effective_only`; a supplied historical config and a stable
+live producer's selected config retain different origins. This does not prove
+another service's installed/enabled configuration, all namespaces/processes,
+auxiliary consumer joins, owner approval or final offload/restore readiness.
+The existing report publication and operator-door readback path are reused.
+
+New G1 pair outputs may explicitly opt into `cooperating_lifetime=True` (CLI
+`--cooperating-lifetime`). Their sealed lease declares
+`consumer_lifetime_contract="leased_scratch_use.v1"`; it remains evidence with
+`owner_review`. The coordinator and audited direct worker retain a shared lock
+on the target directory inode before first output access through teardown and
+terminal receipt publication. Controlled subprocess admission uses a dedicated
+bounded handshake; unknown adapters and container execution cannot opt in.
+Inherited descriptors are close-only. Real policy-server/container descendants,
+external inputs, existing Arena paths and legacy/manual consumers remain unproved.
+No declaration is silently added to historical leases.
+
+The collector's exclusive nonblocking probe, if successful, ends before return.
+Its interval is historical evidence, never a reusable fence or permission to
+retire a folder. `references_clear`, `consumer_fence_checked`, general inventory
+and execution authority remain false; `candidate_bytes` stays null and mutations
+stay zero, including with `--apply` or the lane opt-in true. This report supplies
+no queue ETA or reclaimed-space forecast. An initial descriptor identity failure
+can leave ownership unprovable: preserve the unproven numeric handle, return a
+fixed incomplete refusal, and claim neither success nor guaranteed closure.
+The selected process channels include observed collector-owned metadata and
+probe descriptors as conservative positives; no self PID or arbitrary own FD
+is suppressed. Probe opens and final lease checks use the same collection clock,
+while descriptor cleanup runs independently after that clock expires. A changed
+raw lease version invalidates the recorded exclusive interval even if its
+canonical sealed meaning is unchanged. Checked report CLI errors emit fixed
+JSON refusals without command arguments; ordinary GC CLI parsing is unchanged.
