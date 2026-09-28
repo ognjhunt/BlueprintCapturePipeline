@@ -312,7 +312,8 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert summary["source_report_digest"] == report["report_digest"]
     assert summary["opt_in"] == {
         "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False,
-        "extended_pin_proofs": False, "lane_scratch": False, "result_residue_offload": False}
+        "replay_cache_shared_scratch": False, "extended_pin_proofs": False, "lane_scratch": False,
+        "result_residue_offload": False}
     # Both the report-only lane scratch phase and the residue offload phase reach the summary.
     assert summary["phases"]["lane_scratch"]["mode"] == "report_only"
     assert summary["phases"]["result_residue_offload"]["enabled"] is False
@@ -432,7 +433,8 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     # A report written before the tick recorded its opt-ins does not claim they were off.
     assert summary["opt_in"] == {
         "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None,
-        "extended_pin_proofs": None, "lane_scratch": None, "result_residue_offload": None}
+        "replay_cache_shared_scratch": None, "extended_pin_proofs": None, "lane_scratch": None,
+        "result_residue_offload": None}
 
 
 def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:
