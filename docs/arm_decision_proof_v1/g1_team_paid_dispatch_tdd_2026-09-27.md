@@ -349,3 +349,16 @@ authority after guard refresh, interrupted execution and repeat invocation.
 Agent review accepted this as the next required bridge to the existing shared
 configurator; neither inspection-only preparation nor endpoint-only execution
 will satisfy the full delivery requirement.
+
+Selected preparation increment verified: the no-spend CLI now reopens authority
+before and after its lock, chooses only the registered manipulation/movement
+directory, seals the existing execution packet/bundle, and rechecks authority
+after building. Cached bytes, exact implementation and approval are immutable;
+missing or symlinked operator directories refuse before building. Five focused
+cases passed together, including real fixture bundle sealing and revalidation,
+navigation packet routing, cached byte tampering, release/approval drift and
+revocation after lock wait. The initial fixture lacked registered publisher
+source bytes and was corrected without weakening the source validator. The
+lock-recheck test first demonstrated the missing recheck, then passed with it
+encoded. Ruff and whitespace checks passed. Queue execution, host preparation
+reservation, paid admission and settlement remain separate unfinished steps.
