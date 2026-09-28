@@ -1,6 +1,7 @@
 """Explicit root preservation restoration; archive presence is not permission."""
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -318,6 +319,84 @@ def _stage_archive(files, config, target, target_fd, action, selection, manifest
         guarded.close()
 
 
+def _activated(files, config, gid, action, expected, public, current, entry, issued, pins_root):
+    """Reconcile durable current activation; no transfer or lease is repeated."""
+    from .control_plane_lane_experiment_consumer import _restoration
+    _require(entry['operation_id'] == action['action_id'] and current[1]['policy'] == action['policy']
+             and all(entry[key] == action[key] for key in ('intent_id', 'generation', 'birth', 'owner', 'target_identity'))
+             and entry['expires_at_epoch'] == action['new_lease_expires_at_epoch'], 'experiment_restore_current_changed')
+    target, _ = actions._target(files, config, entry)
+    actions._lease(files, target, entry)
+    actions._birth(files, public, entry, gid)
+    _restoration(files, public, entry, gid, issued)
+    actions._pin_fence(files, config, pins_root, target, issued)
+    public = birth._authority_lock(files, config.experiment_authority_root, gid)
+    refreshed = _current(files, public, gid)
+    _require(refreshed[0] == current[0], 'experiment_restore_current_changed')
+    store = issuance._store(files, config.experiment_record_store)
+    operations = actions._directory(files, store, 'operations')
+    operation = actions._directory(files, operations, action['action_id'])
+    files.proof(operation)
+    fcntl.flock(operation, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    files._operation_path = str(Path(config.experiment_record_store) / 'operations' / action['action_id'])
+    previous, events = None, []
+    for index in range(4104):
+        value = recovery._read_event(files, operation, action, index, previous)
+        if value is None:
+            break
+        event, selected = value
+        events.append((event, selected))
+        previous = selected
+    else:
+        raise OwnerTargetVersionError('experiment_restore_event_limit')
+    _require(len(events) >= 5 and events[0][0]['event_kind'] == 'restore_started'
+             and events[0][0]['body']['restore_intent'] == expected, 'experiment_restore_operation_invalid')
+    tail = 1 if events[-1][0]['event_kind'] == 'activation_complete' else 0
+    ready, correspondence, restored = events[-3-tail:len(events)-tail]
+    _require([value[0]['event_kind'] for value in (ready, correspondence, restored)]
+             == ['restored_payload_ready', 'restoration_correspondence', 'restored'],
+             'experiment_restore_operation_invalid')
+    _require(set(ready[0]['body']) == {'restore_started', 'restored_manifest', 'target_identity', 'new_lease'}
+             and ready[0]['body']['restore_started'] == events[0][1]
+             and ready[0]['body']['target_identity'] == entry['target_identity']
+             and ready[0]['body']['new_lease'] == entry['lease']
+             and set(correspondence[0]['body']) == {'restored_payload_ready', 'public_certificate', 'restore_intent', 'policy', 'principal'}
+             and correspondence[0]['body'] == dict(restored_payload_ready=ready[1], public_certificate=entry['restoration'],
+                restore_intent=expected, policy=action['policy'], principal=action['principal'])
+             and set(restored[0]['body']) == {'restore_started', 'restored_payload_ready', 'public_certificate',
+                                            'restoration_correspondence', 'prepared_authority'},
+             'experiment_restore_operation_invalid')
+    for index, (event, _) in enumerate(events[1:-3-tail]):
+        body = event['body']
+        _require(event['event_kind'] == 'restore_member'
+                 and set(body) == {'restore_started', 'index', 'path', 'sha256', 'size_bytes'}
+                 and body['restore_started'] == events[0][1] and body['index'] == index,
+                 'experiment_restore_operation_invalid')
+    manifest_selector = ready[0]['body']['restored_manifest']
+    raw, _ = _document(files, Path(config.experiment_record_store) / (action['action_id'] + '.manifest.json'),
+                       1048576, selector=manifest_selector)
+    measured = actions._manifest(files, target, files.parents[target])
+    _require(raw == actions._encoded(measured, 'manifest_digest', 1048576), 'experiment_restore_payload_changed')
+    prepared, _ = _document(files, Path(config.experiment_record_store) / (action['action_id'] + '.restored-head.json'),
+                            4096, selector=restored[0]['body']['prepared_authority'])
+    _require(prepared == (json.dumps(current[0], sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n').encode()
+             and restored[0]['body']['restore_started'] == events[0][1]
+             and restored[0]['body']['restored_payload_ready'] == ready[1]
+             and restored[0]['body']['public_certificate'] == entry['restoration']
+             and restored[0]['body']['restoration_correspondence'] == correspondence[1],
+             'experiment_restore_operation_invalid')
+    head_selector = issuance._selector(prepared, files.budget)
+    body = dict(restored=restored[1], active_head=head_selector)
+    if tail:
+        _require(events[-1][0]['body'] == body, 'experiment_restore_operation_invalid')
+        receipt = events[-1][1]
+    else:
+        files.verify()
+        receipt = actions._event(files, operation, action, 'activation_complete', body, len(events), restored[1], issued)
+    return dict(action_id=action['action_id'], intent_id=entry['intent_id'], decision='restored', receipt=receipt,
+                generation=entry['generation'], removed_logical_bytes=0, removed_allocated_bytes=0)
+
+
 def restore(action_id, *, expected_restore_intent, installed_config_path, now, pins_root):
     files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
     reservation = None
@@ -327,6 +406,8 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         _require(config.experiment_retirement_enabled is True, 'experiment_retirement_disabled')
         action = _restore_intent(files, config, action_id, expected_restore_intent, issued)
         public, current, entry = actions._selected(files, config, action['intent_id'], issued, gid)
+        if entry['state'] == 'active' and entry['restoration'] is not None:
+            return _activated(files, config, gid, action, expected_restore_intent, public, current, entry, issued, pins_root)
         _require(entry['state'] == 'retired' and entry['operation_id'] == action_id and current[1]['policy'] == action['policy']
                  and all(entry[key] == action[key] for key in ('generation', 'birth', 'lease', 'target_identity', 'owner')),
                  'experiment_restore_current_changed')
