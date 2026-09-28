@@ -23,6 +23,7 @@ from blueprint_pipeline.remote_cpu_job_contract import forbidden_record_content
 
 # The corpus is part of the host/worker parity contract: changing it changes every golden digest.
 GOLDEN_CORPUS_SHA256 = "be44e31f6f9610571eaa5eabfb10a00ccba5e1da7f3d537a548cfb75b3d4f1fb"
+GOLDEN_SIMD_INPUT_DIGEST = "sha256:ddbf088d1ba962388096bd276db57d40aff5f2b77fdfebfa49d3c4b592ea79d5"
 FACTS_DISTRIBUTIONS = {
     "numpy", "usd-core", "msgpack", "jsonschema", "referencing", "rpds-py", "attrs", "webcolors", "pydantic",
     "pydantic-core", "pillow", "defusedxml", "packaging",
@@ -55,19 +56,26 @@ def _installed_version(name: str) -> str | None:
         return None
 
 
+def _numpy_simd_view() -> dict:
+    try:
+        from numpy._core import _multiarray_umath as umath
+    except ImportError:  # numpy 1.x
+        from numpy.core import _multiarray_umath as umath
+    return {
+        "baseline": sorted(umath.__cpu_baseline__), "dispatch": sorted(umath.__cpu_dispatch__),
+        "enabled": sorted(name for name, on in umath.__cpu_features__.items() if on),
+    }
+
+
 def test_environment_records_cpython_zlib_golden_deflate_simd_and_distributions(tmp_path: Path, monkeypatch) -> None:
     cpuinfo = _cpuinfo(tmp_path / "cpuinfo", "sse2 avx2 fma sse2")
     record = environment.environment_record(cpuinfo_path=cpuinfo)
 
     assert record["schema_version"] == "remote_cpu_environment.v1"
-    assert record["interpreter"] == {
-        "implementation": platform.python_implementation(), "version": sys.version,
-        "machine": platform.machine(), "libc": list(platform.libc_ver()),
-    }
+    assert record["python_version_info"] == list(sys.version_info)
     corpus = environment.golden_corpus()
     assert hashlib.sha256(corpus).hexdigest() == GOLDEN_CORPUS_SHA256
-    assert record["zlib"] == {
-        "runtime_version": zlib.ZLIB_RUNTIME_VERSION, "compile_version": zlib.ZLIB_VERSION,
+    assert record["golden_deflate"] == {
         "corpus_digest": _sha(corpus), "zlib_level6_digest": _sha(zlib.compress(corpus, 6)),
         "raw_deflate_level6_digest": _sha(_raw_level6(corpus)),
     }
@@ -81,49 +89,82 @@ def test_environment_records_cpython_zlib_golden_deflate_simd_and_distributions(
     data, offset = buffer.getvalue(), member.header_offset
     start = offset + 30 + int.from_bytes(data[offset + 26:offset + 28], "little") + int.from_bytes(
         data[offset + 28:offset + 30], "little")
-    assert _sha(data[start:start + member.compress_size]) == record["zlib"]["raw_deflate_level6_digest"]
+    assert _sha(data[start:start + member.compress_size]) == record["golden_deflate"]["raw_deflate_level6_digest"]
 
-    try:
-        from numpy._core import _multiarray_umath as umath
-    except ImportError:  # numpy 1.x
-        from numpy.core import _multiarray_umath as umath
-    assert record["cpu"] == {
-        "numpy_simd": {
-            "baseline": sorted(umath.__cpu_baseline__), "dispatch": sorted(umath.__cpu_dispatch__),
-            "enabled": sorted(name for name, on in umath.__cpu_features__.items() if on),
-        },
-        "flags": ["avx2", "fma", "sse2"], "flags_source": str(cpuinfo),
-    }
+    # The golden SIMD digest is behaviour: NuRec's float32 exp and sigmoid and float64 norms.
+    assert record["golden_simd"]["input_digest"] == GOLDEN_SIMD_INPUT_DIGEST
+    assert environment.golden_simd() == record["golden_simd"]
+    import numpy
+
+    real_exp = numpy.exp
+    monkeypatch.setattr(numpy, "exp", lambda values, *args, **kwargs: numpy.nextafter(
+        real_exp(values, *args, **kwargs), numpy.float32(numpy.inf)).astype(values.dtype))
+    perturbed = environment.golden_simd()
+    monkeypatch.setattr(numpy, "exp", real_exp)
+    assert perturbed["input_digest"] == GOLDEN_SIMD_INPUT_DIGEST
+    assert perturbed["output_digest"] != record["golden_simd"]["output_digest"]
+
+    simd = _numpy_simd_view()
     assert record["cpu_class"] == canonical_digest(
-        {"machine": platform.machine(), "numpy_simd": record["cpu"]["numpy_simd"], "flags": ["avx2", "fma", "sse2"]}
+        {"machine": platform.machine(), "numpy_simd": simd, "flags": ["avx2", "fma", "sse2"]}
     )
+    assert record["informational"] == {
+        "python_version": sys.version, "implementation": platform.python_implementation(),
+        "machine": platform.machine(), "libc": list(platform.libc_ver()),
+        "zlib_runtime_version": zlib.ZLIB_RUNTIME_VERSION, "zlib_compile_version": zlib.ZLIB_VERSION,
+        "numpy_simd": simd, "cpu_flags": ["avx2", "fma", "sse2"], "cpu_flags_source": str(cpuinfo),
+        "executable": sys.executable,
+    }
 
     assert set(environment.COMPILE_DISTRIBUTIONS) == FACTS_DISTRIBUTIONS
     assert [row["name"] for row in record["distributions"]] == sorted(FACTS_DISTRIBUTIONS)
     for row in record["distributions"]:
         assert row["version"] == _installed_version(row["name"]), row
-    parity = {name: record[name] for name in ("interpreter", "zlib", "distributions")}
-    assert record["environment_digest"] == canonical_digest(parity)
-    assert record["executable"] == sys.executable
+    digested = {name: record[name] for name in environment.DIGESTED_FIELDS}
+    assert set(digested) == {"python_version_info", "golden_deflate", "golden_simd", "distributions", "cpu_class"}
+    assert record["environment_digest"] == canonical_digest(digested) == environment.environment_digest(record)
 
     other_cpu = environment.environment_record(cpuinfo_path=_cpuinfo(tmp_path / "other", "sse2"))
     unmeasured = environment.environment_record(cpuinfo_path=tmp_path / "absent")
-    assert other_cpu["environment_digest"] == unmeasured["environment_digest"] == record["environment_digest"]
-    assert len({record["cpu_class"], other_cpu["cpu_class"]}) == 2
-    assert (unmeasured["cpu_class"], unmeasured["cpu"]["flags"], unmeasured["cpu"]["flags_source"]) == (None, [], None)
+    assert other_cpu["cpu_class"] != record["cpu_class"] and unmeasured["cpu_class"] is None
+    assert len({record["environment_digest"], other_cpu["environment_digest"], unmeasured["environment_digest"]}) == 3
+    assert (unmeasured["informational"]["cpu_flags"], unmeasured["informational"]["cpu_flags_source"]) == ([], None)
     missing = environment.environment_record(
         cpuinfo_path=cpuinfo, distributions=(*environment.COMPILE_DISTRIBUTIONS, "definitely-not-installed")
     )
     assert {"name": "definitely-not-installed", "version": None} in missing["distributions"]
     assert missing["environment_digest"] != record["environment_digest"]
-
-    rebuilt = types.SimpleNamespace(**{name: getattr(zlib, name) for name in dir(zlib) if not name.startswith("__")})
-    rebuilt.compressobj = lambda level, method, wbits: zlib.compressobj(1, method, wbits)
-    monkeypatch.setattr(environment, "zlib", rebuilt)
-    different_zlib = environment.environment_record(cpuinfo_path=cpuinfo)
-    assert different_zlib["zlib"]["raw_deflate_level6_digest"] != record["zlib"]["raw_deflate_level6_digest"]
-    assert different_zlib["environment_digest"] != record["environment_digest"]
     assert forbidden_record_content(record) == [] and json.loads(json.dumps(record)) == record
+
+
+def test_environment_digest_covers_behaviour_not_build_strings(tmp_path: Path, monkeypatch) -> None:
+    cpuinfo = _cpuinfo(tmp_path / "cpuinfo", "sse2 avx2")
+    record = environment.environment_record(cpuinfo_path=cpuinfo)
+
+    # Another build of the same interpreter, libc and zlib (zlib 1.2.12 and 1.3.1 deflate alike).
+    monkeypatch.setattr(environment, "sys", types.SimpleNamespace(
+        version="3.12.11 (main, Jan  1 2026, 00:00:00) [GCC 12.2.0]", version_info=sys.version_info,
+        executable="/usr/local/bin/python3"))
+    monkeypatch.setattr(environment, "platform", types.SimpleNamespace(
+        python_implementation=platform.python_implementation, machine=platform.machine,
+        libc_ver=lambda: ("glibc", "2.36")))
+    other_zlib = types.SimpleNamespace(**{name: getattr(zlib, name) for name in dir(zlib) if not name.startswith("__")})
+    other_zlib.ZLIB_RUNTIME_VERSION = other_zlib.ZLIB_VERSION = "1.2.12"
+    monkeypatch.setattr(environment, "zlib", other_zlib)
+    rebuilt = environment.environment_record(cpuinfo_path=cpuinfo)
+    assert rebuilt["informational"] != record["informational"]
+    assert rebuilt["informational"]["zlib_runtime_version"] == "1.2.12"
+    assert rebuilt["environment_digest"] == record["environment_digest"]
+
+    other_zlib.compressobj = lambda level, method, wbits: zlib.compressobj(1, method, wbits)
+    deflates_differently = environment.environment_record(cpuinfo_path=cpuinfo)
+    assert deflates_differently["golden_deflate"] != record["golden_deflate"]
+    assert deflates_differently["environment_digest"] != record["environment_digest"]
+    other_zlib.compressobj = zlib.compressobj
+
+    monkeypatch.setattr(environment, "sys", types.SimpleNamespace(
+        version=sys.version, version_info=(3, 12, 99, "final", 0), executable=sys.executable))
+    assert environment.environment_record(cpuinfo_path=cpuinfo)["environment_digest"] != record["environment_digest"]
 
 
 def test_chain_preflight_reports_the_interpreter_environment_without_findings(tmp_path: Path, monkeypatch) -> None:
