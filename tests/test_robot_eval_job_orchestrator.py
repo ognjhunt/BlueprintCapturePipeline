@@ -1880,7 +1880,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert run_manifest["sc3_correlation_claim_status"] == "correlation_not_measured"
     assert (
         policy_execution["modality_results"]["high_level_skill_trace"]["attempt_count"]
-        == (scenario_eval_matrix["scenario_eval_run_count"])
+        == 1
     )
     assert policy_execution["robot_policy_execution_proven"] is False
     assert deployment["status"] == "not_requested"
@@ -8717,7 +8717,13 @@ def test_robot_eval_job_consumes_staged_policy_package(
     assert policy_execution["modality_results"]["high_level_skill_trace"]["status"] == (
         "completed_reference_replay"
     )
-    assert policy_execution["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
+    assert policy_execution["attempt_count"] == 1
+    assert policy_execution["scenario_eval_run_coverage_complete"] is False
+    assert len(policy_execution["missing_scenario_eval_run_ids"]) == scenario_eval_matrix["scenario_eval_run_count"]
+    trace = _read_json(job_dir / "policy_execution_trace.json")
+    assert trace["attempts"][0]["status"] == "submitted_unexecuted"
+    assert trace["attempts"][0]["success"] is None
+    assert trace["attempts"][0]["actions"] == []
 
 
 @pytest.mark.parametrize(
@@ -8805,6 +8811,15 @@ def test_robot_eval_job_replays_reference_policy_modality_with_matrix_coverage(
     modality_result = policy_execution["modality_results"][modality]  # type: ignore[index]
 
     assert policy_execution["selected_modalities"] == [modality]
+    if modality == "high_level_skill_trace":
+        assert policy_execution["attempt_count"] == 1
+        assert policy_execution["scenario_eval_run_coverage_complete"] is False
+        assert policy_trace["attempts"][0]["status"] == "submitted_unexecuted"
+        assert policy_trace["attempts"][0]["success"] is None
+        assert policy_trace["attempts"][0]["actions"] == []
+        assert modality_result["execution_performed"] is False
+        assert modality_result["robot_policy_execution_proven"] is False
+        return
     assert policy_execution["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
     assert policy_execution["scenario_eval_run_coverage_complete"] is True
     assert policy_execution["missing_scenario_eval_run_ids"] == []

@@ -2149,7 +2149,9 @@ def _normalize_policy_attempts(
         status = _string(raw.get("status") or raw.get("result") or "completed").lower()
         success_raw = raw.get("success")
         success = (
-            _boolish(success_raw)
+            None
+            if raw.get("evidence_scope") == "submitted_skill_intent_only"
+            else _boolish(success_raw)
             if success_raw is not None
             else status
             in {

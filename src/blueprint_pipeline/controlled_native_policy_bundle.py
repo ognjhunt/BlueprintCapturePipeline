@@ -65,3 +65,40 @@ def build_controlled_native_policy_bundle(*, job_dir: Path, packet_dir: Path,
 def load_verified_controlled_native_policy_bundle(receipt_path, **kwargs):
     return load_verified_native_task_arena_construction_bundle(receipt_path,
         expected_execution_mode="controlled_policy", **kwargs)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Rebuild operator-owned inputs at an exact release; never allocate."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("job-dir", "packet-dir", "runtime-source-packet-receipt",
+                 "configuration", "job-request", "observations"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--policy-credential", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        credential = None
+        if args.policy_credential:
+            if args.policy_credential.is_symlink() or args.policy_credential.stat().st_mode & 0o077:
+                raise ValueError("controlled_native_policy_credential_not_private")
+            credential = json.loads(args.policy_credential.read_text())
+        receipt = build_controlled_native_policy_bundle(
+            job_dir=args.job_dir, packet_dir=args.packet_dir,
+            runtime_source_packet_receipt=args.runtime_source_packet_receipt,
+            implementation_commit=args.implementation_commit,
+            configuration=json.loads(args.configuration.read_text()),
+            job_request=json.loads(args.job_request.read_text()),
+            observations=json.loads(args.observations.read_text()), policy_credential=credential)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(json.dumps({"status": "blocked", "error_class": type(exc).__name__,
+                          "provider_mutation_performed": False}))
+        return 2
+    print(json.dumps({key: receipt.get(key) for key in
+                     ("status", "bundle_path", "bundle_sha256", "implementation_commit")}))
+    return 0 if receipt.get("status") == "ready" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
