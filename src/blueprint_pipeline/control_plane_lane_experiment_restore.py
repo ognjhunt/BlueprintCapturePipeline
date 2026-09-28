@@ -19,11 +19,9 @@ from . import control_plane_lane_scratch as scratch
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_disk_budget import reserve_control_plane_disk
 from .control_plane_lane_experiment_authority import _current
-from .control_plane_lane_experiment_publication import _BirthFiles
 from .control_plane_lane_experiment_actions import _publish
 from .control_plane_lane_experiment_work import _ActionFiles
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require
-from .control_plane_reference_budget import ReferenceCollectionBudget
 from .decision_evidence_contracts import canonical_digest
 
 RESTORE_SCHEMA = 'control_plane_lane_experiment_restore_intent.v1'
@@ -53,7 +51,7 @@ def _document(files, path, cap, *, selector=None):
 
 
 def issue_restore(intent_id, *, principal, owner, lease_ttl_seconds, expires_at_epoch, installed_config_path, now):
-    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    files = _ActionFiles(now=now)
     try:
         issued = now()
         config, gid = actions._context(files, installed_config_path, issued)
@@ -79,8 +77,9 @@ def issue_restore(intent_id, *, principal, owner, lease_ttl_seconds, expires_at_
                  and all(prior[key] == entry[key] for key in ('intent_id', 'owner', 'generation', 'birth', 'lease', 'target_identity', 'completion')),
                  'experiment_restore_ineligible')
         prior_selector = issuance._selector(prior_raw, files.budget)
-        manifest_raw, manifest = _document(files, store_path / (old_operation + '.manifest.json'), 1048576,
-                                            selector=prior['manifest'])
+        files.phase('manifest')
+        manifest_raw, _ = files.read(store_path / (old_operation + '.manifest.json'), cap=1048576, protected=True, mode=0o600)
+        _require(issuance._selector(manifest_raw, files.budget) == prior['manifest'], 'experiment_restore_record_changed')
         manifest = actions._manifest_record(files, manifest_raw, prior)
         rows = sorted(manifest['members'], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         retired, _, _ = recovery.retired(files, config, prior, prior_selector, target, rows, entry, original['marker'], _retained_store=store)
@@ -357,6 +356,8 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
     files._operation_path = str(Path(config.experiment_record_store) / 'operations' / action['action_id'])
     previous, events = None, []
     for index in range(4104):
+        if index % 16 == 0:
+            files.phase('restore_recovery_batch')
         value = recovery._read_event(files, operation, action, index, previous)
         if value is None:
             break
@@ -391,10 +392,18 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
                  and body['restore_started'] == events[0][1] and body['index'] == index,
                  'experiment_restore_operation_invalid')
     manifest_selector = ready[0]['body']['restored_manifest']
-    raw, _ = _document(files, Path(config.experiment_record_store) / (action['action_id'] + '.manifest.json'),
-                       1048576, selector=manifest_selector)
-    measured = actions._manifest(files, target, files.parents[target], binding=entry)
+    files.phase('restore_activation_manifest')
+    raw, _ = files.read(Path(config.experiment_record_store) / (action['action_id'] + '.manifest.json'),
+                       cap=1048576, protected=True, mode=0o600)
+    _require(issuance._selector(raw, files.budget) == manifest_selector, 'experiment_restore_record_changed')
+    saved = actions._manifest_record(files, raw, entry)
+    measured = actions._manifest(files, target, files.parents[target], binding=entry, hash_payload=False)
+    _require(len(saved['members']) == len(measured['members']) and all(
+        before[:4] == current[:4] for before, current in zip(saved['members'], measured['members'])),
+        'experiment_restore_payload_changed')
+    actions._hash_manifest(files, target, files.parents[target], measured, role='restore_activation_validate')
     _require(raw == actions._encoded(measured, 'manifest_digest', 1048576), 'experiment_restore_payload_changed')
+    files.phase('finalize')
     prepared, _ = _document(files, Path(config.experiment_record_store) / (action['action_id'] + '.restored-head.json'),
                             4096, selector=restored[0]['body']['prepared_authority'])
     _require(prepared == (json.dumps(current[0], sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n').encode()
@@ -447,8 +456,9 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                                      selector=selection['original_action'])
         _require(prior['action'] == 'offload' and all(prior[key] == entry[key] for key in ('intent_id', 'owner', 'generation', 'birth', 'lease', 'target_identity', 'completion')),
                  'experiment_restore_selection_invalid')
-        manifest_raw, manifest = _document(files, store_path / (selection['original_operation_id'] + '.manifest.json'), 1048576,
-                                            selector=selection['manifest'])
+        files.phase('manifest')
+        manifest_raw, _ = files.read(store_path / (selection['original_operation_id'] + '.manifest.json'), cap=1048576, protected=True, mode=0o600)
+        _require(issuance._selector(manifest_raw, files.budget) == selection['manifest'], 'experiment_restore_record_changed')
         manifest = actions._manifest_record(files, manifest_raw, prior)
         rows = sorted(manifest['members'], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         public = birth._authority_lock(files, config.experiment_authority_root, gid)

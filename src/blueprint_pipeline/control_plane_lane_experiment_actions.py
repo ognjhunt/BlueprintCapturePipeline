@@ -535,6 +535,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         if action["action"] == "owner_review":
             return _outcome(action, "kept", "owner_review")
         if entry["state"] == "retired":
+            files.phase('manifest')
             manifest_raw, _ = files.read(Path(config.experiment_record_store) / (action_id + ".manifest.json"),
                                         cap=1048576, protected=True, mode=0o600)
             _require(issuance._selector(manifest_raw, files.budget) == action["manifest"], "experiment_manifest_changed")
@@ -565,6 +566,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         refreshed = _current(files, public, gid)
         _require(refreshed[0] == current[0] and entry["state"] in ("active", "retiring"), "experiment_action_current_changed")
         store = issuance._store(files, config.experiment_record_store)
+        files.phase('manifest')
         manifest_raw, _ = files.read(Path(config.experiment_record_store) / (action_id + ".manifest.json"),
                                     cap=1048576, protected=True, mode=0o600)
         _require(issuance._selector(manifest_raw, files.budget) == action["manifest"], "experiment_manifest_changed")

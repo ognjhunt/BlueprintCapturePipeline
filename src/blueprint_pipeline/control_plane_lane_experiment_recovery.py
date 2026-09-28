@@ -10,6 +10,7 @@ from . import control_plane_lane_experiment_retirement as issuance
 from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_lane_experiment_publication import _publish
+from .control_plane_lane_experiment_work import _ActionFiles
 from .control_plane_lane_owner_target_versions import _require
 from .decision_evidence_contracts import canonical_digest
 
@@ -25,7 +26,7 @@ def _read_event(files, directory, action, index, previous):
         os.stat(name, dir_fd=directory, follow_symlinks=False)
     except FileNotFoundError:
         return None
-    raw, _ = files.read(Path(files._operation_path) / name, cap=32768, protected=True, mode=0o600)
+    raw, record = files.read(Path(files._operation_path) / name, cap=32768, protected=True, mode=0o600)
     value = retained._document(raw, 32768, _work_budget=files.budget)
     _require(set(value) == _FIELDS and value['schema_version'] == 'control_plane_lane_experiment_event.v1'
              and value['event_digest'] == canonical_digest(value, digest_field='event_digest')
@@ -34,7 +35,16 @@ def _read_event(files, directory, action, index, previous):
              and value['operation_id'] == action['action_id'] and type(value['sequence']) is int
              and value['sequence'] == index and value['previous_event'] == previous,
              'experiment_operation_invalid')
-    return value, issuance._selector(raw, files.budget)
+    selected = issuance._selector(raw, files.budget)
+    if type(files) is _ActionFiles:
+        # Exact root-owned immutable event under the retained operation EX.
+        # The bounded parsed value and hash chain remain; release the original
+        # read token only after named/full original metadata proof, never adopt.
+        files.verify_record(record)
+        files.records.remove(record)
+        files.close(record.fd)
+        _require(record.fd not in files.owned, 'experiment_operation_cleanup_failed')
+    return value, selected
 
 
 def _once(files, parent, name, payload, *, kind):
@@ -127,6 +137,8 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
     logical, allocated, changed, count = 0, 0, {}, 0
     offset = 1 if action['action'] == 'offload' else 0
     for index, row in enumerate(rows, 1):
+        if type(files) is _ActionFiles and (index - 1) % 16 == 0:
+            files.phase('recovery_batch')
         selected = _read_event(files, operation, action, index + offset, previous) if not offset or preservation else None
         if selected is None:
             break
