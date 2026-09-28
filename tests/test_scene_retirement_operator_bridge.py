@@ -356,3 +356,33 @@ def test_actual_installed_script_invokes_exact_engine_cli_and_writes_sanitized_o
     assert '--apply' not in args and '--intent-id' in args and '--consent-id' in args
     outcome=json.loads((resultdir/(identity+'.outcome.json')).read_text())
     assert outcome['status']=='planned' and outcome['intent_id']=='scene-1'
+
+
+def test_client_close_failure_retains_completed_native_result_instead_of_zero_mutations(tmp_path,monkeypatch):
+    module,_,_,_,values=selected_fixture(tmp_path,monkeypatch)
+    # Isolate finalization; this is not a successful whole-scene action fixture.
+    monkeypatch.setattr(module.engine,'retire_scene',lambda *a,**kw:
+        dict(status='retired',intent_id='scene-1',removed_allocated_bytes=4096,logical_bytes=3))
+    class Transport:
+        def close(self):
+            raise ValueError('secret=not-public')
+    result=module.run_selected_action('retire',**values,apply=True,now=lambda:100,
+                                     transport_factory=lambda:Transport())
+    assert result['status']=='incomplete'
+    assert result['removed_allocated_bytes']==4096 and result['logical_bytes']==3
+    assert result.get('mutations')!=0 and 'not-public' not in str(result)
+
+
+def test_native_response_close_fault_cannot_claim_success_and_is_typed():
+    module=bridge()
+    client=Client()
+    class Body(io.BytesIO):
+        def close(self):
+            super().close()
+            raise RuntimeError('secret=do-not-log')
+    client.get_object=lambda **kw:dict(Body=Body(b'x'),ContentLength=1)
+    transport=module.SceneArchiveTransport(client=client,bucket='private-artifacts')
+    transport.bind_allowance(allowance())
+    uri='s3://private-artifacts/blueprint/arm-decision-proof-v1/scene-retirement/'+'1'*32+'.tar'
+    with pytest.raises(ValueError,match='^scene_retirement_remote_cleanup_unproven$'):
+        list(transport.read_archive(uri))
