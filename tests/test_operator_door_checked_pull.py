@@ -344,3 +344,58 @@ def test_checked_destination_does_not_follow_linked_parent(tmp_path, monkeypatch
                                   expected_sha256=_digest(b'ab'), expected_size=2)
     assert list(real.iterdir()) == [destination]
     assert destination.read_bytes() == b'old'
+
+
+@pytest.mark.parametrize('fault', ['parent', 'temporary'])
+def test_identity_acquisition_failure_closes_descriptors_and_preserves_destination(tmp_path, monkeypatch, fault):
+    import os
+    import stat
+    _requests(monkeypatch, b'ab')
+    destination = tmp_path / 'artifact.bin'
+    destination.write_bytes(b'old')
+    real_open, real_fstat = os.open, os.fstat
+    opened = []
+    def open_file(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+    def fstat(descriptor):
+        info = real_fstat(descriptor)
+        if (fault == 'parent' and stat.S_ISDIR(info.st_mode)
+                or fault == 'temporary' and stat.S_ISREG(info.st_mode)):
+            raise OSError('identity unavailable')
+        return info
+    monkeypatch.setattr(os, 'open', open_file)
+    monkeypatch.setattr(os, 'fstat', fstat)
+    try:
+        with pytest.raises(client.DoorError, match='^checked_pull_local_write_failed$'):
+            _pull(tmp_path, b'ab')
+        assert destination.read_bytes() == b'old'
+        for descriptor in opened:
+            with pytest.raises(OSError):
+                real_fstat(descriptor)
+        partials = list(tmp_path.glob('.*.partial'))
+        assert len(partials) == (1 if fault == 'temporary' else 0)
+        assert all(path.read_bytes() == b'' for path in partials)
+    finally:
+        for descriptor in opened:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def test_saved_inode_substitution_refuses_verified_success_without_touching_foreign_entry(tmp_path, monkeypatch):
+    _requests(monkeypatch, b'ab')
+    destination = tmp_path / 'artifact.bin'
+    destination.write_bytes(b'old')
+    original_replace = client.os.replace
+    def replace(source, target, **kwargs):
+        original_replace(source, target, **kwargs)
+        destination.rename(tmp_path / 'held-by-other-operation')
+        destination.write_bytes(b'unrelated destination')
+    monkeypatch.setattr(client.os, 'replace', replace)
+    with pytest.raises(client.DoorError, match='^checked_pull_local_write_failed$'):
+        _pull(tmp_path, b'ab')
+    assert destination.read_bytes() == b'unrelated destination'
+    assert (tmp_path / 'held-by-other-operation').read_bytes() == b'ab'

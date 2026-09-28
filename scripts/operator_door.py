@@ -275,18 +275,16 @@ def _checked_cleanup(directory: int, temporary: str, identity: tuple[int, int]) 
 
 
 def _write_checked_file(remote, local, directory, name, expected_sha256, expected_size):
-    descriptor, temporary = _checked_temporary(directory, name)
-    owned = _checked_inode(os.fstat(descriptor))
     parent = _checked_inode(os.fstat(directory))
+    descriptor, temporary = _checked_temporary(directory, name)
+    owned = None
     try:
+        owned = _checked_inode(os.fstat(descriptor))
         digest = hashlib.sha256()
         offset = 0
         requests = 0
-        try:
-            stream = os.fdopen(descriptor, "wb")
-        except OSError:
-            os.close(descriptor)
-            raise
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = None  # The stream owns it only after fdopen succeeds.
         with stream:
             while requests == 0 or offset < expected_size:
                 if requests >= MAX_CHECKED_PULL_REQUESTS:
@@ -318,7 +316,9 @@ def _write_checked_file(remote, local, directory, name, expected_sha256, expecte
         return {"path": remote, "saved": str(local), "bytes": offset,
                 "verified_digest": expected_sha256, "verified_bytes": offset}
     finally:
-        if temporary is not None:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None and owned is not None:
             _checked_cleanup(directory, temporary, owned)
 
 

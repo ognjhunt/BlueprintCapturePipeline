@@ -362,7 +362,9 @@ parents without symlinks or traversal. Retained directory/file identities bind
 temporary creation, publication and cleanup; observed substitutions refuse
 verified success and preserve foreign entries. These checks do not provide an
 atomic compare-and-rename against arbitrary concurrent writers, or rollback
-after another writer changes the path during publication. The existing per-request timeout
+after another writer changes the path during publication. If initial temporary
+identity acquisition fails, the descriptor closes and the unproven empty entry
+is retained rather than deleted. The existing per-request timeout
 remains; no new whole-transfer deadline is claimed. Ordinary file and directory
 pull behavior is unchanged.
 
