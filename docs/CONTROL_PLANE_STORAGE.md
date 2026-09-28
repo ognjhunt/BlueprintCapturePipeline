@@ -53,10 +53,16 @@ and never a host path.
 A measured output hold refused after the CPU prefix is sealed like one refused
 before staging: exactly `scene_configuration_provider_output_disk_budget_exceeded`,
 zero provider mutations, and the ledger's numbers at refusal time. Capacity recovery
-retries either one once the role's projection fits again, unless paid API
-pretraining already ran in that attempt (`recovery_withheld:
-api_pretraining_consumed`), which keeps the typed blocker without an automatic
-retry. After an extraction refusal the output stays durable, in B2 and as the local
+retries either one once the role's projection fits again, but a retry never repeats
+paid external work. So a refusal after the CPU prefix keeps its typed blocker and is
+not retried automatically when the attempt recorded, or cannot rule out, external
+spend. The admission record's `recovery_withheld` names why:
+`api_pretraining_consumed` when paid API pretraining ran,
+`prefix_external_spend_recorded` when the prefix's stage-3 authoring reserved an
+OpenAI or Anthropic cap, and `prefix_spend_unproven` when the prefix's retained output
+(`cpu_prestage_output.zip`, with its `official_openai_cost/` receipts and inference
+reservations) is missing, incomplete or unreadable. `prefix_spend` records what that
+archive showed. After an extraction refusal the output stays durable, in B2 and as the local
 zip, but nothing recovers it automatically yet. The website publication reconciler
 and the publication-recovery CLI both require `configuration_completed: true`, which
 stays false by design until readers can fetch archive members on demand (plan

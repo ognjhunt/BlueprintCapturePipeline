@@ -12,8 +12,10 @@ largest extraction that zip may declare. Under ``measured``:
    same volume is checked up front, as the larger of the two needs, and the
    hold is taken only after that prefix released its own reservation. A hold
    refused then is sealed like a refusal before staging: typed, zero provider
-   mutations, and retried by capacity recovery unless paid API pretraining
-   already ran in the attempt;
+   mutations, and retried by capacity recovery only when the attempt recorded
+   no paid external spend. API pretraining that ran, or a CPU prefix whose own
+   cost records show or cannot rule out OpenAI or Anthropic spend, withholds
+   the retry (``recovery_withheld``), since a retry never repeats paid work;
 2. the local zip, from whichever source, is published to B2 before anything is
    extracted, on every outcome;
 3. the extraction is sized from the zip's own central directory, and whatever
@@ -32,14 +34,16 @@ staging. Nothing here allocates, grants or mutates a provider.
 from __future__ import annotations
 
 import functools
+import json
 import os
 import re
 import shutil
 import zipfile
 from collections.abc import Callable, Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .decision_evidence_contracts import canonical_digest
 from .control_plane_disk_budget import (
     DEFAULT_RESERVATION_ROOT,
     ControlPlaneDiskBudgetError,
@@ -55,6 +59,7 @@ from .task_evaluation_scene_configuration_provider_artifacts import (
     TaskEvaluationSceneConfigurationVastError,
     _provider_output_disk_requirements,
     _publish_provider_output_archive,
+    _sha256,
 )
 
 
@@ -82,8 +87,14 @@ CPU_PREFIX_OVERHEAD_BYTES = 512 * 1024**2
 PREALLOCATION_PHASE = "before_allocation_and_staging"
 #: Where a hold deferred behind a CPU prefix sharing the volume is taken.
 DEFERRED_HOLD_PHASE = "after_cpu_prefix"
-#: Why a typed refusal after the prefix is not retried automatically.
+#: Why a typed refusal after the prefix is not retried automatically: a retry
+#: never repeats paid external work, so recorded or unprovable spend holds it.
 API_PRETRAINING_CONSUMED = "api_pretraining_consumed"
+PREFIX_SPEND_RECORDED = "prefix_external_spend_recorded"
+PREFIX_SPEND_UNPROVEN = "prefix_spend_unproven"
+PREFIX_SPEND_NONE = "no_external_spend_recorded"
+#: The prestage's retained output, the cost reservations of failed stages included.
+CPU_PREFIX_OUTPUT_ARCHIVE = "cpu_prestage_output.zip"
 #: The lane's result schema; measured runs are never diagnostic.
 LANE_RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_vast_result.v1"
 _HOLD_DEFERRED = "deferred_until_after_cpu_prefix"
@@ -157,6 +168,92 @@ def extraction_requirement(archive_path: Path, *, maximum_archive_bytes: int) ->
         requirement["extraction_bytes"] + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
     )
     return requirement
+
+
+def cpu_prefix_spend(archive_path: Path) -> dict[str, Any]:
+    """What the CPU prefix's own records show it reserved against OpenAI or Anthropic.
+
+    The prestage keeps its runtime output, a failed stage's cost reservations
+    included, as ``cpu_prestage_output.zip``. Every paid stage-3 path reserves
+    before its first call: OpenAI through ``official_openai_cost/`` receipts,
+    Anthropic and Agents reviews through ``inference_reservations/`` files and
+    their audit manifest. Zero spend is proven only by an archive complete as
+    its writer seals it (exclusions first, retained checkpoints last) holding
+    no such reservation. A missing, unreadable or incomplete archive, or an
+    audit that does not verify, proves nothing and counts as spent.
+    """
+
+    from .task_evaluation_scene_configuration_output_archive import EXCLUDED_PARTS
+    from .task_evaluation_supervisor.inference_reservations import (
+        INFERENCE_RESERVATION_MANIFEST_SCHEMA_VERSION as MANIFEST_SCHEMA,
+    )
+
+    evidence: dict[str, Any] = {
+        "archive_name": archive_path.name,
+        "archive_sha256": None,
+        "cap_record_count": 0,
+        "status": PREFIX_SPEND_UNPROVEN,
+    }
+    try:
+        if archive_path.is_symlink() or not archive_path.is_file():
+            return evidence
+        evidence["archive_sha256"] = _sha256(archive_path)
+        recorded, unverified = 0, False
+        with zipfile.ZipFile(archive_path) as archive:
+            names = archive.namelist()
+
+            def read(name: str) -> Any:
+                if archive.getinfo(name).file_size > 2 * 1024**2:
+                    raise ValueError("prefix_spend_record_oversized")
+                return json.loads(archive.read(name))
+
+            if (
+                len(names) != len(set(names))
+                or "runtime_output_missing.json" in names
+                or "retained_training_checkpoints.json" not in names
+                or read("provider_output_zip_exclusions.json") != {
+                    "schema_version": (
+                        "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1"
+                    ),
+                    "excluded_directory_names": sorted(EXCLUDED_PARTS),
+                }
+            ):
+                return evidence
+            for name in names:
+                parts = PurePosixPath(name).parts
+                if "official_openai_cost" in parts or (
+                    "inference_reservations" in parts and parts[-1] != "manifest.json"
+                ):
+                    recorded += 1
+                elif parts[-1] == "inference_audit.json" or parts[-2:] == (
+                    "inference_reservations", "manifest.json"
+                ):
+                    manifest = read(name)
+                    if (
+                        not isinstance(manifest, dict)
+                        or manifest.get("schema_version") != MANIFEST_SCHEMA
+                        or manifest.get("inference_reservation_manifest_digest")
+                        != canonical_digest(
+                            manifest, digest_field="inference_reservation_manifest_digest"
+                        )
+                    ):
+                        unverified = True
+                    elif any(
+                        manifest.get(key) != 0
+                        for key in (
+                            "reservation_count", "in_flight_unknown_count", "reserved_max_cost_usd",
+                        )
+                    ):
+                        recorded += 1
+        evidence["cap_record_count"] = recorded
+        evidence["status"] = (
+            PREFIX_SPEND_RECORDED if recorded
+            else PREFIX_SPEND_UNPROVEN if unverified
+            else PREFIX_SPEND_NONE
+        )
+    except (*_READ_ERRORS, LookupError, TypeError):
+        evidence["status"] = PREFIX_SPEND_UNPROVEN
+    return evidence
 
 
 def _ledger_numbers(refusal: str) -> dict[str, int]:
@@ -335,13 +432,23 @@ class SceneConfigurationOutputAdmission:
         It has the shape of a refusal before staging, so capacity recovery
         re-opens it the same way, and adds what the attempt already did: the
         consumed authority, the prefix receipts, the staging cleanup and the
-        watchdog closed as no allocation. Paid API pretraining that already
-        ran withholds automatic recovery, as it does for a credit refusal.
+        watchdog closed as no allocation. Automatic recovery never repeats
+        paid external work, so it is withheld when API pretraining ran or when
+        the CPU prefix's own records show, or cannot rule out, external spend.
         """
 
         record = self.record
-        if api_pretraining:
-            record["recovery_withheld"] = API_PRETRAINING_CONSUMED
+        prefix_spend = (
+            cpu_prefix_spend(self.job / CPU_PREFIX_OUTPUT_ARCHIVE) if cpu_prestage else None
+        )
+        if prefix_spend is not None:
+            record["prefix_spend"] = prefix_spend
+        record["recovery_withheld"] = (
+            API_PRETRAINING_CONSUMED if api_pretraining
+            else prefix_spend["status"]
+            if prefix_spend is not None and prefix_spend["status"] != PREFIX_SPEND_NONE
+            else None
+        )
         blockers = [*record["blockers"], *cleanup_blockers]
         if cleanup.get("all_objects_absent") is not True:
             blockers.append("object_store_provider_zero_not_proven")
@@ -647,17 +754,25 @@ def releases_output_on_exit(
 
 
 def recovery_withheld(result: Mapping[str, Any]) -> bool:
-    """A measured refusal whose attempt already ran paid API pretraining.
+    """A measured refusal that capacity recovery must not retry: it keeps its
+    typed blocker, but a retry would repeat paid external work.
 
-    It keeps its typed blocker, but capacity recovery does not retry it, as it
-    does not retry a credit refusal once that preparation has run.
+    That covers API pretraining that already ran, as for a credit refusal, and
+    a CPU prefix unless the sealed record carries its proof of zero external
+    spend; an older or incomplete record counts as spent.
     """
 
     record = measured_admission_record(result)
-    return record is not None and bool(
-        record.get("recovery_withheld")
-        or (record.get("hold_phase") == DEFERRED_HOLD_PHASE
-            and result.get("api_pretraining") is not None)
+    if record is None:
+        return False
+    if record.get("recovery_withheld"):
+        return True
+    if record.get("hold_phase") != DEFERRED_HOLD_PHASE:
+        return False
+    proof = record.get("prefix_spend")
+    return result.get("api_pretraining") is not None or (
+        result.get("cpu_prestage") is not None
+        and not (isinstance(proof, Mapping) and proof.get("status") == PREFIX_SPEND_NONE)
     )
 
 
@@ -759,6 +874,7 @@ __all__ = [
     "SceneConfigurationOutputHoldRefused",
     "configured_output_admission_mode",
     "cpu_prefix_peak_bytes",
+    "cpu_prefix_spend",
     "extraction_requirement",
     "measured_admission_record",
     "open_scene_configuration_output_admission",

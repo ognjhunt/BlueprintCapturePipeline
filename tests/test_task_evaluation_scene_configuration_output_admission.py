@@ -47,6 +47,12 @@ from blueprint_pipeline.task_evaluation_scene_capacity_recovery import (
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import (
+    write_output_archive,
+)
+from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import (
+    INFERENCE_RESERVATION_MANIFEST_SCHEMA_VERSION,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     MAX_ATTEMPT_SPEND_USD,
     MAX_HOURLY_RATE_USD,
@@ -238,20 +244,76 @@ def _write_completed_archive(
                     remaining -= written
 
 
-def _write_prefix_archive(path: Path, receipt: dict) -> None:
-    """What ``cpu_prestage_output.zip`` holds: a sealed completed prefix, not a run."""
+ASTRA_RUNTIME = "stages/stage-3/producer/astra_cad_blender_runtime"
 
-    result = {
-        "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
-        "status": "completed_prefix",
-        "run_id": receipt["run_id"],
-        "source_commit": receipt["source_commit"],
-        "result_digest": "",
+
+def _inference_manifest(run_id: str, *, reservations: int, digest_valid: bool = True) -> dict:
+    manifest = {
+        "schema_version": INFERENCE_RESERVATION_MANIFEST_SCHEMA_VERSION,
+        "run_id": run_id,
+        "reservations": [{"reservation_id": "sha256:" + "4" * 64}] * reservations,
+        "reservation_count": reservations,
+        "in_flight_unknown_count": 0,
+        "reserved_max_cost_usd": 1.25 * reservations,
+        "projected_max_cost_usd_total": 1.25 * reservations,
+        "proof_effect": "none",
     }
-    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(RESULT_NAME, json.dumps(result))
-        archive.writestr("stages/stage-1/adapter/appearance.usdc", b"prefix appearance")
+    manifest["inference_reservation_manifest_digest"] = canonical_digest(
+        manifest, digest_field="inference_reservation_manifest_digest"
+    )
+    if not digest_valid:
+        manifest["reservation_count"] = 0
+    return manifest
+
+
+def _write_prefix_output(job_dir: Path, work: Path, receipt: dict, *, spend: str) -> None:
+    """``cpu_prestage_output.zip`` as the prestage writes it, from its runtime output.
+
+    ``spend`` is what stage 3 recorded against the attempt's external caps:
+    ``none`` (stages 1-2 only), ``openai`` (the content-agents official cost
+    reservation), ``anthropic`` (Astra's inference reservation and audit), or
+    ``unverified_manifest`` (an audit that does not verify). ``missing``,
+    ``corrupt`` and ``incomplete`` leave no archive that can prove anything.
+    """
+
+    archive = job_dir / "cpu_prestage_output.zip"
+    if spend == "missing":
+        return
+    if spend == "corrupt":
+        archive.write_bytes(b"not a zip archive")
+        return
+    output = work / "runtime_output"
+    if spend != "incomplete":
+        result = {
+            "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
+            "status": "completed_prefix",
+            "run_id": receipt["run_id"],
+            "source_commit": receipt["source_commit"],
+            "result_digest": "",
+        }
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        files = {
+            RESULT_NAME: json.dumps(result),
+            "stages/stage-1/adapter/appearance.usdc": "#usda 1.0\n",
+            "stages/stage-2/adapter/collision.usda": "#usda 1.0\n",
+        }
+        if spend == "openai":
+            files["stages/stage-3/producer/released_content_agents_runtime/official_openai_cost/"
+                  "openai_official_cost_run_reservation.v1.json"] = json.dumps(
+                {"schema_version": "openai_official_cost_run_reservation.v1",
+                 "status": "reserved_before_openai_call", "maximum_cost_usd": 3.0})
+        elif spend == "anthropic":
+            files[f"{ASTRA_RUNTIME}/inference/inference_reservations/reserved/{'4' * 64}.json"] = "{}"
+            files[f"{ASTRA_RUNTIME}/inference_audit.json"] = json.dumps(
+                _inference_manifest(receipt["run_id"], reservations=1))
+        elif spend == "unverified_manifest":
+            files[f"{ASTRA_RUNTIME}/inference_audit.json"] = json.dumps(
+                _inference_manifest(receipt["run_id"], reservations=1, digest_valid=False))
+        for relative, text in files.items():
+            path = output / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+    write_output_archive(output, archive)
 
 
 def _harness(
@@ -537,12 +599,14 @@ def _install_prestage(
     monkeypatch: pytest.MonkeyPatch,
     work: Path,
     *,
-    prefix_output: bool = False,
+    prefix_spend: str = "none",
     free_after: int | None = None,
 ) -> dict:
     """A CPU prefix that reserves its real need on the same ledger and volume.
 
-    ``free_after`` is what another writer left free by the time the prefix ended.
+    It leaves ``cpu_prestage_output.zip`` as the real prestage does
+    (``prefix_spend``, see ``_write_prefix_output``); ``free_after`` is what
+    another writer left free by the time the prefix ended.
     """
 
     monkeypatch.setenv(cpu_prestage.WORK_DIR_ENV, str(work))
@@ -559,8 +623,7 @@ def _install_prestage(
             capsule = Path(job_dir) / "cpu_prestage_capsule.zip"
             with zipfile.ZipFile(capsule, "w") as archive:
                 archive.writestr("cpu_prestage_transport.json", "{}")
-            if prefix_output:
-                _write_prefix_archive(Path(job_dir) / "cpu_prestage_output.zip", bundle_receipt)
+            _write_prefix_output(Path(job_dir), work, bundle_receipt, spend=prefix_spend)
         if free_after is not None:
             lane.volume.free = free_after
         return {"capsule_path": str(capsule), "capsule_sha256": _sha256(capsule),
@@ -753,15 +816,8 @@ def test_deferred_hold_refusal_is_typed_and_recoverable_by_role(tmp_path, monkey
     recovery re-checks max(hold, prefix need) through the role's projection.
     """
 
-    lane = _harness(tmp_path, monkeypatch)
-    work = tmp_path / "prestage-work"
-    work.mkdir()
+    lane, result, required = _refused_after_prefix(tmp_path, monkeypatch)
     hold = SMALL_UPLOAD + RESERVE
-    observed = _install_prestage(lane, monkeypatch, work, free_after=FLOOR + hold - 1)
-    required = max(hold, int(observed["need"]))
-    lane.volume.free = FLOOR + required
-
-    result = lane.run(cpu_prestage_stage_limit="stage-2")
 
     assert result["status"] == "blocked"
     assert result["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
@@ -785,7 +841,10 @@ def test_deferred_hold_refusal_is_typed_and_recoverable_by_role(tmp_path, monkey
     assert (record["free_bytes"], record["available_bytes"]) == (FLOOR + hold - 1, hold - 1)
     assert record["projection_before_staging"]["available_bytes"] == required
     assert record["required_available_bytes"] == required
-    assert record.get("recovery_withheld") is None
+    # The prefix's own complete output records no OpenAI or Anthropic reservation.
+    assert record["recovery_withheld"] is None
+    assert record["prefix_spend"]["status"] == "no_external_spend_recorded"
+    assert record["prefix_spend"]["archive_sha256"] == _sha256(lane.job / "cpu_prestage_output.zip")
     assert _ledger_rows(lane.ledger) == []
     # Recoverable like the pre-staging refusal, re-checked by the role's projection.
     assert capacity.preallocation_capacity_failure(result) is True
@@ -797,6 +856,80 @@ def test_deferred_hold_refusal_is_typed_and_recoverable_by_role(tmp_path, monkey
     assert _recheck_by_role(lane, monkeypatch, tmp_path, result, room - 1) == (
         "waiting_for_capacity"
     )
+    # Without that proof in the sealed record, the refusal is not retried.
+    unproven = copy.deepcopy(result)
+    del unproven["provider_output_disk_capacity"]["prefix_spend"]
+    assert capacity.preallocation_capacity_failure(unproven) is False
+
+
+def _refused_after_prefix(tmp_path, monkeypatch, *, prefix_spend: str = "none"):
+    """A run whose CPU prefix completed, after which the volume no longer fits the hold."""
+
+    lane = _harness(tmp_path, monkeypatch)
+    work = tmp_path / "prestage-work"
+    work.mkdir()
+    hold = SMALL_UPLOAD + RESERVE
+    observed = _install_prestage(
+        lane, monkeypatch, work, prefix_spend=prefix_spend, free_after=FLOOR + hold - 1
+    )
+    required = max(hold, int(observed["need"]))
+    lane.volume.free = FLOOR + required
+    return lane, lane.run(cpu_prestage_stage_limit="stage-2"), required
+
+
+@pytest.mark.parametrize("spend", ["openai", "anthropic"])
+def test_deferred_hold_refusal_after_prefix_external_spend_is_withheld(
+    tmp_path, monkeypatch, spend
+) -> None:
+    """Stage-3 authoring in the prefix reserved an external cap; a retry would repeat it."""
+
+    lane, result, _required = _refused_after_prefix(tmp_path, monkeypatch, prefix_spend=spend)
+
+    assert result["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
+    assert result["provider_mutations_performed"] == 0
+    record = result["provider_output_disk_capacity"]
+    assert record["hold"] == "refused" and record["hold_phase"] == "after_cpu_prefix"
+    assert record["recovery_withheld"] == "prefix_external_spend_recorded"
+    assert record["prefix_spend"]["status"] == "prefix_external_spend_recorded"
+    assert record["prefix_spend"]["cap_record_count"] >= 1
+    assert capacity.preallocation_capacity_failure(result) is False
+    assert admission.recorded_preallocation_refusal(
+        result, maximum_archive_bytes=SMALL_UPLOAD, job_dir=lane.job
+    ) is None
+
+
+@pytest.mark.parametrize("prefix", ["missing", "corrupt", "incomplete", "unverified_manifest"])
+def test_deferred_hold_refusal_with_unproven_prefix_spend_is_withheld(
+    tmp_path, monkeypatch, prefix
+) -> None:
+    """A prefix whose records cannot prove zero external spend counts as spent."""
+
+    lane, result, _required = _refused_after_prefix(tmp_path, monkeypatch, prefix_spend=prefix)
+
+    assert result["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
+    record = result["provider_output_disk_capacity"]
+    assert record["recovery_withheld"] == "prefix_spend_unproven"
+    assert record["prefix_spend"]["status"] == "prefix_spend_unproven"
+    assert capacity.preallocation_capacity_failure(result) is False
+    assert admission.recorded_preallocation_refusal(
+        result, maximum_archive_bytes=SMALL_UPLOAD, job_dir=lane.job
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("reservations", "expected"),
+    [(0, "no_external_spend_recorded"), (2, "prefix_external_spend_recorded")],
+)
+def test_an_inference_audit_alone_decides_by_its_reservation_count(
+    tmp_path, reservations, expected
+) -> None:
+    output = tmp_path / "runtime_output"
+    audit = output / ASTRA_RUNTIME / "inference_audit.json"
+    audit.parent.mkdir(parents=True)
+    audit.write_text(json.dumps(_inference_manifest("run", reservations=reservations)))
+    write_output_archive(output, tmp_path / "cpu_prestage_output.zip")
+
+    assert admission.cpu_prefix_spend(tmp_path / "cpu_prestage_output.zip")["status"] == expected
 
 
 def test_deferred_hold_refusal_after_api_pretraining_is_typed_but_withheld(
@@ -881,7 +1014,7 @@ def test_archive_is_published_before_extraction_on_every_outcome(
     if outcome == "cpu_prefix":
         work = tmp_path / "prestage-work"
         work.mkdir()
-        _install_prestage(lane, monkeypatch, work, prefix_output=True)
+        _install_prestage(lane, monkeypatch, work)
         lane.behaviour["output"] = "dead"
         expected_name = "cpu_prestage_output.zip"
     elif outcome == "corrupt":
