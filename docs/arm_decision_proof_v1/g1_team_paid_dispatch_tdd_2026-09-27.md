@@ -463,3 +463,29 @@ Fresh host observation still shows 10,905,767,936 work-volume bytes available;
 the newest GC pass ended MainPID 0/exit 0 without increasing that capacity.
 Plan 11a is merged, but full Plan 11 remains unfinished; respect the owner's
 streaming prerequisite. No GPU allocation or hand data deletion this increment.
+
+## Exact-head CI admission registration repair review
+
+Terminal CI 36368890200 also identifies two owned omissions: the selected paid
+controller calls the canonical admission builder/issuer but is not recorded in
+the immutable surface manifest and verifier sets, and six inline CLI arguments
+plus the branch raise the allocator above its existing source budget. Register
+only this reviewed selected controller in both sets and the manifest. Move its
+CLI argument definitions and exact release-check/exit wrapper into the selected
+controller module, preserving all current authority, endpoint, disk, grant,
+watchdog and one-attempt checks. Do not raise the allocator budget or change
+unrelated listener governance. Red-first checks pin the registered surface and
+existing allocator line budget; replay the actual canonical CLI and verifier.
+No broad suite rerun is needed for this recorded dependency-boundary repair.
+
+Repair verification: registration and allocator-budget tests failed first at
+the absent selected issuer and `7459 > 7453`. After the narrow extraction and
+manifest update, 60 focused verifier/budget/actual selected CLI/reachability
+cases passed together. The canonical `verify_paid_resource_allocator.py`
+finished with `paid_resource_allocator_verification=passed`. Allocator is now
+7448 lines under its unchanged 7453-line budget; selected CLI behavior stays in
+the reviewed controller. Changed-file Ruff and whitespace checks passed.
+Remaining full-suite failures include unchanged listener size, materializer,
+quality-ledger, cold-import, supervisor and verdict-cache boundaries owned by
+issue #2236; the isolated immutable cache case passed locally. Exact previous
+head run is terminal/red, not a pending or green promotion gate.

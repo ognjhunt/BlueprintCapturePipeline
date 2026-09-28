@@ -48,6 +48,23 @@ PROVIDER_OUTPUT_FORECAST_BYTES = 10_000_000_000
 COLLECTION_FORECAST_BYTES = PROVIDER_INPUT_FORECAST_BYTES + 2 * PROVIDER_OUTPUT_FORECAST_BYTES
 
 
+def add_g1_team_policy_allocator_arguments(parser: Any) -> None:
+    for name in ("bundle-receipt", "intent", "registry", "approval", "credential-registry"):
+        parser.add_argument("--g1-team-" + name)
+    parser.add_argument("--g1-team-trusted-client", action="append", default=[])
+
+
+def dispatch_g1_team_policy_allocator_cli(args: Any, *, control_recheck: Callable) -> int:
+    blockers, identity = control_recheck()
+    result = dispatch_g1_team_paid_policy(
+        args, control_identity=identity, control_blockers=blockers,
+        control_recheck=control_recheck,
+    )
+    success = result.get("status") in {"dry_run_ready", "completed"}
+    print(json.dumps({"success": success}, sort_keys=True))
+    return 0 if success else 2
+
+
 def _verify_output(result: dict[str, Any], bundle: dict[str, Any], *, job: Path) -> dict[str, Any]:
     """Reopen immutable selected inputs and actual native episode media."""
     archive_path = Path(bundle["bundle_path"])
