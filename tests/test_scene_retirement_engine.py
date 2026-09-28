@@ -76,3 +76,36 @@ def test_installed_transport_binds_the_one_native_allowance_before_any_action_wo
     result=retire_scene(plan,consent,transport=transport,now=lambda:100,monotonic=lambda:0)
     assert result['status']=='kept' and member.exists()
     assert len(transport.allowances)==1
+
+
+def test_consent_targets_include_exact_coalesced_children_without_a_second_owner_or_clearance(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_retirement import _plan_members
+    root=str(tmp_path.resolve()/'member')
+    plan={'action':'KEEP','cleanup_authorized':False,'measured_members':[
+        {'path':root,'status':'observed_scoped_metadata','keeps':[]},
+        {'path':root+'/nested','status':'coalesced_descendant_member','attributed_root':root}]}
+    consent={'members':[{'canonical_path':root,'class':'host'}],'private_archive_classes':[]}
+    _plan_members(plan,consent)
+    assert plan['action']=='KEEP' and plan['cleanup_authorized'] is False
+    plan['measured_members'][1]['attributed_root']=str(tmp_path.resolve()/'foreign')
+    with pytest.raises(ValueError):
+        _plan_members(plan,consent)
+
+
+def test_independent_sam_owner_consent_can_supply_retention_policy_without_erasing_other_keeps(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_retirement import _plan_members
+    root=str(tmp_path.resolve()/'sam-owner-member')
+    row={'path':root,'status':'observed_scoped_metadata','storage_class':'evidence',
+         'keeps':['sam_evidence_retention_policy_required']}
+    plan={'action':'KEEP','cleanup_authorized':False,'measured_members':[row]}
+    consent={'members':[{'canonical_path':root,'class':'evidence','owner_intent_id':'original-owner'}],
+             'private_archive_classes':['evidence']}
+    _plan_members(plan,consent)
+    assert row['keeps']==['sam_evidence_retention_policy_required'] and plan['action']=='KEEP'
+    consent['private_archive_classes']=[]
+    with pytest.raises(ValueError):
+        _plan_members(plan,consent)
+    consent['private_archive_classes']=['evidence']
+    row['keeps'].append('external_hardlink_or_unobserved_alias')
+    with pytest.raises(ValueError):
+        _plan_members(plan,consent)
