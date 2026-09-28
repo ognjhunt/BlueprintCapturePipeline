@@ -383,6 +383,35 @@ def test_offload_keeps_the_directory_when_publication_or_verification_fails(
     assert directory.is_dir()
 
 
+@pytest.mark.parametrize("uri", [None, 42, ["s3://bucket/key"]])
+def test_offload_refuses_to_evict_behind_a_reference_without_a_string_uri(tmp_path: Path, uri) -> None:
+    """The pointer's URI is the only way back to the archive. A publisher whose reference checks out
+    in every other way but has no string URI is refused like any other mismatch: no pointer is
+    written and nothing is evicted."""
+
+    root = tmp_path / "canaries"
+    root.mkdir()
+    now = 3_000_000.0
+    directory = _run(root, "run-1", receipt="dispatch_receipt.json", age=30 * 86400, now=now)
+    before = {path.relative_to(directory).as_posix(): path.read_bytes()
+              for path in directory.rglob("*") if path.is_file()}
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=0, now=lambda: now, classifier=_unclassified)
+    honest = functools.partial(store.publish_configured_scene_artifact, client=_ContentAddressedClient(), bucket=BUCKET)
+
+    def without_uri(**kwargs):
+        return {**honest(**kwargs), "uri": uri}
+
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=without_uri, now=lambda: now)
+
+    assert result["offloaded_count"] == 0
+    assert result["skipped"] == [{"name": "run-1", "reason": "offload_failed:ControlPlaneEvidenceOffloadError"}]
+    assert {path.relative_to(directory).as_posix(): path.read_bytes()
+            for path in directory.rglob("*") if path.is_file()} == before
+    assert not (root / f"run-1{POINTER_SUFFIX}").exists()
+    assert not list(root.glob(".run-1.offload-*"))
+
+
 def test_unsealed_directory_idle_past_the_abandonment_window_is_sealed_as_abandoned(
     tmp_path: Path,
 ) -> None:
