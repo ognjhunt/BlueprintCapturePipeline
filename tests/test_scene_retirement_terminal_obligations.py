@@ -49,7 +49,8 @@ def fixture(tmp_path):
     intent=json.loads(intent_raw)
     canonical=ReferenceFact(sources['envelope'],'scene_intent_digest','selector_only','declared_document_selector',
         'canonical_document_seal',intent['intent_digest'])
-    protections=[{'kind':kind,'observation':asdict(fact),'action':'KEEP'} for kind,fact in (
+    import json
+    protections=[{'kind':kind,'observation':json.loads(json.dumps(asdict(fact))),'action':'KEEP'} for kind,fact in (
         ('local_path_protections',local),('remote_raw_references',remote_fact),
         ('canonical_document_selector_obligations',canonical))]
     fresh={'selected_intent_provenance':{'role':'intent','path':intent_path,

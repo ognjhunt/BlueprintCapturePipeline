@@ -365,7 +365,7 @@ def _selected_sam(protection,selected,fresh,allowance,bound,progress):
     return result
 
 
-def validate_current_reference_transfer(fresh,allowance):
+def validate_current_reference_transfer(fresh,allowance,*,preserved=None):
     observation=fresh.get('reference_observation')
     _require(type(observation) is dict,'scene_retirement_reference_scope_unproven')
     scopes=_rows(observation.get('child_scopes'))
@@ -385,6 +385,8 @@ def validate_current_reference_transfer(fresh,allowance):
         emitted+=1024+sum(len(current['source'][key].encode('utf-8')) for key in ('row_path','queue_root'))
         _require(emitted<=1024*1024,'scene_retirement_reference_limit')
         records.append(current)
+    from .task_evaluation_scene_retirement_reference_proofs import TerminalProofs
+    facts=TerminalProofs(fresh,selected,records,allowance,preserved)
     released=0
     auxiliaries=[]
     for protection in _rows(observation.get('protections')):
@@ -395,6 +397,10 @@ def validate_current_reference_transfer(fresh,allowance):
             emitted+=1024+len(current['source']['row_path'].encode('utf-8'))
             _require(emitted<=1024*1024,'scene_retirement_reference_limit')
             auxiliaries.append(current)
+            continue
+        if protection.get('kind') in {'local_path_protections','remote_raw_references',
+            'raw_digest_selector_obligations','canonical_document_selector_obligations'}:
+            facts.transfer(protection)
             continue
         # Released observations carry retained evidence but protect no live
         # consumer. Every positive/dependent/unreleased/unknown fact still keeps.
@@ -407,5 +413,6 @@ def validate_current_reference_transfer(fresh,allowance):
     return dict(scope='selected_closed_metadata_transfer_only',
         transferred_records=records,transferred_record_count=len(records),
         transferred_auxiliary_records=auxiliaries,
-        retained_released_pin_count=released,references_clear=False,consumer_fence_checked=False,
+        retained_released_pin_count=released,transferred_obligations=facts.transferred,
+        archive_inventory_verified=facts.has_inventory,covered_reference_keeps=facts.covered_keeps(),references_clear=False,consumer_fence_checked=False,
         mutations=0,unknown_scopes_cleared=False)
