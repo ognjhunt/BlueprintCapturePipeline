@@ -30,16 +30,58 @@ ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
        "LANG": "C", "DEBIAN_FRONTEND": "noninteractive"}
 
 
+def validate_cpu_guest_context(value):
+    if (value.get("system") != "Linux" or value.get("architecture") != "x86_64"
+            or value.get("kernel") != KERNEL or value.get("uid") != 0):
+        raise ValueError("g1_vm_system_install_guest_context_invalid")
+    interfaces = value.get("interfaces")
+    if interfaces not in (["lo"], ["docker0", "lo"]):
+        raise ValueError("g1_vm_system_install_guest_network_invalid")
+    if "docker0" in interfaces and value.get("docker_bridge") != {
+            "is_bridge": True, "hardware_device": False, "carrier": "0", "operstate": "down"}:
+        raise ValueError("g1_vm_system_install_guest_network_invalid")
+    routes = value.get("routes")
+    if not isinstance(routes, list) or any(
+            not isinstance(row, dict) or row.get("dst") != "172.17.0.0/16"
+            or row.get("dev") != "docker0" or "docker0" not in interfaces
+            or "linkdown" not in row.get("flags", []) for row in routes):
+        raise ValueError("g1_vm_system_install_guest_routes_invalid")
+    if not any(row.get("device") == "/dev/vdb" and row.get("target") == "/run/blueprint-cpu-seed"
+               and row.get("filesystem") == "iso9660"
+               and {"ro", "nodev", "nosuid", "noexec"} <= set(row.get("flags", []))
+               for row in value.get("seed_mounts", [])):
+        raise ValueError("g1_vm_system_install_guest_seed_mount_invalid")
+
+
 def require_cpu_guest():
-    """Reject ordinary hosts before any package manager or runtime mutation."""
-    if (platform.system() != "Linux" or platform.machine() != "x86_64"
-            or platform.release() != KERNEL or os.geteuid() != 0
-            or {p.name for p in Path("/sys/class/net").iterdir()} != {"lo"}):
-        raise ValueError("g1_vm_system_install_guest_context_invalid")
-    mounts = [line.split() for line in Path("/proc/mounts").read_text().splitlines()]
-    if not any(len(row) >= 4 and row[:3] == ["/dev/vdb", "/run/blueprint-cpu-seed", "iso9660"]
-               and {"ro", "nodev", "nosuid", "noexec"} <= set(row[3].split(",")) for row in mounts):
-        raise ValueError("g1_vm_system_install_guest_context_invalid")
+    """Observe the exact offline guest; a disconnected Docker bridge is internal."""
+    value = {"system": platform.system(), "architecture": platform.machine(),
+             "kernel": platform.release(), "uid": os.geteuid()}
+    try:
+        if value != {"system": "Linux", "architecture": "x86_64", "kernel": KERNEL, "uid": 0}:
+            raise ValueError("g1_vm_system_install_guest_context_invalid")
+        value["interfaces"] = sorted(p.name for p in Path("/sys/class/net").iterdir())
+        value["docker_bridge"] = None
+        if "docker0" in value["interfaces"]:
+            bridge = Path("/sys/class/net/docker0")
+            value["docker_bridge"] = {"is_bridge": (bridge / "bridge").is_dir(),
+                                      "hardware_device": (bridge / "device").exists(),
+                                      "carrier": (bridge / "carrier").read_text().strip(),
+                                      "operstate": (bridge / "operstate").read_text().strip()}
+        child = subprocess.run(["ip", "-j", "route"], capture_output=True, text=True,
+                               timeout=10, check=True, env=ENV)
+        if len(child.stdout) > 65536:
+            raise ValueError("g1_vm_system_install_guest_routes_invalid")
+        value["routes"] = json.loads(child.stdout)
+        mounts = [line.split() for line in Path("/proc/mounts").read_text().splitlines()]
+        value["seed_mounts"] = [{"device": row[0], "target": row[1], "filesystem": row[2],
+                                 "flags": row[3].split(",")} for row in mounts
+                                if len(row) >= 4 and row[1] == "/run/blueprint-cpu-seed"]
+        validate_cpu_guest_context(value)
+        return value
+    except Exception as error:
+        error.guest_context = value
+        raise
 
 
 def validate_namespace_observation(text):
@@ -87,7 +129,7 @@ def rehearse_offline_installation(root, *, implementation_commit, system_helpers
         return observed["stdout"]
 
     try:
-        require_cpu_guest()
+        result["guest_context"] = require_cpu_guest()
         result["stage"] = "package_verification"
         argv = system_helpers["offline_apt_simulation_command"](
             root, expected_implementation_commit=implementation_commit)
@@ -122,6 +164,8 @@ def rehearse_offline_installation(root, *, implementation_commit, system_helpers
             raise ValueError("g1_vm_system_install_docker_runtime_invalid")
         result["status"] = "cpu_installation_observed"
     except Exception as error:
+        if isinstance(getattr(error, "guest_context", None), dict):
+            result["guest_context"] = error.guest_context
         code = str(error)
         result["blocker_code"] = code if re.fullmatch(r"g1_vm_system_[a-z_]+", code) else "g1_vm_system_install_probe_failed"
         result["error_type"] = type(error).__name__

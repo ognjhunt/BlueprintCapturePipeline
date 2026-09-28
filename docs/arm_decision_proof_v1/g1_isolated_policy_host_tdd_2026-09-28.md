@@ -1312,3 +1312,28 @@ against the retained base without packaging another389MB seed or rerunning
 APT. Keep the installation context guard unchanged until actual fields name
 the cause. Test those exact read-only argv in the emitted guest source; no
 provider/GPU/namespace/installation claim or retained data deletion.
+
+The small d4db inspection is terminal, exit0: native ip JSON observes only lo
+and docker0; docker0 is DOWN/NO-CARRIER, with one linkdown172.17.0.0/16
+Docker subnet route and no default route. The parent command independently
+binds -nic none. Thus the guard's loopback-only predicate rejects Docker's
+already installed software bridge, not an observed external NIC.
+
+Reviewed focused context repair: admit only lo or lo plus this disconnected
+Docker bridge. Independently require its sysfs bridge directory, absence of
+hardware device, carrier0 and down operational state; refuse any foreign
+interface, default/foreign route, connected bridge or missing metadata. Keep
+Linux/x86_64/root/exact kernel and exact readonly/noexec seed mount predicates.
+Retain the bounded observed context on both success and refusal and name the
+failing predicate. Test the complete observed Docker case and each foreign/
+connected/route/mount variant before mutation. Reuse the full unchanged25
+assets for the same installation objective; do not rerun the resolver.
+
+Owner stop checkpoint2026-09-28: the goal is explicitly paused, heartbeat
+deleted and paid controller stopped through its normal teardown. The existing
+context fix is completed for merge only: all10 new cases were red before
+implementation; all82 focused installation/CPU/package tests now pass6.42s,
+Ruff/diff pass. The real installation remains unqualified and no further CPU
+or GPU attempt will start. Paired paid dispatch remains refused, public
+publication remains unapproved, and retaining/merging this code does not
+claim completion of the original embodiment/policy goal.

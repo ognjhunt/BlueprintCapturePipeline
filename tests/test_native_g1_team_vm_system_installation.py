@@ -114,3 +114,37 @@ def test_namespace_claim_is_independently_rejected(fault):
         observed["extra"] = True
     with pytest.raises(ValueError, match="namespace"):
         installation.validate_namespace_observation(json.dumps(observed))
+
+
+@pytest.mark.parametrize("fault", [None, "lo_only", "nic", "bridge", "hardware", "carrier", "up", "route", "default", "mount"])
+def test_only_observed_disconnected_docker_bridge_is_admitted(fault):
+    installation = load()
+    context = {"system": "Linux", "architecture": "x86_64", "kernel": installation.KERNEL, "uid": 0,
+               "interfaces": ["docker0", "lo"],
+               "docker_bridge": {"is_bridge": True, "hardware_device": False, "carrier": "0", "operstate": "down"},
+               "routes": [{"dst": "172.17.0.0/16", "dev": "docker0", "flags": ["linkdown"]}],
+               "seed_mounts": [{"device": "/dev/vdb", "target": "/run/blueprint-cpu-seed", "filesystem": "iso9660",
+                                "flags": ["ro", "nodev", "nosuid", "noexec"]}]}
+    if fault == "lo_only":
+        context.update(interfaces=["lo"], docker_bridge=None, routes=[])
+    elif fault == "nic":
+        context["interfaces"].append("eth0")
+    elif fault == "bridge":
+        context["docker_bridge"]["is_bridge"] = False
+    elif fault == "hardware":
+        context["docker_bridge"]["hardware_device"] = True
+    elif fault == "carrier":
+        context["docker_bridge"]["carrier"] = "1"
+    elif fault == "up":
+        context["docker_bridge"]["operstate"] = "up"
+    elif fault == "route":
+        context["routes"][0]["dst"] = "10.0.0.0/8"
+    elif fault == "default":
+        context["routes"].append({"dst": "default", "dev": "docker0"})
+    elif fault == "mount":
+        context["seed_mounts"][0]["flags"] = ["rw"]
+    if fault in (None, "lo_only"):
+        installation.validate_cpu_guest_context(context)
+    else:
+        with pytest.raises(ValueError, match="g1_vm_system_install_guest"):
+            installation.validate_cpu_guest_context(context)
