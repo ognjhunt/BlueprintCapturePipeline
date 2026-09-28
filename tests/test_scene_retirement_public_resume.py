@@ -17,7 +17,7 @@ from tests.test_scene_retirement_intent_receipt import operation,raw_ref
 def pending_action(tmp_path,monkeypatch,*,after_generation=False):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
     policy,scope,_,_,_,_,transport=operation(tmp_path,monkeypatch,member_count=2,with_transport=True)
-    policy['principals']=[dict(principal_id='operator',actions=['retire'],owner_intent_ids=[scope['intent_id']],private_archive_classes=['host'])]
+    policy['principals']=[dict(principal_id='operator',actions=['retire','restore'],owner_intent_ids=[scope['intent_id']],private_archive_classes=['host'])]
     policy['private_archive_allowed_classes']=['host']
     policy['limits']={'elapsed_seconds':20}
     policy['policy_digest']=canonical_digest(policy,digest_field='policy_digest')
