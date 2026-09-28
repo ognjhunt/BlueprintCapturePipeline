@@ -379,7 +379,7 @@ def test_report_only_lane_phase_never_changes_existing_reclaim_outlook(lane_comp
            "content_store": {"status": "applied", "candidate_bytes": 20, "removed_bytes": 10,
                              "retained_by_reason": {"protected_pin": {"count": 1, "bytes": 5}}}}
     baseline = cap._reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked")
-    assert baseline[0]["reclaimable_bytes"] == 20
+    assert baseline[0]["reclaimable_bytes"] == 10  # 20 planned minus 10 already removed.
     raw["lane_scratch"] = {"status": "report_only", "complete": lane_complete, "candidate_bytes": None,
                            "removed_bytes": 0, "retained_by_reason": {"references_unknown": {"count": 1, "bytes": None}}}
     raw["opt_in"] = {"lane_scratch": True}
