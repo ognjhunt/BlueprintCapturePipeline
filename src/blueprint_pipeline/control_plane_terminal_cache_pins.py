@@ -1,137 +1,370 @@
-"""Release obsolete cache pins from verified archived-run evidence.
+"""Release storage pins once evidence proves they protect nothing.
 
 The collector previously retained already-archived runs for the pin's full
 30-day TTL. This reconciliation changes only the cache ledger; the normal
 collector separately rechecks references and removes reproducible directories.
+
+Two original proofs always apply to an activation pin: every run it owns that
+exists is archived behind a verified pointer (``archived_run``) or sealed cold
+without a result registry (``sealed_cold_run``). The extended proofs
+(``sealed_registry_run``, ``activation_expired_unlaunched`` for
+profile-authority activations, and ``unconsumed_stale_pin``) live in the
+read-only ``control_plane_pin_proofs``, which says what each requires. They are
+evaluated on every tick but release a pin only with the owner's opt-in,
+``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``; until then their
+candidates are listed with ``"enabled": false``.
+
+Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
+is released only when no queue row or process references any pin in it), and
+a re-derivation at the mutation edge. A dependency a release takes with it is
+covered by its parent's closure checks and by the ledger's ``_still_needed``
+(no other live pin depends on it), not by a proof of its own: the original
+proofs have always released an activation's preparation and compilation that
+way, and a preparation's lifecycle ends with the activation that consumed it.
+
+The extended proofs read queues strictly: they also count a row parked in a
+queue state that will still run, and a row they cannot read keeps their
+candidates as ``queue_unreadable``, where the original proofs skip it as they
+always did. At their mutation edge the queues, the proof and the processes are
+read again outside the pin lock, which blocks every producer; under the lock
+only the ledger is re-read before the release.
+
+The report names every live pin: a candidate with its ``proof``, or a ``kept``
+row with a typed reason.
 """
 from __future__ import annotations
 
-import json
+import os
+from collections import Counter
 from pathlib import Path
 
-from .control_plane_storage_pins import load_storage_pins, release_storage_pin
+from .control_plane_pin_proofs import (
+    MINIMUM_PIN_AGE_SECONDS, _evidence_names, _pin_path_allowed, _present, _read, extended_proof,
+    launch_queue_snapshot, preparation_envelope_snapshot,
+)
+from .control_plane_storage_pins import depends_on, load_storage_pins, release_storage_pin, storage_pin_guard
+from .control_plane_storage_references import QueueReferenceUnreadable, queue_reference_text
 from .decision_evidence_contracts import canonical_digest
-from .completed_replay_cache_retention import active_reference
+from . import completed_replay_cache_retention as retention
 from .control_plane_evidence_offload import (
     DEFAULT_HOT_WINDOW_SECONDS, POINTER_SUFFIX, _has_result_registry, _terminal_receipt, _tree_snapshot,
 )
+from .control_plane_replay_cache_gc import _truthy_setting
 from .control_plane_storage_roots import require_storage_class
 
-# A pin may name the reproducible activation inputs (cache or work class) or the
-# retained run directory itself (evidence_cold). Releasing a pin removes no
-# bytes, so any of these is acceptable; hot evidence and state never are.
-_PIN_PATH_CLASSES = ("cache", "work", "evidence_cold")
-
-def _read(path):
-    if (not path.is_file() or any(p.is_symlink() for p in (path, *path.parents))
-            or path.stat().st_size > 16 * 1024**2):
-        return None
-    try:
-        value = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
+EXTENDED_PIN_PROOFS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS"
+EXTENDED_PIN_PROOFS_INVALID = "extended_pin_proofs_setting_invalid"
+#: Report rows per list; production holds about 142 live pins. Counts always cover every pin.
+_MAX_ROWS = 200
 
 
-def _pin_path_allowed(classifier, path):
-    last = None
-    for expected in _PIN_PATH_CLASSES:
-        try:
-            classifier(str(path), expected=expected, code="terminal_cache_pin_path_class_invalid")
-            return
-        except ValueError as exc:
-            last = exc
-    raise last
+def extended_pin_proofs_setting(environ=os.environ):
+    """Whether the extended proofs may release pins, and an alert when the setting is invalid.
+
+    Its own opt-in, parsed exactly like the storage GC's others: an invalid value
+    only lists candidates and alerts, and it never follows another opt-in.
+    """
+
+    return _truthy_setting(environ, EXTENDED_PIN_PROOFS_ENV, EXTENDED_PIN_PROOFS_INVALID)
 
 
 def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, now=None):
-    """Proof that the run this activation pin protects no longer needs the pin.
+    """Proof that the runs this activation pin protects no longer need the pin.
 
-    Either the run has been archived behind a verified pointer, or the run
-    directory itself is sealed by a terminal receipt, idle past the hot window,
-    and carries no result registry. The second case exists because the
+    Every name the activation owns that exists, in every evidence root, must be
+    closed: archived behind a verified pointer, or its run directory sealed by a
+    terminal receipt, idle past the hot window, and carrying no result registry.
+    The proof is the first closed name's. The second case exists because the
     collector will not offload a pinned run and used to release the pin only
     after offload: a launch that ended blocked or cancelled without releasing
-    its own pin kept its evidence on disk indefinitely.
+    its own pin kept its evidence on disk indefinitely. Until 10c this stopped at
+    the first closed name, so a website activation's sealed own directory could
+    release the pin while its ``<id>-launch`` run was still going.
     """
 
     owner, kind = pin["owner_id"], pin["kind"]
     if kind != "activation":
         return None
-    evidence_names = (owner, owner + "-launch") if owner.endswith("-activation-auto") else (owner,)
+    proof = None
     for root in evidence_roots:
         root = Path(root)
-        for evidence_name in evidence_names:
+        for evidence_name in _evidence_names(owner):
             directory = root / evidence_name
-            if (now is not None and directory.is_dir() and not directory.is_symlink()
-                    and not (root / (evidence_name + POINTER_SUFFIX)).exists()):
-                receipt = _terminal_receipt(directory)
-                if receipt is None or _has_result_registry(directory):
-                    continue
-                latest, size, count = _tree_snapshot(directory)
-                if now - latest < hot_window_seconds:
-                    continue
-                return {"kind": "sealed_cold_run", "path": str(directory), "terminal_receipt": receipt,
-                        "latest_mtime_epoch": latest, "size_bytes": size, "file_count": count}
-            path = root / (evidence_name + ".offloaded.v1.json")
-            value = _read(path)
-            if (value is None or directory.exists()
-                    or value.get("schema_version") != "control_plane_evidence_offload_pointer.v1"
-                    or value.get("pointer_digest") != canonical_digest(value, digest_field="pointer_digest")
-                    or value.get("status") != "offloaded" or value.get("directory") != evidence_name
-                    or value.get("evidence_deleted") is not False
-                    or not str(value.get("uri", "")).startswith("s3://blueprint-task-evaluation-artifacts-prod/")
-                    or value.get("terminal_receipt") not in {"dispatch_receipt.json", "launch_receipt.json", "abandoned_idle"}
-                    or type(value.get("size_bytes")) is not int or value["size_bytes"] <= 0):
+            pointer = root / (evidence_name + POINTER_SUFFIX)
+            present = (_present(directory), _present(pointer))
+            if present == (False, False):
                 continue
-            return {"kind": "archived_run", "path": str(path), "pointer_digest": value["pointer_digest"],
-                    "terminal_receipt": value["terminal_receipt"], "archive_digest": value["digest"]}
+            found = None if None in present else (
+                _sealed_cold_run(directory, pointer, hot_window_seconds=hot_window_seconds, now=now)
+                or _archived_run(evidence_name, directory, pointer))
+            if found is None:
+                return None
+            proof = proof or found
+    return proof
+
+
+def _sealed_cold_run(directory, pointer, *, hot_window_seconds, now):
+    if now is None or not directory.is_dir() or directory.is_symlink() or pointer.exists():
+        return None
+    receipt = _terminal_receipt(directory)
+    if receipt is None or _has_result_registry(directory):
+        return None
+    latest, size, count = _tree_snapshot(directory)
+    if now - latest < hot_window_seconds:
+        return None
+    return {"kind": "sealed_cold_run", "path": str(directory), "terminal_receipt": receipt,
+            "latest_mtime_epoch": latest, "size_bytes": size, "file_count": count}
+
+
+def _archived_run(evidence_name, directory, pointer):
+    value = _read(pointer)
+    if (value is None or directory.exists()
+            or value.get("schema_version") != "control_plane_evidence_offload_pointer.v1"
+            or value.get("pointer_digest") != canonical_digest(value, digest_field="pointer_digest")
+            or value.get("status") != "offloaded" or value.get("directory") != evidence_name
+            or value.get("evidence_deleted") is not False
+            or not str(value.get("uri", "")).startswith("s3://blueprint-task-evaluation-artifacts-prod/")
+            or value.get("terminal_receipt") not in {"dispatch_receipt.json", "launch_receipt.json", "abandoned_idle"}
+            or type(value.get("size_bytes")) is not int or value["size_bytes"] <= 0):
+        return None
+    return {"kind": "archived_run", "path": str(pointer), "pointer_digest": value["pointer_digest"],
+            "terminal_receipt": value["terminal_receipt"], "archive_digest": value["digest"]}
+
+
+def _derive(pin, live_pins, context):
+    """``extended_proof`` and the type of any error it raised: one unreadable pin never costs the tick."""
+
+    try:
+        return (*extended_proof(pin, live_pins, **context), None)
+    except Exception as exc:  # noqa: BLE001 - the report keeps the type, never a message with a path
+        return None, "proof_error", type(exc).__name__
+
+
+def _live_queue_text(queue_roots):
+    """Every queue row that will still run, read strictly: ``(text, None)``, or ``(None, "queue_unreadable")``.
+
+    Pending and processing rows of every root, and the rows a queue parks in a
+    state that will still run (``LIVE_QUEUE_STATES``: a preparation awaiting its
+    source or capacity), each read twice so a row moving between states mid-read
+    is seen. Only the extended proofs read this way; a row that cannot be read
+    keeps their candidates and nothing else.
+    """
+
+    from .control_plane_release_leases import LIVE_QUEUE_STATES
+
+    try:
+        return "\n".join(queue_reference_text(queue_roots, states=LIVE_QUEUE_STATES, strict=True)
+                         for _read_pass in range(2)), None
+    except QueueReferenceUnreadable:
+        return None, "queue_unreadable"
+
+
+def _live_pins(pins_root, now):
+    return {(p["kind"], p["owner_id"]): p for p in load_storage_pins(pins_root, now=lambda: now) if p["status"] == "live"}
+
+
+def _closure(identity, pins):
+    """The pin and every live pin it depends on, transitively: what releasing it can release."""
+
+    closure, pending = {}, [identity]
+    while pending:
+        key = pending.pop()
+        if key in closure or key not in pins:
+            continue
+        closure[key] = pins[key]
+        pending.extend((d["kind"], d["owner_id"]) for d in pins[key].get("depends_on", []))
+    return closure
+
+
+def _partial_release(pins_root, now, identity, closure, error_type):
+    """What the ledger holds after this tick's release raised: a partial release receipt when it recorded the pin.
+
+    ``release_storage_pin`` writes the pin's release and then walks its
+    dependencies, so it can fail having recorded the pin. Only a release stamped
+    with this tick's own time is this tick's: one another worker recorded
+    meanwhile is not. The receipt lists every pin of the closure so stamped;
+    otherwise the answer is {}.
+    """
+
+    try:
+        stamped = {(p["kind"], p["owner_id"]) for p in load_storage_pins(pins_root, now=lambda: now)
+                   if p.get("released_at_epoch") == now}
+    except Exception:  # noqa: BLE001 - a ledger that cannot be read is reported as the failure it is
+        return {}
+    if identity not in stamped:
+        return {}
+    return {"schema_version": "control_plane_storage_pin_release.v1", "kind": identity[0], "owner_id": identity[1],
+            "status": "release_partial", "error_type": error_type,
+            "released": [{"kind": key[0], "owner_id": key[1]} for key in closure if key in stamped]}
+
+
+def _process_checker(reference_checker):
+    """``reference_checker`` as given, or one sweep of the process table, taken when first asked and reused.
+
+    A pass checks every path of every candidate's closure; one sweep answers for
+    all of them as a sweep per path would (``process_reference_index``).
+    """
+
+    if reference_checker is not None:
+        return reference_checker
+    swept = []
+
+    def checker(path):
+        if not swept:
+            swept.append(retention.process_reference_index())
+        return swept[0](path)
+
+    return checker
+
+
+def _referenced(closure, queue_text, reference_checker):
+    return any(p["owner_id"] in queue_text or any(reference_checker(Path(path)) for path in p["paths"])
+               for p in closure.values())
+
+
+def _closure_reason(identity, closure, pins, queue_text, reference_checker):
+    """Why the closure keeps the pin: a queue row or process references it, or another pin depends on it."""
+
+    if _referenced(closure, queue_text, reference_checker):
+        return "active_reference"
+    if any(depends_on(other, *identity) for key, other in pins.items() if key not in closure):
+        return "depended_on"
     return None
 
 
 def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now, apply=False,
-                                  reference_checker=active_reference, classifier=require_storage_class,
-                                  hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS):
-    from .control_plane_storage_gc import _queue_reference_text
+                                  reference_checker=None, classifier=require_storage_class,
+                                  hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, extended_proofs_enabled=False,
+                                  activation_queue_root=None, preparation_queue_root=None, running_commit="",
+                                  launch_queue_root=None, standing_authorization_dir=None):
+    """Plan, and with ``apply`` release, every live pin a proof closes.
+
+    ``enabled`` is the extended proofs' opt-in; the original proofs always apply.
+    ``activation_queue_root`` is where the activation worker seals its results
+    (``activation_queue_root_of(queue_roots)``); without it an unlaunched activation is kept.
+    ``preparation_queue_root`` (``preparation_queue_root_of(queue_roots)``) and the
+    ``running_commit`` tell whether an activation can still take a preparation;
+    without them a stale preparation or compilation is kept. ``launch_queue_root``
+    (``launch_queue_root_of(queue_roots)``) and ``standing_authorization_dir``, where
+    launch admission records consumed authorizations, hold the evidence of a launch
+    under any id; without them an unlaunched activation is kept.
+    ``reference_checker`` answers whether a process still reads a path; by
+    default planning sweeps the process table once, and each release sweeps it
+    again. The launch queue and the preparation envelopes are read once for
+    planning and once for the releases.
+    Each candidate carries its ``proof`` and whether it is ``enabled``, each kept
+    pin a typed ``reason`` (and ``error_type`` for ``proof_error``), and
+    ``released_count_by_kind`` counts every pin a release receipt lists, its
+    dependencies included. Nothing here removes a byte.
+    """
+
     pins_root = Path(pins_root)
     for root in evidence_roots:
         classifier(str(root), expected="evidence_cold", code="terminal_cache_pin_evidence_root_invalid")
-    pins = {(p["kind"], p["owner_id"]): p for p in load_storage_pins(pins_root, now=lambda: now) if p["status"] == "live"}
-    queue_text = _queue_reference_text(queue_roots)
+    pins = _live_pins(pins_root, now)
+    queue_text = queue_reference_text(queue_roots)
+    live_queue_text, queue_unreadable = _live_queue_text(queue_roots)
+    planning_checker = _process_checker(reference_checker)
+    context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
+               "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root,
+               "preparation_queue_root": preparation_queue_root, "running_commit": running_commit,
+               "launch_queue_root": launch_queue_root, "standing_authorization_dir": standing_authorization_dir,
+               "launch_queue": launch_queue_snapshot(launch_queue_root),
+               "preparation_envelopes": preparation_envelope_snapshot(preparation_queue_root)}
+    # The releases re-derive their proofs against the launch queue and the preparation
+    # envelopes read again, once each, after planning.
+    edge_context = {**context, "launch_queue": launch_queue_snapshot(launch_queue_root),
+                    "preparation_envelopes": preparation_envelope_snapshot(preparation_queue_root)}
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
+        row = {"kind": pin["kind"], "owner_id": pin["owner_id"]}
         proof = _closed_proof(pin, evidence_roots, hot_window_seconds=hot_window_seconds, now=now)
-        if proof is None or now - pin["created_at_epoch"] < 6 * 3600:
-            continue
-        for path in pin["paths"]:
-            _pin_path_allowed(classifier, path)
-        # Check the entire dependency closure before releasing a parent pin.
-        closure, pending = {}, [identity]
-        while pending:
-            key = pending.pop()
-            if key in closure or key not in pins:
+        original = proof is not None
+        if original:
+            if now - pin["created_at_epoch"] < MINIMUM_PIN_AGE_SECONDS:
+                kept.append({**row, "reason": "pin_young"})
                 continue
-            closure[key] = pins[key]
-            pending.extend((d["kind"], d["owner_id"]) for d in pins[key].get("depends_on", []))
-        if any(p["owner_id"] in queue_text or any(reference_checker(Path(path)) for path in p["paths"])
-               for p in closure.values()):
-            kept.append({"kind": pin["kind"], "owner_id": pin["owner_id"], "reason": "active_reference"})
+            for path in pin["paths"]:
+                _pin_path_allowed(classifier, path)
+            # Check the entire dependency closure before releasing a parent pin.
+            closure = _closure(identity, pins)
+            reason = _closure_reason(identity, closure, pins, queue_text, planning_checker)
+        else:
+            proof, reason, error = _derive(pin, pins, context)
+            if proof is not None and queue_unreadable is not None:
+                reason = queue_unreadable
+            elif proof is not None:
+                try:
+                    closure = _closure(identity, pins)
+                    reason = _closure_reason(identity, closure, pins, live_queue_text, planning_checker)
+                except Exception as exc:  # noqa: BLE001 - an extended candidate never costs the original proofs
+                    reason, error = "proof_error", type(exc).__name__
+            if error is not None:
+                kept.append({**row, "reason": reason, "error_type": error})
+                continue
+        if reason is not None:
+            kept.append({**row, "reason": reason})
             continue
-        if any(any((d["kind"], d["owner_id"]) == identity for d in other.get("depends_on", []))
-               for key, other in pins.items() if key not in closure):
-            continue
-        candidate = {"kind": pin["kind"], "owner_id": pin["owner_id"], "proof": proof}
+        candidate = {**row, "proof": proof, "enabled": original or bool(extended_proofs_enabled)}
         candidates.append(candidate)
-        if apply:
+        if not (apply and candidate["enabled"]):
+            continue
+        if original:
             # Re-read live queue references and the proof at the mutation edge.
-            fresh = _queue_reference_text(queue_roots)
+            fresh = queue_reference_text(queue_roots)
             if (proof != _closed_proof(pin, evidence_roots, hot_window_seconds=hot_window_seconds, now=now)
-                    or any(p["owner_id"] in fresh or any(reference_checker(Path(path)) for path in p["paths"])
-                           for p in closure.values())):
+                    or _referenced(closure, fresh, _process_checker(reference_checker))):
                 kept.append({**candidate, "reason": "reference_changed"})
                 continue
             released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
                                                  owner_id=pin["owner_id"], now=lambda: now))
+            continue
+        # An extended proof is re-derived before the release: queue rows first, then the
+        # ledger, the proof and a fresh sweep of the processes, all outside the pin lock, which
+        # blocks every producer. Under the lock only the ledger is re-read, so a pin a
+        # consumer published meanwhile shows up there if its queue row no longer did. A
+        # failure keeps this pin, with its error type, and costs no other.
+        stage = "proof_error"
+        try:
+            fresh, fresh_unreadable = _live_queue_text(queue_roots)
+            if fresh_unreadable is not None:
+                kept.append({**candidate, "reason": fresh_unreadable})
+                continue
+            fresh_proof, fresh_reason, fresh_error = _derive(pin, _live_pins(pins_root, now), edge_context)
+            if fresh_proof is None:
+                # The fresh derivation says why the proof no longer holds.
+                kept.append({**candidate, "reason": fresh_reason,
+                             **({"error_type": fresh_error} if fresh_error else {})})
+                continue
+            if fresh_proof != proof or _referenced(closure, fresh, _process_checker(reference_checker)):
+                kept.append({**candidate, "reason": "reference_changed"})
+                continue
+            stage = "release_failed"
+            with storage_pin_guard(pins_root, exclusive=True):
+                if any(depends_on(other, *identity) for other in _live_pins(pins_root, now).values()):
+                    kept.append({**candidate, "reason": "depended_on"})
+                    continue
+                released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
+                                                     owner_id=pin["owner_id"], now=lambda: now))
+        except Exception as exc:  # noqa: BLE001 - one failed check or release never costs the tick or its report
+            # Only a failure in the release itself can have left this tick's release in the ledger.
+            partial = (_partial_release(pins_root, now, identity, closure, type(exc).__name__)
+                       if stage == "release_failed" else {})
+            if partial:
+                released.append(partial)
+            else:
+                kept.append({**candidate, "reason": stage, "error_type": type(exc).__name__})
+    # A pin a later release took with it (a dependency no live pin needed any more) was released, not kept.
+    released_pins = {(row["kind"], row["owner_id"]) for receipt in released for row in receipt["released"]}
+    kept = [row for row in kept if (row["kind"], row["owner_id"]) not in released_pins]
+    by_kind = Counter(row["kind"] for receipt in released for row in receipt["released"])
     return {"schema_version": "control_plane_terminal_cache_pin_reconciliation.v1",
-        "status": "applied" if apply else "dry_run", "candidates": candidates, "released": released,
-        "kept": kept, "cache_or_evidence_bytes_removed": False}
+        "status": "applied" if apply else "dry_run", "enabled": bool(extended_proofs_enabled),
+        "candidates": candidates[:_MAX_ROWS], "omitted_candidates_count": max(0, len(candidates) - _MAX_ROWS),
+        "candidate_count": len(candidates),
+        "candidate_count_by_proof": dict(sorted(Counter(row["proof"]["kind"] for row in candidates).items())),
+        "released": released, "released_count": sum(by_kind.values()),
+        "released_count_by_kind": dict(sorted(by_kind.items())),
+        "kept": kept[:_MAX_ROWS], "omitted_kept_count": max(0, len(kept) - _MAX_ROWS),
+        "retained_counts": dict(sorted(Counter(row["reason"] for row in kept).items())),
+        "cache_or_evidence_bytes_removed": False}

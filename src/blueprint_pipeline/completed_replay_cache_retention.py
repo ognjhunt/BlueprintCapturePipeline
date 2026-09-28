@@ -636,6 +636,55 @@ def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()
     return process_reference(root, process_root=process_root, ignored_process_ids=ignored_process_ids) is not None
 
 
+def process_reference_index(*, process_root=Path("/proc"), ignored_process_ids=()):
+    """One sweep of the process table, for checking many roots: ``index(root)`` answers as ``active_reference``.
+
+    It reads each process's command line, environment, working directory and
+    open descriptors once, and never returns or stores anything but what it
+    matches against. A root is referenced when one of them names it; when any
+    entry could not be read, every root counts as referenced, as
+    ``active_reference`` counts an unreadable inventory. A missing process root
+    still raises.
+    """
+    if not process_root.is_dir():
+        raise ValueError("replay_cache_process_inventory_unavailable")
+    blobs, targets, unreadable = [], [], False
+    try:
+        processes = list(process_root.iterdir())
+    except OSError:
+        return lambda _root: True
+    for process in processes:
+        if not process.name.isdigit() or int(process.name) in ignored_process_ids:
+            continue
+        for name in ("cmdline", "environ"):
+            try:
+                blobs.append((process / name).read_bytes())
+            except _EXITED:
+                continue
+            except OSError:
+                unreadable = True
+        try:
+            descriptors = list((process / "fd").iterdir())
+        except _EXITED:
+            continue
+        except OSError:
+            unreadable, descriptors = True, []
+        for descriptor in (process / "cwd", *descriptors):
+            try:
+                targets.append(os.readlink(descriptor))
+            except _EXITED:
+                continue
+            except OSError:
+                unreadable = True
+
+    def referenced(root):
+        needle = str(root)
+        return (unreadable or any(needle.encode() in blob for blob in blobs)
+                or any(target == needle or target.startswith(needle + "/") for target in targets))
+
+    return referenced
+
+
 def _scan(
     replay_root, minimum_closed_seconds, now, process_root, *, verify, reclaim_store_copies, single_files,
     reclaim_scratch_inputs,

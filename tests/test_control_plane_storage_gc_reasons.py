@@ -20,6 +20,7 @@ from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
 from blueprint_pipeline.control_plane_storage_pins import live_pinned_paths, release_storage_pin, write_storage_pin
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_completed_replay_cache_retention import _refuse_reading
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
 
@@ -39,6 +40,7 @@ def isolated_disk_ledger(tmp_path, monkeypatch):
                         tmp_path / "disk-reservations")
     # No process on this host references anything unless a test says so.
     monkeypatch.setattr(retention, "process_reference", lambda _root, **_kwargs: None)
+    monkeypatch.setattr(retention, "process_reference_index", lambda **_kwargs: lambda _root: False)
 
 
 def _noclass(*_args, **_kwargs) -> None:
@@ -136,6 +138,54 @@ def test_unreadable_process_inventory_protects_with_a_reason(tmp_path, monkeypat
     assert run.is_dir() and (run / "frames.bin").stat().st_size == 5000
 
 
+def test_protected_pin_evidence_names_pin_kinds(tmp_path) -> None:
+    """2026-09-27: evidence offload kept 17 runs (7.6 GB) as protected_pin and could not say
+    which pins held them. Each is now counted under the kinds of the pins that hold it, with
+    how many distinct pins hold that kind's runs, so the runs can be checked against the pin
+    proofs. No owner or path reaches the reasons."""
+
+    evidence = tmp_path / "launch-runs"
+    own = _cold_run(evidence, "run-secret-own", size=1000)
+    two = _cold_run(evidence, "run-secret-two", size=1100)
+    three = _cold_run(evidence, "run-secret-three", size=1200)
+    shared = _cold_run(evidence, "run-secret-shared", size=2000)
+    _cold_run(evidence, "run-secret-free", size=3000)
+    pins = tmp_path / "pins"
+    # Young pins: this tick's pin pass keeps them all, whatever their proofs.
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="run-secret-own", paths=[own], now=lambda: NOW)
+    # One pin holding two runs is one owner, not two.
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="act-secret-two", paths=[two, three],
+                      now=lambda: NOW)
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="act-secret-a", paths=[shared / "inputs"],
+                      now=lambda: NOW)
+    write_storage_pin(pins_root=pins, kind="preparation", owner_id="prep-secret-b", paths=[shared], now=lambda: NOW)
+
+    reason = reasons.evidence_protection_reason(
+        shared, settlement_roots=(), pins_root=pins, queue_roots=[], now=lambda: NOW)
+    report = run_storage_gc(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=pins,
+                            evidence_roots=[evidence], now=lambda: NOW, classifier=_noclass)
+
+    assert reason == reasons.PROTECTED_PIN and type(reason) is str
+    assert reasons.pin_protection(shared, pins_root=pins, now=lambda: NOW) == (
+        "activation+preparation", {("activation", "act-secret-a"), ("preparation", "prep-secret-b")})
+    size = {run.name: sum(path.stat().st_size for path in run.rglob("*") if path.is_file())
+            for run in (own, two, three, shared)}
+    by_kind = {"activation": {"count": 3, "bytes": size[own.name] + size[two.name] + size[three.name],
+                              "owner_count": 2},
+               "activation+preparation": {"count": 1, "bytes": size[shared.name], "owner_count": 2}}
+    manifest = report["evidence_offload"]
+    assert manifest["retained_by_reason"] == {"protected_pin": {
+        "count": 4, "bytes": sum(size.values()), "by_kind": by_kind}}
+    assert [row["name"] for row in manifest["candidates"]] == ["run-secret-free"]
+    summary = reasons.build_storage_gc_summary(report)
+    assert summary["phases"]["evidence_offload"]["retained_by_reason"]["protected_pin"]["by_kind"] == by_kind
+    assert "secret" not in json.dumps(manifest["retained_by_reason"]) + json.dumps(summary)
+    # A reason given no detail still counts as it always did.
+    plain: dict = {}
+    reasons.count_retained(plain, "protected_pin", 5)
+    assert plain == {"protected_pin": {"count": 1, "bytes": 5}}
+
+
 def test_pin_kinds_name_exactly_the_live_pinned_paths(tmp_path) -> None:
     """The kind map only labels what ``live_pinned_paths`` pins; it never decides."""
 
@@ -228,7 +278,8 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert (summary["status"], summary["observed_at_epoch"]) == ("applied", report["observed_at_epoch"])
     assert summary["source_report_digest"] == report["report_digest"]
     assert summary["opt_in"] == {
-        "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False}
+        "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False,
+        "extended_pin_proofs": False}
     assert (summary["phase_errors"], summary["skipped_roots"]) == ([], [str(absent_scratch)])
     sizes = {run.name: sum(p.stat().st_size for p in run.rglob("*") if p.is_file())
              for run in (queued, hot, registry_run)}
@@ -278,6 +329,41 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert "operator_door" in sys.modules
 
 
+def test_the_summary_counts_terminal_pin_candidates_releases_and_the_opt_in(tmp_path) -> None:
+    """The pin phase's summary named nothing but its status, with null retention. It now
+    counts the candidates and the pins released, says whether the extended proofs may
+    release, and counts why the rest were kept, naming no owner and no path."""
+
+    pins = tmp_path / "pins"
+    for owner, created in (("prep-secret-stale", NOW - 9 * 86400), ("prep-secret-young", NOW - 3600)):
+        write_storage_pin(pins_root=pins, kind="preparation", owner_id=owner, now=lambda created=created: created,
+                          paths=[f"/var/lib/blueprint/task-evaluation-inputs/prepared-references/{owner}"])
+    # The stale preparation's sealed envelope binds it to a release other than the running one.
+    preparations = tmp_path / "task-evaluation-launch-preparations"
+    envelope = {"schema_version": "task_evaluation_launch_preparation_envelope.v1", "request_digest": "sha256:" + "1" * 64,
+                "request": {"preparation_id": "prep-secret-stale", "expected_production_commit": "a" * 40},
+                "envelope_digest": ""}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    (preparations / "materialized").mkdir(parents=True)
+    (preparations / "materialized" / f"prep-secret-stale-{'1' * 64}.json").write_text(json.dumps(envelope), encoding="utf-8")
+    common = dict(content_store_roots=[], derived_roots=[], queue_roots=[preparations], pins_root=pins, now=lambda: NOW,
+                  classifier=_noclass, apply=True, ack=RUN_ACK, running_commit="b" * 40)
+
+    listed = reasons.build_storage_gc_summary(run_storage_gc(**common))
+    applied = reasons.build_storage_gc_summary(run_storage_gc(**common, extended_pin_proofs_enabled=True))
+
+    phase = {"status": "applied", "candidate_bytes": None, "removed_or_offloaded_bytes": None,
+             "retained_by_reason": {"pin_young": {"count": 1, "bytes": None}}, "candidate_count": 1}
+    assert listed["phases"]["terminal_cache_pins"] == {**phase, "released_count": 0, "enabled": False}
+    assert applied["phases"]["terminal_cache_pins"] == {**phase, "released_count": 1, "enabled": True}
+    assert (listed["opt_in"]["extended_pin_proofs"], applied["opt_in"]["extended_pin_proofs"]) == (False, True)
+    assert "secret" not in json.dumps(listed) + json.dumps(applied)
+    # A report from before the counts does not claim there were none.
+    older = reasons.build_storage_gc_summary({"status": "applied", "terminal_cache_pins": {
+        "status": "applied", "candidates": [], "released": [], "kept": []}})["phases"]["terminal_cache_pins"]
+    assert (older["candidate_count"], older["released_count"], older["enabled"]) == (None, None, None)
+
+
 def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     """However many reasons a phase reports, the summary keeps the largest, bounded, and a
     reason that is not a typed string (a path, say) is never copied into it."""
@@ -309,7 +395,8 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     assert "run-1" not in json.dumps(summary)
     # A report written before the tick recorded its opt-ins does not claim they were off.
     assert summary["opt_in"] == {
-        "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None}
+        "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None,
+        "extended_pin_proofs": None}
 
 
 def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:

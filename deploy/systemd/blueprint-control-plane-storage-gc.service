@@ -93,6 +93,8 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS=2160
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS=/var/lib/blueprint/pubsub-handoffs
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
 Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
+# Read only: launch admission's consumed standing authorizations are evidence an activation launched.
+Environment=BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR=/var/lib/blueprint/pipeline-control-plane/standing-authorizations
 Environment=BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-gc
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key

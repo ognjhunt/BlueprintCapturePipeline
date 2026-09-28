@@ -7,8 +7,10 @@ names under their old ones for its existing callers.
 
 from __future__ import annotations
 
+import os
 import re
-from collections.abc import Sequence
+import stat
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .control_plane_retained_receipt import RETAINED_RECEIPTS
@@ -27,14 +29,39 @@ SETTLEMENT_RECORD_GLOBS = (
 )
 
 
-def queue_reference_text(queue_roots: Sequence[str | Path]) -> str:
-    """Concatenate every pending or processing queue message; a name in it is live."""
+class QueueReferenceUnreadable(ValueError):
+    """A queue root, state directory or row that cannot be read proves nothing about what it names."""
+
+
+def queue_reference_text(
+    queue_roots: Sequence[str | Path],
+    states: Sequence[str] | Mapping[str, Sequence[str]] | None = QUEUE_STATES,
+    *,
+    strict: bool = False,
+) -> str:
+    """Concatenate queue messages; a name in them is live.
+
+    ``states`` are the state directories read under each root: one sequence for
+    every root, a mapping from a root's directory name to its states (a root it
+    does not name reads ``QUEUE_STATES``), or None for every directory the root
+    holds. By default only pending and processing rows are read, and a linked,
+    oversized or unreadable row, or a linked state directory, is skipped: every
+    original caller reads that way. ``strict`` raises ``QueueReferenceUnreadable``
+    for each of those instead, and for a linked queue root, since a row that
+    cannot be read proves nothing about what it names. A missing root or state
+    directory holds no rows either way, and a row that moved to another state
+    between the listing and the read is skipped where it was: a strict caller
+    reads twice and unions, so it is seen where it went.
+    """
 
     chunks: list[str] = []
     for raw_root in queue_roots:
         root = Path(raw_root).expanduser()
-        for state in QUEUE_STATES:
+        for state in _queue_states(root, states, strict=strict):
             directory = root / state
+            if strict:
+                chunks.extend(_strict_rows(directory))
+                continue
             if not directory.is_dir() or directory.is_symlink():
                 continue
             for path in sorted(directory.glob("*.json")):
@@ -45,6 +72,63 @@ def queue_reference_text(queue_roots: Sequence[str | Path]) -> str:
                 except (OSError, UnicodeDecodeError):
                     continue
     return "\n".join(chunks)
+
+
+def _queue_states(root: Path, states, *, strict: bool) -> list[str]:
+    if strict and root.is_symlink():
+        raise QueueReferenceUnreadable("queue_root_linked")
+    if isinstance(states, Mapping):
+        return list(states.get(root.name, QUEUE_STATES))
+    if states is not None:
+        return list(states)
+    try:
+        if root.is_symlink():
+            return []
+        if not root.is_dir():
+            return []
+        with os.scandir(root) as entries:
+            children = sorted(entries, key=lambda entry: entry.name)
+            linked = [entry.name for entry in children if entry.is_symlink()]
+            if linked and strict:
+                raise QueueReferenceUnreadable("queue_state_linked")
+            return [entry.name for entry in children if not entry.is_symlink() and entry.is_dir()]
+    except OSError as exc:
+        if strict:
+            raise QueueReferenceUnreadable("queue_root_unreadable") from exc
+        return []
+
+
+def _strict_rows(directory: Path) -> list[str]:
+    """Every ``*.json`` row of one state directory, or ``QueueReferenceUnreadable``."""
+
+    try:
+        if directory.is_symlink():
+            raise QueueReferenceUnreadable("queue_state_linked")
+        if not directory.exists():
+            return []
+        if not directory.is_dir():
+            raise QueueReferenceUnreadable("queue_state_not_a_directory")
+        with os.scandir(directory) as entries:
+            names = sorted(entry.name for entry in entries if entry.name.endswith(".json"))
+    except OSError as exc:
+        raise QueueReferenceUnreadable("queue_state_unreadable") from exc
+    rows: list[str] = []
+    for name in names:
+        path = directory / name
+        try:
+            observed = path.lstat()
+            if not stat.S_ISREG(observed.st_mode):
+                raise QueueReferenceUnreadable("queue_row_linked")
+            if observed.st_size > MAX_QUEUE_MESSAGE_BYTES:
+                raise QueueReferenceUnreadable("queue_row_oversized")
+            rows.append(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            # Moved to another state since the listing: callers read twice and union, so it is
+            # seen where it went. A row that is linked, not regular, oversized or unreadable is not.
+            continue
+        except (OSError, UnicodeDecodeError) as exc:
+            raise QueueReferenceUnreadable("queue_row_unreadable") from exc
+    return rows
 
 
 def settlement_reopens_beyond_retained_receipts(name: str, settlement_text: str) -> bool:
@@ -102,6 +186,7 @@ def settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[s
 __all__ = [
     "MAX_QUEUE_MESSAGE_BYTES",
     "QUEUE_STATES",
+    "QueueReferenceUnreadable",
     "SETTLEMENT_RECORD_GLOBS",
     "queue_reference_text",
     "settlement_reference_text",

@@ -535,8 +535,12 @@ One tick runs nine phases in order:
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
    live queue references. Nothing is deleted.
-2. **Terminal cache pins** whose run is proven closed by archived-run evidence
-   are released. Only the pin ledger changes.
+2. **Terminal cache pins** whose run is proven closed are released: by the two
+   original proofs always, and by the extended proofs only with
+   `BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1` in the operator
+   environment file (until then they list candidates with `"enabled": false`).
+   Only the pin ledger changes. The proofs are described under
+   [Terminal cache pin proofs](#terminal-cache-pin-proofs).
 3. **Derived directories** under the configured `cache` roots are retired when
    no live pin names them, no pending or processing queue message mentions
    them, and they have been idle for an hour
@@ -568,6 +572,71 @@ One tick runs nine phases in order:
    `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
    detailed contract is below.
 
+### Terminal cache pin proofs
+
+The original proofs release an activation pin when every run that exists under
+its names (its id, and `<id>-launch` for a website `-activation-auto`
+activation) is archived behind a verified pointer (`archived_run`) or sealed by
+a terminal receipt without a result registry and idle past the hot window
+(`sealed_cold_run`). Until 10c they stopped at the first such name, so a
+website activation's sealed own directory could release the pin while its
+`<id>-launch` run was still going. The extended proofs, in the read-only
+`control_plane_pin_proofs` module, apply only with the opt-in:
+
+- `sealed_registry_run`: every run under the activation's evidence names
+  carries its terminal receipt and a result registry the artifact store accepts
+  as sealed, idle past the hot window, with no whole-run pointer. Without the
+  receipt the canary dispatcher can still recover a stranded delivery from the
+  launch set.
+- `activation_expired_unlaunched`, for a profile-authority activation only. A
+  policy-campaign activation publishes no standing authorization and
+  dispatches through the policy canary queue on the scene execution window, so
+  its pin is kept as `policy_campaign_activation_out_of_scope` until the canary
+  dispatcher releases it. The proof needs no run directory or pointer under any
+  of the activation's evidence names; its one sealed result in the activation
+  queue in a prepared status and older than 604,800 + 86,400 seconds (a shared
+  mutation window lives at most a week); and the standing authorization its
+  prepared envelope dates expired more than a day ago (launch admission checks
+  that authorization, and the request sets it with no maximum). A launch id the
+  WebApp or an operator chooses names no directory a search could guess, so it
+  also needs positive evidence of no launch: no record under
+  `<standing authorization dir>/consumed/<profile id>/` (the directory launch
+  admission records into, `BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR`
+  in the unit) and no row of the launch queue `task-evaluation-launches`, in any
+  state, naming the activation or its profile. For a profile without the
+  one-use standing authorization requirement, an operator's per-launch
+  handshake can still admit a launch after the authorization lapsed; if that
+  happens after the pin was released, the launch fails its input verification
+  rather than using missing inputs, which re-preparing recovers. The proof
+  accepts that risk only after both the window and the authorization lapsed and
+  neither record exists.
+- `unconsumed_stale_pin`: a preparation or compilation pin no live pin depends
+  on, created more than eight days ago, naming only `cache` paths, whose
+  preparation no activation can take any more: its one sealed envelope in the
+  preparation queue sits in `materialized/` bound to a release other than the
+  running one, or in `blocked/`. The activation worker verifies a preparation's
+  materialized inputs and never re-fetches them, and a materialized preparation
+  waits for its activation intent with no age limit. A rollback to that release
+  would make it activatable again.
+
+An activation's evidence names are its id, `<id>-launch` (configured-controls
+activations such as `<run>-controls` launch that way too) and the bounded
+launch id the launch paths derive for a long id, with their own function. An
+evidence root that is linked or unreadable keeps the pin, and so does a missing
+root whose parent is missing too (unmounted, say). A missing root whose parent
+is present and readable, with no linked ancestor, holds no runs: the unit marks
+two roots optional, and a host without them would otherwise never release.
+Every proof keeps the six-hour minimum pin age,
+the dependency closure's queue and process checks, and a re-derivation at the
+mutation edge. The extended proofs read queues strictly: they also count a row
+parked in a state that will still run (`LIVE_QUEUE_STATES`, such as a
+preparation awaiting its source preparation), and a row they cannot read keeps
+their candidates as `queue_unreadable`, while a row that merely moved between
+states mid-read is found where it went. Planning and the releases each read the
+launch queue and the preparation queue's ended envelopes once (twice over,
+unioned), and the process table is swept once for planning and once per
+release.
+
 **Why a tick kept what it kept.** On 2026-09-27 an applied tick with offload
 enabled reclaimed nothing, and its report could not say why. The derived and
 evidence manifests carry `retained_by_reason`, `{reason: {count, bytes}}` in
@@ -585,7 +654,40 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `protected_process`, `protected_process_inventory_unreadable`,
   `protected_pin`, `protected_settlement`, `protected_queue`. A `/proc` entry
   the tick cannot read protects the run (`protected_process_inventory_unreadable`)
-  instead of failing the check.
+  instead of failing the check. `protected_pin` carries `by_kind`: the kinds of
+  the live pins holding each run, with the number of distinct pins holding each
+  kind's runs (`owner_count`), so the runs can be checked against the pin proofs.
+- Terminal cache pins: every live pin is a candidate, with its `proof` and
+  whether it is `enabled`, or a `kept` row with a typed reason, counted in
+  `retained_counts`: `pin_young`, `pin_invalid` (no numeric creation time),
+  `active_reference`, `depended_on`, `reference_changed`, `pin_not_stale`,
+  `path_class_invalid`, the run reasons (`registry_unsealed`, `registry_hot`,
+  `run_not_sealed`, `run_hot`, `run_without_registry`, `run_pointer_present`,
+  `run_path_unsafe`, `evidence_root_unavailable`), the activation result
+  reasons (`activation_queue_unconfigured`, `activation_queue_unavailable`,
+  `activation_result_missing`, `activation_result_ambiguous`,
+  `activation_result_invalid`, `activation_result_not_prepared`,
+  `activation_result_not_stale`, `activation_envelope_missing`,
+  `activation_envelope_unreadable`, `activation_envelope_invalid`,
+  `activation_authorization_not_lapsed`,
+  `activation_authorization_consumed`, `standing_authorization_unavailable`,
+  `activation_launch_requested`, `launch_queue_unconfigured`,
+  `launch_queue_unavailable`, `policy_campaign_activation_out_of_scope`),
+  `queue_unreadable`, and the preparation reasons (`preparation_queue_unconfigured`,
+  `preparation_queue_unavailable`, `running_commit_unknown`,
+  `preparation_envelope_missing`, `preparation_envelope_ambiguous`,
+  `preparation_envelope_invalid`, `preparation_release_current`). A pin a
+  proof could not read is `proof_error`, and one whose release failed at the
+  mutation edge is `release_failed`, each with its `error_type`; neither costs
+  any other pin. A release that raised after the ledger recorded it is in
+  `released` with `status: release_partial`, listing what the ledger shows
+  released. At the mutation edge a proof that no longer holds keeps the pin
+  with the fresh derivation's own reason; one that holds differently, or a new
+  reference, is `reference_changed`. A pin released along with a dependent is
+  in that release receipt, not in `kept`. The report also counts candidates by proof and
+  released pins by kind, dependencies included. `candidates` and `kept` list
+  at most 200 rows each, with `omitted_candidates_count` and
+  `omitted_kept_count`; every count covers every pin.
 - Result-artifact offload: a retained run says why in `retained_reason` (`hot`
   or its protection reason). A run whose offload raised records `error_type`,
   `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
@@ -598,11 +700,12 @@ way (0644 in the 0755 directory). It holds the tick's status and
 `source_report_digest`, the opt-in flags, alerts, `phase_errors` and
 `skipped_roots`. Per phase it gives `candidate_bytes`,
 `removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
-phase counts without sizing. `retained_by_reason` is `{}` when a phase kept
-nothing and null when it does not say what it kept: an applied content-store,
-stranded-row, scratch or bundle receipt, a replay cache pass and the terminal
-pin pass carry no retained counts. An artifact already evicted is not counted as
-kept. `top_retained` lists the ten reasons that keep the
+phase counts without sizing, and the terminal pin phase also gives
+`candidate_count`, `released_count` and `enabled`. `retained_by_reason` is `{}`
+when a phase kept nothing and null when it does not say what it kept: an
+applied content-store, stranded-row, scratch or bundle receipt and a replay
+cache pass carry no retained counts. An artifact already evicted is not counted
+as kept. `top_retained` lists the ten reasons that keep the
 most bytes. It names no run, file or host path except the configured roots in
 `skipped_roots`, and stays under 256 KiB. If it cannot be built or written, the
 previous tick's `summary.json` is removed, so a stale summary never sits beside

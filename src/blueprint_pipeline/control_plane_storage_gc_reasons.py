@@ -18,12 +18,12 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from . import completed_replay_cache_retention as retention
-from .control_plane_storage_pins import live_pinned_paths, load_storage_pins
+from .control_plane_storage_pins import load_storage_pins
 from .control_plane_storage_references import (
     queue_reference_text,
     settlement_reference_text,
@@ -47,6 +47,28 @@ EVIDENCE_PROTECTION_REASONS = (
 )
 
 
+def pin_protection(
+    directory: Path, *, pins_root: str | Path, now: Callable[[], float]
+) -> tuple[str, frozenset[tuple[str, str]]] | None:
+    """The live pins that name ``directory``, lie inside it or contain it: their kinds and identities, or None.
+
+    The kinds are sorted and joined by ``+``, as ``live_pin_kinds`` joins them.
+    ``evidence_protection_reason`` decides ``protected_pin`` from the same pins,
+    and the evidence manifest counts their kind and owners from this.
+    """
+
+    holders: set[tuple[str, str]] = set()
+    for pin in load_storage_pins(pins_root, now=now):
+        if pin["status"] == "live" and any(
+            Path(str(path)) == directory or directory in Path(str(path)).parents or Path(str(path)) in directory.parents
+            for path in pin.get("paths") or []
+        ):
+            holders.add((str(pin["kind"]), str(pin["owner_id"])))
+    if not holders:
+        return None
+    return "+".join(sorted({kind for kind, _owner in holders})), frozenset(holders)
+
+
 def evidence_protection_reason(
     directory: Path,
     *,
@@ -66,7 +88,8 @@ def evidence_protection_reason(
        read, which proves nothing is unreferenced;
     2. ``protected_process``, or ``protected_process_inventory_unreadable`` when a
        process entry could not be read and none was seen holding the directory;
-    3. ``protected_pin``: a live storage pin names it, lies inside it or contains it;
+    3. ``protected_pin``: a live storage pin names it, lies inside it or contains it
+       (``pin_protection`` names those pins);
     4. ``protected_settlement``: a settlement record reopens a path under it that
        the offload pointer does not retain;
     5. ``protected_queue``: a pending or processing queue message names it.
@@ -87,8 +110,7 @@ def evidence_protection_reason(
         return PROTECTED_PROCESS_INVENTORY_UNREADABLE
     if process:
         return PROTECTED_PROCESS
-    pinned = live_pinned_paths(pins_root, now=now)
-    if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
+    if pin_protection(directory, pins_root=pins_root, now=now) is not None:
         return PROTECTED_PIN
     if settlement_reopens_beyond_retained_receipts(directory.name, settlement_text):
         return PROTECTED_SETTLEMENT
@@ -98,9 +120,19 @@ def evidence_protection_reason(
 
 
 def count_retained(
-    by_reason: MutableMapping[str, dict[str, Any]], reason: str, size_bytes: int, *, kind: str | None = None
+    by_reason: MutableMapping[str, dict[str, Any]],
+    reason: str,
+    size_bytes: int,
+    *,
+    kind: str | None = None,
+    owners: Collection[Any] | None = None,
 ) -> None:
-    """Count one retained entry of ``size_bytes`` under ``reason``, and under ``kind`` within it when given."""
+    """Count one retained entry of ``size_bytes`` under ``reason``, and under ``kind`` within it when given.
+
+    ``owners``, when given with ``kind``, is every owner the caller has seen hold
+    an entry of that kind so far; the kind's ``owner_count`` is their number, so
+    an owner holding several entries counts once.
+    """
 
     row = by_reason.setdefault(reason, {"count": 0, "bytes": 0})
     row["count"] += 1
@@ -109,6 +141,8 @@ def count_retained(
         detail = row.setdefault("by_kind", {}).setdefault(kind, {"count": 0, "bytes": 0})
         detail["count"] += 1
         detail["bytes"] += int(size_bytes)
+        if owners is not None:
+            detail["owner_count"] = len(owners)
 
 
 class WalkMeter:
@@ -191,7 +225,7 @@ PHASES = (
     "replay_caches",
     "scene_workspaces",
 )
-OPT_INS = ("evidence_offload", "scene_workspace_retirement", "replay_cache_retention")
+OPT_INS = ("evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "extended_pin_proofs")
 _REMOVED_KEYS = ("removed_bytes", "offloaded_bytes", "retired_bytes")
 _MAX_REASONS = 50
 _MAX_FAILURES = 20
@@ -226,6 +260,8 @@ def _reason_rows(source: Mapping[str, Any], *, max_rows: int | None = _MAX_REASO
         row["bytes"] = None if size is None or row["bytes"] is None else row["bytes"] + size
         if isinstance(detail.get("by_kind"), Mapping):
             row["by_kind"] = _reason_rows(detail["by_kind"])
+        if _integer(detail.get("owner_count")) is not None:
+            row["owner_count"] = row.get("owner_count", 0) + detail["owner_count"]
     ranked = sorted(
         (item for item in rows.items() if item[1]["count"] > 0),
         key=lambda item: (-(item[1]["bytes"] or 0), -item[1]["count"], item[0]),
@@ -263,6 +299,20 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
     if entry.get("status") == "error":
         summary["error_type"] = _typed(entry.get("error"), "Exception", _TYPE_NAME)
     return summary
+
+
+def _terminal_pin_counts(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """The pin phase's candidate and released pin counts, and whether its extended proofs may release.
+
+    Each is null when the report does not say, never zero.
+    """
+
+    enabled = entry.get("enabled")
+    return {
+        "candidate_count": _integer(entry.get("candidate_count")),
+        "released_count": _integer(entry.get("released_count")),
+        "enabled": enabled if isinstance(enabled, bool) else None,
+    }
 
 
 def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
@@ -335,7 +385,8 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     ``source_report_digest``, the ``opt_in`` flags (null when the report predates
     them), ``alerts``, ``phase_errors``, ``skipped_roots`` (configured roots that
     were absent: the only paths it names), per phase ``candidate_bytes``,
-    ``removed_or_offloaded_bytes`` and ``retained_by_reason``, ``top_retained``
+    ``removed_or_offloaded_bytes`` and ``retained_by_reason`` (for the pin phase
+    also ``candidate_count``, ``released_count`` and ``enabled``), ``top_retained``
     phase rows, and ``top_retained_reasons`` aggregated before phase rows are
     capped. Every reason is
     a typed string; anything else becomes ``unrecognized_reason``.
@@ -349,6 +400,8 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
             phases[key] = _result_artifact_summary(entry)
         elif isinstance(entry, Mapping):
             phases[key] = _phase_summary(entry)
+            if key == "terminal_cache_pins":
+                phases[key].update(_terminal_pin_counts(entry))
             by_reason = entry.get("retained_by_reason")
             raw_reasons = by_reason if isinstance(by_reason, Mapping) else entry.get("retained_counts")
             if isinstance(raw_reasons, Mapping):
@@ -405,6 +458,7 @@ __all__ = [
     "entry_bytes",
     "evidence_protection_reason",
     "live_pin_kinds",
+    "pin_protection",
     "WalkMeter",
     "walked_bytes",
 ]
