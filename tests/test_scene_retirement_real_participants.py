@@ -360,3 +360,39 @@ def test_actual_birth_interprets_only_the_verified_raw_request_bytes(tmp_path, m
         state = access.birth_scene_member(member, owner_intent_id=intent_id,
                                          owner_raw_ref=owner, birth_request_raw_ref=birth, now=101)
     assert state['state'] == 'active' and repeated == []
+
+
+def test_actual_birth_cleans_owned_birth_gate_on_store_fsync_failure(tmp_path, monkeypatch):
+    access, policy, member = access_fixture(tmp_path, monkeypatch)
+    intent_id, owner, birth = authenticated_birth_refs(tmp_path, monkeypatch)
+    member.rmdir()
+    store_inode = Path(policy['generation_store']).stat().st_ino
+    original_open, original_fsync = os.open, os.fsync
+    gates = []
+    def opened(name, *args, **kwargs):
+        fd = original_open(name, *args, **kwargs)
+        if str(name).endswith('.lock'):
+            gates.append(fd)
+        return fd
+    def fault(fd):
+        if os.fstat(fd).st_ino == store_inode:
+            raise OSError('injected store fsync failure')
+        return original_fsync(fd)
+    monkeypatch.setattr(os, 'open', opened)
+    monkeypatch.setattr(os, 'fsync', fault)
+    try:
+        with pytest.raises(OSError, match='injected store fsync failure'):
+            access.birth_scene_member(member, owner_intent_id=intent_id,
+                                     owner_raw_ref=owner, birth_request_raw_ref=birth, now=101)
+        assert gates
+        for fd in gates:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+        assert not member.exists()
+    finally:
+        for fd in gates:
+            try:
+                os.fstat(fd)
+            except OSError:
+                continue
+            os.close(fd)
