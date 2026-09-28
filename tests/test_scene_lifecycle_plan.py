@@ -173,3 +173,30 @@ def test_measurement_reserves_output_before_next_member(tmp_path, monkeypatch):
         monkeypatch.setattr(reader, 'stat', checked)
         with pytest.raises(ValueError, match='retained_lineage_emission_limit'):
             m.measure(reader, {}, sink, [])
+
+
+def test_later_metadata_drift_keeps_accepted_measurement_with_null_current_total(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_acquisition import Acquisition, AcquisitionError
+    context, intent_id, member = preparation_fixture(tmp_path)
+    def changed(self):
+        raise AcquisitionError('scene_lifecycle_metadata_changed')
+    monkeypatch.setattr(Acquisition, 'verify', changed)
+    report = run(context, intent_id)
+    row = next(row for row in report['measured_members'] if row['path'] == str(member))
+    assert report['status'] == 'incomplete' and report['action'] == 'KEEP'
+    assert row['observed_allocated_bytes'] > 0 and row['measured_allocated_bytes'] is None
+    assert row['measured_logical_bytes'] is None and row['measured_apparent_bytes'] is None
+    assert 'metadata_changed_after_observation' in row['keeps']
+    assert report['historical_lineage']['mutations'] == 0
+
+
+def test_deadline_finalization_uses_fixed_refusal_without_new_traversal(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_acquisition import Acquisition
+    context, intent_id, _ = preparation_fixture(tmp_path)
+    def expired(self):
+        self.budget.fail('reference_deadline_exceeded')
+    monkeypatch.setattr(Acquisition, 'verify', expired)
+    report = run(context, intent_id)
+    assert 'measured_members' not in report
+    assert report['blockers'] == ['reference_deadline_exceeded']
+    assert report['action'] == 'KEEP' and report['cleanup_authorized'] is False

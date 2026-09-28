@@ -147,3 +147,29 @@ def test_final_retained_directory_descriptor_identity_is_rechecked(tmp_path, mon
             scoped.setattr(m.os, 'fstat', changed)
             with pytest.raises(m.AcquisitionError, match='metadata_changed'):
                 reader.verify()
+
+
+def test_invalid_unicode_path_is_fixed_refusal_before_encoding_or_open(monkeypatch):
+    m = module()
+    monkeypatch.setattr(m.os, 'open', lambda *a, **k: pytest.fail('invalid path opened'))
+    with pytest.raises(m.AcquisitionError, match='path_invalid'):
+        m.path('/metadata/\ud800.json', ReferenceCollectionBudget(monotonic=lambda: 0))
+
+
+def test_scoped_directory_mount_boundary_refuses_before_descendant_retention(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    m = module()
+    child = tmp_path / 'child'
+    child.mkdir()
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        original = reader._open
+        def crossed(name, flags, parent=None):
+            fd, info = original(name, flags, parent)
+            if name == 'child':
+                info = SimpleNamespace(**{key: getattr(info, key) + (1 if key == 'st_dev' else 0)
+                                         for key in ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_nlink')})
+            return fd, info
+        monkeypatch.setattr(reader, '_open', crossed)
+        with pytest.raises(m.AcquisitionError, match='mount_boundary'):
+            reader.entries(str(child))
+        assert str(child) not in reader.directories

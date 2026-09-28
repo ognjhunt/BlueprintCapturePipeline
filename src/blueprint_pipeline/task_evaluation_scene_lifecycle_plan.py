@@ -91,22 +91,13 @@ def _context(value, budget):
     return value
 
 
-def _finished(seed, decoded, context, intent_id, now, budget):
-    history = seed['history']
-    owner = context['roots']['intent_root'] + '/' + intent_id
-    intent_row = next(row for row in decoded if row['path'] == owner + '/intent.json')
-    intent = intent_row['value']
-    status = 'unknown'
-    reason = 'history_not_current'
-    projection = next((row for row in decoded if row['path'] == owner + '/progression.json'), None)
-    if history['chain_validated'] and history['projection_state'] == 'current' and projection is not None:
-        if projection['value']['status'] == 'completed':
-            status, reason = 'completed', 'validated_current_completed_history'
-    # Revocation/expiry metadata is interpreted separately in the next bounded
-    # authority-end predicate; no runtime loader, repair, mtime or admission call.
-    budget.charge('facts')
-    return {'status': status, 'reason': reason, 'observed_at_epoch': now,
-            'finished_for_cleanup_authority': False, 'intent_digest': intent['intent_digest']}
+def _finished(seed, decoded, context, intent_id, now, budget, scopes):
+    from .task_evaluation_scene_lifecycle_finished import finished
+    extension_root = context['roots']['intent_root'] + '/' + intent_id + '/execution-window-extensions'
+    observed = any(row['role'] == 'extensions' and row['path'] == extension_root
+                   and row['status'] == 'observed_selected_layout' for row in _work_items(scopes, budget))
+    return finished(seed['history'], decoded, context['roots'], intent_id, now, budget,
+                    extensions_observed=observed)
 
 
 def _families(sink):
@@ -125,7 +116,7 @@ def build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, monoton
 
 def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget, context_anchor=None):
     reader = None
-    result, reference_result = None, None
+    result, reference_result, sink = None, None, None
     try:
         budget.tick()
         acquisition.require(type(budget) is ReferenceCollectionBudget and isinstance(intent_id, str)
@@ -146,7 +137,7 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
         result = {'schema_version': 'task_evaluation_scene_lifecycle_plan.v1', 'status': 'incomplete', 'action': 'KEEP',
                   'scope': 'selected_exact_scene_metadata_and_measured_paths', 'observed_at_epoch': observed_at_epoch,
                   'intent_id': intent_id, 'selected_intent_provenance': seed_result['intent_provenance'],
-                  'finished_observation': _finished(seed_result, decoded, context, intent_id, observed_at_epoch, budget),
+                  'finished_observation': _finished(seed_result, decoded, context, intent_id, observed_at_epoch, budget, pool.scopes),
                   'historical_lineage': historical, 'acquisition_scopes': sink.rows(pool.scopes),
                   'unselected_metadata_protections': sink.rows(protected), 'family_obligations': _families(sink),
                   'measured_members': sink.rows(), 'sharing': sink.rows(), 'reference_keeps': sink.rows(),
@@ -164,11 +155,31 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
         sink.check_document(result)
         native.c.retained.c.bounded_size(result, MAX_OUTPUT_BYTES, work_budget=budget)
         budget.tick()
-    except (ValueError, OSError, TypeError, KeyError, AttributeError, OverflowError, RecursionError):
-        result = fallback(budget.failure or 'scene_lifecycle_metadata_or_context_unproven')
-        if reference_result is not None:
-            # Fixed finite counters survive a shared-resource refusal; they do
-            # not preserve an unverified planner claim or open a fresh budget.
+    except (ValueError, OSError, TypeError, KeyError, AttributeError, OverflowError, RecursionError) as error:
+        ordinary_drift = isinstance(error, (acquisition.AcquisitionError, OSError)) and not budget.failure
+        if result is not None and sink is not None and ordinary_drift:
+            try:
+                # Accepted positives stay historical KEEP evidence while the
+                # same B permits bounded framing. Current measured totals become
+                # unknown after a later metadata verification failure.
+                code = 'metadata_changed_after_observation'
+                sink.reserve_row({'reason': code})
+                result['blockers'].append(code)
+                for row in _work_items(result['measured_members'], budget):
+                    sink.reserve_row({'reason': code})
+                    row['status'] = 'incomplete_scoped_metadata'
+                    row['measured_allocated_bytes'] = None
+                    if 'measured_logical_bytes' in row:
+                        row['measured_logical_bytes'] = row['measured_apparent_bytes'] = None
+                    row.setdefault('keeps', []).append(code)
+                for family in _work_items(result['family_obligations'], budget):
+                    family['measured_allocated_bytes'] = None
+                sink.check_document(result)
+            except (ValueError, TypeError, OverflowError, RecursionError):
+                result = fallback(budget.failure or 'scene_lifecycle_output_unproven')
+        else:
+            result = fallback(budget.failure or 'scene_lifecycle_metadata_or_context_unproven')
+        if reference_result is not None and 'historical_lineage' not in result:
             result['raw_accounting'] = reference_result['raw_accounting']
         if reader is not None:
             result['planner_acquired_raw_bytes'] = reader.physical_read_bytes

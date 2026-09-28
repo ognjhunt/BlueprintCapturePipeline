@@ -4,7 +4,7 @@ from __future__ import annotations
 import stat
 from pathlib import PurePosixPath
 
-from .task_evaluation_scene_lifecycle_acquisition import require
+from .task_evaluation_scene_lifecycle_acquisition import AcquisitionError, require
 from .task_evaluation_scene_lineage_budget import _work_items, _work_order
 
 KINDS = {
@@ -73,9 +73,11 @@ def measure(reader, historical, sink, families):
             path = stack.pop()
             try:
                 info = reader.stat(path)
-            except FileNotFoundError:
+            except (OSError, AcquisitionError):
+                if budget.failure:
+                    raise
                 complete = False
-                row['keeps'].append('member_or_child_unavailable')
+                row['keeps'].append('member_or_child_unavailable_or_changed')
                 continue
             if root_device is None:
                 root_device = info.st_dev
@@ -113,9 +115,11 @@ def measure(reader, historical, sink, families):
                     for name in _work_items(reader.entries(path), budget):
                         budget.charge('facts')
                         stack.append(path + '/' + name)
-                except FileNotFoundError:
+                except (OSError, AcquisitionError):
+                    if budget.failure:
+                        raise
                     complete = False
-                    row['keeps'].append('member_directory_unavailable')
+                    row['keeps'].append('member_directory_unavailable_or_changed')
         row['observed_unique_regular_inodes'] = len(regular)
         row['observed_logical_bytes'], row['observed_apparent_bytes'] = logical, apparent
         row['measured_logical_bytes'] = logical if complete else None

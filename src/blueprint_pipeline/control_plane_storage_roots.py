@@ -126,6 +126,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/provider-locks", "ledger", "blueprint", "paid launch lock slots"),
     StorageRoot(f"{_CONTROL_PLANE}/release-leases", "ledger", "root", "release retention leases (sidecars for immutable bindings)"),
     # --- queues and scratch
+    StorageRoot(f"{_INPUTS}/completed-scene-preparation", "work", "blueprint", "mixed owner-scoped source preparation work and evidence; report only"),
+    StorageRoot(f"{_INPUTS}/completed-scene-preparation-inputs", "work", "blueprint", "mixed owner-scoped materialized preparation work; report only"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaign-work", "work", "blueprint", "G1 campaign preparation and settlement work"),

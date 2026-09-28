@@ -31,7 +31,7 @@ def path(value, budget):
     for offset, char in enumerate(value):
         if offset % 1024 == 0:
             budget.tick()
-        require(ord(char) >= 32 and ord(char) != 127 and char not in '\\<>*?[]', 'path_invalid')
+        require(ord(char) >= 32 and ord(char) != 127 and not 0xD800 <= ord(char) <= 0xDFFF and char not in '\\<>*?[]', 'path_invalid')
     require(len(value.encode('utf-8')) <= 4096 and value.startswith('/'), 'path_invalid')
     parts = value[1:].split('/')
     require(len(parts) <= 64 and all(p not in ('', '.', '..') for p in parts), 'path_invalid')
@@ -96,9 +96,12 @@ class Acquisition:
             fd, info = self._open('/', DIR_FLAGS)
         else:
             parent, _, name = absolute.rpartition('/')
-            parent_fd, _ = self._directory(parent or '/')
+            parent_fd, parent_info = self._directory(parent or '/')
             require(len(self.directories) < MAX_DIRECTORIES, 'directories_limit')
             fd, info = self._open(name, DIR_FLAGS, parent_fd)
+            scoped = any(absolute != anchor and PurePosixPath(absolute).is_relative_to(PurePosixPath(anchor))
+                         for anchor, _ in self.anchors)
+            require(not scoped or info.st_dev == parent_info.st_dev, 'mount_boundary')
             self._observe(absolute, parent_fd, name, info)
         self.directories[absolute] = fd, info
         return fd, info

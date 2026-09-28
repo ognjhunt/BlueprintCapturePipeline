@@ -91,10 +91,12 @@ class Pool:
         factory = roots['factory_output_root'] + '/' + self.intent_id
         for attempt in self.names('factory_children', factory, ID):
             base = factory + '/' + attempt
-            for role, leaf in [('source_snapshots', 'source_binding.json'), ('factories', 'factory.json'),
+            for role, leaf in [('source_snapshots', 'source_binding.json'), ('source_snapshots', 'machinery.json'),
+                               ('source_snapshots', 'release_binding.json'), ('factories', 'factory.json'),
+                               ('factories', 'materialized/factory_receipt.json'),
                                ('source_submissions', 'materialized/submission/scene_configuration_preparation_request.v1.json'),
                                ('source_submissions', 'materialized/submission/bundle_manifest.v1.json'),
-                               ('submission_publications', 'materialized/submission/publication.json'),
+                               ('submission_publications', 'publication.json'),
                                ('sam_prefix_selections', 'materialized/prefix_selection.json')]:
                 self.read(role, base + '/' + leaf)
         self.rows('website_bindings', factory + '/website-source', HEX + r'\.json')
@@ -120,8 +122,6 @@ class Pool:
         self.rows('sam_results', roots['sam_queue_root'] + '/results', 'sam31-' + HEX + r'(?:\.conflict-' + HEX + r')?\.json')
         for child in self.names('sam_progress_groups', roots['sam_queue_root'] + '/progress', 'sam31-' + HEX):
             self.rows('sam_execution_progress', roots['sam_queue_root'] + '/progress/' + child, r'[0-9]{6,}\.json')
-        for role in ('revocations', 'extensions'):
-            pass  # Already selected only beneath this exact intent.
         for selector in self.context['retained_metadata_files']:
             self.read(selector['role'], selector['path'])
         if self.context['progression_config'] is not None:
@@ -154,7 +154,8 @@ def select(decoded, context, intent_id, budget):
     downstream = {role: [] for role in d.ROLES}
     source = {role: [] for role in native.prior.ROLES}
     bridge = {role: [] for role in native.ROLES}
-    raw_index, canonical, by_path = {}, {}, {}
+    raw_index, canonical, by_path, parent_modes = {}, {}, {}, {}
+    explicit = {row['path'] for row in _work_items(context.get('retained_metadata_files', []), budget)}
     selected, frontier, protected = set(), [], []
     owner = context['roots']['intent_root'] + '/' + intent_id
     for index, row in enumerate(_work_items(decoded, budget)):
@@ -165,7 +166,13 @@ def select(decoded, context, intent_id, budget):
             if key.endswith('_digest') and isinstance(value, str) and re.fullmatch('sha256:' + HEX, value):
                 budget.charge('facts')
                 canonical.setdefault(value, []).append(index)
-        if row['path'] == owner or row['path'].startswith(owner + '/'):
+        if row['role'] == 'parent_envelopes' and row['value'].get('schema_version') == 'task_evaluation_launch_preparation_envelope.v1':
+            request = row['value'].get('request')
+            if isinstance(request, dict):
+                budget.charge('facts')
+                parent_modes.setdefault((str(PurePosixPath(row['path']).parent.parent), PurePosixPath(row['path']).name), set()).add(request.get('run_mode'))
+        if row['path'].startswith(owner + '/') or row['path'] in explicit:
+            budget.charge('facts')
             frontier.append(index)
     # Only explicit initial owner records or exact source selectors establish
     # reachability. All other acquisition observations stay protected raw evidence.
@@ -174,6 +181,7 @@ def select(decoded, context, intent_id, budget):
         index = frontier.pop()
         if index in selected:
             continue
+        budget.charge('facts')
         selected.add(index)
         row = decoded[index]
         value = row['value']
@@ -184,18 +192,32 @@ def select(decoded, context, intent_id, budget):
             if isinstance(node, dict):
                 if {'path', 'sha256', 'size_bytes'} <= node.keys():
                     require(type(node['size_bytes']) is int and node['size_bytes'] >= 0, 'reference_invalid')
-                    frontier.extend(raw_index.get((node['path'], node['sha256'], node['size_bytes']), ()))
+                    for found in _work_items(raw_index.get((node['path'], node['sha256'], node['size_bytes']), ()), budget):
+                        budget.charge('facts')
+                        frontier.append(found)
                 for key, child in _work_items(node.items(), budget):
                     if key in {'request_digest', 'envelope_digest', 'preparation_result_digest', 'profile_digest',
                                'intent_digest', 'plan_digest', 'adoption_digest', 'launch_request_digest', 'launch_receipt_digest'}:
-                        frontier.extend(canonical.get(child, ()) if isinstance(child, str) else ())
-                    if key == 'result_filename' and isinstance(child, str):
-                        for candidate, indexes in _work_items(by_path.items(), budget):
-                            if PurePosixPath(candidate).name == child:
-                                frontier.extend(indexes)
+                        for found in _work_items(canonical.get(child, ()) if isinstance(child, str) else (), budget):
+                            budget.charge('facts')
+                            frontier.append(found)
+                    if key == 'result_filename' and isinstance(child, str) and row['role'] == 'preparation_links':
+                        # This producer's link names the configured canonical
+                        # preparation queue, never an arbitrary equal basename.
+                        exact = context['roots']['preparation_queue_root'] + '/results/' + child
+                        for found in _work_items(by_path.get(exact, ()), budget):
+                            budget.charge('facts')
+                            frontier.append(found)
+                    if key == 'request_digest' and row['role'] in {'parent_envelopes', 'activation_envelopes'}:
+                        exact = str(PurePosixPath(row['path']).parent.parent) + '/results/' + PurePosixPath(row['path']).name
+                        for found in _work_items(by_path.get(exact, ()), budget):
+                            budget.charge('facts')
+                            frontier.append(found)
+                    budget.charge('facts')
                     stack.append(child)
             elif isinstance(node, list):
                 for child in _work_items(node, budget):
+                    budget.charge('facts')
                     stack.append(child)
     for index, row in enumerate(_work_items(decoded, budget)):
         role = row['role']
@@ -205,10 +227,18 @@ def select(decoded, context, intent_id, budget):
             protected.append({'role': role, 'path': row['path'], 'sha256': row['sha256'],
                               'size_bytes': len(row['raw']), 'status': 'kept_unselected_metadata'})
             continue
-        if role == 'parent_envelopes':
-            role = 'preparation_envelopes' if value.get('request', {}).get('run_mode') == 'scene_configuration' else 'native_preparation_envelopes'
-        elif role == 'parent_results':
-            role = 'preparation_results' if value.get('schema_version') == 'task_evaluation_launch_preparation_result.v1' else 'native_preparation_results'
+        if role in {'parent_envelopes', 'parent_results'}:
+            p = PurePosixPath(row['path'])
+            modes = parent_modes.get((str(p.parent.parent), p.name), set())
+            if modes == {'scene_configuration'}:
+                role = 'preparation_envelopes' if role == 'parent_envelopes' else 'preparation_results'
+            elif len(modes) == 1 and modes <= {'episode_evaluation', 'destination_qualification'}:
+                role = 'native_preparation_envelopes' if role == 'parent_envelopes' else 'native_preparation_results'
+            else:
+                budget.charge('facts')
+                protected.append({'role': role, 'path': row['path'], 'sha256': row['sha256'],
+                                  'size_bytes': len(row['raw']), 'status': 'kept_parent_mode_unproven'})
+                continue
         elif role == 'activation_envelopes' and value.get('request', {}).get('lane') != 'task_evaluation_scene_configuration':
             role = 'native_activation_envelopes'
         elif role == 'activation_results' and value.get('lane') not in (None, 'task_evaluation_scene_configuration'):
