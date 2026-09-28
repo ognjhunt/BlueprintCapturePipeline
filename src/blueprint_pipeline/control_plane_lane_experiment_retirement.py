@@ -27,7 +27,7 @@ _LOCK = ".experiment-authority.lock"
 _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
-_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|head-prepared|authority-pending))?\.json\Z")
+_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|head-prepared|authority-pending|action|manifest|reservation|retiring-head|retired-head))?\.json\Z")
 _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
@@ -100,6 +100,40 @@ def _capacity(files, parent, *, adding_registration=True):
             files.budget.charge("entries")
             files.proof(parent)
             info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
+            if item.name == "operations":
+                owners._protected(info, directory=True, mode=0o700)
+                operations = files.open(item.name, os.O_RDONLY | os.O_DIRECTORY, parent=parent)
+                try:
+                    files.slot()
+                    operation_count = 0
+                    with os.scandir(operations) as named_operations:
+                        for operation in named_operations:
+                            files.budget.charge("entries")
+                            operation_count += 1
+                            _require(operation_count <= 256 and owners._matches(operation.name, owners._CONSENT_ID),
+                                     "experiment_store_full")
+                            files.proof(operations)
+                            owners._protected(os.stat(operation.name, dir_fd=operations, follow_symlinks=False),
+                                              directory=True, mode=0o700)
+                            reservation_fd = files.open(operation.name + ".reservation.json", os.O_RDONLY, parent=parent)
+                            try:
+                                reservation_info = os.fstat(reservation_fd)
+                                owners._protected(reservation_info, mode=0o600)
+                                reserved = retained._document(files.read_bytes(reservation_fd, 4096), 4096,
+                                                              _work_budget=files.budget)
+                                _require(set(reserved) == {"schema_version", "operation_id", "reserved_bytes", "reservation_digest"}
+                                         and reserved["schema_version"] == "control_plane_lane_experiment_reservation.v1"
+                                         and reserved["operation_id"] == operation.name
+                                         and type(reserved["reserved_bytes"]) is int and 0 < reserved["reserved_bytes"] <= MAX_EXPERIMENT_STORE_BYTES
+                                         and reserved["reservation_digest"] == canonical_digest(reserved, digest_field="reservation_digest"),
+                                         "experiment_store_unsafe")
+                                total += reserved["reserved_bytes"]
+                                _require(total <= MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
+                            finally:
+                                files.close(reservation_fd)
+                finally:
+                    files.close(operations)
+                continue
             owners._protected(info, mode=0o600)
             if item.name == _LOCK:
                 _require(info.st_size == 0, "experiment_store_unsafe")
@@ -110,9 +144,10 @@ def _capacity(files, parent, *, adding_registration=True):
             if match.group(2) is None:
                 count += 1
             total += info.st_size
-            _require(records <= MAX_EXPERIMENT_REGISTRATIONS * 8
+            _require(records <= MAX_EXPERIMENT_REGISTRATIONS * 12
                      and count <= MAX_EXPERIMENT_REGISTRATIONS - int(adding_registration)
-                     and 0 < info.st_size <= _MAX_INTENT and total <= MAX_EXPERIMENT_STORE_BYTES,
+                     and 0 < info.st_size <= (1048576 if match.group(2) == "manifest" else _MAX_INTENT)
+                     and total <= MAX_EXPERIMENT_STORE_BYTES,
                      "experiment_store_full")
     files.budget.tick()
     return total
@@ -185,3 +220,17 @@ def issue_experiment_creation_intent(*, installed_config_path="/etc/blueprint-op
             files.finish()
         finally:
             budget.close()
+
+
+def issue_experiment_action_intent(intent_id, *, principal, owner, action, expires_at_epoch,
+        installed_config_path="/etc/blueprint-operator-door/door.json", now=time.time):
+    from .control_plane_lane_experiment_actions import issue_action
+    return issue_action(intent_id, principal=principal, owner=owner, action=action,
+        expires_at_epoch=expires_at_epoch, installed_config_path=installed_config_path, now=now)
+
+
+def run_registered_experiment_action(action_id, *, expected_action_intent,
+        installed_config_path="/etc/blueprint-operator-door/door.json", now=time.time, _pins_root=None):
+    from .control_plane_lane_experiment_actions import run_action
+    return run_action(action_id, expected_action_intent=expected_action_intent,
+        installed_config_path=installed_config_path, now=now, _pins_root=_pins_root)

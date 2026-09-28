@@ -193,6 +193,8 @@ def stage_resume_signal(
     This is a wake-up signal, not human acceptance or permission to spend.
     The production driver and mask consumer must still run their full validators.
     """
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(evidence_ref, approved_roots)
     root = Path(queue_root)
     ensure_progress_roots(root)
     signal = {"schema_version": RESUME_SCHEMA, "preparation_id": preparation_id,
@@ -268,6 +270,8 @@ def advance_sam31_for_preparation(
     advancing this preparation is shared across the nested validators (and never
     survives the call), the same way the factory and stage executor already run.
     """
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(envelope_context, approved_roots)
     from .validation_file_digests import file_digest_scope
     with file_digest_scope():
         return _advance_sam31_for_preparation(queue_root=queue_root, envelope_context=envelope_context,

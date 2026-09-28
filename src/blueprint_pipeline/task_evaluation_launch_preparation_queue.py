@@ -126,6 +126,8 @@ def _write_launch_preparation_record_exclusive_locked(
 def write_launch_preparation_record_exclusive(
     path: Path, value: Mapping[str, Any]
 ) -> None:
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(value)
     with release_reference_lock(path.parents[2], exclusive=False):
         _write_launch_preparation_record_exclusive_locked(path, value)
 
@@ -137,6 +139,8 @@ def stage_launch_preparation_request(
     submitted_by: str,
 ) -> dict[str, Any]:
     """Validate and immutably queue one no-spend preparation request."""
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(value)
 
     try:
         request = validate_launch_preparation_request(value)

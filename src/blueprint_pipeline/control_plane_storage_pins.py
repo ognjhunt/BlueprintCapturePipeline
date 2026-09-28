@@ -123,6 +123,8 @@ def write_storage_pin(
         if not path.is_absolute():
             raise ControlPlaneStoragePinError("control_plane_storage_pin_path_not_absolute")
         pinned.append(str(path))
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(pinned)
     dependencies: list[dict[str, str]] = []
     for row in depends_on:
         dependency_kind, dependency_id = _validated_owner(

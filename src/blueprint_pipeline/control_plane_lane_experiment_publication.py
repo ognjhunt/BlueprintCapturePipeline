@@ -18,16 +18,18 @@ from .control_plane_lane_owner_target_io import _TargetFiles, _typed
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _require
 
 _NAMES = {
-    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|head-prepared|authority-pending))?\.json",
+    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|head-prepared|authority-pending|action|reservation|retiring-head|retired-head))?\.json",
+    "manifest": r"[0-9a-f]{32}\.manifest\.json",
+    "event": r"e-[0-9]{5}\.json",
     "birth": r"[0-9a-f]{32}\.birth\.json",
     "authority": r"authority-[0-9]{8}-[0-9a-f]{32}\.json",
     "head": r"HEAD\.json",
     "lease": r"\.lane-scratch\.v1\.json",
     "marker": r"\.registered-experiment\.v1\.json",
 }
-_MODES = dict(private=0o600, birth=0o640, authority=0o640, head=0o640,
+_MODES = dict(manifest=0o600, event=0o600, private=0o600, birth=0o640, authority=0o640, head=0o640,
               lease=0o600, marker=0o600)
-_CAPS = dict(private=32768, birth=32768, authority=32768, head=4096,
+_CAPS = dict(manifest=1048576, event=32768, private=32768, birth=32768, authority=32768, head=4096,
              lease=8192, marker=4096)
 
 
@@ -38,6 +40,22 @@ class _BirthFiles(_TargetFiles):
 
     def parent(self, path, *, protected=False):
         selected = retained._path(os.fspath(path), _work_budget=self.budget)
+        known = self.parents.get(selected.parent)
+        if known is not None:
+            self.budget.tick()
+            self.location(known)
+            if protected:
+                current = known
+                for _ in range(64):
+                    owners._protected(os.fstat(current), directory=True)
+                    parent = self.bindings[current][0]
+                    if parent is None:
+                        break
+                    self.proof(parent)
+                    current = parent
+                else:
+                    raise OwnerTargetVersionError("experiment_resource_exhausted")
+            return known, selected.name
         self.budget.charge("roots")
         prefix = Path("/")
         fd = self.parents.get(prefix)

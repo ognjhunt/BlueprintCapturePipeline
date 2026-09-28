@@ -1,0 +1,44 @@
+"""Unsupported publishers refuse decoded registered paths before persistence."""
+import importlib
+import pytest
+
+TARGET = "/mnt/blueprint-work/lanes/g1/registered-" + "a" * 32
+VALUE = {"nested": [{"path": TARGET + "/payload.bin"}]}
+CASES = [
+    ("task_evaluation_launch_preparation_queue", "write_launch_preparation_record_exclusive", {"path": None, "value": VALUE}),
+    ("task_evaluation_launch_preparation_queue", "stage_launch_preparation_request", {"value": VALUE, "queue_root": "/unused", "submitted_by": "owner"}),
+    ("task_evaluation_launch_activation_queue", "stage_launch_activation_request", {"value": VALUE, "queue_root": "/unused", "submitted_by": "owner"}),
+    ("task_evaluation_scene_intake", "stage_scene_intent", {"value": VALUE, "queue_root": "/unused", "authenticated_client": "owner", "trusted_clients": {"owner"}}),
+    ("task_evaluation_scene_construction_queue", "stage_scene_construction", {"request": VALUE, "preparation_result": {}, "recipe": {}, "recipe_configuration_references": (), "render_inputs_result": {}, "queue_root": "/unused"}),
+    ("task_evaluation_scene_construction_queue", "stage_scene_configuration_revision", {"queue_root": "/unused", "source_envelope": VALUE, "expected_production_commit": "a" * 40, "revision_id": "revision", "semantic_checkpoint_digest": "sha256:" + "b" * 64}),
+    ("task_evaluation_episode_compilation_queue", "stage_episode_compilation", {"request": VALUE, "preparation_result": {}, "configured_revision": {}, "configured_scene_bundle_reference": {}, "queue_root": "/unused"}),
+    ("task_evaluation_launch_dispatcher", "stage_launch_request", {"value": VALUE, "queue_root": "/unused"}),
+    ("task_evaluation_policy_canary_handoff_state", "write_immutable", {"path": None, "value": VALUE}),
+    ("task_evaluation_policy_canary_handoff_state", "seal_state", {"path": None, "value": VALUE}),
+    ("task_evaluation_sam31_preparation_queue", "advance_sam31_for_preparation", {"queue_root": None, "envelope_context": VALUE, "approved_roots": ()}),
+]
+
+
+@pytest.mark.parametrize("module,name,kwargs", CASES)
+def test_actual_queue_publisher_refuses_enrolled_reference_before_disk(module, name, kwargs, monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "mkdir", lambda *a, **kw: pytest.fail("unsupported persistent consumer touched disk"))
+    code = importlib.import_module("blueprint_pipeline." + module)
+    with pytest.raises(ValueError, match="experiment_external_publisher_unsupported"):
+        getattr(code, name)(**kwargs)
+
+
+def test_pin_cannot_silently_publish_registered_path_without_current_lifetime(tmp_path):
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
+    with pytest.raises(ValueError, match="experiment_external_publisher_unsupported"):
+        write_storage_pin(pins_root=tmp_path / "pins", kind="activation", owner_id="run", paths=[TARGET])
+    assert not (tmp_path / "pins").exists()
+
+
+def test_decoded_escape_and_relative_registered_names_are_reserved():
+    import json
+    from blueprint_pipeline.control_plane_registered_reference_gate import refuse_registered_references
+    for value in (json.loads('"g1\\u002fregistered-' + 'a' * 32 + '\\u002fpayload"'), "../g1/registered-" + "b" * 32):
+        with pytest.raises(ValueError, match="experiment_external_publisher_unsupported"):
+            refuse_registered_references({"reference": value})
+    refuse_registered_references({"path": "/work/g1/legacy-run/payload", "evidence": [1, True, None]})

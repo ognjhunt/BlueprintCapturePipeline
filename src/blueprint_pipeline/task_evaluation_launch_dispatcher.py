@@ -1011,6 +1011,8 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
 
 
 def stage_launch_request(*, value: Mapping[str, Any], queue_root: str | Path) -> dict[str, Any]:
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(value)
     request = dict(value)
     blockers = validate_launch_request(request)
     if blockers:
@@ -1475,8 +1477,11 @@ def dispatch_launch_request(
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
     publication_readiness_probe: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(request_path)
     request_source = Path(request_path).expanduser().resolve()
     request = _read_json(request_source)
+    refuse_registered_references(request)
     blockers = validate_launch_request(request)
     if public_catalog_path is not None:
         blockers.extend(
@@ -1493,6 +1498,7 @@ def dispatch_launch_request(
     else:
         try:
             profile = _read_json(profile_path)
+            refuse_registered_references(profile)
         except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
             blockers.append("launch_profile_invalid_json")
     if profile:
