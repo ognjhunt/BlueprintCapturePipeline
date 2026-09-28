@@ -48,6 +48,28 @@ and never a host path.
 | `policy_canary_dispatch` | 2 GiB | the measured footprint | canary dispatcher queue boundary |
 | `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
 | `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
+| `scene_configuration_output` | 2 GiB | only with `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`, for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix leaves archives in the job directory, estimated at one unpacked bundle (an estimate, not a proven bound). When it shares the volume, admission checks the larger of its own need and the hold plus those archives up front, and the hold is taken after the prefix releases; otherwise one reservation holds both. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
+
+A measured output hold refused after the CPU prefix is sealed like one refused
+before staging: exactly `scene_configuration_provider_output_disk_budget_exceeded`,
+zero provider mutations, and the ledger's numbers at refusal time. Capacity recovery
+retries either one once the role's projection fits again, but a retry never repeats
+paid external work. So a refusal after the CPU prefix keeps its typed blocker and is
+not retried automatically when the attempt recorded, or cannot rule out, external
+spend. The admission record's `recovery_withheld` names why:
+`api_pretraining_consumed` when paid API pretraining ran,
+`prefix_external_spend_recorded` when the prefix's stage-3 authoring reserved an
+OpenAI or Anthropic cap, and `prefix_spend_unproven` when the prefix's retained output
+(`cpu_prestage_output.zip`, with its `official_openai_cost/` receipts and inference
+reservations) is missing, incomplete or unreadable. `prefix_spend` records what that
+archive showed. The sealed blocker list stays exact, so capacity recovery's observation
+adds `preallocation_capacity_recovery_withheld:<reason>` beside it, which the scene's
+`scene_configuration_failed` state shows, and carries the reason as `recovery_withheld`.
+After an extraction refusal the output stays durable, in B2 and as the local
+zip, but nothing recovers it automatically yet. The website publication reconciler
+and the publication-recovery CLI both require `configuration_completed: true`, which
+stays false by design until readers can fetch archive members on demand (plan
+13a.1, PR C). Nothing re-runs the provider or deletes the zip in that state.
 
 The intake version endpoint reports `disk_headroom` with `refused_roles` and each
 role's `footprints` and `targets` (device, floor, reservations and available
@@ -135,7 +157,8 @@ Pid liveness is the primary liveness signal and the TTL only a backstop for a
 recycled pid. A job holds its reservation for at most its systemd unit's
 `TimeoutStartSec`, so each role's TTL outlives that timeout (a test pins this
 against `deploy/systemd`): `cpu_prestage` and `semantic_pretraining` 12 h,
-`stage_replay`, `policy_canary_dispatch` and `launch_dispatch` 6 h,
+`stage_replay`, `policy_canary_dispatch`, `launch_dispatch` and
+`scene_configuration_output` 6 h,
 `control_plane_deploy` and `evidence_offload` 4 h, every other role 2 h.
 
 The ledger directory is group-writable and root uses it too, so nothing in it

@@ -31,6 +31,12 @@ ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
 pytestmark = pytest.mark.slow
 
 
+@pytest.fixture(autouse=True)
+def _ceiling_output_admission(monkeypatch):
+    """These lane runs pin today's ceiling admission, whatever the shell exports."""
+    monkeypatch.delenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION", raising=False)
+
+
 def _prepare(tmp_path, monkeypatch, *, source_kind="mesh", render_materializer=None):
     queue = ensure_launch_preparation_queue_root(tmp_path / "preparations")
     config, intent_id, intents, now = _config(tmp_path, monkeypatch, submission_enabled=True,
