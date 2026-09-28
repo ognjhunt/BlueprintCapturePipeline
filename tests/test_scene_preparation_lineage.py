@@ -454,6 +454,7 @@ def test_valid_join_never_reads_files_or_calls_current_admission(monkeypatch):
 
 
 @pytest.mark.parametrize("with_activation", [False, True])
+@pytest.mark.slow
 def test_first_join_in_fresh_process_never_imports_runtime_paths(with_activation):
     import os
     from pathlib import Path
