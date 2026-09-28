@@ -45,6 +45,23 @@ def test_source_bundle_is_read_from_fixed_protected_core(tmp_path, monkeypatch):
                for path, raw in values.values())
 
 
+def test_bootstrap_runtime_matches_enforcing_work_volume_snapshot():
+    assert bootstrap()._RUNTIME_ROOT == Path('/mnt/blueprint-work/scene-retirement-runtime')
+
+
+def test_loader_retains_original_source_identity_after_path_changes(tmp_path, monkeypatch):
+    module, package = fixture(tmp_path, monkeypatch)
+    values = module._core_sources()
+    name = 'blueprint_pipeline.task_evaluation_scene_retirement_supervisor'
+    path, raw = values[name]
+    original = module._identity(path.stat())
+    loader = module._SourceOnly(values)
+    path.write_bytes(b'value = "new-protected-version"\n')
+    assert loader.source_identities[name] == original
+    assert loader.values[name] == (path, raw)
+    assert loader.source_identities[name] != module._identity(path.stat())
+
+
 @pytest.mark.parametrize('change', ['linked-source', 'writable-source', 'linked-parent', 'writable-parent'])
 def test_root_import_refuses_mutable_or_linked_source(tmp_path, monkeypatch, change):
     module, package = fixture(tmp_path, monkeypatch)
