@@ -206,7 +206,9 @@ def test_robot_eval_execution_matrix_policy_and_command_edges(
         observations=[{"observation_id": "obs-1"}, {"observation_id": "obs-2"}],
         generated_at="2026-06-01T00:00:00Z",
     )
-    assert [attempt["observation_id"] for attempt in expanded] == ["obs-1", "obs-2"]
+    assert [attempt["observation_id"] for attempt in expanded] == ["obs-1"]
+    assert expanded[0]["status"] == "submitted_unexecuted"
+    assert expanded[0]["success"] is None
 
     status, payload, detail = ree._run_command(
         command_text="/definitely/missing/blueprint-command",

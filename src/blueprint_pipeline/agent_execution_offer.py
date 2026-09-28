@@ -45,9 +45,13 @@ def _read_object(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def build_agent_execution_offer(capture_root: Path) -> tuple[dict[str, Any] | None, str | None]:
+def build_agent_execution_offer(capture_root: Path, *, policy_execution_profiles: tuple[str, ...] = ()) -> tuple[dict[str, Any] | None, str | None]:
     """The offer for this capture, or ``(None, reason)`` when it cannot be made."""
     root = Path(capture_root).resolve()
+    if (len(set(policy_execution_profiles)) != len(policy_execution_profiles)
+            or not set(policy_execution_profiles).issubset({"controlled_observation_v1", "onnx_state_mlp_cpu_v1"})
+            or ("onnx_state_mlp_cpu_v1" in policy_execution_profiles and "controlled_observation_v1" not in policy_execution_profiles)):
+        return None, "policy_execution_profiles_invalid"
     descriptor = _read_object(root / "capture_descriptor.json")
     if descriptor is None:
         return None, "capture_descriptor_missing"
@@ -86,10 +90,12 @@ def build_agent_execution_offer(capture_root: Path) -> tuple[dict[str, Any] | No
         "scenario_id": scenarios.pop(),
         "episode_count": count,
         "episode_specs_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        **({"policy_execution_profiles": list(policy_execution_profiles)} if policy_execution_profiles else {}),
     }, None
 
 
-def publish_agent_execution_offer(capture_root: Path, *, transport=None) -> dict[str, Any]:
+def publish_agent_execution_offer(capture_root: Path, *, transport=None,
+                                  policy_execution_profiles: tuple[str, ...] = ()) -> dict[str, Any]:
     """Post the offer for a website capture. Never raises; records the outcome."""
     root = Path(capture_root).resolve()
     descriptor = _read_object(root / "capture_descriptor.json") or {}
@@ -98,7 +104,7 @@ def publish_agent_execution_offer(capture_root: Path, *, transport=None) -> dict
     if not is_website_entry_source(metadata.get("capture_entry_source")) or not request_id:
         result: dict[str, Any] = {"status": "skipped", "reason": "not_a_website_capture"}
     else:
-        offer, reason = build_agent_execution_offer(root)
+        offer, reason = build_agent_execution_offer(root, policy_execution_profiles=policy_execution_profiles)
         if offer is None:
             result = {"status": "skipped", "reason": reason}
         else:

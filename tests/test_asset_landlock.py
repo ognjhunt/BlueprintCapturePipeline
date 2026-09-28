@@ -214,8 +214,23 @@ def test_uncaptured_output_is_forwarded_without_inheriting_parent_file_fds(isola
     assert "forwarded" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(os.geteuid() != 0, reason='reproduces provider container root')
 def test_foreign_owned_python_tree_is_readable_without_restoring_capabilities(tmp_path):
+    if os.geteuid() != 0:
+        sudo = shutil.which("sudo")
+        if not sudo or subprocess.run([sudo, "-n", "true"], capture_output=True).returncode:
+            pytest.skip("provider-root fixture requires root or passwordless sudo")
+        # CI's unprivileged pytest still executes the real root-only kernel
+        # boundary. No service credentials or outer shard state enter the child.
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([
+            sudo, "-n", "env", f"PYTHONPATH={root / 'src'}",
+            "PYTHONDONTWRITEBYTECODE=1", "BLUEPRINT_ALLOW_REPO_OUTPUT=0",
+            sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+            "-o", "addopts=", f"{Path(__file__).resolve()}::{test_foreign_owned_python_tree_is_readable_without_restoring_capabilities.__name__}",
+        ], capture_output=True, text=True, timeout=60, cwd=root)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "1 passed" in result.stdout
+        return
     from blueprint_pipeline.asset_runtime_permissions import prepare_runtime_code_access
     vendor = tmp_path / 'vendor'
     runtime = vendor / 'kit' / 'python'

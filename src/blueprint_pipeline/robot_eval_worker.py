@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from .common import (
     ensure_dir,
@@ -1560,6 +1560,8 @@ def run_robot_eval_worker(
     cpu_preflight_backends: Sequence[str] = CPU_BACKENDS,
     cpu_preflight_smoke_steps: int = 10,
     allow_cpu_preflight_render: bool = False,
+    allow_policy_execution: bool = False,
+    controlled_policy_executor: Callable[..., Mapping[str, Any]] | None = None,
     timeout_seconds: int | None = None,
     budget_usd: float | None = None,
     artifact_output_uri: str | None = None,
@@ -2008,6 +2010,10 @@ def run_robot_eval_worker(
             cpu_preflight_backends=cpu_preflight_backends,
             cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
             allow_cpu_preflight_render=allow_cpu_preflight_render,
+            # ADP-050/day 28: these are trusted worker startup arguments,
+            # never selected from the downloaded customer manifest.
+            allow_policy_execution=allow_policy_execution,
+            controlled_policy_executor=controlled_policy_executor,
             timeout_seconds=selected_timeout,
             budget_usd=selected_budget,
         )

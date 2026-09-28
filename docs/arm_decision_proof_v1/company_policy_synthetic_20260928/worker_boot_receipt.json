@@ -1,0 +1,16 @@
+{
+  "schema_version": "company_policy_worker_boot_receipt.v1",
+  "source": "trusted_company_policy_worker_bootstrap",
+  "status": "dedicated_ephemeral_worker_ready",
+  "worker_identity": "blueprint-policy-proof-dedicated-lima",
+  "pipeline_release_sha": "e85d3e29277f9662e81352dd0dc5a80316e93d60",
+  "sandbox_attempt_id": "blueprint-synthetic-attempt-20260928",
+  "dedicated_ephemeral_worker": true,
+  "scene_bytes_present": false,
+  "observation_bytes_present": false,
+  "mounted_customer_input_paths": [],
+  "mount_inventory_sha256": "5bb091959f2868e571ccd5a63ba5305d4e83fd60cbcd3cb1eb49657b598d30df",
+  "attestation_key_id": "ephemeral-synthetic-proof",
+  "receipt_digest": "sha256:ffc15ab60a900c56779097733c703c3fb3eb9f33cb343d70732beba1ba4abb39",
+  "attestation_hmac_sha256": "777f9fff1fcb84524ab73ad70eaeb8350ba4468a405ee7a90f71b92b80764fdc"
+}
