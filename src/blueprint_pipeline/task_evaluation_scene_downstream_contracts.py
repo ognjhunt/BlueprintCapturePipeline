@@ -96,7 +96,10 @@ class OutputRows(list):
 
     def append(self, row):
         require(self.budget['rows'] < self.limits['MAX_ROWS'], 'rows_limit')
-        length = bounded_size(row, self.limits['MAX_OUTPUT_BYTES'] - self.budget['bytes'])
+        remaining = self.limits['MAX_OUTPUT_BYTES'] - self.budget['bytes']
+        if self.emission_budget is not None:
+            remaining = self.emission_budget.preflight_row(row, remaining, reference=self.reference)
+        length = bounded_size(row, remaining)
         if self.emission_budget is not None:
             self.emission_budget.reserve_row(row, reference=self.reference)
         self.budget['bytes'] += length

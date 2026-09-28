@@ -95,3 +95,32 @@ def test_private_child_path_charges_emissions_before_bulk_output_encoding(child,
     monkeypatch.setattr(preparation, '_encoded', encoded)
     with pytest.raises(c.RetainedEmissionBudgetError):
         call()
+
+
+@pytest.mark.parametrize('kind', ['rows', 'references'])
+def test_exhausted_shared_occurrence_refuses_before_native_measurement(monkeypatch, kind):
+    from blueprint_pipeline import task_evaluation_scene_downstream_contracts as downstream
+    c = budget_api()
+    budget = c.RetainedEmissionBudget(max_bytes=128, max_rows=0 if kind == 'rows' else 4,
+                                    max_references=0 if kind == 'references' else 4)
+    rows = downstream.OutputRows({'rows': 0, 'bytes': 0}, {'MAX_ROWS': 4, 'MAX_OUTPUT_BYTES': 128},
+                                 emission_budget=budget, reference=kind == 'references')
+    monkeypatch.setattr(downstream, 'bounded_size', lambda *a: pytest.fail('native traversal before exhausted shared cap'))
+    with pytest.raises(c.RetainedEmissionBudgetError):
+        rows.append({'a': 1})
+
+
+def test_native_measurement_receives_smaller_shared_remaining_allowance(monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_downstream_contracts as downstream
+    c = budget_api()
+    budget = c.RetainedEmissionBudget(max_bytes=16, max_rows=4, max_references=4)
+    original = downstream.bounded_size
+    seen = []
+    def measure(value, limit):
+        seen.append(limit)
+        assert limit == 16
+        return original(value, limit)
+    monkeypatch.setattr(downstream, 'bounded_size', measure)
+    rows = downstream.OutputRows({'rows': 0, 'bytes': 0}, {'MAX_ROWS': 4, 'MAX_OUTPUT_BYTES': 128}, emission_budget=budget)
+    rows.append({'a': 1})
+    assert seen == [16]

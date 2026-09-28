@@ -81,6 +81,16 @@ class RetainedEmissionBudget:
             scope.used['rows'] += 1
             scope.used['references'] += int(reference)
 
+    def preflight_row(self, row, native_remaining, *, reference=False):
+        # No counter change. Fail shared occurrence caps and stream the row
+        # under min(native,parent) before the legacy stack-based measurement.
+        for scope in (*self.ancestors, self):
+            _require(scope.used['rows'] < scope.caps['rows'])
+            _require(not reference or scope.used['references'] < scope.caps['references'])
+        effective = min(native_remaining, self.remaining_bytes)
+        _measure(row, effective)
+        return effective
+
     def reserve_reference(self, row):
         self.reserve_row(row, reference=True)
 
