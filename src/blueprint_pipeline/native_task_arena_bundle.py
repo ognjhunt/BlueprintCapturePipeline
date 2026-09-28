@@ -25,7 +25,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .adp_isaac_lab_arena_vast import DEFAULT_IMAGE
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE as DEFAULT_IMAGE
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import RECEIPT_SCHEMA_VERSION

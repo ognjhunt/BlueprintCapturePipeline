@@ -23,8 +23,21 @@ def g1_paid_campaign_terminal_evidence(
     record: Callable[[Path, bytes], dict[str, Any]],
     error_factory: Callable[[str], Exception],
 ) -> dict[str, Any] | None:
-    if result.get("schema_version") != "native_g1_paid_campaign_result.v1":
+    schemas = {
+        "native_g1_paid_campaign_result.v1": (
+            "native_g1_development_campaign", "native_g1_provider_campaign_result.v1",
+            "native_g1_paid_campaign.v1",
+        ),
+        "native_g1_team_paid_policy_result.v1": (
+            "native_g1_team_policy", "native_g1_team_provider_result.v1",
+            "native_g1_team_paid_policy.v1",
+        ),
+    }
+    contract = schemas.get(result.get("schema_version"))
+    if contract is None:
         return None
+    bundle_kind, native_schema, closeout_kind = contract
+    selected = bundle_kind == "native_g1_team_policy"
     if result_path.name != "adp_arena_vast_result.json":
         raise error_factory("vast_official_g1_terminal_result_invalid")
     run_root = result_path.parent
@@ -77,7 +90,7 @@ def g1_paid_campaign_terminal_evidence(
         ),
         "artifact_manifest": attempt_root / "artifact_manifest.json",
         "native_result": (
-            attempt_root / "immutable_execution/native_g1_provider_campaign_result.v1.json"
+            attempt_root / "immutable_execution" / (native_schema + ".json")
         ),
         "watchdog_receipt": (
             attempt_root / "independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json"
@@ -123,7 +136,7 @@ def g1_paid_campaign_terminal_evidence(
         or closeout.get("teardown_manifest")
         != record(loaded["teardown_manifest"][0], loaded["teardown_manifest"][2])
         or adapter.get("schema_version") != "vast_provider_adapter_result.v1"
-        or adapter.get("provider_bundle_kind") != "native_g1_development_campaign"
+        or adapter.get("provider_bundle_kind") != bundle_kind
         or adapter.get("vast_instance_ids") != [instance_id]
         or adapter.get("status") not in {"completed", "blocked"}
         or adapter.get("final_validation_status") != "passed"
@@ -159,18 +172,23 @@ def g1_paid_campaign_terminal_evidence(
         or cleanup.get("raw_secret_values_recorded") is not False
     ):
         raise error_factory("vast_official_g1_terminal_closure_invalid")
+    expected_native_status = (
+        "completed_development_only" if selected and result.get("status") == "completed"
+        else result.get("status")
+    )
     if native is not None and (
-        native.get("schema_version") != "native_g1_provider_campaign_result.v1"
-        or native.get("status") != result.get("status")
+        native.get("schema_version") != native_schema
+        or native.get("status") != expected_native_status
         or native.get("claim_ceiling") != "development_only"
-        or native.get("ranking_eligible") is not False
-        or native.get("physical_outcome_claimed") is not False
+        or (selected and native.get("public_redistribution_authorized") is not False)
+        or (not selected and native.get("ranking_eligible") is not False)
+        or (not selected and native.get("physical_outcome_claimed") is not False)
         or native.get("result_digest") != canonical_digest(native, digest_field="result_digest")
         or result.get("native_control_result_digest") != native.get("result_digest")
     ):
         raise error_factory("vast_official_g1_terminal_closure_invalid")
     evidence = {
-        "financial_closeout_kind": "native_g1_paid_campaign.v1",
+        "financial_closeout_kind": closeout_kind,
         "terminal_status": result["status"],
         "provider_absence_confirmed": True,
         "provider_zero_verified": True,

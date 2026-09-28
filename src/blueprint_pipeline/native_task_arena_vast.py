@@ -39,12 +39,12 @@ from .native_task_arena_paid_authority import (
     validate_native_task_arena_paid_attempt_authority,
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_MINIMUM_DRIVER_VERSION as MINIMUM_DRIVER_VERSION
 
 
 PROBE_KIND = "native-task-arena-construction"
 RESULT_SCHEMA_VERSION = "native_task_arena_vast_run.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/native-task-arena"
-MINIMUM_DRIVER_VERSION = "580.65.06"
 NO_POLICY_MIN_GPU_RAM_MB = 24_000
 NO_POLICY_PREFERRED_GPU_KEYWORDS = ("L40S", "RTX 6000 Ada", "RTX 4090")
 # Runtime layers and evidence are served from Blueprint's US object store.

@@ -27,6 +27,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "native_task_arena",
     "native_task_arena_policy_canary_session",
     "native_g1_development_campaign",
+    "native_g1_team_policy",
     "paired_target_native_import",
     "adp009d_ovrtx",
     "adp009d_aura_native",
@@ -41,6 +42,26 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_retained_scene_render",
     "task_evaluation_scene_configuration",
 )
+
+
+def provider_command_execute_fallback_allowed(kind: str, *, configured_override: bool) -> bool:
+    """Log unavailability cannot restart an owned selected-policy episode."""
+    if kind == "native_g1_team_policy":
+        return False
+    return configured_override or kind in {
+        "native_task_arena", "native_task_arena_policy_canary_session", "native_g1_development_campaign",
+    }
+
+
+def g1_provider_output_contract(kind: str) -> tuple[str | None, bool, tuple[str, ...]]:
+    """Retain lossless G1 evidence while excluding downloaded execution inputs."""
+    if kind == "native_g1_team_policy":
+        return "native_g1_team_provider_result.v1.json", True, ()
+    if kind == "native_g1_development_campaign":
+        return "native_g1_provider_campaign_result.v1.json", True, (
+            "policy-runtime-build/policy-runtime/", "models/checkpoints/", "models/sonic/",
+        )
+    return None, False, ()
 
 
 def wam_registered_alternative_inputs_present(
@@ -294,6 +315,16 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_native_g1_campaign_runtime_contract"
+    elif provider_bundle_kind == "native_g1_team_policy":
+        entrypoint_valid = all(token in entrypoint_text for token in (
+            "native_task_runtime_source_provision", "native_g1_team_provider_runtime",
+            "native_g1_team_provider_result.v1.json", "stage_reached",
+        ))
+        runner_valid = all(token in runner_text for token in (
+            "verify_g1_team_provider_inputs", "run_supervised_g1_team_worker",
+            "verified_output", "development_only", "credential_file_path",
+        ))
+        runner_blocker = "provider_runner_missing_native_g1_team_runtime_contract"
     elif provider_bundle_kind == "paired_target_native_import":
         entrypoint_valid = all(
             token in entrypoint_text

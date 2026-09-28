@@ -39,14 +39,24 @@ def _refuse(code: str) -> None:
     raise CensusDecisionError(code)
 
 
-def _digest(payload: bytes) -> str:
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
+def _digest(payload: bytes, *, _work_budget=None) -> str:
+    if _work_budget is not None:
+        _work_budget.tick()
+    result = "sha256:" + hashlib.sha256(payload).hexdigest()
+    if _work_budget is not None:
+        _work_budget.tick()
+    return result
 
 
-def encode_validation_report(report: dict[str, Any]) -> bytes:
+def encode_validation_report(report: dict[str, Any], *, _work_budget=None) -> bytes:
     """One deterministic encoding for stdout and retained validation artifacts."""
-    return (json.dumps(report, sort_keys=True, separators=(",", ":"),
-                       ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+    if _work_budget is not None:
+        _work_budget.available("output_bytes", _work_budget.measure(report) + 1)
+    encoded = (json.dumps(report, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+    if _work_budget is not None:
+        _work_budget.tick()
+    return encoded
 
 
 def _bound(value: int) -> int:
@@ -56,7 +66,20 @@ def _bound(value: int) -> int:
 
 
 @contextmanager
-def _opened_parent(path: Path):
+def _opened_parent(path: Path, *, _work_budget=None, _descriptors=None):
+    if _work_budget is not None:
+        from .control_plane_lane_owner_consents import _Files, _require
+        own = _descriptors is None
+        files = _Files(_work_budget) if own else _descriptors
+        _require(type(files) is _Files and files.budget is _work_budget, "owner_consent_options_invalid")
+        try:
+            yield files.parent(path)
+        finally:
+            if own:
+                files.finish()
+        return
+    if _descriptors is not None:
+        _refuse("census_input_unsafe")
     if ".." in Path(path).parts:
         _refuse("census_input_unsafe")
     absolute = Path(os.path.abspath(path))
@@ -70,9 +93,24 @@ def _opened_parent(path: Path):
         yield directory, absolute.name
 
 
-def read_census_input_record(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> tuple[bytes, tuple[int, int]]:
+def read_census_input_record(path: Path, *, max_bytes: int = MAX_JSON_BYTES,
+                             _work_budget=None, _descriptors=None) -> tuple[bytes, tuple[int, int]]:
     """Read bounded input bytes and retain their inode identity for artifact alias checks."""
     limit = _bound(max_bytes)
+    if _work_budget is not None:
+        from .control_plane_lane_owner_consents import _Files, _require
+        own = _descriptors is None
+        files = _Files(_work_budget) if own else _descriptors
+        _require(type(files) is _Files and files.budget is _work_budget, "owner_consent_options_invalid")
+        try:
+            raw, acquired = files.read(path, cap=limit)
+            files.verify()
+            return raw, (acquired.info.st_dev, acquired.info.st_ino)
+        finally:
+            if own:
+                files.finish()
+    if _descriptors is not None:
+        _refuse("census_input_unsafe")
     try:
         with _opened_parent(path) as (directory, name):
             descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -112,9 +150,11 @@ def read_census_input_record(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> 
         raise CensusDecisionError(code) from exc
 
 
-def read_census_input(path: Path, *, max_bytes: int = MAX_JSON_BYTES) -> bytes:
+def read_census_input(path: Path, *, max_bytes: int = MAX_JSON_BYTES,
+                      _work_budget=None, _descriptors=None) -> bytes:
     """Read a bounded regular input through no-follow ancestor descriptors."""
-    return read_census_input_record(path, max_bytes=max_bytes)[0]
+    return read_census_input_record(path, max_bytes=max_bytes, _work_budget=_work_budget,
+                                    _descriptors=_descriptors)[0]
 
 
 def write_census_validation_report(path: Path, payload: bytes, *, input_paths, input_identities) -> None:
@@ -150,7 +190,7 @@ def write_census_validation_report(path: Path, payload: bytes, *, input_paths, i
         raise CensusDecisionError("census_input_unsafe") from exc
 
 
-def _document(payload: bytes, limit: int) -> dict[str, Any]:
+def _document(payload: bytes, limit: int, *, _work_budget=None) -> dict[str, Any]:
     if not isinstance(payload, bytes):
         _refuse("census_json_invalid")
     if len(payload) > limit:
@@ -159,6 +199,8 @@ def _document(payload: bytes, limit: int) -> dict[str, Any]:
     def unique(pairs):
         result = {}
         for key, value in pairs:
+            if _work_budget is not None:
+                _work_budget.charge("values")
             if key in result:
                 raise ValueError("duplicate")
             result[key] = value
@@ -168,24 +210,40 @@ def _document(payload: bytes, limit: int) -> dict[str, Any]:
         raise ValueError("nonfinite")
 
     try:
+        if _work_budget is not None:
+            _work_budget.tick()
+            _work_budget.preflight(payload.decode("utf-8"))
         value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique,
                            parse_constant=nonfinite)
         if not isinstance(value, dict):
             _refuse("census_json_invalid")
-        encode_validation_report(value)  # Reject overflowing floats and invalid Unicode too.
+        encode_validation_report(value, _work_budget=_work_budget)
         return value
     except (ValueError, UnicodeError, RecursionError) as exc:
+        if _work_budget is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            if isinstance(exc, ReferenceCollectionBudgetError):
+                raise
         raise CensusDecisionError("census_json_invalid") from exc
 
 
-def _number(value: Any) -> bool:
+def _number(value: Any, *, _work_budget=None) -> bool:
+    if _work_budget is not None:
+        _work_budget.tick()
+        if type(value) is int and value.bit_length() > 63:
+            return False
     try:
         return type(value) in (int, float) and math.isfinite(value) and value >= 0
     except OverflowError:
         return False
 
 
-def _path(value: Any) -> PurePosixPath:
+def _path(value: Any, *, _work_budget=None) -> PurePosixPath:
+    if _work_budget is not None:
+        _work_budget.tick()
+        if not isinstance(value, str) or len(value) > MAX_PATH_BYTES:
+            _refuse("census_row_ambiguous")
+        _work_budget.measure(value, cap=MAX_PATH_BYTES + 2)
     try:
         byte_count = len(value.encode("utf-8")) if isinstance(value, str) else 0
     except UnicodeError as exc:
@@ -203,19 +261,23 @@ def _path(value: Any) -> PurePosixPath:
 
 
 
-def _counter(value: Any) -> bool:
+def _counter(value: Any, *, _work_budget=None) -> bool:
+    if _work_budget is not None:
+        _work_budget.tick()
+        if type(value) is int and value.bit_length() > 63:
+            return False
     return type(value) is int and value >= 0
 
 
-def _inventory_rows(census: dict, roots: tuple[PurePosixPath, ...]) -> dict[str, dict]:
+def _inventory_rows(census: dict, roots: tuple[PurePosixPath, ...], *, _work_budget=None) -> dict[str, dict]:
     fields = {"schema_version", "status", "observed_at_epoch", "rows", "candidate_count",
               "entries_visited", "unique_allocated_bytes", "scan_errors", "mutations"}
     if set(census) != fields or census["schema_version"] != INVENTORY_SCHEMA:
         _refuse("census_inventory_invalid")
     if census["status"] != "complete" or census["scan_errors"] != []:
         _refuse("census_inventory_incomplete")
-    if (not _number(census["observed_at_epoch"])
-            or any(not _counter(census[key]) for key in
+    if (not _number(census["observed_at_epoch"], _work_budget=_work_budget)
+            or any(not _counter(census[key], _work_budget=_work_budget) for key in
                    ("candidate_count", "entries_visited", "unique_allocated_bytes", "mutations"))
             or census["mutations"] != 0):
         _refuse("census_inventory_invalid")
@@ -229,12 +291,15 @@ def _inventory_rows(census: dict, roots: tuple[PurePosixPath, ...]) -> dict[str,
     indexed: dict[str, dict] = {}
     known_refs = {"process", "queue", "pin", "live_release", "active_run"}
     for row in rows:
+        if _work_budget is not None:
+            _work_budget.charge("rows")
+            _work_budget.charge("entries")
         if isinstance(row, dict) and "references" not in row:
             _refuse("census_reference_invalid")
         if not isinstance(row, dict) or not row_fields <= set(row):
             _refuse("census_inventory_invalid")
-        if (any(not _counter(row[key]) for key in ("allocated_bytes", "shared_names", "unreadable"))
-                or any(row[key] is not None and not _number(row[key]) for key in
+        if (any(not _counter(row[key], _work_budget=_work_budget) for key in ("allocated_bytes", "shared_names", "unreadable"))
+                or any(row[key] is not None and not _number(row[key], _work_budget=_work_budget) for key in
                        ("newest_mtime_epoch", "age_seconds"))
                 or row["owner_decision"] is not None or row["approved_expiry"] is not None
                 or any(not isinstance(row[key], str) for key in
@@ -242,30 +307,43 @@ def _inventory_rows(census: dict, roots: tuple[PurePosixPath, ...]) -> dict[str,
             _refuse("census_inventory_invalid")
         if row["unreadable"] != 0:
             _refuse("census_inventory_incomplete")
-        path = _path(row["path"])
+        path = _path(row["path"], _work_budget=_work_budget)
         if path in roots or not any(root in path.parents for root in roots) or str(path) in indexed:
             _refuse("census_row_ambiguous")
         refs = row["references"]
+        if _work_budget is not None:
+            _work_budget.tick()
+            _work_budget.charge("entries", len(refs) if isinstance(refs, list) else 0)
         if (not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in known_refs for ref in refs)
                 or len(set(refs)) != len(refs)):
             _refuse("census_reference_invalid")
         indexed[str(path)] = row
     for path in indexed:
+        if _work_budget is not None:
+            _work_budget.charge("entries", len(PurePosixPath(path).parents))
         if any(str(parent) in indexed for parent in PurePosixPath(path).parents):
             _refuse("census_row_ambiguous")
-    if sum(row["allocated_bytes"] for row in rows) != census["unique_allocated_bytes"]:
+    allocated = 0
+    for row in rows:
+        if _work_budget is not None:
+            _work_budget.charge("entries")
+        allocated += row["allocated_bytes"]
+    if allocated != census["unique_allocated_bytes"]:
         _refuse("census_inventory_invalid")
     return indexed
 
 
-def _decision_metadata(decision: dict, roots: tuple[PurePosixPath, ...], now: float) -> None:
+def _decision_metadata(decision: dict, roots: tuple[PurePosixPath, ...], now: float, *, _work_budget=None) -> None:
+    if _work_budget is not None:
+        _work_budget.measure(decision)
+        _work_budget.tick()
     action = decision["action"]
     base = {"path", "action", "owner"}
     try:
         _id(decision.get("owner"), "owner")
         if action == "keep":
             expiry = decision.get("expires_at_epoch")
-            if (set(decision) != base | {"expires_at_epoch"} or not _number(expiry)
+            if (set(decision) != base | {"expires_at_epoch"} or not _number(expiry, _work_budget=_work_budget)
                     or not 0 < expiry - now <= MAX_TTL_SECONDS):
                 _refuse("census_decision_metadata_invalid")
         elif action in ("delete", "offload"):
@@ -283,8 +361,12 @@ def _decision_metadata(decision: dict, roots: tuple[PurePosixPath, ...], now: fl
                 _refuse("census_decision_metadata_invalid")
             metadata = {key: value for key, value in decision.items() if key not in base}
             _creation_lease(owner=decision["owner"], now=lambda: now, **metadata)
+            if _work_budget is not None:
+                _work_budget.tick()
             path = PurePosixPath(decision["path"])
             for root in roots:
+                if _work_budget is not None:
+                    _work_budget.charge("entries")
                 if root not in path.parents:
                     continue
                 relative = path.relative_to(root).parts
@@ -292,33 +374,67 @@ def _decision_metadata(decision: dict, roots: tuple[PurePosixPath, ...], now: fl
                         and relative[1:] != (decision["lane"], decision["name"])):
                     _refuse("census_decision_metadata_invalid")
     except (LaneScratchError, TypeError, ValueError, OverflowError) as exc:
+        if _work_budget is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            if isinstance(exc, ReferenceCollectionBudgetError):
+                raise
         raise CensusDecisionError("census_decision_metadata_invalid") from exc
 
 
 def validate_census_annotations(
     census_bytes: bytes, annotation_bytes: bytes, *, now: float, allowed_roots,
     max_input_bytes: int = MAX_JSON_BYTES, max_output_bytes: int = MAX_JSON_BYTES,
+    _work_budget=None,
 ) -> dict[str, Any]:
     """Validate byte-bound retained proposals; never stat, resolve or operate on targets."""
-    census = _document(census_bytes, _bound(max_input_bytes))
-    annotations = _document(annotation_bytes, _bound(max_input_bytes))
+    if _work_budget is not None:
+        from .control_plane_reference_budget import ReferenceCollectionBudget
+        if not isinstance(_work_budget, ReferenceCollectionBudget):
+            _refuse("census_annotations_invalid")
+        _work_budget.tick()
+        if not isinstance(census_bytes, bytes) or not isinstance(annotation_bytes, bytes):
+            _refuse("census_json_invalid")
+        limit = _bound(max_input_bytes)
+        if len(census_bytes) > limit or len(annotation_bytes) > limit:
+            _refuse("census_input_too_large")
+        _work_budget.charge("raw_bytes", len(census_bytes) + len(annotation_bytes))
+        for payload in (census_bytes, annotation_bytes):
+            try:
+                _work_budget.preflight(payload.decode("utf-8"))
+            except UnicodeError:
+                _refuse("census_json_invalid")
+    return _validate_census_annotations(census_bytes, annotation_bytes, now=now,
+        allowed_roots=allowed_roots, max_input_bytes=max_input_bytes,
+        max_output_bytes=max_output_bytes, _work_budget=_work_budget)
+
+
+def _validate_census_annotations(census_bytes, annotation_bytes, *, now, allowed_roots,
+        max_input_bytes=MAX_JSON_BYTES, max_output_bytes=MAX_JSON_BYTES, _work_budget=None):
+    """Semantic core; issuance's owned acquisition adapter supplies preflighted bytes."""
+    census = _document(census_bytes, _bound(max_input_bytes), _work_budget=_work_budget)
+    annotations = _document(annotation_bytes, _bound(max_input_bytes), _work_budget=_work_budget)
     output_limit = _bound(max_output_bytes)
-    if not _number(now):
+    if not _number(now, _work_budget=_work_budget):
         _refuse("census_annotations_invalid")
     try:
         if isinstance(allowed_roots, (str, bytes)):
             _refuse("census_inventory_invalid")
-        roots = tuple(_path(str(root)) if isinstance(root, (str, PurePosixPath)) else
-                      _path(None) for root in allowed_roots)
+        roots_list = []
+        for root in allowed_roots:
+            if _work_budget is not None:
+                _work_budget.charge("roots")
+            roots_list.append(_path(str(root) if isinstance(root, (str, PurePosixPath)) else None,
+                                    _work_budget=_work_budget))
+        roots = tuple(roots_list)
     except TypeError as exc:
         raise CensusDecisionError("census_inventory_invalid") from exc
     if not roots:
         _refuse("census_inventory_invalid")
-    rows = _inventory_rows(census, roots)
+    rows = _inventory_rows(census, roots, _work_budget=_work_budget)
     if (annotations.get("schema_version") != ANNOTATIONS_SCHEMA
             or set(annotations) != {"schema_version", "census_digest", "decisions"}):
         _refuse("census_annotations_invalid")
-    digest = _digest(census_bytes)
+    digest = _digest(census_bytes, _work_budget=_work_budget)
     if annotations["census_digest"] != digest:
         _refuse("census_identity_mismatch")
     decisions = annotations["decisions"]
@@ -327,6 +443,9 @@ def validate_census_annotations(
     validated = {}
     counts = dict.fromkeys(ACTIONS, 0)
     for decision in decisions:
+        if _work_budget is not None:
+            _work_budget.charge("facts")
+            _work_budget.charge("entries")
         if not isinstance(decision, dict):
             _refuse("census_annotations_invalid")
         path = decision.get("path")
@@ -337,20 +456,27 @@ def validate_census_annotations(
         action = decision.get("action")
         if not isinstance(action, str) or action not in ACTIONS:
             _refuse("census_decision_action_invalid")
-        _decision_metadata(decision, roots, now)
+        _decision_metadata(decision, roots, now, _work_budget=_work_budget)
         refs = rows[path]["references"]
         if refs and action in ("delete", "offload"):
             _refuse("census_decision_referenced")
+        if _work_budget is not None:
+            _work_budget.charge("entries", len(refs))
+            _work_budget.retain(decision)
+            _work_budget.retain({"references": refs})
         validated[path] = decision | {"references": list(refs)}
         counts[action] += 1
     if len(validated) != len(rows):
         _refuse("census_decision_missing")
+    if _work_budget is not None:
+        _work_budget.tick()
+        _work_budget.available("values", len(validated))
     report = {"schema_version": VALIDATION_SCHEMA, "status": "validated",
-              "census_digest": digest, "annotations_digest": _digest(annotation_bytes),
+              "census_digest": digest, "annotations_digest": _digest(annotation_bytes, _work_budget=_work_budget),
               "decision_count": len(validated), "decision_counts": counts,
               "decisions": [validated[path] for path in sorted(validated)],
               "mutations": 0, "execution_authorized": False,
               "requires_fresh_reference_check": True}
-    if len(encode_validation_report(report)) > output_limit:
+    if len(encode_validation_report(report, _work_budget=_work_budget)) > output_limit:
         _refuse("census_validation_output_too_large")
     return report
