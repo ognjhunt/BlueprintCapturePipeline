@@ -246,3 +246,37 @@ def test_publisher_overlong_native_path_is_rejected_before_string_growth(monkeyp
     monkeypatch.setattr(Path, "__str__", guarded)
     with pytest.raises(ValueError, match="experiment_publisher_input_limit"):
         refuse_registered_references(selected)
+
+
+@pytest.mark.parametrize("operation", ["write", "release"])
+def test_actual_pin_storage_destination_cannot_select_registered_target(tmp_path, operation):
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin, release_storage_pin
+
+    target = tmp_path / "g1" / ("registered-" + "a" * 32)
+    target.mkdir(parents=True)
+    with pytest.raises(ValueError, match="experiment_external_publisher_unsupported"):
+        if operation == "write":
+            write_storage_pin(
+                pins_root=target, kind="activation", owner_id="run", paths=[tmp_path / "ordinary"]
+            )
+        else:
+            release_storage_pin(pins_root=target, kind="activation", owner_id="run")
+    assert list(target.iterdir()) == []
+
+
+def test_native_launch_selected_profile_root_is_gated_before_request_payload(tmp_path, monkeypatch):
+    from pathlib import Path
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import dispatch_launch_request
+
+    target = tmp_path / "g1" / ("registered-" + "a" * 32)
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *a, **kw: pytest.fail("native dispatch read payload before path guard"),
+    )
+    with pytest.raises(ValueError, match="experiment_external_publisher_unsupported"):
+        dispatch_launch_request(
+            request_path=tmp_path / "ordinary.json",
+            profile_dir=target,
+            state_root=tmp_path / "state",
+        )
