@@ -280,12 +280,13 @@ SCENE_RETIREMENT_STORES=(
   "${SCENE_RETIREMENT_ROOT}/coordinator"
   "${SCENE_RETIREMENT_ROOT}/generations"
   "${SCENE_RETIREMENT_ROOT}/journals"
+  "${SCENE_RETIREMENT_ROOT}/journals/processes"
   "${SCENE_RETIREMENT_ROOT}/journals/retired"
   "${SCENE_RETIREMENT_ROOT}/journals.metadata"
   "${SCENE_RETIREMENT_ROOT}/consents"
 )
-SCENE_RETIREMENT_MODES=(755 755 700 700 700 750 700)
-SCENE_RETIREMENT_OWNERS=(root root "${SERVICE_USER}" root root root root)
+SCENE_RETIREMENT_MODES=(755 755 700 700 700 700 750 700)
+SCENE_RETIREMENT_OWNERS=(root root "${SERVICE_USER}" root root root root root)
 # Preflight every named directory and ancestry before the first mutation.
 # Existing authority is validated, never repaired or recursively re-owned.
 for SCENE_INDEX in "${!SCENE_RETIREMENT_STORES[@]}"; do
@@ -320,6 +321,7 @@ run install -d -m 0755 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}"
 run install -d -m 0755 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/coordinator"
 run install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/generations"
 run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals"
+run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals/processes"
 run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals/retired"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals.metadata"
 run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/consents"
