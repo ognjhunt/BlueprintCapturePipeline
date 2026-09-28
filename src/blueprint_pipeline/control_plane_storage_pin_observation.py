@@ -313,7 +313,15 @@ class _Scan:
                     raise _Blocked(error.code) from None
             raw = bytearray()
             while len(raw) <= before.st_size:
-                chunk = self.call(os.read, fd, min(READ_CHUNK_BYTES, before.st_size + 1 - len(raw)))
+                amount = min(READ_CHUNK_BYTES, before.st_size + 1 - len(raw))
+                if self.shared is not None:
+                    try:
+                        # EOF/growth sentinels also require allowance before allocation.
+                        self.shared.available("raw_bytes", 1)
+                    except ReferenceCollectionBudgetError as error:
+                        raise _Blocked(error.code) from None
+                    amount = min(amount, self.shared.limits["raw_bytes"] - self.shared.counts["raw_bytes"])
+                chunk = self.call(os.read, fd, amount)
                 self.bytes += len(chunk)
                 _require(self.bytes <= MAX_TOTAL_BYTES, "pin_bytes_limit")
                 self.shared_charge("raw_bytes", len(chunk))

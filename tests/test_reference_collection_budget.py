@@ -179,3 +179,58 @@ def test_public_deadline_state_cannot_reset_single_use_budget():
     for name in ("deadline", "last", "duration", "monotonic"):
         with pytest.raises(AttributeError):
             setattr(shared, name, None)
+
+
+@pytest.mark.parametrize("family", ["primary", "pins", "auxiliary"])
+@pytest.mark.parametrize("grows", [False, True])
+@pytest.mark.parametrize("chunk_bytes", [2, 4096])
+def test_shared_raw_boundary_never_allocates_unbudgeted_growth_or_eof_sentinel(
+        tmp_path, monkeypatch, family, grows, chunk_bytes):
+    import os
+
+    from blueprint_pipeline import control_plane_queue_observation as queues
+    from blueprint_pipeline import control_plane_storage_pin_observation as pins
+    from tests.test_queue_auxiliary_layouts import CHILD, root_for
+
+    if family == "primary":
+        root = tmp_path / "queue"
+        (root / "pending").mkdir(parents=True)
+        path = root / "pending" / "row.json"
+    elif family == "pins":
+        root = tmp_path / "pins"
+        (root / "preparation").mkdir(parents=True)
+        path = root / "preparation" / "owner.json"
+    else:
+        root = root_for(tmp_path, "sam")
+        path = root / "started" / (CHILD + ".json")
+    def observe(shared):
+        if family == "primary":
+            return observe_queue_states(
+                [QueueRootContract(str(root), ("pending",))], observed_at_epoch=100, budget=shared)
+        if family == "pins":
+            return observe_storage_pins(str(root), observed_at_epoch=100, budget=shared)
+        return observe_preparation_sam_auxiliaries(
+            [AuxiliaryQueueContract("sam", str(root))], observed_at_epoch=100, budget=shared)
+    path.write_bytes(b"{}  ")
+    monkeypatch.setattr(budgets, "MAX_RAW_BYTES", 4)
+    monkeypatch.setattr(queues, "READ_CHUNK_BYTES", chunk_bytes)
+    monkeypatch.setattr(pins, "READ_CHUNK_BYTES", chunk_bytes)
+    shared = budgets.ReferenceCollectionBudget(monotonic=lambda: 0)
+    original_read = os.read
+    calls = []
+
+    def read(fd, amount):
+        remaining = shared.limits["raw_bytes"] - shared.counts["raw_bytes"]
+        if grows and not calls:
+            with path.open("ab") as writer:
+                writer.write(b" ")
+        chunk = original_read(fd, amount)
+        calls.append((amount, remaining, len(chunk)))
+        return chunk
+
+    monkeypatch.setattr(os, "read", read)
+    result = observe(shared)
+    assert calls and all(0 < amount <= remaining for amount, remaining, _ in calls)
+    assert sum(received for _, _, received in calls) == shared.counts["raw_bytes"] == 4
+    assert not result.complete and not result.rows
+    assert "reference_raw_bytes_limit" in result.blockers
