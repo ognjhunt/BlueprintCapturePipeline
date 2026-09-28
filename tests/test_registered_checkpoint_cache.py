@@ -552,3 +552,38 @@ def test_resume_refuses_live_or_unproven_operation_without_terminal(cache_instal
         cache.resume_needed_checkpoint_cache(grant['intent_id'],
             expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
             installed_config_path=value['config'], now=lambda: 1200)
+
+
+def test_default_registered_reader_uses_public_current_authority_without_private_config(
+        cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline import native_g1_checkpoint_cache as native
+    value = cache_installation
+    _, result, _, _, _ = fill_cache(value, monkeypatch)
+    monkeypatch.setattr(cache, '_PUBLIC_REGISTRATION', value['public'], raising=False)
+    monkeypatch.setattr(cache, '_PUBLIC_INVENTORY', value['inventory_path'], raising=False)
+    monkeypatch.setattr(cache, '_REGISTERED_ROOTS', (Path(value['settings']['lane_scratch_work_root']),))
+    monkeypatch.setattr(cache.installed, '_configuration',
+                        lambda *a, **kw: pytest.fail('ordinary reader opened private installed config'))
+    target = Path(result['path'])
+    with cache.NeededCheckpointCacheUse.open_registered(target, now=lambda: 1200) as use:
+        rows = native.verify_local_g1_checkpoint_cache(target, _cache_use=use)
+        assert len(rows) == 24
+        assert use._layout.get('config') is None and use._layout.get('private') is None
+
+
+def test_existing_target_acquisition_cannot_reset_first_metadata_deadline(cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    _, result, _, _, _ = fill_cache(value, monkeypatch)
+    clock = [0.0]
+    actual = cache._PayloadFiles.directory
+    def delayed(self, path):
+        clock[0] = 6.0
+        return actual(self, path)
+    monkeypatch.setattr(cache._PayloadFiles, 'directory', delayed)
+    with pytest.raises(ValueError, match='needed_cache'):
+        with cache.NeededCheckpointCacheUse.open_registered(Path(result['path']),
+                installed_config_path=value['config'], now=lambda: 1200,
+                monotonic=lambda: clock[0]):
+            pytest.fail('existing-target acquisition reset expired M0 deadline')
