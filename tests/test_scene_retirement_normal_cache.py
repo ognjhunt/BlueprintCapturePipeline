@@ -152,5 +152,23 @@ def test_actual_normal_queue_births_before_global_cas_materialization(tmp_path,m
     generation=json.loads((store/(hashlib.sha256(str(target).encode()).hexdigest()+'.json')).read_bytes())
     assert generation['state']=='active' and generation['owner_raw_ref']==proofs['intent_raw_ref']
     for leaf in (inputs/'content-addressed'/'sha256').iterdir():
+        if len(leaf.name)!=64:  # Existing materializer lock directory is not a digest object.
+            continue
         record=json.loads((store/(hashlib.sha256(str(leaf).encode()).hexdigest()+'.json')).read_bytes())
         assert record['state']=='active' and record['source_publication_raw_ref']
+
+
+def test_actual_preparation_only_authority_can_birth_without_paid_reservation(tmp_path,monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import create_preparation_attempt
+    access,_,value,_,_,inputs,proofs=owner_submission(tmp_path,monkeypatch)
+    owner=json.loads(Path(proofs['intent_raw_ref']['path']).read_bytes())
+    directory=Path(proofs['intent_raw_ref']['path']).parent
+    create_preparation_attempt(directory=directory,attempt_id='preparing-1',
+        source_commit=value['expected_production_commit'],runtime_digest='sha256:'+'a'*64,
+        input_digest='sha256:'+'b'*64,now=101)
+    target=inputs/'new-preparation'
+    born=access.birth_scene_member(target,owner_intent_id=owner['intent_id'],
+        owner_raw_ref=proofs['intent_raw_ref'],birth_request_raw_ref=_raw(directory/'preparation-attempts'/'preparing-1.json'),now=101)
+    assert born['state']=='active'
+    assert born['birth_request_raw_ref']['path'].endswith('/preparation-attempts/preparing-1.json')
+    assert json.loads(Path(born['birth_request_raw_ref']['path']).read_bytes())['paid_authority_granted'] is False
