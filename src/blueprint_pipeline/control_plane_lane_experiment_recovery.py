@@ -123,7 +123,7 @@ def begin(files, config, action, expected, entry, current, refreshed, public, st
                                            preservation=preservation), preservation)
 
 
-def progress(files, operation, action, expected, target, rows, previous, *, preservation=None):
+def progress(files, operation, action, expected, target, rows, previous, *, preservation=None, _target_transition=None):
     logical, allocated, changed, count = 0, 0, {}, 0
     offset = 1 if action['action'] == 'offload' else 0
     for index, row in enumerate(rows, 1):
@@ -167,6 +167,11 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
         except FileNotFoundError:
             _require(any(row[0] == path for row in rows[:count]), 'experiment_operation_invalid')
             continue
+        if destination == target and _target_transition is not None:
+            _require(type(_target_transition) is list and len(_target_transition) == len(_STAT)
+                     and all(type(v) is int and v >= 0 for v in _target_transition),
+                     'experiment_directory_transition_changed')
+            metadata = tuple(_target_transition)
         _require(identity == dict(dev=named.st_dev, ino=named.st_ino, type='directory')
                  and stat.S_ISDIR(named.st_mode) and tuple(getattr(named, key) for key in _STAT) == metadata,
                  'experiment_directory_transition_changed')
@@ -184,7 +189,7 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
     return previous, logical, allocated, {p: v[1] for p, v in changed.items()}, count, completed
 
 
-def retired(files, config, action, expected, target, rows, entry, marker, *, _retained_store=None):
+def retired(files, config, action, expected, target, rows, entry, marker, *, _retained_store=None, _target_transition=None):
     from . import control_plane_lane_experiment_actions as code
     files._operation_path = str(Path(config.experiment_record_store) / 'operations' / action['action_id'])
     store = issuance._store(files, config.experiment_record_store) if _retained_store is None else _retained_store
@@ -211,7 +216,7 @@ def retired(files, config, action, expected, target, rows, entry, marker, *, _re
                  and value['body']['manifest'] == action['manifest'], 'experiment_operation_invalid')
         preservation = (previous, value['body']['archive'])
     _, logical, allocated, _, count, receipt = progress(files, operation, action, expected, target, rows, previous,
-                                                        preservation=preservation)
+                                                        preservation=preservation, _target_transition=_target_transition)
     _require(count == len(rows) and receipt is not None, 'experiment_operation_invalid')
     raw, _ = files.read(Path(files._operation_path) / f'e-{len(rows) + 1 + (action["action"] == "offload"):05d}.json', cap=32768, protected=True, mode=0o600)
     final = retained._document(raw, 32768, _work_budget=files.budget)

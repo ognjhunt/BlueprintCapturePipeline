@@ -19,7 +19,7 @@ from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _
 
 _NAMES = {
     "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|reservation|retiring-head|retired-head))?\.json",
-    "manifest": r"[0-9a-f]{32}\.manifest\.json",
+    "manifest": r"[0-9a-f]{32}\.(?:stage-)?manifest\.json",
     "event": r"e-[0-9]{5}\.json",
     "birth": r"[0-9a-f]{32}\.birth\.json",
     "bootstrap": r"[0-9a-f]{32}\.producer-bootstrap\.json",

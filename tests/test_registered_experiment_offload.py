@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -184,7 +184,7 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         assert _current_entry(value, intent_id)['state'] == 'restoring'
         assert len(list(target.iterdir())) == 2
         monkeypatch.setattr(archive, 'verify_preservation', actual_verify)
-    if certificate_case == 'stage_ready_crash':
+    if certificate_case.startswith('stage_ready_'):
         from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
         original_phase = _ActionFiles.phase
         def interrupted_before_link(files, name):
@@ -198,6 +198,23 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         assert stage.is_dir() and list(stage.rglob('*'))
         transport_calls = list(cloud.calls)
         monkeypatch.setattr(_ActionFiles, 'phase', original_phase)
+        if certificate_case != 'stage_ready_crash':
+            payload = next(path for path in stage.rglob('*') if path.is_file())
+            if certificate_case == 'stage_ready_changed':
+                payload.write_bytes(b'foreign')
+            elif certificate_case == 'stage_ready_replaced':
+                raw = payload.read_bytes()
+                payload.unlink()
+                payload.write_bytes(raw)
+            else:
+                (value[2] / 'operations' / grant['action_id'] / 'e-00001.json').unlink()
+            retained = {str(path.relative_to(stage)): path.read_bytes() for path in stage.rglob('*') if path.is_file()}
+            with pytest.raises(ValueError, match='experiment_'):
+                root.restore_registered_experiment(grant['action_id'], **arguments)
+            assert cloud.calls == transport_calls and len(allocations) == 1
+            assert {str(path.relative_to(stage)): path.read_bytes() for path in stage.rglob('*') if path.is_file()} == retained
+            assert _current_entry(value, intent_id)['state'] == 'restoring'
+            return
     if certificate_case == 'activation_crash':
         from blueprint_pipeline import control_plane_lane_experiment_actions as actions
         actual_event = actions._event

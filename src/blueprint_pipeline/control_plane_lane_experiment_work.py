@@ -17,8 +17,8 @@ from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _
 from .control_plane_reference_budget import ReferenceCollectionBudget
 
 _PHASES = {'manifest': (1, 100000), 'ready': (1, 10000), 'removal_batch': (256, 10000),
-           'restore_admission': (1, 10000), 'restore_prepare': (1, 100000), 'restore_directories': (256, 10000), 'restore_cleanup': (256, 10000), 'restore_batch': (256, 10000), 'finalize': (1, 100000)}
-_ROLES = frozenset({'issue_hash', 'archive_prehash', 'archive_stream', 'archive_digest_hash', 'archive_upload_hash', 'archive_digest_stream', 'archive_upload_stream', 'remove_hash', 'restore_read', 'restore_write', 'restore_validate'})
+           'restore_admission': (1, 10000), 'restore_prepare': (1, 100000), 'restore_stage': (1, 100000), 'restore_stage_verify': (1, 100000), 'restore_directories': (256, 10000), 'restore_cleanup': (256, 10000), 'restore_batch': (256, 10000), 'finalize': (1, 100000)}
+_ROLES = frozenset({'issue_hash', 'archive_prehash', 'archive_stream', 'archive_digest_hash', 'archive_upload_hash', 'archive_digest_stream', 'archive_upload_stream', 'remove_hash', 'restore_read', 'restore_write', 'restore_validate', 'restore_stage_validate'})
 _QUANTUM, _AGGREGATE = 1024 * 1024, 20 * 1024 * 1024
 
 

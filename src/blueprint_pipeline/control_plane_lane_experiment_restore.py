@@ -382,7 +382,9 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
              and set(restored[0]['body']) == {'restore_started', 'restored_payload_ready', 'public_certificate',
                                             'restoration_correspondence', 'prepared_authority'},
              'experiment_restore_operation_invalid')
-    for index, (event, _) in enumerate(events[1:-3-tail]):
+    _require(events[1][0]['event_kind'] == 'restore_stage_ready'
+             and events[1][0]['body']['restore_started'] == events[0][1], 'experiment_restore_operation_invalid')
+    for index, (event, _) in enumerate(events[2:-3-tail]):
         body = event['body']
         _require(event['event_kind'] == 'restore_member'
                  and set(body) == {'restore_started', 'index', 'path', 'sha256', 'size_bytes'}
@@ -453,9 +455,31 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         refreshed = _current(files, public, gid)
         _require(refreshed[0] == current[0], 'experiment_restore_current_changed')
         store = issuance._store(files, config.experiment_record_store)
+        stage_resume = None
+        if entry['state'] == 'restoring':
+            operations = actions._directory(files, store, 'operations')
+            restore_operation = actions._directory(files, operations, action_id)
+            files.location(restore_operation)
+            try:
+                fcntl.flock(restore_operation, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise OwnerTargetVersionError('experiment_restore_operation_busy') from None
+            files._operation_path = str(store_path / 'operations' / action_id)
+            initial = recovery._read_event(files, restore_operation, action, 0, None)
+            _require(initial is not None and initial[0]['event_kind'] == 'restore_started'
+                     and initial[0]['body']['restore_intent'] == expected_restore_intent,
+                     'experiment_restore_operation_invalid')
+            possible = recovery._read_event(files, restore_operation, action, 1, initial[1])
+            if possible is not None:
+                event, selected = possible
+                _require(event['event_kind'] == 'restore_stage_ready' and set(event['body']) == {
+                    'restore_started', 'stage_manifest', 'stage_identity', 'stage_metadata', 'target_metadata'}
+                    and event['body']['restore_started'] == initial[1], 'experiment_restore_operation_invalid')
+                stage_resume = event, selected
         old_entry = entry | {'operation_id': selection['original_operation_id']}
         final, _, _ = recovery.retired(files, config, prior, issuance._selector(prior_raw, files.budget),
-                                      target, rows, old_entry, origin['marker'], _retained_store=store)
+                                      target, rows, old_entry, origin['marker'], _retained_store=store,
+            _target_transition=stage_resume[0]['body']['target_metadata'] if stage_resume else None)
         _require(final == selection['retired'], 'experiment_restore_selection_invalid')
         # The exact old operation/store lock and pins EX remain held.
         occupied = issuance._capacity(files, store, adding_registration=False)
@@ -466,7 +490,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         files._store_path = config.experiment_record_store
         recovery._once(files, store, action_id + '.reservation.json', reservation_raw, kind='private')
         operations = actions._directory(files, store, 'operations')
-        operation = actions._directory(files, operations, action_id, create=entry['state'] == 'retired')
+        operation = restore_operation if entry['state'] == 'restoring' else actions._directory(files, operations, action_id, create=True)
         files.location(operation)
         files.proof(operation)
         try:
@@ -504,17 +528,20 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             prepared, _ = _document(files, store_path / (action_id + '.restore-head.json'), 4096)
             _require(prepared == (json.dumps(refreshed[0], sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n').encode(),
                      'experiment_restore_current_changed')
-            # Only the proven pre-stage boundary is resumable here. Existing
-            # partial/foreign stages are retained before any token/client call.
-            files.location(target_fd)
-            try:
-                os.stat(stage_name, dir_fd=target_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
+            if stage_resume is None:
+                # No durable stage receipt: uncertain/partial bytes are retained.
+                files.location(target_fd)
+                try:
+                    os.stat(stage_name, dir_fd=target_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise OwnerTargetVersionError('experiment_restore_stage_requires_reconciliation')
+                _require(recovery._read_event(files, operation, action, 1, started) is None,
+                         'experiment_restore_operation_invalid')
             else:
-                raise OwnerTargetVersionError('experiment_restore_stage_requires_reconciliation')
-            _require(recovery._read_event(files, operation, action, 1, started) is None,
-                     'experiment_restore_operation_invalid')
+                _require(recovery._read_event(files, operation, action, 2, stage_resume[1]) is None,
+                         'experiment_restore_stage_requires_reconciliation')
             restoring = refreshed
         def guard():
             _require(now() < action['expires_at_epoch'], 'experiment_restore_expired')
@@ -522,12 +549,75 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             files.location(target_fd)
             files.location(reference_fd)
             files.verify_record(restoring[2])
-        need = manifest['logical_bytes'] + len(rows) * 8192 + 8192
-        reservation = reserve_control_plane_disk('experiment_restore', target_root=target, expected_bytes=need,
-            minimum_bytes=need, workspace=target / stage_name, fresh=True, evictor=None)
-        stage, stage_name, staged, directory_modes = _stage_archive(files, config, target, target_fd,
-            action, selection, manifest_raw, rows, guard)
-        previous, index = started, 1
+        if stage_resume is None:
+            need = manifest['logical_bytes'] + len(rows) * 8192 + 8192
+            reservation = reserve_control_plane_disk('experiment_restore', target_root=target, expected_bytes=need,
+                minimum_bytes=need, workspace=target / stage_name, fresh=True, evictor=None)
+            stage, stage_name, staged, directory_modes = _stage_archive(files, config, target, target_fd,
+                action, selection, manifest_raw, rows, guard)
+            files.phase('restore_stage')
+            staged_manifest = actions._manifest(files, target / stage_name, stage, binding=entry, hash_payload=False)
+            staged_by_path = {path: (info, digest) for path, info, digest in staged}
+            for row in staged_manifest['members']:
+                if row[1] == 'file':
+                    info, digest = staged_by_path[row[0]]
+                    _require(row[2] == f'{info.st_dev}:{info.st_ino}:r' and row[3] == ':'.join(map(str, (
+                        stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid, info.st_nlink,
+                        info.st_size, info.st_mtime_ns, info.st_ctime_ns))), 'experiment_restore_stage_changed')
+                    row[4] = digest
+            stage_selected = _publish(files, store, action_id + '.stage-manifest.json',
+                actions._encoded(staged_manifest, 'manifest_digest', 1048576), kind='manifest')
+            previous = actions._event(files, operation, action, 'restore_stage_ready', dict(restore_started=started,
+                stage_manifest=stage_selected, stage_identity=dict(dev=os.fstat(stage).st_dev, ino=os.fstat(stage).st_ino, type='directory'),
+                stage_metadata=[getattr(os.fstat(stage), key) for key in recovery._STAT],
+                target_metadata=[getattr(os.fstat(target_fd), key) for key in recovery._STAT]), 1, started, issued)
+        else:
+            files.phase('restore_stage_verify')
+            proof = stage_resume[0]['body']
+            stage = files.open(stage_name, os.O_RDONLY | os.O_DIRECTORY, parent=target_fd)
+            files.parents[target / stage_name] = stage
+            info = os.fstat(stage)
+            _require(proof['stage_identity'] == dict(dev=info.st_dev, ino=info.st_ino, type='directory')
+                     and proof['stage_metadata'] == [getattr(info, key) for key in recovery._STAT]
+                     and proof['target_metadata'] == [getattr(os.fstat(target_fd), key) for key in recovery._STAT],
+                     'experiment_restore_stage_changed')
+            raw, _ = files.read(store_path / (action_id + '.stage-manifest.json'), cap=1048576,
+                                protected=True, mode=0o600)
+            _require(issuance._selector(raw, files.budget) == proof['stage_manifest'], 'experiment_restore_stage_changed')
+            saved = actions._manifest_record(files, raw, entry)
+            measured = actions._manifest(files, target / stage_name, stage, binding=entry, hash_payload=False)
+            _require(len(measured['members']) == len(saved['members']) and all(
+                current[:4] == previous[:4] for current, previous in zip(measured['members'], saved['members'])),
+                'experiment_restore_stage_changed')
+            # Original staged inode/version proof is durable; bytes alone are not admission.
+            files.payload(target, target_fd, expected_payload_bytes=files.payload_size if files.payload_size is not None else manifest['logical_bytes'])
+            staged, directory_modes = [], {}
+            for row in saved['members']:
+                relative, kind, _, token, digest = row
+                if kind == 'directory':
+                    original_row = next(original for original in rows if original[0] == relative)
+                    directory_modes[relative] = tuple(map(int, original_row[3].split(':')))
+                    continue
+                parent, name = files.parent(target / stage_name / relative)
+                fd = files.open(name, os.O_RDONLY | os.O_NONBLOCK, parent=parent)
+                original, content, amount = os.fstat(fd), hashlib.sha256(), 0
+                try:
+                    while True:
+                        guard()
+                        block = files.payload_read(fd, archive.QUANTUM, role='restore_stage_validate')
+                        if not block:
+                            break
+                        content.update(block)
+                        amount += len(block)
+                    _require(amount == original.st_size and 'sha256:' + content.hexdigest() == digest
+                             and owners._metadata(os.fstat(fd)) == owners._metadata(original),
+                             'experiment_restore_stage_changed')
+                    staged.append((relative, original, digest))
+                finally:
+                    files.close(fd)
+                    files.trim_payload(keep=(stage,))
+            previous = stage_resume[1]
+        index = 2
         for directory_index, (relative, before) in enumerate(sorted(directory_modes.items(), key=lambda item: (len(Path(item[0]).parts), item[0]))):
             if directory_index % 16 == 0:
                 files.phase('restore_directories')
@@ -560,7 +650,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                 files.location(destination_parent)
                 os.fsync(destination_parent)
                 previous = actions._event(files, operation, action, 'restore_member', dict(restore_started=started,
-                    index=index - 1, path=relative, sha256=sha, size_bytes=before.st_size), index, previous, issued)
+                    index=index - 2, path=relative, sha256=sha, size_bytes=before.st_size), index, previous, issued)
                 index += 1
                 files.location(source_parent)
                 files.proof(fd)
