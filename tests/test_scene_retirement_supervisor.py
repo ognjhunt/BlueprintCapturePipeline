@@ -539,3 +539,24 @@ def test_platform_missing_native_fields_cannot_clear_loaded_or_unknown_pid(monke
     native = module._NativeObservation(SimpleNamespace(tick=lambda: None))
     with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
         module._platform_rows(native)
+
+
+def test_enabled_runtime_can_resolve_actual_first_party_script_namespace(tmp_path, monkeypatch):
+    module = supervisor()
+    runtime = tmp_path / 'protected-runtime'
+    source, dependencies, scripts = runtime / 'src', runtime / 'dependencies', runtime / 'scripts'
+    for path in (source, dependencies, scripts):
+        path.mkdir(parents=True)
+    selected = scripts / 'read_task_evaluation_preparation_status_via_webapp.py'
+    selected.write_bytes(b'# tiny local first-party script namespace fixture\n')
+    monkeypatch.setattr(module, '_TRUSTED_SOURCE_ROOT', source)
+    monkeypatch.setattr(module, '_TRUSTED_DEPENDENCIES', dependencies)
+    roots = module._runtime_import_paths()
+    # The actual lazy reader imports scripts.<name>, which lives beside src,
+    # rather than inside it. Resolve the genuine namespace without executing
+    # any webapp request or importing code from a service-owned checkout.
+    namespace = importlib.machinery.PathFinder.find_spec('scripts', roots)
+    assert namespace is not None
+    resolved = importlib.machinery.PathFinder.find_spec('scripts.' + selected.stem,
+                                                       namespace.submodule_search_locations)
+    assert resolved is not None and resolved.origin == str(selected)
