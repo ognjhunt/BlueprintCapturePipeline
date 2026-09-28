@@ -1,0 +1,64 @@
+"""Numeric descriptor substitution must refuse before actual producer mutations."""
+import os
+
+import pytest
+
+from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+
+
+@pytest.mark.parametrize('substitution', ['owned-temp-before-write', 'parent-before-create', 'temp-before-fsync'])
+def test_generation_publisher_never_mutates_reused_foreign_descriptor(tmp_path, monkeypatch, substitution):
+    store = tmp_path / 'store'
+    store.mkdir()
+    foreign = tmp_path / 'foreign'
+    if substitution == 'parent-before-create':
+        foreign.mkdir()
+    else:
+        foreign.write_bytes(b'foreign-original-bytes')
+    real_open, real_write = os.open, os.write
+    foreign_fd = real_open(foreign, os.O_RDONLY | os.O_DIRECTORY if foreign.is_dir() else os.O_RDWR)
+    substituted = []
+    try:
+        with access._opened(store, directory=True) as (parent, info):
+            original_new = generations._new_file
+            def new_file(fd, name, **kwargs):
+                if substitution == 'parent-before-create':
+                    os.close(fd)
+                    os.dup2(foreign_fd, fd)
+                    substituted.append(fd)
+                result = original_new(fd, name, **kwargs)
+                if substitution == 'owned-temp-before-write':
+                    os.close(result[0])
+                    os.dup2(foreign_fd, result[0])
+                    substituted.append(result[0])
+                return result
+            def write(fd, value):
+                result = real_write(fd, value)
+                if substitution == 'temp-before-fsync' and not substituted:
+                    os.close(fd)
+                    os.dup2(foreign_fd, fd)
+                    substituted.append(fd)
+                return result
+            monkeypatch.setattr(generations, '_new_file', new_file)
+            monkeypatch.setattr(os, 'write', write)
+            # New keyword is supplied only once production supports it; current
+            # RED still reaches the actual unsafe operation, not a TypeError.
+            import inspect
+            kwargs = {'parent_identity': access._identity(info)} if 'parent_identity' in inspect.signature(generations._write).parameters else {}
+            with pytest.raises(access.SceneRetirementAccessError):
+                generations._write(parent, 'state.json', {'state': 'active'}, **kwargs)
+            assert substituted
+            for fd in substituted:
+                assert access._identity(os.fstat(fd)) == access._identity(os.fstat(foreign_fd))
+            if foreign.is_dir():
+                assert list(foreign.iterdir()) == []
+            else:
+                assert foreign.read_bytes() == b'foreign-original-bytes'
+    finally:
+        for fd in set(substituted):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        os.close(foreign_fd)
