@@ -82,3 +82,25 @@ def test_transport_cannot_claim_success_after_abandoning_partial_member_union(tm
         preserve_members(members,transport=PartialTransport(members),
             allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0),token='1'*32)
     assert all(path.exists() for path in members)
+
+
+@pytest.mark.parametrize('first',[float('nan'),float('inf'),True,None])
+@pytest.mark.parametrize('kind',['monotonic','wall'])
+def test_invalid_initial_action_clock_refuses_before_establishing_origin(first,kind):
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    values = iter([first,0.0,9999.0])
+    selected = lambda:next(values)
+    kwargs = {'monotonic':selected,'now':lambda:200} if kind == 'monotonic' else {'now':selected,'monotonic':lambda:0}
+    with pytest.raises(ValueError,match='scene_retirement_clock_unproven'):
+        ActionAllowance(expires_at=1000,elapsed_seconds=1,**kwargs)
+
+
+def test_raising_initial_action_clock_is_fixed_refusal_and_cannot_reset_object():
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    def fault():
+        raise OSError('raw private callback detail must not escape')
+    value = ActionAllowance.__new__(ActionAllowance)
+    with pytest.raises(ValueError,match='scene_retirement_clock_unproven'):
+        value.__init__(expires_at=1000,now=lambda:200,monotonic=fault)
+    with pytest.raises(ValueError,match='scene_retirement_allowance_already_initialized'):
+        value.__init__(expires_at=1000,now=lambda:200,monotonic=lambda:0)
