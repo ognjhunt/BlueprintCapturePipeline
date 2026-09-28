@@ -874,14 +874,21 @@ def _sdk_closure(packages, tools):
         _require(len(candidates) == 1)
         row = candidates[0]
         key = (row['name'], row['version'])
-        extra = edge.get('extra')
-        if key in selected and extra in selected[key][1]:
-            continue
+        extras = edge.get('extra', [])
+        extras = [extras] if type(extras) is str else extras
+        _require(type(extras) is list and len(extras) <= 64
+                 and all(type(extra) is str and extra for extra in extras)
+                 and len(set(extras)) == len(extras))
+        requested = {None, *extras}
         previous = selected.get(key, (row, set()))[1]
-        previous.add(extra)
+        fresh = requested - previous
+        if not fresh:
+            continue
+        previous.update(requested)
         selected[key] = (row, previous)
-        todo.extend(row.get('dependencies', ()))
-        if extra is not None:
+        if None in fresh:
+            todo.extend(row.get('dependencies', ()))
+        for extra in fresh - {None}:
             _require(extra in row.get('optional-dependencies', {}))
             todo.extend(row['optional-dependencies'][extra])
     _require(len({key[0] for key in selected}) == len(selected))
