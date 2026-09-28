@@ -24,6 +24,58 @@ def _action() -> list[float]:
     return action
 
 
+def test_archive_location_override_keeps_approved_binding_unchanged(tmp_path, monkeypatch):
+    setup = _setup()
+    profile = _profile(setup, {"mode": "noncontainer_artifact", "artifact_uri": "https://files.example.org/policy.tar.gz",
+        "artifact_sha256": "sha256:" + "b" * 64, "entrypoint": "policy/run.py", "protocol": "jsonl_observation_action_v1"})
+    binding = {"mode": "noncontainer_artifact", "profile_digest": profile["profile_digest"],
+               "artifact_sha256": profile["delivery"]["artifact_sha256"], "staged_artifact_path": "/operator-private/approved.tar"}
+    original = json.loads(json.dumps(binding))
+    relocated = tmp_path / "sealed-vm-inputs/policy.tar"
+    calls = []
+    class Lease:
+        client = object()
+    def launch(**kwargs):
+        calls.append(kwargs)
+        return Lease(), {"status": "synthetic_wire_compatible", "receipt_digest": "sha256:" + "c" * 64}
+    monkeypatch.setattr("blueprint_pipeline.native_g1_team_runtime_session.launch_g1_team_artifact_synthetic_probe", launch)
+    open_g1_team_runtime_session(profile=profile, trusted_setup=setup, authenticated_owner=OWNER,
+        approved_binding=binding, staged_artifact_override=relocated, output_dir=tmp_path / "session")
+    assert calls[0]["staged_artifact_path"] == relocated
+    assert calls[0]["operator_approved_artifact_sha256"] == binding["artifact_sha256"]
+    assert binding == original
+
+
+def test_container_refuses_archive_override_before_child(tmp_path, monkeypatch):
+    setup = _setup()
+    profile = _profile(setup, {"mode": "container", "image_ref": "example/team@sha256:" + "a" * 64,
+                               "protocol": "jsonl_observation_action_v1"})
+    monkeypatch.setattr("blueprint_pipeline.native_g1_team_runtime_session.launch_g1_team_container_synthetic_probe",
+                        lambda **kwargs: pytest.fail("foreign archive override reached child"))
+    with pytest.raises(ValueError, match="session_binding_invalid"):
+        open_g1_team_runtime_session(profile=profile, trusted_setup=setup, authenticated_owner=OWNER,
+            approved_binding={"mode": "container", "profile_digest": profile["profile_digest"], "image_ref": profile["delivery"]["image_ref"], "gpu_device": 0},
+            staged_artifact_override=tmp_path / "archive.tar", output_dir=tmp_path / "session")
+
+
+def test_relocated_archive_cannot_bypass_approved_hash(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_team_artifact_runtime as artifact
+    setup = _setup()
+    profile = _profile(setup, {"mode": "noncontainer_artifact", "artifact_uri": "https://files.example.org/policy.tar.gz",
+        "artifact_sha256": "sha256:" + "b" * 64, "entrypoint": "policy/run.py", "protocol": "jsonl_observation_action_v1"})
+    binding = {"mode": "noncontainer_artifact", "profile_digest": profile["profile_digest"],
+        "artifact_sha256": profile["delivery"]["artifact_sha256"], "staged_artifact_path": "/operator-private/approved.tar"}
+    relocated = tmp_path / "altered.tar"
+    relocated.write_bytes(b"foreign bytes")
+    monkeypatch.setattr(artifact.sys, "platform", "linux")
+    monkeypatch.setattr(artifact.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(artifact.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("altered archive child started"))
+    with pytest.raises(ValueError, match="digest_mismatch"):
+        open_g1_team_runtime_session(profile=profile, trusted_setup=setup, authenticated_owner=OWNER,
+            approved_binding=binding, staged_artifact_override=relocated, output_dir=tmp_path / "session")
+    assert not (tmp_path / "session").exists()
+
+
 def test_endpoint_probes_then_reuses_same_client_without_persisting_secret(tmp_path: Path) -> None:
     setup = _setup()
     profile = _profile(setup, {

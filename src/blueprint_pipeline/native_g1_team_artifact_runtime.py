@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -23,6 +24,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_g1_team_archive_gpu import (
+    probe_archive_gpu_namespace, recheck_archive_gpu_binding,
+)
 from .native_g1_team_policy_conformance import run_g1_team_policy_synthetic_conformance
 from .native_g1_team_policy_jsonl_client import NativeG1TeamPolicyJsonlClient
 from .team_policy_delivery_profile import validate_team_policy_delivery_profile
@@ -35,6 +39,9 @@ _MAX_FILES = 20_000
 _MAX_ARCHIVE_BYTES = 16 * 1024**3
 _MAX_UNPACKED_BYTES = 32 * 1024**3
 _MIN_FREE_AFTER_EXTRACT = 8 * 1024**3
+BWRAP_REQUIRED_OPTIONS = ("--cap-drop", "--chdir", "--clearenv", "--dev", "--dev-bind", "--die-with-parent",
+                          "--dir", "--gid", "--new-session", "--proc", "--ro-bind", "--ro-bind-fd", "--setenv",
+                          "--tmpfs", "--uid", "--unshare-all", "--unsetenv")
 
 
 def _sha256(path: Path) -> str:
@@ -97,7 +104,26 @@ def _extract_regular_archive(archive_path: Path, destination: Path) -> None:
             target.chmod(0o555)
 
 
-def isolated_artifact_command(*, artifact_root: Path, entrypoint: str) -> list[str]:
+def _mapped_directory_access(node: os.stat_result, *, uid: int, gid: int, read: bool) -> bool:
+    """Namespace capabilities cannot override foreign ancestor permissions."""
+    if not stat.S_ISDIR(node.st_mode):
+        return False
+    shift = 6 if node.st_uid == uid else 3 if node.st_gid == gid else 0
+    bits = (stat.S_IMODE(node.st_mode) >> shift) & 0o7
+    required = 0o5 if read else 0o1
+    return bits & required == required
+
+
+def _require_namespace_artifact_access(artifact_root: Path) -> None:
+    canonical = artifact_root.resolve(strict=True)
+    uid, gid = os.geteuid(), os.getegid()
+    for directory in (canonical, *canonical.parents):
+        if not _mapped_directory_access(directory.stat(), uid=uid, gid=gid, read=directory == canonical):
+            raise ValueError("g1_team_artifact_namespace_path_inaccessible")
+
+
+def isolated_artifact_command(*, artifact_root: Path, entrypoint: str, artifact_directory_fd: int,
+                              gpu_binding: Mapping[str, Any] | None = None) -> list[str]:
     """Expose only a read-only artifact and standard runtimes to bubblewrap."""
 
     relative = PurePosixPath(entrypoint)
@@ -110,21 +136,37 @@ def isolated_artifact_command(*, artifact_root: Path, entrypoint: str) -> list[s
         or not (artifact_root.joinpath(*relative.parts)).is_file()
     ):
         raise ValueError("g1_team_artifact_entrypoint_invalid")
+    try:
+        if type(artifact_directory_fd) is not int or artifact_directory_fd < 3:
+            raise ValueError("g1_team_artifact_directory_fd_invalid")
+        held = os.fstat(artifact_directory_fd)
+        current = artifact_root.stat()
+        if not stat.S_ISDIR(held.st_mode) or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+            raise ValueError("g1_team_artifact_directory_fd_invalid")
+    except OSError as exc:
+        raise ValueError("g1_team_artifact_directory_fd_invalid") from exc
+    _require_namespace_artifact_access(artifact_root)
     bwrap = shutil.which("bwrap")
     if not bwrap:
         raise ValueError("g1_team_artifact_sandbox_unavailable")
     command = [
         bwrap, "--unshare-all", "--die-with-parent", "--new-session",
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-        "--dir", "/etc", "--ro-bind", str(artifact_root), "/work",
+        "--dir", "/etc", "--ro-bind-fd", str(artifact_directory_fd), "/work",
         "--uid", "65534", "--gid", "65534", "--cap-drop", "ALL",
+        "--clearenv",
     ]
+    if gpu_binding is not None:
+        recheck_archive_gpu_binding(gpu_binding)
+        for row in gpu_binding["devices"]:
+            command.extend(["--dev-bind", row["path"], row["path"]])
     for system_path in ("/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"):
         if Path(system_path).exists():
             command.extend(["--ro-bind", system_path, system_path])
     command.extend([
         "--chdir", "/work", "--setenv", "HOME", "/tmp",
-        "--setenv", "XDG_CACHE_HOME", "/tmp", "--unsetenv", "PYTHONPATH",
+        "--setenv", "XDG_CACHE_HOME", "/tmp", "--setenv", "PATH", "/usr/bin:/bin",
+        "--setenv", "LANG", "C.UTF-8", "--unsetenv", "PYTHONPATH",
         "--unsetenv", "LD_PRELOAD", "--", "/work/" + str(relative),
     ])
     return command
@@ -136,6 +178,7 @@ class NativeG1TeamArtifactLease:
     def __init__(
         self, *, process: subprocess.Popen[bytes], client: NativeG1TeamPolicyJsonlClient,
         output_dir: Path, profile_digest: str, artifact_sha256: str, stderr_file: Any,
+        gpu_binding_digest: str | None = None, gpu_probe_digest: str | None = None,
     ) -> None:
         self.process = process
         self.client = client
@@ -143,6 +186,7 @@ class NativeG1TeamArtifactLease:
         self.profile_digest = profile_digest
         self.artifact_sha256 = artifact_sha256
         self._stderr_file = stderr_file
+        self.gpu_binding_digest, self.gpu_probe_digest = gpu_binding_digest, gpu_probe_digest
         self._closed: dict[str, Any] | None = None
 
     def close(self) -> dict[str, Any]:
@@ -169,6 +213,8 @@ class NativeG1TeamArtifactLease:
             "process_exit_code": self.process.poll(),
             "process_close_error": error,
             "raw_stderr_quarantined": True,
+            "gpu_binding_digest": self.gpu_binding_digest,
+            "gpu_namespace_probe_digest": self.gpu_probe_digest,
             "provider_teardown_verified": False,
             "claim_ceiling": "planning_only",
         }
@@ -185,6 +231,7 @@ def launch_g1_team_artifact_synthetic_probe(
     authenticated_owner: Mapping[str, str], operator_approved_profile_digest: str,
     operator_approved_artifact_sha256: str, staged_artifact_path: Path,
     output_dir: Path,
+    gpu_binding: Mapping[str, Any] | None = None,
 ) -> tuple[NativeG1TeamArtifactLease, dict[str, Any]]:
     """Verify operator-bound bytes and prove the synthetic G1 JSONL wire."""
 
@@ -212,23 +259,34 @@ def launch_g1_team_artifact_synthetic_probe(
         raise ValueError("g1_team_artifact_admission_invalid")
     if _sha256(staged_artifact_path) != operator_approved_artifact_sha256:
         raise ValueError("g1_team_artifact_digest_mismatch")
+    if gpu_binding is not None:
+        if gpu_binding.get("profile_digest") != bound["profile_digest"]:
+            raise ValueError("g1_team_artifact_gpu_binding_invalid")
+        recheck_archive_gpu_binding(gpu_binding)
     output_dir.mkdir(mode=0o700)
     artifact_root = output_dir / "artifact"
     artifact_root.mkdir(mode=0o755)
     _extract_regular_archive(staged_artifact_path, artifact_root)
-    command = isolated_artifact_command(
-        artifact_root=artifact_root, entrypoint=delivery["entrypoint"]
-    )
-    descriptor = os.open(
-        output_dir / "team_policy_raw_stderr.quarantined.log",
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
-    )
-    stderr_file = os.fdopen(descriptor, "wb")
+    # Open before bubblewrap drops its setup UID. Private ancestors stay private.
+    artifact_fd = os.open(artifact_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    stderr_file = None
     process: subprocess.Popen[bytes] | None = None
     try:
+        command = isolated_artifact_command(
+            artifact_root=artifact_root, entrypoint=delivery["entrypoint"],
+            artifact_directory_fd=artifact_fd, gpu_binding=gpu_binding,
+        )
+        gpu_probe = (probe_archive_gpu_namespace(command=command, binding=gpu_binding, output_dir=output_dir)
+                     if gpu_binding is not None else None)
+        descriptor = os.open(
+            output_dir / "team_policy_raw_stderr.quarantined.log",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+        )
+        stderr_file = os.fdopen(descriptor, "wb")
         process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_file,
             bufsize=0, start_new_session=True, close_fds=True,
+            pass_fds=(artifact_fd,),
             env={
                 "PATH": "/usr/bin:/bin", "HOME": "/tmp",
                 "XDG_CACHE_HOME": "/tmp", "LANG": "C.UTF-8",
@@ -244,13 +302,18 @@ def launch_g1_team_artifact_synthetic_probe(
                 process.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        stderr_file.close()
+        if stderr_file is not None:
+            stderr_file.close()
         raise
+    finally:
+        os.close(artifact_fd)
     assert process is not None
     lease = NativeG1TeamArtifactLease(
         process=process, client=client, output_dir=output_dir,
         profile_digest=bound["profile_digest"], artifact_sha256=operator_approved_artifact_sha256,
         stderr_file=stderr_file,
+        gpu_binding_digest=gpu_binding["receipt_digest"] if gpu_binding is not None else None,
+        gpu_probe_digest=gpu_probe["receipt_digest"] if gpu_probe is not None else None,
     )
     try:
         conformance = run_g1_team_policy_synthetic_conformance(

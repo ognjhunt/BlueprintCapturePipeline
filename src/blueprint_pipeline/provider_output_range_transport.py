@@ -155,21 +155,56 @@ class ProviderOutputRangeReader(io.RawIOBase):
             size -= len(chunk)
         return b''.join(chunks)
 
-    def archive_sha256(self):
-        """Hash the complete pinned object once without storing the ZIP."""
-        digest, received = hashlib.sha256(), 0
-        with self._response({}, expected_status=200) as response:
-            if response.headers.get('Content-Length') != str(self._size):
+    @property
+    def block_bytes(self):
+        return self._block_bytes
+
+    def stream_to(self, sink, *, start=0, end=None):
+        """Pass pinned bytes ``[start, end)`` to ``sink`` in order, with one GET.
+
+        The whole object is one plain GET; any narrower span is one ``Range``
+        GET. ``sink`` receives chunks of at most one block and must not keep
+        them. Nothing is cached, so only the chunk in flight is held here. An
+        exception raised by ``sink`` stops the transfer and propagates
+        unchanged rather than as a transport failure.
+        """
+        end = self._size if end is None else end
+        if type(start) is not int or type(end) is not int or not 0 <= start < end <= self._size:
+            raise ProviderOutputTransportError('provider_output_range_invalid')
+        whole = start == 0 and end == self._size
+        expected, received, refusal = end - start, 0, None
+        headers = {} if whole else {'Range': f'bytes={start}-{end - 1}'}
+        with self._response(headers, expected_status=200 if whole else 206) as response:
+            if response.headers.get('Content-Length') != str(expected):
                 raise ProviderOutputTransportError('provider_output_content_length_invalid')
-            while received < self._size:
+            if not whole and response.headers.get('Content-Range') != f'bytes {start}-{end - 1}/{self._size}':
+                raise ProviderOutputTransportError('provider_output_content_range_invalid')
+            while received < expected:
                 if time.monotonic() >= self._deadline:
                     raise ProviderOutputTransportError('provider_output_transfer_deadline_exceeded')
-                chunk = response.read(min(self._block_bytes, self._size - received))
+                chunk = response.read(min(self._block_bytes, expected - received))
                 if not chunk:
-                    raise ProviderOutputTransportError('provider_output_archive_truncated')
-                digest.update(chunk)
+                    raise ProviderOutputTransportError('provider_output_archive_truncated' if whole
+                                                       else 'provider_output_range_truncated')
                 received += len(chunk)
                 self.transferred_bytes += len(chunk)
-            if response.read(1):
-                raise ProviderOutputTransportError('provider_output_archive_overlong')
+                try:
+                    sink(chunk)
+                except Exception as exc:
+                    # Leave the response context normally: it would otherwise
+                    # rewrite the sink's own refusal as a transport failure.
+                    refusal = exc
+                    break
+                del chunk
+            if refusal is None and response.read(1):
+                raise ProviderOutputTransportError('provider_output_archive_overlong' if whole
+                                                   else 'provider_output_range_overlong')
+        if refusal is not None:
+            raise refusal
+        return received
+
+    def archive_sha256(self):
+        """Hash the complete pinned object once without storing the ZIP."""
+        digest = hashlib.sha256()
+        self.stream_to(digest.update)
         return 'sha256:' + digest.hexdigest()

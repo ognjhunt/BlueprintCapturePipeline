@@ -16,6 +16,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_shared_scene_episode import team_policy_candidate_id
+from .native_g1_team_policy_approval import validate_g1_team_policy_approval
 from .native_g1_team_runtime_session import open_g1_team_runtime_session
 from .native_g1_team_scored_scene_episode import run_g1_team_scored_scene_episode
 from .task_evaluation_packet_planning_setup import validate_packet_planning_setup
@@ -32,7 +33,7 @@ def run_g1_team_supervised_episode(
     profile: Mapping[str, Any],
     trusted_setup: Mapping[str, Any],
     authenticated_owner: Mapping[str, str],
-    approved_binding: Mapping[str, Any],
+    operator_approval: Mapping[str, Any],
     sonic_bridge: Any,
     objective_id: str,
     max_steps: int,
@@ -41,6 +42,8 @@ def run_g1_team_supervised_episode(
     make_action_tensor: Callable[..., Any],
     credential: str | None = None,
     fetcher: Any = None,
+    policy_relay_config_path: Path | None = None,
+    execution_packet_digest: str | None = None,
 ) -> dict[str, Any]:
     """Connect a bound runtime session to one scored G1 scene episode.
 
@@ -52,6 +55,13 @@ def run_g1_team_supervised_episode(
     setup = validate_packet_planning_setup(trusted_setup)
     bound = validate_team_policy_delivery_profile(
         profile, trusted_setup=setup, authenticated_owner=authenticated_owner
+    )
+    approval = validate_g1_team_policy_approval(
+        operator_approval,
+        profile=bound,
+        trusted_setup=setup,
+        authenticated_owner=authenticated_owner,
+        objective_id=objective_id,
     )
     plan = getattr(built, "plan", None)
     if (
@@ -69,6 +79,14 @@ def run_g1_team_supervised_episode(
         or output_dir.is_symlink()
     ):
         raise ValueError("g1_team_supervised_episode_admission_invalid")
+    if policy_relay_config_path is not None:
+        from .native_g1_team_relay_runtime_session import read_g1_team_relay_config
+        if credential is not None or fetcher is not None:
+            raise ValueError("g1_team_relay_unexpected_endpoint_credential")
+        read_g1_team_relay_config(
+            config_path=policy_relay_config_path, execution_packet_digest=execution_packet_digest,
+            profile=bound, trusted_setup=setup, authenticated_owner=authenticated_owner,
+        )
     output_dir.mkdir(mode=0o700)
     session = None
     episode = None
@@ -76,15 +94,23 @@ def run_g1_team_supervised_episode(
     blocker = None
     phase = "synthetic_conformance"
     try:
-        session = open_g1_team_runtime_session(
-            profile=bound,
-            trusted_setup=setup,
-            authenticated_owner=authenticated_owner,
-            approved_binding=approved_binding,
-            output_dir=output_dir / "runtime",
-            credential=credential,
-            fetcher=fetcher,
-        )
+        if policy_relay_config_path is not None:
+            from .native_g1_team_relay_runtime_session import open_g1_team_relay_runtime_session
+            session = open_g1_team_relay_runtime_session(
+                config_path=policy_relay_config_path, execution_packet_digest=execution_packet_digest,
+                profile=bound, trusted_setup=setup, authenticated_owner=authenticated_owner,
+                output_dir=output_dir / "runtime",
+            )
+        else:
+            session = open_g1_team_runtime_session(
+                profile=bound,
+                trusted_setup=setup,
+                authenticated_owner=authenticated_owner,
+                approved_binding=approval["runtime_binding"],
+                output_dir=output_dir / "runtime",
+                credential=credential,
+                fetcher=fetcher,
+            )
         phase = "scored_scene_episode"
         episode = run_g1_team_scored_scene_episode(
             built=built,
@@ -138,6 +164,7 @@ def run_g1_team_supervised_episode(
         "objective_id": objective_id,
         "delivery_mode": bound["delivery"]["mode"],
         "source_setup_digest": setup["setup_digest"],
+        "operator_approval_digest": approval["approval_digest"],
         "scene_plan_digest": plan["plan_digest"],
         "synthetic_conformance_digest": (
             session.conformance.get("receipt_digest") if session is not None else None

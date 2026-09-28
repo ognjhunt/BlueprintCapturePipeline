@@ -49,13 +49,18 @@ def _relative(value: str) -> Path:
 
 
 def _media(review: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
+    selected = review.get("schema_version") == "native_g1_team_private_review.v1"
+    if selected:
+        from .native_g1_team_private_review import validate_g1_team_private_review
+
+        validate_g1_team_private_review(review)
     if (
         review.get("status") != "verified_private_development_review"
         or review.get("claim_ceiling") != "development_only"
         or review.get("public_redistribution_authorized") is not False
         or review.get("physical_outcome_claimed") is not False
         or not isinstance(review.get("episodes"), list)
-        or len(review["episodes"]) != 4
+        or len(review["episodes"]) != (1 if selected else 4)
     ):
         raise ValueError("g1_review_delivery_unverified_review")
     records: list[tuple[str, Mapping[str, Any]]] = []
@@ -131,6 +136,8 @@ def _stage_review_artifacts(
     *, review: Mapping[str, Any], source_root: Path, result_root: Path, run_id: str
 ) -> dict[str, Any]:
     run = strict_identifier(run_id, field="run_id", max_length=192)
+    if review.get("schema_version") == "native_g1_team_private_review.v1" and review.get("run_id") != run:
+        raise ValueError("g1_review_delivery_selected_intent_mismatch")
     root = Path(result_root)
     source = Path(source_root)
     if (
@@ -224,6 +231,18 @@ def materialize_g1_private_review_delivery(
 ) -> dict[str, Any]:
     adapter = _read(adapter_result_path)
     bundle_receipt = _read(bundle_receipt_path)
+    if bundle_receipt.get("schema_version") == "native_g1_team_provider_bundle.v1":
+        from .native_g1_team_review_evidence import verify_retained_g1_team_review
+
+        evidence = verify_retained_g1_team_review(
+            adapter_result_path=adapter_result_path, bundle_receipt_path=bundle_receipt_path,
+        )
+        if _read(retained_review_path) != evidence.review:
+            raise ValueError("g1_review_delivery_retained_review_changed")
+        return _stage_review_artifacts(
+            review=evidence.review, source_root=evidence.source_root,
+            result_root=result_root, run_id=run_id,
+        )
     bundle = load_verified_g1_provider_bundle(
         bundle_receipt_path,
         expected_implementation_commit=bundle_receipt["implementation_commit"],

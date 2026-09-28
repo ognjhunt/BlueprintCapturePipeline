@@ -1,0 +1,54 @@
+{
+  "claim_ceiling": "development_only",
+  "container_image": "fixture-isaac-image",
+  "embodiment_id": "unitree_g1_dex3_v1",
+  "episodes": [
+    {
+      "candidate_id": "team_policy_77057d98e0dcb9340bc1da3ad84efc12586bba432d4807b660dab7ad237cda31",
+      "frame_manifest": {
+        "relative_path": "selected-worker/worker/episode/episode/media/team_policy_77057d98e0dcb9340bc1da3ad84efc12586bba432d4807b660dab7ad237cda31/multicamera_frame_manifest.json",
+        "sha256": "sha256:8cb5651538f0578623e9e5384f014fb34327edbb7774f3d35ef7e9f67e16c033",
+        "size_bytes": 19144
+      },
+      "objective_id": "task_success",
+      "policy_query_count": 2,
+      "review_videos": {
+        "head": {
+          "relative_path": "selected-worker/worker/episode/episode/media/team_policy_77057d98e0dcb9340bc1da3ad84efc12586bba432d4807b660dab7ad237cda31/head.mp4",
+          "sha256": "sha256:acf756a93961118ea07b62493a5b22c1a62adbb627d62bd0d567efaab08c1263",
+          "size_bytes": 3482
+        },
+        "overview": {
+          "relative_path": "selected-worker/worker/episode/episode/media/team_policy_77057d98e0dcb9340bc1da3ad84efc12586bba432d4807b660dab7ad237cda31/overview.mp4",
+          "sha256": "sha256:840fdc81a0ffdeb9a368192a0d5ff6017541d9e93eddc78f2c5ba21ac8c224c2",
+          "size_bytes": 1622
+        }
+      },
+      "score": {
+        "episode_result_digest": "sha256:4c6e75e3b2cd3bc5e7c908c66a3e3ff597b1f8567e324a89207ac1e00ccb514b",
+        "outcome": "failure",
+        "samples": 3,
+        "score_digest": "sha256:5fc5d35ed06432b6170e501a3068772b43f512581099227b13e37046a280aac3",
+        "status": "scored"
+      }
+    }
+  ],
+  "execution_packet_digest": "sha256:166a9b7c039ad47d75761c6cfb4a56575a68eeafcb978b1bacc5fec812204393",
+  "intent_id": "g1-team-policy-64966e37e7e7cc2f01282b4a5d1c0a2e56c0ffdbff96c945902d67525a267abf",
+  "organization_id": "team-1",
+  "owner_user_id": "owner-1",
+  "physical_outcome_claimed": false,
+  "policy_delivery_mode": "authenticated_endpoint",
+  "policy_profile_digest": "sha256:77057d98e0dcb9340bc1da3ad84efc12586bba432d4807b660dab7ad237cda31",
+  "provider_bundle_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "public_redistribution_authorized": false,
+  "review_digest": "sha256:f70a91c4914957c61c7207bc2a55d5f015d5f2712a0ba5ac546b611d722c4a11",
+  "run_id": "team-g1-book-1",
+  "runtime_delivery_mode": "container",
+  "scene_id": "interiorgs-839873",
+  "schema_version": "native_g1_team_private_review.v1",
+  "simulator_result_is_physical_proof": false,
+  "status": "verified_private_development_review",
+  "task_id": "scene-839873-mug-planar-push",
+  "worker_result_digest": "sha256:a25376e549312201b8cf366c175f0058b1ed6b72559feda74e8fc65ca3c1e84c"
+}

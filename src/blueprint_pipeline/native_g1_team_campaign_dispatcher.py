@@ -373,6 +373,43 @@ def dispatch_one_g1_team_campaign(
         os.close(descriptor)
 
 
+def _dispatch_configured_queues(args: argparse.Namespace) -> dict[str, Any]:
+    """Share the installed caller; selected requests use their own authority."""
+    pending = None
+    if args.selected_queue_root is not None:
+        # Lazy import avoids a module initialization cycle: the selected queue
+        # reuses this module's canonical allocator and spend-guard callbacks.
+        from .native_g1_team_policy_dispatcher import dispatch_one_g1_team_policy
+        if (args.selected_queue_root.is_dir() and args.selected_approval_root.is_dir()
+                and args.selected_sonic_asset_dir.is_dir() and args.registry_path.is_file()):
+            pending = dispatch_one_g1_team_policy(
+                queue_root=args.selected_queue_root, registry_path=args.registry_path,
+                approval_root=args.selected_approval_root,
+                trusted_clients=set(args.selected_trusted_client),
+                work_root=args.selected_work_root, sonic_asset_dir=args.selected_sonic_asset_dir,
+                credential_registry_path=args.selected_credential_registry_path,
+                implementation_commit=args.implementation_commit,
+                machine_avoidlist_path=args.machine_avoidlist_path, execute=args.execute,
+            )
+            if pending["status"] not in {
+                "no_pending_intent", "awaiting_operator_approval", "other_intent_active",
+                "awaiting_exact_attempt_reconciliation",
+            }:
+                return pending
+        else:
+            pending = {"status": "selected_runtime_configuration_pending",
+                       "provider_mutation_performed": False}
+    if args.queue_root.is_dir() and args.registry_path.is_file():
+        result = dispatch_one_g1_team_campaign(
+            queue_root=args.queue_root, registry_path=args.registry_path,
+            work_root=args.work_root, implementation_commit=args.implementation_commit,
+            machine_avoidlist_path=args.machine_avoidlist_path, execute=args.execute,
+        )
+        if result["status"] != "no_pending_intent" or pending is None:
+            return result
+    return pending or {"status": "no_pending_intent", "provider_mutation_performed": False}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--queue-root", type=Path, required=True)
@@ -381,18 +418,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--machine-avoidlist-path", type=Path)
     parser.add_argument("--execute", action="store_true")
+    selected_names = ("queue-root", "work-root", "approval-root", "sonic-asset-dir", "credential-registry-path")
+    for name in selected_names:
+        parser.add_argument("--selected-" + name, type=Path)
+    parser.add_argument("--selected-trusted-client", action="append")
     args = parser.parse_args(argv)
-    result = dispatch_one_g1_team_campaign(
-        queue_root=args.queue_root, registry_path=args.registry_path,
-        work_root=args.work_root, implementation_commit=args.implementation_commit,
-        machine_avoidlist_path=args.machine_avoidlist_path, execute=args.execute,
-    )
+    selected_options = [getattr(args, "selected_" + name.replace("-", "_")) for name in selected_names]
+    selected_options.append(args.selected_trusted_client)
+    if any(value is not None for value in selected_options) and not all(selected_options):
+        parser.error("all selected queue operator arguments must be supplied together")
+    result = _dispatch_configured_queues(args)
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in {
         "no_pending_intent", "dry_run_ready",
         "authorization_expired_before_provider",
         "superseded_before_provider_by_release",
         "controller_completed_pending_billing_and_private_delivery",
+        "awaiting_operator_approval", "other_intent_active",
+        "selected_runtime_configuration_pending",
     } else 2
 
 
