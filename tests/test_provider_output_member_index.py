@@ -44,6 +44,7 @@ from tests.provider_output_fixtures import (
 )
 
 EXPANDED = 64 * 1024**2
+MIN_BLOCK = 128 * 1024
 ETAG = '"version1"'
 # A known-answer vector: the SHA-256 of 4 GiB + 1 MiB of zero bytes.
 ZERO_RUN = 4 * 1024**3 + 1024**2
@@ -74,8 +75,10 @@ def _mixed_archive():
 
 
 def _index(data, **options):
+    """Index through the smallest admitted block, with short reads splitting records."""
     store = data if isinstance(data, RangeStore) else RangeStore(data)
-    reader = store.reader(block_bytes=options.pop("block_bytes", 4096))
+    store.max_read = options.pop("chunk_bytes", 4096)
+    reader = store.reader(block_bytes=MIN_BLOCK)
     options.setdefault("maximum_expanded_bytes", EXPANDED)
     return build_member_index(reader, **options), store
 
@@ -123,7 +126,7 @@ def _assert_matches_zipfile(index, data):
 
 def test_one_pass_index_matches_zipfile_for_stored_and_deflated_members():
     data = _mixed_archive()
-    index, store = _index(data, block_bytes=1000)
+    index, store = _index(data, chunk_bytes=1000)
 
     _assert_matches_zipfile(index, data)
     files = [row for row in index["members"] if row["kind"] == "file"]
@@ -151,14 +154,14 @@ def test_one_pass_index_matches_zipfile_for_stored_and_deflated_members():
     assert store.whole_object_gets() == 1
     assert all(row["if_match"] == ETAG for row in store.requests[1:])
     # Deterministic: a pass with a different transport block size agrees byte for byte.
-    again, _ = _index(data, block_bytes=7)
+    again, _ = _index(data, chunk_bytes=7)
     assert json.dumps(again, sort_keys=True) == json.dumps(index, sort_keys=True)
 
 
 def test_record_ranges_reopen_each_member_with_one_range_request():
     data = _mixed_archive()
     index, store = _index(data)
-    reader = store.reader(block_bytes=4096)
+    reader = store.reader(block_bytes=MIN_BLOCK)
     before = len(store.requests)
     for member in index["members"]:
         record = bytearray()
@@ -407,9 +410,17 @@ def test_directory_metadata_stays_within_the_documented_bound(astral):
     assert index["totals"]["members"] == count
     assert peak <= 2 * block + count * 16 * 1024, peak
 
+
+def test_index_refuses_transport_blocks_below_128_kib():
+    store = RangeStore(_mixed_archive())
+    reader = store.reader(block_bytes=MIN_BLOCK - 1)
+    with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_index_block_too_small$"):
+        build_member_index(reader, maximum_expanded_bytes=EXPANDED)
+    assert len(store.requests) == 1  # the reader's own probe; the index read nothing
+
 def test_truncated_stream_is_refused():
     store = RangeStore(_mixed_archive())
-    reader = store.reader(block_bytes=4096)
+    reader = store.reader(block_bytes=MIN_BLOCK)
     store.truncate_whole_object = True
     with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_archive_truncated$"):
         build_member_index(reader, maximum_expanded_bytes=EXPANDED)
@@ -432,7 +443,7 @@ def test_version_change_between_directory_and_stream_is_refused(store_behaviour)
     changed = _republished(data)
     assert len(changed) == len(data) and changed != data
     store = RangeStore(data)
-    reader = store.reader(block_bytes=4096)
+    reader = store.reader(block_bytes=MIN_BLOCK)
     new_etag = ETAG if store_behaviour == "same_etag" else '"version2"'
     store.next_version = (RangeStore(changed).object, new_etag)
     store.ignore_if_match = store_behaviour == "ignores_if_match"
@@ -448,11 +459,12 @@ def test_version_change_between_directory_and_stream_is_refused(store_behaviour)
     assert all(row["if_match"] == ETAG for row in store.requests[1:])
 
 
-def test_index_pass_writes_nothing_and_buffers_at_most_two_blocks(tmp_path, monkeypatch):
-    block = 1024**2
+@pytest.mark.parametrize("block", [MIN_BLOCK, 1024**2])
+def test_index_pass_writes_nothing_and_buffers_at_most_two_blocks(tmp_path, monkeypatch, block):
+    unit = 1024**2
     archive = build_zip([
-        Entry("checkpoints/weights.pt", Zeros(24 * block)),
-        Entry("runtime/field.npy", bytes(6 * block), method=DEFLATED),
+        Entry("checkpoints/weights.pt", Zeros(24 * unit)),
+        Entry("runtime/field.npy", bytes(6 * unit), method=DEFLATED),
         Entry("runtime/result.json", b'{"status": "completed"}', method=DEFLATED),
     ])
     store = RangeStore(archive)
@@ -468,9 +480,9 @@ def test_index_pass_writes_nothing_and_buffers_at_most_two_blocks(tmp_path, monk
             tracemalloc.stop()
 
     assert attempts == [] and list(tmp_path.iterdir()) == []
-    assert index["archive"]["size"] > 24 * block
+    assert index["archive"]["size"] > 24 * unit
     assert peak <= 2 * block, peak
-    assert index["totals"]["bytes"] == 30 * block + len(b'{"status": "completed"}')
+    assert index["totals"]["bytes"] == 30 * unit + len(b'{"status": "completed"}')
 
 
 def test_data_descriptors_with_and_without_signature_are_indexed():
@@ -486,7 +498,7 @@ def test_data_descriptors_with_and_without_signature_are_indexed():
         Entry("runtime/b.bin", bytes(range(256)) * 9, descriptor="unsigned"),
         Entry("runtime/c.bin", b"tail", descriptor="signed"),
     ]).to_bytes()
-    index, _ = _index(unsigned, block_bytes=5)
+    index, _ = _index(unsigned, chunk_bytes=5)
     _assert_matches_zipfile(index, unsigned)
     descriptor_ends = [row["record_end_offset"] - row["data_offset"] - row["compressed_size"]
                        for row in index["members"]]

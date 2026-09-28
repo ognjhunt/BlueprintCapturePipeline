@@ -15,8 +15,8 @@ inflates each member in bounded ``max_length`` steps while computing its
 SHA-256 and CRC-32, and requires the records to tile ``[0, directory)``
 exactly. It writes nothing to disk. Archive bytes are held one transport
 block at a time plus one inflate step, after an end-record read of at most
-64 KiB; with the default 8 MiB block that stays under two blocks however large
-the archive. Directory metadata is bounded before it is buffered: a central
+64 KiB; the pass refuses blocks under 128 KiB, so that stays under two blocks
+however large the archive. Directory metadata is bounded before it is buffered: a central
 record whose name exceeds 4,096 bytes, extra field 8 KiB or comment 4 KiB is
 refused from its fixed header, and records are parsed one at a time. What
 remains grows with the member cap and name length: at most about 16 KiB per
@@ -91,6 +91,9 @@ DEFAULT_MAXIMUM_MEMBERS = 10_000
 MAX_ARCHIVE_ENTRIES = 200_000
 MAX_EXPANDED_BYTES = 1024**4
 INFLATE_STEP_BYTES = 256 * 1024
+# Below this, fixed per-pass buffers (the 64 KiB end-record read, one inflate
+# step) no longer fit inside two transport blocks.
+MIN_BLOCK_BYTES = 128 * 1024
 # Refused as soon as a central record's fixed header is read, before its
 # variable part is buffered. The name bound is the entry rules' own limit.
 MAX_NAME_BYTES = 4096
@@ -614,15 +617,21 @@ def build_member_index(source, *, maximum_expanded_bytes: int,
     """Index ``source`` in one pinned pass and return ``provider_output_member_index.v1``.
 
     ``source`` is a pinned range source: ``identity`` (``size_bytes``, ``etag``,
-    ``generation``) and ``stream_to(sink, *, start=0, end=None)``, such as
+    ``generation``), ``block_bytes`` (at least ``MIN_BLOCK_BYTES``) and
+    ``stream_to(sink, *, start=0, end=None)``, such as
     ``ProviderOutputRangeReader`` or ``LocalArchiveRangeSource``.
     """
     limits = _limits(maximum_members, maximum_expanded_bytes, maximum_member_inflated_bytes)
     identity = _source_identity(source)
+    block_bytes = getattr(source, 'block_bytes', None)
+    if type(block_bytes) is not int:
+        raise _refusal('provider_output_member_index_source_invalid')
+    if block_bytes < MIN_BLOCK_BYTES:
+        raise _refusal('provider_output_member_index_block_too_small')
     try:
         layout = _end_records(source, identity['size_bytes'], limits['maximum_members'])
         stream = _ArchiveStream(*_read_directory(source, layout, identity['size_bytes'], limits),
-                                inflate_step_bytes(getattr(source, 'block_bytes', 8 * 1024**2)))
+                                inflate_step_bytes(block_bytes))
         source.stream_to(stream.feed)
         stream.finish()
     except (ProviderOutputTransportError, ProviderOutputInventoryError) as exc:

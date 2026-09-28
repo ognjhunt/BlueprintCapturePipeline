@@ -141,13 +141,15 @@ class VirtualFile(io.RawIOBase):
 
 
 class _Response:
-    def __init__(self, url, status, headers, obj, start, stop):
+    def __init__(self, url, status, headers, obj, start, stop, max_read=None):
         self.status, self.headers, self._url = status, headers, url
-        self._obj, self._position, self._stop = obj, start, stop
+        self._obj, self._position, self._stop, self._max_read = obj, start, stop, max_read
 
     def read(self, size=-1):
         if size is None or size < 0:
             size = self._stop - self._position
+        if self._max_read:  # a short read, as a real socket may return
+            size = min(size, self._max_read)
         end = min(self._stop, self._position + size)
         chunk = self._obj.read(self._position, end) if end > self._position else b""
         self._position = end
@@ -171,7 +173,8 @@ class RangeStore:
     ``truncate_whole_object`` only a whole-object GET's, and ``truncate_when``
     those whose logged request it accepts; ``ignore_if_match``
     serves whatever version is current; ``next_version`` swaps in a new
-    ``(object, etag)`` just before the next whole-object GET.
+    ``(object, etag)`` just before the next whole-object GET. ``max_read``
+    makes every response return at most that many bytes per read.
     """
 
     def __init__(self, data, *, etag='"version1"', generation=None, url=URL):
@@ -181,6 +184,7 @@ class RangeStore:
         self.truncate = False
         self.truncate_whole_object = False
         self.truncate_when = None
+        self.max_read = None
         self.ignore_if_match = False
         self.next_version = None
 
@@ -210,7 +214,7 @@ class RangeStore:
         short = (self.truncate or (self.truncate_whole_object and requested is None)
                  or (self.truncate_when is not None and self.truncate_when(entry)))
         return _Response(request.full_url, status, response_headers, self.object, start,
-                         stop - 1 if short else stop)
+                         stop - 1 if short else stop, self.max_read)
 
     def reader(self, **options) -> ProviderOutputRangeReader:
         options.setdefault("maximum_archive_bytes", max(1, self.object.size))
