@@ -34,7 +34,11 @@ _METADATA = frozenset({scratch.LEASE_FILE, ".registered-experiment.v1.json"})
 def _publish(files, *args, **kwargs):
     if isinstance(files, _ActionFiles):
         files.reserve_output(len(args[2]))
-    return _native_publish(files, *args, **kwargs)
+    before = set(files.owned)
+    selected = _native_publish(files, *args, **kwargs)
+    if isinstance(files, _ActionFiles):
+        files.publication_complete(args[0], args[1], before)
+    return selected
 
 
 def _encoded(value, field, cap):
@@ -444,7 +448,7 @@ def _event(files, directory, action, kind, body, index, previous, issued):
     return _publish(files, directory, f"e-{index:05d}.json", payload, kind="event")
 
 
-def _member(files, target, row, current_directory_metadata=None, *, hash_payload=True):
+def _member(files, target, row, current_directory_metadata=None, *, hash_payload=True, hash_role="archive_prehash"):
     relative, kind, identity, token, digest = row
     path = Path(relative)
     _require(not path.is_absolute() and path.parts and all(part not in (".", "..") for part in path.parts),
@@ -468,7 +472,7 @@ def _member(files, target, row, current_directory_metadata=None, *, hash_payload
             amount = 0
             while True:
                 files.location(fd)
-                block = (files.payload_read(fd, 1024 * 1024, role="archive_prehash")
+                block = (files.payload_read(fd, 1024 * 1024, role=hash_role)
                          if isinstance(files, _ActionFiles) and files.payload_mode else os.read(fd, 1024 * 1024))
                 if not block:
                     break
@@ -572,44 +576,59 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
             else:
                 archive.verify_preservation(files, config, preservation[1], archive_guard)
                 files.phase("ready")
-        for index, row in enumerate(rows, 1):
-            if index <= removed_count:
-                continue
-            if index == removed_count + 1:
-                files.phase("removal_batch")
-            _require(now() < action["expires_at_epoch"], "experiment_action_expired")
-            files.verify_record(lease_record)
-            files.verify()
-            files.location(target_fd)
-            files.location(reference_fd)
-            files.proof(reference_fd)
-            files.verify_record(retiring[2])
-            parent, name, fd, info = _member(files, target, row, changed_directories.get(row[0]))
+        # Exactly 16 source members per declared native mutation phase. Full
+        # hashing runs under the original action clock with original FDs held;
+        # metadata clocks are never reset inside a batch or payload loop.
+        for start in range(removed_count, len(rows), 16):
+            files.payload(target, target_fd, expected_payload_bytes=files.payload_size if files.payload_size is not None else manifest["logical_bytes"])
+            held = {}
             try:
-                files.location(parent)
-                files.proof(fd)
-                _require(owners._metadata(os.fstat(fd)) == owners._metadata(info)
-                         == owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)), "experiment_member_changed")
-                if row[1] == "directory":
-                    os.rmdir(name, dir_fd=parent)
-                else:
-                    os.unlink(name, dir_fd=parent)
-                    logical += info.st_size
-                allocated += info.st_blocks * 512
-                files.location(parent)
-                os.fsync(parent)
-                updated = os.fstat(parent)
-                changed_directories[str(Path(row[0]).parent)] = tuple(getattr(updated, key) for key in
-                    ("st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"))
-                previous = _event(files, operation, action, "member_removed", dict(preservation=preservation[0] if preservation else None,
-                    action=expected_action_intent, manifest=action["manifest"], index=index - 1,
-                    path=row[0], original_identity=dict(dev=info.st_dev, ino=info.st_ino, type=row[1]),
-                    logical_bytes=info.st_size if row[1] == "file" else 0, eligible_allocated_bytes=info.st_blocks * 512,
-                    parent_after=dict(path=str(Path(row[0]).parent), identity=dict(dev=updated.st_dev, ino=updated.st_ino, type="directory"),
-                        stat_token=":".join(str(value) for value in changed_directories[str(Path(row[0]).parent)]))),
-                    index + offset, previous, issued)
+                for index in range(start + 1, min(start + 16, len(rows)) + 1):
+                    row = rows[index - 1]
+                    if row[1] == "file":
+                        archive_guard() if offset else files.verify()
+                        held[index] = _member(files, target, row, hash_role="remove_hash")
+                files.phase("removal_batch")
+                for index in range(start + 1, min(start + 16, len(rows)) + 1):
+                    row = rows[index - 1]
+                _require(now() < action["expires_at_epoch"], "experiment_action_expired")
+                files.verify_record(lease_record)
+                files.verify()
+                files.location(target_fd)
+                files.location(reference_fd)
+                files.proof(reference_fd)
+                files.verify_record(retiring[2])
+                parent, name, fd, info = held.pop(index) if row[1] == "file" else _member(
+                    files, target, row, changed_directories.get(row[0]), hash_payload=False)
+                try:
+                    files.location(parent)
+                    files.proof(fd)
+                    _require(owners._metadata(os.fstat(fd)) == owners._metadata(info)
+                             == owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)), "experiment_member_changed")
+                    if row[1] == "directory":
+                        os.rmdir(name, dir_fd=parent)
+                    else:
+                        os.unlink(name, dir_fd=parent)
+                        logical += info.st_size
+                    allocated += info.st_blocks * 512
+                    files.location(parent)
+                    os.fsync(parent)
+                    updated = os.fstat(parent)
+                    changed_directories[str(Path(row[0]).parent)] = tuple(getattr(updated, key) for key in
+                        ("st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"))
+                    previous = _event(files, operation, action, "member_removed", dict(preservation=preservation[0] if preservation else None,
+                        action=expected_action_intent, manifest=action["manifest"], index=index - 1,
+                        path=row[0], original_identity=dict(dev=info.st_dev, ino=info.st_ino, type=row[1]),
+                        logical_bytes=info.st_size if row[1] == "file" else 0, eligible_allocated_bytes=info.st_blocks * 512,
+                        parent_after=dict(path=str(Path(row[0]).parent), identity=dict(dev=updated.st_dev, ino=updated.st_ino, type="directory"),
+                            stat_token=":".join(str(value) for value in changed_directories[str(Path(row[0]).parent)]))),
+                        index + offset, previous, issued)
+                finally:
+                    files.close(fd)
             finally:
-                files.close(fd)
+                for _, _, fd, _ in held.values():
+                    files.close(fd)
+                files.trim_payload()
         files.location(target_fd)
         os.fsync(target_fd)
         if receipt is None:

@@ -66,7 +66,7 @@ def test_declared_metadata_phase_cannot_be_repeated_to_extend_deadline(tmp_path)
         files.budget.close()
 
 
-def test_immutable_event_publication_releases_only_its_original_fds(tmp_path, root_metadata):
+def test_immutable_event_publication_releases_only_its_original_fds(tmp_path, root_metadata):  # noqa: F811
     import json
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
@@ -87,7 +87,7 @@ def test_immutable_event_publication_releases_only_its_original_fds(tmp_path, ro
         files.budget.close()
 
 
-def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_installation, monkeypatch):
+def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_installation, monkeypatch):  # noqa: F811
     from tests.test_registered_experiment_retirement_flow import _born_scratch, _issue_action, _gc
     from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
     grant, _, target = _born_scratch(retirement_installation)

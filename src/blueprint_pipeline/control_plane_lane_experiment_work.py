@@ -90,6 +90,24 @@ class _ActionFiles(_BirthFiles):
         self._end()
         self.payload_mode, self.payload_root, self.payload_fd, self.payload_size = True, root, fd, expected_payload_bytes
 
+    def publication_complete(self, parent, name, before):
+        """Release newly created metadata FDs only after immutable readback.
+
+        The native publisher retains its original write token. Its temporary
+        pathname has disappeared, so closing proves that original token against
+        the final named inode rather than adopting another observed identity.
+        """
+        self.location(parent)
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        for fd in self.owned.keys() - before:
+            _require(fd not in self.parents.values() and not any(record.fd == fd for record in self.records),
+                     'experiment_work_publication_unproven')
+            self.proof(fd)
+            _require(owners._metadata(os.fstat(fd)) == owners._metadata(named),
+                     'experiment_work_publication_unproven')
+            self.close(fd)
+            _require(fd not in self.owned, 'experiment_work_cleanup_failed')
+
     def reserve_output(self, size):
         self.check_long()
         _require(type(size) is int and size >= 0 and not self.payload_mode
