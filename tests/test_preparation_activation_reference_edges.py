@@ -310,6 +310,29 @@ def test_invalid_reference_body_cannot_resolve_activation_selector_despite_self_
     assert len(result.local_path_protections) == 3
 
 
+@pytest.mark.parametrize("missing", ["absent", "null"])
+@pytest.mark.parametrize("change", [{}, {"run_id": "foreign"}, {"team_namespace": "foreign"},
+                                   {"source_commit": "b" * 40}])
+def test_missing_success_reference_proof_keeps_exact_activation_target_unresolved(missing, change):
+    prep = preparation_set()
+    value = json.loads(prep[-1].raw_bytes)
+    if missing == "absent":
+        del value["references"]
+    else:
+        value["references"] = None
+    value.update(change)
+    prep[-1] = replace(prep[-1], raw_bytes=json.dumps(sealed(value, "result_digest")).encode())
+    result = observe(*prep, *activation_set(prep))
+    assert "preparation_references_missing" in result.blockers
+    assert "activation_preparation_unresolved" in result.blockers
+    if change:
+        assert "preparation_result_binding_invalid" in result.blockers
+    assert not result.complete_supplied_supported_projection
+    assert len(result.records) == 6
+    assert not result.local_path_protections
+    assert result.remote_raw_references
+
+
 @pytest.mark.parametrize("mode", ["destination_qualification", "episode_evaluation"])
 @pytest.mark.parametrize("missing", ["robot", "controller"])
 def test_non_scene_modes_require_reference_bearing_robot_and_controller(mode, missing):

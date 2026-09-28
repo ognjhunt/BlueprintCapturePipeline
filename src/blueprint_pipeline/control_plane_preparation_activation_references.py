@@ -442,7 +442,7 @@ class _Interpretation:
         if reason in {"supported_reference_invalid", "supported_request_invalid", "supported_selector_invalid",
                       "unsupported_metadata_shape", "materialized_reference_count_invalid",
                       "materialized_reference_path_ambiguous", "materialized_reference_binding_mismatch",
-                      "request_materialized_reference_missing", "preparation_result_binding_invalid",
+                      "request_materialized_reference_missing", "preparation_references_missing", "preparation_result_binding_invalid",
                       "activation_execution_declaration_invalid", "activation_result_binding_invalid",
                       "canary_companions_invalid"}:
             doc.supported_semantics = False
@@ -745,6 +745,16 @@ class _Interpretation:
         success = value["status"] in _PREPARATION_SUCCESS
         if not success:
             self.defer(doc, "status", "preparation_status_incomplete")
+        parents = self.parents(doc)
+        if len(parents) != 1:
+            self.defer(doc, "envelope", "preparation_envelope_unresolved")
+        elif success:
+            request = parents[0].value["request"]
+            for key, request_key in (("run_id", "run_id"), ("team_namespace", "team_namespace"), ("source_commit", "expected_production_commit")):
+                if value.get(key) != request[request_key]:
+                    self.defer(doc, key, "preparation_result_binding_invalid")
+            if value.get("full_byte_service_account_readback_passed") is not True:
+                self.defer(doc, "full_byte_service_account_readback_passed", "supported_reference_invalid")
         refs = value.get("references")
         if refs is None:
             self.defer(doc, "references", "preparation_references_missing")
@@ -752,9 +762,6 @@ class _Interpretation:
         _check(isinstance(refs, list) and len(refs) <= MAX_FACTS, "supported_reference_invalid")
         if type(value.get("reference_count")) is not int or value["reference_count"] != len(refs):
             self.defer(doc, "reference_count", "materialized_reference_count_invalid")
-        parents = self.parents(doc)
-        if len(parents) != 1:
-            self.defer(doc, "envelope", "preparation_envelope_unresolved")
         matched = set()
         declared: dict[str, set[tuple[str, str, int]]] = {}
         for item in refs:
@@ -808,10 +815,6 @@ class _Interpretation:
             except _Invalid as error:
                 self.defer(doc, "references", error.code)
         if success and len(parents) == 1:
-            request = parents[0].value["request"]
-            for key, request_key in (("run_id", "run_id"), ("team_namespace", "team_namespace"), ("source_commit", "expected_production_commit")):
-                _check(value.get(key) == request[request_key], "preparation_result_binding_invalid")
-            _check(value.get("full_byte_service_account_readback_passed") is True, "supported_reference_invalid")
             for path in self.request_references.get(_source_key(parents[0].source), {}):
                 if path not in matched:
                     self.defer(doc, path, "request_materialized_reference_missing")
