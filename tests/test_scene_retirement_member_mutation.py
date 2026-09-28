@@ -68,6 +68,11 @@ def test_proved_internal_cross_member_hardlink_union_removes_completely(tmp_path
                               allowance=journal.allowance,token='3'*32)
     removed={}
     with access.exclusive_scene_access():
-        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal,removed_inodes=removed)
+        first_outcome=detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal,removed_inodes=removed)
         outcome=detach_and_remove(preserved,member_index=1,generation_id='4'*32,journal=journal,removed_inodes=removed)
     assert outcome['outcome']=='removed' and not first.exists() and not second.exists()
+
+    assert first_outcome['removed_allocated_bytes']==0
+    assert outcome['removed_allocated_bytes']==preserved['unique_allocated_bytes']
+    assert first_outcome['removed_file_count']==outcome['removed_file_count']==1
+    assert first_outcome['logical_bytes']==outcome['logical_bytes']==len(b'preserved-evidence')
