@@ -26,6 +26,7 @@ import subprocess
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from types import MappingProxyType
 
 from .task_evaluation_scene_retirement_access import _opened, _require, scene_access
 from . import task_evaluation_scene_retirement_access as access
@@ -66,6 +67,12 @@ _CONTINUOUS = {
 _TRUSTED_SOURCE_ROOT = Path('/mnt/blueprint-work/scene-retirement-runtime/src')
 _BOOTSTRAP = Path('/usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py')
 _TRUSTED_DEPENDENCIES = Path('/mnt/blueprint-work/scene-retirement-runtime/dependencies')
+_PRELOADED_CORE = frozenset(('blueprint_pipeline',
+    'blueprint_pipeline.task_evaluation_scene_retirement_supervisor',
+    'blueprint_pipeline.task_evaluation_scene_retirement_access',
+    'blueprint_pipeline.decision_evidence_contracts',
+    'blueprint_pipeline.task_evaluation_scene_retirement_preservation',
+    'blueprint_pipeline.task_evaluation_scene_retirement_generations'))
 _PROPERTIES_CONTINUOUS = frozenset(('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID',
     'ControlPID', 'Job', 'NeedDaemonReload', 'FragmentPath', 'DropInPaths', 'ExecStart',
     'ControlGroup', 'InvocationID', 'User', 'Group', 'NoNewPrivileges', 'AmbientCapabilities',
@@ -148,6 +155,13 @@ def _platform_rows(native):
             key, separator, value = line.partition('=')
             _require(separator and key in _OS_PROPERTIES and key not in row, _READER_ERROR)
             row[key] = value
+        if set(row) == _OS_PROPERTIES - {'ExecStart'}:
+            _require(row['Id'] in _OS_UNITS and row['LoadState'] == 'not-found'
+                     and row['ActiveState'] == 'inactive' and row['SubState'] == 'dead'
+                     and row['MainPID'] == row['ControlPID'] == '0'
+                     and row['ControlGroup'] == row['FragmentPath'] == row['DropInPaths'] == '',
+                     _READER_ERROR)
+            row['ExecStart'] = ''
         _require(set(row) == _OS_PROPERTIES and row['Id'] not in rows, _READER_ERROR)
         rows[row['Id']] = row
     _require(set(rows) == set(_OS_UNITS), _READER_ERROR)
@@ -177,7 +191,7 @@ def _loaded_rows(raw):
 
 def _unit_version(info):
     return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
-            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 def _unit_bytes(path, allowance, *, protected):
@@ -434,16 +448,14 @@ def _source_bundle(policy, native):
         module = row['entrypoint'].split(':')[0]
         _require(module not in hashes or hashes[module] == row['installed_source_sha'], _READER_ERROR)
         hashes[module] = row['installed_source_sha']
-    names = set(hashes) | set(_CONTINUOUS) | {
-        'blueprint_pipeline.task_evaluation_scene_retirement_supervisor',
-        'blueprint_pipeline.task_evaluation_scene_retirement_access',
-        'blueprint_pipeline.decision_evidence_contracts',
-    }
+    names = set(hashes) | set(_CONTINUOUS) | _PRELOADED_CORE
     result, total = {}, 0
     for module in sorted(names):
-        _require(re.fullmatch(r'blueprint_pipeline\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*', module),
+        _require(module == 'blueprint_pipeline' or
+                 re.fullmatch(r'blueprint_pipeline\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*', module),
                  _READER_ERROR)
-        path = _TRUSTED_SOURCE_ROOT / (module.replace('.', '/') + '.py')
+        path = (package / '__init__.py' if module == 'blueprint_pipeline'
+                else _TRUSTED_SOURCE_ROOT / (module.replace('.', '/') + '.py'))
         raw, version = _native_bytes(path, native, cap=1024 * 1024, protected=True)
         digest = 'sha256:' + hashlib.sha256(raw).hexdigest()
         _require(module not in hashes or hashes[module] == digest, _READER_ERROR)
@@ -455,6 +467,33 @@ def _source_bundle(policy, native):
 
 def _source_records(bundle):
     return {name:{key:value for key, value in row.items() if key != 'raw'} for name, row in bundle.items()}
+
+
+def _require_preloaded_core(bundle):
+    """Bind current core claims to the actual isolated root loader's first read."""
+    bootstrap = sys.modules.get('__main__')
+    _require(bootstrap is not None and bootstrap.__dict__.get('__file__') == str(_BOOTSTRAP), _READER_ERROR)
+    loader_type = bootstrap.__dict__.get('_SourceOnly')
+    _require(type(loader_type) is type(importlib.abc.MetaPathFinder)
+             and _PRELOADED_CORE <= bundle.keys(), _READER_ERROR)
+    for name in sorted(_PRELOADED_CORE):
+        loaded = sys.modules.get(name)
+        _require(loaded is not None, _READER_ERROR)
+        spec = loaded.__dict__.get('__spec__')
+        _require(spec is not None, _READER_ERROR)
+        loader = spec.loader
+        # No evidence callback from a different loader may run before this
+        # exact class proof. The kernel command/unit proof precedes this seam.
+        _require(type(loader) is loader_type, _READER_ERROR)
+        values, identities = vars(loader).get('values'), vars(loader).get('source_identities')
+        _require(type(values) is MappingProxyType and type(identities) is MappingProxyType
+                 and set(values) == set(identities) == _PRELOADED_CORE, _READER_ERROR)
+        retained, identity = values[name], identities[name]
+        current = bundle[name]
+        _require(type(retained) is tuple and len(retained) == 2 and type(retained[1]) is bytes
+                 and type(identity) is tuple and len(identity) == 9
+                 and current['path'] == str(retained[0]) and current['raw'] == retained[1]
+                 and current['identity'] == list(identity), _READER_ERROR)
 
 
 def _deployment_identity_dropin(row, module, native):
@@ -821,10 +860,9 @@ def _continuous_main(module, arguments):
             pass
         with scene_access(), _opened(policy['coordinator_path'], directory=True, protected=True) as (_, coordinator):
             bundle = _source_bundle(policy, native)
+            _require_preloaded_core(bundle)
             _require(all(name not in sys.modules for name in bundle
-                         if name not in {'blueprint_pipeline.task_evaluation_scene_retirement_supervisor',
-                                         'blueprint_pipeline.task_evaluation_scene_retirement_access',
-                                         'blueprint_pipeline.decision_evidence_contracts'}), _READER_ERROR)
+                         if name not in _PRELOADED_CORE), _READER_ERROR)
             uid, gid = access._service_identity()
             receipt = dict(schema_version='scene_retirement_current_boot.v1', module=module,
                 pid=row['pid'], start_ticks=row['start_ticks'], boot_id=boot_id, cgroup=row['cgroup'],
@@ -858,9 +896,7 @@ def _continuous_main(module, arguments):
             sys.meta_path.insert(0, finder)
             try:
                 for name in sorted(bundle):
-                    if name in {'blueprint_pipeline.task_evaluation_scene_retirement_supervisor',
-                                'blueprint_pipeline.task_evaluation_scene_retirement_access',
-                                'blueprint_pipeline.decision_evidence_contracts'}:
+                    if name in _PRELOADED_CORE:
                         continue
                     native.tick()
                     loaded = importlib.import_module(name)
