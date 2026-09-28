@@ -17,15 +17,15 @@ from .task_evaluation_scene_retirement_preservation import _payload, _scan, _sna
 
 
 def inventory_digest(preserved,index):
-    files=[dict(relative_path=row['relative_path'],mode=row['mode'],size_bytes=row['size_bytes'],
+    files=[dict(relative_path=row['relative_path'],mode=row['mode'],uid=row['uid'],gid=row['gid'],size_bytes=row['size_bytes'],
                 sha256=row['sha256'],hardlink_group=row['hardlink_group'])
            for row in preserved['files'] if row['member_index']==index]
-    directories=[dict(relative_path=row['relative_path'],mode=row['mode'])
+    directories=[dict(relative_path=row['relative_path'],mode=row['mode'],uid=row['uid'],gid=row['gid'])
                  for row in preserved['directories'] if row['member_index']==index]
     return canonical_digest({'files':files,'directories':directories})
 
 
-def _verify_current(preserved,index,allowance):
+def _verify_current(preserved,index,allowance,removed_inodes):
     member=preserved['members'][index]
     files,directories=[],[]
     current=_scan(Path(member['path']),index,allowance,files,directories)
@@ -39,9 +39,17 @@ def _verify_current(preserved,index,allowance):
         _require(row['snapshot']==expected_directories[row['relative_path']]['snapshot'],'scene_retirement_member_changed')
     for row in files:
         original=expected_files[row['relative_path']]
-        _require(row['snapshot']==original['snapshot'],'scene_retirement_member_changed')
+        removed=removed_inodes.get(tuple(original['physical_identity'][:2]),0)
+        if removed:
+            _require(original['hardlink_group'] is not None
+                     and row['snapshot'][:-2]==original['snapshot'][:-2]
+                     and row['snapshot'][-1]==original['snapshot'][-1]-removed,
+                     'scene_retirement_member_changed')
+        else:
+            _require(row['snapshot']==original['snapshot'],'scene_retirement_member_changed')
+        checked=dict(original,snapshot=row['snapshot'])
         digest=hashlib.sha256()
-        for chunk in _payload(Path(member['path'])/row['relative_path'],original,allowance):
+        for chunk in _payload(Path(member['path'])/row['relative_path'],checked,allowance):
             digest.update(chunk)
         _require('sha256:'+digest.hexdigest()==original['sha256'],'scene_retirement_payload_changed')
 
@@ -61,7 +69,8 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
     member=preserved['members'][member_index]
     source=Path(member['path'])
     destination=source.parent/('.scene-retirement-'+journal.token+'-'+str(member_index))
-    _verify_current(preserved,member_index,allowance)
+    removed=removed_inodes if removed_inodes is not None else {}
+    _verify_current(preserved,member_index,allowance,removed)
     with _opened(source.parent,directory=True) as (parent,parent_info):
         parent_identity=_identity(parent_info)
         evidence=dict(canonical_path=str(source),detached_path=str(destination),generation_id=generation_id,
@@ -81,7 +90,6 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
         _current_parent(source.parent,parent,parent_identity)
         os.fsync(parent)
         journal.append('detached',member_key=str(member_index),evidence=dict(evidence,detach_plan_raw_ref=planned))
-        removed=removed_inodes if removed_inodes is not None else {}
         files=[row for row in preserved['files'] if row['member_index']==member_index]
         directories={row['relative_path']:row for row in preserved['directories'] if row['member_index']==member_index}
         directory_ids={'':tuple(member['physical_identity']),**{

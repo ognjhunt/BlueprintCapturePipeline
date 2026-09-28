@@ -23,6 +23,10 @@ def test_full_preserved_member_restores_bytes_hardlinks_and_mode_without_overwri
     assert (member/'nested'/'evidence.bin').read_bytes()==b'preserved-evidence'
     assert (member/'linked.bin').stat().st_ino==(member/'nested'/'evidence.bin').stat().st_ino
     assert (member.stat().st_mode & 0o777)==preserved['members'][0]['mode']
+    assert (member.stat().st_uid,member.stat().st_gid)==(preserved['members'][0]['uid'],preserved['members'][0]['gid'])
+    expected=next(row for row in preserved['files'] if row['relative_path']=='nested/evidence.bin')
+    info=(member/'nested'/'evidence.bin').stat()
+    assert (info.st_uid,info.st_gid,info.st_mode & 0o777)==(expected['uid'],expected['gid'],expected['mode'])
 
 
 def test_restore_conflict_keeps_new_writer_and_corrupt_remote_creates_nothing(tmp_path,monkeypatch):

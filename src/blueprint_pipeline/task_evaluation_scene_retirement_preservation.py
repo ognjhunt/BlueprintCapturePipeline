@@ -76,7 +76,7 @@ class ActionAllowance:
 
 
 def _snapshot(info):
-    return (*_identity(info),info.st_size,info.st_mtime_ns,info.st_ctime_ns,info.st_nlink)
+    return (*_identity(info),info.st_size,info.st_uid,info.st_gid,info.st_mtime_ns,info.st_ctime_ns,info.st_nlink)
 
 
 def _relative(value):
@@ -111,7 +111,10 @@ def _scan(root, member_index, allowance, files, directories, *, depth=0):
                 relative = _relative(prefix+name)
                 child = os.stat(name,dir_fd=parent,follow_symlinks=False)
                 _require(child.st_dev == device,'scene_retirement_mount_unproven')
+                _require(0 <= child.st_uid < 2**32-1 and 0 <= child.st_gid < 2**32-1
+                         and not stat.S_IMODE(child.st_mode) & 0o7000,'scene_retirement_owner_metadata_unproven')
                 row = dict(member_index=member_index,relative_path=relative,mode=stat.S_IMODE(child.st_mode),
+                           uid=child.st_uid,gid=child.st_gid,
                            physical_identity=list(_identity(child)),snapshot=list(_snapshot(child)))
                 if stat.S_ISDIR(child.st_mode):
                     _require(len(files)+len(directories) < 10000,'scene_retirement_inventory_limit')
@@ -132,7 +135,10 @@ def _scan(root, member_index, allowance, files, directories, *, depth=0):
                                       sha256=None,hardlink_group=None))
             _guard(parent,expected)
         visit(fd,identity,'',depth)
-        return dict(path=str(root),physical_identity=list(identity),snapshot=list(_snapshot(info)),mode=stat.S_IMODE(info.st_mode))
+        _require(0 <= info.st_uid < 2**32-1 and 0 <= info.st_gid < 2**32-1
+                 and not stat.S_IMODE(info.st_mode) & 0o7000,'scene_retirement_owner_metadata_unproven')
+        return dict(path=str(root),physical_identity=list(identity),snapshot=list(_snapshot(info)),
+                    mode=stat.S_IMODE(info.st_mode),uid=info.st_uid,gid=info.st_gid)
 
 
 def _payload(path, row, allowance):
@@ -162,6 +168,7 @@ def _archive_chunks(roots, files, directories, allowance):
         allowance.tick()
         header = tarfile.TarInfo(str(row['member_index'])+'/'+row['relative_path'])
         header.mode = row['mode']
+        header.uid, header.gid = row['uid'], row['gid']
         header.mtime = 0
         header.type = tarfile.DIRTYPE if row['type'] == 'directory' else tarfile.REGTYPE
         header.size = row.get('size_bytes',0)
