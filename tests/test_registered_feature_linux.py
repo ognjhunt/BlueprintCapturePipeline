@@ -148,6 +148,9 @@ def _linux_cache_roundtrip():
     try:
         assert account.pw_uid != 0 and account.pw_gid == grp.getgrnam("blueprint").gr_gid
         value = install_protected_feature(root)
+        from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+
+        consumer.LANE_ROOTS = (value["work"], Path(value["settings"]["lane_scratch_inputs_root"]))
         # Disposable fixed installation repin precedes actual issuance and fill.
         cache._PUBLIC_REGISTRATION = value["public"]
         cache._PUBLIC_INVENTORY = value["inventory_path"]
@@ -765,11 +768,11 @@ def _linux_contained_roundtrip():
         source = Path(__file__).parents[1]
         installed = root / "installed"
         installed.mkdir(mode=0o755)
-        for folder in ("blueprint_pipeline", "tests"):
+        for folder in ("blueprint_pipeline", "tests", "scripts"):
             origin = (
                 source / "src/blueprint_pipeline"
                 if folder == "blueprint_pipeline"
-                else source / "tests"
+                else source / folder
             )
             for path in origin.rglob("*.py"):
                 target = installed / folder / path.relative_to(origin)
