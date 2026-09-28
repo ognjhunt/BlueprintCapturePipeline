@@ -746,3 +746,10 @@ def test_forged_executor_receipt_cannot_unlock_first_observation() -> None:
             attestation_key=_ATTESTATION_KEY,
         )
     assert "company_policy_sandbox_executor_attestation_invalid" in excinfo.value.blockers
+
+
+def test_registry_broker_wire_binding_includes_required_pull_purpose() -> None:
+    # The WebApp strict claim/acknowledgement schemas require this discriminator.
+    binding = _plan()["credential_broker_request_binding"]
+    assert binding["schema_version"] == "company_policy_registry_credential_claim.v1"
+    assert binding["purpose"] == "pull_digest_pinned_company_policy_image"

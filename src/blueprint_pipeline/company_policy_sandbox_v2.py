@@ -304,6 +304,7 @@ def build_company_policy_sandbox_plan(
         },
         "credential_broker_request_binding": {
             "schema_version": "company_policy_registry_credential_claim.v1",
+            "purpose": "pull_digest_pinned_company_policy_image",
             "tenant_id": admission_receipt.get("tenant_id"),
             "run_id": admission_receipt.get("run_id"),
             "submission_id": admission_receipt.get("submission_id"),
