@@ -1298,3 +1298,17 @@ Final71 focused installation/CPU/package tests pass in2.84s, with changed-file
 Ruff and diff checks passing. The actual CPU installation remains unobserved
 until the pushed clean commit is replayed against the unchanged retained base
 and25 package bytes. No GPU/container/archive dispatch predicate is opened.
+
+Actual3eb8 CPU rehearsal is terminal: parent observed clean guest exit0,
+native installation receipt blocked at guest_context before any package
+manager invocation. uid0, x86_64 and kernel5.15.0-1067-kvm are retained and
+match. Network interfaces and mount flags were not in the initial diagnostic
+inventory, so the compound context refusal cannot yet be assigned to a
+specific remaining predicate. Parent observation is not installation success.
+
+Reviewed narrow diagnosis: add fixed read-only ip JSON link/route and proc
+mount commands to the default CPU observation. Replay that small inspection
+against the retained base without packaging another389MB seed or rerunning
+APT. Keep the installation context guard unchanged until actual fields name
+the cause. Test those exact read-only argv in the emitted guest source; no
+provider/GPU/namespace/installation claim or retained data deletion.

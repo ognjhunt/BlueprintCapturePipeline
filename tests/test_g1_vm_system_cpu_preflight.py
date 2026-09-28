@@ -82,6 +82,14 @@ def test_seed_contains_only_fixed_cpu_diagnostics_and_terminal_receipt():
     compile(script, "guest_cpu_probe.py", "exec")
 
 
+def test_inspection_retains_every_installation_context_predicate_without_mutation():
+    source = probe.guest_probe_source()
+    assert "'network_interfaces':['ip','-j','link']" in source
+    assert "'network_routes':['ip','-j','route']" in source
+    assert "'mounts':['cat','/proc/mounts']" in source
+    assert "rehearse_offline_installation" not in source
+
+
 def test_cpu_result_cannot_be_accepted_without_one_terminal_guest_receipt():
     with pytest.raises(ValueError, match="terminal"):
         probe.read_guest_result("boot output only")

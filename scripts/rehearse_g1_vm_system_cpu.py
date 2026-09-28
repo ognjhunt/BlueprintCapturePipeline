@@ -152,6 +152,8 @@ result={'schema_version':'g1_vm_guest_system_cpu_observation.v1','scope':'local_
  'gpu_runtime_qualified':False,'policy_inference_performed':False,'provider_mutation_performed':False,
  'claim_ceiling':'development_only','uid':os.geteuid(),'platform':platform.machine(),'probes':{}}
 commands={'os_release':['cat','/etc/os-release'],'kernel':['uname','-r'],
+ 'network_interfaces':['ip','-j','link'],'network_routes':['ip','-j','route'],
+ 'mounts':['cat','/proc/mounts'],
  'packages':['dpkg-query','-W','-f=${Package} ${Version}\\n'],
  'docker_version':['docker','--version'],'docker_runtimes':['docker','info','--format','{{json .Runtimes}}'],
  'nvidia_toolkit':['nvidia-container-cli','--version'],
