@@ -26,6 +26,9 @@ SUPPORTED_SCHEMAS = {
     'sam_jobs': {'task_evaluation_sam31_preparation_execution_job.v1'},
     'sam_results': {'task_evaluation_sam31_preparation_execution_result.v1'},
     'sam_adoptions': {'task_evaluation_sam31_completed_prefix_adoption.v1'},
+    'sam_prefix_selections': {'task_evaluation_sam31_prefix_selection.v1'},
+    'sam_artifact_metadata': {'public_scene_sam31_task_input_packet.v1', 'semantic_sam31_source_track_run_request.v1',
+                              'public_scene_interiorgs_edit_input_request.v2'},
     'sam_parent_envelopes': {'task_evaluation_launch_preparation_envelope.v1'},
     'preparation_envelopes': {'task_evaluation_launch_preparation_envelope.v1'},
     'sam_execution_receipts': {'task_evaluation_sam31_phase_execution_receipt.v1', 'task_evaluation_sam31_phase_replay_receipt.v1'},
@@ -75,8 +78,8 @@ def decode(groups, limits):
 
 class Context(c.Context):
     """One invocation's exact indexes, reference and output occurrence budget."""
-    def __init__(self, decoded, roots, limits, intent_id, source_roles):
-        super().__init__(decoded, roots, limits, intent_id)
+    def __init__(self, decoded, roots, limits, intent_id, source_roles, *, emission_budget=None):
+        super().__init__(decoded, roots, limits, intent_id, emission_budget=emission_budget)
         self.source_roles = source_roles
         self.record_index = {(p['path'], p['sha256'], p['size_bytes']): row
                              for rows in decoded.values() for row in rows for p in [row[1]]}

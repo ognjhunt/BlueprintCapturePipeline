@@ -10,9 +10,13 @@ from . import task_evaluation_scene_source_family_contracts as contracts
 from . import task_evaluation_scene_source_family_website as website
 from . import task_evaluation_scene_source_family_sam as sam
 from . import task_evaluation_scene_source_family_adoption as adoption
+from .task_evaluation_scene_lineage_budget import RetainedEmissionBudget, RetainedEmissionBudgetError
 from .task_evaluation_scene_source_family_contracts import SceneSourceFamilyInventoryError
 
-_downstream_join = downstream.join_retained_scene_downstream_inventory
+def _downstream_join(*, intent_id, seed_records, downstream_records, roots, emission_budget):
+    return downstream._join(intent_id, seed_records, downstream_records, roots, emission_budget=emission_budget)
+
+
 MAX_RECORD_BYTES = MAX_TOTAL_BYTES = MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_RECORDS = MAX_REFERENCES = MAX_ROWS = 10_000
 MAX_NODES, MAX_DEPTH = 100_000, 64
@@ -36,6 +40,8 @@ def join_retained_scene_source_family_inventory(*, intent_id, seed_records, down
                      retained_metadata_roots)
     except SceneSourceFamilyInventoryError:
         raise
+    except RetainedEmissionBudgetError:
+        raise SceneSourceFamilyInventoryError('scene_source_family_output_limit') from None
     except contracts.c.SceneDownstreamInventoryError as exc:
         code = str(exc).removeprefix('scene_downstream_')
         raise SceneSourceFamilyInventoryError('scene_source_family_' + code) from None
@@ -70,20 +76,15 @@ def _join(intent_id, seed_records, downstream_records, source_records, roots, pa
     limits = {k: globals()[k] for k in ('MAX_RECORD_BYTES', 'MAX_TOTAL_BYTES', 'MAX_OUTPUT_BYTES',
         'MAX_RECORDS', 'MAX_REFERENCES', 'MAX_ROWS', 'MAX_NODES', 'MAX_DEPTH', 'MAX_ADOPTION_DEPTH', 'MAX_ADOPTION_NODES')}
     decoded = c.decode(groups, limits)
-    context = c.Context(decoded, roots, limits, intent_id, ROLES)
+    emission_budget = RetainedEmissionBudget(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
+    context = c.Context(decoded, roots, limits, intent_id, ROLES, emission_budget=emission_budget)
     context.routes, context.metadata_roots = routes, metadata_roots
     context.references()
-    # Conservative finite raw-provenance/reference projection before legacy child
-    # calls: no wrapper may invoke a child whose known retained projections alone
-    # exhaust this invocation's output allowance.
-    projection = [{'role': p['role'], 'path': p['path'], 'sha256': p['sha256'], 'size_bytes': p['size_bytes']}
-                  for p in context.raw if p['role'] not in ROLES]
-    contracts.c.bounded_size(projection, MAX_OUTPUT_BYTES - context.budget['bytes'])
     old = _downstream_join(intent_id=intent_id, seed_records=seed_records, downstream_records=downstream_records,
-                           roots={k: v for k, v in roots.items() if k not in EXTRA_ROOTS})
-    context.charge_child(old)
+                           roots={k: v for k, v in roots.items() if k not in EXTRA_ROOTS}, emission_budget=emission_budget)
     websites = website.capture(context, old)
     publications = website.publication(context, old)
+    context.source_owner_workspaces = {m['path'] for m in old['seed']['members'] if m['kind'] == 'administrative_source_workspace'}
     sam_rows = sam.inventory(context, old)
     adoption_rows, original_phases = adoption.inventory(context)
     result = {'schema_version': 'task_evaluation_scene_source_family_inventory.v1',
@@ -94,6 +95,7 @@ def _join(intent_id, seed_records, downstream_records, source_records, roots, pa
         'raw_reference_obligations': context.obligations, 'remote_reference_obligations': context.remote,
         'structural_join_obligations': context.structural, 'lexical_members': context.members,
         'mutations': 0, **{flag: False for flag in FALSE_FLAGS}}
+    emission_budget.check_document(result)
     contracts.c.bounded_size(result, MAX_OUTPUT_BYTES)
     for key, rows in result.items():
         if isinstance(rows, list):
