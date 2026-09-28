@@ -208,3 +208,56 @@ print("compiled-sealed-source")
                             timeout=10)
     assert result.returncode == 0, result.stderr
     assert result.stdout == 'compiled-sealed-source\n'
+
+
+def _selected_cohort_fixture(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    module, _ = fixture(tmp_path, monkeypatch)
+    source = module._RUNTIME_ROOT / "generations" / ("a" * 64)
+    sdk = module._RUNTIME_ROOT / "sdk-generations" / ("b" * 64)
+    (source / "src/blueprint_pipeline").mkdir(parents=True)
+    (source / "scripts").mkdir()
+    sdk.mkdir(parents=True)
+    for name in module._CORE:
+        (source / "src/blueprint_pipeline" / name).write_bytes(b'value = "selected-cohort"\n')
+    boot = tmp_path.resolve() / "installed-bootstrap"
+    boot.mkdir()
+    executable = boot / "continuous_bootstrap.py"
+    raw = SCRIPT.read_bytes()
+    executable.write_bytes(raw)
+    monkeypatch.setattr(module, "_BOOT_ROOT", boot, raising=False)
+    monkeypatch.setattr(module, "__file__", str(executable))
+    current = {"schema": "scene-retirement-runtime-cohort.v1", "runtime_root": str(source),
+               "dependencies_root": str(sdk), "source_digest": "a" * 64,
+               "dependency_digest": "b" * 64,
+               "bootstrap": {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw), "mode": 0o644},
+               "previous": {"sha256": "sha256:" + "c" * 64, "size_bytes": 1}}
+    (boot / "CURRENT.json").write_text(json.dumps(current))
+    return module, source, sdk, boot, current
+
+
+def test_native_bootstrap_loads_one_exact_selected_source_sdk_cohort(tmp_path, monkeypatch):
+    module, source, sdk, _, _ = _selected_cohort_fixture(tmp_path, monkeypatch)
+    selected_source, selected_sdk = module._select_runtime()
+    assert selected_source == source and selected_sdk == sdk
+    values = module._core_sources()
+    assert all(path.parent == source / "src/blueprint_pipeline" and raw == b'value = "selected-cohort"\n'
+               for path, raw in values.values())
+    assert values.runtime_root == source and values.dependencies_root == sdk
+
+
+@pytest.mark.parametrize("change", ["sdk-tuple", "bootstrap-bytes", "linked-current"])
+def test_mixed_or_replaced_current_cohort_refuses_before_source_import(tmp_path, monkeypatch, change):
+    import json
+    module, _, _, boot, current = _selected_cohort_fixture(tmp_path, monkeypatch)
+    if change == "sdk-tuple":
+        current["dependency_digest"] = "d" * 64
+        (boot / "CURRENT.json").write_text(json.dumps(current))
+    elif change == "bootstrap-bytes":
+        (boot / "continuous_bootstrap.py").write_bytes(b"changed executable")
+    else:
+        (boot / "CURRENT.json").rename(boot / "foreign-current.json")
+        (boot / "CURRENT.json").symlink_to(boot / "foreign-current.json")
+    with pytest.raises(ValueError, match="scene_retirement_bootstrap_unproven"):
+        module._core_sources()
