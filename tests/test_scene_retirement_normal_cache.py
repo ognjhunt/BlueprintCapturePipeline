@@ -406,3 +406,55 @@ def test_native_cache_union_metadata_refuses_a_second_owner_alias_before_payload
         preservation._inventory_members([member],
             preservation.ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0),
             cache_aliases=[dict(canonical_path=str(alias),digest='sha256:'+alias.name,size_bytes=6)])
+
+
+def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generations(tmp_path,monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement as engine
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import inventory_digest
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members,ActionAllowance
+    from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    path,consent=cache_action_consent(tmp_path,monkeypatch)
+    policy=access._policy()
+    policy['reference_context']={'roots':{'intent_root':str(Path(consent['intent_raw_ref']['path']).parent.parent)}}
+    _sealed_file(tmp_path/'policy.json',policy,'policy_digest',mode=0o644)
+    source=json.loads(Path(consent['cache_objects'][0]['source_raw_ref']['path']).read_bytes())
+    request=json.loads(Path(source['submission_request_raw_ref']['path']).read_bytes())
+    root=Path(consent['cache_objects'][0]['canonical_path']).parents[2]/request['preparation_id']
+    records=[(file,json.loads(file.read_bytes())) for file in Path(policy['generation_store']).glob('*.json')]
+    generation=next(value for _,value in records if value.get('canonical_path')==str(root))
+    caches=[(file,value) for file,value in records if value.get('schema_version')=='scene_content_generation.v1']
+    consent['cache_objects']=[dict(canonical_path=value['canonical_path'],digest=value['digest'],
+        size_bytes=value['size_bytes'],generation_id=value['generation_id'],generation_raw_ref=_raw(file),
+        source_raw_ref=value['source_publication_raw_ref']) for file,value in caches]
+    allowance=ActionAllowance(expires_at=200,now=lambda:101,monotonic=lambda:0)
+    transport=MemoryTransport([root])
+    preserved=preserve_members([root],transport=transport,allowance=allowance,token='4'*32,
+        cache_aliases=[{key:row[key] for key in ('canonical_path','digest','size_bytes')}
+                       for row in consent['cache_objects']])
+    consent['members']=[dict(canonical_path=str(root),**{key:generation[key] for key in
+        ('owner_intent_id','owner_raw_ref','generation_id','dev','ino','mode')},
+        inventory_sha256=inventory_digest(preserved,0),**{'class':'host'})]
+    store=Path(policy['journal_store']);store.mkdir(mode=0o700)
+    (store/'retired').mkdir(mode=0o700)
+    initial=dict(schema_version='scene_retirement_journal.v1',status='pending',
+        intent_id=consent['intent_id'],intent_raw_ref=consent['intent_raw_ref'],plan_raw_ref=consent['plan_raw_ref'],
+        members=consent['members'],generations=[generation],cache_objects=consent['cache_objects'],
+        cache_generations=[value for _,value in caches],preserved=preserved,metadata_closure_raw_ref=None)
+    journal=SceneJournal.create(store,token='4'*32,initial=initial,allowance=allowance)
+    pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
+    with access.exclusive_scene_access():
+        event=journal.append('retiring',member_key='0',evidence={
+            'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][0]['inventory_sha256']})
+        generation=engine._transition(policy,generation,state='retiring',token=journal.token,journal_ref=event,
+            inventory_sha256=consent['members'][0]['inventory_sha256'])
+        receipt=engine._finish_retirement(policy,consent,initial,journal,pending,[generation],[],allowance)
+    assert receipt['status']=='retired' and not root.exists()
+    assert all(not Path(row['canonical_path']).exists() for row in consent['cache_objects'])
+    assert receipt['removed_allocated_bytes']==preserved['unique_allocated_bytes']
+    assert len(receipt['cache_outcomes'])==len(caches)
+    snapshot=json.loads(Path(receipt['retired_journal_raw_ref']['path']).read_bytes())
+    assert snapshot['cache_outcomes']==receipt['cache_outcomes']
+    assert all(json.loads(file.read_bytes())['state']=='retired' for file,_ in caches)
