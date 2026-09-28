@@ -680,3 +680,22 @@ fixture against a fresh immutable successor and preserve the failed root.
 Reviewed against the installed binary's help and bubblewrap's setup/descriptor
 cleanup implementation. This changes archive setup, not any approval or paid
 admission predicate; actual CUDA and full VM dispatch still require proof.
+
+The449d3c4d5 real replay also refused /proc/self/fd/3: this installed
+bubblewrap resolves the descriptor to its canonical path before mounting.
+`namei -l` identifies the two private0750 blueprint-owned ancestors outside
+our root-owned scratch. A trusted namespace observation confirms its map is
+UID65534->host0/GID65534->host0, so it loses initial-namespace DAC override
+across those foreign ancestors. Descriptor binding does not bypass traversal.
+Do not describe449 as a successful namespace repair.
+
+Encoded correction: before launch, check canonical ancestor execute permission
+using exactly the caller UID/GID that bubblewrap maps; reject foreign private
+ancestors with a typed namespace-path refusal. Check artifact read+execute too.
+Keep the descriptor for source identity and closure, but require this path
+predicate separately. The VM canonical staging must use private root-owned
+ancestors; the control-plane replay uses its own new private root-owned staging
+under /root to match that contract. Copy only this small source/fixture package;
+do not move/chmod existing evidence or change a paid gate. Tests pin owner/group/
+world traversal and absent execute/read permissions. Repeat against a fresh
+immutable successor, retaining both prior failed roots.

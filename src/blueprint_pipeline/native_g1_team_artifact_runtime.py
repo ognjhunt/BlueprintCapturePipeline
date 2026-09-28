@@ -101,6 +101,24 @@ def _extract_regular_archive(archive_path: Path, destination: Path) -> None:
             target.chmod(0o555)
 
 
+def _mapped_directory_access(node: os.stat_result, *, uid: int, gid: int, read: bool) -> bool:
+    """Namespace capabilities cannot override foreign ancestor permissions."""
+    if not stat.S_ISDIR(node.st_mode):
+        return False
+    shift = 6 if node.st_uid == uid else 3 if node.st_gid == gid else 0
+    bits = (stat.S_IMODE(node.st_mode) >> shift) & 0o7
+    required = 0o5 if read else 0o1
+    return bits & required == required
+
+
+def _require_namespace_artifact_access(artifact_root: Path) -> None:
+    canonical = artifact_root.resolve(strict=True)
+    uid, gid = os.geteuid(), os.getegid()
+    for directory in (canonical, *canonical.parents):
+        if not _mapped_directory_access(directory.stat(), uid=uid, gid=gid, read=directory == canonical):
+            raise ValueError("g1_team_artifact_namespace_path_inaccessible")
+
+
 def isolated_artifact_command(*, artifact_root: Path, entrypoint: str, artifact_directory_fd: int,
                               gpu_binding: Mapping[str, Any] | None = None) -> list[str]:
     """Expose only a read-only artifact and standard runtimes to bubblewrap."""
@@ -124,6 +142,7 @@ def isolated_artifact_command(*, artifact_root: Path, entrypoint: str, artifact_
             raise ValueError("g1_team_artifact_directory_fd_invalid")
     except OSError as exc:
         raise ValueError("g1_team_artifact_directory_fd_invalid") from exc
+    _require_namespace_artifact_access(artifact_root)
     bwrap = shutil.which("bwrap")
     if not bwrap:
         raise ValueError("g1_team_artifact_sandbox_unavailable")

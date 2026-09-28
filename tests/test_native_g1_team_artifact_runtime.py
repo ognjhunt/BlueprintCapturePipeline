@@ -3,6 +3,7 @@
 import hashlib
 import io
 import os
+import stat
 import sys
 import tarfile
 from pathlib import Path
@@ -53,6 +54,30 @@ def _sandbox_command(artifact: Path, entrypoint: str, **kwargs):
         )
     finally:
         os.close(descriptor)
+
+
+@pytest.mark.parametrize("uid,gid,mode,allowed", [
+    (11, 12, 0o700, True), (10, 12, 0o710, True), (10, 13, 0o701, True),
+    (10, 13, 0o750, False), (11, 12, 0o600, False), (10, 13, 0o700, False),
+    (11, 12, 0o001, False), (10, 12, 0o001, False),
+])
+def test_namespace_ancestor_access_uses_mapped_ids_without_host_dac_override(uid, gid, mode, allowed):
+    observed = SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=stat.S_IFDIR | mode)
+    assert runtime._mapped_directory_access(observed, uid=11, gid=12, read=False) is allowed
+
+
+def test_namespace_artifact_requires_read_and_execute():
+    observed = SimpleNamespace(st_uid=11, st_gid=12, st_mode=stat.S_IFDIR | 0o300)
+    assert runtime._mapped_directory_access(observed, uid=11, gid=12, read=False) is True
+    assert runtime._mapped_directory_access(observed, uid=11, gid=12, read=True) is False
+
+
+def test_foreign_private_ancestor_is_typed_refusal(monkeypatch, tmp_path):
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    monkeypatch.setattr(runtime, "_mapped_directory_access", lambda *a, **kw: False)
+    with pytest.raises(ValueError, match="namespace_path_inaccessible"):
+        runtime._require_namespace_artifact_access(artifact)
 
 
 def test_bwrap_command_exposes_readonly_artifact_without_network(monkeypatch, tmp_path):
@@ -258,6 +283,9 @@ def test_gpu_probe_failure_closes_artifact_descriptor_without_starting_policy(mo
     descriptors = []
     monkeypatch.setattr(runtime.sys, "platform", "linux")
     monkeypatch.setattr(runtime.os, "geteuid", lambda: 0)
+    # Hardware caller is fake root on macOS; path permission semantics have
+    # separate tests and the real Linux immutable-source rehearsal.
+    monkeypatch.setattr(runtime, "_require_namespace_artifact_access", lambda _: None)
     monkeypatch.setattr(runtime, "recheck_archive_gpu_binding", lambda _: None)
     monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/bwrap")
     monkeypatch.setattr(runtime.shutil, "disk_usage", lambda _: SimpleNamespace(free=runtime._MIN_FREE_AFTER_EXTRACT + 1024**3))
