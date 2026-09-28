@@ -265,6 +265,7 @@ class _Promotion:
         self.staged_reader = None
         self.output_reused = False
         self.prior_copy_missing = False
+        self.witness_carried: list[dict] = []
         self.local_verified: Path | None = None
         self.local_removed_before = False
         self.durable: dict[str, bool] = {}
@@ -554,26 +555,37 @@ class _Promotion:
         except ProviderOutputMemberIndexError as exc:
             raise ProviderOutputPromotionError(str(exc)) from None
 
-    def _prior_witness_versions(self, prior: Mapping | None) -> list[dict]:
-        """Prior witness versions that still stand.
+    def _prior_witness_versions(self, prior: Mapping | None, *, verify: bool = True) -> list[dict]:
+        """Prior witness versions that still stand, from a final receipt or a checkpoint.
 
-        A promoted copy stands while it exists; a redundancy proof stands only
-        with the durable primary it was proven against, never with other bytes
-        promoted since.
+        A promoted copy stands while it exists (one HEAD unless ``verify`` is
+        false); a redundancy proof stands only with the durable primary it was
+        proven against, never with other bytes promoted since.
         """
         section = (prior or {}).get("staged_objects", {}).get("paired_witness") if prior else None
-        if not section or section.get("state") not in DURABLE_STATES:
+        if not section or section.get("state") not in {*DURABLE_STATES, "pending"}:
             return []
         kept = []
         for row in section["versions"]:
             reference = row.get("durable_reference")
             if reference is not None:
-                if self._still_durable(reference):
+                if not verify or self._still_durable(reference):
                     kept.append(row)
             elif (self.status == "promoted" and self.primary
                   and (row.get("redundancy") or {}).get("output_archive_sha256") == self.primary["archive_sha256"]):
                 kept.append(row)
         return kept
+
+    def _carried_witness_versions(self, prior: Mapping | None) -> list[dict]:
+        """The prior witness versions every receipt carries until the witness step decides."""
+        if self.witness_key is None:
+            return []
+        try:
+            return _retrying(lambda: self._prior_witness_versions(prior), self.attempts, "paired_witness")
+        except ProviderOutputPromotionError as exc:
+            # A HEAD that failed proves no copy gone: carry them as the prior receipt had them.
+            self.blockers.append(f"paired_witness_promotion_failed:{exc}")
+            return self._prior_witness_versions(prior, verify=False)
 
     def _restore(self, prior: Mapping) -> dict:
         """Rewrite the prior durable record exactly, with this run's blocker: nothing was proven gone."""
@@ -584,8 +596,8 @@ class _Promotion:
         self.local_removed_before = prior.get("local_copy_removed_after_verified_promotion") is True
         return self._receipt(final=True)
 
-    def _witness(self, prior: Mapping | None) -> dict:
-        versions = self._prior_witness_versions(prior)
+    def _witness(self) -> dict:
+        versions = list(self.witness_carried)
         section = {"key_sha256": key_sha256(self.witness_key), "state": _witness_state(versions) or "deferred",
                    "versions": versions}
         if self.status == "failed":
@@ -627,6 +639,7 @@ class _Promotion:
                 if prior and prior.get("status") == "promoted" and not self.prior_copy_missing:
                     # Only provider_output_durable_copy_missing proves the durable copy gone.
                     return self._restore(prior)
+            self.witness_carried = self._carried_witness_versions(prior)
             self._checkpoint()
             if self.status == "promoted":
                 try:
@@ -636,15 +649,12 @@ class _Promotion:
                 self._checkpoint()
             if self.witness_key is not None:
                 try:
-                    self.witness_section = _retrying(lambda: self._witness(prior), self.attempts, "paired_witness")
+                    self.witness_section = _retrying(self._witness, self.attempts, "paired_witness")
                 except ProviderOutputPromotionError as exc:
                     self.blockers.append(f"paired_witness_promotion_failed:{exc}")
-                    try:
-                        versions = self._prior_witness_versions(prior)
-                    except ProviderOutputPromotionError:
-                        versions = []
                     self.witness_section = {"key_sha256": key_sha256(self.witness_key),
-                                            "state": _witness_state(versions) or "failed", "versions": versions}
+                                            "state": _witness_state(self.witness_carried) or "failed",
+                                            "versions": list(self.witness_carried)}
         except ProviderOutputPromotionError as exc:
             self.blockers.append(str(exc))
         finally:
@@ -664,7 +674,10 @@ class _Promotion:
                                 "versions": list(self.versions)}
         witness_section = self.witness_section
         if self.witness_key is not None and self.manifest_sha256 is not None and not final:
-            witness_section = {"key_sha256": key_sha256(self.witness_key), "state": "pending", "versions": []}
+            # Still ``pending`` until the witness step decides (closeout waits on it), but
+            # carrying the prior witness versions that stand, so a kill here loses none.
+            witness_section = {"key_sha256": key_sha256(self.witness_key), "state": "pending",
+                               "versions": list(self.witness_carried)}
         if witness_section is not None:
             staged["paired_witness"] = witness_section
         latest = (witness_section or {}).get("versions") or [{}]

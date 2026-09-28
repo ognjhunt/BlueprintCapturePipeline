@@ -849,6 +849,49 @@ def test_a_transient_head_failure_on_resume_keeps_the_durable_receipt(world):
     assert _receipt_now(world)["durable_reference"] == first["durable_reference"]
 
 
+def test_a_resume_killed_during_the_witness_step_keeps_the_promoted_witness(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch)
+    _, witness, _ = _paired()
+    world.stage("paired_witness", witness, etag='"witness-1"')
+    first, _ = world.promote(cleanup=lambda: {"status": "blocked"})
+    assert (first["status"], first["witness"]["disposition"]) == ("absent_confirmed", "promoted")
+    world.cleanup()  # the witness, the only paid evidence, leaves staging behind its receipt
+    assert world.keys["paired_witness"] not in world.spaces.stores
+
+    with monkeypatch.context() as patch:
+        patch.setattr(promotion._Promotion, "_witness", _kill)
+        with pytest.raises(_Killed):
+            world.resume()
+
+    mid = _receipt_now(world)
+    # Still a checkpoint (closeout waits on ``pending``), yet it names the promoted witness.
+    section = mid["staged_objects"]["paired_witness"]
+    assert section["state"] == "pending"
+    assert section["versions"] == first["staged_objects"]["paired_witness"]["versions"]
+    assert mid["witness"]["reference"] == first["witness"]["reference"]
+    assert world.resume()["status"] == "completed"
+    end = _receipt_now(world)
+    assert (end["witness"]["disposition"], end["witness"]["reference"]) == ("promoted", first["witness"]["reference"])
+
+
+def test_a_transient_head_failure_on_the_witness_copy_keeps_it(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch)
+    _, witness, _ = _paired()
+    world.stage("paired_witness", witness, etag='"witness-1"')
+    first, _ = world.promote(cleanup=lambda: {"status": "blocked"})
+    world.cleanup()
+
+    def head_failed(**_kwargs):
+        raise scene_store.TaskEvaluationConfiguredSceneObjectStoreError("configured_scene_artifact_head_failed")
+
+    resumed = world.resume(verifier=head_failed)
+
+    assert "paired_witness_promotion_failed:configured_scene_artifact_head_failed" in resumed["blockers"]
+    assert _receipt_now(world)["staged_objects"]["paired_witness"] == first["staged_objects"]["paired_witness"]
+    assert world.resume()["status"] == "completed"
+    assert _receipt_now(world)["witness"]["reference"] == first["witness"]["reference"]
+
+
 def test_a_redundant_witness_stands_only_with_the_primary_it_was_proven_against(paired_world):
     world = paired_world
     output, witness, _ = _paired()
