@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed'])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash'])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -131,8 +131,25 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         allocations.append((args, kwargs))
         return reservation
     monkeypatch.setattr(restore, 'reserve_control_plane_disk', reserve)
-    outcome = root.restore_registered_experiment(grant['action_id'], expected_restore_intent=grant['restore_intent'],
-        installed_config_path=value[0], now=lambda: 2902, _pins_root=value[0].parent / 'pins')
+    arguments = dict(expected_restore_intent=grant['restore_intent'], installed_config_path=value[0],
+        now=lambda: 2902, _pins_root=value[0].parent / 'pins')
+    if certificate_case == 'activation_crash':
+        from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+        actual_event = actions._event
+        def killed(*args, **kwargs):
+            if args[3] == 'activation_complete':
+                raise OSError('killed_after_actual_active_head')
+            return actual_event(*args, **kwargs)
+        monkeypatch.setattr(actions, '_event', killed)
+        with pytest.raises(ValueError, match='experiment_'):
+            root.restore_registered_experiment(grant['action_id'], **arguments)
+        monkeypatch.setattr(actions, '_event', actual_event)
+    outcome = root.restore_registered_experiment(grant['action_id'], **arguments)
+    if certificate_case in ('replayed', 'activation_crash'):
+        calls = list(cloud.calls)
+        replay = root.restore_registered_experiment(grant['action_id'], **arguments)
+        assert replay['receipt'] == outcome['receipt'] and cloud.calls == calls
+
     assert outcome['decision'] == 'restored' and reservation.released and len(allocations) == 1
     assert allocations[0][1]['minimum_bytes'] > 0
     entry = _current_entry(value, intent_id)
