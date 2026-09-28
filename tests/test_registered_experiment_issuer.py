@@ -50,9 +50,9 @@ def installation(tmp_path, monkeypatch, root_metadata):  # noqa: F811
 def issue(installation, **changes):
     from blueprint_pipeline.control_plane_lane_experiment_retirement import issue_experiment_creation_intent
     config, _, _, _ = installation
-    return issue_experiment_creation_intent(installed_config_path=config, principal="operator", owner="owner",
-        root="work", reference_value="run1", lease_ttl_seconds=1800,
-        participant_profile="local_root_disposable.v1", request_records=(), now=lambda: 1000, **changes)
+    options = dict(installed_config_path=config, principal="operator", owner="owner", root="work", reference_value="run1",
+        lease_ttl_seconds=1800, participant_profile="local_root_disposable.v1", request_records=(), now=lambda: 1000)
+    return issue_experiment_creation_intent(**(options | changes))
 
 
 def test_default_flags_and_private_public_paths_are_derived(monkeypatch):
