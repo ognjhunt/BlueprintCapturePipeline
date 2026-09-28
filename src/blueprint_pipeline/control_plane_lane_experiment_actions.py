@@ -17,7 +17,8 @@ from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch as scratch
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_lane_experiment_authority import _current, _read
-from .control_plane_lane_experiment_publication import _BirthFiles, _publish
+from .control_plane_lane_experiment_publication import _BirthFiles, _publish as _native_publish
+from .control_plane_lane_experiment_work import _ActionFiles
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require, _valid_digest
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .decision_evidence_contracts import canonical_digest
@@ -28,6 +29,12 @@ _ACTION_FIELDS = frozenset({"schema_version", "intent_id", "action_id", "issuer_
     "generation", "birth", "target_identity", "lease", "completion", "manifest", "action",
     "issued_at_epoch", "expires_at_epoch", "policy", "action_digest"})
 _METADATA = frozenset({scratch.LEASE_FILE, ".registered-experiment.v1.json"})
+
+
+def _publish(files, *args, **kwargs):
+    if isinstance(files, _ActionFiles):
+        files.reserve_output(len(args[2]))
+    return _native_publish(files, *args, **kwargs)
 
 
 def _encoded(value, field, cap):
@@ -437,7 +444,7 @@ def _event(files, directory, action, kind, body, index, previous, issued):
     return _publish(files, directory, f"e-{index:05d}.json", payload, kind="event")
 
 
-def _member(files, target, row, current_directory_metadata=None):
+def _member(files, target, row, current_directory_metadata=None, *, hash_payload=True):
     relative, kind, identity, token, digest = row
     path = Path(relative)
     _require(not path.is_absolute() and path.parts and all(part not in (".", "..") for part in path.parts),
@@ -456,12 +463,13 @@ def _member(files, target, row, current_directory_metadata=None):
     initial = os.fstat(fd)
     try:
         _require(owners._metadata(initial) == owners._metadata(named), "experiment_member_changed")
-        if kind == "file":
+        if kind == "file" and hash_payload:
             actual = hashlib.sha256()
             amount = 0
             while True:
                 files.location(fd)
-                block = os.read(fd, 1024 * 1024)
+                block = (files.payload_read(fd, 1024 * 1024, role="archive_prehash")
+                         if isinstance(files, _ActionFiles) and files.payload_mode else os.read(fd, 1024 * 1024))
                 if not block:
                     break
                 amount += len(block)
@@ -480,11 +488,12 @@ def _member(files, target, row, current_directory_metadata=None):
 
 
 def run_action(action_id, *, expected_action_intent, installed_config_path, now, _pins_root):
-    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    files = _ActionFiles(now=now)
     try:
         issued = now()
         config, gid = _context(files, installed_config_path, issued)
         action = _read_action(files, config, action_id, expected_action_intent, issued)
+        files.bind_deadline(action["expires_at_epoch"])
         if config.experiment_retirement_enabled is not True:
             return _outcome(action, "kept", "experiment_retirement_disabled")
         public, current, entry = _selected(files, config, action["intent_id"], issued, gid)
@@ -555,15 +564,19 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                 files.verify_record(retiring[2])
             if preservation is None:
                 archived = archive.preserve(files, config, target, rows, manifest_raw, archive_guard)
+                files.phase("ready")
                 ready = _event(files, operation, action, "preservation_ready", dict(started=previous,
                     action=expected_action_intent, birth=entry["birth"], manifest=action["manifest"], archive=archived,
                     target_identity=entry["target_identity"], lease=entry["lease"]), 1, previous, issued)
                 preservation, previous = (ready, archived), ready
             else:
                 archive.verify_preservation(files, config, preservation[1], archive_guard)
+                files.phase("ready")
         for index, row in enumerate(rows, 1):
             if index <= removed_count:
                 continue
+            if index == removed_count + 1:
+                files.phase("removal_batch")
             _require(now() < action["expires_at_epoch"], "experiment_action_expired")
             files.verify_record(lease_record)
             files.verify()
@@ -603,6 +616,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
             receipt = _event(files, operation, action, "retired", dict(preservation=preservation[0] if preservation else None, manifest=action["manifest"],
             removed_event_count=len(rows), removed_logical_bytes=logical, eligible_allocated_bytes=allocated,
             remaining_metadata=[entry["lease"], original["marker"]], partial=False), len(rows) + 1 + offset, previous, issued)
+        files.phase("finalize")
         prepared, old_head = _version(files, public, retiring, entry | {"state": "retired"}, gid, action["policy"], issued)
         recovery._once(files, store, action_id + ".retired-head.json", prepared, kind="private")
         _install_head(files, public, prepared, gid, old_head)

@@ -1,6 +1,4 @@
 """Real owned descriptor work keeps metadata phases separate from payload IO."""
-from pathlib import Path
-
 import pytest
 
 

@@ -81,10 +81,10 @@ def _client(files, config):
 
 
 class _Controller:
-    def __init__(self, guard, size):
+    def __init__(self, guard, size, *, _origin=None):
         _require(type(size) is int and 0 < size <= MAX_PAYLOAD, 'experiment_archive_limit')
         self.guard, self.size = guard, size
-        self.origin = time.monotonic()
+        self.origin = time.monotonic() if _origin is None else _origin
         self.lock, self.failure = threading.RLock(), None
         self.calls = dict(source=0, readback=0, sdk=0)
         self.maximum = dict(source=24 * (math.ceil(size / QUANTUM) + 4096),
@@ -230,7 +230,10 @@ def preserve(files, config, target, rows, manifest_raw, guard):
              'experiment_archive_manifest_invalid')
     prefix = MAGIC + len(manifest_raw).to_bytes(4, 'big') + manifest_raw
     size = len(prefix) + sum(int(row[3].split(':')[4]) for row in rows if row[1] == 'file')
-    controller = _Controller(guard, size)
+    controller = _Controller(guard, size, _origin=getattr(files, "controller_origin", None))
+    client, bucket = _client(files, config)
+    if type(files) is actions._ActionFiles:
+        files.payload(target, files.parents[target], expected_payload_bytes=size)
     def write(sink):
         controller.check('source')
         sink.write(prefix)
@@ -250,7 +253,9 @@ def preserve(files, config, target, rows, manifest_raw, guard):
                     _require(fragments < 8, 'experiment_archive_fragment_limit')
                     fragments += 1
                     files.location(fd)
-                    payload = os.read(fd, min(QUANTUM - count % QUANTUM, info.st_size + 1 - count))
+                    amount = min(QUANTUM - count % QUANTUM, info.st_size + 1 - count)
+                    payload = (files.payload_read(fd, amount, role='archive_stream')
+                               if type(files) is actions._ActionFiles and files.payload_mode else os.read(fd, amount))
                     controller.check('source')
                     if not payload:
                         break
@@ -267,13 +272,13 @@ def preserve(files, config, target, rows, manifest_raw, guard):
             self.digest = hashlib.sha256()
         def write(self, payload):
             self.digest.update(payload)
-    sink = Digest()
-    write(sink)
-    digest = 'sha256:' + sink.digest.hexdigest()
-    key = remote.LARGE_ARTIFACT_KEY_PREFIX + '/lane-experiment/sha256/' + digest[7:] + '/archive.bin'
-    client, bucket = _client(files, config)
-    guarded = _LaneArchiveClient(client, bucket, key, controller)
+    guarded = None
     try:
+        sink = Digest()
+        write(sink)
+        digest = 'sha256:' + sink.digest.hexdigest()
+        key = remote.LARGE_ARTIFACT_KEY_PREFIX + '/lane-experiment/sha256/' + digest[7:] + '/archive.bin'
+        guarded = _LaneArchiveClient(client, bucket, key, controller)
         result = remote.publish_configured_scene_stream(write_stream=write, digest=digest, size_bytes=size,
             filename='archive.bin', artifact_kind='lane-experiment', client=guarded, bucket=bucket)
         controller.check()
@@ -286,7 +291,10 @@ def preserve(files, config, target, rows, manifest_raw, guard):
     except remote.TaskEvaluationConfiguredSceneObjectStoreError:
         raise OwnerTargetVersionError('experiment_archive_preservation_failed') from None
     finally:
-        guarded.close()
+        if guarded is not None:
+            guarded.close()
+        else:
+            client.close()
 
 
 def verify_preservation(files, config, preservation, guard):
@@ -297,7 +305,7 @@ def verify_preservation(files, config, preservation, guard):
         and preservation['full_byte_service_account_readback_passed'] is True
         and preservation['sha256'] == preservation['readback_sha256']
         and preservation['size_bytes'] == preservation['readback_size_bytes'], 'experiment_archive_receipt_invalid')
-    controller = _Controller(guard, preservation['size_bytes'])
+    controller = _Controller(guard, preservation['size_bytes'], _origin=getattr(files, 'controller_origin', None))
     client, bucket = _client(files, config)
     key = remote.LARGE_ARTIFACT_KEY_PREFIX + '/lane-experiment/sha256/' + preservation['sha256'][7:] + '/archive.bin'
     guarded = _LaneArchiveClient(client, bucket, key, controller)
