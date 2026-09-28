@@ -175,11 +175,11 @@ class Context(c.Context):
                 work_budget.charge("values")
             value = stack.pop()
             if isinstance(value, dict):
-                ((stack.extend(_work_items(_work_items(value.values(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(value.values(), work_budget))) if work_budget is not None else stack.extend(value.values()))
+                stack.extend(_work_items(value.values(), work_budget) if work_budget is not None else value.values())
             elif isinstance(value, list):
                 self.budget['rows'] += len(value)
                 require(self.budget['rows'] <= self.limits['MAX_ROWS'], 'rows_limit', **_work_kwargs(work_budget))
-                ((stack.extend(_work_items(_work_items(value, work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(value, work_budget))) if work_budget is not None else stack.extend(value))
+                stack.extend(_work_items(value, work_budget) if work_budget is not None else value)
         self.budget['bytes'] += c.bounded_size(result, self.limits['MAX_OUTPUT_BYTES'] - self.budget['bytes'], **_work_kwargs(work_budget))
         for key in (_work_items(('raw_reference_obligations', 'remote_reference_obligations', 'structural_join_obligations'), work_budget) if work_budget is not None else ('raw_reference_obligations', 'remote_reference_obligations', 'structural_join_obligations')):
             for _ in (_work_items(result[key], work_budget) if work_budget is not None else result[key]):

@@ -322,9 +322,9 @@ def publication(context, old, *, work_budget=None):
                         ref = inventory.get(item['uri'])
                         c.require(ref is not None and all(ref[k] == item[k] for k in (_work_items(('uri', 'digest', 'size_bytes'), work_budget) if work_budget is not None else ('uri', 'digest', 'size_bytes'))),
                                   'manifest_request_invalid', **_work_kwargs(work_budget))
-                    ((stack.extend(_work_items(_work_items(item.values(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item.values(), work_budget))) if work_budget is not None else stack.extend(item.values()))
+                    stack.extend(_work_items(item.values(), work_budget) if work_budget is not None else item.values())
                 elif isinstance(item, list):
-                    ((stack.extend(_work_items(_work_items(item, work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item, work_budget))) if work_budget is not None else stack.extend(item))
+                    stack.extend(_work_items(item, work_budget) if work_budget is not None else item)
     for row in (_work_items(receipts, work_budget) if work_budget is not None else receipts):
         value, proof = row
         c.require(value.get('status') == 'published_and_read_back' and c.matches(value.get('source_commit'), c.COMMIT, **_work_kwargs(work_budget))

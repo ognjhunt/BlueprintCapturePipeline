@@ -73,11 +73,11 @@ def bounded_size(value, limit, *, work_budget=None):
         item = stack.pop()
         if isinstance(item, dict):
             size += 2 + max(0, len(item) - 1) + len(item)
-            ((stack.extend(_work_items(_work_items(item.values(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item.values(), work_budget))) if work_budget is not None else stack.extend(item.values()))
-            ((stack.extend(_work_items(_work_items(item.keys(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item.keys(), work_budget))) if work_budget is not None else stack.extend(item.keys()))
+            stack.extend(_work_items(item.values(), work_budget) if work_budget is not None else item.values())
+            stack.extend(_work_items(item.keys(), work_budget) if work_budget is not None else item.keys())
         elif isinstance(item, list):
             size += 2 + max(0, len(item) - 1)
-            ((stack.extend(_work_items(_work_items(item, work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(item, work_budget))) if work_budget is not None else stack.extend(item))
+            stack.extend(_work_items(item, work_budget) if work_budget is not None else item)
         elif isinstance(item, str):
             require(len(item) <= limit - size, 'output_limit', **_work_kwargs(work_budget))
             size += 2
@@ -240,7 +240,8 @@ def decode(groups, limits, *, work_budget=None):
                 nodes += 1
                 require(nodes <= limits['MAX_NODES'] and depth <= limits['MAX_DEPTH'], 'nodes_limit', **_work_kwargs(work_budget))
                 children = current.values() if isinstance(current, dict) else current if isinstance(current, list) else ()
-                ((stack.extend(_work_items(_work_items(((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children)), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children)), work_budget))) if work_budget is not None else stack.extend((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children)))
+                children = ((item, depth + 1) for item in (_work_items(children, work_budget) if work_budget is not None else children))
+                stack.extend(_work_items(children, work_budget) if work_budget is not None else children)
             bounded_size(value, limits['MAX_TOTAL_BYTES'], **_work_kwargs(work_budget))  # Surrogate/type checks after decoded bounds, before hashes.
             decoded[role].append((value, proof))
             raw_pairs.append((pair[1], proof))
@@ -367,9 +368,9 @@ class Context:
                             self.remote.append({'uri': uri, 'digest': digest, 'size_bytes': size,
                                                 'status': 'kept_unresolved', 'reason': 'remote_availability_unverified',
                                                 'source_provenance': [proof]})
-                        ((stack.extend(_work_items(_work_items(current.values(), work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(current.values(), work_budget))) if work_budget is not None else stack.extend(current.values()))
+                        stack.extend(_work_items(current.values(), work_budget) if work_budget is not None else current.values())
                     elif isinstance(current, list):
-                        ((stack.extend(_work_items(_work_items(current, work_budget), work_budget)) if work_budget is not None else stack.extend(_work_items(current, work_budget))) if work_budget is not None else stack.extend(current))
+                        stack.extend(_work_items(current, work_budget) if work_budget is not None else current)
 
     def missing(self, role, reason, sources, expected=None, selector=None, *, work_budget=None):
         if work_budget is None:

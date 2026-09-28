@@ -162,3 +162,15 @@ def test_private_source_branch_refuses_live_work_without_emission_sink():
     budget = ReferenceCollectionBudget(monotonic=lambda: 0)
     with pytest.raises(ValueError, match='scene_inventory_parameters_invalid'):
         seed._sources(args['intent_id'], args['records'], args['roots'], set(), [], work_budget=budget)
+# A real dictionary requires three measurement nodes, three native traversal
+# nodes, two guarded child consumptions and one scalar-encoding measurement.
+# Duplicate wrappers must not invent
+# two more consumptions and exhaust this exact allowance.
+def test_bounded_size_uses_one_guard_for_each_actual_child_consumption():
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from blueprint_pipeline.task_evaluation_scene_downstream_contracts import bounded_size
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    budget.charge('values', budget.limits['values'] - 9)
+    assert bounded_size({'a': 1}, 100, work_budget=budget) == 7
+    assert budget.counts['values'] == budget.limits['values']
+    assert bounded_size({'a': 1}, 100) == 7
