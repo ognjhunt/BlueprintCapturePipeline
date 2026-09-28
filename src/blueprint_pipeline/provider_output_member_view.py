@@ -38,6 +38,16 @@ and any entry-rule refusal the index would raise, from the central directory
 alone. The contract here is the measurement rule the lane's contract module
 will own: every ``.json`` file outside a ``policy-requests`` directory is
 materialized; everything else stays remote.
+
+Scratch copies: ``python -m blueprint_pipeline.provider_output_member_view
+materialize --evidence-root <root> --prefix cell_runs/NN/ --output-root
+<scratch>`` writes every indexed file under the prefix to
+``<scratch>/<path less prefix>`` -- the retained cell tree an offline tool such
+as ``policy_canary_interrupted_cell_recovery`` requires. A member on disk is
+copied, any other is fetched by one range request; every file is checked
+against the index and left ``0440``. The copy is built beside the output root
+and renamed into place whole, never inside the evidence root and never over an
+existing path.
 """
 
 from __future__ import annotations
@@ -46,6 +56,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 import uuid
 import zipfile
@@ -389,6 +400,78 @@ def _open_descriptor(path: Path, root: Path, presign, opener) -> ProviderOutputM
                                     presign=presign, opener=opener)
 
 
+SCRATCH_SCHEMA = "provider_output_member_scratch_copy.v1"
+
+
+def _copy_checked(source: Path, row: Mapping[str, Any], target: Path) -> None:
+    """Copy a local member to ``target`` (0440) only when its bytes are the index's."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.parent / f".{target.name}.{uuid.uuid4().hex}.partial"
+    try:
+        digest, crc = hashlib.sha256(), 0
+        with source.open("rb") as stream, partial.open("xb") as sink:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                sink.write(chunk)
+                digest.update(chunk)
+                crc = zlib.crc32(chunk, crc)
+            sink.flush()
+            os.fsync(sink.fileno())
+        if (crc & 0xFFFFFFFF, "sha256:" + digest.hexdigest()) != (row["crc32"], row["sha256"]):
+            raise _refuse("provider_output_member_digest_mismatch")
+        partial.chmod(0o440)
+        os.link(partial, target)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def materialize_scratch_copy(view: ProviderOutputMemberView, *, prefix: str, output_root: str | Path) -> dict:
+    """Write every indexed file under ``prefix`` to ``output_root``, each checked against the index.
+
+    ``prefix`` is ``""`` or a directory path ending in ``/``; it is stripped from
+    each written path. ``output_root`` must not exist and must lie outside the
+    evidence root; the copy is built in a sibling directory and renamed into
+    place only once every file verified.
+    """
+    stem = prefix.rstrip("/")
+    try:
+        if prefix and (not prefix.endswith("/") or safe_member_name(stem) != stem):
+            raise ProviderOutputInventoryError("prefix")
+    except ProviderOutputInventoryError:
+        raise _refuse("provider_output_member_view_prefix_invalid") from None
+    root = Path(output_root).absolute()
+    resolved = root.resolve()
+    if resolved == view.evidence_root or view.evidence_root in resolved.parents:
+        raise _refuse("provider_output_member_view_write_inside_evidence_root")
+    if root.exists() or root.is_symlink():
+        raise _refuse("provider_output_member_view_destination_exists")
+    rows = [row for path, row in sorted(view._rows.items()) if path.startswith(prefix)]
+    if not rows:
+        raise _refuse("provider_output_member_view_prefix_empty")
+    root.parent.mkdir(parents=True, exist_ok=True)
+    building = root.parent / f".{root.name}.{uuid.uuid4().hex}.partial"
+    copied = fetched = 0
+    try:
+        for row in rows:
+            target = building / row["path"][len(prefix):]
+            local = view.evidence_root / row["path"]
+            if local.is_file() and not local.is_symlink():
+                _copy_checked(local, row, target)
+                copied += 1
+            else:
+                view.fetch_to(row["path"], target)
+                fetched += 1
+        os.rename(building, root)
+    except FileExistsError:
+        raise _refuse("provider_output_member_view_destination_exists") from None
+    finally:
+        if building.exists():
+            shutil.rmtree(building, ignore_errors=True)
+    return {"schema_version": SCRATCH_SCHEMA, "prefix": prefix, "member_index_digest": view.index["index_digest"],
+            "archive_sha256": view.index["archive"]["sha256"], "member_count": len(rows),
+            "copied_member_count": copied, "fetched_member_count": fetched,
+            "bytes": sum(row["size"] for row in rows), "private_url_recorded": False}
+
+
 def open_member_view(path: str | Path, *, presign: Callable[[], str] | None = None,
                      opener: Callable | None = None) -> ProviderOutputMemberView | None:
     """The view covering ``path``, or None when no descriptor names one of its ancestors."""
@@ -438,12 +521,28 @@ def plan_member_dispositions(archive_path: str | Path, contract: str) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Plan a provider archive's member dispositions (read-only).")
+    parser = argparse.ArgumentParser(
+        description="Plan a provider archive's member dispositions, or copy members to a scratch root.")
     commands = parser.add_subparsers(dest="command", required=True)
     plan = commands.add_parser("plan")
     plan.add_argument("--archive", required=True, type=Path)
     plan.add_argument("--contract", required=True, choices=sorted(CONTRACTS))
+    materialize = commands.add_parser("materialize")
+    materialize.add_argument("--evidence-root", required=True, type=Path)
+    materialize.add_argument("--prefix", required=True)
+    materialize.add_argument("--output-root", required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.command == "materialize":
+        try:
+            view = open_member_view(args.evidence_root)
+            if view is None:
+                raise _refuse("provider_output_member_view_absent")
+            summary = materialize_scratch_copy(view, prefix=args.prefix, output_root=args.output_root)
+        except ProviderOutputMemberViewError as exc:
+            print(f"provider_output_member_view refused: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
     try:
         summary = plan_member_dispositions(args.archive, args.contract)
     except (OSError, zipfile.BadZipFile):

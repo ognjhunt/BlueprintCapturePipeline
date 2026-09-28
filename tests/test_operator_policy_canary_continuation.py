@@ -318,3 +318,66 @@ def test_process_identity_rejects_wrong_or_duplicated_intent_option(command):
             'lstart=': 'start', 'stat=': 'S', 'command=': command}[argv[-1]])
     with pytest.raises(handoff.ContinuationError, match='process_argument_mismatch'):
         handoff.process_identity(42, required_argument_pairs=(('--intent', '/exact/intent.json'),), runner=runner)
+
+
+def test_continuation_promotes_before_cleanup_when_staging_requires_it(tmp_path, monkeypatch):
+    """The continuation's default cleanup promotes a gated staging's output to B2 under the
+    per-staging lock before the gated cleanup may delete it; ungated staging is unchanged."""
+    from blueprint_pipeline import provider_output_promotion as promotion
+    from blueprint_pipeline import provider_output_promotion_records as records
+    from blueprint_pipeline import provider_output_range_transport as transport
+    from blueprint_pipeline import task_evaluation_configured_scene_object_store as scene_store
+    from blueprint_pipeline.wam_provider_object_store import STAGING_MANIFEST_FILENAME
+    from tests.provider_output_fixtures import quick10_shaped_archive
+    from tests.test_provider_output_promotion import MAXIMUM, SMALL, World
+
+    world = World(tmp_path / "attempts", monkeypatch, witness=False)
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    monkeypatch.setattr(transport, "_open_with_policy", world.spaces.opener)
+    monkeypatch.setattr(scene_store, "_artifact_object_store_client", lambda: (world.cas, world.cas.bucket))
+    order = []
+    complete, delete = world.cas.complete_multipart_upload, world.spaces.delete_object
+    monkeypatch.setattr(world.cas, "complete_multipart_upload",
+                        lambda **kwargs: (order.append("b2_upload"), complete(**kwargs))[1])
+    monkeypatch.setattr(world.spaces, "delete_object",
+                        lambda **kwargs: (order.append(("delete", kwargs["Key"])), delete(**kwargs))[1])
+    manifest = world.staging / STAGING_MANIFEST_FILENAME
+    intent = {"ingestion_binding": {"staging_manifest": file_record(manifest), "maximum_archive_bytes": MAXIMUM},
+              "cleanup_configuration": {}, "terminal_delivery_intent": {"run_root": str(tmp_path / "run-1")}}
+    # The continuation's own collection pinned this identity.
+    write(handoff.metadata_root(intent) / "collected.json",
+          {"remote_identity": {"size_bytes": archive.size, "etag": '"spaces-1"', "generation": None}})
+
+    # Another promoter holds the staging lock: the gated cleanup runs anyway and defers the output.
+    monkeypatch.setattr(coordinator, "CLEANUP_PROMOTION_LOCK_TIMEOUT_SECONDS", 0.05)
+    with promotion.staging_lock(world.staging, timeout_seconds=1):
+        deferred = coordinator.cleanup_owned_objects(intent)
+    assert deferred["all_objects_absent"] is False and world.keys["output"] in world.spaces.stores
+    assert order == [("delete", world.keys["bundle"])] and world.cas.uploads == 0
+
+    cleaned = coordinator.cleanup_owned_objects(intent)
+
+    assert cleaned["status"] == "completed" and cleaned["all_objects_absent"] is True
+    assert order.index("b2_upload") < order.index(("delete", world.keys["output"]))
+    receipt = records.load_promotion_receipt(world.staging,
+                                             staging_manifest_sha256=records.staging_manifest_sha256(world.staging))
+    assert (receipt["status"], receipt["source"]) == ("promoted", "remote_observation")
+    assert receipt["observation"] == {"size_bytes": archive.size, "etag": '"spaces-1"'}
+    assert records.load_staged_object_absence_proof(world.staging)["promotion_status"] == "promoted"
+    assert (world.attempt / promotion.INDEX_FILENAME).is_file()
+    # The receipt it leaves is what the continuation's own validity check accepts.
+    assert coordinator._cleanup_valid(intent, cleaned) is True
+
+    # Ungated staging (download mode) is cleaned exactly as before: no promotion.
+    ungated = tmp_path / "ungated"
+    ungated_world = World(ungated, monkeypatch, witness=False)
+    staged = json.loads((ungated_world.staging / STAGING_MANIFEST_FILENAME).read_text())
+    staged.pop("output_promotion_required")
+    (ungated_world.staging / STAGING_MANIFEST_FILENAME).write_text(json.dumps(staged), encoding="utf-8")
+    ungated_world.stage("output", archive)
+    plain = coordinator.cleanup_owned_objects({
+        **intent, "ingestion_binding": {"staging_manifest": file_record(ungated_world.staging / STAGING_MANIFEST_FILENAME),
+                                        "maximum_archive_bytes": MAXIMUM}})
+    assert plain["all_objects_absent"] is True and ungated_world.cas.uploads == 0
+    assert not (ungated_world.staging / records.RECEIPT_FILENAME).exists()
