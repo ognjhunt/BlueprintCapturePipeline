@@ -1183,6 +1183,37 @@ def test_up_front_prefix_need_is_what_the_prestage_reserves(tmp_path) -> None:
     assert admission.cpu_prefix_peak_bytes(tmp_path / "bundle.zip") == receipt["reserved_peak_bytes"]
 
 
+def test_up_front_prefix_need_is_what_api_pretraining_reserves(tmp_path, monkeypatch) -> None:
+    """The ArtiFixer semantic preparation reserves on its own volume by the same formula."""
+
+    bundle = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("provider_runtime/a.bin", b"a" * 4096)
+        archive.writestr("provider_runtime/b.bin", b"b" * 1000)
+    monkeypatch.setattr(pretraining, "LOGICAL_ROOT", tmp_path / "semantic-pretraining")
+    reserved: dict[str, object] = {}
+
+    class Reserved(Exception):
+        pass
+
+    def reserve(role, **kwargs):  # type: ignore[no-untyped-def]
+        reserved.update(kwargs, role=role)
+        raise Reserved
+
+    monkeypatch.setattr(disk_budget, "reserve_control_plane_disk", reserve)
+    with pytest.raises(Reserved):
+        pretraining.prepare_semantics_before_gpu(
+            bundle_receipt={"bundle_path": str(bundle), "bundle_sha256": _sha256(bundle)},
+            authority={"authority_digest": "sha256:" + "a" * 64},
+            job_dir=tmp_path / "job", environment={},
+        )
+
+    assert reserved["role"] == "semantic_pretraining"
+    assert reserved["target_root"] == tmp_path / "semantic-pretraining"
+    assert reserved["expected_bytes"] == admission.cpu_prefix_peak_bytes(bundle)
+    assert reserved["expected_bytes"] == 3 * 5096 + 512 * MIB
+
+
 # ---------------------------------------------------------------------------
 # Durable before extraction
 # ---------------------------------------------------------------------------
@@ -1567,8 +1598,11 @@ def test_dead_machine_retry_accepts_new_codes(tmp_path, monkeypatch) -> None:
     assert dead_machine_launch_failure(measured) is True
     assert dead_machine_launch_failure(ceiling) is True
     assert measured["provider_output_archive_durable"] is False
-    # Each measured refusal code is treated exactly like the ceiling code it replaces.
+    # Each measured refusal code is classified as the ceiling code it replaces is:
+    # never a dead machine, even beside that proof. A refusal before allocation
+    # rented nothing, and a machine whose output reached extraction did not die.
     proof = ["vast_heartbeat_instance_exited", "scene_configuration_provider_not_completed"]
+    assert dead_machine_launch_failure({**measured, "blockers": proof}) is True
     for new, old in (
         (admission.BUDGET_EXCEEDED_BLOCKER, CEILING_PREALLOCATION_BLOCKER),
         (admission.EXTRACTION_BUDGET_EXCEEDED_BLOCKER, CEILING_EXTRACTION_BLOCKER),
@@ -1577,6 +1611,5 @@ def test_dead_machine_retry_accepts_new_codes(tmp_path, monkeypatch) -> None:
     ):
         for blockers in ([new], [*proof, new]):
             twin = [old if blocker == new else blocker for blocker in blockers]
-            assert dead_machine_launch_failure({**measured, "blockers": blockers}) is (
-                dead_machine_launch_failure({**measured, "blockers": twin})
-            )
+            assert dead_machine_launch_failure({**measured, "blockers": twin}) is False
+            assert dead_machine_launch_failure({**measured, "blockers": blockers}) is False
