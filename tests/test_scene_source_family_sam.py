@@ -325,3 +325,104 @@ def test_bare_source_conversion_and_renderer_selectors_remain_structural_without
     obligations = result['structural_join_obligations']
     assert {'sam_source_installation', 'sam_conversion_terms', 'sam_renderer_input'} <= {r['role'] for r in obligations}
     assert next(r for r in obligations if r['role'] == 'sam_renderer_input')['expected_path'] == root+'/original.ply'
+
+
+def adopted_final_fixture():
+    from tests.test_scene_source_family_adoption import fixture as adoption_fixture
+    args = adoption_fixture(through='segment_cutout')
+    rows = args['source_records']
+    adoption = json.loads(rows['sam_adoptions'][0][1])
+    artifacts = {}
+    for _, raw in rows['sam_results']:
+        artifacts.update(json.loads(raw)['artifacts'])
+    artifacts.update({name: item['successor'] for name, item in adoption['administrative_rebindings'].items()})
+    evidence = {name: artifacts[name] for name in ('calibrated_mask_set', 'segment_cutout_set',
+        'track_selection_review', 'selection_inputs', 'standard_splat_conversion')}
+    final = seal({'schema_version': 'task_evaluation_sam31_preparation_result.v1', 'status': 'exact_mask_inputs_ready',
+        'source_commit': adoption['source_commit'], 'plan_digest': ref(rows['sam_plans'][0])['sha256'], 'evidence': evidence,
+        'stage_result_receipts': [], 'completed_prefix_adoption': {'receipt': ref(rows['sam_adoptions'][0]),
+            'original_execution_commit': adoption['original_execution_commit'], 'through_phase': adoption['through_phase'],
+            'original_phase_result_receipts': [r['result'] for r in adoption['phase_records']]}}, 'result_digest')
+    request_digest = 'sha256:'+'f'*64  # Current parent proof intentionally unavailable.
+    progress = seal({'schema_version': 'task_evaluation_sam31_preparation_progress.v1',
+        'preparation_id': 'current-parent', 'request_digest': request_digest, 'run_id': 'current-run',
+        'source_commit': adoption['source_commit'], 'status': 'ready', 'sequence': 1, 'previous_progress_digest': None,
+        'provider_mutation_performed': False, 'paid_execution_requested': False,
+        'advancement': {'status': 'ready', 'sam31_preparation_result': final, 'sam31_exact_mask_inputs': evidence,
+                        'evidence_refs': list(evidence.values())}}, 'progress_digest')
+    path = args['roots']['preparation_queue_root']+'/source-progress/current-parent-'+request_digest[7:]+'/000001-'+progress['progress_digest'][7:]+'.json'
+    rows['source_progress'] = [pair(path, progress)]
+    return args
+
+
+def edit_adopted_final(args, edit):
+    path, raw = args['source_records']['source_progress'][0]
+    progress = json.loads(raw)
+    final = progress['advancement']['sam31_preparation_result']
+    edit(final)
+    progress['advancement']['sam31_preparation_result'] = seal(final, 'result_digest')
+    progress['advancement']['sam31_exact_mask_inputs'] = final['evidence']
+    progress['advancement']['evidence_refs'] = [final['evidence'][name] for name in
+        ('calibrated_mask_set', 'segment_cutout_set', 'track_selection_review', 'selection_inputs', 'standard_splat_conversion')]
+    progress = seal(progress, 'progress_digest')
+    args['source_records']['source_progress'] = [pair(path.rsplit('/', 1)[0]+'/000001-'+progress['progress_digest'][7:]+'.json', progress)]
+
+
+@pytest.mark.parametrize('edit', [
+    lambda f: f['completed_prefix_adoption'].update(original_execution_commit='c'*40),
+    lambda f: f['completed_prefix_adoption'].update(original_phase_result_receipts=[]),
+    lambda f: f['completed_prefix_adoption']['original_phase_result_receipts'].reverse(),
+    lambda f: f['evidence'].update(track_selection_review=f['evidence']['selection_inputs']),
+])
+def test_available_adoption_final_contradictions_refuse_without_current_parent(edit):
+    args = adopted_final_fixture()
+    edit_adopted_final(args, edit)
+    refuses(args)
+
+
+def test_matching_adoption_final_retains_original_and_successor_evidence_without_current_parent():
+    result = api().join_retained_scene_source_family_inventory(**adopted_final_fixture())
+    assert any(r['role'] == 'sam_final' and not r['parent_binding_verified'] for r in result['sam_observations'])
+
+
+def test_final_selected_adoption_through_phase_disagreement_refuses_with_results_absent():
+    args = adopted_final_fixture()
+    references = [ref(r) for r in args['source_records']['sam_results']]
+    args['source_records']['sam_results'] = []
+    def edit(final):
+        final['completed_prefix_adoption']['through_phase'] = 'calibrated_views'
+        final['stage_result_receipts'] = references[3:]
+    edit_adopted_final(args, edit)
+    refuses(args)
+
+
+def test_final_selected_adoption_source_commit_disagreement_refuses_without_current_parent():
+    args = adopted_final_fixture()
+    edit_adopted_final(args, lambda f: f.update(source_commit='c'*40))
+    path, raw = args['source_records']['source_progress'][0]
+    progress = seal(dict(json.loads(raw), source_commit='c'*40), 'progress_digest')
+    args['source_records']['source_progress'] = [pair(path.rsplit('/', 1)[0]+'/000001-'+progress['progress_digest'][7:]+'.json', progress)]
+    refuses(args)
+
+
+@pytest.mark.parametrize('mode', ['missing_adoption', 'missing_results', 'future_schema', 'future_status', 'permutation'])
+def test_adoption_final_missing_unknown_and_permuted_proofs_remain_protected(mode):
+    args = adopted_final_fixture()
+    rows = args['source_records']
+    if mode == 'missing_adoption':
+        rows['sam_adoptions'] = []
+    elif mode == 'missing_results':
+        rows['sam_results'] = []
+    elif mode in {'future_schema', 'future_status'}:
+        path, raw = rows['sam_adoptions'][0]
+        adoption = json.loads(raw)
+        adoption.update({'schema_version': 'task_evaluation_sam31_completed_prefix_adoption.v2'} if mode == 'future_schema'
+                        else {'status': 'future_status'})
+        rows['sam_adoptions'] = [pair(path, seal(adoption, 'adoption_digest'))]
+        edit_adopted_final(args, lambda f: f['completed_prefix_adoption'].update(receipt=ref(rows['sam_adoptions'][0])))
+    else:
+        for values in rows.values():
+            values.reverse()
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert any(r['role'] == 'sam_final' for r in result['sam_observations'])
+    assert result['scientific_validity_checked'] is False and result['mutations'] == 0

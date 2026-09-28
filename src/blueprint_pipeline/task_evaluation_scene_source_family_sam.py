@@ -395,7 +395,7 @@ def _source_progress(context, parents, observations):
                     and c.matches(declared_adoption.get('original_execution_commit'), c.COMMIT)
                     and isinstance(declared_adoption.get('original_phase_result_receipts'), list)
                     and len(declared_adoption['original_phase_result_receipts']) <= 10, 'sam_final_adoption_invalid')
-                context.selected(declared_adoption.get('receipt'), nested[1], {'sam_adoptions'})
+                _final_adoption(context, declared_adoption, nested, final)
                 start = PHASES.index(declared_adoption['through_phase']) + 1
                 for original_result in declared_adoption['original_phase_result_receipts']:
                     context.selected(original_result, nested[1], {'sam_results'})
@@ -407,6 +407,7 @@ def _source_progress(context, parents, observations):
                         and result[0].get('plan_digest') == final['plan_digest']
                         and result[0].get('parent_request_digest') == value['request_digest']
                         and result[0].get('phase') == phase, 'sam_final_receipts_invalid')
+                    _final_aliases(final, result[0]['artifacts'])
             observations.append(c.observation(nested, role='sam_final', plan_digest=final['plan_digest'],
                 parent_binding_verified=len(selected_parents) == 1 and len(branches[(value['request_digest'], value['sequence'])]) == 1))
         observations.append(c.observation(row, role='sam_source_progress', sequence=value['sequence'], progress_status=value['status']))
@@ -424,6 +425,41 @@ def _source_progress(context, parents, observations):
             c.require(prior[0]['source_commit'] == value['source_commit'] and prior[0]['preparation_id'] == value['preparation_id'],
                       'sam_resume_progress_invalid')
         observations.append(c.observation(row, role='sam_resume', wake_authorized=False))
+
+
+def _final_aliases(final, artifacts):
+    for name in EVIDENCE.intersection(artifacts):
+        c.require(final['evidence'][name] == artifacts[name], 'sam_final_evidence_invalid')
+
+
+def _final_adoption(context, declared, nested, final):
+    selected = context.selected(declared.get('receipt'), nested[1], {'sam_adoptions'})
+    if selected is None:
+        return
+    adoption, proof = selected
+    if adoption.get('status') != 'verified_completed_prefix':
+        context.missing('sam_final_adoption', 'unsupported_retained_status', [proof])
+        return
+    c.c.seal(selected, 'adoption_digest')
+    phase_rows = adoption.get('phase_records')
+    c.require(isinstance(phase_rows, list) and len(phase_rows) <= 10 and all(isinstance(r, dict) for r in phase_rows),
+              'sam_final_adoption_invalid')
+    c.require(adoption.get('source_commit') == final['source_commit']
+        and all(adoption.get(k) == declared[k] for k in ('original_execution_commit', 'through_phase'))
+        and declared['original_phase_result_receipts'] == [r.get('result') for r in phase_rows], 'sam_final_adoption_invalid')
+    artifacts = {}
+    for phase in phase_rows:
+        result = context.selected(phase.get('result'), nested[1], {'sam_results'})
+        if result and result[0].get('status') == 'completed':
+            artifacts.update(result[0]['artifacts'])
+            if phase.get('phase') == 'standard_splat_conversion':
+                artifacts['standard_splat_conversion'] = result[0]['artifacts'].get('standard_splat_conversion_receipt')
+    rebindings = adoption.get('administrative_rebindings')
+    c.require(isinstance(rebindings, dict), 'sam_final_adoption_invalid')
+    for name in EVIDENCE.intersection(rebindings):
+        c.require(isinstance(rebindings[name], dict), 'sam_final_adoption_invalid')
+        artifacts[name] = rebindings[name].get('successor')
+    _final_aliases(final, artifacts)
 
 
 def _host_evidence(context):
