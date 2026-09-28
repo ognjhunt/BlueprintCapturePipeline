@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -100,7 +101,7 @@ def _extract_regular_archive(archive_path: Path, destination: Path) -> None:
             target.chmod(0o555)
 
 
-def isolated_artifact_command(*, artifact_root: Path, entrypoint: str,
+def isolated_artifact_command(*, artifact_root: Path, entrypoint: str, artifact_directory_fd: int,
                               gpu_binding: Mapping[str, Any] | None = None) -> list[str]:
     """Expose only a read-only artifact and standard runtimes to bubblewrap."""
 
@@ -114,13 +115,22 @@ def isolated_artifact_command(*, artifact_root: Path, entrypoint: str,
         or not (artifact_root.joinpath(*relative.parts)).is_file()
     ):
         raise ValueError("g1_team_artifact_entrypoint_invalid")
+    try:
+        if type(artifact_directory_fd) is not int or artifact_directory_fd < 3:
+            raise ValueError("g1_team_artifact_directory_fd_invalid")
+        held = os.fstat(artifact_directory_fd)
+        current = artifact_root.stat()
+        if not stat.S_ISDIR(held.st_mode) or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+            raise ValueError("g1_team_artifact_directory_fd_invalid")
+    except OSError as exc:
+        raise ValueError("g1_team_artifact_directory_fd_invalid") from exc
     bwrap = shutil.which("bwrap")
     if not bwrap:
         raise ValueError("g1_team_artifact_sandbox_unavailable")
     command = [
         bwrap, "--unshare-all", "--die-with-parent", "--new-session",
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-        "--dir", "/etc", "--ro-bind", str(artifact_root), "/work",
+        "--dir", "/etc", "--ro-bind-fd", str(artifact_directory_fd), "/work",
         "--uid", "65534", "--gid", "65534", "--cap-drop", "ALL",
         "--clearenv",
     ]
@@ -235,21 +245,26 @@ def launch_g1_team_artifact_synthetic_probe(
     artifact_root = output_dir / "artifact"
     artifact_root.mkdir(mode=0o755)
     _extract_regular_archive(staged_artifact_path, artifact_root)
-    command = isolated_artifact_command(
-        artifact_root=artifact_root, entrypoint=delivery["entrypoint"], gpu_binding=gpu_binding,
-    )
-    gpu_probe = (probe_archive_gpu_namespace(command=command, binding=gpu_binding, output_dir=output_dir)
-                 if gpu_binding is not None else None)
-    descriptor = os.open(
-        output_dir / "team_policy_raw_stderr.quarantined.log",
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
-    )
-    stderr_file = os.fdopen(descriptor, "wb")
+    # Open before bubblewrap drops its setup UID. Private ancestors stay private.
+    artifact_fd = os.open(artifact_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    stderr_file = None
     process: subprocess.Popen[bytes] | None = None
     try:
+        command = isolated_artifact_command(
+            artifact_root=artifact_root, entrypoint=delivery["entrypoint"],
+            artifact_directory_fd=artifact_fd, gpu_binding=gpu_binding,
+        )
+        gpu_probe = (probe_archive_gpu_namespace(command=command, binding=gpu_binding, output_dir=output_dir)
+                     if gpu_binding is not None else None)
+        descriptor = os.open(
+            output_dir / "team_policy_raw_stderr.quarantined.log",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+        )
+        stderr_file = os.fdopen(descriptor, "wb")
         process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_file,
             bufsize=0, start_new_session=True, close_fds=True,
+            pass_fds=(artifact_fd,),
             env={
                 "PATH": "/usr/bin:/bin", "HOME": "/tmp",
                 "XDG_CACHE_HOME": "/tmp", "LANG": "C.UTF-8",
@@ -265,8 +280,11 @@ def launch_g1_team_artifact_synthetic_probe(
                 process.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        stderr_file.close()
+        if stderr_file is not None:
+            stderr_file.close()
         raise
+    finally:
+        os.close(artifact_fd)
     assert process is not None
     lease = NativeG1TeamArtifactLease(
         process=process, client=client, output_dir=output_dir,

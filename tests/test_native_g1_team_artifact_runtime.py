@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import os
 import sys
 import tarfile
 from pathlib import Path
@@ -43,23 +44,33 @@ def _bound_profile(digest: str):
     return setup, profile
 
 
+def _sandbox_command(artifact: Path, entrypoint: str, **kwargs):
+    descriptor = os.open(artifact, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        return runtime.isolated_artifact_command(
+            artifact_root=artifact, entrypoint=entrypoint,
+            artifact_directory_fd=descriptor, **kwargs,
+        )
+    finally:
+        os.close(descriptor)
+
+
 def test_bwrap_command_exposes_readonly_artifact_without_network(monkeypatch, tmp_path):
     artifact = tmp_path / "artifact"
     (artifact / "policy").mkdir(parents=True)
     (artifact / "policy" / "run.py").write_text("#!/usr/bin/env python3\n")
     monkeypatch.setattr(runtime.shutil, "which", lambda _name: "/usr/bin/bwrap")
-    command = runtime.isolated_artifact_command(artifact_root=artifact, entrypoint="policy/run.py")
+    command = _sandbox_command(artifact, "policy/run.py")
     assert command[0:4] == ["/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--new-session"]
-    assert command[command.index("--ro-bind") + 1 : command.index("--ro-bind") + 3] == [
-        str(artifact), "/work"
-    ]
+    assert command[command.index("--ro-bind-fd") + 2] == "/work"
+    assert str(artifact) not in command
     assert "--bind" not in command
     assert command[command.index("--uid") + 1] == "65534"
     assert command[command.index("--cap-drop") + 1] == "ALL"
     assert command[-1] == "/work/policy/run.py"
     assert "--clearenv" in command
     with pytest.raises(ValueError, match="entrypoint_invalid"):
-        runtime.isolated_artifact_command(artifact_root=artifact, entrypoint="../etc/passwd")
+        _sandbox_command(artifact, "../etc/passwd")
 
 
 def test_gpu_mounts_are_only_bound_nodes_and_cpu_has_no_gpu_devices(monkeypatch, tmp_path):
@@ -70,12 +81,35 @@ def test_gpu_mounts_are_only_bound_nodes_and_cpu_has_no_gpu_devices(monkeypatch,
     observed = []
     monkeypatch.setattr(runtime, "recheck_archive_gpu_binding", lambda binding: observed.append(binding))
     binding = {"devices": [{"path": path} for path in ("/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm")]}
-    command = runtime.isolated_artifact_command(artifact_root=artifact, entrypoint="run", gpu_binding=binding)
+    command = _sandbox_command(artifact, "run", gpu_binding=binding)
     devices = [command[i + 1:i + 3] for i, item in enumerate(command) if item == "--dev-bind"]
     assert devices == [[row["path"], row["path"]] for row in binding["devices"]]
     assert observed == [binding]
     assert "--bind" not in command and "--share-net" not in command
-    assert "--dev-bind" not in runtime.isolated_artifact_command(artifact_root=artifact, entrypoint="run")
+    assert "--dev-bind" not in _sandbox_command(artifact, "run")
+
+
+@pytest.mark.parametrize("fault", ["foreign", "file", "closed", "boolean"])
+def test_private_archive_binding_requires_its_own_directory_descriptor(monkeypatch, tmp_path, fault):
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    (artifact / "run").write_text("#!/bin/sh\n")
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    path = artifact / "run" if fault == "file" else foreign if fault == "foreign" else artifact
+    descriptor = os.open(path, os.O_RDONLY)
+    if fault == "closed":
+        os.close(descriptor)
+    monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/bwrap")
+    try:
+        with pytest.raises(ValueError, match="artifact_directory_fd_invalid"):
+            runtime.isolated_artifact_command(
+                artifact_root=artifact, entrypoint="run",
+                artifact_directory_fd=True if fault == "boolean" else descriptor,
+            )
+    finally:
+        if fault != "closed":
+            os.close(descriptor)
 
 
 @pytest.mark.parametrize("name,content", [("../escape", b"bad"), ("policy/run.py", None)])
@@ -212,3 +246,39 @@ def test_client_initialization_failure_kills_sandbox_process(monkeypatch, tmp_pa
         )
     assert kills == [(12345, runtime.signal.SIGKILL)]
     assert set(launch_options[0]["env"]) == {"PATH", "HOME", "XDG_CACHE_HOME", "LANG"}
+    assert len(launch_options[0]["pass_fds"]) == 1
+    with pytest.raises(OSError):
+        os.fstat(launch_options[0]["pass_fds"][0])
+
+
+def test_gpu_probe_failure_closes_artifact_descriptor_without_starting_policy(monkeypatch, tmp_path):
+    source = tmp_path / "team.tar.gz"
+    digest = _archive(source, [("policy/run.py", b"#!/usr/bin/env python3\n")])
+    setup, profile = _bound_profile(digest)
+    descriptors = []
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(runtime.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(runtime, "recheck_archive_gpu_binding", lambda _: None)
+    monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/bwrap")
+    monkeypatch.setattr(runtime.shutil, "disk_usage", lambda _: SimpleNamespace(free=runtime._MIN_FREE_AFTER_EXTRACT + 1024**3))
+
+    def refuse(**kwargs):
+        command = kwargs["command"]
+        descriptor = int(command[command.index("--ro-bind-fd") + 1])
+        os.fstat(descriptor)
+        descriptors.append(descriptor)
+        raise ValueError("probe refused")
+
+    monkeypatch.setattr(runtime, "probe_archive_gpu_namespace", refuse)
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **kw: pytest.fail("policy started"))
+    with pytest.raises(ValueError, match="probe refused"):
+        runtime.launch_g1_team_artifact_synthetic_probe(
+            profile=profile, trusted_setup=setup, authenticated_owner=OWNER,
+            operator_approved_profile_digest=profile["profile_digest"],
+            operator_approved_artifact_sha256=digest, staged_artifact_path=source,
+            output_dir=tmp_path / "probe",
+            gpu_binding={"profile_digest": profile["profile_digest"], "devices": []},
+        )
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])

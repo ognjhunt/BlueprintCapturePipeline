@@ -658,3 +658,25 @@ Changed-file Ruff and diff checks pass. These tests simulate GPU observations;
 they do not qualify actual CUDA access. The next immutable-source rehearsal runs
 the production archive launcher with real Linux bubblewrap and a synthetic JSONL
 policy, with no GPU, site input, task score or provider mutation.
+
+### Reviewed real namespace finding: private ancestor traversal
+
+Actual Linux bubblewrap0.9.0 at immutable72337b7e3 refused the archive source
+with Permission denied after dropping UID. The retained child exited1 and its
+teardown is terminal; source files reverified. Keep the private0700 staging and
+evidence directories. Do not chmod private ancestors or expose the host root.
+The installed binary supports --ro-bind-fd. Open only the extracted artifact
+directory with DIRECTORY/NOFOLLOW before launch, verify its inode/device against
+the path, bind that descriptor read-only to /work, and inherit only that
+descriptor for the trusted CUDA probe and bubblewrap setup. Close the parent
+descriptor on every error/success after Popen; bubblewrap consumes it before
+the untrusted policy executes. No raw directory FD may survive into the policy.
+
+Test first: mismatched/non-directory/closed descriptors refuse; command uses
+only the approved directory descriptor; Popen and probe inherit exactly it;
+client/probe failure closes it and retains existing process cleanup. The real
+CPU policy also asserts no extra inherited descriptor. Repeat the same Linux
+fixture against a fresh immutable successor and preserve the failed root.
+Reviewed against the installed binary's help and bubblewrap's setup/descriptor
+cleanup implementation. This changes archive setup, not any approval or paid
+admission predicate; actual CUDA and full VM dispatch still require proof.

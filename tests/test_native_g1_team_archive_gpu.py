@@ -16,6 +16,15 @@ UUID = "GPU-01234567-89ab-cdef-0123-456789abcdef"
 
 
 @pytest.fixture
+def artifact_fd(tmp_path):
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@pytest.fixture
 def observed(monkeypatch):
     monkeypatch.setattr(
         gpu,
@@ -146,7 +155,7 @@ def test_device_must_be_actual_root_owned_public_character_node(monkeypatch):
     ],
 )
 def test_same_sandbox_probe_must_prove_exact_device_memory_and_cleanup(
-    observed, monkeypatch, tmp_path, fault
+    observed, monkeypatch, tmp_path, fault, artifact_fd
 ):
     calls = []
 
@@ -191,6 +200,7 @@ def test_same_sandbox_probe_must_prove_exact_device_memory_and_cleanup(
         "65534",
         "--cap-drop",
         "ALL",
+        "--ro-bind-fd", str(artifact_fd), "/work",
     ]
     for row in observed["devices"]:
         command += ["--dev-bind", row["path"], row["path"]]
@@ -206,6 +216,8 @@ def test_same_sandbox_probe_must_prove_exact_device_memory_and_cleanup(
         assert calls[0][0][:2] == command[:2]
         assert calls[0][0][-6:-3] == ["/usr/bin/python3", "-I", "-B"]
         assert "PYTHONPATH" not in calls[0][1]["env"]
+        assert calls[0][1]["pass_fds"] == (artifact_fd,)
+        assert calls[0][1]["close_fds"] is True
         assert receipt["guest_gpu_inference_verified"] is False
         assert (tmp_path / gpu.PRIVATE_LOG_FILENAME).stat().st_mode & 0o777 == 0o600
 
@@ -263,7 +275,7 @@ def test_actual_trusted_probe_abi_and_cleanup_without_a_driver(monkeypatch, caps
 
 @pytest.mark.parametrize("mutation", ["extra_device", "share_net", "capability", "duplicate_uid"])
 def test_probe_refuses_widened_namespace_before_execution(
-    observed, monkeypatch, tmp_path, mutation
+    observed, monkeypatch, tmp_path, mutation, artifact_fd
 ):
     command = [
         "bwrap",
@@ -275,6 +287,7 @@ def test_probe_refuses_widened_namespace_before_execution(
         "65534",
         "--cap-drop",
         "ALL",
+        "--ro-bind-fd", str(artifact_fd), "/work",
     ]
     for row in observed["devices"]:
         command += ["--dev-bind", row["path"], row["path"]]

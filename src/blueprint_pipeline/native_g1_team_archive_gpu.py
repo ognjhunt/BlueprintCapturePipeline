@@ -180,9 +180,21 @@ def probe_archive_gpu_namespace(*, command: list[str], binding: Mapping[str, Any
     if (observed_devices != [[path, path] for path in _PATHS] or "--unshare-all" not in prefix
             or "--clearenv" not in prefix):
         raise ValueError("g1_archive_gpu_namespace_command_invalid")
+    directory_mounts = [prefix[i + 1:i + 3] for i, item in enumerate(prefix) if item == "--ro-bind-fd"]
+    try:
+        if (len(directory_mounts) != 1 or len(directory_mounts[0]) != 2
+                or directory_mounts[0][1] != "/work"
+                or not re.fullmatch(r"[0-9]+", directory_mounts[0][0])):
+            raise ValueError("g1_archive_gpu_namespace_command_invalid")
+        artifact_fd = int(directory_mounts[0][0])
+        if artifact_fd < 3 or not stat.S_ISDIR(os.fstat(artifact_fd).st_mode):
+            raise ValueError("g1_archive_gpu_namespace_command_invalid")
+    except OSError as exc:
+        raise ValueError("g1_archive_gpu_namespace_command_invalid") from exc
     try:
         result = subprocess.run([*prefix, "--", "/usr/bin/python3", "-I", "-B", "-S", "-c", CUDA_PROBE],
             capture_output=True, text=True, check=False, timeout=30,
+            pass_fds=(artifact_fd,), close_fds=True,
             env={"PATH": "/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8"})
         with os.fdopen(os.open(output_dir / PRIVATE_LOG_FILENAME, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as stream:
             stream.write(result.stderr)
