@@ -832,6 +832,27 @@ def test_deferred_hold_refusal_after_api_pretraining_is_typed_but_withheld(
     ) is None
 
 
+def test_hold_is_released_when_the_lane_raises_after_admission(tmp_path, monkeypatch) -> None:
+    """An exception after the hold was taken still frees it and records the footprint."""
+
+    lane = _harness(tmp_path, monkeypatch)
+
+    def broken_secrets(**_kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("fixture secret staging failed")
+
+    monkeypatch.setattr(scene_vast, "_stage_owner_only_runtime_secrets", broken_secrets)
+
+    with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError):
+        lane.run()
+
+    # The hold was taken before staging, then the lane raised past every seal.
+    assert ("stage", "object_store_staging") in lane.events
+    assert _ledger_rows(lane.ledger) == []
+    [sample] = _history(lane.ledger)
+    assert sample["outcome"] == "failed"
+    assert sample["reserved_bytes"] == SMALL_UPLOAD + RESERVE
+
+
 def test_up_front_prefix_need_is_what_the_prestage_reserves(tmp_path) -> None:
     receipt, _job = _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
 

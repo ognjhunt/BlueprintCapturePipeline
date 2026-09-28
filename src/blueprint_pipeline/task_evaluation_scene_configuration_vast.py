@@ -78,7 +78,7 @@ from .task_evaluation_scene_configuration_provider_artifacts import (
 )
 from .task_evaluation_scene_configuration_output_admission import (
     SceneConfigurationOutputHoldRefused, open_scene_configuration_output_admission,
-    release_scene_configuration_output,
+    release_scene_configuration_output, releases_output_on_exit,
 )
 from .task_evaluation_scene_configuration_openai_runtime_scope import (
     MANAGED_GUARD_FILE_ENV,
@@ -1053,6 +1053,7 @@ def _recover_escaped_adapter_failure(
     return adapter, started_path_present
 
 
+@releases_output_on_exit
 def run_scene_configuration_vast(
     *,
     job_dir: str | Path,

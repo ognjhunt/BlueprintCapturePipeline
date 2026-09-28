@@ -31,6 +31,7 @@ staging. Nothing here allocates, grants or mutates a provider.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -618,6 +619,33 @@ def release_scene_configuration_output(
     return sealed
 
 
+def releases_output_on_exit(
+    lane: Callable[..., dict[str, Any]]
+) -> Callable[..., dict[str, Any]]:
+    """Wrap the lane so no exit leaves its output reservations behind.
+
+    Sealing a terminal result releases them; this only acts when the lane
+    raised after admission (outcome ``failed``, with its footprint sample) or
+    returned without a live seal. Otherwise the hold would stay live until the
+    allocator process exited or the role's TTL passed.
+    """
+
+    @functools.wraps(lane)
+    def run(**arguments: Any) -> dict[str, Any]:
+        outcome = "failed"
+        try:
+            result = lane(**arguments)
+            outcome = "completed" if result.get("status") == "completed" else "blocked"
+            return result
+        finally:
+            key = str(Path(arguments["job_dir"]).expanduser().resolve())
+            admission = _HELD.pop(key, None)
+            if admission is not None:
+                admission.release(outcome)
+
+    return run
+
+
 def recovery_withheld(result: Mapping[str, Any]) -> bool:
     """A measured refusal whose attempt already ran paid API pretraining.
 
@@ -738,4 +766,5 @@ __all__ = [
     "recorded_preallocation_refusal",
     "recovery_withheld",
     "release_scene_configuration_output",
+    "releases_output_on_exit",
 ]
