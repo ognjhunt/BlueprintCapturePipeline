@@ -9,9 +9,12 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import functools
 import hashlib
 import json
+import os
 import sys
 import threading
 import time
@@ -610,7 +613,77 @@ def test_resume_cli_runs_resume_and_says_how_it_must_be_launched(tmp_path, monke
 
     monkeypatch.setattr(promotion, "resume_provider_output_promotion", fake_resume)
     code = promotion.main(["resume", "--attempt-root", str(tmp_path), "--maximum-archive-bytes", "1024"])
-    assert code == 1 and calls == [(tmp_path, {"artifact_kind": KIND, "maximum_archive_bytes": 1024})]
+    assert code == 1 and calls == [(tmp_path, {"artifact_kind": KIND, "maximum_archive_bytes": 1024,
+                                               "lock_timeout_seconds": promotion.DEFAULT_LOCK_TIMEOUT_SECONDS})]
     assert json.loads(capsys.readouterr().out)["blockers"] == ["staged_output_promotion_receipt_missing"]
     # Review I5: the resume door must run it as the service user with a private umask.
     assert "``blueprint``" in promotion.main.__doc__ and "UMask=0077" in promotion.main.__doc__
+
+
+def _ungated(world):
+    path = world.staging / STAGING_MANIFEST_FILENAME
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest.pop("output_promotion_required")  # a download-mode staging manifest
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def test_promotion_and_resume_refuse_an_attempt_that_did_not_require_promotion(world):
+    _ungated(world)
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    local = _local_zip(world, archive)  # download mode's own ZIP, which SSH adoption still reads
+    before = sorted(path.name for path in world.staging.iterdir())
+
+    receipt = promotion.promote_staged_provider_output(
+        staging_dir=world.staging, attempt_root=world.attempt, observation=None, local_archive=local,
+        maximum_archive_bytes=MAXIMUM, **world.dependencies())
+    resumed = world.resume()
+
+    assert (receipt["status"], receipt["blockers"]) == ("failed", ["provider_output_promotion_not_required"])
+    assert (resumed["status"], resumed["blockers"]) == ("blocked", ["provider_output_promotion_not_required"])
+    assert resumed["cleanup"] is None and resumed["absence_proof"] is None
+    # Nothing was read, published, unlinked or cleaned up.
+    assert local.is_file() and world.cas.uploads == 0 and world.spaces.deleted == []
+    assert world.spaces.requests(world.keys["output"]) == []
+    assert sorted(path.name for path in world.staging.iterdir()) == before
+
+
+@pytest.mark.parametrize("fault", ["symlinked_lock_file", "flock_unavailable"])
+def test_an_unavailable_lock_still_runs_the_gated_cleanup(world, monkeypatch, fault):
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    if fault == "symlinked_lock_file":  # refused under O_NOFOLLOW, even for root
+        (world.staging / promotion.LOCK_FILENAME).symlink_to(world.tmp_path / "elsewhere.lock")
+    else:
+        def unavailable(descriptor, operation):
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        monkeypatch.setattr(promotion.fcntl, "flock", unavailable)
+
+    receipt, cleanup = world.promote(observation=_observed(archive))
+
+    assert (receipt["status"], receipt["blockers"]) == ("failed", ["provider_output_promotion_lock_unavailable"])
+    assert world.cas.uploads == 0 and world.spaces.requests(world.keys["output"]) == []
+    # The gated cleanup still ran without the lock: the bundle went, the unpromoted output stayed.
+    assert cleanup["blockers"] == ["staged_output_promotion_receipt_missing"]
+    assert world.keys["bundle"] in world.spaces.deleted and world.keys["output"] in world.spaces.stores
+    assert not (world.tmp_path / "elsewhere.lock").exists()
+
+
+def test_a_held_lock_times_out_quickly_and_still_runs_the_gated_cleanup(world):
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    assert promotion.DEFAULT_LOCK_TIMEOUT_SECONDS <= 600  # well inside the unit's 5 h timeout
+    holder = os.open(world.staging / promotion.LOCK_FILENAME, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        receipt, cleanup = world.promote(observation=_observed(archive), lock_timeout_seconds=0.05)
+        resumed = world.resume(lock_timeout_seconds=0.05)
+    finally:
+        os.close(holder)
+
+    assert receipt["blockers"] == ["provider_output_promotion_lock_timeout"]
+    assert cleanup["blockers"] == ["staged_output_promotion_receipt_missing"]
+    assert "provider_output_promotion_lock_timeout" in resumed["blockers"]
+    assert world.cas.uploads == 0 and world.keys["output"] in world.spaces.stores
+

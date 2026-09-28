@@ -44,6 +44,10 @@ absent or its index was refused -- the witness is promoted
 (``policy-canary-paired-witness``); if the output's promotion failed, it is
 deferred untouched.
 
+Only a staging manifest with ``output_promotion_required`` is promoted
+(``provider_output_promotion_not_required`` otherwise): a download-mode
+attempt keeps its own ZIP and ungated cleanup, and resume refuses it outright.
+
 B2 must be configured explicitly (review I4): all five
 ``BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE`` variables. The artifact
 client would otherwise fall back to the staging store's WAM credentials, so
@@ -131,7 +135,9 @@ MAXIMUM_MANIFEST_BYTES = 64 * 1024**2
 DEFAULT_MAXIMUM_ARCHIVE_BYTES = 64 * 1024**3
 PRESIGN_EXPIRATION_SECONDS = 2 * 3600
 READER_DEADLINE_SECONDS = 2 * 3600
-DEFAULT_LOCK_TIMEOUT_SECONDS = 3 * 3600
+# Short: a promoter that cannot take the lock falls through to the gated cleanup,
+# and the unit's own start timeout is 5 h.
+DEFAULT_LOCK_TIMEOUT_SECONDS = 600
 LOCK_POLL_SECONDS = 1.0
 RETRY_ATTEMPTS = 3
 RETRY_SLEEP_SECONDS = 2.0
@@ -257,6 +263,9 @@ class _Promotion:
                 or manifest.get("schema_version") != STAGING_SCHEMA_VERSION
                 or manifest.get("status") not in {"completed", "blocked"} or not output_key):
             raise ProviderOutputPromotionError("provider_output_promotion_staging_manifest_invalid")
+        if manifest.get("output_promotion_required") is not True:
+            # A download-mode attempt: its own ZIP and ungated cleanup stay as they are.
+            raise ProviderOutputPromotionError("provider_output_promotion_not_required")
         self.output_key, self.witness_key, self.witness_maximum = output_key, None, self.maximum
         witness = manifest.get("paired_witness") if isinstance(manifest.get("paired_witness"), dict) else {}
         if witness.get("status") == "ready":
@@ -672,12 +681,18 @@ def staging_lock(staging_dir: str | Path, *, timeout_seconds: float) -> Iterator
 
     Promotion, its cleanup and resume take it, so two promoters of one
     staging dir run one after the other, and the second finds the first's
-    receipt.
+    receipt. A lock that cannot be opened or taken is
+    ``provider_output_promotion_lock_unavailable``; waiting too long is
+    ``provider_output_promotion_lock_timeout``.
     """
     staging = Path(staging_dir)
     if staging.is_symlink() or not staging.is_dir():
         raise ProviderOutputPromotionError("provider_output_promotion_staging_missing")
-    descriptor = os.open(staging / LOCK_FILENAME, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        descriptor = os.open(staging / LOCK_FILENAME, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                             0o600)
+    except OSError:  # unwritable, root-owned, or a symlink under O_NOFOLLOW
+        raise ProviderOutputPromotionError("provider_output_promotion_lock_unavailable") from None
     try:
         deadline = time.monotonic() + timeout_seconds
         while True:
@@ -688,6 +703,8 @@ def staging_lock(staging_dir: str | Path, *, timeout_seconds: float) -> Iterator
                 if time.monotonic() >= deadline:
                     raise ProviderOutputPromotionError("provider_output_promotion_lock_timeout") from None
                 time.sleep(LOCK_POLL_SECONDS)
+            except OSError:
+                raise ProviderOutputPromotionError("provider_output_promotion_lock_unavailable") from None
         yield
     finally:
         os.close(descriptor)
@@ -716,9 +733,9 @@ def promote_then_cleanup(*, cleanup: Callable[[], Mapping[str, Any]],
 
     ``promotion`` holds ``promote_staged_provider_output``'s arguments. When the
     cleanup proves every staged object absent, the staged-object absence proof
-    is written (review C2). If the lock cannot be taken, promotion is skipped
-    (a ``failed`` receipt, not written) and cleanup still runs: its gate needs
-    no lock to stay safe.
+    is written (review C2). If the lock is unavailable or not taken within
+    ``lock_timeout_seconds``, promotion is skipped (a ``failed`` receipt, not
+    written) and cleanup still runs: its gate needs no lock to stay safe.
     """
     staging = promotion.get("staging_dir")
     try:
@@ -742,12 +759,29 @@ def _recorded_observation(command_result: Path) -> dict | None:
         return None
 
 
+def _promotion_refusal(staging: Path) -> str | None:
+    """Why this staging dir may not be promoted at all, or None."""
+    path = staging / STAGING_MANIFEST_FILENAME
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
+    except (OSError, UnicodeError, ValueError):
+        manifest = None
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != STAGING_SCHEMA_VERSION:
+        return "provider_output_promotion_staging_manifest_invalid"
+    if manifest.get("output_promotion_required") is not True:
+        return "provider_output_promotion_not_required"
+    return None
+
+
+
+
 def resume_provider_output_promotion(
     attempt_root: str | Path,
     *,
     artifact_kind: str = OUTPUT_ARTIFACT_KIND,
     maximum_archive_bytes: int | None = None,
     cleanup: Callable[[], Mapping[str, Any]] | None = None,
+    lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
     **dependencies: Any,
 ) -> dict:
     """Rerun promotion, the gated cleanup and the absence proof for one attempt.
@@ -755,24 +789,31 @@ def resume_provider_output_promotion(
     Reads the arena lane's layout: ``object_store_staging/``, the adapter's
     recorded ``provider_output_remote_observation``, and an SSH-recovered ZIP
     still in ``vast_provider_run/``. Writes ``provider_output_resume.v1.json``
-    beside them and never rewrites the sealed lane result.
+    beside them and never rewrites the sealed lane result. An attempt whose
+    staging manifest did not require promotion is refused before anything is
+    read, published, removed or cleaned up.
     """
     attempt = Path(attempt_root).expanduser().resolve()
     staging = attempt / STAGING_DIRNAME
     run = attempt / PROVIDER_RUN_DIRNAME
     local = run / OUTPUT_FILENAME
-    receipt, cleaned = promote_then_cleanup(
-        cleanup=cleanup or (lambda: cleanup_staged_wam_provider_objects(staging)),
-        staging_dir=staging, attempt_root=attempt, artifact_kind=artifact_kind,
-        observation=_recorded_observation(run / COMMAND_RESULT_NAME),
-        local_archive=local if local.is_file() and not local.is_symlink() else None,
-        maximum_archive_bytes=maximum_archive_bytes or DEFAULT_MAXIMUM_ARCHIVE_BYTES, **dependencies)
-    blockers = list(receipt.get("blockers") or []) + list(cleaned.get("blockers") or [])
-    try:
-        proof = load_staged_object_absence_proof(staging)
-    except ProviderOutputPromotionRecordError as exc:
-        proof = None
-        blockers.append(str(exc))
+    refusal = _promotion_refusal(staging)
+    if refusal is not None:
+        receipt, cleaned = _unwritten_failure(staging, artifact_kind, refusal), None
+    else:
+        receipt, cleaned = promote_then_cleanup(
+            cleanup=cleanup or (lambda: cleanup_staged_wam_provider_objects(staging)),
+            lock_timeout_seconds=lock_timeout_seconds, staging_dir=staging, attempt_root=attempt,
+            artifact_kind=artifact_kind, observation=_recorded_observation(run / COMMAND_RESULT_NAME),
+            local_archive=local if local.is_file() and not local.is_symlink() else None,
+            maximum_archive_bytes=maximum_archive_bytes or DEFAULT_MAXIMUM_ARCHIVE_BYTES, **dependencies)
+    blockers = list(receipt.get("blockers") or []) + list((cleaned or {}).get("blockers") or [])
+    proof = None
+    if cleaned is not None:
+        try:
+            proof = load_staged_object_absence_proof(staging)
+        except ProviderOutputPromotionRecordError as exc:
+            blockers.append(str(exc))
     if proof is None and not blockers:
         blockers.append("staged_object_absence_not_proven")
     result = {
@@ -781,7 +822,8 @@ def resume_provider_output_promotion(
         "status": "completed" if proof is not None and not blockers else "blocked",
         "attempt_root": str(attempt),
         "promotion": {key: receipt.get(key) for key in ("status", "source", "receipt_digest", "blockers")},
-        "cleanup": {key: cleaned.get(key) for key in ("status", "all_objects_absent", "blockers")},
+        "cleanup": ({key: cleaned.get(key) for key in ("status", "all_objects_absent", "blockers")}
+                    if cleaned is not None else None),
         "absence_proof": ({"path": ABSENCE_PROOF_FILENAME, "proof_digest": proof["proof_digest"]}
                           if proof is not None else None),
         "lane_result_rewritten": False,
@@ -801,7 +843,8 @@ def main(argv: list[str] | None = None) -> int:
     """Resume one attempt's provider-output promotion, gated cleanup and absence proof.
 
     ``python -m blueprint_pipeline.provider_output_promotion resume --attempt-root <attempt>
-    [--artifact-kind policy-canary-provider-output] [--maximum-archive-bytes N]``
+    [--artifact-kind policy-canary-provider-output] [--maximum-archive-bytes N]
+    [--lock-timeout-seconds S]``
 
     Run it as the ``blueprint`` service user with ``UMask=0077``, never as
     root (review I5). It writes the promotion receipt, the member index, the
@@ -820,9 +863,11 @@ def main(argv: list[str] | None = None) -> int:
     resume.add_argument("--attempt-root", required=True, type=Path)
     resume.add_argument("--artifact-kind", default=OUTPUT_ARTIFACT_KIND)
     resume.add_argument("--maximum-archive-bytes", type=int, default=DEFAULT_MAXIMUM_ARCHIVE_BYTES)
+    resume.add_argument("--lock-timeout-seconds", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
     result = resume_provider_output_promotion(args.attempt_root, artifact_kind=args.artifact_kind,
-                                              maximum_archive_bytes=args.maximum_archive_bytes)
+                                              maximum_archive_bytes=args.maximum_archive_bytes,
+                                              lock_timeout_seconds=args.lock_timeout_seconds)
     print(json.dumps({key: result.get(key) for key in ("status", "blockers", "promotion", "cleanup",
                                                        "absence_proof")}, sort_keys=True))
     return 0 if result.get("status") == "completed" else 1
