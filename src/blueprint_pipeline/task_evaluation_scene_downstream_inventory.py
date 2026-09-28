@@ -35,8 +35,10 @@ def join_retained_scene_downstream_inventory(*, intent_id, seed_records, downstr
         raise SceneDownstreamInventoryError('scene_downstream_input_invalid') from None
 
 
-def _join(intent_id, seed_records, downstream_records, roots):
+def _join(intent_id, seed_records, downstream_records, roots, *, emission_budget=None):
     c = contracts
+    if emission_budget is not None:
+        emission_budget = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
     c.require(c.matches(intent_id, c.ID) and isinstance(seed_records, dict)
               and set(seed_records) == seed_module._ROLES | {'intent', 'projection'}
               and all(isinstance(seed_records[r], (list, tuple)) for r in seed_module._ROLES)
@@ -49,10 +51,13 @@ def _join(intent_id, seed_records, downstream_records, roots):
     limits = {name: globals()[name] for name in ('MAX_RECORD_BYTES', 'MAX_TOTAL_BYTES', 'MAX_OUTPUT_BYTES',
                                                'MAX_RECORDS', 'MAX_REFERENCES', 'MAX_ROWS', 'MAX_NODES', 'MAX_DEPTH')}
     decoded = c.decode(groups, limits)
-    context = c.Context(decoded, roots, limits, intent_id)
+    context = c.Context(decoded, roots, limits, intent_id, emission_budget=emission_budget)
     context.references()
-    seed = seed_module.join_retained_scene_inventory_seed(intent_id=intent_id, records=seed_records,
-                                                          roots={k: roots[k] for k in seed_module._ROOTS})
+    if emission_budget is not None:
+        seed = seed_module._join(intent_id, seed_records, {k: roots[k] for k in seed_module._ROOTS}, emission_budget=emission_budget)
+    else:
+        seed = seed_module.join_retained_scene_inventory_seed(intent_id=intent_id, records=seed_records,
+                                                              roots={k: roots[k] for k in seed_module._ROOTS})
     context.seed_budget(seed)
     activations, matched = execution.activation(context, seed)
     launches, bound = execution.launches(context, matched)
@@ -68,6 +73,8 @@ def _join(intent_id, seed_records, downstream_records, roots):
     rows = sum(len(value) for value in result.values() if isinstance(value, list))
     rows += sum(len(value) for value in seed.values() if isinstance(value, list))
     c.require(rows <= MAX_ROWS, 'rows_limit')
+    if emission_budget is not None:
+        emission_budget.check_document(result)
     c.bounded_size(result, MAX_OUTPUT_BYTES)  # Refuse BEFORE bulk row-key/document serialization.
     for key, value in result.items():
         if isinstance(value, list):

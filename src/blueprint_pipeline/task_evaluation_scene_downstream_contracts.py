@@ -87,18 +87,28 @@ def raw_digest(raw):
 
 class OutputRows(list):
     """Charge actual occurrence rows/bytes before storing, before dedup/encoding."""
-    def __init__(self, budget, limits, rows=()):
+    def __init__(self, budget, limits, rows=(), *, emission_budget=None, reference=False):
         super().__init__()
         self.budget, self.limits = budget, limits
+        self.emission_budget, self.reference = emission_budget, reference
         for row in rows:
             self.append(row)
 
     def append(self, row):
         require(self.budget['rows'] < self.limits['MAX_ROWS'], 'rows_limit')
-        length = bounded_size(row, self.limits['MAX_OUTPUT_BYTES'] - self.budget['bytes'])
+        remaining = self.limits['MAX_OUTPUT_BYTES'] - self.budget['bytes']
+        if self.emission_budget is not None:
+            remaining = self.emission_budget.preflight_row(row, remaining, reference=self.reference)
+        length = bounded_size(row, remaining)
+        if self.emission_budget is not None:
+            self.emission_budget.reserve_row(row, reference=self.reference)
         self.budget['bytes'] += length
         self.budget['rows'] += 1
         super().append(row)
+
+    def extend(self, values):
+        for row in values:
+            self.append(row)
 
 
 def seal(row, field, *, cross=False):
@@ -196,22 +206,27 @@ def decode(groups, limits):
 
 
 class Context:
-    def __init__(self, decoded, roots, limits, intent_id):
+    def __init__(self, decoded, roots, limits, intent_id, *, emission_budget=None):
         self.decoded, self.roots, self.limits, self.intent_id = decoded, roots, limits, intent_id
         self.budget = {'rows': 0, 'bytes': 0}
+        self.emission_budget = emission_budget
         self.raw = self.rows(p for rows in decoded.values() for _, p in rows)
         self.index = {(p['path'], p['sha256'], p['size_bytes']): p for p in self.raw}
         self.by_path = {role: {} for role in decoded}
         for role, rows in decoded.items():
             for row in rows:
                 self.by_path[role].setdefault(row[1]['path'], []).append(row)
-        self.obligations, self.remote, self.structural, self.members = (self.rows() for _ in range(4))
+        self.obligations, self.remote, self.structural = (self.rows(reference=True) for _ in range(3))
+        self.members = self.rows()
         self.count, self.sizes = 0, {}
         for proof in self.raw:
             self.size(proof['sha256'], proof['size_bytes'])
 
-    def rows(self, values=()):
-        return OutputRows(self.budget, self.limits, values)
+    def rows(self, values=(), *, reference=False):
+        return OutputRows(self.budget, self.limits, values, emission_budget=self.emission_budget, reference=reference)
+
+    def provenance(self, values):
+        return self.emission_budget.reserve_provenance(values) if self.emission_budget is not None else list(values)
 
     def seed_budget(self, seed):
         self.budget['rows'] += sum(len(v) for v in seed.values() if isinstance(v, list))

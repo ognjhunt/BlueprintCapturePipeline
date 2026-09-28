@@ -324,7 +324,7 @@ def terminal(context, launches):
         candidates = [r for path in candidate_paths for r in paths['_dispatch_index'].get((path, state[field]), [])]
         # Same raw bytes at original+indexed names retain both provenances.
         variants = {r[1]['sha256'] for r in candidates}
-        sources, reason, archive = [proof] + [r[1] for r in candidates], None, False
+        sources, reason, archive = context.provenance(p for group in ((proof,), (r[1] for r in candidates)) for p in group), None, False
         if len(variants) != 1:
             reason = 'terminal_dispatch_unavailable_or_ambiguous'
         dispatch = candidates[0] if len(variants) == 1 else None
@@ -380,7 +380,7 @@ def terminal(context, launches):
                 if not all(selected):
                     reason = reason or 'terminal_reference_bytes_unavailable'
                 for matches in selected:
-                    sources += [r[1] for r in matches]
+                    sources += context.provenance(r[1] for r in matches)
         bridges = [r for r in launches.get(state['run_id'], []) if str(PurePosixPath(r[0][1]['path']).parent) == directory]
         if not bridges:
             reason = reason or 'terminal_owner_bridge_unavailable'

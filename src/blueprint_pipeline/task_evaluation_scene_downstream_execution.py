@@ -28,7 +28,7 @@ def activation(context, seed):
         if known or status == 'blocked':
             c.require(value.get('provider_mutation_performed') is False and value.get('paid_execution_requested') is False
                       and isinstance(value.get('blockers'), list), 'activation_scope_invalid')
-        sources = [proof]
+        sources = context.provenance((proof,))
         if known:
             for field in ('preparation_id', 'team_namespace', 'lane'):
                 c.require(c.matches(value.get(field), c.ID), 'activation_invalid')
@@ -58,7 +58,7 @@ def activation(context, seed):
         bound = status == 'profile_authority_materialized_no_execution' and envelope is not None and expected in seed_paths
         reason = None if bound else 'activation_envelope_ambiguous' if len(candidates) > 1 else 'activation_output_scope_unproven'
         if len(candidates) > 1:
-            sources += [r[1] for r in candidates]
+            sources += context.provenance(r[1] for r in candidates)
         if bound:
             context.member(c.child(context.roots['activation_output_root'], value['activation_id']), 'activation_workspace',
                            {'activation_id': value['activation_id'], 'preparation_id': value['preparation_id']}, sources)
@@ -73,7 +73,7 @@ def activation(context, seed):
     result_names = {PurePosixPath(p['path']).name for _, p in context.decoded['activation_results']}
     for filename, candidates in envelopes.items():
         if filename not in result_names:
-            context.missing('activation_result', 'activation_result_unavailable', [r[1] for r in candidates],
+            context.missing('activation_result', 'activation_result_unavailable', context.provenance(r[1] for r in candidates),
                             c.child(context.roots['activation_queue_root'], 'results', filename))
     return rows, matched
 
