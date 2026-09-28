@@ -12,6 +12,26 @@ canonical_digest = c.canonical_digest
 cross_runtime_canonical_digest = c.cross_runtime_canonical_digest
 matches, path, child, under = c.matches, c.path, c.child, c.under
 DIGEST, COMMIT, ID = c.DIGEST, c.COMMIT, c.ACTIVATION_ID
+SUPPORTED_SCHEMAS = {
+    'website_registrations': {'website_scene_source_registration.v1'},
+    'website_bindings': {'website_scene_source_binding.v1'},
+    'website_preparations': {'website_scene_preparation.v1'},
+    'website_runtime_inputs': {'website_scene_runtime_inputs.v1'},
+    'website_task_contexts': {'website_site_task_context.v1'},
+    'sam_plans': {'task_evaluation_sam31_preparation_plan.v1'},
+    'sam_profiles': {'task_evaluation_sam31_preparation_profile.v1'},
+    'sam_recipes': {'task_evaluation_scene_construction_recipe.v1'},
+    'sam_stage_configurations': {'observed_appearance_object_removal_configuration.v1'},
+    'sam_host_tasks': {'task_evaluation_minimal_task_request.v1'},
+    'sam_jobs': {'task_evaluation_sam31_preparation_execution_job.v1'},
+    'sam_results': {'task_evaluation_sam31_preparation_execution_result.v1'},
+    'sam_adoptions': {'task_evaluation_sam31_completed_prefix_adoption.v1'},
+    'sam_parent_envelopes': {'task_evaluation_launch_preparation_envelope.v1'},
+    'preparation_envelopes': {'task_evaluation_launch_preparation_envelope.v1'},
+    'sam_execution_receipts': {'task_evaluation_sam31_phase_execution_receipt.v1', 'task_evaluation_sam31_phase_replay_receipt.v1'},
+    'sam_host_evidence': {'standard_splat_conversion_receipt.v1', 'public_scene_host_input_installation_receipt.v1',
+                          'public_scene_source_preparation.v1'},
+}
 
 
 class SceneSourceFamilyInventoryError(ValueError):
@@ -72,6 +92,10 @@ class Context(c.Context):
         row = self.record_index.get(tuple(reference[k] for k in ('path', 'sha256', 'size_bytes')))
         if row and roles is not None:
             require(row[1]['role'] in roles, 'reference_role_invalid')
+            known = SUPPORTED_SCHEMAS.get(row[1]['role'])
+            if known and row[0].get('schema_version') not in known:
+                self.missing(row[1]['role'], 'unsupported_retained_schema', [row[1]])
+                return None
         return row
 
     def known(self, role, schema, seal_field=None):

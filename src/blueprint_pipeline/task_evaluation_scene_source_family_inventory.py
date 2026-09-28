@@ -8,6 +8,8 @@ from __future__ import annotations
 from . import task_evaluation_scene_downstream_inventory as downstream
 from . import task_evaluation_scene_source_family_contracts as contracts
 from . import task_evaluation_scene_source_family_website as website
+from . import task_evaluation_scene_source_family_sam as sam
+from . import task_evaluation_scene_source_family_adoption as adoption
 from .task_evaluation_scene_source_family_contracts import SceneSourceFamilyInventoryError
 
 _downstream_join = downstream.join_retained_scene_downstream_inventory
@@ -82,10 +84,12 @@ def _join(intent_id, seed_records, downstream_records, source_records, roots, pa
     context.charge_child(old)
     websites = website.capture(context, old)
     publications = website.publication(context, old)
+    sam_rows = sam.inventory(context, old)
+    adoption_rows, original_phases = adoption.inventory(context)
     result = {'schema_version': 'task_evaluation_scene_source_family_inventory.v1',
         'scope': 'supplied_retained_source_family_records', 'status': 'kept_unresolved', 'intent_id': intent_id,
         'downstream_inventory': old, 'website_observations': websites, 'publication_observations': publications,
-        'sam_observations': context.rows(), 'adoption_observations': context.rows(), 'original_phase_observations': context.rows(),
+        'sam_observations': sam_rows, 'adoption_observations': adoption_rows, 'original_phase_observations': original_phases,
         'raw_versions': context.rows(p for p in context.raw if p['role'] in ROLES),
         'raw_reference_obligations': context.obligations, 'remote_reference_obligations': context.remote,
         'structural_join_obligations': context.structural, 'lexical_members': context.members,

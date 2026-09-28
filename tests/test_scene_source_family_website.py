@@ -425,3 +425,32 @@ def test_host_only_duplicate_uri_refuses_without_manifest_even_with_distinct_pat
     args['seed_records']['source_submissions'] = args['seed_records']['source_submissions'][:1]
     args['seed_records']['factories'] = []
     refuses(args)
+
+
+def test_known_owner_binding_selected_future_registration_keeps_raw_without_interpretation():
+    args = fixture(website=True)
+    rows, seed = args['source_records'], args['seed_records']
+    path, raw = rows['website_registrations'][0]
+    prior = json.loads(raw)
+    future = pair(path, {'schema_version': 'website_scene_source_registration.v2', 'references': prior['references']})
+    rows['website_registrations'] = [future]
+    binding_path, raw = seed['source_snapshots'][0]
+    binding = json.loads(raw)
+    binding['registration'] = ref(future)
+    binding = seal(binding, 'binding_digest')
+    seed['source_snapshots'][0] = pair(binding_path, binding)
+    rows['website_bindings'] = [pair(args['roots']['factory_output_root'] + '/' + args['intent_id'] +
+        '/website-source/' + binding['binding_digest'][7:] + '.json', binding)]
+    path, raw = seed['attempts'][0]
+    attempt = json.loads(raw)
+    attempt['input_digest'] = binding['binding_digest']
+    attempt = seal(attempt, 'attempt_digest', cross=True)
+    seed['attempts'][0] = pair(path, attempt)
+    path, raw = seed['factories'][0]
+    factory = json.loads(raw)
+    factory['attempt_digest'] = attempt['attempt_digest']
+    seed['factories'][0] = pair(path, seal(factory, 'factory_digest'))
+    rows['website_handoffs'] = []
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert any(r['path'] == future[0] for r in result['raw_versions'])
+    assert not any(m['kind'] == 'capture_dependency' for m in result['lexical_members'])
