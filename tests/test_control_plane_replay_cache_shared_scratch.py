@@ -1042,3 +1042,21 @@ def test_a_lookahead_reached_through_a_link_is_never_walked(tmp_path) -> None:
     assert (block["candidate_groups"], block["kept_by_reason"], block["holders_by_gate"]) == (0, {}, {})
     assert {row["error"] for row in phase["errors"]} == {"ValueError"}
     assert all(path.exists() for path in names)
+
+def test_a_group_one_replay_holds_alone_stays_with_the_per_replay_rule(tmp_path) -> None:
+    """A group whose every name sits in one replay, however many names it has there, is the per-replay
+    rule's: the shared plan neither plans nor counts it, so a tick that only plans counts it once,
+    in the per-replay estimate."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    own = _store_blob(tmp_path, b"linked twice inside one replay" * 20)
+    own_names = _linked(own, names[0].parents[3], "prep-a/own.usd")
+    own_size = own.stat().st_size
+    _moved(own)
+
+    phase = _tick(tmp_path, parent_root)["replay_caches"]
+
+    block = phase["shared_scratch"]
+    assert (block["candidate_groups"], block["candidate_bytes"], block["kept_by_reason"]) == (1, size, {})
+    assert phase["estimated_candidate_bytes"] == own_size
+    assert all(path.exists() for path in (*names, *own_names))
