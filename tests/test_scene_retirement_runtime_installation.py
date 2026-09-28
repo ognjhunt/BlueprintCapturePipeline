@@ -2,6 +2,7 @@
 from pathlib import Path
 import importlib.util
 import os
+import sys
 
 import pytest
 
@@ -87,3 +88,37 @@ def test_space_floor_refuses_before_copying_any_runtime_bytes(tmp_path, monkeypa
     with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
         module.prepare(source, deps)
     assert not module._RUNTIME_ROOT.exists()
+
+
+@pytest.mark.parametrize('change', ['abi', 'linked-config', 'writable-config', 'duplicate-version'])
+def test_dependency_venv_must_match_actual_system_python_before_copy(tmp_path, monkeypatch, change):
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    venv = tmp_path.resolve() / 'root-venv'
+    sdk = venv / f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages'
+    sdk.mkdir(parents=True)
+    config = venv / 'pyvenv.cfg'
+    config.write_text(f'version = {sys.version_info.major}.{sys.version_info.minor}.1\n')
+    if change == 'abi':
+        config.write_text('version = 2.7.1\n')
+    elif change == 'linked-config':
+        real = tmp_path / 'foreign-config'
+        config.rename(real)
+        config.symlink_to(real)
+    elif change == 'writable-config':
+        config.chmod(0o666)
+    else:
+        config.write_text(config.read_text() * 2)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.dependency_root(venv)
+    assert not module._RUNTIME_ROOT.exists()
+
+
+def test_dependency_location_is_derived_without_executing_venv(tmp_path, monkeypatch):
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    venv = tmp_path.resolve() / 'root-venv'
+    sdk = venv / f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages'
+    sdk.mkdir(parents=True)
+    (venv / 'pyvenv.cfg').write_text(f'version = {sys.version_info.major}.{sys.version_info.minor}.1\n')
+    (venv / 'bin').mkdir()
+    (venv / 'bin/python').write_text('raise AssertionError("must not execute service interpreter")')
+    assert module.dependency_root(venv) == sdk
