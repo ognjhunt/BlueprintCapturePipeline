@@ -282,3 +282,139 @@ def test_actual_predecessor_lanes_and_required_source_leaves(lane):
     request = activation_request(lane=lane, lineage={"kind": "predecessor", **leaves})
     result = observe(record("activation", request=request, state="pending"))
     assert {row.contract_path for row in result.remote_raw_references} == {"release_window", *["lineage." + key for key in leaves]}
+
+
+def test_actual_generic_producer_scalar_metadata_does_not_make_projection_unknown():
+    rows = preparation_set(unique_object_count=1, content_addressed_reuse_count=0,
+                           service_account="blueprint", service_account_uid=1000)
+    result = observe(*rows)
+    assert result.complete_supplied_supported_projection
+
+
+@pytest.mark.parametrize("change", [{"run_id": "foreign"}, {"team_namespace": "foreign"}, {"source_commit": "b" * 40}])
+def test_rejected_preparation_body_never_resolves_activation_edge(change):
+    prep = preparation_set()
+    prep[-1] = rewrite(prep[-1], **change)
+    result = observe(*prep, *activation_set(prep))
+    assert len(result.local_path_protections) == 4
+    assert "activation_preparation_unresolved" in result.blockers
+
+
+def test_invalid_reference_body_cannot_resolve_activation_selector_despite_self_seal():
+    prep = preparation_set()
+    refs = json.loads(prep[-1].raw_bytes)["references"]
+    refs[0]["size_bytes"] = True
+    prep[-1] = rewrite(prep[-1], references=refs)
+    result = observe(*prep, *activation_set(prep))
+    assert "activation_preparation_unresolved" in result.blockers
+    assert len(result.local_path_protections) == 3
+
+
+@pytest.mark.parametrize("mode", ["destination_qualification", "episode_evaluation"])
+@pytest.mark.parametrize("missing", ["robot", "controller"])
+def test_non_scene_modes_require_reference_bearing_robot_and_controller(mode, missing):
+    request = preparation_request(run_mode=mode, robot={key: reference() for key in ("configuration", "kinematics", "joint_bounds", "base_registration", "controller_configuration")},
+                                  controller={"kind": "zero_action", "configuration": reference()})
+    del request[missing]
+    result = observe(record(request=request))
+    assert "supported_reference_invalid" in result.blockers
+
+
+@pytest.mark.parametrize("field", ["run_mode", "lane", "binding_mode"])
+def test_malformed_supported_discriminants_do_not_leak_typeerror(field):
+    if field == "lane":
+        row = record("activation", request=activation_request(lane=[]), state="prepared")
+    else:
+        request = preparation_request()
+        (request if field == "run_mode" else request["task"])[field] = []
+        row = record(request=request)
+    result = observe(row)
+    assert not result.complete_supplied_supported_projection and result.records
+
+
+@pytest.mark.parametrize("field", ["run_id", "service_account", "observed_at_iso"])
+def test_known_scalar_result_field_cannot_hide_object_metadata(field):
+    rows = preparation_set()
+    rows[-1] = rewrite(rows[-1], **{field: {"path": "/not-inferred"}})
+    result = observe(*rows)
+    assert not result.complete_supplied_supported_projection
+    assert any(row.reason in {"unsupported_metadata_shape", "supported_request_invalid", "preparation_result_binding_invalid"} for row in result.missing_edge_obligations)
+
+
+def test_known_scalar_request_field_cannot_hide_object_metadata():
+    request = preparation_request()
+    request["runtime"]["oci_image"] = {"new_reference": reference()}
+    result = observe(record(request=request))
+    assert "unsupported_metadata_shape" in result.blockers
+
+
+def test_known_supported_metadata_objects_do_not_invent_remote_or_local_paths():
+    request = preparation_request()
+    request["scene"]["identity"] = {"id": "scene", "version": "v1"}
+    request["task"]["identity"] = {"id": "task", "version": "v1"}
+    request["runtime"].update(identity={"id": "runtime", "version": "v1"}, requirements={"cpu_cores": 1, "memory_gib": 1, "gpu_count": 0, "disk_gib": 1}, network={"default": "deny", "allowlist": []}, entrypoint=["run"], secret_refs=[])
+    request["publication"] = {"input_namespace": "inputs", "service_account_readback_required": True}
+    result = observe(*preparation_set(request))
+    assert result.complete_supplied_supported_projection
+    assert len(result.remote_raw_references) == 8
+    assert len(result.local_path_protections) == 4
+
+
+def test_identical_declared_contract_duplicates_preserve_all_locations_without_ambiguity():
+    rows = preparation_set()
+    refs = json.loads(rows[-1].raw_bytes)["references"]
+    refs.append({**refs[0], "materialized_path": "/other/copy"})
+    rows[-1] = rewrite(rows[-1], references=refs, reference_count=5)
+    result = observe(*rows, *activation_set(rows))
+    assert result.complete_supplied_supported_projection
+    assert len(result.local_path_protections) == 5
+    assert all(row.binding_status == "request_bound" for row in result.local_path_protections)
+
+
+def test_conflicting_declared_contract_duplicates_make_every_contested_binding_receipt_only():
+    rows = preparation_set()
+    refs = json.loads(rows[-1].raw_bytes)["references"]
+    refs.append({**refs[0], "uri": "gs://bucket/foreign", "materialized_path": "/other/copy"})
+    rows[-1] = rewrite(rows[-1], references=refs, reference_count=5)
+    result = observe(*rows, *activation_set(rows))
+    contested = [row for row in result.local_path_protections if row.contract_path == "scene.configured_revision"]
+    assert all(row.binding_status == "receipt_only" for row in contested)
+    assert "activation_preparation_unresolved" in result.blockers
+    assert len(result.local_path_protections) == 5
+
+
+@pytest.mark.parametrize("flag", ["provider_mutation_performed", "paid_execution_requested"])
+def test_preparation_paid_or_provider_execution_declaration_is_not_supported_no_execution_proof(flag):
+    rows = preparation_set()
+    rows[-1] = rewrite(rows[-1], **{flag: True})
+    result = observe(*rows, *activation_set(rows))
+    assert not result.complete_supplied_supported_projection
+    assert "activation_preparation_unresolved" in result.blockers
+
+
+@pytest.mark.parametrize("field", ["identity", "network", "requirements"])
+def test_known_nested_runtime_metadata_cannot_hide_unknown_object_fields(field):
+    request = preparation_request()
+    request["runtime"][field] = {"unknown": {"path": "/not-inferred"}}
+    result = observe(record(request=request))
+    assert not result.complete_supplied_supported_projection
+    assert "unsupported_metadata_shape" in result.blockers
+
+
+def test_native_probe_unknown_nested_reference_is_explicit_incomplete_metadata():
+    request = preparation_request()
+    request["task"]["destination"] = {"asset": reference(), "rights_admission": reference(), "static_qualification": reference(),
+                                         "native_probe": {"unknown": reference()}}
+    result = observe(record(request=request))
+    assert "unsupported_metadata_shape" in result.blockers
+    assert all(row.contract_path != "task.destination.native_probe.unknown" for row in result.remote_raw_references)
+
+
+def test_campaign_common_canonical_selectors_remain_discoverable_without_parent():
+    row = record("activation", "result", status="policy_campaign_queue_materialized_no_execution",
+                 policy_campaign_activation_digest=D, policy_campaign_activation_sha256=D,
+                 preparation_result_digest=D, release_window_digest=D,
+                 provider_mutation_performed=False, paid_execution_requested=False)
+    result = observe(row)
+    assert {fact.contract_path for fact in result.canonical_document_selector_obligations} >= {
+        "preparation_result_digest", "release_window_digest", "policy_campaign_activation_digest"}

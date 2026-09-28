@@ -148,7 +148,7 @@ def test_wrong_schema_seal_request_or_intake_declaration_cannot_join(field, valu
     if field != "envelope_digest":
         data = sealed(data, "envelope_digest")
     result = observe(replace(row, raw_bytes=json.dumps(data).encode()))
-    assert result.records[0].disposition == "invalid"
+    assert result.records[0].disposition == ("unsupported" if field == "schema_version" else "invalid")
 
 
 def test_hashed_activation_filename_supports_actual_192_character_id():

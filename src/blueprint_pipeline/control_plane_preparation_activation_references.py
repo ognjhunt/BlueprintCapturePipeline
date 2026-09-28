@@ -41,6 +41,37 @@ _ROLES = {"envelope", "identity", "result", "result_conflict"}
 _UNFINISHED = ("construction_compilation_launch_profile", "policy_canary", "auxiliary_consumer_joins",
                "runtime_wrapper_revision_recipe", "registry_process_enabled_sources",
                "fencing_grants_offload_restore")
+# Finite known structured fields; scalar metadata cannot conceal new containers.
+# These classify shapes only, never recursively discover references.
+_STRUCTURED = {
+    "envelope": "request", "identity": "",
+    "request": "scene robot construction controller task sensors runtime execution_adapter publication spend policy_run_setup policy_run_selection policy_run_configuration policy_canary_activation preparation release_window lineage authorization requested_mutations episode_interpretation_authority episode_interpretation_source_rights_admission",
+    "scene": "identity source_manifest appearance geometry registration rights website_native_inputs configured_revision",
+    "scene.appearance": "representation renderer_qualification", "scene.geometry": "collision validation source_derivation",
+    "scene.registration": "metric_registration support_plane robot_mount_interface workspace_clearance camera_calibration",
+    "scene.rights": "admission evidence public_display_authorization",
+    "scene.rights.evidence.i": "artifact",
+    "scene.rights.public_display_authorization": "scene_identity task_identity subject_identity allowed_fields",
+    "scene.website_native_inputs": "runtime_inputs appearance observations candidate frames",
+    "construction": "recipe output_identity", "robot": "identity configuration kinematics joint_bounds base_registration controller_configuration",
+    "controller": "identity configuration model_or_asset_rights",
+    "task": "identity destination subject definition success_criteria execution surface_target",
+    "task.subject": "identity asset physics_validation rights_admission source_object",
+    "task.destination": "identity asset rights_admission static_qualification native_import_qualification geometry placement_qualification native_probe pose_world",
+    "task.surface_target": "surface_position_world_m", "task.destination.pose_world": "position_world_m orientation_xyzw",
+    "task.destination.native_probe": "placement_support_scene_prim_paths qualification_limits",
+    "task.destination.native_probe.qualification_limits": "minimum_camera_pixels",
+    "runtime": "identity entrypoint health_protocol requirements network secret_refs mounts",
+    "runtime.network": "allowlist", "runtime.requirements": "", "runtime.mounts.i": "source",
+    "sensors": "configuration", "execution_adapter": "runtime_source_bundle policy_observation_setup",
+    "execution_adapter.policy_observation_setup": "appearance_asset appearance_authoring_receipt wrist_camera_mount_registry policy_master_resolution_wh overview_review_resolution_wh",
+    "publication": "", "spend": "provider_allowlist external_service_caps",
+    "spend.external_service_caps": "openai anthropic", "spend.external_service_caps.openai": "stage_max_cost_usd",
+    "preparation": "", "lineage": "project_spend_reconciliation initial_provider_zero construction_result prior_authority prior_result prior_launch_receipt prior_webapp_sync prior_provider_zero prior_spend_reconciliation destination_qualification_result zero_action_result controls_qualification_manifest",
+    "authorization": "scene_owner_attempt", "requested_mutations": "",
+    "references": "host_source_readback",
+    "result": "references blockers policy_run_plan task_success_contract episode_interpretation_authority episode_interpretation_source_rights_admission construction_output_identity",
+}
 
 
 class PreparationActivationReferenceError(ValueError):
@@ -50,6 +81,10 @@ class PreparationActivationReferenceError(ValueError):
 class _Invalid(Exception):
     def __init__(self, code: str = "supplied_record_invalid"):
         self.code = code
+
+
+def _resource(code: str) -> bool:
+    return code.endswith("limit") or code in {"queue_deadline_exceeded", "queue_clock_invalid", "queue_result_invalid"}
 
 
 @dataclass(frozen=True)
@@ -154,6 +189,10 @@ def _digest(value: Any) -> bool:
     return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
 
 
+def _enum(value: Any, choices: set[str]) -> bool:
+    return isinstance(value, str) and value in choices
+
+
 def _filename(family: str, identifier: str, digest: str) -> str:
     name = identifier + "-" + digest[7:] + ".json"
     if family == "activation" and len(name.encode()) > 255:
@@ -175,6 +214,7 @@ class _Document:
     canonical_digest: str
     state: str
     contested: bool = False
+    supported_semantics: bool = True
 
 
 class _Interpretation:
@@ -187,19 +227,90 @@ class _Interpretation:
             "local_path_protections", "remote_raw_references", "raw_digest_selector_obligations",
             "canonical_document_selector_obligations", "missing_edge_obligations")}
         self.fact_count = 0
+        self.output_bytes = 0
         self.request_references: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
         self.envelopes: dict[tuple[str, str, str, str], list[_Document]] = {}
         self.identities: dict[tuple[str, str, str, str], list[_Document]] = {}
         self.results: dict[tuple[str, str, str, str], list[_Document]] = {}
+
+    def wire_size(self, value: Any) -> int:
+        """Count the fixed output's JSON representation without encoding it."""
+        self.scan.tick()
+        if isinstance(value, str):
+            size = 2
+            for offset, char in enumerate(value):
+                if offset % 1024 == 0:
+                    self.scan.tick()
+                n = ord(char)
+                if char in '\\"\b\f\n\r\t':
+                    size += 2
+                elif n < 32:
+                    size += 6
+                elif n < 128:
+                    size += 1
+                elif n < 2048:
+                    size += 2
+                elif 0xD800 <= n <= 0xDFFF:
+                    raise _Blocked("reference_output_limit")
+                elif n < 65536:
+                    size += 3
+                else:
+                    size += 4
+                if size > MAX_OUTPUT_BYTES:
+                    raise _Blocked("reference_output_limit")
+            return size
+        if isinstance(value, dict):
+            size = 2
+            for index, (key, child) in enumerate(value.items()):
+                self.scan.tick()
+                size += (2 if index else 0) + self.wire_size(key) + 2 + self.wire_size(child)
+                if size > MAX_OUTPUT_BYTES:
+                    raise _Blocked("reference_output_limit")
+            return size
+        if isinstance(value, (tuple, list)):
+            size = 2
+            for index, child in enumerate(value):
+                self.scan.tick()
+                size += (2 if index else 0) + self.wire_size(child)
+                if size > MAX_OUTPUT_BYTES:
+                    raise _Blocked("reference_output_limit")
+            return size
+        if value is None:
+            return 4
+        if isinstance(value, bool):
+            return 4 if value else 5
+        if type(value) is int:
+            try:
+                return len(str(value))
+            except ValueError:
+                raise _Blocked("reference_output_limit") from None
+        raise _Blocked("reference_output_limit")
+
+    def charge(self, value: Any) -> None:
+        size = self.wire_size(value) + 2
+        if size > MAX_OUTPUT_BYTES - self.output_bytes:
+            raise _Blocked("reference_output_limit")
+        self.output_bytes += size
+
+    def provenance_document(self, source: RawReferenceProvenance) -> dict[str, Any]:
+        return {"family": source.family, "queue_root": source.queue_root, "role": source.role,
+                "row_path": source.row_path, "raw_sha256": source.raw_sha256,
+                "raw_size_bytes": source.raw_size_bytes, "observed_identity": source.observed_identity}
 
     def block(self, reason: str) -> None:
         self.scan.block(reason)
 
     def fact(self, kind: str, source: RawReferenceProvenance, contract_path: str, **kwargs: Any) -> None:
         self.scan.tick()
-        if self.fact_count >= MAX_FACTS:
+        related = kwargs.get("related_sources", ())
+        count = 1 + len(related)
+        if count > MAX_FACTS - self.fact_count:
             raise _Blocked("reference_facts_limit")
-        self.fact_count += 1
+        self.fact_count += count
+        wire = {"source": self.provenance_document(source), "contract_path": contract_path, "digest": None,
+                "path": None, "uri": None, "size_bytes": None, "related_sources": (), **kwargs}
+        wire["related_sources"] = tuple(self.provenance_document(item) for item in related)
+        self.charge(wire)
         self.facts[kind].append(ReferenceFact(source, contract_path, **kwargs))
 
     def canonical(self, value: dict[str, Any], field: str | None = None) -> str:
@@ -217,8 +328,14 @@ class _Interpretation:
         self.scan.tick()
         return "sha256:" + output.hexdigest()
 
-    def decode(self, row: RetainedReferenceRecord) -> None:
+    def decode(self, row: RetainedReferenceRecord, value: dict[str, Any] | None, parse_error: str | None) -> None:
         self.scan.tick()
+        # Reserve a conservative fixed disposition envelope before allocating
+        # any provenance/record object; facts are charged separately per copy.
+        self.charge({"source": {"family": row.family, "queue_root": row.queue_root, "role": row.role,
+                     "row_path": row.row_path, "raw_sha256": "sha256:" + "0" * 64,
+                     "raw_size_bytes": len(row.raw_bytes), "observed_identity": row.observed_identity},
+                     "disposition": "unsupported", "reason": "x" * 64, "canonical_digest": "sha256:" + "0" * 64})
         digest = hashlib.sha256()
         for offset in range(0, len(row.raw_bytes), 4096):
             self.scan.tick()
@@ -227,13 +344,15 @@ class _Interpretation:
                                         "sha256:" + digest.hexdigest(), len(row.raw_bytes), row.observed_identity)
         canonical = None
         try:
-            text = self.scan.parse(row.raw_bytes)
-            self.scan.tick()
-            value = json.loads(text)
-            self.scan.tick()
+            _check(parse_error is None and value is not None, "supplied_json_invalid")
             field = {"envelope": "envelope_digest", "identity": "identity_digest"}.get(row.role, "result_digest")
             schema_role = "result" if row.role == "result_conflict" else row.role
-            _check(value.get("schema_version") == "task_evaluation_launch_" + row.family + "_" + schema_role + ".v1")
+            schema = value.get("schema_version")
+            if isinstance(schema, str) and schema != "task_evaluation_launch_" + row.family + "_" + schema_role + ".v1":
+                self.block("unsupported_schema")
+                self.records.append(ReferenceRecordDisposition(source, "unsupported", "unsupported_schema", None))
+                return
+            _check(schema == "task_evaluation_launch_" + row.family + "_" + schema_role + ".v1")
             _check(_digest(value.get(field)))
             canonical = self.canonical(value, field)
             _check(value[field] == canonical)
@@ -279,7 +398,7 @@ class _Interpretation:
             self.block(error.code)
             self.records.append(ReferenceRecordDisposition(source, "invalid", error.code, canonical))
         except _Blocked as error:
-            if error.code.endswith("limit") or error.code in {"queue_deadline_exceeded", "queue_clock_invalid", "queue_result_invalid"}:
+            if _resource(error.code):
                 raise
             self.block("supplied_json_invalid")
             self.records.append(ReferenceRecordDisposition(source, "invalid", "supplied_json_invalid", canonical))
@@ -315,6 +434,13 @@ class _Interpretation:
                 self.records[index] = ReferenceRecordDisposition(row.source, "conflict", "immutable_record_conflict", row.canonical_digest)
 
     def defer(self, doc: _Document, path: str, reason: str) -> None:
+        if reason in {"supported_reference_invalid", "supported_request_invalid", "supported_selector_invalid",
+                      "unsupported_metadata_shape", "materialized_reference_count_invalid",
+                      "materialized_reference_path_ambiguous", "materialized_reference_binding_mismatch",
+                      "request_materialized_reference_missing", "preparation_result_binding_invalid",
+                      "activation_execution_declaration_invalid", "activation_result_binding_invalid",
+                      "canary_companions_invalid"}:
+            doc.supported_semantics = False
         self.block(reason)
         self.fact("missing_edge_obligations", doc.source, path, binding_status="unresolved",
                   reason=reason, digest_meaning="no_inferred_raw_identity")
@@ -323,11 +449,26 @@ class _Interpretation:
         self.scan.tick()
         _check(isinstance(value, dict), "supported_reference_invalid")
         allowed = set(fields.split())
+        location = re.sub(r"(?<=\.)[0-9]+(?=\.|$)", "i", path)
+        structured = set(_STRUCTURED.get(location, "").split())
         for key in value:
             self.scan.tick()
             if key not in allowed:
                 self.defer(doc, path, "unsupported_metadata_shape")
                 break
+            if isinstance(value[key], (dict, list)) and key not in structured:
+                self.defer(doc, path + "." + key, "unsupported_metadata_shape")
+            if key in {"identity", "output_identity", "scene_identity", "task_identity", "subject_identity"} and key in structured:
+                identity = self.shape(doc, value[key], path + "." + key, "id version")
+                _check(_identifier(identity.get("id")) and _identifier(identity.get("version")), "supported_request_invalid")
+            if key in {"entrypoint", "secret_refs", "allowlist", "allowed_fields", "provider_allowlist",
+                       "surface_position_world_m", "position_world_m", "orientation_xyzw",
+                       "policy_master_resolution_wh", "overview_review_resolution_wh", "placement_support_scene_prim_paths", "blockers"} and key in structured:
+                _check(isinstance(value[key], list), "supported_request_invalid")
+                for item in value[key]:
+                    self.scan.tick()
+                    if isinstance(item, (dict, list)):
+                        self.defer(doc, path + "." + key, "unsupported_metadata_shape")
         return value
 
     def remote(self, doc: _Document, path: str, value: Any) -> dict[str, Any]:
@@ -368,8 +509,25 @@ class _Interpretation:
             "policy_run_setup policy_run_selection policy_run_configuration policy_canary_activation "
             "replacement_authoring_backend replacement_authoring_model_provider replacement_authoring_agent_runtime replacement_authoring_model")
         _check(_identifier(request.get("run_id")), "supported_request_invalid")
-        _check(request.get("run_mode") in {"scene_configuration", "destination_qualification", "episode_evaluation"}, "supported_request_invalid")
+        _check(_enum(request.get("run_mode"), {"scene_configuration", "destination_qualification", "episode_evaluation"}), "supported_request_invalid")
         refs = {}
+        for name in ("scene", "task", "robot", "controller", "runtime"):
+            container = request.get(name)
+            if isinstance(container, dict) and "identity" in container:
+                identity = self.shape(doc, container["identity"], name + ".identity", "id version")
+                _check(_identifier(identity.get("id")) and _identifier(identity.get("version")), "supported_request_invalid")
+        if "publication" in request:
+            self.shape(doc, request["publication"], "publication", "input_namespace service_account_readback_required")
+        if "spend" in request:
+            spend = self.shape(doc, request["spend"], "spend", "maximum_hourly_rate_usd hard_cap_usd hard_ttl_seconds provider_compute_spend_cap_usd external_service_caps retry_cap selected_provider provider_allowlist")
+            if "external_service_caps" in spend:
+                caps = self.shape(doc, spend["external_service_caps"], "spend.external_service_caps", "openai anthropic")
+                for provider in ("openai", "anthropic"):
+                    if provider in caps:
+                        path = "spend.external_service_caps." + provider
+                        cap = self.shape(doc, caps[provider], path, "maximum_cost_usd maximum_requests stage_max_cost_usd" if provider == "openai" else "maximum_cost_usd maximum_requests")
+                        if "stage_max_cost_usd" in cap:
+                            self.shape(doc, cap["stage_max_cost_usd"], path + ".stage_max_cost_usd", "artifixer_semantic_teacher artifixer_visual_review content_agents")
         for key in ("policy_run_setup", "policy_run_selection", "policy_run_configuration", "policy_canary_activation"):
             if key in request:
                 _check(isinstance(request[key], dict), "supported_request_invalid")
@@ -396,7 +554,7 @@ class _Interpretation:
             for index, item in enumerate(evidence):
                 path = "scene.rights.evidence." + str(index)
                 item = self.shape(doc, item, path, "role artifact")
-                _check(item.get("role") in {"publisher_terms", "publisher_readme", "upstream_license", "human_authority_record"}, "supported_reference_invalid")
+                _check(_enum(item.get("role"), {"publisher_terms", "publisher_readme", "upstream_license", "human_authority_record"}), "supported_reference_invalid")
                 refs.update(self.leaves(doc, item, path, "artifact"))
             if "public_display_authorization" in scene["rights"]:
                 authorization = self.shape(doc, scene["rights"]["public_display_authorization"], "scene.rights.public_display_authorization",
@@ -425,10 +583,12 @@ class _Interpretation:
         for key, required, optional, metadata in (
             ("robot", "configuration kinematics joint_bounds base_registration controller_configuration", "", "identity"),
             ("controller", "configuration", "model_or_asset_rights", "identity kind")):
+            if key not in request and request["run_mode"] != "scene_configuration":
+                self.defer(doc, key, "supported_reference_invalid")
             if key in request:
                 container = self.shape(doc, request[key], key, required + " " + optional + " " + metadata)
                 if key == "controller":
-                    _check(container.get("kind") in {"zero_action", "deterministic_scripted", "policy_container"}, "supported_request_invalid")
+                    _check(_enum(container.get("kind"), {"zero_action", "deterministic_scripted", "policy_container"}), "supported_request_invalid")
                     if container["kind"] == "policy_container":
                         required += " model_or_asset_rights"
                         optional = ""
@@ -470,9 +630,21 @@ class _Interpretation:
                 _check("placement_qualification" not in destination, "supported_request_invalid")
                 _check(isinstance(destination.get("native_probe"), dict), "supported_request_invalid")
             refs.update(self.leaves(doc, destination, "task.destination", needed))
+            if "pose_world" in destination:
+                self.shape(doc, destination["pose_world"], "task.destination.pose_world", "position_world_m orientation_xyzw")
+            if "native_probe" in destination:
+                probe = self.shape(doc, destination["native_probe"], "task.destination.native_probe", "schema_version placement_support_scene_prim_paths qualification_limits settle_sample_count settle_steps_per_sample")
+                if "qualification_limits" in probe:
+                    limits = self.shape(doc, probe["qualification_limits"], "task.destination.native_probe.qualification_limits", "maximum_penetration_m minimum_support_contact_force_n maximum_forbidden_contact_force_n settle_translation_tolerance_m settle_rotation_tolerance_rad reset_translation_tolerance_m reset_rotation_tolerance_rad minimum_camera_pixels")
+                    if "minimum_camera_pixels" in limits:
+                        self.shape(doc, limits["minimum_camera_pixels"], "task.destination.native_probe.qualification_limits.minimum_camera_pixels", "external wrist overview")
         sensors = self.shape(doc, request.get("sensors"), "sensors", "configuration")
         refs.update(self.leaves(doc, sensors, "sensors", "configuration"))
         runtime = self.shape(doc, request.get("runtime"), "runtime", "identity oci_image entrypoint health_protocol requirements network secret_refs mounts output_limit_bytes")
+        if "requirements" in runtime:
+            self.shape(doc, runtime["requirements"], "runtime.requirements", "cpu_cores memory_gib gpu_count disk_gib")
+        if "network" in runtime:
+            self.shape(doc, runtime["network"], "runtime.network", "default allowlist")
         refs.update(self.leaves(doc, runtime, "runtime", "health_protocol"))
         mounts = runtime.get("mounts")
         _check(isinstance(mounts, list) and len(mounts) <= 128, "supported_reference_invalid")
@@ -495,7 +667,7 @@ class _Interpretation:
     def activation_request(self, doc: _Document) -> dict[str, dict[str, Any]]:
         request = self.shape(doc, doc.value["request"], "request", "schema_version expected_production_commit activation_id team_namespace run_kind capture_session_id intake_id episode_interpretation_authority episode_interpretation_source_rights_admission lane preparation release_window lineage authorization requested_mutations")
         lane, kind = request.get("lane"), request.get("run_kind", "qualified_evaluation")
-        _check(lane in _LANES and kind in {"qualified_evaluation", "internal_policy_canary"}, "supported_request_invalid")
+        _check(_enum(lane, _LANES) and _enum(kind, {"qualified_evaluation", "internal_policy_canary"}), "supported_request_invalid")
         if kind == "internal_policy_canary":
             _check(lane == "native_task_arena_policy_evaluation" and _identifier(request.get("capture_session_id")) and _identifier(request.get("intake_id")), "supported_request_invalid")
         binding = self.shape(doc, request.get("preparation"), "preparation", "preparation_id request_digest result_digest")
@@ -557,10 +729,14 @@ class _Interpretation:
                 self.shape(doc, doc.value, "identity", "schema_version " + doc.source.family + "_id request_digest identity_digest")
 
     def parents(self, doc: _Document) -> list[_Document]:
-        return self.envelopes.get((doc.source.family, doc.source.queue_root, doc.identifier, doc.request_digest), [])
+        rows = self.envelopes.get((doc.source.family, doc.source.queue_root, doc.identifier, doc.request_digest), [])
+        return [row for row in rows if row.supported_semantics]
 
     def materialized(self, doc: _Document) -> None:
         value = doc.value
+        for flag in ("provider_mutation_performed", "paid_execution_requested"):
+            if flag in value and value[flag] is not False:
+                self.defer(doc, flag, "supported_request_invalid")
         success = value["status"] in _PREPARATION_SUCCESS
         if not success:
             self.defer(doc, "status", "preparation_status_incomplete")
@@ -575,7 +751,13 @@ class _Interpretation:
         if len(parents) != 1:
             self.defer(doc, "envelope", "preparation_envelope_unresolved")
         matched = set()
-        seen = set()
+        declared: dict[str, set[tuple[str, str, int]]] = {}
+        for item in refs:
+            self.scan.tick()
+            if (isinstance(item, dict) and isinstance(item.get("contract_path"), str)
+                    and isinstance(item.get("uri"), str) and isinstance(item.get("digest"), str)
+                    and type(item.get("size_bytes")) is int):
+                declared.setdefault(item["contract_path"], set()).add((item["uri"], item["digest"], item["size_bytes"]))
         for item in refs:
             self.scan.tick()
             try:
@@ -599,10 +781,10 @@ class _Interpretation:
                     self.selector(doc, path + ".host_source_readback.installation_receipt_digest", host["installation_receipt_digest"])
                     self.selector(doc, path + ".host_source_readback.publisher_intake_sha256", host["publisher_intake_sha256"], raw=True)
                 binding, reason, related = "receipt_only", "deferred_parent_reference_proof", ()
-                if path in seen:
+                ambiguous = len(declared.get(path, ())) > 1
+                if ambiguous:
                     self.defer(doc, path, "materialized_reference_path_ambiguous")
-                seen.add(path)
-                if len(parents) == 1 and not doc.contested:
+                if len(parents) == 1 and not doc.contested and not ambiguous:
                     parent = parents[0]
                     expected = self.request_references.get(_source_key(parent.source), {}).get(path)
                     if expected is not None:
@@ -634,10 +816,13 @@ class _Interpretation:
         for flag in ("provider_mutation_performed", "paid_execution_requested"):
             _check(value.get(flag) is False, "activation_execution_declaration_invalid")
         status = value["status"]
+        for key in ("preparation_result_digest", "release_window_digest"):
+            if key in value:
+                self.selector(doc, key, value[key])
         if status == "profile_authority_materialized_no_execution":
             _check(_identifier(value.get("profile_id")), "supported_selector_invalid")
-            for key in ("preparation_result_digest", "release_window_digest", "profile_digest"):
-                self.selector(doc, key, value.get(key))
+            _check("preparation_result_digest" in value and "release_window_digest" in value, "supported_selector_invalid")
+            self.selector(doc, "profile_digest", value.get("profile_digest"))
             for key in ("profile_publication_receipt_digest", "standing_authorization_digest"):
                 self.selector(doc, key, value.get(key), raw=True)
         elif status == "policy_campaign_queue_materialized_no_execution":
@@ -674,7 +859,8 @@ class _Interpretation:
         prep_targets: dict[tuple[str, str, str], list[_Document]] = {}
         for doc in self.documents:
             self.scan.tick()
-            if doc.source.family == "preparation" and doc.source.role == "result" and not doc.contested:
+            if (doc.source.family == "preparation" and doc.source.role == "result"
+                    and not doc.contested and doc.supported_semantics):
                 prep_targets.setdefault((doc.identifier, doc.request_digest, doc.canonical_digest), []).append(doc)
             if doc.source.role in {"envelope", "identity"}:
                 key = (doc.source.family, doc.source.queue_root, doc.identifier, doc.request_digest)
@@ -682,11 +868,17 @@ class _Interpretation:
                 if len(opposite.get(key, [])) != 1:
                     self.defer(doc, "identity" if doc.source.role == "envelope" else "envelope", "identity_envelope_unresolved")
             if doc.source.role == "envelope":
-                if not self.results.get((doc.source.family, doc.source.queue_root, doc.identifier, doc.request_digest)):
+                versions = self.results.get((doc.source.family, doc.source.queue_root, doc.identifier, doc.request_digest), [])
+                if not versions:
                     self.defer(doc, "result", "result_selector_missing")
+                elif len({version.canonical_digest for version in versions}) > 1:
+                    self.defer(doc, "result", "unqualified_result_selector_ambiguous")
         for doc in self.documents:
             self.scan.tick()
             if doc.source.family != "activation" or doc.source.role != "envelope":
+                continue
+            if not doc.supported_semantics:
+                self.defer(doc, "preparation", "activation_preparation_unresolved")
                 continue
             binding = doc.value["request"].get("preparation")
             if not isinstance(binding, dict):
@@ -713,7 +905,8 @@ class _Interpretation:
                 continue
             try:
                 fields = ("schema_version status preparation_id activation_id source_commit run_id team_namespace result_digest "
-                    "references reference_count full_byte_service_account_readback_passed provider_mutation_performed "
+                    "references reference_count unique_object_count content_addressed_reuse_count service_account service_account_uid "
+                    "full_byte_service_account_readback_passed provider_mutation_performed "
                     "catalog_mutation_performed paid_execution_requested blockers observed_at_iso run_mode "
                     "existing_result_digest candidate_result_digest adapter_result_digest construction_recipe_digest "
                     "configured_scene_revision_digest configured_scene_bundle_digest episode_compilation_queue_envelope_digest "
@@ -731,6 +924,11 @@ class _Interpretation:
                         "policy_campaign_activation_sha256 campaign_unit_count run_kind claim_ceiling policy_canary_runtime_inputs_path "
                         "policy_canary_runtime_inputs_sha256 policy_canary_runtime_inputs_digest capture_session_id intake_id request_digest")
                 self.shape(doc, doc.value, "result", fields)
+                for key in ("unique_object_count", "content_addressed_reuse_count", "service_account_uid"):
+                    if key in doc.value:
+                        _check(type(doc.value[key]) is int and doc.value[key] >= 0, "supported_request_invalid")
+                if "service_account" in doc.value:
+                    _check(isinstance(doc.value["service_account"], str) and 0 < len(doc.value["service_account"]) <= 4096, "supported_request_invalid")
                 if doc.source.family == "preparation":
                     self.materialized(doc)
                 else:
@@ -760,17 +958,25 @@ class _Interpretation:
 
     def result(self) -> PreparationActivationReferenceInterpretation:
         self.scan.tick()
-        records = tuple(sorted(self.records, key=lambda row: _source_key(row.source)))
+        def record_key(row: ReferenceRecordDisposition) -> tuple[str, ...]:
+            self.scan.tick()
+            return _source_key(row.source)
+        def fact_key(row: ReferenceFact) -> tuple[Any, ...]:
+            self.scan.tick()
+            return _source_key(row.source), row.contract_path, row.path or "", row.uri or "", row.digest or "", row.reason
+        records = tuple(sorted(self.records, key=record_key))
         facts = {}
         for kind, rows in self.facts.items():
             self.scan.tick()
-            facts[kind] = tuple(sorted(rows, key=lambda row: (_source_key(row.source), row.contract_path,
-                                                             row.path or "", row.uri or "", row.digest or "", row.reason)))
+            facts[kind] = tuple(sorted(rows, key=fact_key))
         self.scan.tick()
         result = PreparationActivationReferenceInterpretation(not self.scan.blockers, records, **facts,
                                                               blockers=tuple(sorted(self.scan.blockers)))
         self.scan.tick()
-        self.scan.output_size(asdict(result))
+        document = asdict(result)
+        self.scan.tick()
+        _check(self.wire_size(document) <= MAX_OUTPUT_BYTES, "reference_output_limit")
+        self.scan.output_size(document)
         self.scan.tick()
         return result
 
@@ -786,7 +992,8 @@ def interpret_preparation_activation_references(
         raise PreparationActivationReferenceError("reference_parameters_invalid")
     roots: set[tuple[str, str]] = set()
     for contract in contracts:
-        if not isinstance(contract, ReferenceFamilyContract) or contract.family not in {"preparation", "activation"}:
+        if (not isinstance(contract, ReferenceFamilyContract) or not isinstance(contract.family, str)
+                or contract.family not in {"preparation", "activation"}):
             raise PreparationActivationReferenceError("reference_parameters_invalid")
         root = _path(contract.queue_root)
         if any(root == prior or root.startswith(prior.rstrip("/") + "/") or prior.startswith(root.rstrip("/") + "/")
@@ -796,12 +1003,16 @@ def interpret_preparation_activation_references(
     engine = _Interpretation(monotonic, float(time_budget_seconds))
     try:
         engine.scan.tick()
+        # Fixed result overhead is charged once, before retained collections.
+        engine.charge(PreparationActivationReferenceInterpretation(False, (), (), (), (), (), (), tuple("x" * 64 for _ in range(33))).__dict__)
         if len(records) > MAX_RECORDS:
             raise _Blocked("reference_records_limit")
         total = 0
         for row in records:
             engine.scan.tick()
-            if (not isinstance(row, RetainedReferenceRecord) or (row.family, row.queue_root) not in roots
+            if (not isinstance(row, RetainedReferenceRecord)
+                    or any(not isinstance(value, str) for value in (row.family, row.queue_root, row.role, row.row_path))
+                    or (row.family, row.queue_root) not in roots
                     or row.role not in _ROLES or type(row.raw_bytes) is not bytes or not row.raw_bytes):
                 raise PreparationActivationReferenceError("reference_parameters_invalid")
             path = _path(row.row_path)
@@ -815,9 +1026,42 @@ def interpret_preparation_activation_references(
             total += len(row.raw_bytes)
             if len(row.raw_bytes) > MAX_RECORD_BYTES or total > MAX_TOTAL_BYTES:
                 raise _Blocked("reference_bytes_limit")
-        seen = set()
+        # Prove lexical aggregate limits for every row before any parser/hash.
+        prepared = []
         for row in records:
-            engine.decode(row)
+            engine.scan.tick()
+            try:
+                text = row.raw_bytes.decode("utf-8")
+                engine.scan.preflight(text)
+                prepared.append((row, text, None))
+            except UnicodeError:
+                prepared.append((row, None, "supplied_json_invalid"))
+            except _Blocked as error:
+                if _resource(error.code):
+                    raise
+                prepared.append((row, None, "supplied_json_invalid"))
+        # Reuse the strict parser's decoded scalar proof globally as a second
+        # pass. No canonical or raw identity hash runs until all rows finish it.
+        engine.scan.values = 0
+        decoded = []
+        for row, text, error in prepared:
+            engine.scan.tick()
+            if error is not None:
+                decoded.append((row, None, error))
+                continue
+            try:
+                checked = engine.scan.parse(row.raw_bytes)
+                engine.scan.tick()
+                value = json.loads(checked)
+                engine.scan.tick()
+                decoded.append((row, value, None))
+            except _Blocked as blocked:
+                if _resource(blocked.code):
+                    raise
+                decoded.append((row, None, "supplied_json_invalid"))
+        seen = set()
+        for row, value, error in decoded:
+            engine.decode(row, value, error)
             source = engine.records[-1].source
             key = _source_key(source) + (source.raw_size_bytes,)
             if key in seen:
