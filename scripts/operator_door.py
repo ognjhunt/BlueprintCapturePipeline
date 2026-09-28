@@ -441,8 +441,14 @@ def _scratch_duration(value: str) -> int:
     return seconds
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="operator_door.py", description=__doc__,
+def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
+    class Parser(argparse.ArgumentParser):
+        def error(self, message: str) -> None:
+            if checked_mode:
+                raise DoorError(2, "checked_pull_options_invalid")
+            super().error(message)
+
+    parser = Parser(prog="operator_door.py", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("whoami")
@@ -459,6 +465,8 @@ def build_parser() -> argparse.ArgumentParser:
     pull = commands.add_parser("pull")
     pull.add_argument("path")
     pull.add_argument("destination")
+    pull.add_argument("--expected-sha256", help="trusted publication sha256: digest; requires expected size")
+    pull.add_argument("--expected-size", help="trusted canonical byte count, at most 16 MiB; file-only")
     journal = commands.add_parser("journal")
     journal.add_argument("unit")
     journal.add_argument("-n", "--lines", type=int, default=200)
@@ -536,6 +544,11 @@ def run(args: argparse.Namespace) -> int:
         sys.stdout.write(data.decode("utf-8", "replace"))
         sys.stdout.flush()
     elif command == "pull":
+        if args.expected_sha256 is not None or args.expected_size is not None:
+            _print(_pull_checked_file(args.path, Path(args.destination),
+                                      expected_sha256=args.expected_sha256,
+                                      expected_size=args.expected_size))
+            return 0
         listing = _json("GET", "/fs/list", {"path": args.path})
         destination = Path(args.destination)
         if listing.get("type") == "dir":
@@ -587,8 +600,12 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    checked_intent = any(option.startswith(token.split("=", 1)[0])
+                         for token in arguments if token.startswith("--") and len(token) > 2
+                         for option in ("--expected-sha256", "--expected-size"))
     try:
+        args = build_parser(checked_mode=checked_intent).parse_args(arguments)
         return run(args)
     except DoorError as error:
         print(str(error), file=sys.stderr)

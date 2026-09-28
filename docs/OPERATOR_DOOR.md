@@ -94,7 +94,7 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 | `GET /whoami` | read | token name and scopes |
 | `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, `capacity` (the capacity controller's `summary.json`: level, alerts, per-mount admission and the usage survey by storage class, root and owner), load, door queue, owned timer holds (including overdue ones), and unreported break-glass note count/latest summary |
 | `GET /fs/list?path=&sort=name\|mtime&match=` | read | directory entries (capped) or a file's metadata |
-| `GET /fs/read?path=&offset=&length=` | read | bytes; `X-Door-Size`, `X-Door-Offset`, `X-Door-Eof` headers for paging |
+| `GET /fs/read?path=&offset=&length=` | read | bytes; `X-Door-Size`, `X-Door-Offset`, `X-Door-Length`, `X-Door-Eof` headers for paging |
 | `GET /fs/archive?path=` | read | tar.gz of a directory (512 MiB cap, two at a time) |
 | `GET /journal?unit=&lines=&since=` | read | `journalctl -u` text, redacted |
 | `GET /units?pattern=&state=` · `GET /units/show?unit=a,b` | read | `blueprint-*` unit rows or properties (never `Environment`) |
@@ -333,3 +333,44 @@ Exit codes: 0 success; 1 a waited-for request did not succeed, or `usage` found
 no usage survey; 2 refused (rule on stderr); 3 unauthorized or missing scope; 4
 network; 5 server error. The audit log is
 `/var/lib/blueprint-operator-door/audit/audit.jsonl`.
+
+
+### Checked retained-file pulls
+
+Use paired `--expected-sha256 sha256:<64 lowercase hex digits>` and
+`--expected-size <canonical decimal bytes>` on `pull` when retaining a census
+artifact for owner annotations. Obtain both values from an independently
+retained, trusted publication receipt for the privileged artifact. Do not derive
+the expected identity from the download or a separate unanchored fetch of a
+mutable `latest.json`. This client consumes that anchor; it does not publish or
+authenticate it.
+
+```bash
+python3 scripts/operator_door.py pull <published-census-path> retained-census.json \
+  --expected-sha256 sha256:<digest-from-trusted-receipt> \
+  --expected-size <bytes-from-trusted-receipt>
+```
+
+Checked pull is file-only through the existing binary `/fs/read` route. It
+requires exact range headers, truthful EOF and an incrementally checked raw
+SHA-256 before atomic local publication. The policy bounds files at 16 MiB,
+requests at 4096 and each requested chunk at 1 MiB; a smaller server cap remains
+supported. Zero-byte files require one truthful empty EOF response. Unique
+operation-owned temporary files prevent truncating an existing destination;
+verification or I/O failures preserve it. The existing per-request timeout
+remains; no new whole-transfer deadline is claimed. Ordinary file and directory
+pull behavior is unchanged.
+
+Success adds only `verified_digest` and `verified_bytes` to the usual path/saved/
+bytes output. Checked errors use small fixed codes without server text, URLs or
+argument contents. HTTP error bodies are capped at 4 KiB plus one sentinel;
+exit codes remain 2 for generic refusal/invalid transfer or local I/O, 3 for
+unauthorized/missing scope, 4 for network failures and 5 for server failures.
+Only a complete bounded JSON `scope_missing` error makes HTTP 403 an exit 3.
+
+A verified file proves byte identity with the supplied anchor, not privileged
+collection, complete inventory, fresh references, owner approval or deletion
+authority. Obtain the reviewed census and publication identity separately, then
+run the [retained annotation validator](runbooks/control-plane-capacity.md#review-retained-experiment-folder-decisions).
+Collection, Plan12b validation and cleanup approval remain separate gates; this
+client does not create a collector, new route/service or cleanup capability.
