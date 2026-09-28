@@ -32,7 +32,8 @@ def test_scene_progression_uses_pinned_checkout_and_config_gated_periodic_worker
     assert "ProtectSystem=strict" in unit and "NoNewPrivileges=true" in unit
     assert "ConditionPathExists=/etc/blueprint/task-evaluation-scene-progression.json" in unit
     assert "exec env PYTHONPATH=src" in unit
-    assert "-m blueprint_pipeline.task_evaluation_scene_progression" in unit
+    assert "-m blueprint_pipeline.task_evaluation_scene_retirement_supervisor " in unit
+    assert "--worker blueprint_pipeline.task_evaluation_scene_progression -- --config " in unit
     assert "paid_resource_allocator" not in unit
     queue = "Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions"
     assert queue in unit

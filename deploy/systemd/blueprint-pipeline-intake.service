@@ -22,13 +22,14 @@ ProtectKernelLogs=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint
+ReadWritePaths=/var/lib/blueprint/scene-retirement/journals/processes
 TasksMax=512
 LimitNOFILE=65536
 MemoryMax=8G
@@ -58,7 +59,7 @@ EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 WorkingDirectory=/
 ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -n "$${BLUEPRINT_PIPELINE_PYTHON:-}" ] && [ -x "$${BLUEPRINT_PIPELINE_PYTHON}" ]; then exec "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.production_runtime_env_guard; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
-ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -n "$${BLUEPRINT_PIPELINE_PYTHON:-}" ] && [ -x "$${BLUEPRINT_PIPELINE_PYTHON}" ]; then exec "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.live_pipeline_intake_service; fi; if [ -x .venv/bin/blueprint-live-pipeline-intake-service ]; then exec .venv/bin/blueprint-live-pipeline-intake-service; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_intake_service; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_intake_service'
+ExecStart=!/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py --continuous-module blueprint_pipeline.live_pipeline_intake_service --
 Restart=on-failure
 RestartSec=5
 Nice=5
