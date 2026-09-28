@@ -80,6 +80,7 @@ def test_disabled_policy_preserves_worker_system_exit_and_argv(tmp_path, monkeyp
     # Production is Linux/systemd. macOS /etc is a symlink and must not be
     # silently followed by the protected acquisition boundary.
     monkeypatch.setattr(module, '_INSTALLED_POLICY', tmp_path / 'absent-policy.json', raising=False)
+    monkeypatch.setattr(access, '_INSTALLED_POLICY', tmp_path / 'absent-policy.json', raising=False)
     original = sys.argv
 
     def worker(name, **kwargs):
@@ -131,10 +132,12 @@ from blueprint_pipeline import task_evaluation_scene_retirement_access as access
 from blueprint_pipeline import task_evaluation_scene_retirement_supervisor as supervisor
 access._POLICY_UID = os.getuid()
 supervisor._INSTALLED_POLICY = os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE']
+access._INSTALLED_POLICY = os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE']
 supervisor.runpy.run_module = lambda *a, **k: print("WORKER_ENTERED")
 try:
     supervisor.main(["--worker", "blueprint_pipeline.task_evaluation_scene_progression", "--"])
-except access.SceneRetirementAccessError:
+except access.SceneRetirementAccessError as error:
+    assert str(error) == "scene_retirement_generation_unavailable", str(error)
     print("STARTUP_REFUSED")
 '''
     with access.exclusive_scene_access():
