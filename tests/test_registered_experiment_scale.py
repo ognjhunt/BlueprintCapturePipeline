@@ -96,7 +96,8 @@ def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
     selected = root.issue_experiment_restore_intent(intent_id, principal='operator', owner='owner',
         lease_ttl_seconds=600, expires_at_epoch=6500, installed_config_path=setup[0], now=lambda: 2901)
     restored = root.restore_registered_experiment(selected['action_id'],
-        expected_restore_intent=selected['restore_intent'], installed_config_path=setup[0], now=lambda: 2901)
+        expected_restore_intent=selected['restore_intent'], installed_config_path=setup[0], now=lambda: 2901,
+        _pins_root=setup[0].parent / 'pins')
     assert restored['decision'] == 'restored', restored
     assert {str(path.relative_to(target)): path.read_bytes()
             for path in target.rglob('*') if path.is_file() and path.name not in control} == before
