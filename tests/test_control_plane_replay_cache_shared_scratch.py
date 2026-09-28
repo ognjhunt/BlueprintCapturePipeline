@@ -15,6 +15,7 @@ import functools
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -703,18 +704,20 @@ def test_a_directory_swapped_for_a_link_while_rechecking_removes_nothing(tmp_pat
     assert all(path.exists() for path in names[1:])
 
 
-@pytest.mark.parametrize("rewrite", ["same_mtime", "new_mtime"])
+@pytest.mark.parametrize("rewrite", ["same_mtime", "new_mtime", "touched"])
 def test_a_holders_report_rewritten_after_the_plan_keeps_the_group_whole(tmp_path, monkeypatch, rewrite) -> None:
     """Apply requires each holder's report to be the one the plan read: the same path, mtime and
     bytes, as the per-replay rule requires its report's digest. A report rewritten after the plan
-    keeps every group its replay holds, even one that still passes every gate under the same mtime."""
+    keeps every group its replay holds, even one that still passes every gate under the same mtime,
+    and so does one only touched, its bytes the same."""
 
     parent_root, names, size = _two_lookaheads(tmp_path)
     report = names[-1].parents[3] / "stage_replay_report.v1.json"
     before = report.stat()
 
     def rewritten() -> None:
-        report.write_text(json.dumps({**json.loads(report.read_text()), "row": {"status": "rewritten"}}))
+        if rewrite != "touched":
+            report.write_text(json.dumps({**json.loads(report.read_text()), "row": {"status": "rewritten"}}))
         mtime_ns = before.st_mtime_ns if rewrite == "same_mtime" else before.st_mtime_ns - 10**9
         os.utime(report, ns=(before.st_atime_ns, mtime_ns))
 
@@ -821,3 +824,106 @@ def test_a_failed_shared_scan_leaves_the_retention_switchs_numbers_alone(tmp_pat
         assert tick["replay_caches"]["errors"] == [] and "phase_errors" not in tick
         assert without_the_pass(tick) == without_the_pass(_tick(tmp_path, base, **switches))
     assert tick["replay_caches"]["candidate_bytes"] == tick["replay_caches"]["removed_bytes"] == len(b"{}" * 200)
+
+
+@pytest.mark.parametrize("change", ["appended", "rewritten_same_size"])
+def test_a_planned_file_changed_in_place_after_the_plan_is_kept(tmp_path, monkeypatch, change) -> None:
+    """Apply rechecks each name's size and mtime against the plan: an inode written in place after the
+    plan, its inode and links unchanged, is kept as changed, and none of its names goes."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+
+    def written() -> None:
+        names[0].chmod(0o640)
+        if change == "appended":
+            with names[0].open("ab") as stream:
+                stream.write(b"written after the plan")
+        else:
+            names[0].write_bytes(names[0].read_bytes()[::-1])
+
+    _after_plan(monkeypatch, written)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:changed": {"groups": 1, "bytes": size}}
+    assert block["removed_groups"] == 0 and all(path.exists() for path in names)
+    assert names[0].stat().st_nlink == len(names)
+
+
+def test_a_holder_replaced_by_a_copy_after_the_plan_keeps_the_group_whole(tmp_path, monkeypatch) -> None:
+    """A replay replaced after the plan by a real directory copied from it, its report the same bytes
+    and mtime, is not the directory the plan walked: its st_dev and inode differ, so every group it
+    holds keeps every name, in every replay, as path_changed."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    second = names[-1].parents[3]
+    walked = second.with_name(second.name + "-walked")
+
+    def copied() -> None:
+        # The walked directory stays allocated, so the copy cannot be given its inode number again.
+        second.rename(walked)
+        shutil.copytree(walked, second, symlinks=True)
+
+    _after_plan(monkeypatch, copied)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:path_changed": {"groups": 1, "bytes": size}}
+    assert block["removed_groups"] == 0 and all(path.exists() for path in names)
+    assert (walked / names[-1].relative_to(second)).stat().st_nlink == len(names)
+
+
+@pytest.mark.parametrize("reported", ["name", "replay"])
+def test_a_name_or_replay_on_another_device_at_apply_is_kept_as_cross_device(tmp_path, monkeypatch, reported) -> None:
+    """Nothing on another filesystem than the replay holding it is unlinked. At apply a name whose
+    lstat shows another st_dev than the held replay, or a held replay on another st_dev than the
+    group (its names showing the same), stops the group as cross_device, and none of its names goes."""
+
+    from tests.test_completed_replay_cache_retention import _OnDevice
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    elsewhere = os.lstat(names[0]).st_dev + 1
+    planned = {path.name for path in names}
+    real_leaf, real_held = retention._leaf, retention._HeldChild
+
+    def leaf(directory, name):
+        info = real_leaf(directory, name)
+        return _OnDevice(info, elsewhere) if name in planned else info
+
+    class Mounted(real_held):
+        def __init__(self, base, name):
+            super().__init__(base, name)
+            self.device = elsewhere
+
+    monkeypatch.setattr(retention, "_leaf", leaf)
+    if reported == "replay":
+        monkeypatch.setattr(retention, "_HeldChild", Mounted)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:cross_device": {"groups": 1, "bytes": size}}
+    assert block["removed_groups"] == 0 and all(path.exists() for path in names)
+
+
+def test_a_replay_opened_through_an_ancestor_swapped_for_a_link_is_refused(tmp_path, monkeypatch) -> None:
+    """Apply opens each replay by path, so an ancestor swapped for a link to the replay's moved tree
+    just as apply opens it hands over descriptors into that tree, no longer under any lookahead. The
+    held replay must still be what its path names through no link: the group is kept as
+    path_changed, and nothing in the moved tree is unlinked."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    activation = names[0].parents[5]
+    moved = tmp_path / "evidence" / activation.name
+    moved.parent.mkdir()
+    real_held = retention._HeldChild
+
+    class Relinked(real_held):
+        def __init__(self, base, name):
+            if not activation.is_symlink():
+                activation.rename(moved)
+                activation.symlink_to(moved, target_is_directory=True)
+            super().__init__(base, name)
+
+    monkeypatch.setattr(retention, "_HeldChild", Relinked)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:path_changed": {"groups": 1, "bytes": size}}
+    assert block["removed_groups"] == 0
+    assert (moved / names[0].relative_to(activation)).stat().st_nlink == len(names)
