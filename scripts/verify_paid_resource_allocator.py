@@ -31,6 +31,22 @@ LEGACY_BUILD_SCRIPTS = (
 )
 RELEASE_WORKFLOW = ROOT / ".github/workflows/groot-oscar-thin-release.yml"
 MUTATION_SURFACE_MANIFEST = ROOT / "docs/architecture/paid-resource-mutation-surfaces.json"
+AGENTS = ROOT / "AGENTS.md"
+REMOTE_CPU_ALLOCATOR = ROOT / "src/blueprint_pipeline/remote_cpu_job_allocator.py"
+CLOUD_RUN_JOBS_CLIENT = ROOT / "src/blueprint_pipeline/cloud_run_jobs_client.py"
+CANONICAL_SUBCOMMANDS = ("cpu-build", "model-volume", "gpu-canary", "provider-reconstruction", "remote-cpu-job")
+# Plan 14 §8: what run_remote_cpu_job must reach, and the blocker each missing call raises.
+REMOTE_CPU_REQUIRED_CALLS = {
+    "require_paid_resource_admission": "remote_cpu_lane_bypasses_shared_admission",
+    "reconcile_ambiguous_dispatch": "remote_cpu_ambiguous_dispatch_reconciliation_missing",
+    "list_all_executions": "remote_cpu_execution_listing_pagination_missing",
+    "prove_compute_zero": "remote_cpu_compute_zero_proof_missing",
+    "prove_provider_zero": "remote_cpu_provider_zero_proof_missing",
+}
+REMOTE_CPU_REQUIRED_MARKERS = (
+    "remote_cpu_provider_zero_unproven",
+    "remote_cpu_ambiguous_dispatch_unresolved",
+)
 OPERATOR_DOCS = (
     ROOT / "README.md",
     ROOT / "docs/FIRST_GPU_E2E_RUNBOOK.md",
@@ -173,8 +189,23 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         r"_call\([\"']POST[\"'].{0,160}/instances", source
     ):
         signals.add("gcp_instance_create")
-    if ".upload_file(" in source or ".delete_object(" in source:
+    if any(
+        call in source
+        for call in (".upload_file(", ".delete_object(", ".copy_object(", ".upload_part_copy(")
+    ):
         signals.add("s3_object_write_or_delete")
+    # A presigned PUT, part upload or delete is write authority held by whoever has the URL.
+    if "generate_presigned_url(" in source and re.search(
+        r"[\"'](?:put_object|upload_part|delete_object)[\"']", source
+    ):
+        signals.add("s3_presigned_write_authority")
+    if (
+        re.search(r"run\.googleapis\.com", source) and re.search(r":(?:run|cancel)[\"']", source)
+    ) or re.search(
+        r"\bgoogle\.cloud(?:\.|\s+import\s+)run_v2\b|\b(?:JobsClient|ExecutionsClient|RunJobRequest)\b",
+        source,
+    ):
+        signals.add("gcp_cloud_run_job_mutation")
     if (
         "teleport.varjo.com" in source
         and "/api/v1/captures" in source
@@ -182,6 +213,63 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
     ):
         signals.add("teleport_capture_create_upload_or_delete")
     return signals
+
+
+def _reachable_calls(source: str, entry: str) -> set[str]:
+    """Names called from ``entry`` or from any same-module function it reaches."""
+
+    functions = {
+        node.name: node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    calls: set[str] = set()
+    reached: set[str] = set()
+    pending = [entry]
+    while pending:
+        name = pending.pop()
+        if name in reached or name not in functions:
+            continue
+        reached.add(name)
+        for node in ast.walk(functions[name]):
+            if isinstance(node, ast.Call):
+                target = node.func
+                called = target.id if isinstance(target, ast.Name) else getattr(target, "attr", None)
+                if called:
+                    calls.add(called)
+                    pending.append(called)
+    return calls
+
+
+def _remote_cpu_lane_blockers(allocator: str, client: str) -> list[str]:
+    """The remote CPU lane admits, reconciles from a complete listing and proves both zeros."""
+
+    calls = _reachable_calls(allocator, "run_remote_cpu_job")
+    blockers = [blocker for call, blocker in REMOTE_CPU_REQUIRED_CALLS.items() if call not in calls]
+    blockers.extend(
+        f"remote_cpu_lane_marker_missing:{marker}"
+        for marker in REMOTE_CPU_REQUIRED_MARKERS
+        if marker not in allocator
+    )
+    if "require_paid_resource_admission_grant" not in _reachable_calls(client, "run_job"):
+        blockers.append("remote_cpu_run_job_grant_validation_missing")
+    if "nextPageToken" not in client:
+        blockers.append("remote_cpu_execution_listing_pagination_missing")
+    return sorted(set(blockers))
+
+
+def _canonical_subcommand_blockers(canonical: str, agents: str) -> list[str]:
+    """Rule (h): the allocator registers every canonical subcommand, and AGENTS.md lists each."""
+
+    blockers = []
+    if not all(item in canonical for item in CANONICAL_SUBCOMMANDS):
+        blockers.append("canonical_allocator_subcommands_missing")
+    blockers.extend(
+        f"agents_md_paid_allocator_command_missing:{item}"
+        for item in CANONICAL_SUBCOMMANDS
+        if f"python -m blueprint_pipeline.paid_resource_allocator {item}" not in agents
+    )
+    return blockers
 
 
 def _unclassified_direct_mutators(
@@ -404,11 +492,13 @@ def verify() -> list[str]:
         blockers.append("legacy_cpu_builder_not_hard_disabled")
     if "legacy_gpu_canary_launcher_disabled" not in gpu:
         blockers.append("legacy_gpu_canary_not_hard_disabled")
-    if not all(
-        item in canonical
-        for item in ("cpu-build", "model-volume", "gpu-canary", "provider-reconstruction")
-    ):
-        blockers.append("canonical_allocator_subcommands_missing")
+    blockers.extend(_canonical_subcommand_blockers(canonical, AGENTS.read_text(encoding="utf-8")))
+    blockers.extend(
+        _remote_cpu_lane_blockers(
+            REMOTE_CPU_ALLOCATOR.read_text(encoding="utf-8"),
+            CLOUD_RUN_JOBS_CLIENT.read_text(encoding="utf-8"),
+        )
+    )
     if "run_storage_model_volume(" not in canonical:
         blockers.append("canonical_allocator_missing_model_volume_route")
     model_calls = _function_calls(STORAGE_VOLUME_ADAPTER)

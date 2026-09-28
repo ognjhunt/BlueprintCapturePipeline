@@ -208,3 +208,158 @@ def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
     assert "remote_build_pushes_unvalidated_final_release_tag" not in blockers
     assert "remote_build_pushes_unvalidated_final_foundation_tag" not in blockers
     assert "lambda_termination_shared_admission_guard_missing" not in blockers
+
+
+REMOTE_CPU_ALLOCATOR = "src/blueprint_pipeline/remote_cpu_job_allocator.py"
+CLOUD_RUN_JOBS_CLIENT = "src/blueprint_pipeline/cloud_run_jobs_client.py"
+PAIRED_WITNESS_STAGING = "src/blueprint_pipeline/native_task_arena_paired_witness_staging.py"
+CANONICAL_ALLOCATOR = "src/blueprint_pipeline/paid_resource_allocator.py"
+
+
+def _source(relative: str) -> str:
+    return (verifier.ROOT / relative).read_text(encoding="utf-8")
+
+
+def test_cloud_run_job_mutation_is_discovered_including_run_v2_clients() -> None:
+    mutations = (
+        'API = "https://run.googleapis.com"\nurl = f"{API}/v2/{job}:run"\n',
+        'url = f"https://run.googleapis.com/v2/{execution}:cancel"\n',
+        "from google.cloud import run_v2\nrun_v2.JobsClient().run_job(name=job)\n",
+        "import google.cloud.run_v2 as cloud_run\n",
+        "client = ExecutionsClient()\nclient.cancel_execution(name=name)\n",
+        "request = RunJobRequest(name=job, overrides=overrides)\n",
+    )
+    for source in mutations:
+        assert "gcp_cloud_run_job_mutation" in verifier._direct_paid_mutation_signals(source), source
+        assert verifier._unclassified_direct_mutators(
+            {"src/blueprint_pipeline/new_cloud_run_launcher.py": source}, set()
+        ) == {"src/blueprint_pipeline/new_cloud_run_launcher.py"}
+    # Identifiers that merely contain run_v2, and a read-only mention of the host, are not clients.
+    for source in (
+        "def compile_new_site_task_evaluation_run_v2(value):\n    return value\n",
+        'run_v2 = sub.add_parser("run-v2")\n',
+        'DOCS = "https://run.googleapis.com/v2/projects/p/locations/l/jobs/j"\n',
+    ):
+        assert verifier._direct_paid_mutation_signals(source) == set(), source
+    assert "gcp_cloud_run_job_mutation" in verifier._direct_paid_mutation_signals(_source(CLOUD_RUN_JOBS_CLIENT))
+
+
+def test_presigned_put_and_copy_object_are_discovered_and_unclassified() -> None:
+    writers = (
+        ('url = client.generate_presigned_url("put_object", Params=params, ExpiresIn=60)',
+         "s3_presigned_write_authority"),
+        ("url = client.generate_presigned_url(\n    ClientMethod='upload_part', Params=params)",
+         "s3_presigned_write_authority"),
+        ('method = "put_object"\nurl = client.generate_presigned_url(method, Params=params)',
+         "s3_presigned_write_authority"),
+        ("client.copy_object(Bucket=bucket, Key=key, CopySource=source)", "s3_object_write_or_delete"),
+        ("client.upload_part_copy(Bucket=bucket, Key=key, UploadId=upload, PartNumber=1, CopySource=source)",
+         "s3_object_write_or_delete"),
+    )
+    for source, signal in writers:
+        assert signal in verifier._direct_paid_mutation_signals(source), source
+        assert verifier._unclassified_direct_mutators(
+            {"scripts/new_object_writer.py": source}, set()
+        ) == {"scripts/new_object_writer.py"}
+    # A presigned GET is read authority only.
+    assert verifier._direct_paid_mutation_signals(
+        'url = client.generate_presigned_url("get_object", Params=params, ExpiresIn=60)'
+    ) == set()
+
+    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
+    classified = {row["path"] for row in manifest["surfaces"]}
+    production = {
+        path.relative_to(verifier.ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in verifier._production_python_paths()
+    }
+    writers_in_tree = {
+        relative for relative, source in production.items()
+        if verifier._direct_paid_mutation_signals(source)
+        & {"s3_presigned_write_authority", "s3_object_write_or_delete"}
+    }
+    assert {PAIRED_WITNESS_STAGING, CONFIGURED_SCENE_OBJECT_STORE} <= writers_in_tree
+    assert verifier._unclassified_direct_mutators(production, classified) == set()
+
+
+def test_remote_cpu_lane_requires_reconcile_pagination_and_zero_proofs() -> None:
+    allocator, client = _source(REMOTE_CPU_ALLOCATOR), _source(CLOUD_RUN_JOBS_CLIENT)
+    assert verifier._remote_cpu_lane_blockers(allocator, client) == []
+    for call, blocker in verifier.REMOTE_CPU_REQUIRED_CALLS.items():
+        mutated = allocator.replace(f"{call}(", f"{call}_removed(")
+        assert blocker in verifier._remote_cpu_lane_blockers(mutated, client), call
+    for marker in ("remote_cpu_provider_zero_unproven", "remote_cpu_ambiguous_dispatch_unresolved"):
+        assert f"remote_cpu_lane_marker_missing:{marker}" in verifier._remote_cpu_lane_blockers(
+            allocator.replace(marker, "remote_cpu_renamed"), client)
+    assert "remote_cpu_run_job_grant_validation_missing" in verifier._remote_cpu_lane_blockers(
+        allocator, client.replace("require_paid_resource_admission_grant(", "_grant_left_unchecked("))
+    assert "remote_cpu_execution_listing_pagination_missing" in verifier._remote_cpu_lane_blockers(
+        allocator, client.replace("nextPageToken", "pageTokenIgnored"))
+
+    # Reachability, not mere presence: a proof defined but never reached from the entry point fails.
+    reached = (
+        "def run_remote_cpu_job(args):\n    return _dispatch(args)\n"
+        "def _dispatch(args):\n    require_paid_resource_admission(args)\n    reconcile_ambiguous_dispatch(args)\n"
+        "    client.list_all_executions(job)\n    return _teardown(args)\n"
+        "def _teardown(args):\n    prove_compute_zero(args)\n    prove_provider_zero(args)\n"
+        "BLOCKERS = ('remote_cpu_provider_zero_unproven', 'remote_cpu_ambiguous_dispatch_unresolved')\n"
+    )
+    assert verifier._remote_cpu_lane_blockers(reached, client) == []
+    unreached = reached.replace("    return _teardown(args)\n", "    return args\n")
+    assert set(verifier._remote_cpu_lane_blockers(unreached, client)) == {
+        "remote_cpu_compute_zero_proof_missing", "remote_cpu_provider_zero_proof_missing"}
+
+
+def test_remote_cpu_job_surfaces_are_exactly_classified() -> None:
+    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
+    surfaces = {row["path"]: row for row in manifest["surfaces"]}
+    assert surfaces[REMOTE_CPU_ALLOCATOR] == {
+        "path": REMOTE_CPU_ALLOCATOR,
+        "classification": "canonical_adapter",
+        "required_markers": [
+            "build_paid_lane_admission",
+            "require_paid_resource_admission",
+            "run_remote_cpu_job",
+        ],
+    }
+    assert surfaces[CLOUD_RUN_JOBS_CLIENT] == {
+        "path": CLOUD_RUN_JOBS_CLIENT,
+        "classification": "grant_gated_legacy_adapter",
+        "required_markers": [
+            "require_paid_resource_admission_grant",
+            'CLOUD_RUN_CPU_JOB_RESOURCE_CLASS = "cloud_run_cpu_job"',
+        ],
+    }
+    assert surfaces[PAIRED_WITNESS_STAGING] == {
+        "path": PAIRED_WITNESS_STAGING,
+        "classification": "metered_object_storage_data_plane",
+        "required_markers": ["stage_paired_witness_slot", "signed_output_object_binding_sha256"],
+    }
+    assert surfaces[CONFIGURED_SCENE_OBJECT_STORE]["classification"] == "metered_object_storage_data_plane"
+    issuers = manifest["issuer_allowlist"]
+    for allowlist in (verifier.APPROVED_ADMISSION_ISSUERS, verifier.APPROVED_LANE_ADMISSION_BUILDERS,
+                      issuers["require_paid_resource_admission"], issuers["build_paid_lane_admission"]):
+        assert REMOTE_CPU_ALLOCATOR in allowlist and CLOUD_RUN_JOBS_CLIENT not in allowlist
+    for relative in (REMOTE_CPU_ALLOCATOR, CLOUD_RUN_JOBS_CLIENT, PAIRED_WITNESS_STAGING):
+        assert all(marker in _source(relative) for marker in surfaces[relative]["required_markers"]), relative
+    issuing = {"require_paid_resource_admission", "build_paid_lane_admission"}
+    client_calls = verifier._all_calls(verifier.ROOT / CLOUD_RUN_JOBS_CLIENT)
+    assert "require_paid_resource_admission_grant" in client_calls and not client_calls & issuing
+    assert issuing <= verifier._all_calls(verifier.ROOT / REMOTE_CPU_ALLOCATOR)
+    assert not issuing & verifier._all_calls(verifier.ROOT / PAIRED_WITNESS_STAGING)
+    # The seam module itself holds no direct provider write; that stays in the client and the data plane.
+    assert verifier._direct_paid_mutation_signals(_source(REMOTE_CPU_ALLOCATOR)) == set()
+
+
+def test_canonical_allocator_requires_the_remote_cpu_job_subcommand() -> None:
+    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
+    surfaces = {row["path"]: row for row in manifest["surfaces"]}
+    assert "remote-cpu-job" in verifier.CANONICAL_SUBCOMMANDS
+    assert surfaces[CANONICAL_ALLOCATOR]["required_markers"] == list(verifier.CANONICAL_SUBCOMMANDS)
+    canonical = _source(CANONICAL_ALLOCATOR)
+    assert verifier._canonical_subcommand_blockers(canonical, _source("AGENTS.md")) == []
+    assert verifier._canonical_subcommand_blockers(
+        canonical.replace("remote-cpu-job", "remote-cpu-other"), _source("AGENTS.md")
+    ) == ["canonical_allocator_subcommands_missing"]
+    assert verifier._canonical_subcommand_blockers(
+        canonical, _source("AGENTS.md").replace("paid_resource_allocator remote-cpu-job", "remote_cpu_job")
+    ) == ["agents_md_paid_allocator_command_missing:remote-cpu-job"]
