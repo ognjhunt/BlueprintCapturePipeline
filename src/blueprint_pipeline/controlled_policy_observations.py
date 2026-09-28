@@ -19,7 +19,7 @@ from typing import Any, Mapping
 from PIL import Image
 
 from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
-from .company_policy_proxy import validate_action_response
+from .controlled_policy_actions import validate_action_response
 from .core.security_controls import fetch_bounded_https
 
 MAX_WIRE_BYTES = 8 * 1024 * 1024

@@ -235,6 +235,8 @@ class AgentRunWebAppClient:
                 "cycle_seconds_p90": receipt.get("cycle_seconds_p90"),
                 "note": receipt.get("note"),
                 "artifact_uri": receipt.get("artifact_uri"),
+                **({"private_execution_result": receipt["private_execution_result"]}
+                   if receipt.get("private_execution_result") else {}),
             },
         )
         rate = quoted_usd / quoted_episodes
@@ -303,6 +305,11 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _stage_canonical_request(row: Mapping[str, Any], inbox_dir: Path) -> Path:
     admission = _mapping(row.get("execution_admission"))
     canonical = _mapping(admission.get("canonical_execution_request"))
+    from .controlled_native_queue import routes_controlled_request
+    if routes_controlled_request(canonical):
+        # The native queue owns this request. The legacy JSON inbox consumer
+        # must not race it or replay the submitted policy through another path.
+        inbox_dir = inbox_dir / "controlled-native"
     required = ("customer", "site_package", "requested_tasks", "robot_profile", "policy_package")
     missing = [field for field in required if not canonical.get(field)]
     if missing:
@@ -326,6 +333,11 @@ def _stage_canonical_request(row: Mapping[str, Any], inbox_dir: Path) -> Path:
 def _default_terminal_reader(
     *, job_dir: Path, expected_job_id: str, expected_canonical_request_digest: str
 ) -> Mapping[str, Any]:
+    from .controlled_native_queue import read_native_terminal
+    native = read_native_terminal(job_dir=job_dir, expected_job_id=expected_job_id,
+        expected_canonical_request_digest=expected_canonical_request_digest)
+    if native is not None:
+        return native
     from .robot_eval_terminal_artifact_adapter import read_terminal_robot_eval_artifacts
 
     observed = read_terminal_robot_eval_artifacts(job_dir)
@@ -580,9 +592,16 @@ def poll_once(
             summary["pending"] += 1
     for journal_path in sorted(journals.glob("*.json")):
         journal = _load_json(journal_path)
-        if journal.get("state") != "staged":
+        if journal.get("state") not in {"staged", "native_execution_in_progress"}:
             continue
         row = _mapping(journal.get("row"))
+        canonical = _mapping(_mapping(row.get("execution_admission")).get("canonical_execution_request"))
+        from .controlled_native_queue import routes_controlled_request, execute_staged_controlled_request
+        if routes_controlled_request(canonical):
+            journal["state"] = "native_execution_in_progress"
+            _write_json_atomic(journal_path, journal)
+            execute_staged_controlled_request(request=canonical,
+                job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]))
         terminal = terminal_reader(
             job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
             expected_job_id=str(journal["canonical_job_id"]),
