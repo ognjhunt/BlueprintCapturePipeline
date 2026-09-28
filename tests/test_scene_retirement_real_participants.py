@@ -236,7 +236,7 @@ def test_reused_retained_parent_is_refused_before_child_lookup(tmp_path, monkeyp
         os.close(foreign)
 
 
-def test_known_close_failure_refuses_and_still_cleans_other_tokens(monkeypatch):
+def test_known_close_failure_refuses_and_still_cleans_other_tokens(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
     original = os.close
     failed, closed = [], []
@@ -249,7 +249,7 @@ def test_known_close_failure_refuses_and_still_cleans_other_tokens(monkeypatch):
     monkeypatch.setattr(os, 'close', fault)
     try:
         with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_descriptor_cleanup_failed'):
-            with access._opened('/private', directory=True):
+            with access._opened(tmp_path.resolve(), directory=True):
                 pass
         assert failed and closed
     finally:
