@@ -32,6 +32,7 @@ SENTINEL_TESTS = (
     "tests/test_paid_resource_admission.py::test_shared_chokepoint_grants_only_exact_admitted_contract",
     "tests/test_paid_resource_allocator_verifier.py::test_unmanifested_script_mutator_is_rejected",
     "tests/test_release_engineering_contracts.py::test_risk_based_verification_workflows_are_bounded",
+    "tests/test_lane_writer_governance.py::test_reviewed_lane_writer_manifest_is_satisfied",
 )
 
 CROSS_CUTTING_FILES = {

@@ -29,6 +29,7 @@ from .native_g1_development_pair import (
     run_g1_development_pair,
 )
 from .native_g1_development_selection import stage_g1_development_selection
+from .native_g1_pi_tokenizer_assets import stage_provider_tokenizer
 from .native_g1_policy_runtime_build import (
     PINNED_IMAGE_ENV,
     execute_g1_policy_runtime_build,
@@ -353,6 +354,15 @@ def run_g1_provider_campaign(runtime_root: Path, output_dir: Path) -> dict[str, 
     try:
         with _Heartbeat(stage):
             identity = verify_g1_provider_inputs(root)
+        stage = "pi-tokenizer"
+        with _Heartbeat(stage):
+            tokenizer = stage_provider_tokenizer(
+                inventory_path=root.parent / "configs/g1_paligemma_tokenizer_inventory.v1.json",
+                bundled_dir=root / "inputs/pi_tokenizer",
+            )
+        (output / "native_g1_pi_tokenizer_stage.v1.json").write_text(
+            json.dumps(tokenizer, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         stage = "runtime-import-preflight"
         with _Heartbeat(stage):
             runtime_imports = _preflight_g1_runtime_imports(output)
@@ -419,6 +429,7 @@ def run_g1_provider_campaign(runtime_root: Path, output_dir: Path) -> dict[str, 
                 pair = run_g1_development_pair(
                     request_paths=[Path(path) for path in selected["request_paths"]],
                     output_dir=output / (packet_name + "_pair"),
+                    provider_run_root=output,
                     mode="subprocess",
                     worker_launcher=Path("/isaac-sim/python.sh"),
                 )

@@ -1,6 +1,7 @@
 """G1 LeRobot inference accepts only the publisher's semantic action format."""
 
 import base64
+import json
 import math
 
 import numpy as np
@@ -82,3 +83,74 @@ def test_reset_requires_official_server_ack() -> None:
     )
     with pytest.raises(ValueError, match="reset_ack_invalid"):
         client.reset(seed=7)
+
+
+def test_real_transport_has_separate_first_steady_and_reset_deadlines(monkeypatch):
+    from blueprint_pipeline import native_g1_humanoidarena_policy_client as module
+    observed = []
+    class Response:
+        def __init__(self, value):
+            self.value = value
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self, count):
+            return json.dumps(self.value).encode()
+    class Opener:
+        def open(self, request, *, timeout):
+            observed.append((request.full_url.rsplit("/", 1)[-1], timeout))
+            return Response({"ok": True} if request.full_url.endswith("/reset") else {"action_chunk": [_action()]})
+    monkeypatch.setattr(module.urllib.request, "build_opener", lambda *args: Opener())
+    client = NativeG1HumanoidArenaPolicyClient(
+        base_url="http://127.0.0.1:18080", first_inference_timeout_seconds=600,
+    )
+    arguments = {"front_rgb": np.zeros((480, 640, 3), dtype=np.uint8),
+                 "observation_state": [0.0] * 64, "task": "Place the book."}
+    client.reset(seed=1)
+    client.infer_chunk(**arguments)
+    assert client.inference_timing_receipt["phase"] == "first_inference"
+    assert client.inference_timing_receipt["status"] == "returned_valid_action"
+    client.reset(seed=2)
+    client.infer_chunk(**arguments)
+    assert observed == [("reset", 30), ("infer", 600), ("reset", 30), ("infer", 30)]
+    assert client.inference_timing_receipt["phase"] == "steady_inference"
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, math.inf, math.nan, 601])
+def test_first_inference_deadline_is_bounded(value):
+    with pytest.raises(ValueError, match="timeout_invalid"):
+        NativeG1HumanoidArenaPolicyClient(
+            base_url="http://127.0.0.1:18080", first_inference_timeout_seconds=value,
+        )
+
+
+def test_timeout_is_typed_retained_and_never_retried_or_counted():
+    calls = []
+    def transport(path, payload):
+        calls.append(path)
+        raise TimeoutError("private endpoint response")
+    client = NativeG1HumanoidArenaPolicyClient(
+        base_url="http://127.0.0.1:18080", transport=transport,
+        first_inference_timeout_seconds=600,
+    )
+    with pytest.raises(TimeoutError, match="g1_policy_first_inference_timeout") as error:
+        client.infer_chunk(front_rgb=np.zeros((480, 640, 3), dtype=np.uint8),
+                           observation_state=[0.0] * 64, task="Place the book.")
+    assert "private endpoint" not in str(error.value)
+    assert calls == ["/infer"]
+    assert client.candidate_policy_queried is False
+    assert client.inference_timing_receipt["status"] == "timeout"
+    assert client.inference_timing_receipt["timeout_seconds"] == 600
+    assert client.inference_timing_receipt["elapsed_seconds"] >= 0
+
+
+def test_invalid_action_does_not_count_as_completed_inference():
+    client = NativeG1HumanoidArenaPolicyClient(
+        base_url="http://127.0.0.1:18080", transport=lambda *args: {"action_chunk": []},
+    )
+    with pytest.raises(ValueError, match="action_chunk_invalid"):
+        client.infer_chunk(front_rgb=np.zeros((480, 640, 3), dtype=np.uint8),
+                           observation_state=[0.0] * 64, task="Place the book.")
+    assert client.candidate_policy_queried is False
+    assert client.inference_timing_receipt["status"] == "failed"

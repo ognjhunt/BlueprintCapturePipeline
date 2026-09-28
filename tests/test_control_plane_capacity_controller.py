@@ -832,6 +832,39 @@ def _survey_result(**overrides):
     return result
 
 
+@pytest.mark.parametrize(("total", "largest"), [
+    (5 * GIB + 1, GIB), (3 * GIB, 2 * GIB + 1),
+])
+def test_orphan_scratch_pages_once_without_folder_names(total, largest):
+    survey = _survey_result(orphan_scratch_bytes=total, orphan_scratch_count=4,
+                            orphan_scratch_largest_bytes=largest,
+                            unclassified_roots=[{"root": "/mnt/blueprint-work/private-name",
+                                                 "allocated_bytes": largest}])
+    alerts = cap.usage_alerts(survey)
+    assert alerts == [{"code": "orphan_scratch_large", "allocated_bytes": total,
+                       "count": 4, "largest_bytes": largest}]
+    cap._annotate_alerts(alerts)
+    assert alerts[0]["severity"] == "page"
+    assert "private-name" not in json.dumps(alerts)
+
+
+def test_orphan_scratch_page_reaches_the_controller_poster(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    posted = []
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        disk_usage=_usage(free_gib=100.0), now=1_000.0,
+        survey=lambda **_kwargs: _survey_result(orphan_scratch_bytes=6 * GIB, orphan_scratch_count=3,
+                                                  orphan_scratch_largest_bytes=3 * GIB),
+        poster=lambda _url, payload: posted.append(payload),
+    )
+    assert len(posted) == 1
+    assert report["alert_posted"] is True
+    assert any(row["code"] == "orphan_scratch_large" and row["severity"] == "page"
+               for row in posted[0]["alerts"])
+
+
 def _no_project_spend(monkeypatch, value=None):
     monkeypatch.setattr(
         "blueprint_pipeline.task_evaluation_scene_spend.refresh_configured_scene_project_spend",
