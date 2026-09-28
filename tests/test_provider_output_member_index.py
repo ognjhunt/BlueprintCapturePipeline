@@ -647,3 +647,62 @@ def test_cli_prints_the_summary_with_bytes_by_class(tmp_path, capsys):
     path.write_bytes(b"not a zip" * 10)
     assert main(["--archive", str(path)]) == 1
     assert "provider_output_archive_end_record_invalid" in capsys.readouterr().err
+
+
+def test_read_indexed_member_is_one_range_request_checked_by_crc_and_sha256(tmp_path):
+    from blueprint_pipeline.provider_output_member_index import (
+        LocalArchiveRangeSource,
+        read_indexed_member,
+    )
+
+    data = _mixed_archive()
+    index, store = _index(data)
+    rows = {row["path"]: row for row in index["members"]}
+    reader = store.reader(block_bytes=MIN_BLOCK)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for path in ("runtime/result.json", "runtime/frames/0001.png", "logs/worker.log"):
+            row = rows[path]
+            before = len(store.requests)
+            assert read_indexed_member(reader, row, maximum_bytes=row["size"]) == archive.read(path)
+            assert [entry["range"] for entry in store.requests[before:]] == [
+                (row["data_offset"], row["data_offset"] + row["compressed_size"] - 1)]
+            assert store.requests[-1]["if_match"] == ETAG
+    empty = rows["runtime/empty.txt"]
+    assert empty["compressed_size"] == 2  # an empty deflate stream still has two bytes to check
+    before = len(store.requests)
+    assert read_indexed_member(reader, empty, maximum_bytes=0) == b""
+    assert len(store.requests) == before + 1
+    stored_empty = build_zip([Entry("empty.txt", b"")])
+    stored_index, stored_store = _index(stored_empty.to_bytes())
+    stored_reader = stored_store.reader(block_bytes=MIN_BLOCK)
+    before = len(stored_store.requests)
+    assert read_indexed_member(stored_reader, stored_index["members"][0], maximum_bytes=0) == b""
+    assert len(stored_store.requests) == before  # no record data, no request
+    before = len(store.requests)
+    with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_read_cap_exceeded$"):
+        read_indexed_member(reader, rows["runtime/result.json"], maximum_bytes=rows["runtime/result.json"]["size"] - 1)
+    with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_read_invalid$"):
+        read_indexed_member(reader, rows["runtime/frames"], maximum_bytes=10**6)
+    assert len(store.requests) == before
+
+    # Bytes that disagree with the index are refused, stored or deflated.
+    frame, result = rows["runtime/frames/0001.png"], rows["runtime/result.json"]
+    tampered = RangeStore(data[:frame["data_offset"] + 7] + b"\xff" + data[frame["data_offset"] + 8:])
+    with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_digest_mismatch$"):
+        read_indexed_member(tampered.reader(block_bytes=MIN_BLOCK), frame, maximum_bytes=10**6)
+    corrupt = RangeStore(data[:result["data_offset"]] + b"\xff" + data[result["data_offset"] + 1:])
+    with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_archive_deflate_invalid$"):
+        read_indexed_member(corrupt.reader(block_bytes=MIN_BLOCK), result, maximum_bytes=10**6)
+    # A transport refusal keeps the transport's code.
+    changed = RangeStore(data)
+    changed_reader = changed.reader(block_bytes=MIN_BLOCK)
+    changed.etag = '"version2"'
+    with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_remote_version_changed$"):
+        read_indexed_member(changed_reader, result, maximum_bytes=10**6)
+
+    # A local archive reads the same way.
+    path = tmp_path / "local.zip"
+    path.write_bytes(data)
+    with LocalArchiveRangeSource(path) as local:
+        assert read_indexed_member(local, result, maximum_bytes=10**6) == zipfile.ZipFile(path).read(
+            "runtime/result.json")

@@ -629,6 +629,43 @@ def inflate_step_bytes(block_bytes: int) -> int:
     return min(INFLATE_STEP_BYTES, max(4096, block_bytes // 4))
 
 
+def read_indexed_member(source, row: Mapping, *, maximum_bytes: int) -> bytes:
+    """Read one file member with one range request, checked against its index row.
+
+    ``source`` serves the archive the row was indexed from through
+    ``stream_to`` (``ProviderOutputRangeReader``, ``LocalArchiveRangeSource``);
+    ``row`` is a file row of a validated index. Only the record data
+    ``[data_offset, data_offset + compressed_size)`` is requested, inflated in
+    memory up to ``maximum_bytes``, and its CRC-32 and SHA-256 must be the
+    row's (``provider_output_member_digest_mismatch``). A member with no record
+    data (an empty stored file) needs no request. Transport refusals keep
+    their codes.
+    """
+    if (not isinstance(row, Mapping) or set(row) != _MEMBER_KEYS or row['kind'] != 'file'
+            or type(maximum_bytes) is not int or maximum_bytes < 0):
+        raise _refusal('provider_output_member_read_invalid')
+    if row['size'] > maximum_bytes:
+        raise _refusal('provider_output_member_read_cap_exceeded')
+    output, digest = bytearray(), _Digest()
+
+    def emit(data):
+        output.extend(data)
+        digest.update(data)
+
+    step = inflate_step_bytes(getattr(source, 'block_bytes', MIN_BLOCK_BYTES))
+    inflater = MemberInflater(row['method'], row['size'], emit, step_bytes=step)
+    try:
+        if row['compressed_size']:
+            source.stream_to(inflater.feed, start=row['data_offset'],
+                             end=row['data_offset'] + row['compressed_size'])
+        inflater.finish()
+    except ProviderOutputTransportError as exc:
+        raise _refusal(str(exc)) from None
+    if digest.crc32 != row['crc32'] or 'sha256:' + digest.sha256.hexdigest() != row['sha256']:
+        raise _refusal('provider_output_member_digest_mismatch')
+    return bytes(output)
+
+
 def build_member_index(source, *, maximum_expanded_bytes: int,
                        maximum_members: int = DEFAULT_MAXIMUM_MEMBERS,
                        maximum_member_inflated_bytes: int | None = None) -> dict:
