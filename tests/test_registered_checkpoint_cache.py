@@ -173,3 +173,188 @@ def test_wrong_private_authority_rejected_without_callbacks(tmp_path):
     with pytest.raises(ValueError, match="needed_cache"):
         wam._sha256_file(tmp_path / "missing", _cache_use=Lookalike())
     assert calls == []
+
+
+def fill_cache(value, monkeypatch):
+    import io
+    import os
+    from urllib.parse import unquote
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline import control_plane_disk_budget as ledger
+    from blueprint_pipeline import native_g1_checkpoint_cache as native
+    fetcher = native._fetcher()
+    calls = []
+    class Response(io.BytesIO):
+        def __init__(self, url):
+            path = unquote(url.removeprefix(fetcher.MODEL_BASE))
+            super().__init__(value['payloads'][path])
+            self.url = url
+        def geturl(self):
+            return self.url
+    def response(url, **kwargs):
+        calls.append(url)
+        return Response(url)
+    monkeypatch.setattr(fetcher, '_open_https', response)
+    monkeypatch.setattr(native, '_fetcher', lambda: fetcher)
+    monkeypatch.setattr(cache, '_process_identity', lambda: dict(boot_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        pid=os.getpid(), start_ticks=1, pid_namespace_inode=1), raising=False)
+    reserve = ledger.reserve_control_plane_disk
+    reservations = []
+    def local_reserve(role, **kwargs):
+        from types import SimpleNamespace
+        result = reserve(role, reservation_root=value['config'].parent / 'reservations',
+            disk_usage=lambda path: SimpleNamespace(total=100*1024**3, free=90*1024**3),
+            now=lambda: 1000, **kwargs)
+        reservations.append(result)
+        return result
+    monkeypatch.setattr(cache, 'reserve_control_plane_disk', local_reserve, raising=False)
+    grant = issue_cache(value)
+    result = cache.fill_needed_checkpoint_cache(grant['intent_id'],
+        expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
+        installed_config_path=value['config'], now=lambda: 1100)
+    return grant, result, fetcher, calls, reservations
+
+
+def test_actual_new_fill_uses_one_live_reservation_and_real_all_four_verification(
+        cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline import native_g1_checkpoint_cache as native
+    value = cache_installation
+    grant, result, fetcher, calls, reservations = fill_cache(value, monkeypatch)
+    target = Path(result['path'])
+    assert result['status'] == 'cache_ready' and result['target_ready_observed'] is True
+    assert len(reservations) == 1 and reservations[0].role == 'g1_checkpoint_cache'
+    assert reservations[0].released is True
+    assert len(calls) == 24
+    assert {path: (target / path).read_bytes() for path in value['payloads']} == value['payloads']
+    lease = json.loads((target / '.lane-scratch.v1.json').read_bytes())
+    assert lease['class_intent'] == 'cache' and lease['cleanup'] == 'owner_review'
+    assert lease['size_budget_bytes'] == 8 * 1024 * 1024 and lease['expires_at_epoch'] == 2800
+    birth_raw = (value['public'] / (grant['intent_id'] + '.birth.json')).read_bytes()
+    assert b'principal' not in birth_raw and b'policy' not in birth_raw
+    actual = fetcher.materialize_candidate
+    candidates = []
+    def verify(**kwargs):
+        assert kwargs['_cache_use'] is use
+        candidates.append(kwargs['candidate_id'])
+        return actual(**kwargs)
+    monkeypatch.setattr(fetcher, 'materialize_candidate', verify)
+    with cache.NeededCheckpointCacheUse.open_registered(target, mode='read',
+            installed_config_path=value['config'], now=lambda: 1200) as use:
+        rows = native.verify_local_g1_checkpoint_cache(target, _cache_use=use)
+        assert candidates == list(PAIR_ORDER) and len(rows) == 24
+        assert use.resource_counters['roles']['verify']['bytes'] == sum(map(len, value['payloads'].values()))
+    assert use.closed is True
+
+
+def fake_wam(monkeypatch, *, hit):
+    import sys
+    from types import SimpleNamespace
+    from blueprint_pipeline import wam_provider_object_store as wam
+    events, objects, pending = [], {}, {}
+    class NotFound(Exception):
+        response = {'ResponseMetadata': {'HTTPStatusCode': 404}}
+    class Client:
+        def head_object(self, *, Bucket, Key):
+            events.append(('head', Key))
+            if Key not in objects:
+                if not hit:
+                    raise NotFound()
+                sha = Key.rsplit('/', 1)[-1].removesuffix('.bin')
+                data = next(data for data in fake_wam.payloads.values() if hashlib.sha256(data).hexdigest() == sha)
+                objects[Key] = (data, sha)
+            data, sha = objects[Key]
+            return {'ContentLength': len(data), 'Metadata': {'sha256': sha}}
+        def create_multipart_upload(self, *, Bucket, Key, Metadata):
+            events.append(('create', Key))
+            pending[Key] = [b'', Metadata['sha256']]
+            return {'UploadId': 'owned-' + hashlib.sha256(Key.encode()).hexdigest()[:16]}
+        def upload_part(self, *, Bucket, Key, UploadId, PartNumber, Body):
+            assert isinstance(Body, bytes) and len(Body) <= 8*1024*1024
+            pending[Key][0] += Body
+            events.append(('part', Key))
+            return {'ETag': '"fixture-part"'}
+        def complete_multipart_upload(self, *, Bucket, Key, UploadId, MultipartUpload):
+            events.append(('complete', Key))
+            objects[Key] = tuple(pending.pop(Key))
+            return {}
+        def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+            events.append(('abort', Key))
+            pending.pop(Key, None)
+        def generate_presigned_url(self, *args, **kwargs):
+            events.append(('presign', kwargs['Params']['Key']))
+            return 'https://fixture.invalid/owned'
+        def upload_file(self, *args, **kwargs):
+            pytest.fail('enrolled bytes reached unguarded SDK pathname upload')
+        def upload_fileobj(self, *args, **kwargs):
+            pytest.fail('enrolled bytes reached unguarded SDK filelike upload')
+        def close(self):
+            events.append(('close', None))
+    def client(*args, **kwargs):
+        assert kwargs['config'].connect_timeout == kwargs['config'].read_timeout == 45
+        assert kwargs['config'].retries == {'total_max_attempts': 1}
+        return Client()
+    class Config:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+    monkeypatch.setitem(sys.modules, 'boto3', SimpleNamespace(client=client))
+    monkeypatch.setitem(sys.modules, 'botocore.client', SimpleNamespace(Config=Config))
+    monkeypatch.setattr(wam, '_read_first_file', lambda **kw: ('fixture', {'available': True}))
+    return events
+
+
+@pytest.mark.parametrize('hit', [True, False])
+def test_real_verifier_and_wam_callee_share_lifetime_through_all_24_files(
+        cache_installation, monkeypatch, hit):
+    import fcntl
+    import os
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline import native_g1_checkpoint_cache as native
+    value = cache_installation
+    _, result, _, _, _ = fill_cache(value, monkeypatch)
+    target = Path(result['path'])
+    fake_wam.payloads = value['payloads']
+    events = fake_wam(monkeypatch, hit=hit)
+    with cache.NeededCheckpointCacheUse.open_registered(target, mode='read',
+            installed_config_path=value['config'], now=lambda: 1200) as use:
+        proof = os.open(target, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(proof, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(proof)
+        staged = native.stage_g1_checkpoint_cache(cache_root=target, job_dir=value['config'].parent / 'staged',
+            key_prefix='fixture', expiration_seconds=60, _cache_use=use)
+        assert staged['status'] == 'completed' and staged['file_count'] == 24
+        assert staged['cache_hit_count'] == (24 if hit else 0)
+        assert staged['upload_count'] == (0 if hit else 24)
+        assert use.closed is False
+        roles = use.resource_counters['roles']
+        assert roles['verify']['bytes'] == roles['wam_hash']['bytes'] == sum(map(len, value['payloads'].values()))
+        if not hit:
+            assert roles['upload']['bytes'] == roles['verify']['bytes']
+        assert sum(kind == 'close' for kind, _ in events) == 24
+    assert use.closed
+
+
+def test_root_revoke_during_actual_hash_stops_next_payload_read(cache_installation, monkeypatch):
+    import os
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, result, _, _, _ = fill_cache(value, monkeypatch)
+    target = Path(result['path'])
+    data_reads, original = [], os.pread
+    def read(fd, amount, offset):
+        block = original(fd, amount, offset)
+        data_reads.append(block)
+        if len(data_reads) == 1:
+            cache.update_needed_checkpoint_cache_authority(operation='revoke', intent_id=grant['intent_id'],
+                installed_config_path=value['config'], now=lambda: 1201)
+        return block
+    with cache.NeededCheckpointCacheUse.open_registered(target, mode='read',
+            installed_config_path=value['config'], now=lambda: 1200) as use:
+        monkeypatch.setattr(os, 'pread', read)
+        with pytest.raises(ValueError, match='needed_cache'):
+            use.hash_file(target / next(iter(value['payloads'])), role='wam_hash')
+        assert len(data_reads) == 1 and use.failure is not None
+    assert {path: (target / path).read_bytes() for path in value['payloads']} == value['payloads']
