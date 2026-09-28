@@ -87,6 +87,27 @@ class VirtualObject:
     def to_bytes(self) -> bytes:
         return bytes(self.read(0, self.size))
 
+    def patched(self, offset: int, payload: bytes) -> VirtualObject:
+        """A same-size copy with ``payload`` written over the bytes at ``offset``."""
+        end, segments, inserted = offset + len(payload), [], False
+        for start, segment in zip(self._starts, self._segments):
+            stop = start + _length(segment)
+            if stop <= offset or start >= end:
+                segments.append(segment)
+                continue
+            if start < offset:
+                segments.append(_slice(segment, 0, offset - start))
+            if not inserted:
+                segments.append(payload)
+                inserted = True
+            if stop > end:
+                segments.append(_slice(segment, end - start, stop - start))
+        return VirtualObject(segments)
+
+
+def _slice(segment, start, stop):
+    return Zeros(stop - start) if isinstance(segment, Zeros) else segment[start:stop]
+
 
 class VirtualFile(io.RawIOBase):
     """Seekable read-only file view, so ``zipfile`` can cross-check a virtual archive."""
@@ -143,8 +164,9 @@ class RangeStore:
     """Object-store double serving one pinned object through the real transport.
 
     ``requests`` logs every GET as ``{"range": (first, last) | None, "if_match": ...}``.
-    Faults: ``truncate`` drops every response's final byte and
-    ``truncate_whole_object`` only a whole-object GET's; ``ignore_if_match``
+    Faults: ``truncate`` drops every response's final byte,
+    ``truncate_whole_object`` only a whole-object GET's, and ``truncate_when``
+    those whose logged request it accepts; ``ignore_if_match``
     serves whatever version is current; ``next_version`` swaps in a new
     ``(object, etag)`` just before the next whole-object GET.
     """
@@ -155,6 +177,7 @@ class RangeStore:
         self.requests: list[dict] = []
         self.truncate = False
         self.truncate_whole_object = False
+        self.truncate_when = None
         self.ignore_if_match = False
         self.next_version = None
 
@@ -181,7 +204,8 @@ class RangeStore:
         response_headers.update({"ETag": self.etag, "Content-Length": str(stop - start)})
         if self.generation:
             response_headers["x-goog-generation"] = self.generation
-        short = self.truncate or (self.truncate_whole_object and requested is None)
+        short = (self.truncate or (self.truncate_whole_object and requested is None)
+                 or (self.truncate_when is not None and self.truncate_when(entry)))
         return _Response(request.full_url, status, response_headers, self.object, start,
                          stop - 1 if short else stop)
 

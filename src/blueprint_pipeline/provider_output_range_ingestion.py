@@ -3,10 +3,17 @@
 The archive is hashed as a stream and then read by conditional HTTP ranges.
 Received evidence remains diagnostic input pending the existing finalizer;
 collection never qualifies episodes, images, provider closeout, or publication.
+
+``ingest_selected_members`` is the selective path: given a member index and a
+selection bound to it, it fetches only the selected members of a durable CAS
+archive, one range request each, and leaves every other member remote. Both
+paths share the entry rules and the partial-file, journal and lock helpers.
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass, field as dataclass_field
 import fcntl
 import hashlib
 import json
@@ -14,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import time
+from typing import Any
 import uuid
 import zipfile
 import zlib
@@ -22,8 +30,12 @@ from .decision_evidence_contracts import canonical_digest
 from .provider_output_disk_capacity import observe_provider_output_disk_capacity
 from .provider_output_member_index import (
     MAX_ARCHIVE_ENTRIES,
+    MemberInflater,
     ProviderOutputMemberIndexError,
     check_archive_entries,
+    inflate_step_bytes,
+    validate_member_index,
+    validate_member_selection,
 )
 from .provider_output_native_inventory import ProviderOutputInventoryError, safe_member_name, verify_native_inventory
 from .provider_output_range_transport import ProviderOutputRangeReader, ProviderOutputTransportError
@@ -289,7 +301,7 @@ def _output_lock(root, binding):
 
 def _record_failure(meta, result, exc):
     code = (str(exc) if isinstance(exc, (ProviderOutputIngestionError, ProviderOutputTransportError,
-                                          ProviderOutputInventoryError))
+                                          ProviderOutputInventoryError, ProviderOutputMemberIndexError))
             else 'provider_output_archive_crc_or_structure_invalid' if isinstance(exc, zipfile.BadZipFile)
             else 'provider_output_archive_or_io_failed')
     if not re.fullmatch(r'[a-z0-9_]+', code):
@@ -395,5 +407,221 @@ def ingest_provider_output(*, binding: dict, signed_get_url_file: str | Path, ou
                     member_inventory_digest=inventory['inventory_digest'], native_inventory=native, blockers=[])
         except Exception as exc:
             _record_failure(meta, result, exc)
+        _write_receipt(meta, result)
+    return result
+
+
+SELECTED_BINDING_SCHEMA = 'provider_output_selected_member_binding.v1'
+SELECTED_RECEIPT_SCHEMA = 'provider_output_selected_member_receipt.v1'
+CAS_REFERENCE_SCHEMA = 'task_evaluation_scene_artifact_reference.v1'
+
+
+@dataclass(frozen=True)
+class CasArchiveSource:
+    """A durable B2 archive reference plus a callable issuing a short-lived GET URL.
+
+    The URL is transport authority only: it is requested when a reader opens,
+    held in memory by that reader alone, and never written to a file, journal,
+    receipt or log.
+    """
+
+    reference: Mapping[str, Any]
+    presign: Callable[[], str] = dataclass_field(repr=False)
+    opener: Callable | None = dataclass_field(default=None, repr=False)
+    block_bytes: int = 8 * 1024**2
+    deadline_seconds: float = 3600
+
+    def durable_reference(self) -> dict:
+        """Secret-free facts naming the durable object, after checking the reference."""
+        reference = self.reference if isinstance(self.reference, Mapping) else {}
+        uri, digest, size = str(reference.get('uri') or ''), str(reference.get('digest') or ''), reference.get('size_bytes')
+        if (reference.get('schema_version') != CAS_REFERENCE_SCHEMA or reference.get('status') != 'remote_verified'
+                or reference.get('content_addressed_key') is not True
+                or reference.get('remote_identity_verified') is not True
+                or reference.get('full_byte_service_account_readback_passed') is not True
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', digest)
+                or not re.fullmatch(r's3://[A-Za-z0-9][A-Za-z0-9.-]{0,254}/[A-Za-z0-9._/-]{1,1024}', uri)
+                or f"/sha256/{digest.removeprefix('sha256:')}/" not in uri
+                or type(size) is not int or size <= 0):
+            raise ProviderOutputIngestionError('provider_output_cas_reference_invalid')
+        return {'uri': uri, 'digest': digest, 'size_bytes': size}
+
+    def open(self, maximum_archive_bytes: int) -> ProviderOutputRangeReader:
+        try:
+            url = self.presign()
+            if not isinstance(url, str) or not url:
+                raise ValueError('presign returned no URL')
+            return ProviderOutputRangeReader(url, maximum_archive_bytes=maximum_archive_bytes,
+                                             block_bytes=self.block_bytes, deadline_seconds=self.deadline_seconds,
+                                             opener=self.opener)
+        except ProviderOutputTransportError:
+            raise
+        except Exception:
+            raise ProviderOutputIngestionError('provider_output_cas_presign_invalid') from None
+
+
+def _reserve(reserve, needed):
+    try:
+        reserve(needed)
+    except ProviderOutputIngestionError:
+        raise
+    except Exception as exc:
+        code = str(exc)
+        raise ProviderOutputIngestionError(code if re.fullmatch(r'[a-z0-9_]{1,128}', code)
+                                           else 'provider_output_disk_reservation_refused') from None
+
+
+def _materialize_member(remote, row, target, partial, *, step_bytes):
+    """Fetch one member's record data with one range request; place it only once verified."""
+    partial_size = _prepare_partial(target, partial, row['size'])
+    if partial.exists():
+        # A crash between the read-only chmod and the rename leaves a verified
+        # 0440 partial; it is re-checked byte for byte below like any other.
+        os.chmod(partial, 0o600)
+    try:
+        with partial.open('r+b' if partial.exists() else 'x+b') as sink:
+            writer = _PartialWriter(sink, partial_size, row['size'], lambda needed: None)
+            inflater = MemberInflater(row['method'], row['size'], writer.write, step_bytes=step_bytes)
+            if row['compressed_size']:
+                remote.stream_to(inflater.feed, start=row['data_offset'],
+                                 end=row['data_offset'] + row['compressed_size'])
+            inflater.finish()
+            record = writer.record()
+        if record != {'size_bytes': row['size'], 'sha256': row['sha256'], 'crc32': row['crc32']}:
+            raise ProviderOutputIngestionError('provider_output_member_digest_mismatch')
+    except (ProviderOutputIngestionError, ProviderOutputMemberIndexError):
+        # Bytes that decode wrongly or disagree with the index are never left
+        # for a resume to trust; a transport failure keeps its partial prefix.
+        partial.unlink(missing_ok=True)
+        raise
+    os.chmod(partial, 0o440)
+    _publish(partial, target)
+    return record
+
+
+def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selection: Mapping,
+                            members_root: str | Path, metadata_root: str | Path,
+                            reserve: Callable[[int], object], disk_usage_provider=None) -> dict:
+    """Materialize only a selection's members from a pinned CAS archive; safe to resume.
+
+    Each selected member is one range request for its record data under the
+    reader's pinned ETag, inflated in bounded steps and checked against the
+    index's CRC-32 and SHA-256 before it is renamed into place read-only (0440).
+    Unselected members are never requested or written. ``reserve(bytes)`` runs
+    before each member is written with the bytes still needed; a typed refusal
+    it raises stops writing and leaves the journal resumable.
+    ``disk_usage_provider``, when given, is sampled before and after each
+    member write. Resuming under another index or selection is refused.
+    """
+    try:
+        validate_member_index(index)
+        selected = validate_member_selection(selection, index)
+    except ProviderOutputMemberIndexError as exc:
+        raise ProviderOutputIngestionError(str(exc)) from None
+    if not isinstance(source, CasArchiveSource) or not callable(reserve):
+        raise ProviderOutputIngestionError('provider_output_selected_ingestion_arguments_invalid')
+    durable = source.durable_reference()
+    recorded = index['archive']['durable_reference']
+    if (durable['digest'] != index['archive']['sha256'] or durable['size_bytes'] != index['archive']['size']
+            or (recorded is not None and (recorded.get('uri'), recorded.get('digest')) != (durable['uri'], durable['digest']))):
+        raise ProviderOutputIngestionError('provider_output_cas_reference_mismatch')
+    members, meta = Path(members_root).absolute(), Path(metadata_root).absolute()
+    if members == meta or members in meta.parents or meta in members.parents:
+        raise ProviderOutputIngestionError('provider_output_selected_roots_invalid')
+    if meta.is_dir() and not (meta / 'binding.json').exists() and any(path.name != 'lock' for path in meta.iterdir()):
+        raise ProviderOutputIngestionError('provider_output_evidence_root_not_owned')
+    binding = {'schema_version': SELECTED_BINDING_SCHEMA, 'member_index_digest': index['index_digest'],
+               'archive_sha256': index['archive']['sha256'], 'durable_reference': durable,
+               'selection_schema_version': selection['schema_version'],
+               'selection_version': selection['selection_version'], 'selection_digest': selection['selection_digest']}
+    binding['binding_digest'] = canonical_digest(binding, digest_field='binding_digest')
+    chosen = {row['path'] for row in selected}
+    files = [row for row in index['members'] if row['kind'] == 'file']
+    result = {'schema_version': SELECTED_RECEIPT_SCHEMA, 'binding_digest': binding['binding_digest'],
+              'member_index_digest': index['index_digest'], 'archive_sha256': index['archive']['sha256'],
+              'selection_version': selection['selection_version'], 'selection_digest': selection['selection_digest'],
+              'durable_reference': durable, 'members_root': str(members),
+              'local_archive_copy_created': False, 'private_url_recorded': False}
+    samples = []
+
+    def sample():
+        if disk_usage_provider is not None:
+            free = getattr(disk_usage_provider(members), 'free', None)
+            if type(free) is int:
+                samples.append(free)
+
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    members.parent.mkdir(parents=True, exist_ok=True)
+    with _locked_roots(members, meta, binding):
+        try:
+            with source.open(index['archive']['size']) as remote:
+                if remote.identity['size_bytes'] != index['archive']['size']:
+                    raise ProviderOutputIngestionError('provider_output_remote_size_mismatch')
+                source_path = meta / 'source.json'
+                previous = _json(source_path) if source_path.exists() else None
+                if previous and (previous.get('source_digest') != canonical_digest(previous, digest_field='source_digest')
+                                 or previous.get('remote_identity') != remote.identity
+                                 or previous.get('binding_digest') != binding['binding_digest']):
+                    raise ProviderOutputIngestionError('provider_output_resume_remote_identity_mismatch')
+                records = _journal_records(meta)
+                if set(records) - chosen:
+                    raise ProviderOutputIngestionError('provider_output_resume_inventory_changed')
+                for path in members.rglob('*'):
+                    if path.is_symlink() or (path.is_file() and path.relative_to(members).as_posix() not in chosen):
+                        raise ProviderOutputIngestionError('provider_output_resume_inventory_changed')
+                verified, pending = {}, []
+                for row in selected:
+                    target = _safe_destination(members, row['path'])
+                    if not target.exists():
+                        pending.append(row)
+                        continue
+                    # Already verified (or renamed just before a crash): the index
+                    # digest decides, so the member is never fetched again.
+                    actual, prior = _hash_file(target), records.get(row['path'])
+                    if (actual != {'size_bytes': row['size'], 'sha256': row['sha256'], 'crc32': row['crc32']}
+                            or (prior and any(prior.get(key) != actual[key] for key in actual))):
+                        raise ProviderOutputIngestionError('provider_output_resume_file_changed')
+                    verified[row['path']] = actual
+                if previous is None:
+                    record = {'remote_identity': remote.identity, 'archive_sha256': index['archive']['sha256'],
+                              'binding_digest': binding['binding_digest']}
+                    record['source_digest'] = canonical_digest(record, digest_field='source_digest')
+                    _atomic_json(source_path, record)
+                resumed = len(verified)
+                step_bytes = inflate_step_bytes(source.block_bytes)
+                with (meta / ('members-' + uuid.uuid4().hex + '.jsonl')).open('x') as journal:
+                    for path, record in verified.items():
+                        if path not in records:
+                            _append_journal(journal, path, record)
+                    unwritten = {}
+                    for row in pending:
+                        partial = _partial_path(meta, row['path'])
+                        kept = partial.stat().st_size if partial.exists() and not partial.is_symlink() else 0
+                        unwritten[row['path']] = row['size'] - min(kept, row['size'])
+                    needed = sum(unwritten.values())
+                    for row in pending:
+                        _reserve(reserve, needed)
+                        sample()
+                        record = _materialize_member(remote, row, _safe_destination(members, row['path']),
+                                                     _partial_path(meta, row['path']), step_bytes=step_bytes)
+                        _append_journal(journal, row['path'], record)
+                        verified[row['path']] = record
+                        needed -= unwritten[row['path']]
+                        sample()
+                result.update(
+                    status='materialized', remote_identity=remote.identity,
+                    members=[{'path': row['path'],
+                              'disposition': 'materialized' if row['path'] in chosen else 'remote',
+                              'size': row['size'], 'sha256': row['sha256'], 'crc32': row['crc32']}
+                             for row in files],
+                    materialized_member_count=len(selected), remote_member_count=len(files) - len(selected),
+                    materialized_bytes=sum(row['size'] for row in selected),
+                    remote_bytes=sum(row['size'] for row in files if row['path'] not in chosen),
+                    resumed_member_count=resumed, transferred_bytes=remote.transferred_bytes,
+                    http_request_count=remote.request_count, blockers=[])
+        except Exception as exc:
+            _record_failure(meta, result, exc)
+        result.update(disk_usage_sample_count=len(samples),
+                      minimum_observed_free_bytes=min(samples) if samples else None)
         _write_receipt(meta, result)
     return result
