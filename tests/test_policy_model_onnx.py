@@ -4,10 +4,35 @@ import hashlib
 
 import numpy as np
 import pytest
-from blueprint_pipeline.policy_model_onnx import OnnxStatePolicy
+from blueprint_pipeline.policy_model_onnx import OnnxStatePolicy, validate_model_task_binding
 
 onnx = pytest.importorskip("onnx")
 pytest.importorskip("onnxruntime")
+
+
+def test_frozen_task_binding_refuses_wrong_state_units_joint_order_and_action_limits():
+    import copy
+    from tests.test_company_policy_container_contract_v2 import _contract
+    contract = _contract()
+    interface = {
+        "preprocessing": "embedded_in_model_graph",
+        "state_fields": [{"name": f["name"], "width": f["shape"][0], "unit": f["unit"]}
+                         for f in contract["observation_schema"]["state_fields"]],
+        "action_schema": {"chunk_rows": contract["action_schema"]["chunk_rows"], "channels": [
+            {key: channel[key] for key in ("name", "raw_accepted_bounds", "unit")}
+            for channel in contract["action_schema"]["channels"]]},
+    }
+    validate_model_task_binding({"interface": interface}, contract)
+    for mutation in ("unit", "joint_order", "limits"):
+        changed = copy.deepcopy(interface)
+        if mutation == "unit":
+            changed["state_fields"][0]["unit"] = "degree"
+        elif mutation == "joint_order":
+            changed["action_schema"]["channels"].reverse()
+        else:
+            changed["action_schema"]["channels"][0]["raw_accepted_bounds"] = [-999.0, 999.0]
+        with pytest.raises(ValueError, match="frozen_task_interface_mismatch"):
+            validate_model_task_binding({"interface": changed}, contract)
 
 def model_artifact(tmp_path):
     from onnx import TensorProto, helper, numpy_helper
@@ -24,11 +49,12 @@ def model_artifact(tmp_path):
         "schema_version": "blueprint.policy_model_artifact.v1",
         "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw),
         "interface": {
+            "schema_version": "blueprint.policy_model_interface.v1", "preprocessing": "embedded_in_model_graph",
             "runner_profile": "onnx_state_mlp_cpu_v1", "input_name": "state", "output_name": "actions",
-            "state_fields": [{"name": "joint_position", "width": 2}],
+            "state_fields": [{"name": "joint_position", "width": 2, "unit": "radian"}],
             "action_schema": {"chunk_rows": 1, "channels": [
-                {"name": "joint_1", "raw_accepted_bounds": [-1.0, 1.0]},
-                {"name": "gripper", "raw_accepted_bounds": [0.0, 1.0]},
+                {"name": "joint_1", "raw_accepted_bounds": [-1.0, 1.0], "unit": "radian"},
+                {"name": "gripper", "raw_accepted_bounds": [0.0, 1.0], "unit": "normalized_fraction"},
             ]},
         },
     }

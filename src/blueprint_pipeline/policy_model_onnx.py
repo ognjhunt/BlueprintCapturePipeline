@@ -16,12 +16,34 @@ from typing import Any, Mapping
 import numpy as np
 
 from .company_policy_proxy import validate_action_response
+from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
 
 PROFILE = "onnx_state_mlp_cpu_v1"
 ONNX_VERSION = "1.23.0"
 ORT_VERSION = "1.30.0"
 MAX_MODEL_BYTES = 16 * 1024 * 1024
 ALLOWED_OPERATORS = frozenset({"Identity", "Gemm", "MatMul", "Add", "Sub", "Mul", "Relu", "Tanh", "Sigmoid", "Reshape", "Clip"})
+
+
+def validate_model_task_binding(artifact: Mapping[str, Any], contract: Mapping[str, Any]) -> None:
+    """The frozen task owns units and action meaning; uploaded metadata cannot replace it."""
+    trusted = validate_company_policy_container_contract_v2(contract)
+    interface = artifact.get("interface", {})
+    if any(len(field["shape"]) != 1 for field in trusted["observation_schema"]["state_fields"]):
+        raise ValueError("policy_model_frozen_task_state_shape_unsupported")
+    expected_fields = [
+        {"name": field["name"], "width": math.prod(field["shape"]), "unit": field["unit"]}
+        for field in trusted["observation_schema"]["state_fields"]
+    ]
+    expected_actions = {
+        "chunk_rows": trusted["action_schema"]["chunk_rows"],
+        "channels": [{key: channel[key] for key in ("name", "raw_accepted_bounds", "unit")}
+                     for channel in trusted["action_schema"]["channels"]],
+    }
+    if (interface.get("state_fields") != expected_fields
+            or interface.get("action_schema") != expected_actions
+            or interface.get("preprocessing") != "embedded_in_model_graph"):
+        raise ValueError("policy_model_frozen_task_interface_mismatch")
 
 
 class OnnxStatePolicy:
@@ -38,6 +60,9 @@ class OnnxStatePolicy:
         interface = artifact.get("interface", {})
         if artifact.get("schema_version") != "blueprint.policy_model_artifact.v1" or interface.get("runner_profile") != PROFILE:
             raise ValueError("policy_model_runner_profile_unsupported")
+        if (interface.get("schema_version") != "blueprint.policy_model_interface.v1"
+                or interface.get("preprocessing") != "embedded_in_model_graph"):
+            raise ValueError("policy_model_preprocessing_interface_invalid")
         if model_path.is_symlink() or not model_path.is_file() or not 0 < model_path.stat().st_size <= MAX_MODEL_BYTES:
             raise ValueError("policy_model_file_invalid")
         raw = model_path.read_bytes()
@@ -51,6 +76,8 @@ class OnnxStatePolicy:
         widths = [field.get("width") for field in fields]
         if any(not isinstance(name, str) or not name for name in names) or len(set(names)) != len(names):
             raise ValueError("policy_model_state_interface_invalid")
+        if any(not isinstance(field.get("unit"), str) or not field["unit"].strip() for field in fields):
+            raise ValueError("policy_model_state_unit_required")
         if any(isinstance(width, bool) or not isinstance(width, int) or not 1 <= width <= 1024 for width in widths) or sum(widths) > 1024:
             raise ValueError("policy_model_state_interface_invalid")
         self.fields = fields
