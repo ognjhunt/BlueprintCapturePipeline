@@ -42,7 +42,7 @@ def test_fixed_root_cli_creates_then_deletes_real_expired_scratch(retirement_ins
     (config.parent / 'pins').mkdir()
     status, applied = call(root, capsys, ['apply', issued_action['action_id'], '--sha256',
         issued_action['action_intent']['sha256'], '--size-bytes', str(issued_action['action_intent']['size_bytes'])])
-    assert status == 0 and applied['result']['decision'] == 'retired'
+    assert status == 0 and applied['result']['decision'] == 'retired', applied
     assert not (target / 'temporary.txt').exists()
 
 

@@ -5,6 +5,8 @@ Legacy experiment directories are not adopted by this interface.
 """
 from __future__ import annotations
 
+import argparse
+import json
 import fcntl
 import os
 import re
@@ -259,3 +261,130 @@ def issue_experiment_producer_bootstrap(intent_id, *, expected_intent_sha256, ex
     return issue_bootstrap(intent_id, expected_intent_sha256=expected_intent_sha256,
         expected_intent_size_bytes=expected_intent_size_bytes, request_paths=request_paths,
         installed_config_path=installed_config_path, now=now)
+
+
+INSTALLED_CONFIG_PATH = "/etc/blueprint-operator-door/door.json"
+
+
+class _FixedCommandParser(argparse.ArgumentParser):
+    def error(self, message):
+        # Argument text can contain paths/private values. Emit only the finite
+        # refusal, never argparse's copy of the rejected body.
+        raise OwnerTargetVersionError("experiment_cli_arguments_invalid")
+
+
+def _command_parser():
+    parser = _FixedCommandParser(prog="registered-experiment", allow_abbrev=False)
+    commands = parser.add_subparsers(dest="operation", required=True, parser_class=_FixedCommandParser)
+    for operation in ("issue-create", "create", "issue-action", "apply", "issue-restore", "restore", "bootstrap", "run"):
+        command = commands.add_parser(operation, allow_abbrev=False)
+        if operation != "issue-create":
+            command.add_argument("intent_id")
+        if operation in ("issue-create", "issue-action", "issue-restore"):
+            command.add_argument("--principal", required=True)
+            command.add_argument("--owner", required=True)
+        if operation in ("issue-action", "issue-restore"):
+            command.add_argument("--expires-at", required=True, type=float)
+        if operation in ("issue-create", "issue-restore"):
+            command.add_argument("--ttl", required=True, type=int)
+        if operation in ("create", "apply", "restore", "bootstrap", "run"):
+            command.add_argument("--sha256", required=True)
+            command.add_argument("--size-bytes", required=True, type=int)
+        if operation == "issue-create":
+            command.add_argument("--root", required=True, choices=("work", "inputs"))
+            command.add_argument("--reference", required=True)
+            command.add_argument("--profile", required=True, choices=tuple(_PROFILES))
+            command.add_argument("--request", nargs=3, action="append", default=[], metavar=("SEALED_PATH", "SHA256", "SIZE"))
+        if operation == "issue-action":
+            command.add_argument("--action", required=True, choices=("delete", "offload", "owner_review"))
+        if operation == "bootstrap":
+            command.add_argument("--request-path", action="append", required=True)
+    return parser
+
+
+def _installed_pin_root():
+    from .control_plane_lane_experiment_actions import _installed_reference_selection
+    files = _TargetFiles(ReferenceCollectionBudget(values_limit=10000))
+    try:
+        config = _configuration(files, INSTALLED_CONFIG_PATH)
+        path, _ = _installed_reference_selection(files, config)
+        files.verify()
+        return Path(path)
+    finally:
+        try:
+            files.finish()
+        finally:
+            files.budget.close()
+
+
+def _dispatch_fixed_command(arguments):
+    operation = arguments.operation
+    fixed = {"installed_config_path": INSTALLED_CONFIG_PATH, "now": lambda: time.time()}
+    if operation == "issue-create":
+        requests = []
+        for path, digest, size in arguments.request:
+            try:
+                count = int(size)
+            except ValueError:
+                raise OwnerTargetVersionError("experiment_cli_arguments_invalid") from None
+            requests.append((path, {"sha256": digest, "size_bytes": count}))
+        return issue_experiment_creation_intent(principal=arguments.principal, owner=arguments.owner,
+            root=arguments.root, reference_value=arguments.reference, lease_ttl_seconds=arguments.ttl,
+            participant_profile=arguments.profile, request_records=requests, **fixed)
+    if operation == "issue-action":
+        return issue_experiment_action_intent(arguments.intent_id, principal=arguments.principal,
+            owner=arguments.owner, action=arguments.action, expires_at_epoch=arguments.expires_at, **fixed)
+    if operation == "issue-restore":
+        return issue_experiment_restore_intent(arguments.intent_id, principal=arguments.principal,
+            owner=arguments.owner, lease_ttl_seconds=arguments.ttl, expires_at_epoch=arguments.expires_at, **fixed)
+    selector = {"sha256": arguments.sha256, "size_bytes": arguments.size_bytes}
+    _require(owners._matches(arguments.intent_id, owners._CONSENT_ID)
+             and re.fullmatch(r"sha256:[0-9a-f]{64}", arguments.sha256) is not None
+             and type(arguments.size_bytes) is int and 0 < arguments.size_bytes <= _MAX_INTENT,
+             "experiment_cli_arguments_invalid")
+    if operation == "create":
+        from .control_plane_lane_experiment_birth import create_registered_experiment
+        return create_registered_experiment(arguments.intent_id, expected_intent=selector, **fixed)
+    if operation == "apply":
+        return run_registered_experiment_action(arguments.intent_id, expected_action_intent=selector,
+            _pins_root=_installed_pin_root(), **fixed)
+    if operation == "restore":
+        return restore_registered_experiment(arguments.intent_id, expected_restore_intent=selector,
+            _pins_root=_installed_pin_root(), **fixed)
+    if operation == "bootstrap":
+        return issue_experiment_producer_bootstrap(arguments.intent_id, expected_intent_sha256=arguments.sha256,
+            expected_intent_size_bytes=arguments.size_bytes, request_paths=tuple(arguments.request_path), **fixed)
+    from .native_g1_registered_containment import run_registered_experiment
+    return run_registered_experiment(arguments.intent_id, expected_intent=selector, **fixed)
+
+
+def main(argv=None):
+    """Fixed root local command; private config/reference authority have no flags."""
+    try:
+        _require(os.geteuid() == 0, "experiment_issuer_required")
+        argv = sys.argv[1:] if argv is None else argv
+        _require(isinstance(argv, (list, tuple)) and len(argv) <= 64
+                 and all(isinstance(value, str) and len(value.encode()) <= 8192 for value in argv)
+                 and sum(len(value.encode()) for value in argv) <= 32768,
+                 "experiment_cli_arguments_invalid")
+        arguments = _command_parser().parse_args(argv)
+        result = _dispatch_fixed_command(arguments)
+        outcome = {"decision": "completed", "result": result}
+        status = 0
+        if isinstance(result, dict) and result.get("decision") in ("kept", "partial", "refused"):
+            outcome["decision"] = result["decision"]
+            status = 2
+        payload = json.dumps(outcome, sort_keys=True, separators=(",", ":")) + "\n"
+        _require(len(payload.encode()) <= 8192, "experiment_cli_output_limit")
+    except (OwnerTargetVersionError, OSError) as error:
+        reason = str(error) if isinstance(error, OwnerTargetVersionError) else "experiment_cli_io_failed"
+        if re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason) is None:
+            reason = "experiment_cli_refused"
+        payload = json.dumps({"decision": "refused", "reason": reason}, separators=(",", ":")) + "\n"
+        status = 2
+    sys.stdout.write(payload)
+    return status
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

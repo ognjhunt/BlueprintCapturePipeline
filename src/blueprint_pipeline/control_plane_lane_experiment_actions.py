@@ -409,7 +409,7 @@ def _directory(files, parent, name, *, create=False):
 
 
 
-def _reference_configuration(files, config, selected_root):
+def _installed_reference_selection(files, config):
     from .control_plane_storage_pins import PINS_ROOT_ENV
     raw, record = files.read(config.experiment_gc_environment_file, cap=65536, protected=True)
     _require(stat.S_IMODE(record.info.st_mode) in (0o600, 0o640), "experiment_reference_configuration_unsafe")
@@ -436,10 +436,16 @@ def _reference_configuration(files, config, selected_root):
         except retained.CensusDecisionError:
             raise OwnerTargetVersionError("experiment_reference_configuration_invalid") from None
         selections.append(path)
-    _require(len(selections) == 1 and isinstance(selected_root, (str, Path))
-             and os.fspath(selected_root) == str(selections[0]), "experiment_reference_configuration_changed")
+    _require(len(selections) == 1, "experiment_reference_configuration_changed")
     files.verify_record(record)
-    return issuance._selector(raw, files.budget)
+    return selections[0], issuance._selector(raw, files.budget)
+
+
+def _reference_configuration(files, config, selected_root):
+    path, selector = _installed_reference_selection(files, config)
+    _require(isinstance(selected_root, (str, Path)) and os.fspath(selected_root) == str(path),
+             "experiment_reference_configuration_changed")
+    return selector
 
 def _pin_fence(files, config, root, target, issued):
     """Exact same publisher authority directory, never a file-name lock."""
