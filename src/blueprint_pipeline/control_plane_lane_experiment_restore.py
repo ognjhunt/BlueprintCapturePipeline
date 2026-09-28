@@ -590,7 +590,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         files.close(stage)
         files.location(target_fd)
         os.fsync(target_fd)
-        files.phase("finalize")
+        files.phase("restore_prepare")
         new_lease = lease | {'renewed_at_epoch': issued, 'expires_at_epoch': action['new_lease_expires_at_epoch']}
         payload = actions._encoded(new_lease, 'lease_digest', scratch.MAX_LEASE_BYTES)
         _require(scratch._lease_fields_valid(json.loads(payload)), 'experiment_restore_lease_invalid')
@@ -598,7 +598,9 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         birth._locked_lane(files, root)
         new_selector = _lease_cas(files, target, target_fd, lease_record, payload)
         # Root measured publication bytes bind restored identities, not a new execution.
-        restored_manifest = actions._manifest(files, target, target_fd, binding=entry | {'lease': new_selector})
+        restored_manifest = actions._manifest(files, target, target_fd, binding=entry | {'lease': new_selector}, hash_payload=False)
+        actions._hash_manifest(files, target, target_fd, restored_manifest, role='restore_validate')
+        files.phase('finalize')
         restored_raw = actions._encoded(restored_manifest, 'manifest_digest', 1048576)
         manifest_selector = _publish(files, store, action_id + '.manifest.json', restored_raw, kind='manifest')
         ready = actions._event(files, operation, action, 'restored_payload_ready', dict(restore_started=started,
