@@ -38,7 +38,8 @@ class ActionAllowance:
         self.limits = dict(local_bytes=local_bytes,archive_bytes=archive_bytes,remote_bytes=remote_bytes)
         self.counts = {key:0 for key in self.limits}
         self.start = self.last_tick = self._sample(monotonic)
-        self.last_wall = self._sample(now)
+        self.started_wall = self.last_wall = self._sample(now)
+        self._resume_origin = None
         self.elapsed_seconds = elapsed_seconds
         self.tick()
 
@@ -60,12 +61,59 @@ class ActionAllowance:
             self.failure = 'scene_retirement_clock_unproven'
         elif wall >= self.expires_at:
             self.failure = 'scene_retirement_consent_expired'
-        elif observed-self.start > self.elapsed_seconds:
+        elif observed-self.start > self.elapsed_seconds or (self._resume_origin is not None and (
+            observed-self._resume_origin['start_monotonic']>self.elapsed_seconds
+            or wall-self._resume_origin['started_wall']>self.elapsed_seconds)):
             self.failure = 'scene_retirement_deadline'
         else:
             self.last_tick, self.last_wall = observed, wall
             return
         raise SceneRetirementAccessError(self.failure)
+
+    def checkpoint(self):
+        """Pure current counters; only a protected selected journal binds them."""
+        self.tick()
+        origin=self._resume_origin or dict(start_monotonic=self.start,started_wall=self.started_wall)
+        return dict(schema_version='scene_retirement_action_allowance.v1',
+            start_monotonic=origin['start_monotonic'],started_wall=origin['started_wall'],
+            last_monotonic=self.last_tick,last_wall=self.last_wall,expires_at=self.expires_at,
+            elapsed_seconds=self.elapsed_seconds,limits=dict(self.limits),counts=dict(self.counts))
+
+    def bind_resume(self,checkpoint):
+        """Narrow a fresh invocation to its exact durable original work prefix.
+
+        No native limit, expiry, current clock origin or consumed count resets.
+        Unknown partial transfer is conservatively reserved before physical work
+        in the selected journal, so a crash cannot refund that reservation.
+        """
+        self.tick()
+        _require(not hasattr(self,'_resume_bound'),'scene_retirement_resume_allowance_unproven')
+        self._resume_bound=True
+        try:
+            keys={'schema_version','start_monotonic','started_wall','last_monotonic','last_wall',
+                  'expires_at','elapsed_seconds','limits','counts'}
+            _require(type(checkpoint) is dict and set(checkpoint)==keys
+                and checkpoint['schema_version']=='scene_retirement_action_allowance.v1',
+                'scene_retirement_resume_allowance_unproven')
+            for key in ('start_monotonic','started_wall','last_monotonic','last_wall'):
+                _require(type(checkpoint[key]) in (int,float) and math.isfinite(checkpoint[key]),
+                         'scene_retirement_resume_allowance_unproven')
+            _require(type(checkpoint['expires_at']) is int and checkpoint['expires_at']==self.expires_at
+                and type(checkpoint['elapsed_seconds']) is int and checkpoint['elapsed_seconds']==self.elapsed_seconds
+                and type(checkpoint['limits']) is dict and checkpoint['limits']==self.limits
+                and all(type(value) is int for value in checkpoint['limits'].values())
+                and type(checkpoint['counts']) is dict and set(checkpoint['counts'])==set(self.counts)
+                and not any(self.counts.values()),'scene_retirement_resume_allowance_unproven')
+            _require(checkpoint['start_monotonic']<=checkpoint['last_monotonic']<=self.last_tick
+                and checkpoint['started_wall']<=checkpoint['last_wall']<=self.last_wall,
+                'scene_retirement_clock_unproven')
+            self._resume_origin=dict(start_monotonic=checkpoint['start_monotonic'],started_wall=checkpoint['started_wall'])
+            self.tick()
+            for key,count in checkpoint['counts'].items():
+                self.charge(key,count)
+        except SceneRetirementAccessError as error:
+            self.failure=str(error)
+            raise
 
     def charge(self, kind, count):
         self.tick()
