@@ -17,23 +17,39 @@ The array math (:func:`build_particlefield_arrays`) is pure numpy and unit-teste
 writer (:func:`write_particlefield_usd`) needs ``pxr`` (OpenUSD / usd-core); it is
 fail-closed when pxr is unavailable. This module claims authoring only — not rendering.
 """
+
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 from pathlib import Path
+import tempfile
+from typing import Any, Sequence
+import zipfile
 
 import numpy as np
 
 from .common import sha256_file, write_json
 from .decision_evidence_contracts import canonical_digest
+from .gaussian_field_quality import measure_gaussian_field_quality
 from .gaussian_splat_decode import (
     GaussianSurfelData,
     SplatData,
     read_aura_2dgs_surfel_ply,
     read_standard_3dgs_ply,
+    write_standard_3dgs_ply,
+)
+from .nurec_volume_codec import (
+    NuRecCodecError,
+    decode_nurec_bytes,
+    describe_volume,
+    gaussian_arrays,
 )
 
 PARTICLEFIELD_SCHEMA = "ParticleField3DGaussianSplat"
 PARTICLEFIELD_RECEIPT_SCHEMA_VERSION = "particlefield_3dgs_authoring_receipt.v1"
+SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR = "inria_channel_major"
+SH_REST_LAYOUT_COEFFICIENT_MAJOR = "coefficient_major_rgb_triplets"
 PARTICLEFIELD_REFERENCE_CONVERTERS = {
     "openusd_py3dgs_ply_to_usd": (
         "https://github.com/PixarAnimationStudios/OpenUSD/blob/"
@@ -46,6 +62,9 @@ PARTICLEFIELD_REFERENCE_CONVERTERS = {
         "source/python/usd_convert_gsplat/usd_writer.py"
     ),
 }
+UPSTREAM_GSPLAT_CONVERTER_DISTRIBUTION = "usd-convert-gsplat"
+UPSTREAM_GSPLAT_CONVERTER_VERSION = "0.1.15"
+UPSTREAM_GSPLAT_CONVERTER_REVISION = "621017ebf78394488260c70ec4eadd70ff621131"
 GAUSSIAN_SURFLET_SCHEMA = "ParticleField+ParticleFieldKernelGaussianSurfletAPI"
 GAUSSIAN_SURFLET_RECEIPT_SCHEMA_VERSION = "aura_ovrtx_particlefield_receipt.v1"
 
@@ -64,10 +83,22 @@ _GAUSSIAN_SURFLET_SCHEMA_MEMBERS = (
 # back as a display colour: colour = 0.5 + C0 * dc.
 SH_C0 = 0.28209479177387814
 
+#: Pixar OpenUSD and NVIDIA's public converter bind no material to a standard
+#: ParticleField.  Kept as an empty compatibility export for callers that used
+#: to compare live shader overrides with the writer.
+PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS: dict[str, bool] = {}
+PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS_LABEL = "upstream_native_unbound"
+GAUSSIAN_SURFLET_DISPLAY_REFERRED_MATERIAL_INPUTS: dict[str, bool] = {
+    "apply_srgb_linear": True,
+    "apply_inverse_tonemap": False,
+}
+
+
 # The structural Z extent, as a fraction of the smaller learned planar extent.
 # Flat has to be relative: a constant epsilon would be thicker than wide for the
 # smallest surfels in this field, which is the bug it replaces at a new scale.
 STRUCTURAL_Z_SCALE_FRACTION = 0.01
+NUREC_VOLUME_MARKER = "omni:nurec:isNuRecVolume"
 
 
 def gaussian_surflet_schema_available(usd_vol: object) -> bool:
@@ -75,17 +106,24 @@ def gaussian_surflet_schema_available(usd_vol: object) -> bool:
 
     return all(hasattr(usd_vol, name) for name in _GAUSSIAN_SURFLET_SCHEMA_MEMBERS)
 
+
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     result = 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
     result = np.where(np.isposinf(x), 1.0, result)
     return np.where(np.isneginf(x), 0.0, result)
 
 
-def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None = None) -> dict:
+def build_particlefield_arrays(
+    splat: SplatData,
+    *,
+    sh_rest: np.ndarray | None = None,
+    sh_rest_layout: str = SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR,
+) -> dict:
     """Compute the ParticleField attribute arrays from standard 3DGS data (pure numpy).
 
-    Returns float32 arrays ready for USD authoring. ``sh_rest`` (N, 45) higher-order SH,
-    INRIA channel-major layout, is optional; without it the field is degree-0 (DC only).
+    Returns float32 arrays ready for USD authoring. ``sh_rest`` (N, 45)
+    higher-order SH is optional and its source layout must be declared when it
+    is not INRIA PLY channel-major; without it the field is degree-0 (DC only).
     """
     if isinstance(splat.count, bool) or splat.count < 1:
         raise ValueError("particlefield_splat_count_invalid")
@@ -103,9 +141,7 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
     if raw_opacity.shape != (splat.count,) or np.isnan(raw_opacity).any():
         raise ValueError("particlefield_nonfinite_input")
     with np.errstate(over="ignore", invalid="ignore"):
-        scales = np.exp(np.asarray(splat.scales, dtype=np.float32)).astype(
-            np.float32
-        )
+        scales = np.exp(np.asarray(splat.scales, dtype=np.float32)).astype(np.float32)
     if not np.isfinite(scales).all() or (scales <= 0.0).any():
         raise ValueError("particlefield_activated_scale_invalid")
 
@@ -121,16 +157,21 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
     dc = np.asarray(splat.f_dc, dtype=np.float32).reshape(n, 1, 3)  # coeff 0 (RGB)
     if sh_rest is not None and np.asarray(sh_rest).size:
         rest = np.asarray(sh_rest, dtype=np.float32)
-        if (
-            rest.ndim != 2
-            or rest.shape[0] != n
-            or rest.shape[1] % 3
-            or not np.isfinite(rest).all()
-        ):
+        if rest.ndim != 2 or rest.shape[0] != n or rest.shape[1] % 3 or not np.isfinite(rest).all():
             raise ValueError("particlefield_sh_rest_invalid")
         n_rest = rest.shape[1] // 3
-        # INRIA f_rest is channel-major: [R*n_rest, G*n_rest, B*n_rest] -> (n, n_rest, 3)
-        rest = rest.reshape(n, 3, n_rest).transpose(0, 2, 1)
+        if sh_rest_layout == SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR:
+            # INRIA PLY f_rest is channel-major:
+            # [R*n_rest, G*n_rest, B*n_rest] -> (n, n_rest, 3).
+            rest = rest.reshape(n, 3, n_rest).transpose(0, 2, 1)
+        elif sh_rest_layout == SH_REST_LAYOUT_COEFFICIENT_MAJOR:
+            # NuRec stores the model tensor directly as RGB triplets per SH
+            # coefficient. Applying the INRIA transpose to this array moves
+            # channels and coefficients, producing view-dependent chromatic
+            # splat artifacts even though every scalar value is preserved.
+            rest = rest.reshape(n, n_rest, 3)
+        else:
+            raise ValueError("particlefield_sh_rest_layout_invalid")
         coeffs = np.concatenate([dc, rest], axis=1)  # (n, 1+n_rest, 3)
         total = coeffs.shape[1]
         degree = int(round(total ** 0.5)) - 1
@@ -156,14 +197,13 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         "sh_coefficients": sh,
         "sh_degree": degree,
         "sh_element_size": int((degree + 1) ** 2),
+        "source_sh_rest_layout": (
+            sh_rest_layout if sh_rest is not None and np.asarray(sh_rest).size else None
+        ),
         "display_colors": display_colors,
         "extent": extent,
-        "positive_infinite_opacity_logit_count": int(
-            np.isposinf(raw_opacity).sum()
-        ),
-        "negative_infinite_opacity_logit_count": int(
-            np.isneginf(raw_opacity).sum()
-        ),
+        "positive_infinite_opacity_logit_count": int(np.isposinf(raw_opacity).sum()),
+        "negative_infinite_opacity_logit_count": int(np.isneginf(raw_opacity).sum()),
     }
 
 
@@ -218,9 +258,9 @@ def build_gaussian_surflet_arrays(surfel: GaussianSurfelData) -> dict:
     # Flat means proportional to the surfel, not a constant: a fixed epsilon
     # would be thicker than wide for the smallest surfels here, which is the
     # same error at a different magnitude.
-    structural_z = (
-        planar_scales.min(axis=1, keepdims=True) * STRUCTURAL_Z_SCALE_FRACTION
-    ).astype(np.float32)
+    structural_z = (planar_scales.min(axis=1, keepdims=True) * STRUCTURAL_Z_SCALE_FRACTION).astype(
+        np.float32
+    )
     scales = np.concatenate([planar_scales, structural_z], axis=1)
 
     raw_quats = np.asarray(surfel.quats, dtype=np.float64)
@@ -255,10 +295,7 @@ def build_gaussian_surflet_arrays(surfel: GaussianSurfelData) -> dict:
         # outside displayable range and decide, rather than be told nothing.
         "sh_dc_out_of_display_range_fraction": float(
             1.0
-            - (
-                (0.5 + SH_C0 * dc.reshape(-1, 3) >= 0.0)
-                & (0.5 + SH_C0 * dc.reshape(-1, 3) <= 1.0)
-            )
+            - ((0.5 + SH_C0 * dc.reshape(-1, 3) >= 0.0) & (0.5 + SH_C0 * dc.reshape(-1, 3) <= 1.0))
             .all(axis=1)
             .mean()
         ),
@@ -308,7 +345,9 @@ def write_gaussian_surflet_particlefield_usd(
                 "expected_source_sha256": expected_source_sha256,
                 "observed_source_sha256": source_sha256,
             }
-    surfel = source if isinstance(source, GaussianSurfelData) else read_aura_2dgs_surfel_ply(source_path)
+    surfel = (
+        source if isinstance(source, GaussianSurfelData) else read_aura_2dgs_surfel_ply(source_path)
+    )
     arrays = build_gaussian_surflet_arrays(surfel)
     if not gaussian_surflet_schema_available(UsdVol):
         return {
@@ -360,21 +399,14 @@ def write_gaussian_surflet_particlefield_usd(
 
     position_api.CreatePositionsAttr().Set(vec3f(arrays["positions"]))
     scale_api.CreateScalesAttr().Set(vec3f(arrays["scales"]))
-    opacity_api.CreateOpacitiesAttr().Set(
-        Vt.FloatArray.FromNumpy(arrays["opacities"])
-    )
-    sh_api.CreateRadianceSphericalHarmonicsCoefficientsAttr().Set(
-        vec3f(arrays["sh_coefficients"])
-    )
+    opacity_api.CreateOpacitiesAttr().Set(Vt.FloatArray.FromNumpy(arrays["opacities"]))
+    sh_api.CreateRadianceSphericalHarmonicsCoefficientsAttr().Set(vec3f(arrays["sh_coefficients"]))
     sh_api.CreateRadianceSphericalHarmonicsDegreeAttr().Set(arrays["sh_degree"])
     field.CreateExtentAttr().Set(vec3f(arrays["extent"]))
     quaternions = arrays["orientations"]
     orientation_api.CreateOrientationsAttr().Set(
         Vt.QuatfArray(
-            [
-                Gf.Quatf(float(w), float(x), float(y), float(z))
-                for w, x, y, z in quaternions
-            ]
+            [Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in quaternions]
         )
     )
 
@@ -386,21 +418,21 @@ def write_gaussian_surflet_particlefield_usd(
     shader_path = f"{material_path}/Shader"
     material = stage.DefinePrim(material_path, "Material")
     shader = stage.DefinePrim(shader_path, "Shader")
-    shader.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set(
-        "sourceAsset"
-    )
+    shader.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set("sourceAsset")
     shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
         "ParticleFieldEmissive.mdl"
     )
-    shader.CreateAttribute(
-        "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
-    ).Set("ParticleFieldEmissive")
+    shader.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(
+        "ParticleFieldEmissive"
+    )
+    # Aura's 2DGS colours are trained on sRGB frames too: linearise them so
+    # the display transform round-trips them instead of encoding them twice.
     shader.CreateAttribute(
         "inputs:apply_inverse_tonemap", Sdf.ValueTypeNames.Bool, custom=True
-    ).Set(False)
-    shader.CreateAttribute(
-        "inputs:apply_srgb_linear", Sdf.ValueTypeNames.Bool, custom=True
-    ).Set(False)
+    ).Set(GAUSSIAN_SURFLET_DISPLAY_REFERRED_MATERIAL_INPUTS["apply_inverse_tonemap"])
+    shader.CreateAttribute("inputs:apply_srgb_linear", Sdf.ValueTypeNames.Bool, custom=True).Set(
+        GAUSSIAN_SURFLET_DISPLAY_REFERRED_MATERIAL_INPUTS["apply_srgb_linear"]
+    )
     shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
     for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
         material.CreateAttribute(f"outputs:{output_name}", Sdf.ValueTypeNames.Token).AddConnection(
@@ -427,20 +459,21 @@ def write_gaussian_surflet_particlefield_usd(
         "structural_z_scale_fraction": arrays["structural_z_scale_fraction"],
         "structural_z_scale_median_m": arrays["structural_z_scale_median_m"],
         "structural_z_scale_max_m": arrays["structural_z_scale_max_m"],
-        "sh_dc_out_of_display_range_fraction": arrays[
-            "sh_dc_out_of_display_range_fraction"
-        ],
+        "sh_dc_out_of_display_range_fraction": arrays["sh_dc_out_of_display_range_fraction"],
         "sh_dc_radiance_max": arrays["sh_dc_radiance_max"],
-        "positive_infinite_opacity_logit_count": arrays[
-            "positive_infinite_opacity_logit_count"
-        ],
+        "positive_infinite_opacity_logit_count": arrays["positive_infinite_opacity_logit_count"],
         "material": {
             "path": material_path,
             "shader": "ParticleFieldEmissive.mdl",
             "sub_identifier": "ParticleFieldEmissive",
-            "apply_inverse_tonemap": False,
-            "apply_srgb_linear": False,
+            "apply_inverse_tonemap": GAUSSIAN_SURFLET_DISPLAY_REFERRED_MATERIAL_INPUTS[
+                "apply_inverse_tonemap"
+            ],
+            "apply_srgb_linear": GAUSSIAN_SURFLET_DISPLAY_REFERRED_MATERIAL_INPUTS[
+                "apply_srgb_linear"
+            ],
             "basis": "official_isaac_lab_gaussian_camera_test_asset",
+            "colour_space": "display_referred_srgb",
         },
         "sealed_source_mutated": False,
         "proof_boundary": "OpenUSD Gaussian-surflet authoring only; live OVRTX rendering remains required.",
@@ -456,11 +489,13 @@ def write_particlefield_usd(
     out_path: str | Path,
     *,
     sh_rest: np.ndarray | None = None,
+    sh_rest_layout: str = SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR,
     prim_path: str = "/World/CapturedScene/Gaussians",
     up_axis: str = "Z",
     sorting_mode: str = "zDepth",
     expected_source_sha256: str | None = None,
     receipt_path: str | Path | None = None,
+    layer_transform_row_major: Sequence[Sequence[float]] | None = None,
 ) -> dict:
     """Author a ParticleField3DGaussianSplat USD from a standard 3DGS PLY (or SplatData).
 
@@ -486,23 +521,35 @@ def write_particlefield_usd(
                 "blockers": ["particlefield_3dgs_source_missing"],
             }
         source_sha256 = f"sha256:{sha256_file(source_path)}"
-        if (
-            expected_source_sha256 is not None
-            and source_sha256 != expected_source_sha256
-        ):
+        if expected_source_sha256 is not None and source_sha256 != expected_source_sha256:
             return {
                 "status": "blocked",
                 "blockers": ["particlefield_3dgs_source_sha256_mismatch"],
                 "expected_source_sha256": expected_source_sha256,
                 "observed_source_sha256": source_sha256,
             }
-    splat = (
-        source
-        if isinstance(source, SplatData)
-        else read_standard_3dgs_ply(source_path)
-    )
+    splat = source if isinstance(source, SplatData) else read_standard_3dgs_ply(source_path)
     effective_sh_rest = sh_rest if sh_rest is not None else splat.sh_rest
-    arr = build_particlefield_arrays(splat, sh_rest=effective_sh_rest)
+    arr = build_particlefield_arrays(
+        splat,
+        sh_rest=effective_sh_rest,
+        sh_rest_layout=sh_rest_layout,
+    )
+    field_quality = measure_gaussian_field_quality(
+        positions=arr["positions"],
+        activated_scales=arr["scales"],
+        opacities=arr["opacities"],
+    )
+    if field_quality.get("status") != "qualified" or field_quality.get("blockers"):
+        return {
+            "status": "blocked",
+            "blockers": ["particlefield_gaussian_field_quality_invalid"],
+            "gaussian_field_quality": field_quality,
+            "proof_boundary": (
+                "No ParticleField authored because the exact learned field failed "
+                "scene-relative geometry quality."
+            ),
+        }
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     stage = Usd.Stage.CreateNew(str(out_path))
@@ -518,14 +565,26 @@ def write_particlefield_usd(
     stage.SetDefaultPrim(world.GetPrim())
     typed_schema = getattr(UsdVol, "ParticleField3DGaussianSplat", None)
     field = typed_schema.Define(stage, prim_path) if typed_schema else None
-    prim = (
-        field.GetPrim()
-        if field
-        else stage.DefinePrim(prim_path, PARTICLEFIELD_SCHEMA)
-    )
+    prim = field.GetPrim() if field else stage.DefinePrim(prim_path, PARTICLEFIELD_SCHEMA)
     if not prim or not prim.IsValid():
-        return {"status": "blocked", "blockers": ["particlefield_schema_unavailable"],
-                "remediation": "usd-core build lacks ParticleField3DGaussianSplat (need a recent UsdVol)"}
+        return {
+            "status": "blocked",
+            "blockers": ["particlefield_schema_unavailable"],
+            "remediation": "usd-core build lacks ParticleField3DGaussianSplat (need a recent UsdVol)",
+        }
+
+    transform = np.asarray(
+        layer_transform_row_major if layer_transform_row_major is not None else np.eye(4),
+        dtype=np.float64,
+    )
+    if transform.shape != (4, 4) or not np.isfinite(transform).all():
+        return {
+            "status": "blocked",
+            "blockers": ["particlefield_layer_transform_invalid"],
+        }
+    if not np.allclose(transform, np.eye(4)):
+        matrix = Gf.Matrix4d(*[float(value) for value in transform.reshape(-1)])
+        UsdGeom.Xformable(prim).AddTransformOp().Set(matrix)
 
     def vec3f(a: np.ndarray):
         return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(a, dtype=np.float32))
@@ -534,9 +593,7 @@ def write_particlefield_usd(
         field.CreatePositionsAttr(vec3f(arr["positions"]))
         field.CreateScalesAttr(vec3f(arr["scales"]))
         field.CreateOpacitiesAttr(
-            Vt.FloatArray.FromNumpy(
-                np.ascontiguousarray(arr["opacities"], dtype=np.float32)
-            )
+            Vt.FloatArray.FromNumpy(np.ascontiguousarray(arr["opacities"], dtype=np.float32))
         )
         sh_attr = field.CreateRadianceSphericalHarmonicsCoefficientsAttr(
             vec3f(arr["sh_coefficients"])
@@ -546,22 +603,18 @@ def write_particlefield_usd(
         prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(
             vec3f(arr["positions"])
         )
-        prim.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set(
-            vec3f(arr["scales"])
-        )
+        prim.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set(vec3f(arr["scales"]))
         prim.CreateAttribute("opacities", Sdf.ValueTypeNames.FloatArray).Set(
-            Vt.FloatArray.FromNumpy(
-                np.ascontiguousarray(arr["opacities"], dtype=np.float32)
-            )
+            Vt.FloatArray.FromNumpy(np.ascontiguousarray(arr["opacities"], dtype=np.float32))
         )
         sh_attr = prim.CreateAttribute(
             "radiance:sphericalHarmonicsCoefficients",
             Sdf.ValueTypeNames.Float3Array,
         )
         sh_attr.Set(vec3f(arr["sh_coefficients"]))
-        prim.CreateAttribute(
-            "radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int
-        ).Set(int(arr["sh_degree"]))
+        prim.CreateAttribute("radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int).Set(
+            int(arr["sh_degree"])
+        )
     UsdGeom.Boundable(prim).CreateExtentAttr(vec3f(arr["extent"]))
 
     # The coefficient array is flattened as (degree + 1)^2 float3 values per
@@ -576,33 +629,9 @@ def write_particlefield_usd(
     )
     display_color.Set(vec3f(arr["display_colors"]))
 
-    # Match Isaac Lab's own known-working Gaussian camera fixture.  The
-    # ParticleField schema carries geometry/radiance attributes, but the RTX
-    # camera path still needs the emissive MDL bound to turn those attributes
-    # into renderable radiance.  Leave its inputs at MDL defaults: the Isaac
-    # Lab PPISP test overrides them only because that test installs a separate
-    # ISP authority, which this normal LDR camera path does not.
-    material_path = f"{prim.GetParent().GetPath()}/Looks/ParticleFieldEmissive"
-    shader_path = f"{material_path}/Shader"
-    material = stage.DefinePrim(material_path, "Material")
-    shader = stage.DefinePrim(shader_path, "Shader")
-    shader.CreateAttribute(
-        "info:implementationSource", Sdf.ValueTypeNames.Token
-    ).Set("sourceAsset")
-    shader.CreateAttribute(
-        "info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset
-    ).Set("ParticleFieldEmissive.mdl")
-    shader.CreateAttribute(
-        "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
-    ).Set("ParticleFieldEmissive")
-    shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
-    for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
-        material.CreateAttribute(
-            f"outputs:{output_name}", Sdf.ValueTypeNames.Token
-        ).AddConnection(shader.GetPath().AppendProperty("outputs:out"))
-    prim.CreateRelationship("material:binding").SetTargets([material.GetPath()])
-    prim.CreateAttribute("projectionModeHint", Sdf.ValueTypeNames.Token).Set("perspective")
-    prim.CreateAttribute("sortingModeHint", Sdf.ValueTypeNames.Token).Set(sorting_mode)
+    # Standard ParticleFields are rendered natively.  Do not add the
+    # ParticleFieldEmissive material or renderer hints used by private PPISP
+    # fixtures; neither public reference converter authors them.
 
     # quaternions: try numpy fast path, fall back to per-element Gf.Quatf (w, x, y, z)
     q = arr["orientations"]
@@ -614,7 +643,9 @@ def write_particlefield_usd(
     try:
         quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q, dtype=np.float32)))
     except Exception:  # noqa: BLE001
-        quat_attr.Set(Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q]))
+        quat_attr.Set(
+            Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q])
+        )
 
     stage.GetRootLayer().Save()
     if source_path is not None and f"sha256:{sha256_file(source_path)}" != source_sha256:
@@ -633,29 +664,331 @@ def write_particlefield_usd(
         "sh_degree": arr["sh_degree"],
         "sh_primvar_element_size": arr["sh_element_size"],
         "sh_primvar_interpolation": "vertex",
+        "source_sh_rest_layout": arr["source_sh_rest_layout"],
         "display_color_fallback_authored": True,
-        "particlefield_emissive_material_binding_authored": True,
-        "particlefield_emissive_material_inputs": "mdl_defaults",
-        "particlefield_emissive_material_path": material_path,
+        "particlefield_emissive_material_binding_authored": False,
+        "particlefield_emissive_material_inputs": (
+            PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS_LABEL
+        ),
+        "particlefield_emissive_material_input_values": dict(
+            PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS
+        ),
+        "particlefield_custom_render_hints_authored": False,
         "reference_converters": PARTICLEFIELD_REFERENCE_CONVERTERS,
         "prim_path": prim_path,
         "default_prim": "/World",
         "source_sha256": source_sha256,
-        "source_kind": (
-            "in_memory_splat_data" if source_path is None else "standard_3dgs_ply"
-        ),
+        "source_kind": ("in_memory_splat_data" if source_path is None else "standard_3dgs_ply"),
+        "positive_infinite_opacity_logit_count": arr["positive_infinite_opacity_logit_count"],
+        "negative_infinite_opacity_logit_count": arr["negative_infinite_opacity_logit_count"],
+        "gaussian_field_quality": field_quality,
+        "sealed_source_mutated": False,
+        "layer_transform_row_major": transform.tolist(),
+        "proof_boundary": "ParticleField USD authoring only; Isaac RTX render is the GPU step.",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    if receipt_path is not None:
+        write_json(Path(receipt_path), result)
+    return result
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _nurec_payload_and_transform(
+    source_path: Path,
+) -> tuple[dict[str, Any], list[list[float]], str, bytes]:
+    """Read one self-contained NuRec volume without changing its learned arrays."""
+
+    try:
+        from pxr import Usd, UsdGeom
+    except Exception as exc:  # noqa: BLE001
+        raise NuRecCodecError(["nurec_particlefield_usd_runtime_unavailable"]) from exc
+    try:
+        stage = Usd.Stage.Open(str(source_path))
+    except Exception as exc:  # noqa: BLE001
+        raise NuRecCodecError(["nurec_particlefield_source_unreadable"]) from exc
+    if stage is None or not stage.GetDefaultPrim():
+        raise NuRecCodecError(["nurec_particlefield_source_unreadable"])
+    volumes = [
+        prim for prim in stage.Traverse() if bool(prim.GetAttribute(NUREC_VOLUME_MARKER).Get())
+    ]
+    if len(volumes) != 1:
+        raise NuRecCodecError(["nurec_particlefield_volume_not_exact"])
+    volume = volumes[0]
+    payloads = {
+        str(child.GetAttribute("filePath").Get().path)
+        for child in volume.GetChildren()
+        if child.GetAttribute("filePath").IsValid()
+        and child.GetAttribute("filePath").Get() is not None
+    }
+    if len(payloads) != 1:
+        raise NuRecCodecError(["nurec_particlefield_payload_not_exact"])
+    payload_name = Path(payloads.pop().replace("\\", "/")).name
+    try:
+        with zipfile.ZipFile(source_path) as archive:
+            members = [
+                info
+                for info in archive.infolist()
+                if not info.is_dir() and Path(info.filename).name == payload_name
+            ]
+            if len(members) != 1:
+                raise NuRecCodecError(["nurec_particlefield_payload_not_exact"])
+            payload = archive.read(members[0])
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise NuRecCodecError(["nurec_particlefield_source_unreadable"]) from exc
+    document = decode_nurec_bytes(payload)
+    matrix = UsdGeom.Xformable(volume).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    transform = [[float(matrix[row][column]) for column in range(4)] for row in range(4)]
+    return document, transform, str(volume.GetPath()), payload
+
+
+def write_particlefield_usd_from_nurec(
+    source_path: str | Path,
+    out_path: str | Path,
+    *,
+    expected_source_sha256: str,
+    receipt_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Convert one sealed NuRec USDZ to the Isaac 6 native ParticleField schema.
+
+    NuRec remains the configured-scene appearance truth. This produces a derived,
+    digest-bound runtime representation from the same learned Gaussian arrays.
+    """
+
+    source = Path(source_path)
+    observed_source_sha256 = f"sha256:{sha256_file(source)}" if source.is_file() else None
+    if (
+        source.is_symlink()
+        or not source.is_file()
+        or observed_source_sha256 != expected_source_sha256
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["nurec_particlefield_source_identity_mismatch"],
+            "expected_source_sha256": expected_source_sha256,
+            "observed_source_sha256": observed_source_sha256,
+        }
+    try:
+        document, transform, source_prim_path, payload = _nurec_payload_and_transform(source)
+        description = describe_volume(document)
+        arrays = gaussian_arrays(document)
+    except (NuRecCodecError, KeyError, ValueError) as exc:
+        return {
+            "status": "blocked",
+            "blockers": ["nurec_particlefield_source_invalid"],
+            "detail_codes": list(getattr(exc, "errors", (str(exc),))),
+        }
+    if (
+        description.get("density_activation") != "sigmoid"
+        or description.get("scale_activation") != "exp"
+        or description.get("rotation_activation") != "normalize"
+        or description.get("radiance_sph_degree") != 3
+        or description.get("density_kernel_planar") is not False
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["nurec_particlefield_activation_contract_unsupported"],
+            "nurec_description": description,
+        }
+    count = int(arrays["positions"].shape[0])
+    splat = SplatData(
+        count=count,
+        xyz=np.asarray(arrays["positions"], dtype=np.float32),
+        opacity=np.asarray(arrays["densities"], dtype=np.float32).reshape(count),
+        f_dc=np.asarray(arrays["features_albedo"], dtype=np.float32),
+        scales=np.asarray(arrays["scales"], dtype=np.float32),
+        quats=np.asarray(arrays["rotations"], dtype=np.float32),
+        properties=(),
+        sh_rest=np.asarray(arrays["features_specular"], dtype=np.float32),
+    )
+    if not np.allclose(np.asarray(transform, dtype=np.float64), np.eye(4)):
+        return {
+            "status": "blocked",
+            "blockers": ["nurec_particlefield_nonidentity_transform_requires_composition"],
+            "layer_transform_row_major": transform,
+        }
+    try:
+        installed_converter_version = importlib.metadata.version(
+            UPSTREAM_GSPLAT_CONVERTER_DISTRIBUTION
+        )
+    except importlib.metadata.PackageNotFoundError:
+        return {
+            "status": "blocked",
+            "blockers": ["upstream_usd_convert_gsplat_missing"],
+        }
+    if installed_converter_version != UPSTREAM_GSPLAT_CONVERTER_VERSION:
+        return {
+            "status": "blocked",
+            "blockers": ["upstream_usd_convert_gsplat_version_mismatch"],
+            "expected_version": UPSTREAM_GSPLAT_CONVERTER_VERSION,
+            "observed_version": installed_converter_version,
+        }
+
+    # NuRec stores RGB triplets per coefficient.  A standard 3DGS PLY stores
+    # all R coefficients, then G, then B.  Materialize that public interchange
+    # contract explicitly and let NVIDIA's pinned converter own the USD schema.
+    rest = np.asarray(splat.sh_rest, dtype=np.float32)
+    n_rest = rest.shape[1] // 3
+    standard_rest = (
+        rest.reshape(count, n_rest, 3)
+        .transpose(0, 2, 1)
+        .reshape(count, n_rest * 3)
+    )
+    standard_splat = SplatData(
+        count=count,
+        xyz=np.asarray(splat.xyz, dtype=np.float32),
+        opacity=np.asarray(splat.opacity, dtype=np.float32),
+        f_dc=np.asarray(splat.f_dc, dtype=np.float32),
+        scales=np.asarray(splat.scales, dtype=np.float32),
+        quats=np.asarray(splat.quats, dtype=np.float32),
+        properties=(),
+        sh_rest=np.ascontiguousarray(standard_rest),
+    )
+    arr = build_particlefield_arrays(
+        standard_splat,
+        sh_rest=standard_splat.sh_rest,
+        sh_rest_layout=SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR,
+    )
+    field_quality = measure_gaussian_field_quality(
+        positions=arr["positions"],
+        activated_scales=arr["scales"],
+        opacities=arr["opacities"],
+    )
+    if field_quality.get("status") != "qualified" or field_quality.get("blockers"):
+        return {
+            "status": "blocked",
+            "blockers": ["particlefield_gaussian_field_quality_invalid"],
+            "gaussian_field_quality": field_quality,
+            "proof_boundary": (
+                "No ParticleField authored because the exact learned field failed "
+                "scene-relative geometry quality."
+            ),
+        }
+    out = Path(out_path).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from pxr import Usd, UsdGeom
+        from usd_convert_gsplat.ply_reader import read_ply as upstream_read_ply
+        from usd_convert_gsplat.usd_writer import write_gaussian_splat_usd
+
+        with tempfile.TemporaryDirectory(
+            prefix="official-particlefield-", dir=out.parent
+        ) as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            standard_ply = temporary_root / "scene.standard-3dgs.ply"
+            upstream_usd = temporary_root / "upstream.usdc"
+            wrapper_usd = temporary_root / "wrapper.usda"
+            write_standard_3dgs_ply(standard_splat, standard_ply)
+            standard_ply_sha256 = f"sha256:{sha256_file(standard_ply)}"
+            upstream_data = upstream_read_ply(str(standard_ply))
+            write_gaussian_splat_usd(
+                upstream_data,
+                str(upstream_usd),
+                source_file=str(standard_ply),
+                prim_name="Gaussians",
+                up_axis="Z",
+            )
+            upstream_sha256 = f"sha256:{sha256_file(upstream_usd)}"
+            upstream_stage = Usd.Stage.Open(str(upstream_usd))
+            if not upstream_stage or not upstream_stage.GetDefaultPrim():
+                raise ValueError("upstream_particlefield_stage_invalid")
+            wrapper = Usd.Stage.CreateNew(str(wrapper_usd))
+            UsdGeom.SetStageUpAxis(wrapper, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(wrapper, 1.0)
+            world = UsdGeom.Xform.Define(wrapper, "/World")
+            wrapper.SetDefaultPrim(world.GetPrim())
+            UsdGeom.Xform.Define(wrapper, "/World/CapturedScene")
+            target = wrapper.OverridePrim("/World/CapturedScene/Gaussians")
+            target.GetReferences().AddReference(
+                str(upstream_usd), upstream_stage.GetDefaultPrim().GetPath()
+            )
+            wrapper.GetRootLayer().comment = (
+                "Composed from NVIDIA usd-convert-gsplat "
+                f"{UPSTREAM_GSPLAT_CONVERTER_VERSION}; Blueprint authors only "
+                "the /World placement wrapper."
+            )
+            flattened = wrapper.Flatten()
+            if not flattened.Export(str(out)):
+                raise ValueError("upstream_particlefield_flatten_failed")
+    except Exception as exc:  # noqa: BLE001 - typed production refusal
+        return {
+            "status": "blocked",
+            "blockers": ["upstream_usd_convert_gsplat_failed"],
+            "error_type": type(exc).__name__,
+        }
+
+    result_stage = Usd.Stage.Open(str(out))
+    result_prim = result_stage.GetPrimAtPath("/World/CapturedScene/Gaussians")
+    if (
+        not result_stage
+        or not result_prim
+        or result_prim.GetTypeName() != PARTICLEFIELD_SCHEMA
+        or result_prim.GetRelationship("material:binding").GetTargets()
+        or result_prim.GetAttribute("projectionModeHint").HasAuthoredValueOpinion()
+        or result_prim.GetAttribute("sortingModeHint").HasAuthoredValueOpinion()
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["upstream_particlefield_output_contract_invalid"],
+        }
+    result = {
+        "schema_version": PARTICLEFIELD_RECEIPT_SCHEMA_VERSION,
+        "status": "completed",
+        "output": str(out),
+        "output_bytes": out.stat().st_size,
+        "output_sha256": f"sha256:{sha256_file(out)}",
+        "schema": PARTICLEFIELD_SCHEMA,
+        "splat_count": arr["count"],
+        "sh_degree": arr["sh_degree"],
+        "sh_primvar_element_size": arr["sh_element_size"],
+        "sh_primvar_interpolation": "vertex",
+        "source_sh_rest_layout": SH_REST_LAYOUT_COEFFICIENT_MAJOR,
+        "standard_interchange_sh_rest_layout": SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR,
+        "display_color_fallback_authored": True,
+        "particlefield_emissive_material_binding_authored": False,
+        "particlefield_custom_render_hints_authored": False,
+        "particlefield_authoring_implementation": "nvidia_usd_convert_gsplat",
+        "upstream_converter": {
+            "distribution": UPSTREAM_GSPLAT_CONVERTER_DISTRIBUTION,
+            "version": installed_converter_version,
+            "source_revision": UPSTREAM_GSPLAT_CONVERTER_REVISION,
+            "source_url": PARTICLEFIELD_REFERENCE_CONVERTERS["nvidia_usd_convert_gsplat"],
+            "standard_ply_sha256": standard_ply_sha256,
+            "uncomposed_output_sha256": upstream_sha256,
+        },
+        "prim_path": "/World/CapturedScene/Gaussians",
+        "default_prim": "/World",
+        "source_sha256": observed_source_sha256,
+        "source_kind": "nurec_usdz",
         "positive_infinite_opacity_logit_count": arr[
             "positive_infinite_opacity_logit_count"
         ],
         "negative_infinite_opacity_logit_count": arr[
             "negative_infinite_opacity_logit_count"
         ],
+        "gaussian_field_quality": field_quality,
         "sealed_source_mutated": False,
-        "proof_boundary": "ParticleField USD authoring only; Isaac RTX render is the GPU step.",
+        "layer_transform_row_major": transform,
     }
-    result["receipt_digest"] = canonical_digest(
-        result, digest_field="receipt_digest"
+    if result.get("status") != "completed":
+        return result
+    result.update(
+        source_sha256=observed_source_sha256,
+        source_kind="nurec_usdz",
+        source_nurec_payload_sha256=_sha256_bytes(payload),
+        source_nurec_prim_path=source_prim_path,
+        source_nurec_description=description,
+        source_nurec_sh_rest_layout=SH_REST_LAYOUT_COEFFICIENT_MAJOR,
+        exact_learned_arrays_preserved=True,
+        representation_conversion_only=True,
+        proof_boundary=(
+            "Deterministic NuRec-to-ParticleField representation conversion only; "
+            "Isaac RTX render remains the GPU gate."
+        ),
     )
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
     if receipt_path is not None:
         write_json(Path(receipt_path), result)
     return result

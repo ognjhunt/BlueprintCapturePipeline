@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from ..openai_prompt_cache import (
+    cache_policy_evidence,
+    direct_prompt_cache_request,
+    usage_and_cost_receipt,
+)
+
 
 _DEFAULT_TIMEOUT_SECONDS = 120
 _DEFAULT_MODE = "codex_cli"
@@ -231,24 +237,31 @@ def _extract_openai_text(response: Any) -> str:
 class _OpenAISDKRunner:
     def __init__(self, *, config: OpenAIPhase2Config) -> None:
         self._config = config
+        self._last_provider_call: Dict[str, Any] | None = None
 
     def runtime_metadata(self) -> Dict[str, Any]:
-        return {
+        metadata = {
             "openai_phase2_mode": "sdk",
             "openai_phase2_model": self._config.model,
             "openai_phase2_timeout_seconds": self._config.timeout_seconds,
             "openai_phase2_transport": "openai_sdk",
             "openai_phase2_reasoning_effort": self._config.reasoning_effort,
         }
+        if self._last_provider_call is not None:
+            metadata["openai_phase2_last_provider_call"] = self._last_provider_call
+        return metadata
 
     def skill_metadata(self, skill_name: str) -> Dict[str, Any]:
-        return {
+        metadata = {
             "skill_name": skill_name,
             "transport": "openai_sdk",
             "mode": "sdk",
             "model": self._config.model,
             "reasoning_effort": self._config.reasoning_effort,
         }
+        if self._last_provider_call is not None:
+            metadata["last_provider_call"] = self._last_provider_call
+        return metadata
 
     def __call__(self, skill_name: str, payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
         api_key = _string_env("OPENAI_API_KEY")
@@ -260,13 +273,29 @@ class _OpenAISDKRunner:
             return None
         client = OpenAI(api_key=api_key)
         prompt = _prompt_for_skill(skill_name, payload)
+        policy, cache_request = direct_prompt_cache_request(
+            model=self._config.model,
+            family="phase2_skill_one_off",
+            contract_version="phase2-skill-one-off-v1",
+            stable_developer_prefix=None,
+            dynamic_input=prompt,
+            output_schema=_skill_schema(skill_name),
+            reasoning_effort=self._config.reasoning_effort,
+            expected_reuse_count=0,
+            expected_reuse_probability=0.0,
+            dynamic_suffix_fields=("skill_name", "payload"),
+        )
         try:
             response = client.responses.create(
                 model=self._config.model,
-                input=prompt,
+                **cache_request,
             )
         except Exception:
             return None
+        self._last_provider_call = {
+            "cache_policy": cache_policy_evidence(policy),
+            "usage": usage_and_cost_receipt(response, model=self._config.model),
+        }
         text = _extract_openai_text(response)
         if not text:
             return None
@@ -274,7 +303,9 @@ class _OpenAISDKRunner:
             parsed = json.loads(text)
         except Exception:
             return None
-        return parsed if isinstance(parsed, Mapping) else None
+        if not isinstance(parsed, Mapping):
+            return None
+        return dict(parsed)
 
 
 class CodexOpenAIPhase2Runner:

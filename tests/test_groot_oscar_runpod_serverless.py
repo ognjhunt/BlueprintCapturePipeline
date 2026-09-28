@@ -514,12 +514,12 @@ def test_active_worker_runs_all_phases_then_retrieves_and_tears_down(
         "cleanup_campaign_storage",
         lambda *_args, **_kwargs: {"status": "completed", "deleted_file_count": 25},
     )
+    real_open_pending = serverless.open_pending_teardown
     monkeypatch.setattr(
         serverless,
         "open_pending_teardown",
-        lambda **_kwargs: {"path": str(tmp_path / "pending.json")},
+        lambda **kwargs: real_open_pending(**{**kwargs, "registry_dir": tmp_path / "pending"}),
     )
-    monkeypatch.setattr(serverless, "bind_pending_teardown_instance", lambda *_args: None)
     monkeypatch.setattr(
         serverless,
         "_arm_watchdog",

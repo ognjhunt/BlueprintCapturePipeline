@@ -302,9 +302,13 @@ def derive_measured_articulation(
         facing_outward_sign=facing_outward_sign,
         facing_proposed_by=facing_proposed_by,
     )
-    shell = measure_forward_shell(points, plane=plane)
+    forward_shell = measure_forward_shell(points, plane=plane)
     hinge = derive_hinge(
-        plane=plane, shell=shell, up_axis=up_axis, hinge_side=hinge_side
+        plane=plane,
+        # Geometric shell mapping, not subprocess shell execution.
+        shell=forward_shell,  # nosec B604
+        up_axis=up_axis,
+        hinge_side=hinge_side,
     )
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -312,7 +316,7 @@ def derive_measured_articulation(
         "source_vertex_count": len(points),
         "stage_up_axis_index": up_axis,
         "front_plate": plane,
-        "forward_shell": shell,
+        "forward_shell": forward_shell,
         "target_joint": hinge,
         "claim_boundary": {
             "physics_typed_by_hand": False,

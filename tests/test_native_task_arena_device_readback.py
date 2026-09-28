@@ -10,7 +10,7 @@ from blueprint_pipeline.native_task_arena_device_readback import (
 from blueprint_pipeline.native_task_arena_runtime import NativeTaskArenaEnvironment
 
 
-class _View:
+class _ArticulationView:
     def __init__(self, device: str):
         self.device = device
 
@@ -18,17 +18,28 @@ class _View:
         return SimpleNamespace(device=self.device)
 
 
+class _RigidBodyView:
+    def __init__(self, device: str):
+        self.device = device
+
+    def get_velocities(self):
+        return SimpleNamespace(device=self.device)
+
+
 def _built(*, task_view_device: str = "cuda:0") -> NativeTaskArenaEnvironment:
-    def asset(view_device: str):
+    def asset(view):
         return SimpleNamespace(
             device="cuda:0",
             data=SimpleNamespace(device="cuda:0"),
-            root_physx_view=_View(view_device),
+            root_physx_view=view,
         )
 
     unwrapped = SimpleNamespace(
         device="cuda:0",
-        scene={"robot": asset("cuda:0"), "task_object": asset(task_view_device)},
+        scene={
+            "robot": asset(_ArticulationView("cuda:0")),
+            "task_object": asset(_RigidBodyView(task_view_device)),
+        },
     )
     return NativeTaskArenaEnvironment(
         env=SimpleNamespace(unwrapped=unwrapped),
@@ -59,6 +70,10 @@ def test_all_native_tensor_devices_must_match_requested_cuda(monkeypatch) -> Non
 
     assert receipt["passed"] is True
     assert set(receipt["observed_devices"].values()) == {"cuda:0"}
+    assert receipt["probe_methods"] == {
+        "robot_physx_joint_velocity": "get_dof_velocities",
+        "task_physx_joint_velocity": "get_velocities",
+    }
 
 
 def test_cpu_physx_array_in_cuda_environment_is_a_typed_blocker(monkeypatch) -> None:

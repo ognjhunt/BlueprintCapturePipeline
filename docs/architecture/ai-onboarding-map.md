@@ -32,7 +32,7 @@ proof.
 | Testbed compilation | `site_task_testbed_compiler.py`, `canonical_site_package.py` | versioned testbed bound to exact evidence |
 | Claim routing | `decision_evidence_contracts.py`, `decision_evidence_router.py`, `decision_evidence_execution.py` | qualified evidence plan or smallest blocker |
 | Leaf run boundary | `evaluation_run_contract.py`, `evaluation_run_execution.py` | scene/robot/task/policy/runtime/proof bindings |
-| Condition matrix | `new_site_task_evaluation_matrix.py`, scenario variation modules | stable candidate/condition IDs and frozen partitions |
+| Condition matrix | `exact_workcell_variation_matrix.py`; `new_site_task_evaluation_matrix.py` remains five-policy compatibility | policy-neutral 100-cell exact-workcell matrix, stable condition IDs, frozen partitions, and later two-candidate binding |
 | Runtime | existing Franka/DROID, MuJoCo/Isaac, and provider-neutral adapters | closed-loop steps and complete episode receipts |
 | Statistics | `rank_fidelity_statistics.py`, `robot_eval_calibration.py` | power plan, uncertainty, decision rule, claim ceiling |
 | Prospective seal | decision envelopes and immutable artifact graph | result digest before holdout release |

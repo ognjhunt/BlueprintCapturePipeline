@@ -6,6 +6,7 @@ import inspect
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -1401,7 +1402,7 @@ def test_codex_advisory_review_is_metadata_only_and_cannot_upgrade_claims(
 
     def fake_runner(config):
         calls.append(config)
-        assert config.model == "gpt-5.6-luna"
+        assert config.model == "gpt-6-luna"
         assert config.sandbox == "read-only"
         assert config.codex_ephemeral is True
         assert config.codex_ignore_user_config is True
@@ -2242,11 +2243,16 @@ def test_bundle_rejects_changed_reference_bytes(
     ("filename", "before", "after"),
     [
         ("material_agent.yaml", "on_failure: warn", "on_failure: fail"),
-        ("texture_agent.yaml", "model: gpt-image-2", "model: unavailable-image"),
+        ("texture_agent.yaml", "model: gpt-image-2.5-sunburst", "model: unavailable-image"),
         (
             "physics_agent.yaml",
             "    enabled: false\n    vlm:\n      backend: openai",
             "    enabled: true\n    vlm:\n      backend: openai",
+        ),
+        (
+            "physics_agent.yaml",
+            "collision_approx: convexHull",
+            "collision_approx: none",
         ),
     ],
 )
@@ -2355,7 +2361,7 @@ def test_provider_runtime_pins_native_dependency_closure_before_agent_execution(
     assert "content_agents_native_ovrtx_dependency_closure_failed" in runtime
     assert 'content_agents_source/.ovrtx_native_venv/bin/python' in runner
     assert runner.index("native, native_blockers = _native_probes(") < runner.index(
-        'for name in ("material", "texture", "physics"):'
+        "for name in AGENT_EXECUTION_ORDER:"
     )
     assert "skipped_after_native_probe_failure" in runner
 
@@ -2483,6 +2489,10 @@ def test_provider_runtime_stage_timeout_kills_posix_process_group(
 def test_provider_runtime_uses_stage_specific_bounded_timeouts() -> None:
     runner = _provider_runner_module()
     runner_source = (ROOT / "scripts/adp_content_agents_provider_runner.py").read_text()
+    from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
+        CONTENT_AGENTS_COMPONENT_TIMEOUT_SECONDS,
+        CONTENT_AGENTS_RUNNER_CLOSURE_MARGIN_SECONDS,
+    )
 
     assert runner.AGENT_TIMEOUT_SECONDS == {
         "material": 3_600,
@@ -2490,15 +2500,45 @@ def test_provider_runtime_uses_stage_specific_bounded_timeouts() -> None:
         "physics": 3_600,
     }
     assert sum(runner.AGENT_TIMEOUT_SECONDS.values()) == 8_400
-    assert "timeout=AGENT_TIMEOUT_SECONDS[name]" in runner_source
+    assert runner.RUNNER_TOTAL_BUDGET_SECONDS <= (
+        CONTENT_AGENTS_COMPONENT_TIMEOUT_SECONDS
+        - CONTENT_AGENTS_RUNNER_CLOSURE_MARGIN_SECONDS
+    )
+    assert "timeout=min(AGENT_TIMEOUT_SECONDS[name], remaining_seconds)" in runner_source
+    assert "content_agents_runner_budget_exhausted_before:" in runner_source
+    assert "content_agents_runner_budget_exhausted_during:" in runner_source
+
+
+def test_provider_runtime_refuses_secret_bearing_agent_evidence(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+    work = tmp_path / "agent-work"
+    work.mkdir()
+    opaque_secret = "opaque-provider-credential-value-839873"
+    (work / "agent-output.json").write_text(
+        json.dumps({"debug": opaque_secret}), encoding="utf-8"
+    )
+    destination = tmp_path / "retained-agent-work"
+
+    with pytest.raises(
+        ValueError, match="content_agents_output_secret_detected"
+    ):
+        runner._copy_evidence(
+            work,
+            destination,
+            env={"OPENAI_API_KEY": opaque_secret},
+        )
+
+    assert not destination.exists()
 
 
 def test_provider_runtime_uses_native_tls_before_uv_dependency_fetches() -> None:
     runtime = (ROOT / "scripts/run_adp_content_agents_provider_runtime.sh").read_text()
 
     native_tls = runtime.index("export UV_NATIVE_TLS=true")
-    assert native_tls < runtime.index('"${UV_BIN}" python install 3.12')
-    assert native_tls < runtime.index('"${UV_BIN}" pip install \\\n')
+    assert native_tls < runtime.index('"${UV_COMMAND[@]}" python install 3.12')
+    assert native_tls < runtime.index('"${UV_COMMAND[@]}" pip install \\\n')
 
 
 def test_provider_output_inspector_recognizes_content_agents_result(tmp_path: Path) -> None:
@@ -4064,6 +4104,61 @@ def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
             assert payload["input"]["reference_images"] == ["../input/reference.png"]
 
 
+def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) -> None:
+    """A movable scene replacement must not reach PhysX as a triangle mesh."""
+
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    sources = {
+        f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    destination = tmp_path / "configs"
+    destination.mkdir()
+    content_agents._materialize_remote_configs(
+        config_sources=sources,
+        destination=destination,
+        variant="scene_configuration_v1",
+        agent_mesh_prim_paths=["/Asset/Geometry/Visual"],
+        agent_render_prim_paths=["/Asset/Geometry/Visual"],
+        agent_default_material_path="/Asset/Looks/content_agents_advisory",
+    )
+
+    physics = yaml.safe_load(
+        (destination / "physics_agent.yaml").read_text(encoding="utf-8")
+    )
+    assert physics["steps"]["apply_physics"]["collision_approx"] == (
+        "convexDecomposition"
+    )
+
+
+def test_scene_configuration_forwards_object_identity_and_image_conditioning(tmp_path: Path) -> None:
+    """The image generator consumes texture.reference_image_uris, not input references."""
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    sources = {
+        f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    destination = tmp_path / "configs"
+    destination.mkdir()
+    references = [(tmp_path / "input" / name).as_uri() for name in ("source.png", "detail.png")]
+    content_agents._materialize_remote_configs(
+        config_sources=sources, destination=destination, variant="scene_configuration_v1",
+        agent_mesh_prim_paths=["/Asset/Geometry/Visual"],
+        agent_default_material_path="/Asset/Looks/GeneratedCandidate",
+        authoring_context={"authoring_target": "One rigid open book matching the source."},
+        reference_image_uris=references,
+    )
+    material = yaml.safe_load((destination / "material_agent.yaml").read_text())
+    prompts = material["steps"]["build_dataset_prepare_dataset"]["prompts"]
+    assert "open book" in prompts["vlm_user"].format(materials_list="Paper, Glass")
+    assert "placeholder or missing materials" in prompts["vlm_system"]
+    texture = yaml.safe_load((destination / "texture_agent.yaml").read_text())
+    assert texture["texture"]["reference_image_uris"] == references
+    prompt = texture["material_textures"]["/Asset/Looks/GeneratedCandidate"]["prompt"]
+    assert "open book" in prompt and "printed or photographic patterns" in prompt
+    assert "no text" not in prompt
+
+
 def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
     tmp_path: Path,
 ) -> None:
@@ -4263,6 +4358,174 @@ def test_provider_runner_rejects_changed_bound_input(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="runtime_input_binding_invalid"):
         runner._runtime_input_plan(runtime)
+
+
+def test_provider_runner_chains_every_paid_agent_output_into_the_final_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paid material and texture outputs must not be discarded.
+
+    The released runner used to launch all three agents against the original
+    source USD and then package only the physics workdir.  That could report all
+    agents as executed while the returned candidate contained neither authored
+    materials nor textures.  Exercise the real runner orchestration with cheap
+    fake executables and require a material -> physics -> texture data chain.
+    Physics intentionally precedes texture so the final portability-preserving
+    texture export retains the authored physics schemas and local texture tree.
+    """
+
+    from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+    runner = _provider_runner_module()
+    runtime = tmp_path / "provider_runtime"
+    runtime.mkdir()
+    monkeypatch.setattr(runner, "__file__", str(runtime / "runner.py"))
+    output_root = tmp_path / "runtime_output"
+    monkeypatch.setenv("BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR", str(output_root))
+
+    input_path = runtime / "input/source_asset.usda"
+    input_path.parent.mkdir()
+    input_path.write_text('#usda 1.0\ndef Xform "Asset" {}\n', encoding="utf-8")
+    write_json(
+        runtime / "adp_content_agents_provider_manifest.json",
+        {
+            "runtime_input_binding": {
+                "relative_path": "input/source_asset.usda",
+                "sha256": "sha256:"
+                + hashlib.sha256(input_path.read_bytes()).hexdigest(),
+            },
+            "joint_agent_plan": {
+                "planned": False,
+                "executed_by_content_agents_bundle": False,
+                "reason": "single_rigid_body_has_no_articulation_task",
+                "input_joint_count": 0,
+                "input_rigid_body_count": 0,
+                "joint_agent_inapplicable_single_rigid_body": True,
+            },
+        },
+    )
+    configs = runtime / "configs"
+    configs.mkdir()
+    for name, workdir in (
+        ("material_agent.yaml", ".material"),
+        ("texture_agent.yaml", ".texture"),
+        ("physics_agent.yaml", ".physics"),
+    ):
+        config_payload = {
+            "project": {"working_dir": workdir},
+            "input": {"usd_path": "../input/source_asset.usda"},
+        }
+        if name == "texture_agent.yaml":
+            config_payload.update(
+                {
+                    "target_prims": ["/Asset/Geometry"],
+                    "material_textures": {
+                        "/Asset/Looks/GeneratedCandidate": {
+                            "material_path": "/Asset/Looks/GeneratedCandidate",
+                            "prompt": "bounded fixture",
+                        }
+                    },
+                }
+            )
+        (configs / name).write_text(
+            yaml.safe_dump(config_payload, sort_keys=False),
+            encoding="utf-8",
+        )
+
+    observed_inputs: list[tuple[str, Path]] = []
+    texture_material_paths: list[str] = []
+
+    def write_bound_candidate(path: Path, *, label: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stage = Usd.Stage.CreateNew(str(path))
+        asset = UsdGeom.Xform.Define(stage, "/Asset").GetPrim()
+        stage.SetDefaultPrim(asset)
+        geometry = UsdGeom.Cube.Define(stage, "/Asset/Geometry").GetPrim()
+        material = UsdShade.Material.Define(stage, "/Asset/Looks/AppliedMaterial")
+        UsdShade.MaterialBindingAPI.Apply(geometry).Bind(material)
+        asset.CreateAttribute("fixture:label", Sdf.ValueTypeNames.String).Set(label)
+        stage.GetRootLayer().Save()
+
+    def fake_run(command, *, log_path, env, **_kwargs):
+        executable = Path(command[0]).name
+        if executable == "nvidia-smi":
+            return {"returncode": 0, "timed_out": False}
+        if executable == "validation-agent":
+            validation_dir = Path(command[command.index("--output-dir") + 1])
+            validation_dir.mkdir(parents=True)
+            write_json(validation_dir / "validation_result.json", {"verdict": "pass"})
+            return {"returncode": 0, "timed_out": False}
+
+        agent = executable.removesuffix("-agent")
+        config_path = next(Path(item) for item in command if str(item).endswith(".yaml"))
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        resolved_input = (config_path.parent / payload["input"]["usd_path"]).resolve()
+        observed_inputs.append((agent, resolved_input))
+        if agent == "texture":
+            texture_material_paths.extend(payload["material_textures"])
+        if agent == "material":
+            authored = configs / ".material/output/output.usd"
+        elif agent == "physics":
+            authored = configs / ".physics/physics/output_physics.usd"
+        elif agent == "texture":
+            authored = configs / ".texture/output/textured_output.usd"
+            texture = configs / ".texture/textures/albedo.png"
+            texture.parent.mkdir(parents=True, exist_ok=True)
+            texture.write_bytes(b"texture")
+        else:  # pragma: no cover - the assertion below names every executable
+            raise AssertionError(executable)
+        if agent in {"material", "physics"}:
+            write_bound_candidate(authored, label=agent)
+        else:
+            authored.parent.mkdir(parents=True, exist_ok=True)
+            authored.write_text(f"#usda 1.0\n# {agent}\n", encoding="utf-8")
+        return {"returncode": 0, "timed_out": False}
+
+    validated: dict[str, Path] = {}
+
+    def fake_validation_stage(source: Path, destination: Path) -> None:
+        validated["source"] = source
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("#usda 1.0\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "_run", fake_run)
+    monkeypatch.setattr(
+        runner,
+        "_native_probes",
+        lambda **_kwargs: (
+            {
+                "planned": False,
+                "ovrtx_exact_camera_executed": False,
+                "ovphysx_drop_contact_settle_executed": False,
+            },
+            [],
+        ),
+    )
+    monkeypatch.setattr(runner, "_validation_stage", fake_validation_stage)
+
+    assert runner.main() == 0
+
+    material_output = (configs / ".material/output/output.usd").resolve()
+    physics_output = (configs / ".physics/physics/output_physics.usd").resolve()
+    texture_output = (configs / ".texture/output/textured_output.usd").resolve()
+    assert observed_inputs == [
+        ("material", input_path.resolve()),
+        ("physics", material_output),
+        ("texture", physics_output),
+    ]
+    assert validated["source"] == texture_output
+    assert texture_material_paths == ["/Asset/Looks/AppliedMaterial"]
+    result = json.loads(
+        (output_root / "adp_content_agents_vast_result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result["status"] == "completed"
+    assert result["agent_execution_order"] == ["material", "physics", "texture"]
+    assert result["authored_candidate"]["sha256"] == runner._sha256(texture_output)
+    assert result["result_digest"] == canonical_digest(
+        result, digest_field="result_digest"
+    )
 
 
 def test_local_preflight_image_admission_is_recipe_bound(monkeypatch) -> None:
@@ -4686,16 +4949,22 @@ def test_content_agents_live_worker_forwards_openai_country_allowlist() -> None:
 
 def test_every_vast_worker_that_forwards_openai_is_country_constrained() -> None:
     sources = ROOT / "src/blueprint_pipeline"
+    # The forwarding marker is any OpenAI key environment name, including the
+    # per-stage names like OPENAI_CONTENT_AGENTS_API_KEY_FILE -- a worker that
+    # renames its key envs must not silently fall out of this contract.
+    forwards_openai = re.compile(r"OPENAI_[A-Z0-9_]*API_KEY")
     openai_vast_workers = {
         path.name: path.read_text(encoding="utf-8")
         for path in sources.glob("*vast*.py")
-        if "OPENAI_API_KEY" in path.read_text(encoding="utf-8")
+        if path.name != "vast_provider_adapter.py"
+        if forwards_openai.search(path.read_text(encoding="utf-8"))
         and "run_vast_provider_adapter(" in path.read_text(encoding="utf-8")
     }
 
     assert set(openai_vast_workers) == {
         "adp_content_agents_vast.py",
         "adp_joint_agent_vast.py",
+        "task_evaluation_scene_configuration_vast.py",
     }
     for source in openai_vast_workers.values():
         assert "allowed_geolocation_country_codes" in source

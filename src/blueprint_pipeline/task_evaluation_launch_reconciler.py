@@ -17,12 +17,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .task_evaluation_launch_progress import build_launch_progress
+from .task_evaluation_scene_evaluation_readiness import (
+    CONFIGURATION_COMPLETE_OFFERING_STATUSES,
+)
 from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
+    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,
     TaskEvaluationLaunchError,
     canonical_digest,
+)
+from .native_task_arena_direct_execution_closeout import (
+    FILENAME as DIRECT_EXECUTION_ADOPTION_FILENAME,
+    SCHEMA_VERSION as DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION,
+    validate_native_direct_execution_adoption,
 )
 
 
@@ -40,6 +50,12 @@ WEBAPP_SYNC_TERMINAL_UNMATCHED_SCHEMA_VERSION = (
 )
 WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME = "webapp_sync_terminal_unmatched.json"
 WEBAPP_SYNC_SUCCEEDED_FILENAME = "webapp_sync_succeeded.json"
+DIRECT_EXECUTION_WEBAPP_SYNC_SUCCEEDED_FILENAME = (
+    "native_direct_execution_adoption_webapp_sync_succeeded.json"
+)
+DIRECT_EXECUTION_WEBAPP_SYNC_ATTEMPTS_DIRECTORY = (
+    "native_direct_execution_adoption_webapp_sync_attempts"
+)
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -197,12 +213,20 @@ def _guard_provider_zero(
             blockers.append(f"gpu_spend_guard_predates_{not_before_subject}")
     if guard.get("reap_mode") is not True:
         blockers.append("gpu_spend_guard_reap_mode_missing")
-    if guard.get("provider_zero_verified") is not True:
-        blockers.append("gpu_provider_zero_not_verified")
     provider_zero = guard.get("provider_zero")
     provider_zero = provider_zero if isinstance(provider_zero, Mapping) else {}
-    if provider_zero.get("status") != "verified":
-        blockers.append("gpu_provider_zero_status_unverified")
+    guard_scope = {
+        str(provider) for provider in provider_zero.get("required_provider_ids") or []
+    }
+    # The profile binds this launch's provider scope. A wider guard can be
+    # globally unverified because a different provider's inventory failed;
+    # its confirmed empty inventory still proves this narrower scope. Retain
+    # the full-scope flags when claiming the guard's entire provider set.
+    if not set(required_providers) < guard_scope:
+        if guard.get("provider_zero_verified") is not True:
+            blockers.append("gpu_provider_zero_not_verified")
+        if provider_zero.get("status") != "verified":
+            blockers.append("gpu_provider_zero_status_unverified")
     if guard.get("live_instance_count") != 0:
         blockers.append("gpu_provider_nonzero")
     if guard.get("total_burn_per_hour_usd") not in (0, 0.0):
@@ -232,9 +256,7 @@ def _guard_provider_zero(
             blockers.append(f"gpu_inventory_nonzero:{provider}")
         elif inventory.get("required") is not True:
             blockers.append(f"gpu_inventory_scope_not_required:{provider}")
-        elif provider not in {
-            str(item) for item in provider_zero.get("required_provider_ids") or []
-        }:
+        elif provider not in guard_scope:
             blockers.append(f"gpu_provider_zero_scope_missing:{provider}")
     return not blockers, sorted(set(blockers))
 
@@ -325,10 +347,12 @@ def _terminal_teardown_evidence(
 def _terminal_preprovider_admission_blocked(*, receipt: Mapping[str, Any]) -> bool:
     """Recognize the allocator's retained fail-closed pre-provider result.
 
-    ``provider_mutation_attempted`` means the dispatcher crossed the canonical
-    allocator boundary; it does not prove that the allocator reached a provider
-    API.  An exact, digest-bound allocator admission rejection therefore has no
-    teardown obligation.  Any other missing teardown remains a closure blocker.
+    ``allocator_invoked`` records the process boundary.  A true
+    ``provider_mutation_attempted`` now additionally requires a retained
+    canonical admission, bound-request, adapter-output, or terminal-result
+    artifact; it still does not prove that the allocator reached a provider API.
+    An exact, digest-bound allocator admission rejection therefore has no
+    teardown obligation. Any other missing teardown remains a closure blocker.
     """
 
     terminal = receipt.get("terminal_evidence")
@@ -427,6 +451,16 @@ def _validated_post_teardown_provider_zero_receipt(
     return value
 
 
+def _release_scene_cache_after_zero(*, run_root: Path, receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Retry metadata-only release once independently bound closure exists."""
+    try:
+        from .task_evaluation_scene_storage_release import release_terminal_scene_activation_pin
+        return release_terminal_scene_activation_pin(run_root=run_root, receipt=receipt)
+    except Exception as exc:  # Cleanup cannot invalidate already proven resource closure.
+        return {"status": "release_unconfirmed", "error_type": type(exc).__name__,
+                "evidence_removed": False}
+
+
 def _reconcile_terminal_provider_zero(
     *,
     run_root: Path,
@@ -457,6 +491,7 @@ def _reconcile_terminal_provider_zero(
             "status": "provider_zero_receipt_retained",
             "provider_zero_confirmed": True,
             "provider_zero_receipt_digest": retained.get("provider_zero_receipt_digest"),
+            "activation_cache_release": _release_scene_cache_after_zero(run_root=run_root, receipt=receipt),
             "provider_mutation_performed": False,
             "allocator_invoked": False,
             "automatic_retry_performed": False,
@@ -480,10 +515,20 @@ def _reconcile_terminal_provider_zero(
 
     blockers: list[str] = []
     receipt_digest = receipt.get("receipt_digest")
-    if (
-        not _is_sha256_digest(receipt_digest)
-        or receipt_digest != canonical_digest(receipt, digest_field="receipt_digest")
-    ):
+    digest_canonicalization = receipt.get("receipt_digest_canonicalization")
+    if digest_canonicalization == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION:
+        expected_receipt_digest = cross_runtime_canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+    elif digest_canonicalization is None:
+        # Preserve validation of immutable launch receipts sealed before the
+        # WebApp boundary declared RFC 8785 number semantics.
+        expected_receipt_digest = canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+    else:
+        expected_receipt_digest = None
+    if not _is_sha256_digest(receipt_digest) or receipt_digest != expected_receipt_digest:
         blockers.append("terminal_launch_receipt_digest_invalid")
     if receipt.get("launch_id") != run_root.name:
         blockers.append("terminal_launch_receipt_run_binding_invalid")
@@ -582,6 +627,7 @@ def _reconcile_terminal_provider_zero(
         "status": "provider_zero_confirmed",
         "provider_zero_confirmed": True,
         "provider_zero_receipt_digest": closure["provider_zero_receipt_digest"],
+        "activation_cache_release": _release_scene_cache_after_zero(run_root=run_root, receipt=receipt),
         "provider_mutation_performed": False,
         "allocator_invoked": False,
         "automatic_retry_performed": False,
@@ -638,6 +684,45 @@ def validated_succeeded_webapp_sync_row(
 
     response = attempt.get("response")
     response = response if isinstance(response, Mapping) else {}
+    terminal = receipt.get("terminal_evidence")
+    terminal = terminal if isinstance(terminal, Mapping) else {}
+    scene_configuration = terminal.get("scene_configuration")
+    scene_configuration = (
+        scene_configuration if isinstance(scene_configuration, Mapping) else {}
+    )
+    offering = scene_configuration.get("configured_scene_offering")
+    offering = offering if isinstance(offering, Mapping) else {}
+    offering_digest = offering.get("offering_digest")
+    offering_status = offering.get("status")
+    offering_ack_invalid = bool(offering) and (
+        not _is_sha256_digest(offering_digest)
+        or offering_status not in CONFIGURATION_COMPLETE_OFFERING_STATUSES
+        or attempt.get("configured_scene_offering_digest") != offering_digest
+        or attempt.get("configured_scene_offering_status") != offering_status
+        or response.get("configured_scene_offering_digest") != offering_digest
+        or response.get("configured_scene_offering_status") != offering_status
+    )
+    direct_projection = receipt.get("website_projection")
+    direct_projection = (
+        direct_projection if isinstance(direct_projection, Mapping) else {}
+    )
+    direct_projection_invalid = (
+        receipt.get("schema_version") == DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION
+        and (
+            direct_projection.get("configured_scene_offering_status")
+            != "configured_controls_pending"
+            or direct_projection.get("native_construction_status") != "blocked"
+            or direct_projection.get("native_construction_blockers")
+            != receipt.get("blockers")
+            or direct_projection.get("qualification_upgrade_performed") is not False
+            or attempt.get("configured_scene_offering_status")
+            != "configured_controls_pending"
+            or attempt.get("native_construction_status") != "blocked"
+            or attempt.get("native_construction_blockers")
+            != receipt.get("blockers")
+            or attempt.get("qualification_upgrade_performed") is not False
+        )
+    )
     if (
         attempt.get("schema_version")
         != "task_evaluation_launch_webapp_sync_result.v1"
@@ -657,8 +742,42 @@ def validated_succeeded_webapp_sync_row(
             response.get(field) != receipt.get(field)
             for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
         )
+        or response.get("schema_version")
+        != "task_evaluation_launch_web_sync_receipt.v1"
+        or response.get("status") != receipt.get("status")
+        or not isinstance(response.get("already_exists"), bool)
+        or offering_ack_invalid
+        or direct_projection_invalid
     ):
         raise TaskEvaluationLaunchError("webapp_sync_succeeded_invalid")
+    committed_receipt = {
+        "sync_result_digest": attempt.get("sync_result_digest"),
+        "launch_id": receipt.get("launch_id"),
+        "run_id": receipt.get("run_id"),
+        "request_digest": receipt.get("request_digest"),
+        "receipt_digest": receipt.get("receipt_digest"),
+        "response_schema_version": response.get("schema_version"),
+        "terminal_status": response.get("status"),
+        "already_exists": response.get("already_exists"),
+    }
+    if offering:
+        committed_receipt.update(
+            {
+                "configured_scene_offering_digest": offering_digest,
+                "configured_scene_offering_status": offering_status,
+            }
+        )
+    if receipt.get("schema_version") == DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION:
+        committed_receipt.update(
+            {
+                "configured_scene_offering_status": (
+                    "configured_controls_pending"
+                ),
+                "native_construction_status": "blocked",
+                "native_construction_blockers": list(receipt["blockers"]),
+                "qualification_upgrade_performed": False,
+            }
+        )
     return {
         "launch_id": receipt.get("launch_id"),
         "status": "webapp_sync_succeeded",
@@ -669,13 +788,7 @@ def validated_succeeded_webapp_sync_row(
         "provider_mutation_performed": False,
         "allocator_invoked": False,
         "automatic_retry_performed": False,
-        "receipt": {
-            "sync_result_digest": attempt.get("sync_result_digest"),
-            "launch_id": receipt.get("launch_id"),
-            "run_id": receipt.get("run_id"),
-            "request_digest": receipt.get("request_digest"),
-            "receipt_digest": receipt.get("receipt_digest"),
-        },
+        "receipt": committed_receipt,
     }
 
 
@@ -741,6 +854,95 @@ def _validated_terminal_unmatched_webapp_sync_row(
     }
 
 
+def _index_terminal_results(
+    *,
+    receipt_paths: Sequence[Path],
+    policy_canary_dispatch_root: str | Path | None,
+    terminal_result_root: str | Path | None,
+    scene_intent_root: str | Path | None,
+) -> list[dict[str, Any]]:
+    """File owner terminal receipts for the scene-progression reconciler (R8).
+
+    Retention duty of this tick: every launch run root is offered to the launch
+    bridge (owner-bound policy-canary launches file their request/profile into
+    the owner's terminal directory; public launches are skipped silently) and
+    every canary root carrying a sealed ``dispatch_receipt.json`` is offered to
+    the canary terminal index. Both are idempotent and read-only over evidence;
+    a typed index refusal is reported as ``terminal_index_blocked`` so the unit
+    alarms instead of silently stranding an owner's completed run.
+    """
+
+    if not (policy_canary_dispatch_root and terminal_result_root and scene_intent_root):
+        return [{"status": "terminal_index_not_configured", "provider_mutation_performed": False}]
+    from .task_evaluation_scene_terminal_result_index import (
+        TerminalResultIndexError,
+        index_launch_bridge,
+        index_policy_canary_nonexecution,
+        index_policy_canary_terminal,
+    )
+
+    rows: list[dict[str, Any]] = []
+
+    def attempt(operation, *, location_key: str, location: Path, **kwargs: Any) -> None:
+        try:
+            result = operation(**{location_key: location, **kwargs})
+        except TerminalResultIndexError as exc:
+            rows.append({
+                "status": "terminal_index_blocked",
+                location_key: str(location),
+                "blockers": [str(exc)],
+                "provider_mutation_performed": False,
+            })
+            return
+        except (OSError, ValueError) as exc:
+            rows.append({
+                "status": "terminal_index_blocked",
+                location_key: str(location),
+                "blockers": ["terminal_result_index_input_invalid"],
+                "error_type": type(exc).__name__,
+                "provider_mutation_performed": False,
+            })
+            return
+        if result.get("status") != "not_owner_bound":
+            rows.append(result)
+
+    for receipt_path in receipt_paths:
+        attempt(
+            index_launch_bridge,
+            location_key="launch_run_root",
+            location=receipt_path.parent,
+            scene_intent_root=scene_intent_root,
+            terminal_result_root=terminal_result_root,
+        )
+    dispatch_root = Path(policy_canary_dispatch_root).expanduser().resolve()
+    if dispatch_root.is_dir():
+        for receipt_path in sorted(dispatch_root.glob("*/dispatch_receipt.json")):
+            attempt(
+                index_policy_canary_terminal,
+                location_key="canary_run_root",
+                location=receipt_path.parent,
+                terminal_result_root=terminal_result_root,
+            )
+        # Preprovider queue refusals intentionally have no dispatch receipt:
+        # the allocator was never entered, so no policy projection or
+        # provider-zero closure exists to bind.  File those typed producer
+        # records through their dedicated index path instead of treating the
+        # absence of the normal paid receipt as corruption.
+        for record_path in sorted(
+            {
+                *dispatch_root.rglob("preprovider_blocked.json"),
+                *dispatch_root.rglob("no_provider_allocation_blocked.json"),
+            }
+        ):
+            attempt(
+                index_policy_canary_nonexecution,
+                location_key="canary_run_root",
+                location=record_path.parent,
+                terminal_result_root=terminal_result_root,
+            )
+    return rows
+
+
 def reconcile_launches(
     *,
     queue_root: str | Path,
@@ -750,6 +952,9 @@ def reconcile_launches(
     now: datetime | None = None,
     fallback_stale_seconds: int = 14_400,
     publish_progress: bool = True,
+    policy_canary_dispatch_root: str | Path | None = None,
+    terminal_result_root: str | Path | None = None,
+    scene_intent_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Reconcile all launch leases without invoking or retrying the allocator."""
 
@@ -955,14 +1160,31 @@ def reconcile_launches(
                 "error_type": type(exc).__name__,
             })
 
+    terminal_index_rows = _index_terminal_results(
+        receipt_paths=receipt_paths,
+        policy_canary_dispatch_root=policy_canary_dispatch_root,
+        terminal_result_root=terminal_result_root,
+        scene_intent_root=scene_intent_root,
+    )
+
     sync_rows: list[dict[str, Any]] = []
     from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp
 
     for receipt_path in receipt_paths:
         run_root = receipt_path.parent
         try:
-            receipt = _read(receipt_path)
-            succeeded_path = run_root / WEBAPP_SYNC_SUCCEEDED_FILENAME
+            adoption_path = run_root / DIRECT_EXECUTION_ADOPTION_FILENAME
+            direct_adoption = adoption_path.is_file()
+            receipt = (
+                validate_native_direct_execution_adoption(adoption_path)
+                if direct_adoption
+                else _read(receipt_path)
+            )
+            succeeded_path = run_root / (
+                DIRECT_EXECUTION_WEBAPP_SYNC_SUCCEEDED_FILENAME
+                if direct_adoption
+                else WEBAPP_SYNC_SUCCEEDED_FILENAME
+            )
             if succeeded_path.is_file():
                 sync_rows.append(
                     validated_succeeded_webapp_sync_row(
@@ -971,7 +1193,11 @@ def reconcile_launches(
                     )
                 )
                 continue
-            terminal_unmatched_path = run_root / WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME
+            terminal_unmatched_path = run_root / (
+                f"native_direct_execution_adoption_{WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME}"
+                if direct_adoption
+                else WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME
+            )
             if terminal_unmatched_path.is_file():
                 sync_rows.append(
                     _validated_terminal_unmatched_webapp_sync_row(
@@ -985,7 +1211,11 @@ def reconcile_launches(
             sync_policy = profile.get("webapp_sync")
             sync_policy = sync_policy if isinstance(sync_policy, Mapping) else {}
             max_attempts = int(sync_policy.get("max_attempts") or 0)
-            attempt_dir = run_root / "webapp_sync_attempts"
+            attempt_dir = run_root / (
+                DIRECT_EXECUTION_WEBAPP_SYNC_ATTEMPTS_DIRECTORY
+                if direct_adoption
+                else "webapp_sync_attempts"
+            )
             prior_attempts = []
             for path in sorted(attempt_dir.glob("*.json")):
                 value = _read(path)
@@ -1021,7 +1251,7 @@ def reconcile_launches(
                 attempt_dir / f"{attempt['sync_result_digest'][7:]}.json", attempt
             )
             if sync_result.get("status") == "succeeded":
-                _write_immutable(run_root / WEBAPP_SYNC_SUCCEEDED_FILENAME, attempt)
+                _write_immutable(succeeded_path, attempt)
             if (
                 sync_result.get("status") == "failed"
                 and sync_result.get("reason") == "http_error:404"
@@ -1030,7 +1260,7 @@ def reconcile_launches(
                     receipt=receipt,
                     attempt=attempt,
                 )
-                _write_immutable(run_root / WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME, unmatched)
+                _write_immutable(terminal_unmatched_path, unmatched)
                 sync_rows.append(
                     _validated_terminal_unmatched_webapp_sync_row(
                         run_root=run_root,
@@ -1074,13 +1304,15 @@ def reconcile_launches(
                 "webapp_sync_not_configured",
                 "webapp_sync_failed",
                 "webapp_sync_reconciliation_blocked",
+                "terminal_index_blocked",
             }
-            for row in [*rows, *terminal_provider_zero_rows, *sync_rows]
+            for row in [*rows, *terminal_provider_zero_rows, *sync_rows, *terminal_index_rows]
         ) else "blocked",
         "processing_count": len(rows),
         "launches": rows,
         "terminal_provider_zero": terminal_provider_zero_rows,
         "webapp_sync": sync_rows,
+        "terminal_index": terminal_index_rows,
         "automatic_retry_performed": False,
         "allocator_invoked": False,
     }
@@ -1098,6 +1330,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--profile-dir")
     parser.add_argument("--report-out", required=True)
     parser.add_argument("--fallback-stale-seconds", type=int, default=14_400)
+    # R8 retention duty: file owner terminal receipts for the scene-progression
+    # reconciler. Unset roots leave the duty explicitly ``not_configured``.
+    parser.add_argument(
+        "--policy-canary-dispatch-root",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT") or None,
+    )
+    parser.add_argument(
+        "--terminal-result-root",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_TERMINAL_RESULT_ROOT") or None,
+    )
+    parser.add_argument(
+        "--scene-intent-root",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT") or None,
+    )
     args = parser.parse_args(argv)
     result = reconcile_launches(
         queue_root=args.queue_root,
@@ -1105,6 +1351,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         guard_report_path=args.guard_report,
         profile_dir=args.profile_dir,
         fallback_stale_seconds=max(1, args.fallback_stale_seconds),
+        policy_canary_dispatch_root=args.policy_canary_dispatch_root,
+        terminal_result_root=args.terminal_result_root,
+        scene_intent_root=args.scene_intent_root,
     )
     output = Path(args.report_out).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

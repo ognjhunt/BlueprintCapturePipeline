@@ -23,6 +23,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from blueprint_pipeline.task_evaluation_release_reference_lock import (
+    release_reference_lock,
+)
+
 
 SCHEMA_VERSION = "task_evaluation_control_plane_release.v1"
 
@@ -147,7 +151,9 @@ def _is_ancestor(repo: Path, commit: str, ref: str) -> bool:
     return completed.returncode == 0
 
 
-def _assert_source(repo: Path, source_commit: str) -> tuple[str, str]:
+def _assert_source(
+    repo: Path, source_commit: str, *, allow_unmerged_remote_commit: bool = False
+) -> tuple[str, str]:
     commit = source_commit.strip().lower()
     if not _valid_commit(commit):
         raise ControlPlaneReleaseError(
@@ -167,7 +173,18 @@ def _assert_source(repo: Path, source_commit: str) -> tuple[str, str]:
             "task_evaluation_control_plane_release_source_commit_unavailable"
         )
     origin_main = _run_git(repo, "rev-parse", "--verify", "origin/main^{commit}").lower()
-    if not _valid_commit(origin_main) or not _is_ancestor(repo, commit, "origin/main"):
+    remote_refs = _run_git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname)",
+        "--contains",
+        commit,
+        "refs/remotes/origin",
+    ).splitlines()
+    admitted_unmerged = allow_unmerged_remote_commit and bool(remote_refs)
+    if not _valid_commit(origin_main) or not (
+        _is_ancestor(repo, commit, "origin/main") or admitted_unmerged
+    ):
         raise ControlPlaneReleaseError(
             "task_evaluation_control_plane_release_source_not_protected_main"
         )
@@ -189,11 +206,34 @@ def _assert_release_checkout(path: Path, source_commit: str) -> None:
         )
 
 
+def _prune_worktree_registrations(source_repo: Path) -> None:
+    """Forget worktrees whose directories are gone, such as retired releases.
+
+    Deploy retirement deletes release worktrees without asking Git, so their
+    registrations outlive them, and ``worktree add`` refuses a path that is
+    "missing but already registered": a rollback to a retired commit could
+    never be staged.  Pruning drops only registrations whose directories no
+    longer exist.  Best effort: if it fails, ``worktree add`` reports why.
+    """
+
+    try:
+        subprocess.run(  # nosec B603 - fixed Git executable and argv
+            _git_argv(source_repo, "worktree", "prune"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
 def _create_release_checkout(*, source_repo: Path, release_path: Path, source_commit: str) -> bool:
     if release_path.exists() or os.path.lexists(release_path):
         _assert_release_checkout(release_path, source_commit)
         return False
     release_path.parent.mkdir(parents=True, exist_ok=True)
+    _prune_worktree_registrations(source_repo)
     try:
         completed = subprocess.run(  # nosec B603 - fixed Git executable and argv
             _git_argv(
@@ -255,7 +295,8 @@ def _install_release_git_index_readability(
             "task_evaluation_control_plane_release_git_index_invalid"
         )
     try:
-        index_path.chmod(0o644)
+        if stat.S_IMODE(index_path.stat().st_mode) != 0o644:
+            index_path.chmod(0o644)
     except OSError as exc:
         raise ControlPlaneReleaseError(
             "task_evaluation_control_plane_release_git_index_unreadable"
@@ -299,6 +340,7 @@ def stage_task_evaluation_control_plane_release(
     state_root: str | Path,
     active_link: str | Path,
     activate: bool = False,
+    allow_unmerged_remote_commit: bool = False,
 ) -> dict[str, Any]:
     """Create (or prove) one detached source tree and optionally activate it."""
 
@@ -319,7 +361,11 @@ def stage_task_evaluation_control_plane_release(
             "task_evaluation_control_plane_release_state_root_overlaps_checkout"
         )
 
-    commit, origin_main = _assert_source(source, source_commit)
+    commit, origin_main = _assert_source(
+        source,
+        source_commit,
+        allow_unmerged_remote_commit=allow_unmerged_remote_commit,
+    )
     release_path = releases / commit
     created = _create_release_checkout(
         source_repo=source, release_path=release_path, source_commit=commit
@@ -360,21 +406,22 @@ def stage_task_evaluation_control_plane_release(
         _write_exact(stage_path, stage_receipt)
 
     if activate:
-        _activate_release(active_link=active, release_path=release_path)
-        activation_receipt: dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
-            "status": "activated",
-            "source_commit": commit,
-            "release_path": str(release_path),
-            "active_link": str(active),
-            "active_link_target": str(release_path),
-            "provider_mutation_performed": False,
-            "raw_secret_values_recorded": False,
-        }
-        activation_receipt["receipt_digest"] = _canonical_digest(
-            activation_receipt, digest_field="receipt_digest"
-        )
-        _write_exact(state / commit / "activation.json", activation_receipt)
+        with release_reference_lock(state, exclusive=False):
+            _activate_release(active_link=active, release_path=release_path)
+            activation_receipt: dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
+                "status": "activated",
+                "source_commit": commit,
+                "release_path": str(release_path),
+                "active_link": str(active),
+                "active_link_target": str(release_path),
+                "provider_mutation_performed": False,
+                "raw_secret_values_recorded": False,
+            }
+            activation_receipt["receipt_digest"] = _canonical_digest(
+                activation_receipt, digest_field="receipt_digest"
+            )
+            _write_exact(state / commit / "activation.json", activation_receipt)
     result = dict(stage_receipt)
     result["created_release_checkout"] = created
     result["release_git_index"] = git_index

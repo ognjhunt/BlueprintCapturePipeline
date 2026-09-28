@@ -176,9 +176,38 @@ def bounded_absolute_joint_setpoint(
         lower = max(previous_value - max_slew, measured_value - max_lead)
         upper = min(previous_value + max_slew, measured_value + max_lead)
         if lower > upper + 1.0e-12:
-            raise NativeFrankaActionMathError(
-                ["native_franka_joint_setpoint_constraints_infeasible"]
+            if per_joint_lead is None:
+                raise NativeFrankaActionMathError(
+                    ["native_franka_joint_setpoint_constraints_infeasible"]
+                )
+            # Native reset/contact dynamics can move a joint far enough that
+            # the previous absolute command no longer intersects the measured
+            # lead window.  When actuator-derived per-joint limits are present,
+            # rebase that stale command inside the actuator's feasible pull
+            # envelope.  This may move the *setpoint* by more than one slew
+            # step, but only toward the measured joint, so it reduces rather
+            # than creates position error.  The deterministic arrival/contact
+            # gates still decide whether the physical motion is acceptable.
+            recovery_lead = max(per_joint_lead[index], max_slew)
+            recovered_previous = min(
+                max(
+                    previous_value,
+                    measured_value - recovery_lead,
+                ),
+                measured_value + recovery_lead,
             )
+            lower = max(
+                recovered_previous - max_slew,
+                measured_value - max_lead,
+            )
+            upper = min(
+                recovered_previous + max_slew,
+                measured_value + max_lead,
+            )
+            if lower > upper + 1.0e-12:
+                raise NativeFrankaActionMathError(
+                    ["native_franka_joint_setpoint_constraints_infeasible"]
+                )
         value = min(max(desired_value, lower), upper)
         if per_joint_lead is not None:
             # Applied as a clamp around the measured joint rather than as

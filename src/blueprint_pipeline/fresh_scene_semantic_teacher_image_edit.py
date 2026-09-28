@@ -11,6 +11,7 @@ only input a later paid allocator lane may send to the selected editor.
 from __future__ import annotations
 
 import argparse
+import re
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -33,16 +34,70 @@ RIGHTS_SCHEMA_VERSION = "fresh_scene_semantic_teacher_image_edit_rights.v1"
 REQUEST_SCHEMA_VERSION = "fresh_scene_semantic_teacher_image_edit_request.v1"
 PACKET_SCHEMA_VERSION = "fresh_scene_semantic_teacher_image_edit_packet.v1"
 CANDIDATE_SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v3"
-PROMPT_POLICY = "generic_masked_object_absent_background_completion_v2"
+PROMPT_POLICY = "generic_masked_object_absent_background_completion_v3"
+NAMED_PROMPT_POLICY = "named_masked_object_absent_background_completion_v4"
+OBJECT_DESCRIPTION_PLACEHOLDER = "{object_description}"
+OBJECT_DESCRIPTION_PATTERN = re.compile(r"[a-z0-9][a-z0-9 ,'-]{1,94}")
 PROMPT_POLICIES = {
-    PROMPT_POLICY: (
+    "generic_masked_object_absent_background_completion_v2": (
         "Remove the masked task object completely. Reconstruct the realistic empty "
         "background surfaces that continue behind it, matching the existing room, "
         "materials, lighting, perspective, and camera viewpoint. Do not add a "
         "replacement object, silhouette, blank panel, text, watermark, robot, or "
         "new foreground item. Preserve the rest of the image as closely as possible."
-    )
+    ),
+    "named_masked_object_absent_background_completion_v3": (
+        "Remove the masked {object_description} completely. Reconstruct the realistic "
+        "empty background surfaces that continue behind it, matching the existing "
+        "room, materials, lighting, perspective, and camera viewpoint, so the area "
+        "looks as if nothing had ever stood there. Make the inpainting consistent "
+        "and realistic. Do not add a replacement object, silhouette, blank panel, "
+        "text, watermark, robot, or new foreground item. Preserve the rest of the "
+        "image as closely as possible."
+    ),
+    PROMPT_POLICY: (
+        "Remove the masked task object completely. It is the only object to remove. "
+        "Reconstruct the surfaces and parts of other objects revealed behind it, matching the existing room, "
+        "materials, lighting, perspective, and camera viewpoint. Do not add a "
+        "replacement object, silhouette, blank panel, text, watermark, robot, or "
+        "new foreground item. Remove only ONE object. Keep every other object, including "
+        "objects overlapping or partly hidden behind the target. Inpaint the newly "
+        "revealed parts of those objects instead of erasing them. Preserve their full "
+        "shape, height, opacity and placement, and preserve the rest of the scene."
+    ),
+    # The owner's own edits (2026-09-13) named the object and asked for a
+    # consistent, realistic fill; the editor is told what the masked thing is.
+    NAMED_PROMPT_POLICY: (
+        "Remove the masked {object_description} completely. It is the only object to remove. "
+        "Reconstruct the surfaces and parts of other objects revealed behind it, matching the existing "
+        "room, materials, lighting, perspective, and camera viewpoint, so the area "
+        "looks as if nothing had ever stood there. Make the inpainting consistent "
+        "and realistic. Do not add a replacement object, silhouette, blank panel, "
+        "text, watermark, robot, or new foreground item. Remove only this ONE object. "
+        "Keep every other object, even where it overlaps or is "
+        "partly hidden behind the target. Inpaint the newly revealed parts of those "
+        "objects instead of erasing them. Preserve their full shape, height, opacity "
+        "and placement, and preserve the rest of the scene."
+    ),
 }
+
+
+def policy_names_the_object(prompt_policy: str) -> bool:
+    return OBJECT_DESCRIPTION_PLACEHOLDER in PROMPT_POLICIES.get(str(prompt_policy), "")
+
+
+def valid_object_description(value: object) -> bool:
+    return isinstance(value, str) and OBJECT_DESCRIPTION_PATTERN.fullmatch(value) is not None
+
+
+def render_prompt(prompt_policy: str, object_description: str | None) -> str:
+    """The exact prompt sent for a policy; a named policy requires a validated description."""
+    template = PROMPT_POLICIES[str(prompt_policy)]
+    if not policy_names_the_object(prompt_policy):
+        return template
+    if not valid_object_description(object_description):
+        raise SemanticTeacherImageEditError(["semantic_teacher_edit_request_invalid"])
+    return template.replace(OBJECT_DESCRIPTION_PLACEHOLDER, str(object_description))
 SUPPORTED_TRANSPORT_KINDS = {"hosted_image_edit", "local_gpu_image_edit"}
 SUPPORTED_MASK_ENCODINGS = {
     "rgba_alpha_zero_edit_region_png",
@@ -235,7 +290,8 @@ def _validated_rights(
 
 
 def _write_edit_mask(
-    *, exact_mask: Path, destination: Path, encoding: str
+    *, exact_mask: Path, destination: Path, encoding: str,
+    frame_role: str = "semantic_edit",
 ) -> tuple[int, int]:
     try:
         with Image.open(exact_mask) as image:
@@ -244,7 +300,9 @@ def _write_edit_mask(
         raise SemanticTeacherImageEditError(
             ["semantic_teacher_exact_mask_unreadable"]
         ) from exc
-    if set(mask.tobytes()) - {0, 255} or not np.any(mask):
+    if (set(mask.tobytes()) - {0, 255}
+            or frame_role not in {"semantic_edit", "source_preservation"}
+            or bool(np.any(mask)) != (frame_role == "semantic_edit")):
         raise SemanticTeacherImageEditError(["semantic_teacher_exact_mask_invalid"])
     if encoding == "rgba_alpha_zero_edit_region_png":
         encoded = np.zeros((*mask.shape, 4), dtype=np.uint8)
@@ -292,6 +350,8 @@ def materialize_semantic_teacher_image_edit_packet(
         or value.get("output_format") != "png"
         or value.get("retry_count") != 0
         or (selected is not None and not isinstance(selected, list))
+        or (policy_names_the_object(str(value.get("prompt_policy")))
+            != valid_object_description(value.get("prompt_object_description")))
     ):
         raise SemanticTeacherImageEditError(["semantic_teacher_edit_request_invalid"])
     output = Path(output_root).expanduser().resolve()
@@ -388,11 +448,13 @@ def materialize_semantic_teacher_image_edit_packet(
                 exact_mask=exact_mask,
                 destination=staged_mask,
                 encoding=str(execution["mask_encoding"]),
+                frame_role=str(frame.get("frame_role", "semantic_edit")),
             )
             frame_rows.append(
                 {
                     "frame_index": expected_index,
                     "camera_id": str(frame["camera_id"]),
+                    "frame_role": frame.get("frame_role", "semantic_edit"),
                     "source_original": _record(source),
                     "exact_repair_mask": _record(exact_mask),
                     "staged_input_rgb": _record(staged_source, root=output),
@@ -405,7 +467,7 @@ def materialize_semantic_teacher_image_edit_packet(
                     "edit_mask_edit_pixels_equal_exact_repair_support": True,
                 }
             )
-            request_count += 1
+            request_count += int(frame.get("frame_role", "semantic_edit") == "semantic_edit")
         task_rows.append(
             {
                 "task_id": task_id,
@@ -435,7 +497,8 @@ def materialize_semantic_teacher_image_edit_packet(
             "backend_entry_digest": backend_entry_digest,
             "execution": execution,
             "prompt_policy": value["prompt_policy"],
-            "prompt": PROMPT_POLICIES[str(value["prompt_policy"])],
+            "prompt_object_description": value.get("prompt_object_description"),
+            "prompt": render_prompt(str(value["prompt_policy"]), value.get("prompt_object_description")),
             "output_format": "png",
         },
         "task_count": len(task_rows),

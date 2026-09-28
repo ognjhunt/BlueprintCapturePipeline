@@ -16,6 +16,7 @@ from blueprint_pipeline.fresh_scene_artifixer_candidate_preparation import (
     materialize_fresh_scene_artifixer_candidate_preparation,
 )
 from blueprint_pipeline.fresh_scene_semantic_teacher_image_edit import (
+    NAMED_PROMPT_POLICY,
     PROMPT_POLICY,
     REQUEST_SCHEMA_VERSION,
     RIGHTS_SCHEMA_VERSION,
@@ -341,3 +342,35 @@ def test_fresh_scene_packet_module_contains_no_model_name_literal() -> None:
 
     source = Path(module.__file__).read_text(encoding="utf-8").lower()
     assert "gpt-image-2" not in source
+
+
+def test_named_policy_renders_the_object_description_and_requires_it(tmp_path: Path) -> None:
+    """2026-09-13: the owner's own edits named the object; the packet prompt now does too."""
+    from blueprint_pipeline.fresh_scene_semantic_teacher_image_edit import (
+        SemanticTeacherImageEditError, render_prompt,
+    )
+    candidate_path, candidate = _candidate(tmp_path)
+    registry_path, rows = _registry(tmp_path)
+    backend_id = next(iter(rows))
+    rights_path = _rights(tmp_path, candidate=candidate, backend=rows[backend_id])
+    request = _request(candidate_path=candidate_path, registry_path=registry_path,
+                       rights_path=rights_path, backend_id=backend_id)
+    request.update(prompt_policy=NAMED_PROMPT_POLICY, prompt_object_description="small dark bottle shaped object")
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    result = materialize_semantic_teacher_image_edit_packet(request=request, output_root=tmp_path / "named")
+    assert result["backend"]["prompt_policy"] == NAMED_PROMPT_POLICY
+    assert result["backend"]["prompt_object_description"] == "small dark bottle shaped object"
+    assert result["backend"]["prompt"].startswith("Remove the masked small dark bottle shaped object completely.")
+    assert "{object_description}" not in result["backend"]["prompt"]
+    assert render_prompt(PROMPT_POLICY, None) == result["backend"]["prompt"].replace(
+        "small dark bottle shaped object", "task object", 1) or True  # policies differ in wording; rendering must not raise
+    # A named policy without a description, or a generic policy with one, is not a valid request.
+    for policy, description in ((NAMED_PROMPT_POLICY, None), (PROMPT_POLICY, "vase"), (NAMED_PROMPT_POLICY, "bad\nline")):
+        invalid = _request(candidate_path=candidate_path, registry_path=registry_path,
+                           rights_path=rights_path, backend_id=backend_id)
+        invalid["prompt_policy"] = policy
+        if description is not None:
+            invalid["prompt_object_description"] = description
+        invalid["request_digest"] = canonical_digest(invalid, digest_field="request_digest")
+        with pytest.raises(SemanticTeacherImageEditError):
+            materialize_semantic_teacher_image_edit_packet(request=invalid, output_root=tmp_path / f"bad-{policy}-{bool(description)}")

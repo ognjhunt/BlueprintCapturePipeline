@@ -26,6 +26,23 @@ def test_the_home_pose_matches_the_published_flange_height() -> None:
     assert position[2] == pytest.approx(0.926, abs=1e-3)
 
 
+def test_position_jacobian_batches_finite_difference_fk(monkeypatch) -> None:
+    import blueprint_pipeline.franka_kinematics as module
+
+    monkeypatch.setattr(
+        module,
+        "forward_kinematics",
+        lambda *_args, **_kwargs: pytest.fail(
+            "batched Jacobian must not invoke scalar FK per perturbation"
+        ),
+    )
+
+    jacobian = module.position_jacobian([0.0, -0.3, 0.0, -1.8, 0.0, 1.6, 0.785])
+
+    assert len(jacobian) == 3
+    assert all(len(row) == 7 for row in jacobian)
+
+
 def test_maximum_reach_is_the_published_855_millimetres() -> None:
     """A reach model that quietly over-reaches would admit impossible placements."""
 

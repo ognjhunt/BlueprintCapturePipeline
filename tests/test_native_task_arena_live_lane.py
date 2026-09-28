@@ -162,6 +162,7 @@ def _provider_bundle(
     root.mkdir()
     bundle = root / "native_task_arena_provider_bundle.zip"
     mode = {
+        "destination": "destination_qualification",
         "construction": "construction_canary",
         "controls": "controls",
         "policy": "policy",
@@ -179,10 +180,12 @@ def _provider_bundle(
     else:
         bundle.write_bytes(f"production-shaped-{link}-bundle".encode())
     bound_names = {
+        "destination": (),
         "construction": (),
         "controls": (
             "native_task_arena_construction_result.v1.json",
             "adp_task_control_plan.v1.json",
+            "adp_task_control_execution_spec.v1.json",
         ),
         "policy": (
             "adp009d_scene_840920_policy_readiness.v1.json",
@@ -270,6 +273,9 @@ def _provider_bundle(
         },
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "expected_output_filename": {
+            "destination": (
+                "task_evaluation_rigid_destination_native_observation.v1.json"
+            ),
             "construction": "native_task_arena_construction_result.v1.json",
             "controls": "native_task_arena_control_result.v1.json",
             "policy": "native_task_arena_policy_result.v1.json",
@@ -374,7 +380,10 @@ def _attempt_authority(
         "maximum_hourly_rate_usd": 1.0,
         "maximum_single_resource_ttl_seconds": 7_200,
         "aggregate_goal_spend_before_attempt_usd": 0.05,
-        "aggregate_goal_spend_cap_usd": paid.AGGREGATE_GOAL_SPEND_CAP_USD,
+        "aggregate_goal_spend_cap_usd": paid.rolling_aggregate_spend_ceiling_usd(
+            prior_spend_usd=0.05,
+            authorized_increment_usd=2.0,
+        ),
         "prior_terminal_attempt": {
             "authority": _record(predecessor["authority"]),
             "terminal_result": _record(predecessor["result"]),
@@ -478,12 +487,37 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "task_id": TASK_ID,
         "request_digest": request["request_digest"],
         "arena_scene_plan_digest": scene_plan["plan_digest"],
+        # Production receipts bind every staged asset here, and the profile has
+        # to declare those bindings or the dispatcher projects a packet
+        # directory holding the documents without the meshes beside them.
+        "source_bindings": [
+            {
+                "semantic_role": row["semantic_role"],
+                "asset_id": None,
+                "source": {
+                    "root": "evidence",
+                    "relative_path": f"configured-scene/{Path(row['usd_path']).name}",
+                    "size_bytes": row["size_bytes"],
+                    "sha256": row["sha256"],
+                },
+                "staged_relative_path": row["usd_path"],
+                "staged_size_bytes": row["size_bytes"],
+                "staged_sha256": row["sha256"],
+            }
+            for row in scene_plan["objects"]
+        ],
         "receipt_digest": "",
     }
     packet_receipt["receipt_digest"] = canonical_digest(
         packet_receipt, digest_field="receipt_digest"
     )
     write_json(packet / builder.PACKET_RECEIPT_NAME, packet_receipt)
+    # Production packets carry the runtime contract beside the documents, and
+    # the bundle now refuses a packet without it, so the fixture must too.
+    write_json(
+        packet / "native_task_runtime_contract.v1.json",
+        {"schema_version": "native_task_runtime_contract.v1", "sealed": True},
+    )
     execution_admission = {
         "schema_version": "native_task_execution_admission.v1",
         "status": "admitted_for_native_gpu_construction",
@@ -543,6 +577,34 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         construction_value, digest_field="result_digest"
     )
     write_json(construction, construction_value)
+    control_plan_value = {
+        "schema_version": "adp_task_control_plan.v1",
+        "scene_plan_digest": scene_plan["plan_digest"],
+        "construction_result_digest": construction_value["result_digest"],
+        "candidate_policy_queried": False,
+        "plan_digest": "",
+    }
+    control_plan_value["plan_digest"] = canonical_digest(
+        control_plan_value, digest_field="plan_digest"
+    )
+    control_plan = tmp_path / "adp_task_control_plan.v1.json"
+    write_json(control_plan, control_plan_value)
+    control_execution_spec_value = {
+        "schema_version": "adp_task_control_execution_spec.v1",
+        "control_selection": "control_pair",
+        "task_kind": scene_plan["task_kind"],
+        "scene_plan_digest": scene_plan["plan_digest"],
+        "construction_result_digest": construction_value["result_digest"],
+        "control_plan_digest": control_plan_value["plan_digest"],
+        "candidate_policy_queried": False,
+        "prior_zero_action_result_digest": None,
+        "execution_spec_digest": "",
+    }
+    control_execution_spec_value["execution_spec_digest"] = canonical_digest(
+        control_execution_spec_value, digest_field="execution_spec_digest"
+    )
+    control_execution_spec = tmp_path / "adp_task_control_execution_spec.v1.json"
+    write_json(control_execution_spec, control_execution_spec_value)
     control = tmp_path / "control_result.json"
     control_value = {
         "schema_version": "native_task_arena_control_result.v1",
@@ -656,6 +718,8 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             ADP009D_SCENARIO_SUITE_PATH
         ),
         "native_task_arena_construction_result.v1.json": construction,
+        "adp_task_control_plan.v1.json": control_plan,
+        "adp_task_control_execution_spec.v1.json": control_execution_spec,
         "native_task_arena_control_result.v1.json": control,
         "native_task_arena_policy_execution_spec.v1.json": policy_spec,
     }
@@ -733,6 +797,47 @@ def _build(lane, link: str, **overrides):
         ]
     arguments.update(overrides)
     return builder.build_native_task_arena_live_profile(**arguments)
+
+
+def test_construction_profile_declares_every_staged_packet_asset(
+    lane: dict,
+) -> None:
+    """The meshes must travel with the documents through the dispatcher."""
+
+    profile = _build(lane, "construction")
+    declared = {
+        Path(row["path"]).resolve(): row["digest"]
+        for row in profile["immutable_inputs"]
+    }
+    receipt = json.loads(
+        (lane["packet"] / builder.PACKET_RECEIPT_NAME).read_text(encoding="utf-8")
+    )
+    bindings = receipt["source_bindings"]
+    assert bindings, "fixture must carry production-shaped source bindings"
+    for binding in bindings:
+        asset = (lane["packet"] / binding["staged_relative_path"]).resolve()
+        # Declared, because the dispatcher projects only declared inputs and a
+        # packet directory without its meshes is not a usable packet.
+        assert asset in declared, binding["semantic_role"]
+        # Bound by exact bytes, so a swapped mesh is refused rather than staged.
+        assert declared[asset] == binding["staged_sha256"]
+    # The runtime contract travels with the packet documents for the same
+    # reason the meshes do: the bundle refuses a packet without it.
+    contract = (lane["packet"] / "native_task_runtime_contract.v1.json").resolve()
+    assert contract in declared
+
+
+def test_profile_binds_the_explicit_admitted_provider(lane: dict) -> None:
+    profile = _build(lane, "construction", provider="vast")
+
+    argv = profile["allocator"]["argv"]
+    assert argv[argv.index("--provider") + 1] == "vast"
+    assert profile["reconciliation"]["required_providers"] == ["vast"]
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="native_task_arena_provider_adapter_unavailable",
+    ):
+        _build(lane, "construction", provider="runpod")
 
 
 def test_policy_profile_exposes_private_digest_bound_native_policy(lane: dict) -> None:
@@ -1010,6 +1115,7 @@ def test_policy_profile_refuses_tampered_preallocation_closeout_binding(
 @pytest.mark.parametrize(
     "link,probe_kind",
     [
+        ("destination", "native-task-arena-destination-qualification"),
         ("construction", "native-task-arena-construction"),
         ("controls", "native-task-arena-controls"),
         ("policy", "native-task-arena-policy"),
@@ -1042,6 +1148,86 @@ def test_controls_profile_forwards_digest_bound_warm_retention(lane) -> None:
     argv = _build(lane, "controls")["allocator"]["argv"]
 
     assert "--native-task-arena-retain-warm-session" in argv
+
+
+def test_construction_profile_forwards_digest_bound_warm_retention(lane) -> None:
+    authority_path = lane["authorities"]["construction"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["retain_warm_session"] = True
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+
+    argv = _build(lane, "construction")["allocator"]["argv"]
+
+    assert "--native-task-arena-retain-warm-session" in argv
+
+
+def test_construction_profile_routes_terminal_feedback_bootstrap(
+    lane, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_path = lane["authorities"]["construction"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["retain_warm_session"] = True
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+    request = json.loads(
+        (lane["packet"] / builder.PACKET_REQUEST_NAME).read_text(encoding="utf-8")
+    )
+    adoption_path = tmp_path / "terminal-feedback-adoption.json"
+    write_json(
+        adoption_path,
+        {"packet_request_digest": request["request_digest"]},
+    )
+    adoption_digest = builder.file_digest(adoption_path)
+    original_loader = builder.BUNDLE_LOADERS[builder.CONSTRUCTION_PROBE_KIND]
+
+    def loader(*args, **kwargs):
+        prepared = dict(original_loader(*args, **kwargs))
+        prepared["bound_runtime_inputs"] = [
+            *list(prepared.get("bound_runtime_inputs") or []),
+            {
+                "relative_path": (
+                    "runtime_inputs/"
+                    "native_construction_terminal_feedback_adoption.v1.json"
+                ),
+                "sha256": adoption_digest,
+            },
+        ]
+        return prepared
+
+    monkeypatch.setitem(
+        builder.BUNDLE_LOADERS,
+        builder.CONSTRUCTION_PROBE_KIND,
+        loader,
+    )
+    monkeypatch.setattr(
+        builder, "validate_terminal_feedback_adoption", lambda value: value
+    )
+    monkeypatch.setattr(
+        builder,
+        "validate_native_task_arena_paid_attempt_authority",
+        lambda *_args, **_kwargs: authority,
+    )
+
+    profile = _build(
+        lane,
+        "construction",
+        terminal_feedback_adoption_path=adoption_path,
+    )
+
+    argv = profile["allocator"]["argv"]
+    assert argv[argv.index("--native-task-arena-terminal-feedback-adoption") + 1] == str(
+        adoption_path
+    )
+    assert any(
+        row["name"] == "native_task_arena_terminal_feedback_adoption"
+        and row["digest"] == adoption_digest
+        for row in profile["immutable_inputs"]
+    )
 
 
 def test_controls_profile_forwards_authorized_external_active_instances(lane) -> None:
@@ -1136,6 +1322,14 @@ def test_profile_accepts_rate_above_cap_when_ttl_projection_fits(lane) -> None:
             "maximum_hourly_rate_usd": 0.64,
             "hard_attempt_spend_cap_usd": 0.5,
             "maximum_single_resource_ttl_seconds": 2_800,
+            "aggregate_goal_spend_cap_usd": (
+                paid.rolling_aggregate_spend_ceiling_usd(
+                    prior_spend_usd=authority[
+                        "aggregate_goal_spend_before_attempt_usd"
+                    ],
+                    authorized_increment_usd=0.5,
+                )
+            ),
         }
     )
     authority["authorization_digest"] = canonical_digest(
@@ -1342,6 +1536,33 @@ def test_vast_geolocation_preference_is_digest_bound_to_the_profile(lane) -> Non
     assert profile["profile_digest"] == canonical_digest(
         profile, digest_field="profile_digest"
     )
+
+
+def test_camera_resolution_is_digest_bound_to_the_profile(lane) -> None:
+    profile = _build(
+        lane,
+        "controls",
+        camera_resolution="640X360",
+        preferred_geolocation_regex="virginia|texas",
+    )
+
+    assert profile["runtime_environment"] == {
+        "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360",
+        "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX": "virginia|texas",
+    }
+    assert profile["profile_digest"] == canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+
+
+@pytest.mark.parametrize(
+    "resolution", ["640", "640*360", "0x360", "319x180", "320x179"]
+)
+def test_invalid_camera_resolution_is_refused_before_allocation(
+    lane, resolution: str
+) -> None:
+    with pytest.raises(TaskEvaluationLaunchError, match="camera_resolution"):
+        _build(lane, "controls", camera_resolution=resolution)
 
 
 @pytest.mark.parametrize(

@@ -90,6 +90,7 @@
   "watchdog_required": true,
   "webapp_status_sync_required": true
  },
+ "source_commit": "0000000000000000000000000000000000000000",
  "runtime_environment": {},
  "schema_version": "task_evaluation_launch_profile.v1",
  "source_bundle": {

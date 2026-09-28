@@ -72,6 +72,33 @@ def test_blocked_when_graphics_backend_is_unknown(tmp_path: Path) -> None:
     assert m["blockers"] == ["unsupported_graphics_backend"]
 
 
+def test_explicit_browser_executable_must_exist_before_decode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    src = tmp_path / "scene.ply"
+    src.write_bytes(b"placeholder")
+    decode_called = False
+
+    def unexpected_decode(*args, **kwargs):
+        nonlocal decode_called
+        decode_called = True
+        raise AssertionError("decode must not run")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.splat_scene_render._decimate_to_standard_ply",
+        unexpected_decode,
+    )
+    result = render_splat_scene(
+        src,
+        tmp_path / "out",
+        browser_executable=tmp_path / "missing-chromium",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["browser_executable_missing"]
+    assert decode_called is False
+
+
 def test_blocked_when_cli_missing(tmp_path: Path) -> None:
     # valid-looking .ply source but repo_root has no splat-transform CLI installed
     src = tmp_path / "scene.ply"

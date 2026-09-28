@@ -1257,10 +1257,11 @@ def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
     assert req["create_endpoint"] == "PUT /asks/{ask_contract_id}/"
     assert req["entrypoint_override"] == "bash"
     assert spec.vast_launch_mode == "args"
-    assert list(RenderLaunchSpec.__dataclass_fields__)[-3:] == [
+    assert list(RenderLaunchSpec.__dataclass_fields__)[-4:] == [
         "vast_launch_mode",
         "excluded_machine_ids",
         "allowed_geolocation_country_codes",
+        "preferred_geolocation_regex",
     ]
     assert req["vast_launch_mode"] == "args"
     assert req["require_direct_port"] is False
@@ -1589,6 +1590,8 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
         "hard_ttl_seconds": None,
         "hard_cap_usd": None,
         "retry_cap": None,
+        "expected_provider_download_bytes": 0,
+        "expected_provider_upload_bytes": 0,
     }
     serialized = json.dumps(result)
     assert "vast-secret" not in serialized
@@ -1681,6 +1684,88 @@ def test_vast_capacity_preflight_prices_requested_disk_and_full_ttl(
     blocked = VastRenderProvider().capacity_preflight(request)
     assert blocked["status"] == "blocked"
     assert "vast_capacity_full_ttl_exceeds_hard_cap" in blocked["blockers"]
+
+
+def test_vast_capacity_preflight_prices_transfer_bytes_and_fails_closed(
+    monkeypatch,
+) -> None:
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        assert (method, path, api_key) == ("POST", "/bundles/", "vast-secret")
+        return 200, {
+            "offers": [
+                {
+                    "ask_contract_id": 46515162,
+                    "machine_id": 137570,
+                    "gpu_name": "RTX 6000Ada",
+                    "gpu_ram": 49_140,
+                    "compute_cap": 890,
+                    "driver_version": "580.119.02",
+                    "disk_space": 773,
+                    "dph_base": 0.6266666666666666,
+                    "storage_cost": 0.4,
+                    "inet_down_cost": 0.01,
+                    "inet_up_cost": 0.01,
+                    "verified": True,
+                    "rentable": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    request = VastRenderProvider().build_request(
+        _spec(
+            container_disk_gb=200,
+            max_hourly_rate_usd=0.80,
+            min_gpu_ram_mb=46_000,
+        ),
+        Path("/unused"),
+    )
+    request.update(
+        {
+            "min_compute_cap": 800,
+            "max_compute_cap": 900,
+            "minimum_driver_version": "580.65.06",
+            "hard_ttl_seconds": 3300,
+            "hard_cap_usd": 0.75,
+            "retry_cap": 0,
+            "expected_provider_download_bytes": 25_303_924_439,
+            "expected_provider_upload_bytes": 1_000_000_000,
+            "prefer_isaac_rt": False,
+        }
+    )
+
+    blocked = VastRenderProvider().capacity_preflight(request)
+
+    assert blocked["status"] == "blocked"
+    assert "vast_capacity_full_ttl_exceeds_hard_cap" in blocked["blockers"]
+    assert blocked["selected_offer"] is None
+    assert blocked["selection_policy"]["expected_provider_download_bytes"] == 25_303_924_439
+    assert blocked["selection_policy"]["expected_provider_upload_bytes"] == 1_000_000_000
+
+    request["hard_ttl_seconds"] = 2100
+    available = VastRenderProvider().capacity_preflight(request)
+    selected = available["selected_offer"]
+    assert available["status"] == "available"
+    assert selected["projected_runtime_cost_usd"] == pytest.approx(
+        selected["hourly_rate_usd"] * 2100 / 3600
+    )
+    assert selected["projected_provider_transfer_cost_usd"] == pytest.approx(
+        0.26303924439
+    )
+    assert selected["projected_full_ttl_cost_usd"] == pytest.approx(
+        selected["projected_runtime_cost_usd"] + 0.26303924439
+    )
+    assert selected["projected_full_ttl_cost_usd"] < 0.75
+
+    request["expected_provider_download_bytes"] = -1
+    invalid = VastRenderProvider().capacity_preflight(request)
+    assert invalid["status"] == "blocked"
+    assert invalid["blockers"] == [
+        "vast_capacity_expected_provider_download_bytes_invalid"
+    ]
 
 
 def test_vast_capacity_preflight_excludes_immutable_machine_ids(
@@ -2373,6 +2458,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
             "require_avx": True,
             "require_known_supported_isaac_driver": True,
             "preferred_gpu_keywords": ["L40S"],
+            "preferred_geolocation_regex": "California|Oregon|Washington",
         }
     )
 
@@ -2389,6 +2475,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
             "min_reliability": 0.99,
             "require_direct_port": False,
             "preferred_gpu_keywords": ["L40S"],
+            "preferred_geolocation_regex": "California|Oregon|Washington",
             "minimum_driver_version": "",
             "disk_gb": 140,
             "required_provider_disk_gb": 140,

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import shlex
 import subprocess
 import sys
 import zipfile
@@ -10,10 +14,14 @@ import zipfile
 import pytest
 from PIL import Image
 
+import blueprint_pipeline.public_scene_artifixer3d_bundle as bundle_subject
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ArtiFixer3DBundleError,
+    COMPONENT_SOURCE_SCHEMA_VERSION,
     DEFAULT_IMAGE,
+    RUNTIME_BLUEPRINT_MODULES,
+    RUNTIME_VGG16_WEIGHTS,
     SCHEMA_VERSION,
     VIBE_IMAGE_EDIT_REVISION,
     VIBE_SOURCE_COMMIT,
@@ -25,6 +33,9 @@ from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
     materialize_artifixer3d_candidate_inputs,
 )
 from tests.test_public_scene_artifixer3d_candidate_inputs import _preflight
+
+
+_VGG16_FIXTURE = b"digest-bound-vgg16-fixture"
 
 
 def _git(command: list[str], root: Path) -> str:
@@ -62,7 +73,13 @@ def _candidate(tmp_path: Path, *, count: int = 2, cameras_per_task: int = 2) -> 
     return output / f"{receipt['schema_version']}.json"
 
 
-def _repository(tmp_path: Path) -> Path:
+def _repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(bundle_subject, "VGG16_WEIGHTS_SIZE_BYTES", len(_VGG16_FIXTURE))
+    monkeypatch.setattr(
+        bundle_subject,
+        "VGG16_WEIGHTS_SHA256",
+        "sha256:" + hashlib.sha256(_VGG16_FIXTURE).hexdigest(),
+    )
     source_repo = Path(__file__).resolve().parents[1]
     root = tmp_path / "repository"
     (root / "scripts").mkdir(parents=True)
@@ -72,15 +89,16 @@ def _repository(tmp_path: Path) -> Path:
     ):
         (root / "scripts" / name).write_bytes((source_repo / "scripts" / name).read_bytes())
     (root / "src" / "blueprint_pipeline").mkdir(parents=True)
-    for name in ("__init__.py", "image_editor_backend_registry.py"):
+    for name in RUNTIME_BLUEPRINT_MODULES:
         (root / "src" / "blueprint_pipeline" / name).write_bytes(
             (source_repo / "src" / "blueprint_pipeline" / name).read_bytes()
         )
-    registry = Path(
-        "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
-    )
+    registry = Path("docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json")
     (root / registry).parent.mkdir(parents=True)
     (root / registry).write_bytes((source_repo / registry).read_bytes())
+    weights = root / RUNTIME_VGG16_WEIGHTS
+    weights.parent.mkdir(parents=True)
+    weights.write_bytes(_VGG16_FIXTURE)
     _git(["git", "init", "-q"], root)
     _git(["git", "config", "user.name", "Fixture"], root)
     _git(["git", "config", "user.email", "fixture@example.test"], root)
@@ -99,7 +117,9 @@ def _attestation(candidate: Path, path: Path) -> Path:
 
 
 def test_bundle_cli_forwards_each_optional_parameter_once(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
 
@@ -110,6 +130,10 @@ def test_bundle_cli_forwards_each_optional_parameter_once(
         return {"status": "sealed_rehearsal_passed_no_upload_no_execution"}
 
     monkeypatch.setattr(subject, "build_artifixer3d_bundle", fake_build)
+    source_receipt = tmp_path / "artifixer-source.json"
+    source_receipt.write_text("{}", encoding="utf-8")
+    blueprint_identity = tmp_path / "blueprint-source.json"
+    blueprint_identity.write_text('{"commit":"identity"}', encoding="utf-8")
 
     assert (
         subject.main(
@@ -134,6 +158,10 @@ def test_bundle_cli_forwards_each_optional_parameter_once(
                 "none",
                 "--allow-active-instance",
                 "17",
+                "--artifixer-source-receipt",
+                str(source_receipt),
+                "--blueprint-source-identity",
+                str(blueprint_identity),
             ]
         )
         == 0
@@ -143,6 +171,8 @@ def test_bundle_cli_forwards_each_optional_parameter_once(
     assert captured["pipeline_mode"] == "dual_target_artifixer3d_only"
     assert captured["direct_editor_backend"] == "none"
     assert captured["allowed_active_instance_ids"] == (17,)
+    assert captured["artifixer_source_receipt_path"] == str(source_receipt)
+    assert captured["blueprint_source_identity"] == {"commit": "identity"}
     assert json.loads(capsys.readouterr().out)["status"] == (
         "sealed_rehearsal_passed_no_upload_no_execution"
     )
@@ -157,6 +187,36 @@ def test_bundle_cli_does_not_advertise_an_unsupported_generated_at_parameter(
         subject.main(["--help"])
 
     assert "--generated-at" not in capsys.readouterr().out
+
+
+def test_bundle_cli_fails_closed_on_invalid_blueprint_source_identity(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    invalid = tmp_path / "invalid-blueprint-source.json"
+    invalid.write_text("[]", encoding="utf-8")
+
+    assert subject.main(
+        [
+            "--candidate-inputs-receipt",
+            "candidate.json",
+            "--use-attestation",
+            "attestation.json",
+            "--artifixer-source",
+            "artifixer",
+            "--output-root",
+            "output",
+            "--repository-root",
+            "repository",
+            "--blueprint-source-identity",
+            str(invalid),
+        ]
+    ) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "blocked"
+    assert result["provider_mutation_performed"] is False
+    assert result["blockers"] == ["artifixer3d_blueprint_source_identity_invalid"]
 
 
 def _runner_module():
@@ -298,7 +358,7 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
         use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
         artifixer_source_directory=source,
         output_root=tmp_path / "bundle",
-        repository_root=_repository(tmp_path),
+        repository_root=_repository(tmp_path, monkeypatch),
         allowed_active_instance_ids=[12, 9, 12],
         artifixer3d_steps=10,
     )
@@ -324,17 +384,68 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert "provider_runtime/public_scene_artifixer3d_runner.py" in names
     assert "provider_runtime/blueprint_pipeline/__init__.py" in names
     assert "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py" in names
+    assert all(
+        f"provider_runtime/blueprint_pipeline/{name}" in names
+        for name in RUNTIME_BLUEPRINT_MODULES
+    )
+    assert f"provider_runtime/{RUNTIME_VGG16_WEIGHTS}" in names
+    assert request["artifixer3d"]["lpips_vgg16_imagenet1k_v1"] == {
+        "filename": "vgg16-397923af.pth",
+        "source_url": bundle_subject.VGG16_WEIGHTS_SOURCE_URL,
+        "size_bytes": len(_VGG16_FIXTURE),
+        "sha256": "sha256:" + hashlib.sha256(_VGG16_FIXTURE).hexdigest(),
+        "torch_home_relative_path": "hub/checkpoints/vgg16-397923af.pth",
+        "network_retrieval_during_method_execution_required": False,
+    }
     assert "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json" in names
     assert not any(name.endswith("artifixer-1.3b.pt") for name in names)
     assert request["source_object_restoration_permitted"] is False
     assert request["outside_exact_support_changed_pixels_permitted"] == 0
     assert manifest["contains_raw_dataset_bytes"] is False
     assert manifest["contains_model_weights"] is False
+    build_seed = (
+        'pip install --python "${artifixer_python}" \\\n'
+        "  setuptools==71.1.0 wheel==0.45.1"
+    )
+    native_requirements = (
+        'pip install --python "${artifixer_python}" --no-build-isolation \\\n'
+        '  -r "${submodule_dir}/requirements.txt"'
+    )
+    assert build_seed in entrypoint
+    assert "artifixer3d_build_dependencies_failed" in entrypoint
+    assert entrypoint.index(build_seed) < entrypoint.index(native_requirements)
     assert 'pip install --python "${artifixer_python}" --no-build-isolation' in entrypoint
     assert '-r "${submodule_dir}/requirements.txt"' in entrypoint
+
+    extracted = tmp_path / "isolated-native-export-import"
+    with zipfile.ZipFile(bundle) as archive:
+        archive.extractall(extracted)
+    runtime = extracted / "provider_runtime"
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import sys; "
+                f"sys.path.insert(0, {str(runtime)!r}); "
+                "import blueprint_pipeline.nurec_usdz_layer_transform"
+            ),
+        ],
+        cwd=tmp_path,
+        env={"PATH": str(Path(sys.executable).parent)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert imported.returncode == 0, imported.stderr
     assert "submodule update --init --recursive" in entrypoint
     assert "submodule status --recursive" in entrypoint
     assert "artifixer3d_nested_submodule_identity_mismatch" in entrypoint
+    assert 'export TORCH_HOME="${runtime_dir}/torch_home"' in entrypoint
+    assert "LearnedPerceptualImagePatchSimilarity" in entrypoint
+    assert "lpips_vgg16_materialization_invalid" in entrypoint
+    assert "lpips_vgg16_preflight_network_forbidden" in entrypoint
     assert 'pip check --python "${artifixer_python}"' in entrypoint
     assert "public_scene_artifixer3d_runtime_preflight.v1" in entrypoint
     assert '"model_eval.run_inference"' in entrypoint
@@ -349,7 +460,11 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     with zipfile.ZipFile(bundle) as archive:
         archive.extractall(extracted)
     imported = subprocess.run(
-        [sys.executable, str(extracted / "provider_runtime" / "public_scene_artifixer3d_runner.py"), "--help"],
+        [
+            sys.executable,
+            str(extracted / "provider_runtime" / "public_scene_artifixer3d_runner.py"),
+            "--help",
+        ],
         cwd=extracted,
         env={"PATH": str(Path(sys.executable).parent)},
         check=False,
@@ -357,6 +472,64 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
         text=True,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_component_source_receipt_reuses_bundle_builder_without_git_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, commit, tree = _source(tmp_path)
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
+    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
+    files = []
+    for name in _git(["git", "ls-files"], source).splitlines():
+        path = source / name
+        files.append(
+            {
+                "relative_path": name,
+                "size_bytes": path.stat().st_size,
+                "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    source_receipt = {
+        "schema_version": COMPONENT_SOURCE_SCHEMA_VERSION,
+        "repository": subject.ARTIFIXER_REPOSITORY,
+        "commit": commit,
+        "tree": tree,
+        "license": "Apache-2.0",
+        "files": files,
+        "receipt_digest": "",
+    }
+    source_receipt["receipt_digest"] = canonical_digest(
+        source_receipt, digest_field="receipt_digest"
+    )
+    receipt_path = tmp_path / "artifixer_source_receipt.json"
+    receipt_path.write_text(json.dumps(source_receipt), encoding="utf-8")
+    shutil.rmtree(source / ".git")
+    candidate = _candidate(tmp_path)
+
+    receipt = build_artifixer3d_bundle(
+        candidate_inputs_receipt_path=candidate,
+        use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
+        artifixer_source_directory=source,
+        artifixer_source_receipt_path=receipt_path,
+        output_root=tmp_path / "component-bundle",
+        repository_root=_repository(tmp_path, monkeypatch),
+        blueprint_source_identity={
+            "commit": "1" * 40,
+            "tree": "2" * 40,
+            "tracked_files_clean": True,
+            "full_byte_component_package_verified": True,
+            "component_package_digest": "sha256:" + "3" * 64,
+        },
+        artifixer3d_steps=10,
+    )
+
+    with zipfile.ZipFile(receipt["bundle"]["path"]) as archive:
+        request = json.loads(archive.read("provider_runtime/artifixer3d_runtime_request.json"))
+    assert request["blueprint_source_identity"]["commit"] == "1" * 40
+    assert request["blueprint_source_identity"]["full_byte_component_package_verified"] is True
 
 
 def test_isolated_bundle_import_fails_when_runtime_registry_module_is_removed(
@@ -373,7 +546,7 @@ def test_isolated_bundle_import_fails_when_runtime_registry_module_is_removed(
         use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
         artifixer_source_directory=source,
         output_root=tmp_path / "bundle",
-        repository_root=_repository(tmp_path),
+        repository_root=_repository(tmp_path, monkeypatch),
     )
     mutated = tmp_path / "mutated.zip"
     missing = "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
@@ -416,7 +589,7 @@ def test_seals_pinned_vibe_semantic_editor_only_bundle(
         use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
         artifixer_source_directory=source,
         output_root=tmp_path / "bundle",
-        repository_root=_repository(tmp_path),
+        repository_root=_repository(tmp_path, monkeypatch),
         direct_editor_backend="vibe_image_edit",
         semantic_editor_only=True,
     )
@@ -456,7 +629,7 @@ def test_rejects_vibe_combined_with_3d_training(
             use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
             artifixer_source_directory=source,
             output_root=tmp_path / "bundle",
-            repository_root=_repository(tmp_path),
+            repository_root=_repository(tmp_path, monkeypatch),
             direct_editor_backend="vibe_image_edit",
             semantic_editor_only=False,
         )
@@ -477,7 +650,7 @@ def test_rejects_semantic_only_with_nonsemantic_backend(
             use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
             artifixer_source_directory=source,
             output_root=tmp_path / "bundle",
-            repository_root=_repository(tmp_path),
+            repository_root=_repository(tmp_path, monkeypatch),
             semantic_editor_only=True,
         )
 
@@ -501,7 +674,7 @@ def test_rejects_tampered_candidate_or_dirty_source(
             use_attestation_path=attestation,
             artifixer_source_directory=source,
             output_root=tmp_path / "bundle-a",
-            repository_root=_repository(tmp_path),
+            repository_root=_repository(tmp_path, monkeypatch),
         )
 
     candidate = _candidate(tmp_path / "other")
@@ -513,5 +686,118 @@ def test_rejects_tampered_candidate_or_dirty_source(
             use_attestation_path=attestation,
             artifixer_source_directory=source,
             output_root=tmp_path / "bundle-b",
-            repository_root=_repository(tmp_path / "other"),
+            repository_root=_repository(tmp_path / "other", monkeypatch),
         )
+
+
+def test_bundle_archive_keeps_the_entrypoint_executable(tmp_path: Path) -> None:
+    """The bundle's own entrypoint has to survive extraction runnable.
+
+    Every member was stored 0o644, so the entrypoint the driver execs came
+    back non-executable. Run
+    ``adp-new-scene-simple-relocation-839873-4dfc5f8e-r3-web-20260827T050053Z``
+    hit that on a rented GPU *after* stage 1 had rendered its frames, cut the
+    source object, built its masks and written the semantic-teacher packet:
+
+        PermissionError: [Errno 13] Permission denied:
+        .../artifixer_execution/provider_runtime/run_public_scene_artifixer3d.sh
+
+    The mode is derived from the source's executable bit, not copied from its
+    mode, so the archive stays byte-reproducible -- the same rule the
+    scene-configuration builder's ``_zip_tree`` already applies.
+    """
+
+    import stat as stat_module
+    import zipfile as zipfile_module
+
+    from blueprint_pipeline.public_scene_artifixer3d_bundle import _zip_tree
+
+    source = tmp_path / "tree"
+    (source / "provider_runtime").mkdir(parents=True)
+    entrypoint = source / "provider_runtime" / "run_public_scene_artifixer3d.sh"
+    entrypoint.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    entrypoint.chmod(0o755)
+    payload = source / "provider_runtime" / "manifest.json"
+    payload.write_text("{}\n", encoding="utf-8")
+    payload.chmod(0o644)
+
+    archive_path = tmp_path / "bundle.zip"
+    _zip_tree(source, archive_path)
+
+    with zipfile_module.ZipFile(archive_path) as archive:
+        modes = {
+            info.filename: stat_module.S_IMODE(info.external_attr >> 16)
+            for info in archive.infolist()
+        }
+
+    assert modes["provider_runtime/run_public_scene_artifixer3d.sh"] & 0o111, (
+        "the entrypoint extracts non-executable, so the stage cannot run it"
+    )
+    assert not modes["provider_runtime/manifest.json"] & 0o111, (
+        "a data member must not gain an executable bit"
+    )
+
+
+def test_runtime_uses_the_python_installed_uv_when_console_script_is_off_path(
+    tmp_path: Path,
+) -> None:
+    """The Isaac Python shim and its console-script directory are distinct.
+
+    The scene provider puts a ``python3`` shim for ``/isaac-sim/python.sh`` on
+    PATH. Installing uv through that shim places the console script beside the
+    underlying interpreter, not necessarily beside the shim. Model that exact
+    layout: pip works and ``python -m uv`` is reachable, while no ``uv``
+    executable exists on PATH. Make the fake module fail its venv action; the
+    runtime must retain the existing typed venv refusal instead of exiting at
+    ``command -v uv`` with no evidence.
+    """
+
+    runtime = tmp_path / "provider_runtime"
+    runtime.mkdir()
+    entrypoint = runtime / "run_public_scene_artifixer3d.sh"
+    entrypoint.write_bytes(
+        (Path(__file__).resolve().parents[1] / "scripts" / entrypoint.name).read_bytes()
+    )
+    (runtime / "artifixer3d_runtime_request.json").write_text(
+        json.dumps(
+            {
+                "direct_editor_backend": "fixture_invalid_backend",
+                "semantic_editor_only": False,
+                "pipeline_mode": "full_artifixer3d_plus",
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    python_shim = fake_bin / "python3"
+    python_shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then exit 0; fi\n'
+        'if [ "$1" = "-m" ] && [ "$2" = "uv" ]; then exit 23; fi\n'
+        f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    python_shim.chmod(0o755)
+    output = tmp_path / "runtime_output"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR": str(output),
+    }
+
+    completed = subprocess.run(
+        ["/bin/bash", str(entrypoint)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=10,
+    )
+
+    result_path = output / "public_scene_artifixer3d_runtime_result.json"
+    assert completed.returncode == 2, f"stdout={completed.stdout}\nstderr={completed.stderr}"
+    assert result_path.is_file(), completed.stderr
+    assert json.loads(result_path.read_text(encoding="utf-8"))["blockers"] == [
+        "artifixer3d_venv_failed"
+    ]

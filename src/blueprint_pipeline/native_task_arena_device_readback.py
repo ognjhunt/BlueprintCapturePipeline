@@ -20,6 +20,18 @@ def _device(value: Any) -> str | None:
     return text or None
 
 
+def _physx_velocity_device(root_view: Any) -> tuple[str | None, str]:
+    """Read a tensor device from either an articulation or rigid-body view."""
+
+    for method_name in ("get_dof_velocities", "get_velocities"):
+        method = getattr(root_view, method_name, None)
+        if callable(method):
+            return _device(method()), method_name
+    raise AttributeError(
+        "PhysX view exposes neither get_dof_velocities nor get_velocities"
+    )
+
+
 def read_native_task_arena_device_binding(
     built: NativeTaskArenaEnvironment,
     *,
@@ -44,6 +56,7 @@ def read_native_task_arena_device_binding(
         "robot_physx_joint_velocity": None,
         "task_physx_joint_velocity": None,
     }
+    probe_methods: dict[str, str] = {}
     probe_errors: list[dict[str, str]] = []
     try:
         from isaaclab_physx.physics import PhysxManager
@@ -61,7 +74,7 @@ def read_native_task_arena_device_binding(
             root_view = getattr(asset, "root_physx_view", None)
             if root_view is None:
                 root_view = getattr(asset, "root_view")
-            observed[key] = _device(root_view.get_dof_velocities())
+            observed[key], probe_methods[key] = _physx_velocity_device(root_view)
         except Exception as exc:  # noqa: BLE001 - retained native capability gap
             probe_errors.append(
                 {"probe": key, "type": type(exc).__name__, "message": str(exc)}
@@ -82,6 +95,7 @@ def read_native_task_arena_device_binding(
         "schema_version": SCHEMA_VERSION,
         "expected_device": expected,
         "observed_devices": observed,
+        "probe_methods": probe_methods,
         "probe_errors": probe_errors,
         "all_required_read_back": not probe_errors
         and all(observed.get(key) is not None for key in required),

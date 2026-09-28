@@ -1,0 +1,643 @@
+"""Materialize a public-scene attempt from retained owner/source/runtime contracts.
+
+This factory calls the canonical CPU producers. It never installs publisher
+assets, queries a model, uploads a source, or allocates a provider. All outputs
+are development-only inputs and authorities, not scientific success evidence.
+"""
+from __future__ import annotations
+
+from copy import deepcopy
+from datetime import datetime, timezone
+from pathlib import Path
+import tempfile
+import time
+
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .validation_file_digests import file_digest_scope
+from .validation_progress import heartbeat
+from .task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
+from .task_evaluation_scene_configuration_submission_inputs import (
+    checked_file, read, require, sha, source_inputs, release_inputs,
+)
+from .task_evaluation_scene_owner_authority import (
+    reopen_scene_intent, task_contract_projection, owner_numeric_task, descriptive_task_match,
+)
+
+BINDING_SCHEMA = "task_evaluation_public_source_binding.v1"
+MACHINERY_SCHEMA = "task_evaluation_public_scene_machinery.v1"
+RELEASE_SCHEMA = "task_evaluation_public_scene_release_binding.v1"
+FACTORY_SCHEMA = "task_evaluation_public_scene_attempt_factory.v1"
+SOURCE_ROLES = {"appearance_3dgs", "semantic_metadata", "scene_structure", "collision_usd", "publisher_scene_usdz"}
+PURPOSES = ("exact_source_calibration_gpu_render", "released_code_segment_contribution_sweep",
+            "configured_scene_partitioned_source_processing")
+SOURCE_REFS = {"installation_receipt", "publisher_intake", "source_preparation_receipt",
+               "destination_simready_result", "standard_splat_conversion_receipt",
+               "interiorgs_terms", "interiorgs_readme", "sage_readme"}
+PROVIDER_REFS = {"worker_stack_manifest", "runtime_image_build_receipt", "license_use_authorization",
+                 "privacy_use_authorization", "trade_controls_review"}
+PROVIDER_OPTIONS = {"runtime_image_identity", "method_version", "output_probability_threshold",
+                    "max_num_objects", "multiplex_count", "use_fa3", "compile_model", "warm_up",
+                    "async_loading_frames"}
+
+
+def source_reference_names(task):
+    return SOURCE_REFS - ({"destination_simready_result"}
+        if task.get("destination", {}).get("kind") == "green_region" else set())
+
+
+def record(path):
+    path = Path(path)
+    return {"path": str(path), "sha256": sha(path), "size_bytes": path.stat().st_size}
+
+
+def _reference(ref):
+    require(isinstance(ref, dict) and set(ref) == {"path", "sha256", "size_bytes"}
+            and Path(ref["path"]).is_absolute(), "public_factory_reference_invalid")
+    return checked_file(ref["path"], ref)
+
+
+def _write(path, value):
+    path = Path(path)
+    require(not any(p.is_symlink() for p in (path, *path.parents)), "public_factory_output_unsafe")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    try:
+        write_launch_preparation_record_exclusive(path, value)
+    except FileExistsError:
+        require(read(path) == value, "public_factory_immutable_conflict")
+    return path
+
+
+def _produce(function, output, **kwargs):
+    """Canonical producers rerun to scratch when validating an interrupted step."""
+    output = Path(output)
+    if not output.exists():
+        output.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        return function(output_path=output, **kwargs)
+    with tempfile.TemporaryDirectory(prefix="factory-revalidate-", dir=output.parent) as scratch:
+        value = function(output_path=Path(scratch) / output.name, **kwargs)
+        require(read(output) == value, "public_factory_immutable_conflict")
+        return value
+
+
+def _camera_failure(path, identity, commit):
+    from .sam31_camera_geometry import CameraGeometryScreenError
+    failure = read(path, digest_field="failure_digest")
+    require(failure.get("identity") == identity and failure.get("source_commit") == commit,
+            "public_factory_failure_binding_changed")
+    for ref in failure["screen"]["source_files"].values():
+        _reference(ref)
+    error = CameraGeometryScreenError(failure["screen"]["blocker"], failure["screen"])
+    error.failure_reference = record(path)
+    raise error
+
+
+def _scene_submission(function, *, failure_path, identity, commit, **kwargs):
+    from .sam31_camera_geometry import CameraGeometryScreenError
+    try:
+        return function(**kwargs)
+    except CameraGeometryScreenError as exc:
+        failure = {"schema_version": "task_evaluation_camera_preparation_failure.v1",
+                   "source_commit": commit, "identity": identity, "screen": exc.screen,
+                   "provider_mutation_performed": False}
+        failure["failure_digest"] = canonical_digest(failure, digest_field="failure_digest")
+        _write(failure_path, failure)
+        exc.failure_reference = record(failure_path)
+        raise
+
+
+def public_source_content_digest(installation):
+    rows = [{key: row[key] for key in ("role", "sha256", "size_bytes")}
+            for row in installation.get("files", []) if row.get("role") in SOURCE_ROLES]
+    require(len(rows) == len(SOURCE_ROLES) and {r["role"] for r in rows} == SOURCE_ROLES,
+            "public_factory_source_roles_invalid")
+    return canonical_digest({"publisher_scene_id": str(installation["scene_id"]),
+                             "assets": sorted(rows, key=lambda r: r["role"])})
+
+
+def _same_intent(plan, intent_digest):
+    """Whether a retained plan was produced for this exact owner intent (its task request names it)."""
+    prior = read(_reference(plan["host_inputs"]["task_request"]))
+    return (prior.get("scene_intent_authority") or {}).get("intent_digest") == intent_digest
+
+
+def _prefix_candidates(binding, machinery, release, task, *, allow_reuse=True):
+    """Discover prior exact task jobs; a retained hint is optional, never opt-in.
+
+    With reuse disabled (a from-scratch owner request) the retained hint and every
+    other run's history are ignored, but this intent's own earlier attempts stay
+    adoptable: their completed stages were produced for this exact request under the
+    same gates, and a successor should continue from the first stage that did not
+    finish instead of paying the whole chain again (scene 840938, 2026-09-13).
+    """
+    require(type(allow_reuse) is bool, "public_factory_reuse_mode_invalid")
+    own_intent = (task.get("scene_intent_authority") or {}).get("intent_digest") if isinstance(task, dict) else None
+    if not allow_reuse and not own_intent:
+        return []
+    from .task_evaluation_sam31_phase_queue import PHASES
+    from .task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT
+    candidates = []
+    if allow_reuse and binding.get("prefix_candidate"):
+        candidates.append(binding["prefix_candidate"])
+    queue = Path(machinery.get("child_queue_root", "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions"))
+    registry = Path(machinery.get("profile_registry_root") or DEFAULT_PROFILE_REGISTRY_ROOT)
+    try:
+        paths = sorted((queue / "completed").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        paths = []
+    seen = set()
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            parent = candidate.get("parent_request_digest")
+            plan = candidate.get("source_plan")
+            if isinstance(parent, str) and isinstance(plan, dict) and isinstance(plan.get("sha256"), str):
+                seen.add((parent, plan["sha256"]))
+
+    def inherited_billing(profile):
+        direct = profile.get("sam31_billing_source")
+        if isinstance(direct, dict):
+            return direct
+        adoption = profile.get("completed_prefix_adoption")
+        if not isinstance(adoption, dict):
+            return None
+        try:
+            retained = read(_reference(adoption), digest_field="adoption_digest")
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        billing = retained.get("sam31_billing_source")
+        return billing if isinstance(billing, dict) else None
+
+    discoveries = []
+    for path in paths[:4096]:
+        try:
+            job = read(path, digest_field="job_digest")
+            if job.get("phase") not in PHASES:
+                continue
+            plan_path = _reference(job["plan_ref"])
+            plan = read(plan_path, digest_field="plan_digest")
+            key = (job["parent_request_digest"], job["plan_ref"]["sha256"])
+            if (key in seen or plan.get("task_identity") != task["task_identity"]
+                    or str(plan.get("publisher_scene_id")) != str(binding["publisher_scene_id"])):
+                continue
+            if not allow_reuse and not _same_intent(plan, own_intent):
+                continue
+            profile = registry / (plan["server_profile_sha256"].removeprefix("sha256:") + ".json")
+            if not profile.is_file() or sha(profile) != plan["server_profile_sha256"]:
+                continue
+            profile_value = read(profile, digest_field="profile_digest")
+            if (profile_value.get("schema_version") != "task_evaluation_sam31_preparation_profile.v1"
+                    or profile_value.get("source_commit") != plan.get("source_commit")):
+                continue
+            seen.add(key)
+            discoveries.append((PHASES.index(job["phase"]), path.stat().st_mtime, {
+                "source_plan": job["plan_ref"], "source_profile": record(profile),
+                "parent_request_digest": job["parent_request_digest"],
+                "sam31_billing_source": (release.get("sam31_billing_source")
+                                         or inherited_billing(profile_value))}))
+        except (OSError, ValueError, KeyError, TypeError):
+            # Unrelated/invalid historical records are not reuse authority.
+            continue
+    discoveries.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return (candidates + [row[2] for row in discoveries])[:16]
+
+
+def _current_conversion(*, refs, inputs, release, machinery, output):
+    """Reuse the retained standard-splat conversion, rebinding it to the current
+    release by CONTENT identity when the release commit has drifted.
+
+    The factory only ever reuses a conversion produced earlier by the
+    decoder-equipped SAM preparation; it never performs a first decode. The raw
+    source bytes and the standard-splat output bytes are verified unchanged
+    (``checked_file`` below), so the deterministic local-format conversion output
+    is byte-identical to what a re-decode at the current release would produce. On
+    commit drift we therefore re-attest the SAME output at ``release.source_commit``
+    WITHOUT re-running the 3DGS decoder (absent on the control plane) -- a deploy
+    must never invalidate a retained per-scene document (piece 1). The original
+    decode provenance is preserved verbatim and the receipt is transparently
+    marked as not re-decoded. Changed source/output bytes fail closed above.
+    """
+    old_path = _reference(refs["standard_splat_conversion_receipt"])
+    old = read(old_path, digest_field="receipt_digest")
+    original = inputs["raw"]["appearance_3dgs"]["path"]
+    checked_file(original, old["source"])
+    checked_file(old_path.parent / old["output"]["relative_path"], old["output"])
+    if old.get("repository", {}).get("commit") == release["source_commit"]:
+        return old_path
+    # Bytes verified unchanged above -> a re-decode is provably redundant. Only a
+    # local-format-only conversion whose source bytes are unchanged is rebindable.
+    old_commit = old.get("repository", {}).get("commit")
+    require(old.get("claim_ceiling") == "local_format_conversion_only"
+            and old.get("source", {}).get("source_bytes_unchanged") is True
+            and old.get("output", {}).get("gaussian_count_preserved") is True
+            and old.get("raw_source_uploaded") is False
+            and isinstance(old_commit, str) and len(old_commit) == 40
+            and all(c in "0123456789abcdef" for c in old_commit),
+            "public_factory_conversion_not_rebindable")
+    converted = output / "conversion" / "standard_splat_conversion_receipt.v1.json"
+    if not converted.exists():
+        converted.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        relative = old["output"]["relative_path"]
+        (converted.parent / relative).write_bytes((old_path.parent / relative).read_bytes())
+        rebound = deepcopy(old)
+        rebound["repository"] = {"commit": release["source_commit"]}
+        rebound["content_identity_rebind"] = {
+            "kind": "standard_splat_content_identity_reattestation",
+            "reattested_at_commit": release["source_commit"], "original_commit": old_commit,
+            "original_receipt_digest": old["receipt_digest"], "original_repository": old["repository"],
+            "redecoded": False, "basis": "source_and_output_bytes_unchanged"}
+        rebound["receipt_digest"] = canonical_digest(rebound, digest_field="receipt_digest")
+        _write(converted, rebound)
+    value = read(converted, digest_field="receipt_digest")
+    require(value.get("repository", {}).get("commit") == release["source_commit"]
+            and value.get("content_identity_rebind", {}).get("redecoded") is False,
+            "public_factory_conversion_binding_changed")
+    checked_file(converted.parent / value["output"]["relative_path"], value["output"])
+    return converted
+
+
+def _source_authorities(*, task, seed, refs, conversion_path, original_source, output, roots, commit):
+    """Derive current execution scope while preserving the admitted publisher basis."""
+    from .sam31_contribution_disclosure import validate_full_source_disclosure
+    old_path = _reference(refs["standard_splat_conversion_receipt"])
+    old = read(old_path, digest_field="receipt_digest")
+    old_standard = old_path.parent / old["output"]["relative_path"]
+    current = read(conversion_path, digest_field="receipt_digest")
+    standard = conversion_path.parent / current["output"]["relative_path"]
+    inherited = seed.get("human_authority", {})
+    authorities = {}
+    for purpose in PURPOSES:
+        original_proof = validate_full_source_disclosure(task_authority=inherited,
+            conversion_path=old_path, standard_splat_path=old_standard, original_source_path=original_source,
+            expected_source_commit=old["repository"]["commit"], publisher_scene_id=task["publisher_scene_id"],
+            approved_roots=roots, purpose=purpose)
+        authority_ref = original_proof["disclosure_authority"]
+        value = read(_reference(authority_ref), digest_field="authorization_digest")
+        # The publisher permission/basis is retained verbatim and revalidated.
+        # Owner consent supplies this attempt's execution permission only.
+        value.update(source_commit=commit, authorized_by=task["human_authority"]["accepted_by"],
+            authorized_on=task["human_authority"]["accepted_on"],
+            authority_reference=task["human_authority"]["authority_reference"],
+            original_disclosure_authority=authority_ref, scene_intent_authority=task["scene_intent_authority"])
+        value["source_binding"].update(standard_splat_sha256=current["output"]["sha256"],
+            standard_splat_size_bytes=current["output"]["size_bytes"],
+            retained_gaussian_count=current["output"]["gaussian_count"])
+        value["authorization_digest"] = canonical_digest(value, digest_field="authorization_digest")
+        authorities[purpose] = record(_write(output / "source-authorities" / (purpose + ".json"), value))
+    task["human_authority"].pop("full_source_provider_disclosure_authority", None)
+    task["human_authority"]["full_source_provider_disclosure_authorities"] = authorities
+    for purpose in PURPOSES:
+        validate_full_source_disclosure(task_authority=task["human_authority"],
+            conversion_path=conversion_path, standard_splat_path=standard, original_source_path=original_source,
+            expected_source_commit=commit, publisher_scene_id=task["publisher_scene_id"],
+            approved_roots=roots, purpose=purpose)
+
+
+@file_digest_scope()
+def materialize_public_scene_attempt(*, intent_path, source_binding_path, machinery_path,
+                                     release_binding_path, output_root, attempt_id, now=None):
+    """Build publication-ready inputs from an already reserved immutable attempt."""
+    from .task_evaluation_scene_intake import _read as read_intake
+    from .task_evaluation_release_retention import release_reference_lock
+    from .task_evaluation_scene_configuration_submission import _validate_task, materialize_scene_configuration_submission
+    from .sam31_provider_launch_packet import materialize_sam31_execution_authorization, materialize_sam31_provider_profile
+    from .task_evaluation_sam31_preparation_profile import materialize_sam31_preparation_profile
+    from .task_evaluation_sam31_preparation_review_authority import materialize_sam31_review_authority
+    from .task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT, register_sam31_profile
+    from .task_evaluation_sam31_prefix_adoption import select_completed_prefix_adoption
+    heartbeat("factory_start")
+
+    moment = time.time() if now is None else now
+    intent_ref = record(intent_path)
+    intent = reopen_scene_intent(intent_ref, now=moment)
+    binding = read(source_binding_path, digest_field="binding_digest")
+    machinery = read(machinery_path, digest_field="machinery_digest")
+    release = read(release_binding_path, digest_field="release_digest")
+    require(binding.get("schema_version") == BINDING_SCHEMA
+            and machinery.get("schema_version") == MACHINERY_SCHEMA
+            and release.get("schema_version") == RELEASE_SCHEMA, "public_factory_schema_invalid")
+    request = intent["request"]
+    require(request["source"]["kind"] == "public_scene"
+            and request["source"]["binding_id"] == binding.get("binding_id")
+            and request["source"]["content_digest"] == binding.get("source_content_digest")
+            and binding.get("owner") == request["owner"]
+            and binding.get("rights_reference") == request["consent"]["rights_reference"],
+            "public_factory_source_or_owner_binding_mismatch")
+    require(binding.get("status") == "admitted_for_private_processing", "public_factory_source_not_admitted")
+    seed_ref = binding.get("accepted_task_seed")
+    if seed_ref is None:
+        return {"schema_version": FACTORY_SCHEMA, "status": "needs_input",
+                "blockers": ["accepted_public_task_seed_required"], "provider_mutation_performed": False}
+    seed = read(_reference(seed_ref))
+    projection = task_contract_projection(seed)
+    descriptive = None
+    numeric_match = cross_runtime_canonical_digest(projection) == cross_runtime_canonical_digest(owner_numeric_task(request["task"]))
+    if not numeric_match:
+        descriptive = descriptive_task_match(owner_task=request["task"], seed=seed, source_binding=binding)
+    if (binding.get("intent_task_digest") != cross_runtime_canonical_digest(request["task"])
+            or (not numeric_match and descriptive is None)):
+        return {"schema_version": FACTORY_SCHEMA, "status": "needs_input",
+                "blockers": ["accepted_public_task_seed_does_not_match_owner_task"],
+                "provider_mutation_performed": False}
+    if descriptive is not None:
+        authority = seed.get("success_contract_authority", {})
+        proposal_ref = seed.get("task_parameter_provenance", {}).get("source_proposal")
+        if authority.get("author_source") != "agent_proposal" or not proposal_ref:
+            return {"schema_version": FACTORY_SCHEMA, "status": "needs_input",
+                    "blockers": ["retained_task_parameter_proposal_required_for_descriptive_task"],
+                    "provider_mutation_performed": False}
+        proposal = read(_reference(proposal_ref), digest_field="proposal_digest")
+        require(authority.get("agent_proposal") == proposal and authority.get("proposal_digest") == proposal["proposal_digest"]
+                and proposal.get("schema_version") == "task_evaluation_task_parameter_proposal.v1"
+                and proposal.get("status") == "proposal_only" and isinstance(proposal.get("success"), dict)
+                and seed["task_parameter_provenance"].get("measured_thresholds_claimed") is False
+                and all(seed["success"].get(key) == value for key, value in proposal["success"].items()),
+                "public_factory_retained_numeric_proposal_changed")
+    require(str(seed.get("publisher_scene_id")) == str(binding.get("publisher_scene_id"))
+            and seed.get("appearance_removal_method") == "sam31", "public_factory_task_source_mismatch")
+    require(set(binding.get("references", {})) == source_reference_names(seed), "public_factory_source_references_invalid")
+    refs = binding["references"]
+    paths = {name: _reference(ref) for name, ref in refs.items()}
+    require(public_source_content_digest(read(paths["installation_receipt"], digest_field="receipt_digest"))
+            == binding["source_content_digest"], "public_factory_source_content_changed")
+    require(set(machinery.get("provider_references", {})) == PROVIDER_REFS
+            and set(machinery.get("provider_options", {})) == PROVIDER_OPTIONS,
+            "public_factory_provider_configuration_invalid")
+    provider_paths = {key: _reference(ref) for key, ref in machinery["provider_references"].items()}
+    require({"vast", "openai"}.issubset(request["execution"]["allowed_providers"]),
+            "public_factory_provider_not_authorized")
+    maximum = machinery.get("maximum_preparation_spend_usd")
+    require(type(maximum) in (int, float) and 4.5 <= maximum <= request["execution"]["max_total_spend_usd"],
+            "public_factory_preparation_cap_insufficient")
+    require(isinstance(attempt_id, str) and attempt_id and "/" not in attempt_id and "\\" not in attempt_id,
+            "public_factory_attempt_id_invalid")
+    retained_bindings = machinery.get("retained_prefix_only_binding_ids", [])
+    require(isinstance(retained_bindings, list) and all(isinstance(item, str) for item in retained_bindings),
+            "public_factory_preparation_mode_invalid")
+    retained_only = binding["binding_id"] in retained_bindings
+    attempt_path = Path(intent_path).parent / ("preparation-attempts" if retained_only else "attempts") / (attempt_id + ".json")
+    attempt = read_intake(attempt_path, "attempt_digest")
+    commit = release["source_commit"]
+    require(attempt.get("intent_digest") == intent["intent_digest"]
+            and attempt.get("source_commit") == commit and attempt.get("runtime_digest") == release["runtime_digest"]
+            and attempt.get("input_digest") == binding["binding_digest"]
+            and ((not retained_only and attempt.get("provider") == "vast"
+                  and attempt.get("maximum_spend_usd") == maximum)
+                 or (retained_only and attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+                     and attempt.get("provider") == "control_plane" and attempt.get("maximum_spend_usd") == 0
+                     and attempt.get("status") == "preparation_only"
+                     and attempt.get("paid_authority_granted") is False
+                     and attempt.get("provider_allocation_permitted") is False)),
+            "public_factory_attempt_binding_mismatch")
+    if "robot_binding_id" in request["task"]:
+        from .task_evaluation_controls_autoprovision import CATALOG_SCHEMA, _asset, payload_digest, resolve_robot_catalog
+        catalog = resolve_robot_catalog(read(_reference(machinery["robot_catalog"]), digest_field="catalog_digest"),
+                                        source_commit=commit)
+        require(catalog.get("schema_version") == CATALOG_SCHEMA, "public_factory_robot_catalog_invalid")
+        robot = catalog["bindings"].get(request["task"]["robot_binding_id"])
+        require(isinstance(robot, dict) and robot.get("expected_production_commit") == commit,
+                "public_factory_robot_binding_mismatch")
+        _asset(robot["robot_asset_usd"])
+        _asset(robot["embodiment_camera_template"])
+        require(payload_digest(Path(robot["runtime_source_payload_dir"])) == robot["runtime_digest"],
+                "public_factory_robot_runtime_changed")
+    if "episode_interpretation" in request["task"]:
+        interpretation = request["task"]["episode_interpretation"]
+        require(type(interpretation) is bool or (isinstance(interpretation, dict)
+                and set(interpretation) == {"enabled"} and type(interpretation["enabled"]) is bool),
+                "public_factory_episode_interpretation_invalid")
+    release_paths = {key: _reference(release[key]) for key in (
+        "deploy_receipt", "release_provenance", "release_environment")}
+    release_inputs(deploy_path=release_paths["deploy_receipt"], provenance_path=release_paths["release_provenance"],
+        publication_root=Path(release["runtime_publication_root"]), commit=commit,
+        release_admission_mode=release["release_admission_mode"])
+    output = Path(output_root)
+    roots = tuple(Path(p) for p in machinery["preparation"]["approved_roots"])
+    require(output.is_absolute() and not any(p.is_symlink() for p in (output, *output.parents))
+            and any(output.is_relative_to(p) for p in roots)
+            and not output.is_relative_to(Path(release["repo_root"])), "public_factory_output_root_invalid")
+    output.mkdir(parents=True, exist_ok=True, mode=0o750)
+    with release_reference_lock(output, exclusive=True):
+        identity = {"intent": intent_ref, "attempt": record(attempt_path), "source_binding": record(source_binding_path),
+                    "machinery": record(machinery_path), "release": record(release_binding_path)}
+        identity_path = output / "factory_inputs.json"
+        if identity_path.exists():
+            retained_identity = read(identity_path)
+            require(all(retained_identity.get(key) == value for key, value in identity.items())
+                    and type(retained_identity.get("factory_started_at_epoch")) in (int, float),
+                    "public_factory_immutable_conflict")
+            identity = retained_identity
+        else:
+            identity["factory_started_at_epoch"] = moment
+            _write(identity_path, identity)
+        camera_failure_path = output / "camera_preparation_failure.json"
+        if camera_failure_path.exists():
+            _camera_failure(camera_failure_path, identity, commit)
+        task = deepcopy(seed)
+        for key in ("robot_binding_id", "episode_interpretation"):
+            if key in request["task"]:
+                task[key] = request["task"][key]
+        task["expected_production_commit"] = commit
+        # Each owner attempt gets a distinct internal namespace. Reusing the
+        # seed's namespace would collide in the controls/activation registry
+        # across tenants and releases and require operator-only supersession.
+        task["team_namespace"] = "scene-" + canonical_digest({
+            "intent_digest": intent["intent_digest"], "attempt_digest": attempt["attempt_digest"],
+        })[7:55]
+        task["run_prefix"] = "scene-" + intent["intent_id"].removeprefix("scene-")[:20] + "-" + attempt_id
+        task["scene_intent_authority"] = {"intent": intent_ref, "intent_digest": intent["intent_digest"],
+                                          "attempt": record(attempt_path)}
+        accepted_on = datetime.fromtimestamp(request["consent"]["accepted_at_epoch"], timezone.utc).isoformat()
+        owner = task["human_authority"] = {}
+        owner.update(accepted_by=request["owner"]["user_id"], accepted_on=accepted_on,
+            authority_reference="scene-intent:" + intent["intent_digest"],
+            private_derived_frame_disclosure_authorized=True, provider_retention_terms_accepted=True,
+            provider_training_terms_accepted=True, provider_training_authorized=False,
+            task_success_contract_confirmed=True, source_calibration_gpu_render_authorized=True,
+            sam31_visual_review_authorized=True, sam31_visual_review_maximum_cost_usd=1.25)
+        if descriptive is not None:
+            task["task_identity"]["id"] = request["task"]["task_id"]
+            task["owner_description_seed_binding"] = {"source_binding": record(source_binding_path), "match": descriptive}
+        if task.get("success_contract_authority") is not None:
+            task["success_contract_authority"].update(accepted_by=owner["accepted_by"],
+                authority_reference=owner["authority_reference"], delegation_authority_reference=owner["authority_reference"],
+                confirmed_by_team_id=task["team_namespace"])
+        inputs = source_inputs(installation_path=paths["installation_receipt"], publisher_path=paths["publisher_intake"],
+            preparation_path=paths["source_preparation_receipt"], task=task, commit=commit)
+        conversion = _current_conversion(refs=refs, inputs=inputs, release=release, machinery=machinery, output=output)
+        _source_authorities(task=task, seed=seed, refs=refs, conversion_path=conversion,
+            original_source=inputs["raw"]["appearance_3dgs"]["path"], output=output, roots=roots, commit=commit)
+        task.setdefault("source_input_references", {}).update({key: refs[key] for key in (
+            "installation_receipt", "source_preparation_receipt", "destination_simready_result") if key in refs})
+        task["source_input_references"]["standard_splat_conversion_receipt"] = record(conversion)
+        task.setdefault("configuration_provenance", {})["execution_release_rebinding"] = {
+            "prior_task_request": seed_ref, "prior_execution_commit": seed.get("expected_production_commit"),
+            "new_execution_commit": commit, "source_file_identities_unchanged": True,
+            "prior_task_identity": seed["task_identity"], "current_task_identity": task["task_identity"],
+            "numeric_task_proposal_reexecuted": False, "original_proposal_receipts_preserved": True}
+        if "request_digest" in task:
+            task["request_digest"] = canonical_digest(task, digest_field="request_digest")
+        _validate_task(task)
+        task_path = _write(output / "task_request.json", task)
+        authorization_path = output / "sam31_execution_authorization.json"
+        _produce(materialize_sam31_execution_authorization, authorization_path,
+            source_commit_sha=commit, runtime_image_identity=machinery["provider_options"]["runtime_image_identity"],
+            authorized_by=owner["accepted_by"], authorized_on=accepted_on, authority_reference=owner["authority_reference"])
+        provider_path = output / "sam31_provider_profile.json"
+        _produce(materialize_sam31_provider_profile, provider_path,
+            **{key + "_path": path for key, path in provider_paths.items()},
+            execution_authorization_path=authorization_path, source_commit_sha=commit, **machinery["provider_options"])
+        terms = _reference(machinery["review_terms"])
+        review_path = output / "sam31_review_authority.json"
+        _produce(materialize_sam31_review_authority, review_path, task_request_path=task_path,
+                 provider_terms_evidence_path=terms)
+        adopted_path = None
+        selection_path = output / "prefix_selection.json"
+        persisted_selection = (
+            read(selection_path, digest_field="selection_digest")
+            if selection_path.exists() else None
+        )
+        selection = {"schema_version": "task_evaluation_sam31_prefix_selection.v1",
+                     "status": "no_reusable_prefix",
+                     "rejected_candidates": [{"blocker": "no_retained_prefix_candidate"}],
+                     "paid_execution_performed": False, "selection_digest": ""}
+        selection["selection_digest"] = canonical_digest(
+            selection, digest_field="selection_digest"
+        )
+        candidates = _prefix_candidates(binding, machinery, release, task,
+            allow_reuse=request["task"].get("reuse_completed_stages", True))
+        best, best_kwargs = None, None
+        selection_reports = []
+        if candidates:
+            from .task_evaluation_prefix_observation import selection_observation
+            from .task_evaluation_sam31_prefix_adoption import PREFIX_LENGTHS
+            zero_path, adoption_moment = selection_observation(output)
+        for index, candidate in enumerate(candidates, start=1):
+            heartbeat("prefix_candidate", candidate_index=index, candidate_total=len(candidates),
+                      parent_request_digest=candidate["parent_request_digest"])
+            kwargs = dict(source_plan_path=_reference(candidate["source_plan"]),
+                source_profile_path=_reference(candidate["source_profile"]),
+                parent_request_digest=candidate["parent_request_digest"],
+                current_host_inputs={"task_request": record(task_path), **{name: refs[name] for name in (
+                    "installation_receipt", "publisher_intake", "source_preparation_receipt", "interiorgs_terms")}},
+                current_provider_profile_path=provider_path, current_repo_root=release["repo_root"],
+                expected_source_commit=commit, provider_zero_path=zero_path, approved_roots=roots,
+                queue_root=machinery["child_queue_root"], parent_queue_root=machinery["parent_queue_root"],
+                execution_root=machinery["execution_root"], now_epoch=adoption_moment,
+                sam31_billing_source_path=(_reference(candidate["sam31_billing_source"])
+                    if candidate.get("sam31_billing_source") else None),
+                release_binding_root=machinery["release_retention_binding_root"])
+            result = select_completed_prefix_adoption(**kwargs, output_path=None,
+                minimum_prefix_length=PREFIX_LENGTHS[best["through_phase"]] if best is not None else 0)
+            selection_reports.append(result)
+            if result["status"] == "reusable_prefix_selected" and (best is None or
+                    PREFIX_LENGTHS[result["through_phase"]] > PREFIX_LENGTHS[best["through_phase"]]):
+                best, best_kwargs = result, kwargs
+                if best["through_phase"] == "segment_cutout":
+                    break
+        if best is not None:
+            from .task_evaluation_sam31_prefix_adoption import materialize_completed_prefix_adoption
+            adopted_path = output / "completed_prefix_adoption.json"
+            if not adopted_path.exists():
+                # The winner is already selected. Revalidate that exact prefix
+                # before publication; another complete search cannot improve it.
+                heartbeat("adoption_publish", through_phase=best["through_phase"])
+                persisted = materialize_completed_prefix_adoption(
+                    **best_kwargs, through_phase=best["through_phase"], output_path=adopted_path)
+                best = {**best, "adoption": persisted}
+            else:
+                # Revalidate the existing adoption against the fresh current
+                # zero while preserving its original witness and digest.
+                retained = read(adopted_path, digest_field="adoption_digest")
+                historical = {"source_plan_path": _reference(retained["source_plan"]),
+                    "source_profile_path": _reference(retained["source_profile"]),
+                    "parent_request_digest": retained["original_parent_request_digest"],
+                    "sam31_billing_source_path": (_reference(retained["sam31_billing_source"])
+                        if retained.get("sam31_billing_source") else None)}
+                heartbeat("adoption_revalidate", through_phase=retained["through_phase"])
+                persisted = materialize_completed_prefix_adoption(
+                    **{**best_kwargs, **historical}, through_phase=retained["through_phase"],
+                    output_path=adopted_path)
+                best = {**best, "through_phase": persisted["through_phase"], "adoption": persisted}
+            computed_selection = {**best, "candidate_selections": selection_reports}
+            if persisted_selection is not None:
+                require(persisted_selection.get("status") == "reusable_prefix_selected"
+                        and persisted_selection.get("adoption") == computed_selection.get("adoption"),
+                        "public_factory_selection_changed")
+                selection = persisted_selection
+            else:
+                selection = computed_selection
+        elif selection_reports:
+            computed_selection = {
+                "schema_version": "task_evaluation_sam31_prefix_selection.v1",
+                "status": "no_reusable_prefix", "candidate_selections": selection_reports,
+                "paid_execution_performed": False,
+            }
+            if persisted_selection is not None:
+                require(persisted_selection.get("status") == "no_reusable_prefix",
+                        "public_factory_selection_changed")
+                selection = persisted_selection
+            else:
+                selection = computed_selection
+        if candidates and persisted_selection is None:
+            selection.update(provider_zero_observation=record(zero_path),
+                             provider_zero_checked_at_epoch=adoption_moment)
+            # The observation is added after the selector seals its report;
+            # reseal the complete immutable selection before publishing it.
+            selection["selection_digest"] = canonical_digest(
+                selection, digest_field="selection_digest"
+            )
+        if persisted_selection is not None:
+            # A completed attempt may be replayed after queue retention removes
+            # the discovery rows.  Its immutable selection remains authoritative
+            # for this output directory and must not be replaced by the default
+            # no-candidate placeholder.
+            if not candidates:
+                selection = persisted_selection
+                if selection.get("status") == "reusable_prefix_selected":
+                    adopted_path = output / "completed_prefix_adoption.json"
+            require(read(selection_path, digest_field="selection_digest") == selection,
+                    "public_factory_selection_changed")
+        else:
+            _write(selection_path, selection)
+        if retained_only:
+            require(selection.get("status") == "reusable_prefix_selected"
+                    and selection.get("through_phase") == "segment_cutout" and adopted_path is not None,
+                    "public_factory_retained_only_complete_prefix_required")
+        preparation = dict(machinery["preparation"])
+        preparation.update(source_commit=commit, repo_root=release["repo_root"], sam31_provider_profile_path=provider_path,
+            sam31_review_rights_attestation_path=review_path, completed_prefix_adoption_path=adopted_path)
+        profile = materialize_sam31_preparation_profile(**preparation)
+        profile_path = _write(output / "sam31_preparation_profile.json", profile)
+        registry = register_sam31_profile(profile_path=profile_path,
+            registry_root=machinery.get("profile_registry_root") or DEFAULT_PROFILE_REGISTRY_ROOT)
+        submission_root = output / "submission"
+        manifest_path = submission_root / "bundle_manifest.v1.json"
+        if not manifest_path.exists():
+            _scene_submission(materialize_scene_configuration_submission,
+                failure_path=camera_failure_path, identity=identity, commit=commit, task_request_path=task_path,
+                installation_receipt_path=paths["installation_receipt"], publisher_intake_path=paths["publisher_intake"],
+                source_preparation_receipt_path=paths["source_preparation_receipt"],
+                destination_simready_result_path=paths.get("destination_simready_result"),
+                deploy_receipt_path=release_paths["deploy_receipt"], release_provenance_path=release_paths["release_provenance"],
+                release_environment_path=release_paths["release_environment"],
+                runtime_publication_root=release["runtime_publication_root"],
+                rights_evidence={key: paths[key] for key in ("interiorgs_terms", "interiorgs_readme", "sage_readme")},
+                staging_root=submission_root, expected_production_commit=commit,
+                namespace_timestamp=release["namespace_timestamp"], sam31_server_profile_path=profile_path,
+                sam31_completed_prefix_adoption_path=adopted_path, release_admission_mode=release["release_admission_mode"],
+                scene_intent_digest=intent["intent_digest"])
+        manifest = read(manifest_path, digest_field="manifest_digest")
+        heartbeat("submission_inputs", file_count=len(manifest["files"]))
+        for row in manifest["files"]:
+            checked_file(submission_root / row["relative_path"], {"sha256": row["digest"], "size_bytes": row["size_bytes"]})
+        receipt = {"schema_version": FACTORY_SCHEMA, "status": "publication_ready", "identity": identity,
+            "intent_digest": intent["intent_digest"], "attempt_digest": attempt["attempt_digest"], "source_commit": commit,
+            "task_request": record(task_path), "sam31_provider_profile": record(provider_path),
+            "sam31_preparation_profile": record(profile_path), "profile_registry": registry,
+            "submission_manifest": record(manifest_path), "prefix_selection": record(output / "prefix_selection.json"),
+            "submission_request": record(submission_root / "scene_configuration_preparation_request.v1.json"),
+            "frozen_policy_candidates": request["execution"]["policy_candidates"],
+            "original_source_reinstalled": False, "task_model_queried": False,
+            "provider_mutation_performed": False, "source_uploaded": False, "claim_scope": "development_only"}
+        receipt["factory_digest"] = canonical_digest(receipt, digest_field="factory_digest")
+        _write(output / "factory_receipt.json", receipt)
+        return receipt

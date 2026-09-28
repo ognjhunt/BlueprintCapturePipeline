@@ -214,7 +214,8 @@ def _source_task_frames(task: Mapping[str, Any]) -> list[dict[str, Any]]:
         if (
             rgb.shape[:2] != mask.shape
             or set(mask.tobytes()) - {0, 255}
-            or not np.any(mask)
+            or frame.get("frame_role", "semantic_edit") not in {"semantic_edit", "source_preservation"}
+            or bool(np.any(mask)) != (frame.get("frame_role", "semantic_edit") == "semantic_edit")
             or frame.get("repair_pixel_count") != int(np.count_nonzero(mask))
         ):
             raise DualTargetInputError(["dual_target_source_shape_or_mask_invalid"])
@@ -223,6 +224,7 @@ def _source_task_frames(task: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "frame_index": expected_index,
                 "camera_id": camera_id,
                 "original_path": original,
+                "frame_role": frame.get("frame_role", "semantic_edit"),
                 "mask_path": exact_mask,
                 "rgb": rgb,
                 "mask": mask,
@@ -395,6 +397,7 @@ def materialize_whole_frame_semantic_teacher_receipt(
     editor_identity: Mapping[str, Any],
     prompt_policy: str,
     output_path: str | Path,
+    training_view_selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind full semantic-editor frames without claiming review or locality."""
 
@@ -422,6 +425,9 @@ def materialize_whole_frame_semantic_teacher_receipt(
         raise DualTargetInputError(["dual_target_semantic_teacher_output_invalid"])
     output = output.resolve()
 
+    editor_identity = dict(editor_identity)
+    if training_view_selection is not None:
+        editor_identity["training_view_selection"] = dict(training_view_selection)
     task = task_matches[0]
     source_frames = _source_task_frames(task)
     rows: list[dict[str, Any]] = []
@@ -440,11 +446,14 @@ def materialize_whole_frame_semantic_teacher_receipt(
             raise DualTargetInputError(["dual_target_semantic_teacher_shape_invalid"])
         support = frame["mask"] > 0
         changed = np.any(teacher != frame["rgb"], axis=2)
+        if frame["frame_role"] == "source_preservation" and np.any(changed):
+            raise DualTargetInputError(["dual_target_preserved_source_changed"])
         rows.append(
             {
                 "frame_index": index,
                 "camera_id": frame["camera_id"],
                 "source_original_frame": _absolute_record(frame["original_path"]),
+                "frame_role": frame["frame_role"],
                 "exact_repair_mask": _absolute_record(frame["mask_path"]),
                 "whole_frame_semantic_teacher": _absolute_record(teacher_path),
                 "width": int(teacher.shape[1]),
@@ -946,6 +955,12 @@ def materialize_dual_target_artifixer3d_inputs(
         source_transforms, _source_transforms_path = _validated_transforms(task, source_frames)
         teacher_receipt = semantic_receipts[task_id]
         teacher_by_camera = _teacher_frame_map(teacher_receipt)
+        selection = teacher_receipt.get("editor_identity", {}).get("training_view_selection")
+        excluded_cameras = set()
+        if selection is not None:
+            from .semantic_target_training_selection import validate_selection
+            excluded_cameras = validate_selection(selection, transforms=source_transforms,
+                teacher_frames=list(teacher_by_camera.values()))
         if set(teacher_by_camera) != {str(frame["camera_id"]) for frame in source_frames}:
             raise DualTargetInputError(["dual_target_semantic_teacher_camera_set_invalid"])
         copied_teacher_receipt = provenance / f"semantic_teacher.{task_id}.json"
@@ -1028,7 +1043,11 @@ def materialize_dual_target_artifixer3d_inputs(
             anchor_index = 2 * physical_index
             teacher_index = anchor_index + 1
             anchor_indices.append(anchor_index)
-            teacher_indices.append(teacher_index)
+            teacher_excluded = source_frame["camera_id"] in excluded_cameras
+            if teacher_excluded:
+                anchor_indices.append(teacher_index)
+            else:
+                teacher_indices.append(teacher_index)
             anchor_path = images / f"{anchor_index:05d}.png"
             teacher_path = images / f"{teacher_index:05d}.png"
             teacher_override_path = teacher_images / f"{teacher_index:05d}.png"
@@ -1041,12 +1060,12 @@ def materialize_dual_target_artifixer3d_inputs(
                 code="dual_target_anchor_copy_invalid",
             )
             _link_or_copy(
-                teacher_source,
+                source_frame["original_path"] if teacher_excluded else teacher_source,
                 teacher_path,
                 code="dual_target_teacher_copy_invalid",
             )
             _link_or_copy(
-                teacher_source,
+                source_frame["original_path"] if teacher_excluded else teacher_source,
                 teacher_override_path,
                 code="dual_target_teacher_copy_invalid",
             )
@@ -1067,7 +1086,11 @@ def materialize_dual_target_artifixer3d_inputs(
                 anchor_sibling_mask_path,
                 code="dual_target_anchor_mask_copy_invalid",
             )
-            if (images / f"{teacher_index:05d}_mask.png").exists():
+            excluded_mask = images / f"{teacher_index:05d}_mask.png"
+            if teacher_excluded:
+                _link_or_copy(anchor_mask_path, excluded_mask,
+                    code="dual_target_excluded_teacher_anchor_mask_invalid")
+            if not teacher_excluded and excluded_mask.exists():
                 raise DualTargetInputError(["dual_target_teacher_mask_forbidden"])
 
             common_transform = {
@@ -1083,7 +1106,8 @@ def materialize_dual_target_artifixer3d_inputs(
                 **common_transform,
                 "file_path": f"images/{teacher_index:05d}.png",
                 "physical_camera_index": physical_index,
-                "training_role": "whole_frame_semantic_teacher",
+                "training_role": ("original_outside_anchor" if teacher_excluded
+                                  else "whole_frame_semantic_teacher"),
             }
             transform_rows.extend((anchor_transform, teacher_transform))
             review_rows.append(
@@ -1100,6 +1124,7 @@ def materialize_dual_target_artifixer3d_inputs(
                 {
                     "physical_camera_index": physical_index,
                     "camera_id": source_frame["camera_id"],
+                    "frame_role": source_frame["frame_role"],
                     "anchor_training_index": anchor_index,
                     "semantic_teacher_training_index": teacher_index,
                     "source_original_frame": _absolute_record(source_frame["original_path"]),
@@ -1116,6 +1141,9 @@ def materialize_dual_target_artifixer3d_inputs(
                         anchor_sibling_mask_path, root=task_root
                     ),
                     "teacher_loss_mask_materialized": False,
+                    "semantic_teacher_excluded_from_training": teacher_excluded,
+                    "excluded_teacher_anchor_mask": (_relative_record(excluded_mask, root=task_root)
+                                                      if teacher_excluded else None),
                     "pair_pose_and_intrinsics_exactly_equal": True,
                     "exact_repair_pixel_count": exact_pixels,
                     "excluded_anchor_loss_pixel_count": excluded_pixels,
@@ -1175,6 +1203,7 @@ def materialize_dual_target_artifixer3d_inputs(
                 "physical_camera_count": len(source_frames),
                 "training_record_count": len(transform_rows),
                 "frames": frame_rows,
+                "training_view_selection": selection,
                 "selected_anchor_indices": anchor_indices,
                 "semantic_teacher_indices": teacher_indices,
                 "selected_anchor_indices_file": _relative_record(selected_path, root=task_root),
@@ -1259,6 +1288,18 @@ def materialize_dual_target_artifixer3d_inputs(
         },
         "receipt_digest": "",
     }
+    if source.get("appearance_initialization") is not None:
+        initialization = source["appearance_initialization"]
+        original_receipt = _bound_record(initialization["receipt"],
+            code="dual_target_appearance_initialization_receipt_invalid")
+        initialization_receipt = provenance / "appearance_initialization.json"
+        _link_or_copy(original_receipt, initialization_receipt,
+            code="dual_target_appearance_initialization_receipt_copy_invalid")
+        receipt["appearance_initialization"] = {
+            **initialization,
+            "receipt": _relative_record(initialization_receipt, root=output),
+            "initialization_sha256": _absolute_record(source_retained)["sha256"],
+        }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path = output / f"{SCHEMA_VERSION}.json"
     _write_json(receipt_path, receipt)

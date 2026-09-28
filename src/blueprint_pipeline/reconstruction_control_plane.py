@@ -33,6 +33,7 @@ from .reconstruction_capability import (
     normalize_reconstruction_result,
     plan_reconstruction_methods,
 )
+from .provided_scene_mesh import ADAPTER as PROVIDED_SCENE_MESH_ADAPTER, method_profile as mesh_method_profile
 
 
 class ReconstructionControlPlaneError(ValueError):
@@ -261,6 +262,8 @@ def prepare_reconstruction_plan(
         profiles.append(
             external_reconstruction_import_method_profile(execution_authorized=local_permitted)
         )
+    if profile == "provided_scene_mesh":
+        profiles.append(mesh_method_profile(execution_authorized=local_permitted))
     plan = plan_reconstruction_methods(
         intake_id=intake,
         capture_digest=str(receipt.get("capture_digest") or ""),
@@ -465,7 +468,7 @@ def execute_reconstruction_plan(
                     output_root=output_root,
                     rights_and_retention=_mapping(context.get("rights_and_retention")),
                 )
-            elif reference == LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER:
+            elif reference in {LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER, PROVIDED_SCENE_MESH_ADAPTER}:
                 result = adapter.execute(
                     intake_id=str(context["intake_id"]),
                     capture_digest=str(context["capture_digest"]),

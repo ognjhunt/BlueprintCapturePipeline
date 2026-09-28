@@ -203,6 +203,7 @@ def render_splat_scene(
     settle_ms: int = 100,
     warmup_ms: int = 2000,
     graphics_backend: str = "swiftshader",
+    browser_executable: str | Path | None = None,
     up_axis: int | None = None,
     focus_point: Sequence[float] | None = None,
     overlay_json: str | Path | None = None,
@@ -252,6 +253,16 @@ def render_splat_scene(
     if normalized_graphics_backend not in {"swiftshader", "metal"}:
         manifest["blockers"].append("unsupported_graphics_backend")
         return manifest
+    normalized_browser_executable: Path | None = None
+    if browser_executable is not None:
+        normalized_browser_executable = Path(browser_executable).expanduser().resolve()
+        if not normalized_browser_executable.is_file():
+            manifest["blockers"].append("browser_executable_missing")
+            return manifest
+        manifest["browser_executable"] = {
+            "path": str(normalized_browser_executable),
+            "sha256": _sha256_file(normalized_browser_executable),
+        }
     if isinstance(decimate, bool) or not isinstance(decimate, int) or decimate < 0:
         manifest["blockers"].append("invalid_splat_decimation_request")
         return manifest
@@ -334,6 +345,8 @@ def render_splat_scene(
         "--settle-ms", str(settle_ms),
         "--graphics-backend", normalized_graphics_backend,
     ]
+    if normalized_browser_executable is not None:
+        cmd += ["--browser-executable", str(normalized_browser_executable)]
     if overlay_json:
         overlay_path = Path(overlay_json).expanduser().resolve()
         if not overlay_path.is_file():
@@ -364,6 +377,7 @@ def render_splat_scene(
         "blockers": render_result.get("blockers", []),
         "page_errors": render_result.get("page_errors", [])[:5],
         "overlay": render_result.get("overlay"),
+        "browser_version": render_result.get("browser_version"),
         "stderr_tail": (proc.stderr or "")[-1200:] if proc.returncode != 0 else "",
     }
     rendered = render_result.get("cameras", []) or []
@@ -499,6 +513,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("swiftshader", "metal"),
         help="local Spark graphics backend; Metal uses the Mac GPU, SwiftShader is software",
     )
+    ap.add_argument(
+        "--browser-executable",
+        help=(
+            "optional explicit Chromium/Chrome executable; its byte digest and runtime "
+            "version are retained in the render manifest"
+        ),
+    )
     ap.add_argument("--up-axis", type=int, default=None, choices=[0, 1, 2])
     ap.add_argument(
         "--focus-point",
@@ -526,6 +547,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         settle_frames=args.settle_frames,
         warmup_ms=args.warmup_ms,
         graphics_backend=args.graphics_backend,
+        browser_executable=args.browser_executable,
         up_axis=args.up_axis,
         focus_point=args.focus_point,
         camera_specs=camera_specs,

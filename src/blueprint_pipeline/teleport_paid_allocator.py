@@ -44,10 +44,12 @@ def _utc_now() -> str:
 
 def add_teleport_provider_arguments(commands: Any, *, root: Path) -> None:
     provider = commands.add_parser("provider-reconstruction")
-    provider.add_argument("--provider", choices=("teleport",), default="teleport")
-    provider.add_argument("--upload-packet", required=True)
-    provider.add_argument("--execution-request", required=True)
-    provider.add_argument("--candidate-observations", required=True)
+    provider.add_argument("--provider", choices=("teleport", "world_labs"), default="teleport")
+    provider.add_argument("--upload-packet")
+    provider.add_argument("--execution-request")
+    provider.add_argument("--candidate-observations")
+    provider.add_argument("--descriptor", help="World Labs prepared website capture descriptor")
+    provider.add_argument("--capture-root", help="World Labs local capture root")
     provider.add_argument("--sealed-evaluation-request")
     provider.add_argument("--output-dir", required=True)
     provider.add_argument(
@@ -80,6 +82,8 @@ def run_teleport_provider(
 
     output = Path(args.output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+    if not all((args.upload_packet, args.execution_request, args.candidate_observations)):
+        return {"status": "blocked", "blockers": ["teleport_required_inputs_missing"]}
     blockers: list[str] = []
     request: dict[str, Any] = {}
     packet_path = Path(args.upload_packet).expanduser().resolve()

@@ -18,12 +18,14 @@ COMMIT = "a" * 40
 NOW = 2_000_000_000.0
 
 
-def _prepared(tmp_path: Path) -> tuple[dict, Path]:
+def _prepared(
+    tmp_path: Path, *, execution_mode: str = "controls"
+) -> tuple[dict, Path]:
     bundle = tmp_path / "native_task_arena_provider_bundle.zip"
     bundle.write_bytes(b"bundle")
     prepared = {
         "schema_version": "native_task_arena_provider_bundle.v1",
-        "execution_mode": "controls",
+        "execution_mode": execution_mode,
         "bundle_path": str(bundle),
         "bundle_sha256": "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest(),
         "input_digest": "sha256:" + "c" * 64,
@@ -33,7 +35,11 @@ def _prepared(tmp_path: Path) -> tuple[dict, Path]:
             "packet_sha256": "sha256:" + "e" * 64,
             "packet_size_bytes": 4_400_000_000,
         },
-        "expected_output_filename": "native_task_arena_control_result.v1.json",
+        "expected_output_filename": (
+            "native_task_arena_control_result.v1.json"
+            if execution_mode == "controls"
+            else "native_task_arena_construction_result.v1.json"
+        ),
     }
     receipt = tmp_path / "native_task_arena_provider_bundle_receipt.v1.json"
     write_json(receipt, prepared)
@@ -68,10 +74,39 @@ def _session(prepared: dict) -> dict:
     return session
 
 
+@pytest.mark.parametrize(
+    "value",
+    (
+        "http://objects.example/value",
+        "file:///private/tmp/value",
+        "https:///missing-host",
+        "https://user:secret@objects.example/value",
+    ),
+)
+def test_read_url_rejects_non_https_or_credential_bearing_values(
+    tmp_path: Path, value: str
+) -> None:
+    path = tmp_path / "signed-url.txt"
+    path.write_text(value + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="native_task_arena_warm_signed_url_invalid"):
+        warm_vast._read_url(path)
+
+
+def test_read_url_accepts_https_signed_url(tmp_path: Path) -> None:
+    path = tmp_path / "signed-url.txt"
+    value = "https://objects.example/value?signature=secret"
+    path.write_text(value + "\n", encoding="utf-8")
+
+    assert warm_vast._read_url(path) == value
+
+
+@pytest.mark.parametrize("execution_mode", ["construction_canary", "controls"])
 def test_warm_authority_binds_session_bundle_and_zero_allocations(
     tmp_path: Path,
+    execution_mode: str,
 ) -> None:
-    prepared, receipt = _prepared(tmp_path)
+    prepared, receipt = _prepared(tmp_path, execution_mode=execution_mode)
     session = _session(prepared)
     session_path = tmp_path / "warm-session.json"
     write_json(session_path, session)
@@ -88,6 +123,7 @@ def test_warm_authority_binds_session_bundle_and_zero_allocations(
     )
 
     assert issued["maximum_provider_allocations"] == 0
+    assert issued["execution_mode"] == execution_mode
     assert issued["provider_instance_id"] == 123
     assert issued["warm_session_digest"] == session["session_digest"]
     assert authority.validate_native_task_arena_warm_attempt_authority(
@@ -218,6 +254,43 @@ def test_warm_log_fetch_reads_dispatch_namespace_not_workload_namespace(
     assert remote_log_path in calls[1]["remote_argv"][2]
 
 
+def test_warm_dispatch_can_bind_a_dedicated_process_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        warm_vast,
+        "enroll_vast_ssh_host_key",
+        lambda *_args, **_kwargs: {
+            "status": "enrolled",
+            "known_hosts_file": str(tmp_path / "vast_ssh_known_hosts"),
+        },
+    )
+
+    def fake_ssh(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed", "blockers": [], "stdout": "7654 7654 7654\n"}
+
+    monkeypatch.setattr(warm_vast, "_run_pinned_ssh", fake_ssh)
+    result = warm_vast._dispatch_warm_script_over_ssh(
+        job=tmp_path,
+        session={"ssh_host": "ssh.example", "ssh_port": 12345},
+        remote_script="#!/usr/bin/env bash\nexit 0\n",
+        attempt_key="c" * 16,
+        require_dedicated_session=True,
+    )
+
+    assert result["status"] == "completed"
+    assert result["remote_pid"] == 7654
+    assert result["remote_process_group_id"] == 7654
+    assert result["remote_session_id"] == 7654
+    assert result["transport"] == "strict_pinned_ssh_stdin_dedicated_session.v1"
+    remote_command = " ".join(observed["remote_argv"])
+    assert "nohup setsid /bin/bash -c" in remote_command
+    assert "BLUEPRINT_SCENE_WARM_DISPATCH_ATTEMPT" in remote_command
+    assert "session.identity" in remote_command
+
+
 def test_pinned_ssh_uses_service_bound_identity_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -249,6 +322,28 @@ def test_pinned_ssh_uses_service_bound_identity_file(
     assert result["status"] == "completed"
     command = observed["command"]
     assert command[command.index("-i") + 1] == str(identity)
+
+
+@pytest.mark.parametrize("failure", ["missing", "symlink", "mode", "unreadable"])
+def test_warm_ssh_identity_validation_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    identity = tmp_path / "vast_ssh_id_ed25519"
+    if failure == "symlink":
+        target = tmp_path / "identity-target"
+        target.write_text("private-key-placeholder")
+        target.chmod(0o600)
+        identity.symlink_to(target)
+    elif failure != "missing":
+        identity.write_text("private-key-placeholder")
+        identity.chmod(0o644 if failure == "mode" else 0o600)
+    if failure == "unreadable":
+        monkeypatch.setattr(warm_vast.os, "access", lambda *_args: False)
+
+    with pytest.raises(
+        ValueError, match="native_task_arena_warm_ssh_identity_invalid"
+    ):
+        warm_vast.validate_native_task_arena_warm_ssh_identity_file(identity)
 
 
 def test_failed_warm_dispatch_fails_before_output_poll(
@@ -372,13 +467,134 @@ def test_close_accepts_provider_404_as_observed_absence(
     assert result["continuing_spend_from_this_run"] is False
 
 
-@pytest.mark.parametrize("diagnostic_mode", [False, True])
+@pytest.mark.parametrize("delete_status", [404, 410])
+def test_close_accepts_delete_absence_then_requires_get_readback(
+    monkeypatch: pytest.MonkeyPatch,
+    delete_status: int,
+) -> None:
+    calls: list[str] = []
+
+    def fake_api_json(*, method, **_kwargs):
+        calls.append(method)
+        if method == "DELETE":
+            raise urllib.error.HTTPError(
+                url="https://provider.example/instances/123/",
+                code=delete_status,
+                msg="already absent",
+                hdrs=None,
+                fp=None,
+            )
+        raise urllib.error.HTTPError(
+            url="https://provider.example/instances/123/",
+            code=404,
+            msg="not found",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr(warm_vast, "_api_json", fake_api_json)
+
+    result = warm_vast._close_warm_instance(
+        instance_id=123, api_key="secret", timeout_seconds=1
+    )
+
+    assert calls == ["DELETE", "GET"]
+    assert result["status"] == "completed"
+    assert result["destroy_http_status_code"] == delete_status
+    assert result["provider_instance_absent"] is True
+    assert result["continuing_spend_from_this_run"] is False
+
+
+def test_close_does_not_swallow_nonterminal_delete_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = urllib.error.HTTPError(
+        url="https://provider.example/instances/123/",
+        code=503,
+        msg="unavailable",
+        hdrs=None,
+        fp=None,
+    )
+    monkeypatch.setattr(
+        warm_vast,
+        "_api_json",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        warm_vast._close_warm_instance(
+            instance_id=123, api_key="secret", timeout_seconds=1
+        )
+    assert excinfo.value.code == 503
+
+
+def test_warm_identity_is_validated_before_authority_consumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared, receipt = _prepared(tmp_path, execution_mode="construction_canary")
+    session = _session(prepared)
+    session_path = tmp_path / "warm-session.json"
+    write_json(session_path, session)
+    issued = authority.materialize_native_task_arena_warm_attempt_authority(
+        warm_session_path=session_path,
+        bundle_receipt_path=receipt,
+        prepared_bundle=prepared,
+        authorization_reference="current production goal",
+        authorized_by="user",
+        authorized_on="2026-08-21",
+        output_path=tmp_path / "warm-authority.json",
+        observed_now_epoch=NOW,
+    )
+    monkeypatch.setattr(warm_vast.time, "time", lambda: NOW)
+    monkeypatch.setattr(
+        warm_vast,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("native_task_arena_warm_ssh_identity_invalid")
+        ),
+    )
+    monkeypatch.setattr(
+        warm_vast,
+        "consume_native_task_arena_warm_authority_once",
+        lambda _value: pytest.fail("invalid identity must not consume authority"),
+    )
+
+    result = warm_vast.run_native_task_arena_warm_controls_vast(
+        job_dir=tmp_path / "job",
+        prepared_bundle=prepared,
+        warm_session=session,
+        warm_attempt_authority=issued,
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        close_on_success=False,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["authorization_consumption"] == {"status": "not_consumed"}
+    assert result["blockers"] == [
+        "native_task_arena_warm_ssh_identity_invalid"
+    ]
+    assert result["provider_allocations_performed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("execution_mode", "diagnostic_mode", "runtime_blocked", "expected_status"),
+    [
+        ("controls", False, False, "completed"),
+        ("controls", True, False, "completed"),
+        ("controls", False, True, "blocked"),
+        ("construction_canary", False, False, "completed"),
+    ],
+)
 def test_warm_execution_reuses_instance_without_allocating(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    execution_mode: str,
     diagnostic_mode: bool,
+    runtime_blocked: bool,
+    expected_status: str,
 ) -> None:
-    prepared, receipt = _prepared(tmp_path)
+    prepared, receipt = _prepared(tmp_path, execution_mode=execution_mode)
     session = _session(prepared)
     session_path = tmp_path / "warm-session.json"
     write_json(session_path, session)
@@ -394,6 +610,11 @@ def test_warm_execution_reuses_instance_without_allocating(
     )
     # Rebind the session deadline to real test time after authority validation.
     monkeypatch.setattr(warm_vast.time, "time", lambda: NOW)
+    monkeypatch.setattr(
+        warm_vast,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda *_args, **_kwargs: tmp_path / "valid-identity",
+    )
     monkeypatch.setattr(warm_vast, "_read_api_key", lambda: "secret-api-key")
     monkeypatch.delenv(warm_vast.VAST_API_GATE_ENV, raising=False)
     monkeypatch.delenv(warm_vast.VAST_INSTANCE_LAUNCH_GATE_ENV, raising=False)
@@ -452,9 +673,13 @@ def test_warm_execution_reuses_instance_without_allocating(
 
     def fake_download(*, destination, **_kwargs):
         execution = {
-            "status": "completed",
+            "status": "blocked" if runtime_blocked else "completed",
             "candidate_policy_queried": False,
-            "blockers": [],
+            "blockers": (
+                ["native_task_phase_ik_unreached:precontact"]
+                if runtime_blocked
+                else []
+            ),
         }
         if diagnostic_mode:
             request = {
@@ -510,7 +735,7 @@ def test_warm_execution_reuses_instance_without_allocating(
             }
         with zipfile.ZipFile(destination, "w") as archive:
             archive.writestr(
-                "native_task_arena_control_result.v1.json",
+                prepared["expected_output_filename"],
                 json.dumps(execution),
             )
         return True
@@ -541,19 +766,29 @@ def test_warm_execution_reuses_instance_without_allocating(
         warm_attempt_authority=issued,
         paid_resource_admission_grant=object(),  # type: ignore[arg-type]
         execute=True,
+        close_on_success=execution_mode == "controls",
     )
 
-    assert result["status"] == "completed"
+    assert result["status"] == expected_status
     assert result["provider_allocations_performed"] == 0
     assert result["provider_instance_id"] == 123
-    assert result["continuing_spend_from_this_run"] is False
-    assert result["warm_session_closeout"]["provider_instance_absent"] is True
+    assert result["execution_mode"] == execution_mode
+    assert result["provider_allocations_performed"] == 0
+    assert result["native_result_path"]
+    assert result["continuing_spend_from_this_run"] is (
+        execution_mode == "construction_canary"
+    )
+    assert result["warm_session_closeout"]["provider_instance_absent"] is (
+        execution_mode == "controls"
+    )
     assert warm_vast.VAST_API_GATE_ENV not in warm_vast.os.environ
     assert warm_vast.VAST_INSTANCE_LAUNCH_GATE_ENV not in warm_vast.os.environ
     assert Path(result["artifact_manifest_path"]).is_file()
     assert Path(result["teardown_manifest_path"]).is_file()
     teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())
-    assert teardown["continuing_spend_from_this_run"] is False
+    assert teardown["continuing_spend_from_this_run"] is (
+        execution_mode == "construction_canary"
+    )
     assert teardown["vast_instance_ids"] == [123]
     assert len(dispatches) == 2
 

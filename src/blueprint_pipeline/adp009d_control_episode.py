@@ -88,6 +88,22 @@ except ModuleNotFoundError:  # repository package
         normalize_physics_backend,
         validate_backend_contact_configuration,
     )
+try:  # flat provider-bundle layout
+    from task_control_diagnostic_boundary import (
+        apply_diagnostic_receipt_boundary,
+        build_task_control_pair,
+        control_plan_boundary_errors,
+        copy_diagnostic_annotations,
+        diagnostic_receipt_annotations,
+    )
+except ModuleNotFoundError:  # repository package
+    from .task_control_diagnostic_boundary import (
+        apply_diagnostic_receipt_boundary,
+        build_task_control_pair,
+        control_plan_boundary_errors,
+        copy_diagnostic_annotations,
+        diagnostic_receipt_annotations,
+    )
 
 
 CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v12"
@@ -231,18 +247,9 @@ TASK_CONTROL_RECOVERY_EXTENDED_STANDOFF_SCALE = 2.0
 
 
 def recovery_ladder_for_plan(plan: Mapping[str, Any]) -> tuple[str, ...]:
-    """The rungs this run will try, in order.
+    """Use the declared implemented recovery rungs, or the default ladder.
 
-    The ordering is a *hypothesis ranking*, and the best-informed ranker is
-    whoever just read the previous run's sealed telemetry -- an operator or an
-    agent -- not a constant frozen at some earlier commit.  A plan may
-    therefore carry its own ``recovery_strategy_ladder`` and reorder or narrow
-    the rungs per launch, with no code change and no deploy.
-
-    What a plan may NOT do is invent a rung: every entry must name a strategy
-    this executor implements, so a sealed plan can never promise physics the
-    run cannot perform.  Anything unknown, empty, or malformed falls back to
-    the default ladder rather than silently disabling recovery.
+    A malformed or empty declaration must not silently disable recovery.
     """
 
     declared = plan.get("recovery_strategy_ladder")
@@ -1725,8 +1732,11 @@ def validate_task_control_plan(
         errors.append("task_control_plan_digest_mismatch")
     if checked.get("task_spec_digest") != canonical_digest(task):
         errors.append("task_control_plan_task_spec_mismatch")
-    if checked.get("trajectory_source") != "native_ik_preflight":
-        errors.append("task_control_trajectory_source_invalid")
+    diagnostic_plan, boundary_errors = control_plan_boundary_errors(checked)
+    errors.extend(boundary_errors)
+    attempt_limit = checked.get("maximum_pose_phase_attempts", TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS)
+    if type(attempt_limit) is not int or not 1 <= attempt_limit <= TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS:
+        errors.append("task_control_phase_attempt_limit_invalid")
     planner_receipt_digest = str(checked.get("planner_receipt_digest") or "")
     if not planner_receipt_digest.startswith("sha256:") or len(
         planner_receipt_digest
@@ -2126,9 +2136,13 @@ def _run_task_control_episode(
         environment.reset()
     else:
         initial_reset_callback()
+    if callable(getattr(environment, "begin_episode", None)):
+        environment.begin_episode()
     samples = [
         _task_neutral_sample(environment, task_kind=task_kind, step_index=0)
     ]
+    reset_reader = getattr(environment, "scientific_reset_readback", None)
+    scientific_reset = reset_reader(control_id) if callable(reset_reader) else None
     initial_state_blocker = (
         initial_sample_validator(samples[0])
         if initial_sample_validator is not None
@@ -2179,6 +2193,7 @@ def _run_task_control_episode(
     current_strategy: str | None = None
     attempt_history: list[dict[str, Any]] = []
     recovery_ladder = recovery_ladder_for_plan(plan)
+    phase_attempt_limit = plan.get("maximum_pose_phase_attempts", TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS)
     while row_index < len(trajectory):
         row = trajectory[row_index]
         pose_mode = row.get("mode") == "ik_pose"
@@ -2616,7 +2631,7 @@ def _run_task_control_episode(
                 if (
                     selected_joints is not None
                     and not hold_arm_during_gripper_transition
-                    and attempt_number < TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS
+                    and attempt_number < phase_attempt_limit
                     and selected_tracking_error is not None
                     and selected_tracking_error > 1.0e-4
                 ):
@@ -2647,12 +2662,12 @@ def _run_task_control_episode(
                         ladder=recovery_ladder,
                         arrival_tolerance_m=float(row["arrival_tolerance_m"]),
                         remaining_attempts=(
-                            TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS - attempt_number
+                            phase_attempt_limit - attempt_number
                         ),
                     )
                 )
                 if (
-                    attempt_number < TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS
+                    attempt_number < phase_attempt_limit
                     and not hold_arm_during_gripper_transition
                     # A position bias cannot repair an orientation-only miss;
                     # retry only when the position gate itself failed.
@@ -2863,6 +2878,8 @@ def _run_task_control_episode(
         passed = False
     receipt: dict[str, Any] = {
         "schema_version": TASK_CONTROL_EPISODE_SCHEMA_VERSION,
+        "scientific_reset": scientific_reset,
+        "task_spec": dict(task_spec),
         "program_id": "arm-decision-proof-v1",
         "control_id": control_id,
         "episode_id": episode_id,
@@ -2887,23 +2904,10 @@ def _run_task_control_episode(
         "caller_asserted_success_accepted": False,
         "receipt_digest": "",
     }
-    if not qualification_allowed:
-        receipt.update(
-            {
-                "qualification_allowed": False,
-                "development_only": True,
-                "diagnostic_only": True,
-                "claim_boundary": (
-                    "synthetic_checkpoint_execution_only;cannot_qualify_"
-                    "phase5_any_downstream_phase_policy_admission_or_task_"
-                    "success"
-                ),
-            }
-        )
-    if receipt_annotations is not None:
-        receipt["diagnostic_annotations"] = json.loads(
-            json.dumps(dict(receipt_annotations), allow_nan=False)
-        )
+    apply_diagnostic_receipt_boundary(
+        receipt, qualification_allowed=qualification_allowed
+    )
+    copy_diagnostic_annotations(receipt, receipt_annotations)
     receipt["receipt_digest"] = canonical_digest(
         receipt, digest_field="receipt_digest"
     )
@@ -2918,6 +2922,7 @@ def run_task_neutral_controls(
     gripper_open_command: float,
     gripper_closed_command: float | None = None,
     output_dir: str | Path,
+    qualification_allowed: bool = True,
 ) -> dict[str, Any]:
     """Run zero then scripted controls for rigid or articulated task state."""
     task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
@@ -2939,37 +2944,72 @@ def run_task_neutral_controls(
             ),
             output=output,
             episode_id=f"{plan['cell_id']}-{control_id}",
+            qualification_allowed=bool(qualification_allowed),
+            receipt_annotations=diagnostic_receipt_annotations(
+                plan, qualification_allowed=qualification_allowed
+            ),
         )
         receipts.append(receipt)
         _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
-    blockers = [
-        blocker for receipt in receipts for blocker in receipt.get("blockers", [])
-    ]
-    pair: dict[str, Any] = {
-        "schema_version": TASK_CONTROL_PAIR_SCHEMA_VERSION,
-        "program_id": "arm-decision-proof-v1",
-        "cell_id": plan["cell_id"],
-        "task_kind": task["task_kind"],
-        "task_spec_digest": plan["task_spec_digest"],
-        "control_plan_digest": plan["plan_digest"],
-        "execution_order": list(REQUIRED_CONTROLS),
-        "controls": [
-            {
-                "control_id": receipt["control_id"],
-                "control_passed": receipt["control_passed"],
-                "observed_outcome": receipt["observed_outcome"],
-                "receipt_digest": receipt["receipt_digest"],
-            }
-            for receipt in receipts
-        ],
-        "cell_admitted_for_policy_execution": not blockers,
-        "policy_execution_blockers": sorted(set(blockers)),
-        "candidate_policy_queried": False,
-        "pair_digest": "",
-    }
-    pair["pair_digest"] = canonical_digest(pair, digest_field="pair_digest")
+    pair = build_task_control_pair(
+        plan=plan,
+        task=task,
+        receipts=receipts,
+        qualification_allowed=bool(qualification_allowed),
+        required_controls=REQUIRED_CONTROLS,
+        canonical_digest=canonical_digest,
+    )
     _write_json(output / "adp_task_control_pair.v1.json", pair)
     return pair
+
+
+def run_task_neutral_control(
+    *,
+    environment: ControlEnvironment,
+    task_spec: Mapping[str, Any],
+    control_plan: Mapping[str, Any],
+    control_id: str,
+    gripper_open_command: float,
+    gripper_closed_command: float | None = None,
+    output_dir: str | Path,
+    qualification_allowed: bool = True,
+) -> dict[str, Any]:
+    """Run exactly one preregistered task-neutral control episode.
+
+    A production Task Evaluation Run may need the negative and positive
+    controls to terminalize under separate provider authorities.  This entry
+    point preserves the same episode implementation and receipt schema as the
+    paired helper while refusing any unrecognized control selector.
+    """
+
+    if control_id not in REQUIRED_CONTROLS:
+        raise ControlEpisodeError(
+            [f"task_control_selection_invalid:{control_id or 'missing'}"]
+        )
+    task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
+    plan = validate_task_control_plan(control_plan, task_spec=task)
+    output = Path(output_dir).expanduser().resolve()
+    _write_json(output / "adp_task_control_plan.v1.json", plan)
+    receipt = _run_task_control_episode(
+        environment=environment,
+        task_spec=task,
+        plan=plan,
+        control_id=control_id,
+        gripper_open_command=float(gripper_open_command),
+        gripper_closed_command=(
+            None
+            if gripper_closed_command is None
+            else float(gripper_closed_command)
+        ),
+        output=output,
+        episode_id=f"{plan['cell_id']}-{control_id}",
+        qualification_allowed=bool(qualification_allowed),
+        receipt_annotations=diagnostic_receipt_annotations(
+            plan, qualification_allowed=qualification_allowed
+        ),
+    )
+    _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
+    return receipt
 
 
 def run_synthetic_post_phase5_downstream_diagnostic(
@@ -3301,6 +3341,7 @@ __all__ = [
     "materialize_control_plan",
     "run_control_episode",
     "run_required_controls",
+    "run_task_neutral_control",
     "run_task_neutral_controls",
     "run_synthetic_post_phase5_downstream_diagnostic",
     "validate_task_control_plan",

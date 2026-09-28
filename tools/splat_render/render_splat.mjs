@@ -3,7 +3,7 @@
 // frames the eval's 6 camera IDs to the splat's real bounding box, and writes per-camera PNGs.
 //
 // Usage:
-//   node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N] [--bg 0xRRGGBB] [--graphics-backend swiftshader|metal|egl]
+//   node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N] [--bg 0xRRGGBB] [--graphics-backend swiftshader|metal|egl] [--browser-executable <absolute-path>]
 //
 // --cameras json (optional): [{ "id": "...", "spec": { "pos":[x,y,z], "target":[x,y,z], "fov":N, "up":[x,y,z] } }, ...]
 // If omitted, six framed views are derived from the splat bounds (overhead/third_person/head_pov/torso/wrist/task_focus).
@@ -37,6 +37,8 @@ const warmupMs = parseInt(arg("warmup-ms", "2000"), 10);
 const settleFrames = parseInt(arg("settle-frames", "6"), 10);
 const settleMs = parseInt(arg("settle-ms", "100"), 10);
 const graphicsBackend = String(arg("graphics-backend", "swiftshader")).toLowerCase();
+const browserExecutableArg = arg("browser-executable", null);
+const browserExecutable = browserExecutableArg ? path.resolve(browserExecutableArg) : null;
 
 if (!["swiftshader", "metal", "egl"].includes(graphicsBackend)) {
   console.error(`unsupported --graphics-backend: ${graphicsBackend}`);
@@ -77,6 +79,14 @@ if ((!splatPath && !compositionArg) || (splatPath && compositionArg) || !outDir)
   process.exit(2);
 }
 fs.mkdirSync(outDir, { recursive: true });
+
+// Operational checkpoints survive a parent watchdog kill. They do not qualify
+// a frame or reset the parent's output-frame progress deadline.
+const progressPath = path.join(outDir, "renderer_progress.jsonl");
+function checkpoint(event, details = {}) {
+  fs.appendFileSync(progressPath, JSON.stringify({ event, at_ms: Date.now(), ...details }) + "\n");
+}
+checkpoint("driver_started", { graphics_backend: graphicsBackend, width, height });
 
 let composition = null;
 let compositeBackgroundPath = null;
@@ -206,18 +216,30 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
 
   const graphicsArgs = graphicsArguments(graphicsBackend);
-  const browser = await chromium.launch({
+  const launchOptions = {
     headless: true,
     args: [
       ...graphicsArgs,
       "--disable-dev-shm-usage",
     ],
-  });
+  };
+  if (browserExecutable) launchOptions.executablePath = browserExecutable;
+  checkpoint("browser_launch_started");
+  const browser = await chromium.launch(launchOptions);
+  checkpoint("browser_launched");
   const page = await browser.newPage({ viewport: { width, height } });
+  await page.exposeFunction("blueprintRenderCheckpoint", (event, detail) => checkpoint(event, detail));
   const pageErrors = [];
-  page.on("pageerror", (e) => pageErrors.push(String(e.message || e)));
+  page.on("pageerror", (e) => {
+    const message = String(e.message || e);
+    pageErrors.push(message);
+    checkpoint("page_error", { message: message.slice(0, 4096) });
+  });
   page.on("console", (m) => {
-    if (m.type() === "error") pageErrors.push("console.error: " + m.text());
+    if (m.type() === "error") {
+      pageErrors.push("console.error: " + m.text());
+      checkpoint("console_error", { message: m.text().slice(0, 4096) });
+    }
   });
 
   let result = {
@@ -229,11 +251,16 @@ async function main() {
     blockers,
     page_errors: pageErrors,
     composition: null,
+    browser_version: browser.version(),
   };
   try {
+    checkpoint("page_navigation_started");
     await page.goto(`${base}/harness.html`, { waitUntil: "load", timeout: 60000 });
+    checkpoint("page_loaded");
     await page.waitForFunction("window.__sparkReady===true", { timeout: 60000 });
+    checkpoint("spark_ready");
     let bounds;
+    checkpoint("splat_load_started");
     if (composition) {
       const objects = composition.objects.map((item) => ({
         object_id: String(item.object_id),
@@ -275,10 +302,12 @@ async function main() {
         "splat_load",
       );
     }
+    checkpoint("splat_loaded");
     result.bounds = bounds;
     if (!bounds || !isFinite(bounds.radius) || bounds.radius <= 0) {
       blockers.push("splat_bounds_invalid_after_load");
     }
+    checkpoint("graphics_readback_started");
     result.graphics_diagnostics = await page.evaluate(() => {
       const canvas = document.getElementById("c");
       const gl = canvas && (canvas.getContext("webgl2") || canvas.getContext("webgl"));
@@ -290,6 +319,7 @@ async function main() {
         renderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
       };
     });
+    checkpoint("graphics_readback_completed", result.graphics_diagnostics);
     if (
       graphicsBackend === "egl" &&
       (!result.graphics_diagnostics.webgl_available ||
@@ -306,12 +336,18 @@ async function main() {
       );
     }
 
-    // settle the async splat upload before capturing any view
-    await page.evaluate((ms) => window.BlueprintSplat.warmup(ms), warmupMs);
-
     const cameras = camerasArg ? JSON.parse(fs.readFileSync(camerasArg, "utf8")) : deriveDefaultCameras(bounds);
+    if (!Array.isArray(cameras) || cameras.length === 0) throw new Error("render_cameras_missing");
+    // Warm the same calibrated view we will capture, never the default origin
+    // camera (which can sit inside geometry and generate extreme overdraw).
+    await page.evaluate((spec) => window.BlueprintSplat.setCamera(spec), cameras[0].spec);
+    checkpoint("first_camera_configured", { camera_id: cameras[0].id });
+    checkpoint("warmup_started");
+    await page.evaluate((ms) => window.BlueprintSplat.warmup(ms), warmupMs);
+    checkpoint("warmup_completed");
 
     for (const cam of cameras) {
+      checkpoint("camera_render_started", { camera_id: cam.id });
       const dataUrl = await page.evaluate(
         ({ spec, sf, sm }) => window.BlueprintSplat.renderView(spec, sf, sm),
         { spec: cam.spec, sf: settleFrames, sm: settleMs },
@@ -320,17 +356,22 @@ async function main() {
       const buf = Buffer.from(b64, "base64");
       const outPath = path.join(outDir, `${cam.id}.png`);
       fs.writeFileSync(outPath, buf);
+      checkpoint("camera_render_completed", { camera_id: cam.id, size_bytes: buf.length });
       result.cameras.push({ id: cam.id, path: outPath, bytes: buf.length, nonblank_score: nonblankScore(buf), spec: cam.spec });
     }
     result.status = blockers.length ? "blocked" : "completed";
   } catch (e) {
     blockers.push("render_harness_exception");
     result.error = String(e && e.stack ? e.stack : e);
+    checkpoint("render_exception", { message: result.error.slice(0, 4096) });
   } finally {
+    // Preserve the actual error even if Chromium shutdown itself stalls.
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    checkpoint("browser_close_started");
     await browser.close().catch(() => {});
+    checkpoint("browser_closed");
     server.close();
   }
-  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
   process.exit(result.status === "completed" ? 0 : 1);
 }
 

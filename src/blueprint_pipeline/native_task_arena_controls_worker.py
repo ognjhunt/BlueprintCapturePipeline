@@ -27,12 +27,21 @@ from blueprint_pipeline.native_task_arena_branch_continuity import (
 from blueprint_pipeline.native_franka_action_math import (
     controlled_body_pose_for_rigid_grasp_frame_target,
 )
+from blueprint_pipeline.native_task_rigid_controls import finalize_rigid_task_controls
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 RESULT_FILENAME = "native_task_arena_control_result.v1.json"
 DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME = (
     "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1.json"
+)
+CONTROL_EXECUTION_SPEC_FILENAME = "adp_task_control_execution_spec.v1.json"
+ZERO_ACTION_RESULT_FILENAME = "native_task_arena_zero_action_result.v1.json"
+CONTROL_PAIR = "control_pair"
+ZERO_ACTION_NEGATIVE = "zero_action_negative"
+SCRIPTED_POSITIVE = "deterministic_scripted_positive"
+CONTROL_SELECTIONS = frozenset(
+    {CONTROL_PAIR, ZERO_ACTION_NEGATIVE, SCRIPTED_POSITIVE}
 )
 POSITION_ONLY_PREALIGN_ORIENTATION_TOLERANCE_RAD = 0.08
 # C25 proved that pose reachability alone is not enough for contact.  The
@@ -360,13 +369,131 @@ def _verified_runtime_inputs(
     required = {
         "native_task_arena_construction_result.v1.json",
         "adp_task_control_plan.v1.json",
+        CONTROL_EXECUTION_SPEC_FILENAME,
     }
     if set(verified) not in (
         required,
         {*required, DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME},
+        {*required, ZERO_ACTION_RESULT_FILENAME},
     ):
         raise RuntimeError("native_task_controls_runtime_inputs_incomplete")
     return verified
+
+
+def _control_execution_spec(
+    inputs: Mapping[str, Path],
+    *,
+    scene_plan: Mapping[str, Any],
+    construction: Mapping[str, Any],
+    control_plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reopen the immutable selector before simulator startup."""
+
+    try:
+        value = json.loads(
+            inputs[CONTROL_EXECUTION_SPEC_FILENAME].read_text(encoding="utf-8")
+        )
+    except (KeyError, OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "native_task_controls_execution_spec_invalid"
+        ) from exc
+    selection = value.get("control_selection") if isinstance(value, Mapping) else None
+    zero_action_result = None
+    zero_action_path = inputs.get(ZERO_ACTION_RESULT_FILENAME)
+    if zero_action_path is not None:
+        try:
+            zero_action_result = json.loads(
+                zero_action_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "native_task_controls_execution_spec_invalid"
+            ) from exc
+    zero_episode = (
+        zero_action_result.get("control_episode")
+        if isinstance(zero_action_result, Mapping)
+        else None
+    )
+    zero_visual = (
+        zero_episode.get("visual_evidence")
+        if isinstance(zero_episode, Mapping)
+        else None
+    )
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != "adp_task_control_execution_spec.v1"
+        or selection not in CONTROL_SELECTIONS
+        or value.get("task_kind") != scene_plan.get("task_kind")
+        or value.get("scene_plan_digest") != scene_plan.get("plan_digest")
+        or value.get("construction_result_digest")
+        != construction.get("result_digest")
+        or value.get("control_plan_digest") != control_plan.get("plan_digest")
+        or value.get("candidate_policy_queried") is not False
+        or (
+            control_plan.get("diagnostic_only") is True
+            and (
+                value.get("diagnostic_only") is not True
+                or value.get("qualification_effect") != "none"
+                or value.get("upstream_construction_blockers")
+                != list(control_plan["upstream_construction_blockers"])
+            )
+        )
+        or value.get("execution_spec_digest")
+        != _canonical_digest(value, field="execution_spec_digest")
+        or (
+            selection == SCRIPTED_POSITIVE
+            and (
+                not isinstance(zero_action_result, Mapping)
+                or zero_action_result.get("schema_version")
+                != RESULT_SCHEMA_VERSION
+                or zero_action_result.get("status") != "completed"
+                or zero_action_result.get("blockers") != []
+                or zero_action_result.get("control_selection")
+                != ZERO_ACTION_NEGATIVE
+                or zero_action_result.get("controls_qualified") is not False
+                or zero_action_result.get("scene_plan_digest")
+                != scene_plan.get("plan_digest")
+                or zero_action_result.get("construction_result_digest")
+                != construction.get("result_digest")
+                or zero_action_result.get("result_digest")
+                != value.get("prior_zero_action_result_digest")
+                or zero_action_result.get("result_digest")
+                != _canonical_digest(zero_action_result, field="result_digest")
+                or not isinstance(zero_episode, Mapping)
+                or zero_episode.get("schema_version")
+                != "adp_task_control_episode.v1"
+                or zero_episode.get("control_id") != ZERO_ACTION_NEGATIVE
+                or zero_episode.get("control_passed") is not True
+                or zero_episode.get("observed_outcome") != "never_moved"
+                or zero_episode.get("grader_authority")
+                != "deterministic_simulator_state"
+                or zero_episode.get("candidate_policy_queried") is not False
+                or not isinstance(zero_visual, Mapping)
+                or zero_visual.get("status") != "complete"
+                or not isinstance(zero_episode.get("media_artifacts"), list)
+                or not zero_episode["media_artifacts"]
+                or zero_episode.get("receipt_digest")
+                != _canonical_digest(zero_episode, field="receipt_digest")
+            )
+        )
+        or (
+            selection != SCRIPTED_POSITIVE
+            and (
+                zero_action_result is not None
+                or value.get("prior_zero_action_result_digest") is not None
+            )
+        )
+        or (
+            selection != CONTROL_PAIR
+            and not (
+                scene_plan.get("task_kind") == "rigid_pick_place"
+                and (scene_plan.get("task_spec") or {}).get("schema_version")
+                == "adp_task_spec.v2"
+            )
+        )
+    ):
+        raise RuntimeError("native_task_controls_execution_spec_invalid")
+    return dict(value)
 
 
 def _downstream_diagnostic_request(
@@ -3115,115 +3242,6 @@ def _to_tensor(value: Any) -> Any:
     raise TypeError(f"unsupported_sim_array:{value_module}.{type(value).__name__}")
 
 
-class _RigidScoringEnvironment:
-    """Overlay exact scoring-frame/contact readback on the shared episode seam."""
-
-    def __init__(
-        self,
-        *,
-        environment: Any,
-        task_readback: Any,
-        task_spec: Mapping[str, Any],
-    ) -> None:
-        if not callable(getattr(task_readback, "read_task_sample", None)):
-            raise RuntimeError("native_task_controls_rigid_readback_missing")
-        try:
-            contact_threshold = float(task_spec["task_contact_minimum_force_n"])
-            collision_threshold = float(
-                task_spec["collision_failure_minimum_force_n"]
-            )
-            bounds = task_spec["workspace_position_bounds_world_m"]
-            lower = [float(value) for value in bounds["minimum"]]
-            upper = [float(value) for value in bounds["maximum"]]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "native_task_controls_rigid_measurement_contract_invalid"
-            ) from exc
-        if (
-            not all(
-                math.isfinite(value)
-                for value in [contact_threshold, collision_threshold, *lower, *upper]
-            )
-            or contact_threshold <= 0.0
-            or collision_threshold <= 0.0
-            or len(lower) != 3
-            or len(upper) != 3
-            or any(low >= high for low, high in zip(lower, upper, strict=True))
-        ):
-            raise RuntimeError(
-                "native_task_controls_rigid_measurement_contract_invalid"
-            )
-        self._environment = environment
-        self._task_readback = task_readback
-        self._contact_threshold = contact_threshold
-        self._collision_threshold = collision_threshold
-        self._workspace_lower = lower
-        self._workspace_upper = upper
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._environment, name)
-
-    def read_object_sample(self) -> dict[str, Any]:
-        base = self._environment.read_object_sample()
-        native = self._task_readback.read_task_sample()
-        if not isinstance(base, Mapping) or not isinstance(native, Mapping):
-            raise RuntimeError("native_task_controls_rigid_sample_invalid")
-        try:
-            pose = [float(value) for value in native["task_scoring_pose_world"]]
-            task_force = float(native["task_robot_contact_peak_force_n"])
-            support_force = float(native["task_support_contact_peak_force_n"])
-            scene_force = float(native["task_scene_collision_peak_force_n"])
-            robot_force = float(native["robot_scene_contact_peak_force_n"])
-            forbidden_robot_force = float(
-                native["robot_task_forbidden_collision_peak_force_n"]
-            )
-            locked_joint_violation = native[
-                "locked_joint_containment_violation"
-            ]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError("native_task_controls_rigid_sample_invalid") from exc
-        if len(pose) != 7 or not all(
-            math.isfinite(value)
-            for value in [
-                *pose,
-                task_force,
-                support_force,
-                scene_force,
-                robot_force,
-                forbidden_robot_force,
-            ]
-        ) or not isinstance(locked_joint_violation, bool):
-            raise RuntimeError("native_task_controls_rigid_sample_invalid")
-        sample = dict(base)
-        sample.update(native)
-        sample.update(
-            {
-                "task_object_pose_world": pose,
-                "task_contact_active": task_force >= self._contact_threshold,
-                "support_contact_active": support_force >= self._contact_threshold,
-                "robot_collision_failure": max(robot_force, forbidden_robot_force)
-                >= self._collision_threshold,
-                "forbidden_robot_task_collision_failure": (
-                    forbidden_robot_force >= self._collision_threshold
-                ),
-                "locked_joint_containment_violation": locked_joint_violation,
-                "scene_collision_failure": scene_force
-                >= self._collision_threshold,
-                "containment_violation": any(
-                    value < low or value > high
-                    for low, value, high in zip(
-                        self._workspace_lower, pose[:3], self._workspace_upper, strict=True
-                    )
-                ),
-                "controls_measurement_authority": (
-                    "native_scoring_frame_pose_filtered_contacts_and_shared_"
-                    "gripper_calibration"
-                ),
-            }
-        )
-        return sample
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     runtime = Path(__file__).resolve().parent
@@ -3272,6 +3290,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         control_plan = json.loads(
             inputs["adp_task_control_plan.v1.json"].read_text(encoding="utf-8")
         )
+        execution_spec = _control_execution_spec(
+            inputs,
+            scene_plan=scene_plan,
+            construction=construction,
+            control_plan=control_plan,
+        )
         binding_mismatches = _input_binding_mismatches(
             manifest=manifest,
             packet_receipt=packet_receipt,
@@ -3291,6 +3315,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["construction_result_digest"] = construction["result_digest"]
         result["input_control_plan_digest"] = control_plan["plan_digest"]
         result["control_plan_digest"] = control_plan["plan_digest"]
+        result["control_selection"] = execution_spec["control_selection"]
+        result["control_execution_spec_digest"] = execution_spec[
+            "execution_spec_digest"
+        ]
         result["phase_reached"] = "inputs_verified"
         _announce("input_verification", "completed")
 
@@ -3299,10 +3327,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_DEVICE,
             launch_native_task_isaaclab,
         )
+        from blueprint_pipeline.native_task_nurec_render_setup import (
+            appearance_render_path_from_plan,
+        )
 
         simulation_app, launch_receipt = launch_native_task_isaaclab(
             output_root / "native_task_runtime_source_provisioning.v1.json",
             device=NATIVE_TASK_ARENA_DEVICE,
+            appearance_render_path=appearance_render_path_from_plan(scene_plan),
         )
         result["isaaclab_launch"] = launch_receipt
         _announce("simulation_app", "completed")
@@ -3326,6 +3358,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         import torch
 
         from blueprint_pipeline.adp009d_control_episode import (
+            run_task_neutral_control,
             run_task_neutral_controls,
         )
         from blueprint_pipeline.native_franka_pose_servo import (
@@ -3346,6 +3379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             build_native_task_arena_environment,
         )
         from blueprint_pipeline.native_task_episode_environment import (
+            NativeRigidScoringEnvironment,
             build_native_task_episode_environment,
         )
 
@@ -3536,7 +3570,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "synthetic_post_phase5_diagnostic_not_applicable_to_rigid_task"
             )
         if graph_rigid:
-            episode_environment = _RigidScoringEnvironment(
+            episode_environment = NativeRigidScoringEnvironment(
                 environment=episode_environment,
                 task_readback=readback,
                 task_spec=scene_plan["task_spec"],
@@ -3557,27 +3591,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         # through the shared episode seam instead.
         if graph_rigid:
             _announce("required_controls")
-            pair = run_task_neutral_controls(
-                environment=episode_environment,
-                task_spec=scene_plan["task_spec"],
+            selection = str(execution_spec["control_selection"])
+            diagnostic_only = control_plan.get("diagnostic_only") is True
+            common = {
+                "environment": episode_environment,
+                "task_spec": scene_plan["task_spec"],
+                "control_plan": effective_control_plan,
+                "gripper_open_command": float(gripper["open_command"]),
+                "gripper_closed_command": float(gripper["closed_command"]),
+                "output_dir": output_root / "controls",
+                "qualification_allowed": not diagnostic_only,
+            }
+            pair = (
+                run_task_neutral_controls(**common)
+                if selection == CONTROL_PAIR
+                else None
+            )
+            episode = (
+                None
+                if pair is not None
+                else run_task_neutral_control(control_id=selection, **common)
+            )
+            return finalize_rigid_task_controls(
+                result=result,
+                selection=selection,
+                diagnostic_only=diagnostic_only,
                 control_plan=effective_control_plan,
-                gripper_open_command=float(gripper["open_command"]),
-                gripper_closed_command=float(gripper["closed_command"]),
-                output_dir=output_root / "controls",
+                announce=_announce,
+                pair=pair,
+                episode=episode,
             )
-            result["control_pair"] = pair
-            result["controls_qualified"] = pair[
-                "cell_admitted_for_policy_execution"
-            ]
-            result["blockers"].extend(pair["policy_execution_blockers"])
-            result["blockers"] = sorted(set(result["blockers"]))
-            result["status"] = "completed" if not result["blockers"] else "blocked"
-            result["phase_reached"] = "required_controls_complete"
-            _announce(
-                "required_controls",
-                "completed" if result["controls_qualified"] else "blocked",
-            )
-            return 0 if result["status"] == "completed" else 1
 
         # This immutable opt-in is a separate, development-only probe.  C74
         # already sealed the reset-isolated 134-cell matrix, so repeating that

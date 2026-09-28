@@ -1,0 +1,43 @@
+{
+  "base_revision": "c217cf39659d5c8c4988dd463d02b7450b5c6345",
+  "implementation_revision": "37eabbf04f9c9e789a4cfc5b470ce93a2bb1b421",
+  "final_remote_main": "da3ff3ba25e411dffc64358655598ba7e5470b15",
+  "committed_revision_test": {
+    "log": "committed-regressions.log",
+    "result": "43 passed in 4.55s",
+    "os_network_denied": true
+  },
+  "candidate_tree_tests": [
+    {
+      "log": "final-focused.log",
+      "result": "439 passed in 69.77s",
+      "revision_note": "implementation tree before F7 interpretation gate and its two new cases"
+    },
+    {
+      "log": "final-session-lifecycle.log",
+      "result": "62 passed in 78.95s",
+      "revision_note": "final production tree; one scenario regression was subsequently made independent of Python aliasing"
+    },
+    {
+      "log": "sandbox-clients-regressions.log",
+      "result": "90 passed, 1 deselected in 5.68s",
+      "revision_note": "final committed production and regression tree",
+      "os_network_denied": true
+    }
+  ],
+  "changed_file_hashes": {
+    "src/blueprint_pipeline/adp009d_policy_episode.py": "8b4479a88e555ca8d168093a0da3b8a78bb338d7c1119b8cc16ae6dbd8923d91",
+    "src/blueprint_pipeline/adp_rigid_task_scoring.py": "5557f75945ee91eaaa12b620baddc728e7196ecb79bccaa3d6334520a3055355",
+    "src/blueprint_pipeline/episode_visual_evidence.py": "4e1c96e22bbee36d15f720f4eb6ca910fe887ec6a5ee208cd0693e34b592b3cb",
+    "src/blueprint_pipeline/native_task_arena_policy_canary_session.py": "12afd1d73cb304186b00fcfe3a782e6bffbd6ef7e2161387dc878532d052e78d",
+    "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": "58946cb58f543c0314d89f215acc98cd56d8671eb8122a32d50ca3d5052f27a6",
+    "src/blueprint_pipeline/task_evaluation_policy_canary_rescore.py": "f82ff7bf09b4cfd6672154220bcd5cb010ea037a9d799c8f66cac97e7294e640",
+    "tests/test_adp_task_scoring.py": "7d5c836b9fd6286863f3de5b65aab2329e14ec94d76029e21ce66ac800df25ed",
+    "tests/test_native_task_arena_policy_canary_bundle.py": "97c4bfbd6e36e71318a7e681c4176b73482f604c691b502c199a681d68bad409",
+    "tests/test_policy_comparison_integrity_audit.py": "7ab73e869d4191be17a0a5c9ca5d4b648e3edd64710e6f2c4f1b8dc2277e2842",
+    "tests/test_policy_comparison_media_audit.py": "ad1b79d8a121a4be1335549cf0ccd3553fdbcf2b0d3feb838bc1a8535668e5b9",
+    "tests/test_policy_comparison_rescore_identity_audit.py": "f1c29d1cbd60af4237ea3b383da1ebf73eb7a6b90bfb97ed5904d3187fc8f2c0"
+  },
+  "primary_final_status": "",
+  "website_primary_final_status": ""
+}

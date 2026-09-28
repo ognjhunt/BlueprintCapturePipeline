@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/exact_workcell_variation_validation.v1.schema.json",
+  "title": "Exact-workcell matrix and schedule validation receipt",
+  "type": "object",
+  "required": ["schema_version", "status", "request_digest", "schedule_request_digest", "matrix_digest", "schedule_digest", "cell_count", "episode_count", "exact_workcell_primary", "object_cousins_in_primary"],
+  "properties": {
+    "schema_version": {"const": "exact_workcell_variation_validation.v1"},
+    "status": {"const": "passed"},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "schedule_request_digest": {"$ref": "#/$defs/digest"},
+    "matrix_digest": {"$ref": "#/$defs/digest"},
+    "schedule_digest": {"$ref": "#/$defs/digest"},
+    "cell_count": {"type": "integer", "minimum": 10},
+    "episode_count": {"type": "integer", "minimum": 40},
+    "exact_workcell_primary": {"const": true},
+    "object_cousins_in_primary": {"const": false}
+  },
+  "additionalProperties": false,
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

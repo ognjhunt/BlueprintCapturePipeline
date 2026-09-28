@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
+from .adp009d_groot_worker_identity import expected_checkpoint_interface_binding
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_scenario_suite import validate_dual_task_scenario_suite
 from .native_task_runtime_contract import (
@@ -186,12 +187,17 @@ def validate_scene_policy_readiness(
     groot = _mapping(by_id.get("groot_n17_droid"))
     groot_checkpoint = _mapping(groot.get("checkpoint"))
     gated_backbone = _mapping(groot_checkpoint.get("gated_backbone"))
+    groot_input = _mapping(groot.get("policy_input_schema"))
     if (
         gated_backbone.get("access_probe_status") != "authorized"
         or not _digest(gated_backbone.get("access_probe_receipt_digest"))
         or gated_backbone.get("secret_material_recorded") is not False
     ):
         errors.append("scene_policy_readiness_groot_gated_backbone_invalid")
+    if groot_input.get("frame_history") != expected_checkpoint_interface_binding()[
+        "video_delta_indices"
+    ]:
+        errors.append("scene_policy_readiness_groot_checkpoint_interface_invalid")
 
     controls = _mapping(payload.get("controls_predecessor"))
     if (

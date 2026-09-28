@@ -1,0 +1,453 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_configured_scene_revision.v1.schema.json",
+  "title": "Task Evaluation configured scene revision v1",
+  "description": "Immutable terminal output of a production scene-configuration Task Evaluation Run. Later episode-evaluation runs bind this revision instead of repeating scene construction.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "configuration_run_id",
+    "team_namespace",
+    "scene_identity",
+    "source_commit",
+    "source",
+    "appearance",
+    "geometry",
+    "replacement",
+    "registration",
+    "configured_scene_bundle",
+    "task_template",
+    "robot_team_interface",
+    "publication",
+    "evaluation_admission",
+    "revision_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_configured_scene_revision.v1"},
+    "status": {"const": "configured"},
+    "configuration_run_id": {"$ref": "#/$defs/identifier"},
+    "team_namespace": {"$ref": "#/$defs/identifier"},
+    "scene_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source": {
+      "type": "object",
+      "required": ["manifest", "rights_admission", "rights_evidence", "raw_source_sent_to_external_provider"],
+      "additionalProperties": false,
+      "properties": {
+        "manifest": {"$ref": "#/$defs/reference"},
+        "rights_admission": {"$ref": "#/$defs/reference"},
+        "rights_evidence": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["role", "artifact"],
+            "additionalProperties": false,
+            "properties": {
+              "role": {"enum": ["publisher_terms", "publisher_readme", "upstream_license", "human_authority_record"]},
+              "artifact": {"$ref": "#/$defs/reference"}
+            }
+          },
+          "allOf": [
+            {"contains": {"type": "object", "properties": {"role": {"const": "publisher_terms"}}, "required": ["role"]}},
+            {"contains": {"type": "object", "properties": {"role": {"const": "human_authority_record"}}, "required": ["role"]}}
+          ]
+        },
+        "raw_source_sent_to_external_provider": {"type": "boolean"},
+        "production_semantic_input_reuse": {"const": true},
+        "provider_disclosure_decision": {
+          "type": "object",
+          "required": ["schema_version", "render_execution_site", "source_appearance_bytes_to_provider", "decision_digest"],
+          "properties": {
+            "schema_version": {"const": "task_evaluation_scene_configuration_disclosure_decision.v1"},
+            "render_execution_site": {"enum": ["control_plane", "provider_gpu"]},
+            "source_appearance_bytes_to_provider": {"type": "boolean"},
+            "decision_digest": {"$ref": "#/$defs/digest"}
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"raw_source_sent_to_external_provider": {"const": true}},
+            "required": ["raw_source_sent_to_external_provider"]
+          },
+          "then": {
+            "required": ["provider_disclosure_decision"],
+            "properties": {
+              "provider_disclosure_decision": {
+                "properties": {
+                  "render_execution_site": {"const": "provider_gpu"},
+                  "source_appearance_bytes_to_provider": {"const": true}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"production_semantic_input_reuse": {"const": true}},
+            "required": ["production_semantic_input_reuse"]
+          },
+          "then": {
+            "required": ["provider_disclosure_decision"],
+            "properties": {
+              "raw_source_sent_to_external_provider": {"const": false}
+            }
+          }
+        }
+      ]
+    },
+    "appearance": {
+      "type": "object",
+      "required": ["observed_source", "object_removal_result", "configured_representation", "appearance_truth_source"],
+      "additionalProperties": false,
+      "allOf": [{"if":{"required":["visual_review_status"],"properties":{"visual_review_status":{"const":"human_accepted_with_known_artifacts"}}},"then":{"required":["ai_visual_review_status","human_approval_digest","human_reviewer_identity","known_artifacts"]},"else":{"not":{"anyOf":[{"required":["ai_visual_review_status"]},{"required":["human_approval_digest"]},{"required":["human_reviewer_identity"]},{"required":["known_artifacts"]},{"required":["thumbnail_selector"]}]}}}],
+      "properties": {
+        "observed_source": {"$ref": "#/$defs/reference"},
+        "object_removal_result": {"$ref": "#/$defs/reference"},
+        "configured_representation": {"$ref": "#/$defs/reference"},
+        "appearance_truth_source": {"enum": ["interiorgs_observed_plus_labeled_generated_edit", "website_prepared_background_with_generated_task_object"]},
+        "visual_review_status": {"enum": ["accepted", "paused_ungraded", "human_accepted_with_known_artifacts", "prepared_scene_ungraded"]},
+        "ai_visual_review_status": {"const": "rejected"},
+        "human_approval_digest": {"$ref": "#/$defs/digest"},
+        "human_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 200},
+        "known_artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+        "warning_label": {"enum": ["Visual review paused - appearance ungraded", "Generated task-object preview; scene appearance ungraded"]}
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "required": ["candidate_collision_source", "object_excision_result", "configured_collision", "validation", "observed_source_truth_claimed"],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_collision_source": {"$ref": "#/$defs/reference"},
+        "object_excision_result": {"$ref": "#/$defs/reference"},
+        "configured_collision": {"$ref": "#/$defs/reference"},
+        "validation": {"$ref": "#/$defs/reference"},
+        "observed_source_truth_claimed": {"const": false}
+      }
+    },
+    "replacement": {
+      "type": "object",
+      "required": ["identity", "source_object", "asset", "static_qualification", "native_import_qualification", "physics_authority"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "source_object": {"$ref": "#/$defs/reference"},
+        "asset": {"$ref": "#/$defs/reference"},
+        "static_qualification": {"$ref": "#/$defs/reference"},
+        "native_import_qualification": {"$ref": "#/$defs/reference"},
+        "physics_authority": {"const": "qualified_replacement_asset"}
+      }
+    },
+    "registration": {
+      "type": "object",
+      "required": ["metric", "support_plane", "robot_mount_interface", "camera_calibration", "workspace_clearance"],
+      "additionalProperties": false,
+      "properties": {
+        "metric": {"$ref": "#/$defs/reference"},
+        "support_plane": {"$ref": "#/$defs/reference"},
+        "robot_mount_interface": {"$ref": "#/$defs/reference"},
+        "camera_calibration": {"$ref": "#/$defs/reference"},
+        "workspace_clearance": {"$ref": "#/$defs/reference"}
+      }
+    },
+    "configured_scene_bundle": {"$ref": "#/$defs/reference"},
+    "task_template": {
+      "type": "object",
+      "required": ["identity", "definition", "success_criteria", "execution"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "definition": {"$ref": "#/$defs/reference"},
+        "success_criteria": {"$ref": "#/$defs/reference"},
+        "execution": {"$ref": "#/$defs/reference"},
+        "destination": {
+          "type": "object",
+          "required": [
+            "schema_version", "identity", "relation", "visible_label", "asset",
+            "rights_admission", "static_qualification",
+            "native_import_qualification", "geometry", "pose_world",
+            "provider_disclosure_allowed", "native_probe"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {"const": "task_evaluation_rigid_destination_asset.v1"},
+            "identity": {"$ref": "#/$defs/versionedIdentity"},
+            "relation": {"enum": ["inside", "on"]},
+            "visible_label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "asset": {"$ref": "#/$defs/reference"},
+            "rights_admission": {"$ref": "#/$defs/reference"},
+            "static_qualification": {"$ref": "#/$defs/reference"},
+            "native_import_qualification": {"$ref": "#/$defs/reference"},
+            "geometry": {"$ref": "#/$defs/reference"},
+            "pose_world": {"$ref": "#/$defs/pose"},
+            "provider_disclosure_allowed": {"const": true},
+            "native_probe": {"type": "object"}
+          }
+        },
+        "surface_target": {
+          "$ref": "#/$defs/surface_target"
+        }
+      },
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "destination",
+              "surface_target"
+            ]
+          }
+        }
+      ]
+    },
+    "presentation": {
+      "type": "object",
+      "required": [
+        "task_thumbnail",
+        "selection_receipt",
+        "selection",
+        "selected_from_exact_reviewed_frame_count",
+        "derived_appearance_evidence",
+        "capture_or_physical_evidence",
+        "image_bytes_modified_after_selection"
+      ],
+      "additionalProperties": false,
+      "allOf": [{"if":{"required":["appearance_review_status"],"properties":{"appearance_review_status":{"const":"human_accepted_with_known_artifacts"}}},"then":{"required":["ai_visual_review_status","human_approval_digest","human_reviewer_identity","known_artifacts"]},"else":{"not":{"anyOf":[{"required":["ai_visual_review_status"]},{"required":["human_approval_digest"]},{"required":["human_reviewer_identity"]},{"required":["known_artifacts"]},{"required":["thumbnail_selector"]}]}}}],
+      "properties": {
+        "task_thumbnail": {
+          "allOf": [
+            {"$ref": "#/$defs/reference"},
+            {"properties": {"size_bytes": {"maximum": 16777216}}}
+          ]
+        },
+        "selection_receipt": {"$ref": "#/$defs/reference"},
+        "selection": {
+          "type": "object",
+          "required": ["camera_id", "frame_digest", "rationale", "reviewer"],
+          "additionalProperties": false,
+          "allOf": [{"if":{"required":["appearance_review_status"],"properties":{"appearance_review_status":{"const":"human_accepted_with_known_artifacts"}}},"then":{"required":["ai_visual_review_status","human_approval_digest","human_reviewer_identity","known_artifacts","thumbnail_selector"]},"else":{"not":{"anyOf":[{"required":["ai_visual_review_status"]},{"required":["human_approval_digest"]},{"required":["human_reviewer_identity"]},{"required":["known_artifacts"]},{"required":["thumbnail_selector"]}]}}}],
+          "properties": {
+            "camera_id": {"$ref": "#/$defs/identifier"},
+            "frame_digest": {"$ref": "#/$defs/digest"},
+            "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "appearance_review_status": {"enum": ["accepted", "paused_ungraded", "human_accepted_with_known_artifacts", "prepared_scene_ungraded"]},
+            "ai_visual_review_status": {"const": "rejected"},
+            "human_approval_digest": {"$ref": "#/$defs/digest"},
+        "human_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 200},
+            "known_artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+            "thumbnail_selector": {"const": "deterministic_first_approved_camera"},
+            "reviewer": {
+              "type": "object",
+              "required": ["kind", "identity", "runtime", "model"],
+              "additionalProperties": false,
+              "properties": {
+                "kind": {"enum": ["ai", "system", "human"]},
+                "identity": {"type": "string", "minLength": 1, "maxLength": 200},
+                "runtime": {"type": "string", "minLength": 1, "maxLength": 200},
+                "model": {"type": "string", "minLength": 1, "maxLength": 200}
+              }
+            }
+          }
+        },
+        "appearance_review_status": {"enum": ["accepted", "paused_ungraded", "human_accepted_with_known_artifacts", "prepared_scene_ungraded"]},
+        "ai_visual_review_status": {"const": "rejected"},
+        "human_approval_digest": {"$ref": "#/$defs/digest"},
+        "human_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 200},
+        "known_artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+        "selected_from_exact_reviewed_frame_count": {"type": "integer", "minimum": 0, "maximum": 64},
+        "warning_label": {"enum": ["Visual review paused - appearance ungraded", "Generated task-object preview; scene appearance ungraded"]},
+        "derived_appearance_evidence": {"const": true},
+        "capture_or_physical_evidence": {"const": false},
+        "image_bytes_modified_after_selection": {"const": false}
+      }
+    },
+    "robot_team_interface": {
+      "type": "object",
+      "description": "Stable consumer boundary for every episode-evaluation run that reuses this configured scene.",
+      "required": [
+        "scene_construction_repeated_per_evaluation",
+        "configuration_run_executed_episode",
+        "configuration_run_purpose",
+        "episode_run_purpose",
+        "episode_packet_compiled_by_production",
+        "team_supplied_components",
+        "configured_scene_components",
+        "production_route"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scene_construction_repeated_per_evaluation": {"const": false},
+        "configuration_run_executed_episode": {"const": false},
+        "configuration_run_purpose": {
+          "const": "build_and_publish_reusable_robot_neutral_scene"
+        },
+        "episode_run_purpose": {
+          "const": "evaluate_one_robot_or_policy_against_configured_scene"
+        },
+        "episode_packet_compiled_by_production": {"const": true},
+        "team_supplied_components": {
+          "const": [
+            "robot_configuration",
+            "kinematics_and_joint_bounds",
+            "robot_to_scene_registration",
+            "controller_or_policy",
+            "camera_and_sensor_configuration",
+            "task_binding",
+            "episode_runtime"
+          ]
+        },
+        "configured_scene_components": {
+          "const": [
+            "appearance",
+            "collision_geometry",
+            "replacement_assets",
+            "metric_registration",
+            "support_plane",
+            "robot_mount_interface",
+            "workspace_clearance",
+            "scene_camera_calibration",
+            "rights_and_provenance",
+            "task_templates",
+            "configured_scene_bundle"
+          ]
+        },
+        "production_route": {
+          "const": "authenticated_webapp_to_task_evaluation_dispatcher"
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "required": ["bundle_manifest", "receipt", "full_byte_service_account_readback_passed"],
+      "additionalProperties": false,
+      "properties": {
+        "bundle_manifest": {"$ref": "#/$defs/reference"},
+        "receipt": {"$ref": "#/$defs/reference"},
+        "full_byte_service_account_readback_passed": {"const": true}
+      }
+    },
+    "evaluation_admission": {
+      "type": "object",
+      "required": ["zero_action_required", "scripted_positive_required", "learned_policy_admitted"],
+      "additionalProperties": false,
+      "properties": {
+        "zero_action_required": {"const": true},
+        "scripted_positive_required": {"const": true},
+        "learned_policy_admitted": {"const": false}
+      }
+    },
+    "revision_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {
+      "type": "object",
+      "required": ["uri", "digest", "size_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "versionedIdentity": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "pose": {
+      "type": "object",
+      "required": ["position_world_m", "orientation_xyzw"],
+      "additionalProperties": false,
+      "properties": {
+        "position_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "orientation_xyzw": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
+      }
+    },
+    "surface_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "shape",
+        "non_colliding",
+        "visible_label",
+        "radius_m",
+        "surface_position_world_m",
+        "support_prim_path",
+        "support_source_instance_id",
+        "maximum_tilt_rad",
+        "stable_seconds",
+        "maximum_linear_speed_m_s",
+        "maximum_angular_speed_rad_s",
+        "target_digest"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "task_evaluation_surface_target.v1"
+        },
+        "shape": {
+          "const": "flat_green_disc"
+        },
+        "non_colliding": {
+          "const": true
+        },
+        "visible_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "radius_m": {
+          "type": "number",
+          "exclusiveMinimum": 0, "maximum": 0.5
+        },
+        "surface_position_world_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number"
+          }
+        },
+        "support_prim_path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "support_source_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "maximum_tilt_rad": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1.5707963267948966
+        },
+        "stable_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "maximum_linear_speed_m_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "maximum_angular_speed_rad_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "target_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 
 import pytest
 
@@ -52,7 +53,12 @@ def _rigid_fixture(*, asset_id: str, scene_id: str = "840313") -> dict:
         "contact_point_scoring_frame_m": [0.0, 0.0, 0.06],
         "approach_unit_scoring_frame": [0.0, -1.0, 0.0],
         "lift_unit_world": [0.0, 0.0, 1.0],
-        "gripper_orientation_scoring_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "gripper_orientation_scoring_frame_xyzw": [
+            0.0,
+            -0.7071067811865475,
+            0.0,
+            0.7071067811865476,
+        ],
         "pregrasp_clearance_m": 0.12,
         "arrival_orientation_tolerance_rad": 0.05,
         "allowed_contact_prim_paths": ["/Asset/body"],
@@ -66,6 +72,7 @@ def _rigid_fixture(*, asset_id: str, scene_id: str = "840313") -> dict:
         "scene_id": scene_id,
         "task_kind": "rigid_pick_place",
         "plan_digest": "sha256:" + "b" * 64,
+        "cadence": {"maximum_action_steps": 240},
         "task_spec": {
             "schema_version": "adp_task_spec.v2",
             "task_kind": "rigid_pick_place",
@@ -150,6 +157,9 @@ def _planar_push_fixture() -> dict:
         0.0,
         0.7071067811865476,
     ]
+    spec["interaction_affordance"]["closed_fingertip_forward_offset_m"] = 0.04
+    spec["interaction_affordance"]["push_contact_interference_m"] = 0.005
+    spec["push_contact_max_displacement_m"] = 0.02
     affordance = spec["interaction_affordance"]
     affordance["affordance_digest"] = canonical_digest(
         affordance, digest_field="affordance_digest"
@@ -197,6 +207,34 @@ def test_every_construction_phase_plan_publishes_the_command_limits(
     assert execution["max_joint_setpoint_lead_rad"] == pytest.approx(
         MAX_JOINT_SETPOINT_LEAD_RAD
     )
+
+
+def test_rigid_phase_plan_reserves_the_controls_settle_window() -> None:
+    """The qualifying controls episode replays every qualified phase and then
+    appends the settle window inside the same ``maximum_action_steps`` cap, so
+    a construction budget without the reserve can qualify a paid construction
+    that ``native_rigid_control_action_budget_exceeded`` then refuses."""
+
+    scene = _rigid_fixture(asset_id="canned_beverage_replacement")
+    execution = materialize_native_task_construction_phase_plan(scene)[
+        "execution_parameters"
+    ]
+    assert execution["maximum_construction_total_steps"] == (
+        scene["cadence"]["maximum_action_steps"]
+        - scene["task_spec"]["settle_window_samples"]
+    )
+
+
+def test_rigid_phase_plan_refuses_an_unqualifiable_budget() -> None:
+    scene = _rigid_fixture(asset_id="canned_beverage_replacement")
+    scene["cadence"]["maximum_action_steps"] = (
+        scene["task_spec"]["settle_window_samples"] + 1
+    )
+    with pytest.raises(
+        NativeTaskConstructionPlanError,
+        match="native_rigid_construction_total_budget_infeasible",
+    ):
+        materialize_native_task_construction_phase_plan(scene)
 
 
 def test_construction_dispatch_forwards_an_overridden_command_limit_pair() -> None:
@@ -247,6 +285,102 @@ def test_840313_rigid_fixture_has_complete_construction_gate_sequence() -> None:
     )
 
 
+def test_pick_place_withdraws_along_destination_qualified_clearance_axis() -> None:
+    scene = _rigid_fixture(asset_id="book_replacement")
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["insertion_withdrawal_unit_world"] = [0.0, 0.0, 1.0]
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+
+    plan = materialize_native_task_construction_phase_plan(
+        scene, rigid_waypoint_count=3
+    )
+    phases = {row["phase_id"]: row for row in plan["phases"]}
+
+    assert phases["settle_observe"]["position_world_m"][:2] == pytest.approx(
+        phases["place"]["position_world_m"][:2]
+    )
+    assert phases["settle_observe"]["position_world_m"][2] == pytest.approx(
+        phases["place"]["position_world_m"][2]
+        + affordance["pregrasp_clearance_m"]
+    )
+    assert phases["retreat"]["position_world_m"] == phases[
+        "settle_observe"
+    ]["position_world_m"]
+
+
+@pytest.mark.parametrize('rotated', [False, True])
+def test_confirmed_retreat_clears_oriented_collision_bounds_and_grasp_offset(rotated):
+    from blueprint_pipeline.adp_rigid_retreat_scoring import _derive_retreat_criterion, score_retreat
+
+    scene = _rigid_fixture(asset_id='authored_rigid_subject')
+    spec = scene['task_spec']
+    affordance = spec['interaction_affordance']
+    # Actual Scene841757 task135 authored an 8cm approach and a 10cm retreat,
+    # with an edge grasp rather than the subject center. These are hermetic
+    # geometry cases, not claims of native scene or asset qualification.
+    affordance['pregrasp_clearance_m'] = .08
+    spec['retreat_clearance_m'] = .10
+    affordance['contact_point_scoring_frame_m'] = [0., -.198848014, 0.]
+    spec['subject_collision_bounds_scoring_frame_m'] = {
+        'minimum': [-.147652001, -.198848014, -.0105687],
+        'maximum': [.147652001, .198848014, .0105687]}
+    direction = [0., 0., 1.]
+    expected_displacement = .10 + .0105687 + .02
+    if rotated:
+        # Asymmetric local X bounds project onto negative world Y after a
+        # quarter-turn. The authored grasp already starts 15cm along that axis.
+        spec['destination_orientation_xyzw'] = [0., 0., math.sqrt(.5), math.sqrt(.5)]
+        affordance['contact_point_scoring_frame_m'] = [-.15, .02, .005]
+        spec['subject_collision_bounds_scoring_frame_m'] = {
+            'minimum': [-.2, -.04, -.01], 'maximum': [.1, .03, .02]}
+        direction = [0., -1., 0.]
+        expected_displacement = .2 - .15 + .10 + .02
+    affordance['insertion_withdrawal_unit_world'] = direction
+    affordance['affordance_digest'] = canonical_digest(affordance, digest_field='affordance_digest')
+    plan = materialize_native_task_construction_phase_plan(scene, rigid_waypoint_count=3)
+    phases = {row['phase_id']: row for row in plan['phases']}
+    place = phases['place']['position_world_m']
+    retreat = phases['retreat']['position_world_m']
+    assert retreat == pytest.approx([x + u*expected_displacement for x, u in zip(place, direction)])
+    assert phases['settle_observe']['position_world_m'] == retreat
+    assert math.dist(phases['pregrasp']['position_world_m'], phases['grasp_contact']['position_world_m']) == pytest.approx(.08)
+    target = phases['place']['expected_scoring_position_world_m']
+    # Destination frame rotation is distinct from subject geometry orientation.
+    spec['destination_pose_world'] = [*target, 0., 0., math.sqrt(.5), math.sqrt(.5)]
+    criterion = _derive_retreat_criterion(spec)
+
+    def measured_result(grasp):
+        return score_retreat(criterion=criterion, task_spec=spec, window_samples=3, release_width_m=.07,
+            samples=[{'step_index': i, 'grasp_frame_position_world_m': grasp,
+                      'task_object_pose_world': [*target, *spec['destination_orientation_xyzw']],
+                      'destination_pose_world': spec['destination_pose_world'],
+                      'gripper_width_m': .08, 'task_contact_active': False} for i in range(3)])
+
+    assert measured_result([x + u*.08 for x, u in zip(place, direction)])['satisfied'] is False
+    assert measured_result(retreat)['satisfied'] is True
+    assert measured_result(retreat)['minimum_observed_clearance_m'] == pytest.approx(.12)
+    assert measured_result([x - u*.01 for x, u in zip(retreat, direction)])['satisfied'] is True
+
+
+@pytest.mark.parametrize('missing', ['subject_collision_bounds_scoring_frame_m', 'qualified_direction'])
+def test_confirmed_retreat_never_falls_back_when_required_geometry_is_missing(missing):
+    scene = _rigid_fixture(asset_id='authored_rigid_subject')
+    spec = scene['task_spec']
+    spec['retreat_clearance_m'] = .1
+    spec['subject_collision_bounds_scoring_frame_m'] = {'minimum': [-.01]*3, 'maximum': [.01]*3}
+    affordance = spec['interaction_affordance']
+    affordance['insertion_withdrawal_unit_world'] = [0., 0., 1.]
+    if missing == 'qualified_direction':
+        del affordance['insertion_withdrawal_unit_world']
+    else:
+        del spec[missing]
+    affordance['affordance_digest'] = canonical_digest(affordance, digest_field='affordance_digest')
+    with pytest.raises(NativeTaskConstructionPlanError, match='retreat_geometry_or_clearance_invalid'):
+        materialize_native_task_construction_phase_plan(scene)
+
+
 def test_planar_push_compiles_without_a_fake_lift_or_grasp() -> None:
     plan = materialize_native_task_construction_phase_plan(
         _planar_push_fixture(), rigid_waypoint_count=3
@@ -260,6 +394,7 @@ def test_planar_push_compiles_without_a_fake_lift_or_grasp() -> None:
         "push_01",
         "push_02",
         "push_03",
+        "push_detach",
         "push_release",
         "settle_observe",
         "retreat",
@@ -268,6 +403,7 @@ def test_planar_push_compiles_without_a_fake_lift_or_grasp() -> None:
     assert "grasp_contact" not in plan["required_gate_ids"]
     assert {
         "push_contact",
+        "push_contact_standoff",
         "push_contact_maintained",
         "push_path",
         "support_contact",
@@ -278,10 +414,23 @@ def test_planar_push_compiles_without_a_fake_lift_or_grasp() -> None:
     )
 
 
-def test_planar_push_gate_uses_native_motion_contact_and_support_readback() -> None:
-    plan = materialize_native_task_construction_phase_plan(
-        _planar_push_fixture(), rigid_waypoint_count=3
+def test_rigid_plan_refuses_an_unauthored_gripper_orientation() -> None:
+    scene = _planar_push_fixture()
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["gripper_orientation_scoring_frame_xyzw"] = [0.0, 0.0, 0.0, 1.0]
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
     )
+
+    with pytest.raises(NativeTaskConstructionPlanError) as excinfo:
+        materialize_native_task_construction_phase_plan(scene)
+
+    assert excinfo.value.errors == (
+        "native_rigid_construction_gripper_orientation_unauthored",
+    )
+
+
+def _passing_push_phase_results(plan: dict) -> list[dict]:
     phase_results = []
     for phase in plan["phases"]:
         pushing = phase["phase_id"] == "push_contact" or phase[
@@ -315,6 +464,14 @@ def test_planar_push_gate_uses_native_motion_contact_and_support_readback() -> N
                 "task_samples": samples,
             }
         )
+    return phase_results
+
+
+def test_planar_push_gate_uses_native_motion_contact_and_support_readback() -> None:
+    plan = materialize_native_task_construction_phase_plan(
+        _planar_push_fixture(), rigid_waypoint_count=3
+    )
+    phase_results = _passing_push_phase_results(plan)
 
     passed = evaluate_rigid_construction_gates(
         phase_plan=plan,
@@ -334,6 +491,222 @@ def test_planar_push_gate_uses_native_motion_contact_and_support_readback() -> N
     assert (
         "native_rigid_construction_gate_failed:push_contact_maintained"
         in failed["blockers"]
+    )
+
+
+def test_planar_push_targets_back_off_by_the_closed_fingertip_offset() -> None:
+    """Scene-839873 franka-controls attempt 001: the pinch centre was
+    commanded to the object face, the closed fingertips struck 39 mm early at
+    approach speed, and the object coasted 93 mm past its first waypoint.
+    Every contact-frame target must stand off by the authored fingertip
+    protrusion minus the commanded interference."""
+
+    scene = _planar_push_fixture()
+    plan = materialize_native_task_construction_phase_plan(
+        scene, rigid_waypoint_count=3
+    )
+    spec = scene["task_spec"]
+    affordance = spec["interaction_affordance"]
+    standoff = (
+        affordance["closed_fingertip_forward_offset_m"]
+        - affordance["push_contact_interference_m"]
+    )
+    start = spec["start_pose_world"][:3]
+    contact = affordance["contact_point_scoring_frame_m"]
+    approach = affordance["approach_unit_scoring_frame"]
+    phases = {row["phase_id"]: row for row in plan["phases"]}
+    expected_contact = [
+        start[axis] + contact[axis] + approach[axis] * standoff
+        for axis in range(3)
+    ]
+    assert phases["push_contact"]["position_world_m"] == pytest.approx(
+        expected_contact
+    )
+    assert phases["precontact"]["position_world_m"] == pytest.approx(
+        [
+            expected_contact[axis]
+            + approach[axis] * affordance["pregrasp_clearance_m"]
+            for axis in range(3)
+        ]
+    )
+    for row in plan["phases"]:
+        if not row["phase_id"].startswith("push_0"):
+            continue
+        expected_scoring = row["expected_scoring_position_world_m"]
+        assert row["position_world_m"] == pytest.approx(
+            [
+                expected_scoring[axis]
+                + contact[axis]
+                + approach[axis] * standoff
+                for axis in range(3)
+            ]
+        )
+    assert plan["thresholds"]["push_contact_max_displacement_m"] == (
+        spec["push_contact_max_displacement_m"]
+    )
+    assert plan["gate_contract"]["push_contact_standoff"] == (
+        "native_task_root_pose_readback"
+    )
+
+
+def test_planar_push_detaches_closed_before_the_release_opens() -> None:
+    """Opening the fingers while the fingertips were still engaged swept the
+    object 93 mm back out of the destination in attempt 001; the retreat must
+    happen with the gripper still closed, and only then open."""
+
+    plan = materialize_native_task_construction_phase_plan(
+        _planar_push_fixture(), rigid_waypoint_count=3
+    )
+    phases = {row["phase_id"]: row for row in plan["phases"]}
+    order = [row["phase_id"] for row in plan["phases"]]
+    assert order.index("push_detach") == order.index("push_release") - 1
+    assert phases["push_detach"]["gripper_state"] == "closed"
+    assert phases["push_release"]["gripper_state"] == "open"
+    assert phases["push_detach"]["position_world_m"] == (
+        phases["push_release"]["position_world_m"]
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value,expected",
+    [
+        (
+            "closed_fingertip_forward_offset_m",
+            None,
+            "native_rigid_construction_push_fingertip_offset_invalid",
+        ),
+        (
+            "push_contact_interference_m",
+            None,
+            "native_rigid_construction_push_contact_interference_invalid",
+        ),
+        (
+            "push_contact_interference_m",
+            0.05,
+            "native_rigid_construction_push_standoff_geometry_infeasible",
+        ),
+        (
+            "closed_fingertip_forward_offset_m",
+            0.15,
+            "native_rigid_construction_push_standoff_geometry_infeasible",
+        ),
+    ],
+)
+def test_planar_push_refuses_unauthored_or_infeasible_fingertip_geometry(
+    field: str, value: float | None, expected: str
+) -> None:
+    scene = _planar_push_fixture()
+    affordance = scene["task_spec"]["interaction_affordance"]
+    if value is None:
+        del affordance[field]
+    else:
+        affordance[field] = value
+    affordance["affordance_digest"] = ""
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+
+    with pytest.raises(NativeTaskConstructionPlanError) as excinfo:
+        materialize_native_task_construction_phase_plan(scene)
+
+    assert expected in excinfo.value.errors
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (
+            None,
+            "native_rigid_construction_push_contact_displacement_bound_invalid",
+        ),
+        (
+            0.004,
+            "native_rigid_construction_push_standoff_geometry_infeasible",
+        ),
+    ],
+)
+def test_planar_push_refuses_an_unauthored_or_unmeasurable_displacement_bound(
+    value: float | None, expected: str
+) -> None:
+    scene = _planar_push_fixture()
+    if value is None:
+        del scene["task_spec"]["push_contact_max_displacement_m"]
+    else:
+        scene["task_spec"]["push_contact_max_displacement_m"] = value
+
+    with pytest.raises(NativeTaskConstructionPlanError) as excinfo:
+        materialize_native_task_construction_phase_plan(scene)
+
+    assert expected in excinfo.value.errors
+
+
+def test_push_contact_standoff_gate_refuses_the_attempt_001_early_punt() -> None:
+    """Regression from the retained attempt-001 readbacks: the object moved
+    31.5 mm during push_contact because the fingertips met it before the
+    commanded frame arrived.  That displacement must fail the standoff gate
+    even when every later sample looks healthy."""
+
+    plan = materialize_native_task_construction_phase_plan(
+        _planar_push_fixture(), rigid_waypoint_count=3
+    )
+    phase_results = _passing_push_phase_results(plan)
+    contact = next(
+        row for row in phase_results if row["phase_id"] == "push_contact"
+    )
+    punted = list(contact["task_sample"]["task_scoring_pose_world"])
+    punted[0] -= 0.0315
+    contact["task_sample"] = dict(
+        contact["task_sample"], task_scoring_pose_world=punted
+    )
+    contact["task_samples"] = [contact["task_sample"]]
+
+    evaluated = evaluate_rigid_construction_gates(
+        phase_plan=plan,
+        phase_results=phase_results,
+        reset_replay={"passed": True},
+    )
+
+    assert evaluated["passed"] is False
+    assert (
+        "native_rigid_construction_gate_failed:push_contact_standoff"
+        in evaluated["blockers"]
+    )
+
+
+def test_rigid_gate_evaluation_tolerates_pre_standoff_phase_plans() -> None:
+    """Sealed pre-standoff plans (the attempt-001 era) must still re-evaluate
+    to their original verdicts: the standoff gate is judged only when the
+    plan's own contract carries it."""
+
+    plan = materialize_native_task_construction_phase_plan(
+        _planar_push_fixture(), rigid_waypoint_count=3
+    )
+    legacy = copy.deepcopy(plan)
+    del legacy["gate_contract"]["push_contact_standoff"]
+    legacy["required_gate_ids"] = sorted(legacy["gate_contract"])
+    del legacy["thresholds"]["push_contact_max_displacement_m"]
+    legacy["plan_digest"] = ""
+    legacy["plan_digest"] = canonical_digest(legacy, digest_field="plan_digest")
+    phase_results = _passing_push_phase_results(legacy)
+    contact = next(
+        row for row in phase_results if row["phase_id"] == "push_contact"
+    )
+    punted = list(contact["task_sample"]["task_scoring_pose_world"])
+    punted[0] -= 0.0315
+    contact["task_sample"] = dict(
+        contact["task_sample"], task_scoring_pose_world=punted
+    )
+    contact["task_samples"] = [contact["task_sample"]]
+
+    evaluated = evaluate_rigid_construction_gates(
+        phase_plan=legacy,
+        phase_results=phase_results,
+        reset_replay={"passed": True},
+    )
+
+    assert evaluated["passed"] is True
+    assert not any(
+        "push_contact_standoff" in blocker for blocker in evaluated["blockers"]
     )
 
 

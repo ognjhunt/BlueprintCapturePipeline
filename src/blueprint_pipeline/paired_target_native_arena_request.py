@@ -817,6 +817,7 @@ def materialize_paired_target_native_arena_requests(
     from .native_task_arena_runtime import (
         NativeTaskArenaRuntimeError,
         author_grounded_articulation,
+        author_passive_joint_friction_overlay,
     )
 
     # One thin convex-approximated wall silently demotes PhysX to the CPU
@@ -850,22 +851,32 @@ def materialize_paired_target_native_arena_requests(
             adaptation = author_grounded_articulation(
                 registered_row["usd_path"], derived_path
             )
+            staged_path = derived_path if adaptation is not None else registered_row["usd_path"]
+            target_joints = []
+            if registered_row["freeze"]["task_kind"] == "articulated_interaction":
+                graph = validate_articulation_graph(registered_row["freeze"]["articulation_graph"])
+                target_joints = [joint for joint in graph["joints"] if joint["role"] == "target"]
+            if len(target_joints) == 1 and target_joints[0]["joint_type"] == "prismatic":
+                friction_path = destination / "runtime_articulation" / f"{asset_id}-passive.usda"
+                friction = author_passive_joint_friction_overlay(
+                    staged_path, friction_path,
+                    joint_prim_path=f"/Asset/joints/{target_joints[0]['joint_id']}",
+                )
+                if friction is not None:
+                    staged_path = friction_path
+                    adaptation = {**(adaptation or {}),
+                        "adaptation": (adaptation or {}).get("adaptation") or "estimated_passive_joint_friction_overlay",
+                        "fixed_base_body_prim_path": (adaptation or {}).get("fixed_base_body_prim_path"),
+                        "candidate_bytes_modified": False,
+                        "derived_from_sha256": _sha256(registered_row["usd_path"]),
+                        "passive_joint_friction": friction}
         except NativeTaskArenaRuntimeError as exc:
             raise PairedTargetNativeArenaRequestError(";".join(exc.errors)) from exc
         except Exception as exc:  # pxr raises Tf.ErrorException on bad usda
             raise PairedTargetNativeArenaRequestError(
                 f"paired_target_arena_request_articulation_unreadable:{asset_id}"
             ) from exc
-        if adaptation is None:
-            grounded[asset_id] = {
-                "usd_path": registered_row["usd_path"],
-                "adaptation": None,
-            }
-        else:
-            grounded[asset_id] = {
-                "usd_path": derived_path,
-                "adaptation": adaptation,
-            }
+        grounded[asset_id] = {"usd_path": staged_path, "adaptation": adaptation}
     request_records = []
     try:
         for task_id in sorted(opened):

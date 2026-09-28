@@ -1,0 +1,14 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-agent-stage-replay.timer.json
+Description=Wake Blueprint offline retained-stage replay worker
+
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=5s
+AccuracySec=1s
+Unit=blueprint-agent-stage-replay.service
+
+[Install]
+WantedBy=timers.target

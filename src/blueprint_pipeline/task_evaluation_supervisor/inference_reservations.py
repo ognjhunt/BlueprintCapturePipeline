@@ -58,16 +58,27 @@ class InferenceReservationAudit:
         ):
             raise InferenceReservationError("inference_reservation_cost_invalid")
         reservation_id = str(reservation.get("reservation_id") or "")
-        expected_id = canonical_digest(
-            {
-                "run_id": reservation.get("run_id"),
-                "capability": reservation.get("capability"),
-                "model": reservation.get("model"),
-                "input_digest": reservation.get("input_digest"),
-                "max_turns": reservation.get("max_turns"),
-                "max_output_tokens": reservation.get("max_output_tokens"),
-            }
-        )
+        reservation_identity = {
+            "run_id": reservation.get("run_id"),
+            "capability": reservation.get("capability"),
+            "model": reservation.get("model"),
+            "input_digest": reservation.get("input_digest"),
+            "max_turns": reservation.get("max_turns"),
+            "max_output_tokens": reservation.get("max_output_tokens"),
+        }
+        # Legacy OpenAI reservations omitted provider from their identity. New
+        # provider reservations bind it without invalidating retained records.
+        if "provider" in reservation:
+            reservation_identity["provider"] = reservation["provider"]
+        if "reasoning_effort" in reservation:
+            reservation_identity["reasoning_effort"] = reservation.get(
+                "reasoning_effort"
+            )
+        if "cache_policy_digest" in reservation:
+            reservation_identity["cache_policy_digest"] = reservation.get(
+                "cache_policy_digest"
+            )
+        expected_id = canonical_digest(reservation_identity)
         if reservation_id != expected_id:
             raise InferenceReservationError("inference_reservation_identity_mismatch")
         expected_digest = canonical_digest(
@@ -95,6 +106,68 @@ class InferenceReservationAudit:
         reservation_path = self._reservation_path(reservation_id)
         if not reservation_path.is_file():
             raise InferenceReservationError("inference_completion_reservation_missing")
+        reservation = dict(read_json(reservation_path))
+        expected_reservation_digest = canonical_digest(
+            reservation,
+            digest_field="inference_reservation_digest",
+        )
+        if reservation.get("inference_reservation_digest") != expected_reservation_digest:
+            raise InferenceReservationError("inference_reservation_digest_mismatch")
+        for field in ("run_id", "capability", "model"):
+            if completion.get(field) != reservation.get(field):
+                raise InferenceReservationError(
+                    f"inference_completion_{field}_mismatch"
+                )
+        if completion.get("provider") != reservation.get("provider", "openai"):
+            raise InferenceReservationError("inference_completion_provider_mismatch")
+        if completion.get("cache_policy") != reservation.get("cache_policy"):
+            raise InferenceReservationError("inference_completion_cache_policy_mismatch")
+        completion_policy = completion.get("cache_policy")
+        if (
+            not isinstance(completion_policy, Mapping)
+            or completion_policy.get("policy_digest")
+            != reservation.get("cache_policy_digest")
+        ):
+            raise InferenceReservationError(
+                "inference_completion_cache_policy_digest_mismatch"
+            )
+        if completion.get("breakpoint_digests") != reservation.get(
+            "breakpoint_digests"
+        ):
+            raise InferenceReservationError(
+                "inference_completion_breakpoint_digests_mismatch"
+            )
+        projected = float(reservation.get("projected_max_cost_usd") or 0.0)
+        completion_projected = completion.get("projected_max_cost_usd")
+        reconciled = completion.get("reconciled_actual_cost_usd")
+        released = completion.get("released_reservation_usd")
+        for label, raw in (
+            ("projected_cost", completion_projected),
+            ("reconciled_cost", reconciled),
+            ("released_reservation", released),
+        ):
+            if (
+                not isinstance(raw, (int, float))
+                or isinstance(raw, bool)
+                or not math.isfinite(float(raw))
+                or float(raw) < 0
+            ):
+                raise InferenceReservationError(
+                    f"inference_completion_{label}_invalid"
+                )
+        if abs(float(completion_projected) - projected) > 1.0e-12:
+            raise InferenceReservationError(
+                "inference_completion_projected_cost_mismatch"
+            )
+        if float(reconciled) > projected + 1.0e-12:
+            raise InferenceReservationError(
+                "inference_completion_reconciled_cost_exceeds_reservation"
+            )
+        expected_released = max(0.0, projected - float(reconciled))
+        if abs(float(released) - expected_released) > 1.0e-12:
+            raise InferenceReservationError(
+                "inference_completion_released_reservation_mismatch"
+            )
         expected_digest = canonical_digest(
             completion,
             digest_field="inference_completion_digest",
@@ -123,6 +196,7 @@ class InferenceReservationAudit:
                 raise InferenceReservationError("inference_completion_path_mismatch")
             completions[reservation_id] = value
         total = 0.0
+        projected_total = 0.0
         for path in sorted(self.reserved_root.glob("*.json")):
             value = dict(read_json(path))
             if value.get("run_id") != self.run_id:
@@ -136,14 +210,40 @@ class InferenceReservationAudit:
             projected = float(value.get("projected_max_cost_usd") or 0.0)
             if not math.isfinite(projected) or projected <= 0:
                 raise InferenceReservationError("inference_reservation_cost_invalid")
-            total += projected
             completion = completions.pop(reservation_id, None)
+            reconciled = projected
+            if completion is not None and "reconciled_actual_cost_usd" in completion:
+                raw_reconciled = completion.get("reconciled_actual_cost_usd")
+                if (
+                    not isinstance(raw_reconciled, (int, float))
+                    or isinstance(raw_reconciled, bool)
+                    or not math.isfinite(float(raw_reconciled))
+                    or float(raw_reconciled) < 0
+                ):
+                    raise InferenceReservationError(
+                        "inference_completion_reconciled_cost_invalid"
+                    )
+                reconciled = float(raw_reconciled)
+                if reconciled > projected + 1.0e-12:
+                    raise InferenceReservationError(
+                        "inference_completion_reconciled_cost_exceeds_reservation"
+                    )
+            projected_total += projected
+            total += reconciled if completion is not None else projected
             reservations.append(
                 {
                     "reservation_id": reservation_id,
                     "reservation_digest": value["inference_reservation_digest"],
                     "reservation_path": str(path.relative_to(self.run_root)),
                     "projected_max_cost_usd": projected,
+                    "reconciled_actual_cost_usd": (
+                        reconciled if completion is not None else None
+                    ),
+                    "released_reservation_usd": (
+                        max(0.0, projected - reconciled)
+                        if completion is not None
+                        else 0.0
+                    ),
                     "status": "completed" if completion is not None else "in_flight_unknown",
                     "completion_digest": (
                         None if completion is None else completion["inference_completion_digest"]
@@ -166,6 +266,7 @@ class InferenceReservationAudit:
                 row["status"] == "in_flight_unknown" for row in reservations
             ),
             "reserved_max_cost_usd": total,
+            "projected_max_cost_usd_total": projected_total,
             "proof_effect": "none",
         }
         manifest["inference_reservation_manifest_digest"] = canonical_digest(

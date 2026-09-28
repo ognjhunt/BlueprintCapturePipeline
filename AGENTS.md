@@ -115,6 +115,20 @@ dependent step as blocked instead of guessing.
 
 ## Working Rules
 
+- **Execute without serial debugging loops.** When the user asks to reach a
+  concrete stage, keep that stage as the immediate objective. Before an attempt,
+  batch the complete applicable preflight: exact runtime inputs, launch arguments,
+  billing/spend admission, resource identity, watchdog, and teardown. A dry run
+  must not claim launch readiness while leaving deterministic execute-only checks
+  untested. After a blocker, make one focused repair and replay that same complete
+  preflight; reuse unchanged assets and completed stages. Defer unrelated audits,
+  improvements, and broad tests until the requested stage is running or terminal.
+  Every 10 minutes without reaching the stage, report the exact remaining blocker,
+  observed progress, and the concrete next action or necessary user decision.
+  Do not substitute another speculative ETA or an expanding investigation.
+  This checkpoint requires a decision and a status update, not an automatic pause
+  or a new permission request. Preserve the existing rights, spend, evidence,
+  watchdog, and teardown requirements.
 - Work the Arm Decision Proof critical path in order. Prefer changes that turn an
   existing development-only seam into a replayable, fail-closed precursor of the
   partner proof; do not optimize unrelated platform breadth.
@@ -167,6 +181,15 @@ dependent step as blocked instead of guessing.
     hosted-check completion, and merge to `main` are not prerequisites for the
     canary. Preserve failures and publish the encoded fix before a production
     release or terminal scientific claim.
+  - **Policy-canary worker, bundle, episode, or client changes:** the focused
+    hermetic tests are the lifecycle rehearsal
+    (`tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py`) and
+    the provider import-closure suite
+    (`tests/test_provider_runtime_import_closure.py`). Run both before any paid
+    Quick-10 attempt: they drive the real per-cell orchestration, episode
+    runner, and policy clients against a fake Isaac with production close and
+    rebuild semantics, and import the sealed bundle in an isolated interpreter.
+    A defect they can catch must never be discovered on a rented GPU.
   - **Build loop (target: under 2 minutes):** run only the deterministic tests,
     schema checks, replay fixtures, and changed-file lint that cover the edited
     surface. Do not run a repository-wide lane merely because a change is ready
@@ -198,6 +221,20 @@ dependent step as blocked instead of guessing.
   A manual action taken to save a live run remains a stopgap; encode and focus-
   test the equivalent in the same session (precedents: PR #180 builder swap,
   PR #181 compute-cap ceiling).
+- **The only loop for a failed production stage** (2026-09-05: hours between
+  attempts were spent re-running finished GPU stages and deploying to discover
+  the next fact). (1) Replay the failed child's saved job against the candidate
+  code first: `python -m blueprint_pipeline.task_evaluation_stage_replay
+  --child <sam31-id> --isolate` on the host runs the stage handler from the
+  candidate tree on the retained inputs in a scratch root, as the service user,
+  with no network, no GPU and no model call, and names the refusing predicate;
+  iterate until the boundary passes. (2) A resubmission adopts every completed
+  stage (completed-prefix adoption) and never re-runs finished GPU work for
+  identical inputs. (3) Batch independent fixes and deploy once; keep unrelated
+  improvements out of the restart path. (4) Read the chain preflight
+  (`preflight/latest.json`: `blocker_count`, `host_findings`, per-unit
+  `findings`) before submitting. A defect first found by a paid run that a
+  replay would have shown is a process defect to record with the fix.
 - Compatibility work must preserve prior proof boundaries. In particular,
   generated-video or simulator execution never becomes physical truth, and a
   candidate policy or provider never grades itself.
@@ -236,6 +273,16 @@ dependent step as blocked instead of guessing.
   `output/` and `robot_eval_jobs/` stay governed by
   `scripts/manage_output_artifact_retention.py`; `~/.claude` is bounded by
   Claude Code's built-in `cleanupPeriodDays` cleanup.
+
+## Cloud Agent Sessions
+
+Claude Code cloud sessions cannot SSH to the control-plane host. They read run
+state, pull inputs, start units and deploy commits already on `main` through
+the operator door ([`docs/OPERATOR_DOOR.md`](docs/OPERATOR_DOOR.md)) with
+`python3 scripts/operator_door.py`, never by putting SSH keys or tunnels into a
+cloud environment. A failed stage is replayed in the session against pulled
+inputs, not on the host. Session setup and the scene procedure live in the sibling
+Blueprint-WebApp checkout's `docs/runbooks/cloud-scene-runs.md`.
 
 ## Commands
 

@@ -1,0 +1,1789 @@
+"""Hermetic full-lifecycle rehearsal of the paired policy canary worker.
+
+Every paid Quick-10 attempt before this test existed discovered a defect that
+needed no GPU to find: a module missing from the bundle, a client refusing a
+second readiness preflight after inference, a result lost when Isaac's
+``SimulationApp.close`` ended the interpreter, a 20 Hz scene fed to 15 Hz
+policies, and a Replicator graph destroyed by rebuilding an environment after
+closing it.  This rehearsal drives the worker's real orchestration
+(:func:`_run_selected_cell` and :func:`_run_isolated_cell_processes`), the real
+episode runner, and the real OpenPI and GR00T client classes over forced
+transports.  Only Isaac itself is replaced, by a fake that keeps the semantics
+that bit production: ``close`` terminates the interpreter, and a closed
+environment can never be rebuilt inside the same process.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Mapping
+
+import numpy as np
+import pytest
+
+from blueprint_pipeline.adp009d_droid_action_execution import GripperConvention
+from blueprint_pipeline.adp009d_groot_worker_identity import (
+    expected_checkpoint_content_binding,
+)
+from blueprint_pipeline.adp009d_policy_episode import run_policy_episode
+from blueprint_pipeline.adp009d_task_scoring import (
+    CAN_START_POSITION_M,
+    SUPPORT_PLANE_Z_M,
+)
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
+from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.groot_n17_droid_policy_runtime import (
+    CHECKPOINT_REVISION,
+    EMBODIMENT_TAG,
+    GROOT_SOURCE_REVISION,
+    LANGUAGE_KEY,
+    MODEL_ID,
+    GrootN17DroidPolicyClient,
+    GrootN17DroidPolicySpec,
+)
+# Dotted import on purpose: the impacted-test selector maps a changed source
+# module to the tests whose source names it, so a worker-only change runs this
+# rehearsal (pinned in tests/test_impacted_test_selection.py).
+import blueprint_pipeline.native_task_arena_policy_canary_worker as worker
+from blueprint_pipeline.policy_canary_episode_interpretation_closeout import (
+    materialize_policy_canary_episode_interpretations,
+)
+from blueprint_pipeline.native_task_arena_policy_canary_session import (
+    CANDIDATE_IDS,
+    PROVIDER_RESULT_FILENAME,
+    build_session_authority,
+)
+from blueprint_pipeline.native_task_arena_policy_worker import (
+    GROOT_RUNTIME_IDENTITY_FILENAME,
+    _runtime_groot_worker_identity,
+    _to_tensor,
+)
+from blueprint_pipeline.openpi_droid_policy_runtime import (
+    OpenPIDroidPolicySpec,
+    OpenPIWebsocketDroidPolicyClient,
+)
+from tests.test_adp009d_policy_episode import _DESTINATION, _LifecycleEnvironment
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
+
+
+class _ParityLifecycleEnvironment(_LifecycleEnvironment):
+    """Expose a measurable approach baseline for the embodiment parity gate."""
+
+    def __init__(self, *, start_position: list[float] | None = None) -> None:
+        super().__init__()
+        self._rehearsal_start = list(start_position or CAN_START_POSITION_M)
+
+    def _position(self):
+        progress = min(1.0, self._t / self.steps_to_destination)
+        return [
+            self._rehearsal_start[axis]
+            + progress * (_DESTINATION[axis] - self._rehearsal_start[axis])
+            for axis in range(3)
+        ]
+
+    def read_object_sample(self):
+        sample = super().read_object_sample()
+        if self._t == 0:
+            position = sample["can_pose_world"][:3]
+            sample["grasp_frame_position_world_m"] = [
+                position[0] - 0.2,
+                position[1],
+                position[2],
+            ]
+        return sample
+
+
+class _RigidSafetyReadbackEnvironment:
+    """Hermetic counterpart of the native rigid scoring readback join."""
+
+    def __init__(self, environment, *, destination_relative: bool = False):
+        self.environment = environment
+        self.destination_relative = destination_relative
+
+    def __getattr__(self, name: str):
+        return getattr(self.environment, name)
+
+    def read_object_sample(self):
+        sample = dict(self.environment.read_object_sample())
+        task_fields = {
+            "task_contact_active": False,
+            "support_contact_active": True,
+        }
+        if self.destination_relative:
+            carrying = sample.get("gripper_width_m", 0.0) < 0.07
+            task_fields.update(
+                task_object_pose_world=list(sample["can_pose_world"]),
+                destination_pose_world=[
+                    *_DESTINATION,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
+                task_contact_active=carrying,
+                support_contact_active=not carrying,
+                task_contact_force_n=1.0 if carrying else 0.0,
+                workspace_excursion=False, retry_count=0, regrasp_count=0,
+
+            )
+        if self.destination_relative and self.environment._t > 0:
+            task_fields["grasp_frame_position_world_m"] = [
+                sample["can_pose_world"][0], sample["can_pose_world"][1],
+                sample["can_pose_world"][2] + (0.0 if carrying else 0.1),
+            ]
+        sample.update(
+            {
+                **task_fields,
+                "robot_collision_failure": False,
+                "scene_collision_failure": False,
+                "containment_violation": False,
+                "forbidden_robot_task_collision_failure": False,
+                "locked_joint_containment_violation": False,
+                "controls_measurement_authority": (
+                    "native_scoring_frame_pose_filtered_contacts_and_shared_"
+                    "gripper_calibration"
+                ),
+            }
+        )
+        return sample
+
+
+RUN_ID = "scene-839873-canary-rehearsal"
+
+
+def test_official_droid_wrist_reset_accepts_visible_edge_task_pixels() -> None:
+    def camera(role: str, *, passed: bool, pixels: int, centered: bool):
+        return {
+            "role": role,
+            "observability": {
+                "passed": passed,
+                "pixel_count": pixels,
+                "render_passed": True,
+                "centroid_within_margin": centered,
+                "target_semantic_ids": [17],
+                "thresholds": {"effective_minimum_pixels": 120},
+            },
+        }
+
+    snapshot = {
+        "cameras": [
+            camera("external", passed=True, pixels=2881, centered=True),
+            camera("overview", passed=True, pixels=509, centered=True),
+            camera("wrist", passed=False, pixels=2928, centered=False),
+        ]
+    }
+
+    droid = worker._policy_camera_visibility_contract(
+        snapshot,
+        preserve_official_droid_calibration=True,
+    )
+    generic = worker._policy_camera_visibility_contract(
+        snapshot,
+        preserve_official_droid_calibration=False,
+    )
+
+    assert droid["passed"] is True
+    assert droid["camera_visibility"]["wrist"] is True
+    assert droid["raw_camera_visibility"]["wrist"] is False
+    assert droid["role_qualifications"]["wrist"]["status"] == (
+        "initial_edge_visible"
+    )
+    assert droid["notices"] == ["droid_wrist_task_initially_near_frame_edge"]
+    assert generic["passed"] is False
+    assert "policy_canary_wrist_task_visibility_failed" in generic["blockers"]
+
+
+def test_official_droid_wrist_black_robot_body_keeps_visible_drawer(tmp_path: Path) -> None:
+    from PIL import Image
+
+    rgb = np.full((100, 100, 3), 120, dtype=np.uint8)
+    rgb[:, :72] = 0
+    robot = np.zeros((100, 100), dtype=np.uint8)
+    robot[:, :72] = 255
+    rgb_path = tmp_path / "wrist.png"
+    mask_path = tmp_path / "robot-mask.png"
+    Image.fromarray(rgb, mode="RGB").save(rgb_path)
+    Image.fromarray(robot, mode="L").save(mask_path)
+    wrist = {
+        "role": "wrist",
+        "rgb_png": {"path": rgb_path.name, "sha256": _sha(rgb_path)},
+        "robot_semantic_mask": {"path": mask_path.name, "sha256": _sha(mask_path),
+                                "pixel_count": 7200},
+        "semantic_label_pixels": {"task_object": {"pixel_fraction": 0.22}},
+        "observability": {
+            "passed": False, "semantic_passed": True, "render_passed": False,
+            "pixel_count": 2200, "centroid_within_margin": True,
+            "target_semantic_ids": [17],
+            "thresholds": {"effective_minimum_pixels": 120},
+            "render_evidence": {"target_rendered": True, "blockers": [
+                "native_task_camera_rgb_site_void_fraction_above_ceiling",
+                "native_task_camera_rgb_site_dominant_color_fraction_above_ceiling",
+            ]},
+        },
+    }
+    blocker = "native_task_prepolicy_visual_frame_near_black_fraction_above_ceiling"
+    visual = {
+        "views": {"wrist": {"blockers": [blocker], "passed": False,
+                             "render_presence": {"passed": True},
+                             "saturation": {"passed": True}}},
+        "blockers": [blocker + ":wrist"], "frame_structure_passed": False,
+        "passed": False, "policy_observation_integrity_blockers": [
+            "native_task_prepolicy_frame_structure_failed",
+            "native_task_appearance_reference_parity_missing",
+        ],
+    }
+    snapshot = {"cameras": [wrist]}
+    qualified, allowed = worker._qualify_official_droid_wrist_body_occlusion(
+        snapshot=snapshot, visual=visual, output_root=tmp_path
+    )
+    assert allowed and qualified["frame_structure_passed"] is True
+    assert qualified["views"]["wrist"]["robot_body_occlusion"]["near_black_inside_robot_fraction"] == 1.0
+    assert visual["frame_structure_passed"] is False
+    other = {"role": "external", "observability": {"passed": True,
+             "render_passed": True, "pixel_count": 1000,
+             "thresholds": {"effective_minimum_pixels": 120}}}
+    result = worker._policy_camera_visibility_contract(
+        {"cameras": [wrist, other, {**other, "role": "overview"}]},
+        preserve_official_droid_calibration=True,
+        wrist_robot_occlusion_qualified=allowed,
+    )
+    assert result["camera_visibility"]["wrist"] is True
+    assert result["role_qualifications"]["wrist"]["raw_render_passed"] is False
+    rgb[:, 72:] = 0  # Black outside the robot mask remains a failure.
+    Image.fromarray(rgb, mode="RGB").save(rgb_path)
+    wrist["rgb_png"]["sha256"] = _sha(rgb_path)
+    refused, allowed = worker._qualify_official_droid_wrist_body_occlusion(
+        snapshot=snapshot, visual=visual, output_root=tmp_path
+    )
+    assert not allowed and refused["blockers"] == [blocker + ":wrist"]
+PI05_POLICY_SPEC = {
+    "policy_id": "pi05_droid_jointpos_polaris",
+    "config_name": "pi05_droid_jointpos_polaris",
+    "checkpoint_uri": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
+    "checkpoint_object_manifest_sha256": "1" * 64,
+    "checkpoint_generation_manifest_sha256": "2" * 64,
+    "checkpoint_inventory_sha256": "3" * 64,
+    "checkpoint_object_count": 1,
+    "checkpoint_size_bytes": 1,
+    "action_space": "joint_position",
+    "action_chunk_rows": 10,
+}
+
+
+def _sha(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _record(path: Path) -> dict[str, Any]:
+    return {"path": str(path), "size_bytes": path.stat().st_size, "sha256": _sha(path)}
+
+
+def _write(path: Path, value: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _activation() -> dict[str, Any]:
+    setup = public_setup()
+    value: dict[str, Any] = {
+        "schema_version": "task_evaluation_policy_campaign_activation.v1",
+        "run_id": RUN_ID,
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
+        "campaign_unit_count": 10,
+        "campaign_units": [
+            {
+                "campaign_unit_id": f"unit-{index}",
+                "cell_id": f"cell-{index}",
+                "seed": 3100 + index,
+                "candidate_ids": list(CANDIDATE_IDS),
+            }
+            for index in range(10)
+        ],
+        "activation_digest": "",
+    }
+    value["activation_digest"] = canonical_digest(value, digest_field="activation_digest")
+    return value
+
+
+def _scene_plan() -> dict[str, Any]:
+    pose = {
+        "position_world_m": [3.4681748, -3.3100837, SUPPORT_PLANE_Z_M],
+        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    }
+    value: dict[str, Any] = {
+        "schema_version": "native_task_arena_scene_plan.v1",
+        "task_id": "scene-839873-mug-planar-push",
+        "task_kind": "rigid_pick_place",
+        "robot": {"robot_id": "franka_panda"},
+        "objects": [
+            {
+                "name": "task_object",
+                "task_subject": True,
+                "pose_world": json.loads(json.dumps(pose)),
+                "reset_state": {"root_pose_world": json.loads(json.dumps(pose))},
+            },
+            {
+                "name": "scene_appearance",
+                "semantic_role": "scene_appearance",
+                "task_subject": False,
+                "sha256": "1bfd4438e057587c785b8211a70e26b896dd1ef90626e7923c541dbfd7c125cc",
+                "pose_world": json.loads(json.dumps(pose)),
+            },
+            {
+                "name": "task_support",
+                "semantic_role": "task_support",
+                "asset_id": "document_tray",
+                "task_subject": False,
+                "object_type": "RIGID",
+                "pose_world": {
+                    "position_world_m": list(_DESTINATION),
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                "reset_state": {
+                    "root_pose_world": {
+                        "position_world_m": list(_DESTINATION),
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                    "joint_positions": {},
+                },
+            },
+        ],
+        "appearance_frame_alignment": {
+            "status": "aligned",
+            "representation": "particlefield_3d_gaussian_splat",
+            "measurement_authority": "particlefield_position_quantiles",
+            "source_asset_sha256": (
+                "sha256:9193a9de6bd81bd6348065b3cad46ad835b62dcfaa6212285a91bffd8a166445"
+            ),
+        },
+        "cameras": [
+            {
+                "role": role,
+                "frame_from_camera_matrix": [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.],
+                "optical_convention": "opencv",
+                "pose_frame": "robot_body" if role == "wrist" else "world",
+                "parent_prim_path": "{ENV_REGEX_NS}/Robot/panda_hand" if role == "wrist" else "{ENV_REGEX_NS}",
+                "intrinsics": {"fx": 500., "fy": 500., "cx": 639.5, "cy": 359.5, "width": 1280, "height": 720},
+                "data_types": ["rgb", "semantic_segmentation"],
+                "policy_input": role != "overview",
+                "review_only": role == "overview",
+            }
+            for role in ("external", "wrist", "overview")
+        ],
+        # The compiled scene still carries the pre-canary 20 Hz cadence; the
+        # worker must resolve it to the frozen DROID adapters' 15 Hz.
+        "cadence": {
+            "control_frequency_hz": 20.0,
+            "physics_frequency_hz": 120.0,
+            "physics_dt_seconds": 1.0 / 120.0,
+            "control_decimation": 6,
+            "maximum_action_steps": 240,
+            "settle_window_samples": 1,
+            "episode_length_seconds": 13.05,
+        },
+        "task_spec": {
+            "schema_version": "adp_task_spec.v1",
+            "task_kind": "rigid_pick_place",
+            "start_pose_world": [
+                *pose["position_world_m"],
+                *pose["orientation_xyzw"],
+            ],
+            "destination_position_world_m": list(_DESTINATION),
+            "support_plane_z_m": SUPPORT_PLANE_Z_M,
+            "settle_window_samples": 1,
+            "require_sealed_start_pose": True,
+            "control_frequency_hz": 20.0,
+            "maximum_action_steps": 240,
+        },
+        "plan_digest": "",
+    }
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    return value
+
+
+def _destination_scene_plan() -> dict[str, Any]:
+    value = _scene_plan()
+    pose = value["objects"][0]["pose_world"]
+    value["task_spec"] = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "rigid_pick_place",
+        "manipulation_strategy": "pick_and_place",
+        "subject_asset_id": "task_object",
+        "start_pose_world": [
+            *pose["position_world_m"],
+            *pose["orientation_xyzw"],
+        ],
+        "destination_position_world_m": list(_DESTINATION),
+        "destination_position_bounds_world_m": {
+            "minimum": [
+                _DESTINATION[0] - 0.1,
+                _DESTINATION[1] - 0.1,
+                SUPPORT_PLANE_Z_M - 0.02,
+            ],
+            "maximum": [
+                _DESTINATION[0] + 0.1,
+                _DESTINATION[1] + 0.1,
+                SUPPORT_PLANE_Z_M + 0.02,
+            ],
+        },
+        "destination_relation": "inside",
+        "destination_pose_world": [*_DESTINATION, 0.0, 0.0, 0.0, 1.0],
+        "destination_position_bounds_destination_frame_m": {
+            "minimum": [-0.1, -0.1, -0.02],
+            "maximum": [0.1, 0.1, 0.02],
+        },
+        "subject_collision_bounds_scoring_frame_m": {
+            "minimum": [-0.03, -0.03, -0.03],
+            "maximum": [0.03, 0.03, 0.03],
+        },
+        "destination_interior_bounds_body_frame_m": {
+            "minimum": [-0.13, -0.13, -0.05],
+            "maximum": [0.13, 0.13, 0.05],
+        },
+        "destination_reset_translation_tolerance_m": 0.002,
+        "destination_reset_rotation_tolerance_rad": 0.01,
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.1,
+        "support_height_interval_m": [
+            SUPPORT_PLANE_Z_M - 0.02,
+            SUPPORT_PLANE_Z_M + 0.02,
+        ],
+        "minimum_translation_m": 0.01,
+        "minimum_lift_m": 0.0,
+        "movement_epsilon_m": 0.001,
+        "reset_translation_tolerance_m": 0.002,
+        "reset_orientation_tolerance_rad": 0.01,
+        "settle_window_samples": 1,
+        "settle_position_tolerance_m": 0.005,
+        "settle_orientation_tolerance_rad": 0.03,
+        "release_required": True,
+        "release_gripper_width_min_m": 0.07,
+        "task_contact_minimum_force_n": 0.5,
+        "control_frequency_hz": 20.0,
+        "maximum_action_steps": 240,
+    }
+    value["task_spec"].update(
+        retreat_clearance_m=0.05,
+        robot_workspace_position_bounds_world_m={"minimum": [-5.]*3, "maximum": [5.]*3},
+        collision_failure_minimum_force_n=1.0,
+        interaction_affordance={"insertion_withdrawal_unit_world": [0.0, 0.0, 1.0]},
+        configured_success_criteria={
+            "owner_success_contract_required": True, "minimum_lift_m": 0.0,
+            "drop_minimum_fall_m": 0.02, "maximum_task_contact_force_n": 20.0,
+            "forbidden_contact_classes": [], "maximum_retries": 0,
+            "maximum_regrasps": 0, "retreat_clearance_m": 0.05,
+            "robot_workspace_position_bounds_world_m": {"minimum": [-5.]*3, "maximum": [5.]*3},
+            "collision_failure_minimum_force_n": 1.0,
+        },
+        configured_owner_authority={
+            "confirmation_status": "confirmed", "accepted_by": "fixture_owner",
+            "authority_reference": "fixture:destination-owner-request",
+        },
+    )
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    return value
+
+
+def _observation_integrity_authority(*, plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Approved same-pose parity + human review bound to the rehearsal backend."""
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        build_policy_observation_integrity_authority,
+    )
+
+    backend = worker.appearance_render_backend_from_plan(plan or _scene_plan())
+    return build_policy_observation_integrity_authority(
+        appearance_render_backend_receipt_digest=backend["receipt_digest"],
+        reference_renderer_identity="nvcr.io/nvidia/nre/nre@sha256:rehearsal",
+        reference_source_sha256=backend["source_asset_digest"],
+        views={
+            view: {
+                "reference_png_sha256": "sha256:" + "1" * 64,
+                "candidate_png_sha256": "sha256:" + "2" * 64,
+            }
+            for view in ("external", "wrist", "overview")
+        },
+        parity_passed=True,
+        human_review_status="approved",
+        reviewer="rehearsal-reviewer",
+        contact_sheet_sha256="sha256:" + "3" * 64,
+    )
+
+
+def _execution_spec(
+    candidate: str,
+    *,
+    port: int,
+    task_success_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    setup = public_setup()
+    success_contract = dict(
+        task_success_contract or setup["task_success_contract"]
+    )
+    value: dict[str, Any] = {
+        "schema_version": "native_task_arena_policy_canary_execution_spec.v1",
+        "candidate_id": candidate,
+        "execution_authority": "internal_policy_canary_unqualified",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "ranking_permitted": False,
+        "qualification_permitted": False,
+        "scene_promotion_permitted": False,
+        "policy_endpoint": {
+            "host": "127.0.0.1",
+            "port": port,
+            "credential_env": (
+                "BLUEPRINT_PI05_API_KEY"
+                if candidate == "pi05_droid"
+                else "BLUEPRINT_GROOT_API_TOKEN"
+            ),
+        },
+        "policy_spec": dict(PI05_POLICY_SPEC) if candidate == "pi05_droid" else {},
+        "candidate_rights_binding": {"status": "admitted"},
+        "checkpoint_digest": "sha256:" + ("c" if candidate == "pi05_droid" else "d") * 64,
+        "runtime_identity_digest": "sha256:" + ("e" if candidate == "pi05_droid" else "f") * 64,
+        "worker_identity_requirement": (
+            "none"
+            if candidate == "pi05_droid"
+            else "groot_droid_runtime_measurement"
+        ),
+        "require_observed_eef_support": candidate == "groot_n17_droid",
+        "task_success_contract": success_contract,
+        "task_success_contract_digest": success_contract["contract_digest"],
+        "prompt": "push the mug across the table",
+        "max_policy_queries": 1,
+        "open_loop_horizon": 8,
+        "execution_spec_digest": "",
+    }
+    value["execution_spec_digest"] = canonical_digest(
+        value, digest_field="execution_spec_digest"
+    )
+    return value
+
+
+def _groot_identity_receipt() -> dict[str, Any]:
+    return {
+        "status": "verified",
+        "model_id": MODEL_ID,
+        "embodiment_tag": EMBODIMENT_TAG,
+        "groot_source_revision": GROOT_SOURCE_REVISION,
+        "checkpoint_revision": CHECKPOINT_REVISION,
+        "checkpoint_files_sha256": "1" * 64,
+        "checkpoint_content_manifest_digest": expected_checkpoint_content_binding()[
+            "file_manifest_digest"
+        ],
+        "environment_lock_sha256": "2" * 64,
+    }
+
+
+def _stage_runtime_root(
+    tmp_path: Path, *, scene_plan: dict[str, Any] | None = None
+) -> tuple[Path, Path]:
+    """Lay out the provider bundle exactly as the worker reads it on a GPU host."""
+
+    runtime = tmp_path / "provider_runtime"
+    provider_output = tmp_path / "runtime_output"
+    provider_output.mkdir(parents=True)
+    packet_receipt = _write(
+        runtime / "native_task_packet" / "native_task_arena_packet_receipt.v1.json",
+        {"schema_version": "native_task_arena_packet_receipt.v1"},
+    )
+    plan = scene_plan or _scene_plan()
+    _write(
+        runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json",
+        plan,
+    )
+    runtime_source = _write(
+        runtime / "native_task_runtime_sources" / "native_task_runtime_source_packet.v1.json",
+        {"schema_version": "native_task_runtime_source_packet.v1"},
+    )
+    activation = _activation()
+    task_success_contract = activation["task_success_contract"]
+    if plan["task_spec"].get("schema_version") == "adp_task_spec.v2":
+        task_success_contract = seal_rigid_task_success_contract(
+            task_spec=plan["task_spec"],
+            site_id="interiorgs-839873",
+            task_id="book-into-tray-rehearsal",
+            author_source="compatibility_default",
+            author_id="blueprint:manipulation_strategy_defaults.v1",
+            confirmation_status="confirmed",
+        )
+        if plan["task_spec"].get("destination_relation"):
+            task_success_contract = _derive_configured_owner_success_contract(
+                plan["task_spec"], site_id="interiorgs-839873", task_id="book-into-tray-rehearsal"
+            )
+        activation["task_success_contract"] = task_success_contract
+        activation["task_success_contract_digest"] = task_success_contract[
+            "contract_digest"
+        ]
+        activation["activation_digest"] = canonical_digest(
+            activation, digest_field="activation_digest"
+        )
+    activation_path = _write(
+        runtime / "runtime_inputs" / "task_evaluation_policy_campaign_activation.v1.json",
+        activation,
+    )
+    scene_revision_digest = "sha256:" + "9" * 64
+    construction = {
+        "schema_version": "task_evaluation_episode_compilation_result.v1",
+        "status": "compiled_for_production_launch",
+        "blockers": [],
+        "configured_scene_revision_digest": scene_revision_digest,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "result_digest": "",
+    }
+    construction["result_digest"] = canonical_digest(construction, digest_field="result_digest")
+    construction_path = _write(
+        runtime / "runtime_inputs" / "native_task_arena_construction_result.v1.json",
+        construction,
+    )
+    cells = []
+    for index in range(10):
+        scenario = {
+            "family": "canonical_anchor" if index < 2 else "placement_approach",
+            "parameters": {} if index < 2 else {"object_start_y_delta_m": 0.005 * index},
+        }
+        cells.append(
+            {
+                "cell_id": f"cell-{index}",
+                "seed": 3100 + index,
+                "cell_spec_digest": "sha256:" + f"{index:064x}",
+                "family": scenario["family"],
+                "resolved_scenario": scenario,
+                "resolved_scenario_digest": canonical_digest(scenario),
+                "control_diagnostic": {
+                    "mode": "nonblocking_diagnostic_pending",
+                    "typed_gap": "controls_pending_at_submission",
+                    "policy_execution_blocked": False,
+                },
+            }
+        )
+    inputs: dict[str, Any] = {
+        "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1",
+        "run_id": RUN_ID,
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": activation["task_success_contract"],
+        "task_success_contract_digest": activation[
+            "task_success_contract_digest"
+        ],
+        "activation_digest": activation["activation_digest"],
+        "scene_revision_digest": scene_revision_digest,
+        "matrix_digest": "sha256:" + "8" * 64,
+        "configuration_digest": "sha256:" + "1" * 64,
+        "plan_digest": "sha256:" + "2" * 64,
+        "base_native_packet": _record(packet_receipt),
+        "runtime_source": _record(runtime_source),
+        "construction_result": _record(construction_path),
+        "cells": cells,
+        "execution_authority": {
+            "maximum_provider_allocations": 1,
+            "retry_cap": 0,
+            "single_warm_provider_session_required": True,
+            "caller_surviving_watchdog_required": True,
+            "billing_teardown_provider_zero_required": True,
+        },
+        "runtime_inputs_digest": "",
+    }
+    inputs["runtime_inputs_digest"] = canonical_digest(
+        inputs, digest_field="runtime_inputs_digest"
+    )
+    inputs_path = _write(runtime / "runtime_inputs" / "policy_canary_runtime_inputs.json", inputs)
+    authority = build_session_authority(
+        activation_manifest=activation,
+        activation_record=_record(activation_path),
+        runtime_inputs=inputs,
+        runtime_input_record=_record(inputs_path),
+        resource_name="blueprint-native-task-policy-canary-0123456789abcdef",
+        hard_cap_usd=4.0,
+        hard_ttl_seconds=9_000,
+    )
+    _write(runtime / "runtime_inputs" / "policy_canary_session_authority.json", authority)
+    _write(
+        runtime / "runtime_inputs" / worker.OBSERVATION_INTEGRITY_AUTHORITY_FILENAME,
+        _observation_integrity_authority(plan=plan),
+    )
+    manifest: dict[str, Any] = {
+        "schema_version": "native_task_arena_policy_canary_provider_bundle.v1",
+        "execution_mode": "internal_policy_canary_paired_session",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "runtime_inputs_digest": inputs["runtime_inputs_digest"],
+        "task_success_contract_digest": inputs["task_success_contract_digest"],
+        "authority_digest": authority["authority_digest"],
+        "execution_spec_digests": {candidate: _execution_spec(candidate,
+            port=8000 if candidate == "pi05_droid" else 5555,
+            task_success_contract=task_success_contract)["execution_spec_digest"] for candidate in CANDIDATE_IDS},
+        "input_digest": "",
+    }
+    manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
+    _write(runtime / "adp_arena_provider_manifest.json", manifest)
+    _write(
+        runtime / "runtime_inputs" / "policy_execution_spec.pi05_droid.json",
+        _execution_spec(
+            "pi05_droid",
+            port=8000,
+            task_success_contract=task_success_contract,
+        ),
+    )
+    _write(
+        runtime / "runtime_inputs" / "policy_execution_spec.groot_n17_droid.json",
+        _execution_spec(
+            "groot_n17_droid",
+            port=5555,
+            task_success_contract=task_success_contract,
+        ),
+    )
+    _write(provider_output / GROOT_RUNTIME_IDENTITY_FILENAME, _groot_identity_receipt())
+    return runtime, provider_output
+
+
+class FakeIsaac:
+    """Isaac Sim as the paid runs observed it, without Isaac.
+
+    ``SimulationApp.close`` ends the interpreter (the run that lost its result
+    exited 0 exactly there), and once an environment has been closed the
+    Replicator camera graph is gone for the rest of the process (the run whose
+    19 later cells failed with ``Unable to retrieve replicator graph``).
+    """
+
+    def __init__(self, result_path: Path) -> None:
+        self.result_path = result_path
+        self.launches = 0
+        self.appearance_render_paths: list[str] = []
+        self.builds = 0
+        self.environment_closes = 0
+        self.closed = False
+        self.graph_valid = True
+        self.result_sealed_at_close: bool | None = None
+        self.built_control_frequencies: list[float] = []
+        self.built_cell_ids: list[str] = []
+        self.built_object_roles: list[tuple[str, ...]] = []
+
+    def launch(
+        self, receipt_path: Path, *, device: str, appearance_render_path: str
+    ) -> tuple[Any, dict[str, Any]]:
+        self.launches += 1
+        self.appearance_render_paths.append(appearance_render_path)
+        return _FakeSimulationApp(self), {
+            "device": device,
+            "receipt": receipt_path.name,
+            "nurec_renderer": {"render_path": appearance_render_path},
+        }
+
+    def build(
+        self,
+        scene_plan: dict[str, Any],
+        *,
+        device: str,
+        bundle_root: Path,
+        preconstruction_receipt: dict[str, Any],
+    ) -> Any:
+        del device, bundle_root, preconstruction_receipt
+        if self.closed or not self.graph_valid:
+            raise RuntimeError("Unable to retrieve replicator graph")
+        self.builds += 1
+        self.built_control_frequencies.append(
+            float(scene_plan["cadence"]["control_frequency_hz"])
+        )
+        self.built_cell_ids.append(str(scene_plan["scenario"]["cell_id"]))
+        self.built_object_roles.append(
+            tuple(
+                str(row.get("semantic_role") or row.get("name") or "")
+                for row in scene_plan["objects"]
+            )
+        )
+        return SimpleNamespace(env=_FakeEnvironment(self), plan=scene_plan)
+
+
+class _FakeSimulationApp:
+    def __init__(self, isaac: FakeIsaac) -> None:
+        self._isaac = isaac
+
+    def close(self) -> None:
+        self._isaac.closed = True
+        self._isaac.result_sealed_at_close = self._isaac.result_path.is_file()
+        raise SystemExit(0)
+
+
+class _FakeEnvironment:
+    def __init__(self, isaac: FakeIsaac) -> None:
+        self._isaac = isaac
+        self.reset_seeds: list[int] = []
+        self.unwrapped = SimpleNamespace(scene={"robot": object()})
+
+    def reset(self, *, seed: int) -> None:
+        self.reset_seeds.append(int(seed))
+
+    def close(self) -> None:
+        self._isaac.environment_closes += 1
+        self._isaac.graph_valid = False
+
+
+class _OpenPIVendor:
+    """The pinned OpenPI websocket server as seen through its client."""
+
+    def __init__(self, spec: OpenPIDroidPolicySpec) -> None:
+        self._spec = spec
+        self.inferences = 0
+
+    def get_server_metadata(self) -> dict[str, Any]:
+        return {
+            **self._spec.server_metadata(),
+            "local_checkpoint_verified": True,
+            "local_checkpoint_verification_sha256": "4" * 64,
+            "local_checkpoint_object_count": 1,
+            "local_checkpoint_size_bytes": 1,
+        }
+
+    def infer(self, observation: dict[str, Any]) -> dict[str, Any]:
+        del observation
+        self.inferences += 1
+        chunk = np.zeros((10, 8), dtype=float)
+        chunk[:, 0] = 0.25
+        chunk[:, 7] = 0.9
+        return {"actions": chunk, "policy_timing": {"infer_ms": 12.0}}
+
+
+class _GrootVendor:
+    """The pinned GR00T ZMQ server as seen through its client."""
+
+    def __init__(self) -> None:
+        self.inferences = 0
+
+    def ping(self) -> bool:
+        return True
+
+    def reset(self) -> dict[str, Any]:
+        return {"status": "reset"}
+
+    def get_modality_config(self) -> dict[str, Any]:
+        return {
+            "video": {
+                "modality_keys": ["exterior_image_1_left", "wrist_image_left"],
+                "delta_indices": [0],
+            },
+            "state": {
+                "modality_keys": ["eef_9d", "gripper_position", "joint_position"],
+                "delta_indices": [0],
+            },
+            "action": {
+                "modality_keys": ["eef_9d", "gripper_position", "joint_position"],
+                "delta_indices": list(range(40)),
+            },
+            "language": {"modality_keys": [LANGUAGE_KEY], "delta_indices": [0]},
+        }
+
+    def get_action(self, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        del request
+        self.inferences += 1
+        joints = np.zeros((1, 40, 7), dtype=float)
+        joints[..., 0] = 0.25
+        return (
+            {
+                "joint_position": joints,
+                "gripper_position": np.zeros((1, 40, 1), dtype=float),
+                "eef_9d": np.zeros((1, 40, 9), dtype=float),
+            },
+            {"served_by": "rehearsal"},
+        )
+
+
+def _real_policy_client(spec: dict[str, Any], *, groot_worker_identity_receipt=None) -> Any:
+    """Construct the real client classes over forced loopback transports."""
+
+    endpoint = spec["policy_endpoint"]
+    if spec["candidate_id"] == "pi05_droid":
+        policy_spec = OpenPIDroidPolicySpec(**spec["policy_spec"])
+        return OpenPIWebsocketDroidPolicyClient(
+            spec=policy_spec,
+            host=str(endpoint["host"]),
+            port=int(endpoint["port"]),
+            client_factory=lambda **_kwargs: _OpenPIVendor(policy_spec),
+        )
+    if groot_worker_identity_receipt is None:
+        raise RuntimeError("groot_runtime_worker_identity_receipt_missing")
+    return GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(**spec["policy_spec"]),
+        worker_identity_receipt=groot_worker_identity_receipt,
+        host=str(endpoint["host"]),
+        port=int(endpoint["port"]),
+        client_factory=lambda **_kwargs: _GrootVendor(),
+    )
+
+
+def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
+    def camera_gate(**kwargs: Any) -> dict[str, Any]:
+        # Only the native render edge is faked; the real worker selects and
+        # enforces this gate before constructing either real policy client.
+        assert kwargs["built"].env is not None
+        assert kwargs["plan"]["policy_canary_embodiment_profile"]["preserve_official_policy_camera_calibration"] is True
+        value = {"schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+                 "status": "passed", "policy_observation_integrity_passed": True,
+                 "frame_structure_passed": True, "candidate_policy_loaded": False,
+                 "candidate_policy_queried": False, "blockers": [], "gate_digest": ""}
+        value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+        return value
+
+    def configure_post_gate_renderer(
+        *, observation_gate: Mapping[str, Any], output_path: str | Path
+    ) -> dict[str, Any]:
+        value = {
+            "schema_version": "policy_canary_post_gate_rtx_streaming_guard.v1",
+            "status": "configured",
+            "observation_gate_digest": observation_gate["gate_digest"],
+            "streaming_busy_after_gate": False,
+            "previous_wait_timeout_seconds": 30.0,
+            "maximum_wait_timeout_seconds": 1.0,
+            "camera_qualification_skipped": False,
+            "later_frames_remain_required": True,
+            "claim_ceiling": "diagnostic_policy_execution",
+            "receipt_digest": "",
+        }
+        value["receipt_digest"] = canonical_digest(
+            value, digest_field="receipt_digest"
+        )
+        _write(Path(output_path), value)
+        return value
+
+    return worker.CellRuntime(
+        device="cuda:0",
+        launch_isaac=isaac.launch,
+        preflight_dependency_matrix=lambda *, robot_id: {
+            "all_required_available": True,
+            "robot_id": robot_id,
+        },
+        prepare_preconstruction=lambda *, expected_device: {
+            "passed": True,
+            "device": expected_device,
+        },
+        build_environment=isaac.build,
+        prepare_appearance_renderer=lambda *, simulation_app, plan: {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "status": "completed",
+            "passed": getattr(simulation_app, "_isaac", None) is isaac and bool(plan),
+            "requested_warmup_steps": 800,
+            "app_update_count": 805,
+            "blockers": [],
+        },
+        read_device_binding=lambda built, *, expected_device: {
+            "passed": built.env is not None and expected_device == "cuda:0"
+        },
+        gripper_probe=lambda *, env, robot, seed: {
+            "status": "measured",
+            "closed_command": 1.0,
+            "open_command": 0.0,
+            "seed": seed,
+        },
+        make_servo=lambda *, env, robot, gripper_convention: SimpleNamespace(
+            current_grasp_frame_pose_world=lambda: None
+        ),
+        make_task_readback=lambda built, *, grasp_frame_pose_callback: None,
+        build_episode_environment=lambda *, built, gripper_convention, servo, task_readback, to_tensor: (
+            _ParityLifecycleEnvironment(
+                start_position=(
+                    list(built.plan["task_spec"]["start_pose_world"][:3])
+                    if built.plan["task_spec"].get("schema_version")
+                    == "adp_task_spec.v2"
+                    else None
+                )
+            ),
+            {"schema_version": "rehearsal_episode_environment.v1", "seed": built.env.reset_seeds[-1]},
+        ),
+        to_tensor=_to_tensor,
+        policy_client=_real_policy_client,
+        groot_worker_identity=_runtime_groot_worker_identity,
+        run_policy_episode=run_policy_episode,
+        prepolicy_camera_gate=camera_gate,
+        configure_post_gate_renderer=configure_post_gate_renderer,
+        make_rigid_task_readback=lambda built: object(),
+        wrap_rigid_scoring_environment=(
+            lambda *, environment, task_readback, task_spec: (
+                _RigidSafetyReadbackEnvironment(
+                    environment,
+                    destination_relative=(
+                        task_spec.get("destination_relation") is not None
+                    ),
+                )
+            )
+        ),
+    )
+
+
+def _run_cell_in_process(
+    *,
+    index: int,
+    runtime_root: Path,
+    output_root: Path,
+    child_root: Path,
+    isaacs: list[FakeIsaac],
+    runtime_factory=_rehearsal_runtime,
+) -> int:
+    """Stand in for one isolated cell interpreter; Isaac's close is SystemExit."""
+
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    isaacs.append(isaac)
+    try:
+        return worker._run_selected_cell(
+            index,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=output_root,
+            cell_runtime=runtime_factory(isaac),
+        )
+    except SystemExit as exc:
+        return int(exc.code or 0)
+
+
+def _sealed_result(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert value["result_digest"] == canonical_digest(value, digest_field="result_digest")
+    return value
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
+    tmp_path: Path,
+    monkeypatch,
+    standalone: bool,
+) -> None:
+    runner = worker
+    if standalone:
+        import importlib.util
+        import sys
+        spec = importlib.util.spec_from_file_location("adp_arena_provider_runner", worker.__file__)
+        runner = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, runner)
+        spec.loader.exec_module(runner)
+        assert not runner.__package__
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "03"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+
+    with pytest.raises(SystemExit) as exited:
+        runner._run_selected_cell(
+            3,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=_rehearsal_runtime(isaac),
+        )
+
+    assert exited.value.code == 0
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    assert result["status"] == "runtime_selected_cell_completed_pending_aggregation"
+    assert result["selected_cell_index"] == 3
+    assert [row["candidate_id"] for row in result["episodes"]] == list(CANDIDATE_IDS)
+    for episode in result["episodes"]:
+        assert episode["status"] == "completed"
+        assert episode["candidate_policy_queried"] is True
+        assert episode["actions_reached_robot"] is True
+        assert episode["policy_outcome_interpretable"] is True
+        assert episode["cell_id"] == "cell-3"
+        assert episode["evidence_artifacts"]["frame_manifest"] is not None
+        assert episode["evidence_artifacts"]["review_video"] is not None
+        assert episode["episode"]["prestart_readiness"]["candidate_policy_queried"] is False
+        visual_gate = episode["episode"]["prestart_readiness"]["prepolicy_visual_quality"]
+        # Truthful load state: the session loads a candidate before its episodes.
+        assert visual_gate["candidate_policy_loaded"] is True
+        assert visual_gate["candidate_policy_queried"] is False
+        assert visual_gate["policy_observation_integrity_passed"] is True
+        assert visual_gate["appearance_reference_parity_binding"]["backend_bound"] is True
+        assert episode["episode_environment"]["appearance_renderer"]["passed"] is True
+        assert episode["episode_environment"]["appearance_renderer"][
+            "requested_warmup_steps"
+        ] == 800
+        assert episode["episode_environment"]["task_state_source"] == (
+            "native_rigid_scoring_frame_and_filtered_contact_readback"
+        )
+        for sample in episode["episode"]["state_trace"]["task_state_samples"]:
+            assert sample["support_contact_active"] is True
+            assert sample["robot_collision_failure"] is False
+            assert sample["scene_collision_failure"] is False
+            assert sample["containment_violation"] is False
+            assert sample["forbidden_robot_task_collision_failure"] is False
+            assert sample["locked_joint_containment_violation"] is False
+    # Exactly one Isaac launch, one environment build for the selected cell,
+    # and the environment closed once after the second candidate.
+    assert isaac.launches == 1
+    # The launcher was told which backend the plan composes; nothing defaulted.
+    assert isaac.appearance_render_paths == ["particlefield_3d_gaussian_splat"]
+    assert result["appearance_render_backend"]["kind"] == (
+        "particlefield_blueprint_private_tensor_conversion"
+    )
+    assert result["appearance_render_backend"]["development_only"] is True
+    assert result["preload_observation_gate"]["policy_observation_integrity_passed"] is True
+    assert result["preload_observation_gate"]["candidate_policy_loaded"] is False
+    dependency_receipt = json.loads(
+        (child_root / "prepolicy_dependency_matrix.v1.json").read_text()
+    )
+    assert dependency_receipt["all_required_available"] is True
+    assert isaac.builds == 1
+    assert isaac.built_cell_ids == ["cell-3"]
+    assert isaac.environment_closes == 1
+    # The compiled 20 Hz scene reached the simulator at the policies' 15 Hz.
+    assert isaac.built_control_frequencies == [15.0]
+    # The provider result was durable before Isaac ended the interpreter.
+    assert isaac.result_sealed_at_close is True
+    assert not list((child_root / "episodes").glob("*.failure_gap.json"))
+    assert (child_root / "policy_canary_telemetry_index.json").is_file()
+
+
+@pytest.mark.parametrize('feasibility_status', [None, 'passed', 'blocked'])
+def test_selected_cell_runs_native_mount_gate_before_loading_either_policy(
+    tmp_path: Path, feasibility_status,
+) -> None:
+    plan = _scene_plan()
+    if feasibility_status is not None:
+        plan['task_spec']['astra_asset_adoption'] = {'fixture_native_adapter': True}
+        plan['plan_digest'] = canonical_digest(plan, digest_field='plan_digest')
+    runtime_root, provider_output = _stage_runtime_root(tmp_path, scene_plan=plan)
+    child_root = provider_output / "cell_runs" / "00"
+    child_root.mkdir(parents=True)
+    packet_request = {
+        "wrist_camera_mount_registry": json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "docs/arm_decision_proof_v1/manifests/"
+                "franka_robotiq_policy_camera_mount_registry.v1.json"
+            ).read_text(encoding="utf-8")
+        )
+    }
+    _write(
+        runtime_root / "native_task_packet" / worker.PACKET_REQUEST_FILENAME,
+        packet_request,
+    )
+    (
+        runtime_root
+        / "runtime_inputs"
+        / worker.OBSERVATION_INTEGRITY_AUTHORITY_FILENAME
+    ).unlink()
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    base_runtime = _rehearsal_runtime(isaac)
+    backend = worker.appearance_render_backend_from_plan(
+        _scene_plan(), packet_request=packet_request
+    )
+    events: list[str] = []
+
+    def camera_gate(**kwargs) -> dict[str, Any]:
+        events.append("camera_gate")
+        assert kwargs["packet_request"]["wrist_camera_mount_registry"]
+        assert kwargs["plan"]["scenario"]["cell_id"] == "cell-0"
+        value = {
+            "schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+            "status": "passed",
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "appearance_render_backend_receipt_digest": backend[
+                "receipt_digest"
+            ],
+            "wrist_camera_mount_selection_digest": "sha256:" + "4" * 64,
+            "frame_structure_passed": True,
+            "target_semantic_visibility_passed": True,
+            "candidate_policy_loaded": False,
+            "candidate_policy_queried": False,
+            "official_ranking_permitted": False,
+            "scene_promotion_permitted": False,
+            "blockers": [],
+            "policy_observation_integrity_passed": True,
+            "gate_digest": "",
+        }
+        value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+        return value
+
+    def policy_client(*args, **kwargs):
+        events.append("policy_load")
+        return base_runtime.policy_client(*args, **kwargs)
+
+    def configure_post_gate_renderer(**kwargs):
+        events.append("renderer_guard")
+        return base_runtime.configure_post_gate_renderer(**kwargs)
+
+    def monitor():
+        events.append('monitor_before_asset_import')
+        return 'fixture-monitor'
+
+    def build(*args, **kwargs):
+        if feasibility_status is not None:
+            assert events == ['monitor_before_asset_import']
+        return base_runtime.build_environment(*args, **kwargs)
+
+    def feasibility(**kwargs):
+        events.append('native_asset_feasibility')
+        assert kwargs['monitor'] == 'fixture-monitor'
+        kwargs['output_root'].mkdir(parents=True)
+        result = {'status': feasibility_status, 'candidate_policy_queried': False,
+                  'policy_start_already_settled': False,
+                  'blockers': ['fixture_missing_support_contact'] if feasibility_status == 'blocked' else []}
+        result['gate_digest'] = canonical_digest(result, digest_field='gate_digest')
+        return result
+
+    runtime = worker.CellRuntime(
+        **{
+            **base_runtime.__dict__,
+            "prepolicy_camera_gate": camera_gate,
+            "configure_post_gate_renderer": configure_post_gate_renderer,
+            "policy_client": policy_client,
+            "begin_native_asset_monitor": monitor,
+            "native_asset_feasibility_gate": feasibility,
+            "build_environment": build,
+        }
+    )
+    with pytest.raises(SystemExit) as exited:
+        worker._run_selected_cell(
+            0,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+    assert exited.value.code == 0
+    if feasibility_status == 'blocked':
+        assert events == ['monitor_before_asset_import', 'native_asset_feasibility']
+        result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+        assert result['preload_observation_gate']['policy_observation_integrity_passed'] is False
+        assert result['policy_loads'] == []
+        return
+    prefix = ['monitor_before_asset_import', 'native_asset_feasibility'] if feasibility_status else []
+    assert events[:len(prefix)+2] == prefix + ["camera_gate", "renderer_guard"]
+    assert events.count("policy_load") == 2
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    assert result["preload_observation_gate"][
+        "policy_observation_integrity_passed"
+    ] is True
+    assert result["policy_loads"] == [
+        {"candidate_id": "pi05_droid", "loaded_once": True},
+        {"candidate_id": "groot_n17_droid", "loaded_once": True},
+    ]
+
+
+def test_selected_cell_retains_real_policy_action_rejected_by_joint_limits(
+    tmp_path: Path,
+) -> None:
+    """Production regression for π0.5 cell 03's rejected joint-4 chunk."""
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "03"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    base_runtime = _rehearsal_runtime(isaac)
+
+    class _Scene839873Environment(_LifecycleEnvironment):
+        def reset(self) -> None:
+            super().reset()
+            self._joints[3] = -1.0
+
+        def joint_limits(self):
+            limits = [[-2.9, 2.9] for _ in range(7)]
+            limits[3] = [-3.0717999935150146, -0.0697999969124794]
+            return limits
+
+    class _RejectedOpenPIVendor(_OpenPIVendor):
+        def infer(self, observation: dict[str, Any]) -> dict[str, Any]:
+            response = super().infer(observation)
+            actions = response["actions"]
+            actions[0, 3] = -0.07
+            actions[1:8, 3] = -0.06750612128169087
+            actions[8:, 3] = -0.07
+            return response
+
+    def policy_client(spec: dict[str, Any], *, groot_worker_identity_receipt=None):
+        if spec["candidate_id"] != "pi05_droid":
+            return _real_policy_client(
+                spec,
+                groot_worker_identity_receipt=groot_worker_identity_receipt,
+            )
+        policy_spec = OpenPIDroidPolicySpec(**spec["policy_spec"])
+        endpoint = spec["policy_endpoint"]
+        return OpenPIWebsocketDroidPolicyClient(
+            spec=policy_spec,
+            host=str(endpoint["host"]),
+            port=int(endpoint["port"]),
+            client_factory=lambda **_kwargs: _RejectedOpenPIVendor(policy_spec),
+        )
+
+    runtime = worker.CellRuntime(
+        **{
+            **base_runtime.__dict__,
+            "build_episode_environment": lambda **kwargs: (
+                _Scene839873Environment(),
+                {
+                    "schema_version": "rehearsal_episode_environment.v1",
+                    "seed": kwargs["built"].env.reset_seeds[-1],
+                },
+            ),
+            "policy_client": policy_client,
+        }
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        worker._run_selected_cell(
+            3,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+
+    assert exited.value.code == 0
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    rejected = next(
+        row for row in result["episodes"] if row["candidate_id"] == "pi05_droid"
+    )
+    assert rejected["status"] == "blocked"
+    assert rejected["candidate_policy_queried"] is True
+    assert rejected["candidate_action_returned"] is True
+    assert rejected["candidate_action_bounds_validated"] is False
+    assert rejected["actions_reached_robot"] is False
+    assert rejected["policy_outcome_interpretable"] is False
+    assert rejected["episode_failure_stage"] == "action_delivery_rejected"
+    assert rejected["visual_evidence"]["status"] == "complete"
+    assert rejected["visual_evidence"].get("media_gap") is None
+    rejection = rejected["action_delivery_rejection"]
+    assert rejection["status"] == "rejected_before_robot"
+    assert rejection["clamping_performed"] is False
+    assert rejection["delivery_attempted"] is False
+    assert rejection["violations"] == [
+        "candidate_action_joint_position_bounds_invalid:count=7:first_row=1:"
+        "first_dimension=3:value=-0.06750612128169087:"
+        "bounds=[-3.0717999935150146,-0.0697999969124794]"
+    ]
+    raw_queries = rejected["candidate_policy_action_queries"]
+    assert raw_queries[0]["raw_vendor_action_response"]["actions"][1][3] == (
+        -0.06750612128169087
+    )
+    assert rejected["evidence_artifacts"]["frame_manifest"] is not None
+    assert rejected["evidence_artifacts"]["review_video"] is not None
+    action_path = child_root / rejected["evidence_artifacts"]["action_sequence"][
+        "relative_path"
+    ]
+    assert action_path.is_file()
+    retained_action = json.loads(action_path.read_text(encoding="utf-8"))[0]
+    assert retained_action["raw_vendor_action_response"]["actions"][1][3] == (
+        -0.06750612128169087
+    )
+    completed = next(
+        row for row in result["episodes"] if row["candidate_id"] == "groot_n17_droid"
+    )
+    assert completed["status"] == "completed"
+
+
+def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_processes(
+    tmp_path: Path,
+) -> None:
+    runtime_root, provider_output = _stage_runtime_root(
+        tmp_path, scene_plan=_destination_scene_plan()
+    )
+    isaacs: list[FakeIsaac] = []
+
+    exit_code = worker._run_isolated_cell_processes(
+        runtime_root=runtime_root,
+        output_root=provider_output,
+        run_cell_process=lambda **kwargs: _run_cell_in_process(**kwargs, isaacs=isaacs),
+    )
+
+    assert exit_code == 0
+    result = _sealed_result(provider_output / PROVIDER_RESULT_FILENAME)
+    assert result["status"] == "runtime_completed_unqualified_pending_closeout"
+    assert result["isolated_simulation_process_count"] == 10
+    assert result["construction_lineage_mode"] == "compiled_configured_scene_diagnostic"
+    assert len(result["episodes"]) == 20
+    assert all(row["status"] == "completed" for row in result["episodes"])
+    assert all(
+        row["episode"]["score"]["schema_version"]
+        == "adp_rigid_task_scoring.v2"
+        and row["episode"]["score"]["measurements"][
+            "destination_pose_readback_complete"
+        ]
+        is True
+        and row["episode"]["score"]["measurements"][
+            "destination_pose_stable"
+        ]
+        is True
+        for row in result["episodes"]
+    )
+    assert all(row["episode"]["score"]["criteria_satisfied"]["retreat"] is True
+               for row in result["episodes"])
+    assert all(row["candidate_policy_queried"] is True for row in result["episodes"])
+    assert result["candidate_policy_queried"] is True
+    # Learned interpretation is attached only by the control-plane closeout,
+    # after every deterministic provider episode has been durably sealed.
+    assert "episode_interpretation" not in result
+    assert {
+        (row["candidate_id"], row["cell_id"], row["seed"]) for row in result["episodes"]
+    } == {
+        (candidate, f"cell-{index}", 3100 + index)
+        for candidate in CANDIDATE_IDS
+        for index in range(10)
+    }
+    assert [
+        row["evidence_artifacts"]["reset_state"]["relative_path"].split("/")[:2]
+        for row in result["episodes"]
+    ] == [["cell_runs", f"{index:02d}"] for index in range(10) for _ in CANDIDATE_IDS]
+    assert len(isaacs) == 10
+    assert all(isaac.launches == 1 and isaac.builds == 1 for isaac in isaacs)
+    assert all(isaac.result_sealed_at_close is True for isaac in isaacs)
+    assert all(isaac.built_control_frequencies == [15.0] for isaac in isaacs)
+    assert all(
+        isaac.built_object_roles == [
+            ("task_object", "scene_appearance", "task_support")
+        ]
+        for isaac in isaacs
+    )
+    roles = {row["role"] for row in result["artifact_inventory"]}
+    assert {"indexed_episode_telemetry", "review_video", "policy_query_receipt"} <= roles
+    assert "episode_interpretation_receipt" not in roles
+    closeout = materialize_policy_canary_episode_interpretations(
+        run_root=tmp_path,
+        evidence_root=provider_output,
+        session_result=result,
+        environment={},
+    )
+    assert closeout["episode_interpretation"]["receipt_count"] == 20
+    assert closeout["episode_interpretation"]["abstained_count"] == 20
+    assert closeout["episode_interpretation"]["provider_call_count"] == 0
+
+
+def test_child_inventory_excludes_parent_owned_console_log(tmp_path: Path) -> None:
+    (tmp_path / "worker_console.log").write_text("still open\n", encoding="utf-8")
+
+    _index, artifacts = worker._write_indexed_telemetry(tmp_path, [])
+
+    assert not any(
+        row["relative_path"] == "worker_console.log" for row in artifacts
+    )
+
+
+def test_one_failed_cell_is_a_typed_gap_and_the_other_nineteen_rollouts_continue(
+    tmp_path: Path,
+) -> None:
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    isaacs: list[FakeIsaac] = []
+
+    def failing_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
+        runtime = _rehearsal_runtime(isaac)
+        if len(isaacs) != 6:
+            return runtime
+
+        def build(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("camera graph failed at /workspace/private/cell.py")
+
+        return worker.CellRuntime(**{**runtime.__dict__, "build_episode_environment": build})
+
+    exit_code = worker._run_isolated_cell_processes(
+        runtime_root=runtime_root,
+        output_root=provider_output,
+        run_cell_process=lambda **kwargs: _run_cell_in_process(
+            **kwargs, isaacs=isaacs, runtime_factory=failing_runtime
+        ),
+    )
+
+    assert exit_code == 0
+    result = _sealed_result(provider_output / PROVIDER_RESULT_FILENAME)
+    assert len(result["episodes"]) == 20
+    failed = [row for row in result["episodes"] if row["cell_id"] == "cell-5"]
+    healthy = [row for row in result["episodes"] if row["cell_id"] != "cell-5"]
+    assert len(failed) == 2 and len(healthy) == 18
+    assert all(row["status"] == "blocked" for row in failed)
+    assert all(row["typed_harness_failure"] == "RuntimeError" for row in failed)
+    assert all(row["candidate_policy_queried"] is False for row in failed)
+    assert all(row["status"] == "completed" for row in healthy)
+    gaps = sorted((provider_output / "cell_runs" / "05" / "episodes").glob("*.failure_gap.json"))
+    assert sorted(path.name.split("--")[-1] for path in gaps) == sorted(
+        f"{candidate}.failure_gap.json" for candidate in CANDIDATE_IDS
+    )
+    for path in gaps:
+        gap = json.loads(path.read_text(encoding="utf-8"))
+        assert gap["failure_type"] == "RuntimeError"
+        assert gap["failure_message"] == "camera graph failed at <path>"
+        assert "/workspace" not in path.read_text(encoding="utf-8")
+    # The failing cell still sealed its result before Isaac closed, and no
+    # other process was disturbed.
+    assert isaacs[5].result_sealed_at_close is True
+    assert all(isaac.result_sealed_at_close is True for isaac in isaacs)
+
+
+def test_unqualified_nurec_renderer_blocks_both_policies_before_query_and_seals_gap(
+    tmp_path: Path,
+) -> None:
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "00"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    runtime = _rehearsal_runtime(isaac)
+
+    def blocked_renderer(*, simulation_app: Any, plan: Mapping[str, Any]) -> dict[str, Any]:
+        assert getattr(simulation_app, "_isaac", None) is isaac
+        assert plan
+        return {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "passed": False,
+            "blockers": ["native_task_arena_nurec_official_setup_not_qualified"],
+        }
+
+    runtime = worker.CellRuntime(
+        **{**runtime.__dict__, "prepare_appearance_renderer": blocked_renderer}
+    )
+    with pytest.raises(SystemExit) as exited:
+        worker._run_selected_cell(
+            0,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+
+    assert exited.value.code == 0
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    assert result["status"] == "blocked"
+    assert result["session_failure_type"] == "RuntimeError"
+    assert result["episodes"] == []
+    assert result["policy_loads"] == []
+    assert result["candidate_policy_queried"] is False
+    assert isaac.result_sealed_at_close is True
+
+
+@pytest.mark.parametrize("fault,blocker", [
+    ("cadence", "policy_canary_control_frequency_invalid"),
+    ("camera", "native_task_arena_camera_intrinsics_not_representable:overview"),
+])
+def test_native_configuration_mismatch_is_refused_before_isaac_and_policies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str, blocker: str
+) -> None:
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "00"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    resolved = worker._resolved_scene_plan
+
+    def stale_cadence(base: dict[str, Any], cell: dict[str, Any], **kwargs) -> dict[str, Any]:
+        plan = resolved(base, cell, **kwargs)
+        if fault == "cadence":
+            plan["task_spec"]["control_frequency_hz"] = 20.0
+        else:
+            overview = next(camera for camera in plan["cameras"] if camera["role"] == "overview")
+            overview["intrinsics"]["cx"] = overview["intrinsics"]["width"] / 2.0
+        plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+        return plan
+
+    monkeypatch.setattr(worker, "_resolved_scene_plan", stale_cadence)
+
+    with pytest.raises(RuntimeError, match=blocker):
+        worker._run_selected_cell(
+            0,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=_rehearsal_runtime(isaac),
+        )
+
+    result = json.loads((child_root / "policy_canary_static_startup_preflight.v1.json").read_text())
+    assert result["status"] == "blocked"
+    expected_reasons = {blocker}
+    if fault == "cadence":
+        expected_reasons.add("policy_episode_control_frequency_task_spec_mismatch")
+    assert all(any(reason in observed for reason in expected_reasons)
+               for observed in result["blockers"])
+    assert result["candidate_policy_queried"] is False
+    assert isaac.launches == 0
+
+
+def test_environment_rebuild_after_close_is_impossible_in_one_process(
+    tmp_path: Path,
+) -> None:
+    """A second cell in the same process would rebuild after close; refuse it."""
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "01"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    runtime = _rehearsal_runtime(isaac)
+
+    with pytest.raises(SystemExit):
+        worker._run_selected_cell(
+            1,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+
+    assert isaac.environment_closes == 1
+    with pytest.raises(RuntimeError, match="Unable to retrieve replicator graph"):
+        runtime.build_environment(
+            _scene_plan(), device="cuda:0", bundle_root=runtime_root, preconstruction_receipt={}
+        )
+
+
+def test_real_clients_reset_episode_scoped_state_before_second_episode(
+    tmp_path: Path,
+) -> None:
+    """A warm client must retain prior query truth without contaminating readiness."""
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    specs = {
+        candidate: json.loads(
+            (runtime_root / "runtime_inputs" / f"policy_execution_spec.{candidate}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for candidate in CANDIDATE_IDS
+    }
+    groot_receipt, _evidence = _runtime_groot_worker_identity(
+        output_root=provider_output, spec=specs["groot_n17_droid"]
+    )
+    gripper = GripperConvention(closed_command=1.0, open_command=0.0, measured_by_probe=True)
+
+    def episode(client: Any, candidate: str, label: str) -> dict[str, Any]:
+        return run_policy_episode(
+            environment=_LifecycleEnvironment(),
+            policy=client,
+            candidate_id=candidate,
+            prompt="push the mug across the table",
+            gripper=gripper,
+            task_spec=worker._resolved_scene_plan(
+                _scene_plan(),
+                {"cell_id": f"cell-{label}", "seed": 1, "resolved_scenario": {}},
+                task_success_contract=public_setup()["task_success_contract"],
+            )["task_spec"],
+            max_policy_queries=1,
+            settle_window_samples=1,
+            open_loop_horizon=8,
+            media_output_dir=tmp_path / candidate / label,
+            episode_id=f"{candidate}-{label}",
+            require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
+            observation_integrity={
+                "authority": _observation_integrity_authority(),
+                "appearance_render_backend_receipt_digest": (
+                    worker.appearance_render_backend_from_plan(_scene_plan())["receipt_digest"]
+                ),
+            },
+        )
+
+    for candidate, receipt in (("pi05_droid", None), ("groot_n17_droid", groot_receipt)):
+        client = _real_policy_client(specs[candidate], groot_worker_identity_receipt=receipt)
+        first = episode(client, candidate, "first")
+        assert first["candidate_policy_queried"] is True
+        second = episode(client, candidate, "second")
+        readiness = second["prestart_readiness"]
+        assert readiness["candidate_policy_queried"] is False
+        assert readiness["policy_control_plane"]["prior_candidate_policy_query_observed"] is True
+        assert second["candidate_policy_queried"] is True
+        assert second["episode_id"] != first["episode_id"]
+        client.close()
+
+
+def test_legacy_missing_observation_integrity_authority_blocks_before_isaac(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scene 839873: a structurally passing render is not observation integrity.
+
+    Without a sealed same-pose parity + human review bound to this session's
+    backend, the worker must end the session before either candidate client
+    is constructed, with zero queries, and still seal and close.
+    """
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    (runtime_root / "runtime_inputs" / worker.OBSERVATION_INTEGRITY_AUTHORITY_FILENAME).unlink()
+    child_root = provider_output / "cell_runs" / "03"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    loads: list[str] = []
+    runtime = _rehearsal_runtime(isaac)
+    runtime = worker.CellRuntime(
+        **{
+            **runtime.__dict__,
+            "policy_client": lambda spec, **_kwargs: loads.append(spec["candidate_id"]),
+        }
+    )
+
+    resolve = worker._resolved_scene_plan
+    def legacy_plan(*args, **kwargs):
+        plan = resolve(*args, **kwargs)
+        plan.pop("policy_canary_embodiment_profile")
+        return plan
+    monkeypatch.setattr(worker, "_resolved_scene_plan", legacy_plan)
+    with pytest.raises(RuntimeError, match="policy_canary_static_startup_preflight_failed"):
+        worker._run_selected_cell(
+            3,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+
+    result = json.loads((child_root / "policy_canary_static_startup_preflight.v1.json").read_text())
+    assert result["status"] == "blocked"
+    assert result["candidate_policy_queried"] is False
+    assert loads == []
+    assert isaac.launches == 0
+    assert isaac.builds == 0
+    assert result["blockers"] == [
+        "native_task_appearance_reference_parity_missing",
+        "native_task_human_visual_review_not_approved",
+    ]
+
+
+@pytest.mark.parametrize('native_ulp_drift', [False, True])
+def test_real_canary_lifecycle_reads_proxy_storage_and_refuses_true_reset_drift(tmp_path, monkeypatch, native_ulp_drift):
+    """The real reset reader must handle Isaac's Warp-first wrapper before queries."""
+    from copy import deepcopy
+    from tests.test_native_scenario_storage_precision import _IsaacProxyArray
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / 'cell_runs' / '03'
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    original_build = isaac.build
+
+    def build(scene_plan, **kwargs):
+        built = original_build(scene_plan, **kwargs)
+        native_plan = deepcopy(scene_plan)
+        subject = next(row for row in native_plan['objects'] if row.get('task_subject'))
+        pose = subject['reset_state']['root_pose_world']
+        expected_y = pose['position_world_m'][1]
+        native = np.asarray([[*pose['position_world_m'], *pose['orientation_xyzw']]], dtype=np.float32)
+        if native_ulp_drift:
+            native[0, 1] = np.nextafter(native[0, 1], np.float32(np.inf))
+        native_plan.setdefault('scenario', {})['parameter_applications'] = [{
+            'parameter_id': 'object_start_y_delta_m', 'readback_kind': 'task_subject_root_position_y_m',
+            'application_tolerance': 0., 'expected_native_value': expected_y,
+            'runtime_name': subject['name'], 'runtime_target': 'task_subject_root_position_y_m',
+            'unit': 'm', 'resolved_value': 0.,
+        }]
+        built.plan = native_plan
+        built.scene_asset_names = {subject['name']: subject['name']}
+        built.native_configuration_readback = {}
+        built.env.unwrapped.scene[subject['name']] = SimpleNamespace(
+            data=SimpleNamespace(root_pose_w=_IsaacProxyArray(native)))
+        return built
+
+    monkeypatch.setattr(isaac, 'build', build)
+    with pytest.raises(SystemExit):
+        worker._run_selected_cell(3, runtime_root=runtime_root, output_root=child_root,
+            provider_output_root=provider_output, cell_runtime=_rehearsal_runtime(isaac))
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    for episode in result['episodes']:
+        assert episode['candidate_policy_queried'] is (not native_ulp_drift)
+        reset = episode['episode']['scientific_reset']
+        row = reset['observed']['scenario_parameters']['parameters'][0]
+        assert row['passed'] is (not native_ulp_drift)
+        assert row['application_tolerance_native_unit'] == 0
+        assert row['native_storage_provenance']['canonical_scalar_dtype'] == 'float32'
+        assert row['native_storage_comparison']['physical_tolerance_changed'] is False
+        if native_ulp_drift:
+            assert episode['typed_harness_failure'] == 'ScientificResetScenarioMismatch'
+        else:
+            assert row['native_storage_comparison']['absolute_error_stored_value'] == 0

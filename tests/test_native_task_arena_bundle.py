@@ -11,6 +11,9 @@ import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import (
+    native_task_arena_feedback_allocator_adapter as feedback_adapter,
+)
+from blueprint_pipeline import (
     native_task_arena_construction_bundle as construction_bundle_module,
 )
 from blueprint_pipeline import native_task_arena_controls_bundle as controls_bundle_module
@@ -25,6 +28,7 @@ from blueprint_pipeline.native_task_arena_bundle import (
     NativeTaskArenaBundleError,
     _entrypoint,
     build_native_task_arena_bundle,
+    zip_member_compression,
 )
 from blueprint_pipeline.native_task_arena_construction_bundle import (
     CONSTRUCTION_RUNTIME_MODULE_NAMES,
@@ -57,6 +61,11 @@ from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import (
     RESULT_FILENAME as RUNTIME_PREFLIGHT_RESULT_FILENAME,
     build_native_task_arena_runtime_preflight_bundle,
     load_verified_native_task_arena_runtime_preflight_bundle,
+)
+from blueprint_pipeline.native_task_arena_destination_qualification_bundle import (
+    RESULT_FILENAME as DESTINATION_RESULT_FILENAME,
+    build_native_task_arena_destination_qualification_bundle,
+    load_verified_native_task_arena_destination_qualification_bundle,
 )
 from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
     _plain_nurec_volume_contract,
@@ -95,6 +104,7 @@ def _sha(path: Path) -> str:
 
 def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
     assert set(EXECUTION_MODE_CONTRACTS) == {
+        "destination_qualification",
         "runtime_preflight",
         "construction_canary",
         "controls",
@@ -187,7 +197,13 @@ def test_transport_accepts_only_exact_nonqualifying_downstream_diagnostic() -> N
     }
 
 
-def _packet(root: Path, *, scene_id: str) -> Path:
+def _packet(
+    root: Path,
+    *,
+    scene_id: str,
+    control_search: bool = False,
+    destination_support: bool = False,
+) -> Path:
     packet = root / f"packet-{scene_id}"
     assets = packet / "assets"
     assets.mkdir(parents=True)
@@ -195,19 +211,70 @@ def _packet(root: Path, *, scene_id: str) -> Path:
     for role in ("scene_collision", "scene_appearance", "task_object"):
         path = assets / f"{role}.usd"
         path.write_text(f"exact:{scene_id}:{role}\n", encoding="utf-8")
+        binding = {
+            "semantic_role": role,
+            "source": {"root": "evidence", "relative_path": path.name},
+            "staged_relative_path": f"assets/{path.name}",
+            "staged_size_bytes": path.stat().st_size,
+            "staged_sha256": _sha(path),
+        }
+        if role == "task_object":
+            binding["asset_id"] = "admitted-can"
+        source_bindings.append(binding)
+    if destination_support:
+        path = assets / "task_support.usd"
+        path.write_text(f"exact:{scene_id}:task_support\n", encoding="utf-8")
         source_bindings.append(
             {
-                "semantic_role": role,
+                "semantic_role": "task_support",
+                "asset_id": "blue-document-tray",
                 "source": {"root": "evidence", "relative_path": path.name},
                 "staged_relative_path": f"assets/{path.name}",
                 "staged_size_bytes": path.stat().st_size,
                 "staged_sha256": _sha(path),
             }
         )
+    task_object = assets / "task_object.usd"
+    packet_request: dict[str, object] = {"scene_id": scene_id}
+    if control_search:
+        authority = {
+            "schema_version": "task_evaluation_control_search_authority.v1",
+            "enabled": True,
+            "claim_ceiling": "development_only_control_search",
+            "provider_allocations_performed": 0,
+            "full_fidelity_replay_required": True,
+            "authority_digest": "",
+        }
+        authority["authority_digest"] = canonical_digest(
+            authority, digest_field="authority_digest"
+        )
+        packet_request["native_construction_feedback"] = {
+            "control_search": authority
+        }
     documents = {
-        "native_task_arena_packet_request.v1.json": {"scene_id": scene_id},
-        "native_task_runtime_contract.v1.json": {"contract_digest": "sha256:" + "c" * 64},
-        "native_task_arena_scene_plan.v1.json": {"plan_digest": "sha256:" + "p" * 64},
+        "native_task_arena_packet_request.v1.json": packet_request,
+        "native_task_runtime_contract.v1.json": {
+            "contract_digest": "sha256:" + "c" * 64,
+            "task_kind": "rigid_pick_place",
+            "task_subject_asset_id": "admitted-can",
+            "task_spec": {
+                "task_kind": "rigid_pick_place",
+                "manipulation_strategy": "planar_push",
+                "subject_asset_id": "admitted-can",
+            },
+            "objects": [
+                {
+                    "asset_id": "admitted-can",
+                    "task_subject": True,
+                    "sha256": _sha(task_object),
+                }
+            ],
+        },
+        "native_task_arena_scene_plan.v1.json": {
+            "plan_digest": "sha256:" + "p" * 64,
+            "appearance_frame_alignment": {"representation": "nurec_volume", "status": "aligned"},
+            "objects": [{"semantic_role": "scene_appearance", "sha256": _sha(assets / "scene_appearance.usd")}],
+        },
     }
     artifacts = []
     for role, (name, value) in zip(
@@ -275,6 +342,7 @@ def _runtime_source_packet(root: Path) -> Path:
                 "pyproject.toml": "[build-system]\nrequires=['setuptools']\n",
                 "extension.toml": "[package]\nversion='fixture'\n",
                 "isaaclab_arena/__init__.py": "VERSION='fixture'\n",
+                "isaaclab_arena_g1/__init__.py": "VERSION='fixture'\n",
             }
         else:
             files = {
@@ -402,6 +470,27 @@ def test_rigid_and_articulated_packets_use_the_same_bundle_contract(
         ) == worker.read_bytes()
 
 
+def test_construction_bundle_binds_initial_warm_control_search_request(
+    tmp_path: Path,
+) -> None:
+    packet = _packet(tmp_path, scene_id="839873", control_search=True)
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+
+    receipt = build_native_task_arena_bundle(
+        job_dir=tmp_path / "job",
+        packet_dir=packet,
+        worker_source=worker,
+        runtime_module_sources=[],
+        implementation_commit="a" * 40,
+        execution_mode="construction_canary",
+        generated_at="fixed",
+    )
+
+    assert receipt["warm_control_search_continuation_requested"] is True
+    assert receipt["control_search_authority_digest"].startswith("sha256:")
+
+
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])
 def test_bound_runtime_inputs_are_immutable_and_scene_neutral(
     tmp_path: Path, scene_id: str
@@ -494,6 +583,57 @@ def _articulated_packet(root: Path) -> tuple[Path, dict]:
 
 
 def _qualified_construction(root: Path, scene: dict) -> Path:
+    def passing_camera(role: str) -> dict:
+        minimum_pixels = 120 if role == "wrist" else 200
+        minimum_fraction = 0.002 if role == "wrist" else 0.003
+        camera = {
+            "snapshot_id": "reset",
+            "role": role,
+            "scene_name": f"{role}_camera",
+            "rgb_png": {"sha256": "sha256:" + "a" * 64},
+            "observability": {
+                "schema_version": "native_task_camera_observability.v2",
+                "passed": True,
+                "semantic_passed": True,
+                "render_passed": True,
+                "centroid_within_margin": True,
+                "site_appearance_claimed": True,
+                "claim": "camera_observes_task_object_in_rendered_site",
+                "blockers": [],
+                "pixel_count": 1000,
+                "pixel_fraction": 0.02,
+                "bbox_xyxy": [100, 30, 180, 120],
+                "thresholds": {
+                    "minimum_pixels": minimum_pixels,
+                    "minimum_pixel_fraction": minimum_fraction,
+                },
+                "render_evidence": {
+                    "passed": True,
+                    "frame_rendered": True,
+                    "target_rendered": True,
+                    "site_rendered": True,
+                    "blockers": [],
+                },
+            },
+        }
+        if role == "wrist":
+            camera["observability"].update(
+                {
+                    "passed": False,
+                    "semantic_passed": False,
+                    "centroid_within_margin": False,
+                    "claim": "camera_observes_task_object_without_site_appearance",
+                    "blockers": [
+                        "native_task_camera_semantic_framing_below_threshold"
+                    ],
+                    "pixel_count": 0,
+                    "pixel_fraction": 0.0,
+                    "bbox_xyxy": None,
+                }
+            )
+            camera["observability"]["render_evidence"]["target_rendered"] = None
+        return camera
+
     clearance = {
         "scene_plan_digest": scene["plan_digest"],
         "phases": [{"phase_id": "approach"}],
@@ -507,11 +647,22 @@ def _qualified_construction(root: Path, scene: dict) -> Path:
         "status": "completed",
         "construction_gate_qualified": True,
         "blockers": [],
+        "candidate_policy_queried": False,
+        "packet_receipt_digest": "sha256:" + "e" * 64,
         "scene_plan_digest": scene["plan_digest"],
         "phase_results": [{"phase_id": "approach", "target_reached": True}],
         "camera_gates": {
             role: {"passed": True} for role in ("external", "wrist", "overview")
         },
+        "camera_snapshots": [
+            {
+                "snapshot_id": "reset",
+                "cameras": [
+                    passing_camera(role)
+                    for role in ("external", "wrist", "overview")
+                ],
+            }
+        ],
         "reset_replay": {"passed": True},
         "construction_phase_plan": clearance,
         "result_digest": "",
@@ -568,6 +719,24 @@ def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:
         "schema_version": "adp_task_control_pair.v1",
         "cell_id": scene["scenario"]["cell_id"],
         "task_spec_digest": canonical_digest(scene["task_spec"]),
+        "execution_order": [
+            "zero_action_negative",
+            "deterministic_scripted_positive",
+        ],
+        "controls": [
+            {
+                "control_id": "zero_action_negative",
+                "control_passed": True,
+                "observed_outcome": "task_did_not_succeed",
+                "receipt_digest": "sha256:" + "1" * 64,
+            },
+            {
+                "control_id": "deterministic_scripted_positive",
+                "control_passed": True,
+                "observed_outcome": "task_succeeded",
+                "receipt_digest": "sha256:" + "2" * 64,
+            },
+        ],
         "cell_admitted_for_policy_execution": True,
         "policy_execution_blockers": [],
         "candidate_policy_queried": False,
@@ -578,6 +747,10 @@ def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:
         "schema_version": "native_task_arena_control_result.v1",
         "status": "completed",
         "controls_qualified": True,
+        "blockers": [],
+        "packet_receipt_digest": construction_result[
+            "packet_receipt_digest"
+        ],
         "scene_plan_digest": scene["plan_digest"],
         "construction_result_digest": construction_result["result_digest"],
         "control_pair": pair,
@@ -720,6 +893,29 @@ def test_policy_execution_spec_refuses_non_loopback_endpoint(
     )
 
     with pytest.raises(ValueError, match="native_task_policy_endpoint_invalid"):
+        validate_native_task_policy_execution_spec(spec)
+
+
+def test_groot_execution_spec_rejects_stale_processor_history_contract(
+    tmp_path: Path,
+) -> None:
+    _, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    spec = _groot_policy_spec(scene, construction, controls)
+    spec["candidate_rights_binding"]["interface_identity"][
+        "policy_input_schema"
+    ]["frame_history"] = [-15, 0]
+    spec["candidate_rights_binding"]["rights_receipt_digest"] = canonical_digest(
+        spec["candidate_rights_binding"], digest_field="rights_receipt_digest"
+    )
+    spec["execution_spec_digest"] = canonical_digest(
+        spec, digest_field="execution_spec_digest"
+    )
+
+    with pytest.raises(
+        ValueError, match="native_task_policy_spec_or_identity_invalid"
+    ):
         validate_native_task_policy_execution_spec(spec)
 
 
@@ -1013,6 +1209,48 @@ def test_provider_free_spec_builder_derives_each_frozen_candidate(
         )
 
 
+def test_qualified_policy_spec_refuses_target_absent_reset_external_camera(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    value = json.loads(construction.read_text(encoding="utf-8"))
+    external = next(
+        camera
+        for camera in value["camera_snapshots"][0]["cameras"]
+        if camera["role"] == "external"
+    )
+    external["observability"].update(
+        {
+            "passed": False,
+            "semantic_passed": False,
+            "pixel_count": 0,
+            "pixel_fraction": 0.0,
+            "bbox_xyxy": None,
+            "centroid_within_margin": False,
+            "claim": "camera_observes_task_object_without_site_appearance",
+            "blockers": ["native_task_camera_semantic_framing_below_threshold"],
+        }
+    )
+    value["result_digest"] = canonical_digest(
+        value, digest_field="result_digest"
+    )
+    construction.write_text(json.dumps(value), encoding="utf-8")
+    controls = _qualified_controls(tmp_path, scene, construction)
+
+    with pytest.raises(
+        ValueError,
+        match="native_task_policy_start_camera_role_not_observable:external",
+    ):
+        build_native_task_policy_execution_spec(
+            candidate_id="pi05_droid",
+            scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
+            construction_result_path=construction,
+            control_result_path=controls,
+            output_path=tmp_path / "must-not-exist.json",
+        )
+
+
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
 def test_provider_free_spec_cli_seals_each_frozen_candidate(
     tmp_path: Path, candidate_id: str
@@ -1172,6 +1410,7 @@ def test_canonical_allocator_routes_native_task_policy_bundle(
     execution_path = tmp_path / "policy-execution.json"
     execution_path.write_text(json.dumps(execution_spec))
     observed: dict = {}
+    monkeypatch.setenv("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", "640x360")
     monkeypatch.setattr(
         allocator,
         "_control_plane_checkout_blockers",
@@ -1230,6 +1469,9 @@ def test_canonical_allocator_routes_native_task_policy_bundle(
     assert observed["prepared_bundle"]["execution_mode"] == "policy"
     assert observed["prepared_bundle"]["policy_candidate_id"] == "pi05_droid"
     assert observed["allowed_active_instance_ids"] == [47373597]
+    assert observed["provider_runtime_environment"] == {
+        "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
+    }
     admission = json.loads((tmp_path / "policy-admission.json").read_text())
     assert admission["candidate_policy_queried"] is True
 
@@ -1434,8 +1676,19 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
         names = set(archive.namelist())
         assert {
             "provider_runtime/runtime_inputs/adp_task_control_plan.v1.json",
+            "provider_runtime/runtime_inputs/adp_task_control_execution_spec.v1.json",
             "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
         }.issubset(names)
+        execution_spec = json.loads(
+            archive.read(
+                "provider_runtime/runtime_inputs/"
+                "adp_task_control_execution_spec.v1.json"
+            )
+        )
+        assert execution_spec["control_selection"] == "control_pair"
+        assert execution_spec["execution_spec_digest"] == canonical_digest(
+            execution_spec, digest_field="execution_spec_digest"
+        )
         assert {
             f"provider_runtime/blueprint_pipeline/{name}"
             for name in CONTROLS_RUNTIME_MODULE_NAMES
@@ -1452,6 +1705,39 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
         expected_implementation_commit="c" * 40,
     )
     assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
+
+
+def test_controls_bundle_cli_forwards_unqualified_diagnostic_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict = {}
+
+    def fake_build(**kwargs):
+        observed.update(kwargs)
+        return {"status": "sealed"}
+
+    monkeypatch.setattr(
+        controls_bundle_module,
+        "build_native_task_arena_controls_bundle",
+        fake_build,
+    )
+
+    assert controls_bundle_module.main(
+        [
+            "--job-dir",
+            "job",
+            "--packet-dir",
+            "packet",
+            "--construction-result",
+            "construction.json",
+            "--runtime-source-packet-receipt",
+            "runtime.json",
+            "--implementation-commit",
+            "a" * 40,
+            "--allow-unqualified-construction-diagnostic",
+        ]
+    ) == 0
+    assert observed["allow_unqualified_construction_diagnostic"] is True
 
 
 def test_controls_bundle_seals_bounded_orientation_reference_into_plan(
@@ -1511,6 +1797,58 @@ def test_controls_bundle_refuses_invalid_bounded_orientation_reference(
             implementation_commit="c" * 40,
             generated_at="fixed",
             bounded_orientation_reference_joint_positions_rad=[0.0] * 6,
+        )
+
+
+def test_scripted_positive_requires_the_matching_terminal_zero_action(
+    tmp_path: Path,
+) -> None:
+    scene = {"plan_digest": "sha256:" + "1" * 64}
+    construction = {"result_digest": "sha256:" + "2" * 64}
+    value = {
+        "schema_version": "native_task_arena_control_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "control_selection": "zero_action_negative",
+        "controls_qualified": False,
+        "scene_plan_digest": scene["plan_digest"],
+        "construction_result_digest": construction["result_digest"],
+        "control_episode": {
+            "schema_version": "adp_task_control_episode.v1",
+            "control_id": "zero_action_negative",
+            "control_passed": True,
+            "observed_outcome": "never_moved",
+            "grader_authority": "deterministic_simulator_state",
+            "candidate_policy_queried": False,
+            "visual_evidence": {"status": "complete"},
+            "media_artifacts": [{"role": "external_video"}],
+            "receipt_digest": "",
+        },
+        "result_digest": "",
+    }
+    value["control_episode"]["receipt_digest"] = canonical_digest(
+        value["control_episode"], digest_field="receipt_digest"
+    )
+    value["result_digest"] = canonical_digest(
+        value, digest_field="result_digest"
+    )
+    path = tmp_path / "zero-action-result.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    checked_path, checked = controls_bundle_module._validated_zero_action_result(
+        path, scene_plan=scene, construction=construction
+    )
+
+    assert checked_path == path.resolve()
+    assert checked["result_digest"] == value["result_digest"]
+    value["control_episode"]["control_passed"] = False
+    value["result_digest"] = canonical_digest(
+        value, digest_field="result_digest"
+    )
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="zero_action_result_invalid"):
+        controls_bundle_module._validated_zero_action_result(
+            path, scene_plan=scene, construction=construction
         )
 
 
@@ -1771,6 +2109,138 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
         expected_execution_mode="runtime_preflight",
     )
     assert verified_manifest["execution_mode"] == "runtime_preflight"
+
+
+def test_destination_qualification_bundle_binds_policy_free_native_inputs(
+    tmp_path: Path,
+) -> None:
+    packet = _packet(tmp_path, scene_id="841757", destination_support=True)
+    packet_receipt = json.loads(
+        (packet / "native_task_arena_packet_receipt.v1.json").read_text()
+    )
+    bindings = {
+        row["semantic_role"]: row for row in packet_receipt["source_bindings"]
+    }
+    identity = {"id": "blue-document-tray", "version": "v1"}
+    support = tmp_path / "support-plane.json"
+    support.write_text(
+        json.dumps(
+            {
+                "schema_version": "task_evaluation_support_plane_input.v1",
+                "scene_id": "841757",
+                "sage_prim_path": "/Root/Cabinet",
+                "top_z_m": 0.275,
+            }
+        ),
+        encoding="utf-8",
+    )
+    static = tmp_path / "destination-static.json"
+    static.write_text(
+        json.dumps(
+            {
+                "replacement_identity": identity,
+                "observed_structure": {
+                    "collision_bounds_body_frame_m": {
+                        "minimum": [-0.165, -0.24, 0.0],
+                        "maximum": [0.165, 0.24, 0.03],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    native = tmp_path / "destination-native.json"
+    native.write_text(json.dumps({"replacement_identity": identity}), encoding="utf-8")
+    geometry = tmp_path / "destination-geometry.json"
+    geometry_value = {
+        "destination_identity": identity,
+        "pose_world": {
+            "position_world_m": [1.0, 2.0, 0.275],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "geometry_digest": "",
+    }
+    geometry_value["geometry_digest"] = canonical_digest(
+        geometry_value, digest_field="geometry_digest"
+    )
+    geometry.write_text(json.dumps(geometry_value), encoding="utf-8")
+    commit = "e" * 40
+    image_digest = "sha256:" + NATIVE_TASK_ARENA_IMAGE.rsplit("@sha256:", 1)[-1]
+    probe = {
+        "schema_version": "task_evaluation_rigid_destination_native_probe_request.v1",
+        "execution_commit": commit,
+        "runtime_identity": {"id": "isaac-arena", "version": "5.1"},
+        "container_identity": {
+            "image": NATIVE_TASK_ARENA_IMAGE,
+            "digest": image_digest,
+        },
+        "destination_identity": identity,
+        "configured_scene_revision_digest": "sha256:" + "1" * 64,
+        "configured_scene_collision_digest": bindings["scene_collision"][
+            "staged_sha256"
+        ],
+        "configured_scene_support_plane_digest": _sha(support),
+        "destination_asset_digest": bindings["task_support"]["staged_sha256"],
+        "destination_static_qualification_digest": _sha(static),
+        "destination_native_import_qualification_digest": _sha(native),
+        "destination_geometry_digest": geometry_value["geometry_digest"],
+        "pose_world": geometry_value["pose_world"],
+        "qualification_limits": {
+            "maximum_penetration_m": 0.001,
+            "minimum_support_contact_force_n": 0.01,
+            "maximum_forbidden_contact_force_n": 0.1,
+            "settle_translation_tolerance_m": 0.002,
+            "settle_rotation_tolerance_rad": 0.01,
+            "reset_translation_tolerance_m": 0.002,
+            "reset_rotation_tolerance_rad": 0.01,
+            "minimum_camera_pixels": {
+                "external": 100,
+                "wrist": 100,
+                "overview": 100,
+            },
+        },
+        "settle_sample_count": 3,
+        "settle_steps_per_sample": 60,
+        "candidate_policy_queried": False,
+        "policy_loaded": False,
+        "request_digest": "",
+    }
+    probe["request_digest"] = canonical_digest(probe, digest_field="request_digest")
+    probe_path = tmp_path / "probe.json"
+    probe_path.write_text(json.dumps(probe), encoding="utf-8")
+
+    receipt = build_native_task_arena_destination_qualification_bundle(
+        job_dir=tmp_path / "destination-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        probe_request_path=probe_path,
+        configured_scene_support_plane_path=support,
+        destination_static_qualification_path=static,
+        destination_native_import_qualification_path=native,
+        destination_geometry_path=geometry,
+        implementation_commit=commit,
+        generated_at="fixed",
+    )
+    assert receipt["execution_mode"] == "destination_qualification"
+    assert receipt["expected_output_filename"] == DESTINATION_RESULT_FILENAME
+    assert receipt["candidate_policy_queried"] is False
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    assert (
+        "provider_runtime/blueprint_pipeline/"
+        "task_evaluation_rigid_destination_native_observation.py"
+    ) in names
+    assert (
+        "provider_runtime/runtime_inputs/"
+        "rigid_destination_native_probe_request.v1.json"
+    ) in names
+    loaded = load_verified_native_task_arena_destination_qualification_bundle(
+        tmp_path
+        / "destination-bundle/native_task_arena_provider_bundle_receipt.v1.json",
+        expected_implementation_commit=commit,
+        expected_packet_receipt_digest=receipt["packet_receipt_digest"],
+    )
+    assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
 
 
 def test_runtime_preflight_classifies_plain_volume_without_spg(tmp_path: Path) -> None:
@@ -2179,6 +2649,8 @@ def test_real_policy_bundles_pass_preflight_and_import_cleanly(
         tmp_path, receipt, name=f"policy-{candidate_id}"
     )
     assert "provider_runtime/blueprint_pipeline/policy_ranking_thesis.py" not in names
+    assert not any(Path(name).name == "policy_canary_interrupted_cell_recovery.py" for name in names)
+    assert not any(Path(name).name == "native_policy_canary_diagnostic_continuation.py" for name in names)
 
 
 @pytest.mark.parametrize(
@@ -2409,6 +2881,37 @@ def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
     )
 
 
+def test_construction_vast_adapter_can_retain_warm_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    observed = {}
+    monkeypatch.setattr(
+        module,
+        "run_arena_native_control_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "construction_canary",
+        "policy_candidate_id": None,
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_construction_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    module.run_native_task_arena_vast(
+        job_dir=tmp_path / "retained-construction",
+        prepared_bundle=prepared,
+        paid_resource_admission_grant=None,
+        execute=False,
+        retain_warm_instance=True,
+    )
+
+    assert observed["retain_warm_instance"] is True
+
+
 @pytest.mark.parametrize(
     ("runner", "execution_mode", "expected_output", "expected_prefix", "candidate"),
     (
@@ -2416,7 +2919,7 @@ def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
             run_native_task_arena_vast,
             "construction_canary",
             "native_task_arena_construction_result.v1.json",
-            "blueprint-native-task-arena-",
+            "blueprint-task-evaluation-native-arena-construction-",
             None,
         ),
         (
@@ -2477,6 +2980,7 @@ def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
 
     assert observed["require_independent_watchdog"] is True
     assert observed["instance_label_prefix"] == expected_prefix
+    assert observed["allowed_geolocation_country_codes"] == ("US",)
     if execution_mode in {"construction_canary", "controls"}:
         assert observed["min_gpu_ram_mb"] == 24_000
         assert "RTX 4090" in observed["preferred_gpu_keywords"]
@@ -2515,12 +3019,54 @@ def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
         paid_resource_admission_grant=None,
         execute=False,
         allowed_active_instance_ids=(47373597,),
+        provider_runtime_environment={
+            "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
+        },
     )
 
     assert observed["candidate_policy_query_expected"] is True
     assert observed["allowed_active_instance_ids"] == (47373597,)
     assert observed["object_store_key_prefix"].endswith("/policy/pi05_droid")
     assert observed["vast_launch_lock_file"] is None
+    assert observed["provider_runtime_environment"] == {
+        "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
+    }
+
+
+def test_policy_vast_adapter_refuses_unallowlisted_provider_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(module, "run_arena_native_control_vast", fake_run)
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "policy",
+        "policy_candidate_id": "pi05_droid",
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_policy_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    with pytest.raises(
+        ValueError, match="native_task_arena_policy_runtime_environment_invalid"
+    ):
+        run_native_task_arena_policy_vast(
+            job_dir=tmp_path / "policy",
+            prepared_bundle=prepared,
+            paid_resource_admission_grant=None,
+            execute=False,
+            provider_runtime_environment={"HOME": "/tmp/provider-home"},
+        )
+
+    assert called is False
 
 
 def test_controls_and_policy_share_the_canonical_provider_semaphore(
@@ -2750,6 +3296,107 @@ def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(
         )
 
 
+def test_construction_bundle_cli_supplies_exact_phase_plan_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = {
+        "schema_version": "native_rigid_construction_phase_plan.v1",
+        "plan_digest": "sha256:" + "1" * 64,
+    }
+    path = tmp_path / "phase-plan.json"
+    write_json(path, override)
+    observed = {}
+
+    def build(**kwargs):
+        observed.update(kwargs)
+        return {"status": "ready"}
+
+    monkeypatch.setattr(
+        construction_bundle_module,
+        "build_native_task_arena_construction_bundle",
+        build,
+    )
+    assert construction_bundle_module.main(
+        [
+            "--job-dir",
+            str(tmp_path / "job"),
+            "--packet-dir",
+            str(tmp_path / "packet"),
+            "--runtime-source-packet-receipt",
+            str(tmp_path / "runtime.json"),
+            "--implementation-commit",
+            "a" * 40,
+            "--construction-phase-plan-override",
+            str(path),
+        ]
+    ) == 0
+    assert observed["construction_phase_plan_override"] == override
+
+
+def test_construction_bundle_binds_terminal_feedback_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    scene = {
+        "schema_version": "native_task_arena_scene_plan.v1",
+        "plan_digest": "sha256:" + "1" * 64,
+    }
+    request = {
+        "request_digest": "sha256:" + "2" * 64,
+        "native_construction_feedback": {
+            "candidate_universe": {
+                "inventory_digest": "sha256:" + "3" * 64
+            }
+        },
+    }
+    write_json(packet / "native_task_arena_scene_plan.v1.json", scene)
+    write_json(packet / "native_task_arena_packet_request.v1.json", request)
+    adoption = {
+        "packet_request_digest": request["request_digest"],
+        "candidate_universe_digest": "sha256:" + "3" * 64,
+    }
+    adoption_path = tmp_path / "adoption.json"
+    write_json(adoption_path, adoption)
+    phase_plan = {
+        "schema_version": "native_rigid_construction_phase_plan.v1",
+        "scene_plan_digest": scene["plan_digest"],
+        "phases": [],
+        "phase_count": 0,
+        "plan_digest": "sha256:" + "4" * 64,
+    }
+    observed = {}
+    monkeypatch.setattr(
+        construction_bundle_module,
+        "materialize_native_task_construction_phase_plan",
+        lambda _scene: phase_plan,
+    )
+    monkeypatch.setattr(
+        construction_bundle_module,
+        "validate_native_construction_terminal_feedback_adoption",
+        lambda value: value,
+    )
+
+    def build(**kwargs):
+        observed.update(kwargs)
+        return {"status": "ready"}
+
+    monkeypatch.setattr(construction_bundle_module, "build_native_task_arena_bundle", build)
+    result = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=tmp_path / "runtime.json",
+        implementation_commit="a" * 40,
+        terminal_feedback_adoption_path=adoption_path,
+    )
+
+    assert result["status"] == "ready"
+    assert set(observed["bound_runtime_inputs"]) == {
+        "native_task_construction_phase_plan.v1.json",
+        "native_construction_terminal_feedback_adoption.v1.json",
+    }
+
+
 @pytest.mark.parametrize("execute", [False, True])
 def test_canonical_allocator_routes_sealed_native_task_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
@@ -2808,6 +3455,7 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         "1.2",
         "--adp-hard-ttl-seconds",
         "5400",
+        "--native-task-arena-retain-warm-session",
     ]
     if execute:
         authority_path = tmp_path / "native-task-arena-authority.json"
@@ -2835,6 +3483,7 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
 
     assert allocator.main(args) == 0
     assert observed["execute"] is execute
+    assert observed["retain_warm_instance"] is True
     assert isinstance(
         observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant
     ) is execute
@@ -2846,6 +3495,135 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         assert observed["paid_attempt_authority"]["authorization_digest"].startswith(
             "sha256:"
         )
+
+
+def test_construction_allocator_automatically_enters_retained_feedback_and_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(tmp_path, scene_id="839873")
+    build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "frozen-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    authority_path = tmp_path / "native-task-arena-authority.json"
+    authority = {
+        "authorization_digest": "sha256:" + "9" * 64,
+        "authority_reference": "always continue bounded native construction",
+        "authorized_by": "task-evaluation-owner",
+        "authorized_on": "2026-08-30T00:00:00Z",
+    }
+    write_json(authority_path, authority)
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_paid_attempt_authority",
+        lambda _authority, **_kwargs: authority,
+    )
+    cold_calls = []
+
+    def cold(**kwargs):
+        cold_calls.append(kwargs)
+        return {
+            "schema_version": "native_task_arena_vast_run.v1",
+            "status": "blocked",
+            "retry_cap": 0,
+            "native_control_result_path": str(tmp_path / "cold-native.json"),
+            "warm_session": {"instance_id": 49322931},
+            "warm_session_receipt_path": str(tmp_path / "warm-session.json"),
+            "continuing_spend_from_this_run": True,
+            "blockers": ["native_rigid_construction_gate_failed:push_contact"],
+        }
+
+    monkeypatch.setattr(allocator, "run_native_task_arena_vast", cold)
+    monkeypatch.setattr(allocator, "native_feedback_runtime_blockers", lambda _path: [])
+    monkeypatch.setattr(
+        feedback_adapter,
+        "_mapping",
+        lambda _path, **_kwargs: {
+            "native_construction_feedback": {"maximum_rounds": 4}
+        },
+    )
+    final_native = {
+        "schema_version": "native_task_arena_construction_result.v1",
+        "status": "completed",
+        "construction_gate_qualified": True,
+        "blockers": [],
+        "result_digest": "",
+    }
+    final_native["result_digest"] = canonical_digest(
+        final_native, digest_field="result_digest"
+    )
+    control_path = tmp_path / "native-controls.json"
+    write_json(control_path, {"result_digest": "sha256:" + "7" * 64})
+    controller_calls = []
+
+    def feedback_controller(**kwargs):
+        controller_calls.append(kwargs)
+        return {
+            "status": "controls_completed",
+            "history": [{"execution": {"native_result": final_native}}],
+            "controls_continuation": {
+                "native_control_result_path": str(control_path),
+                "native_control_result_digest": "sha256:" + "7" * 64,
+            },
+        }
+
+    monkeypatch.setattr(
+        feedback_adapter,
+        "run_retained_native_construction_feedback",
+        feedback_controller,
+    )
+    adapter_path = tmp_path / "adapter.json"
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        PROBE_KIND,
+        "--provider",
+        "vast",
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--adapter-output",
+        str(adapter_path),
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(_runtime_source_packet(tmp_path)),
+        "--native-task-arena-bundle-receipt",
+        str(
+            tmp_path
+            / "frozen-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+        ),
+        "--native-task-arena-attempt-authority",
+        str(authority_path),
+        "--native-task-arena-retain-warm-session",
+        "--adp-job-dir",
+        str(tmp_path / "job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.2",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--execute",
+    ]
+
+    assert allocator.main(args) == 0
+    assert len(cold_calls) == 1
+    assert len(controller_calls) == 1
+    assert controller_calls[0]["cold_allocator_result"]["retry_cap"] == 0
+    result = json.loads(adapter_path.read_text())
+    assert result["status"] == "completed"
+    assert result["retry_cap"] == 0
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["native_control_result_digest"] == final_native["result_digest"]
+    assert result["native_controls_result_digest"] == "sha256:" + "7" * 64
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["private_data_uploaded"] is True
     assert admission["raw_dataset_bytes_uploaded"] is False
@@ -2947,6 +3725,8 @@ def test_canonical_allocator_routes_no_motion_runtime_preflight(
 def test_canonical_allocator_routes_qualified_native_controls_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
 ) -> None:
+    from blueprint_pipeline import task_evaluation_control_stage_policy as stage_policy
+    monkeypatch.setattr(stage_policy, "CONTROLS_PAUSED", False)  # Historical enabled-mode contract.
     packet, scene = _articulated_packet(tmp_path)
     construction = _qualified_construction(tmp_path, scene)
     source_packet = _runtime_source_packet(tmp_path)
@@ -3048,6 +3828,8 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
 def test_canonical_allocator_attaches_controls_without_new_gpu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from blueprint_pipeline import task_evaluation_control_stage_policy as stage_policy
+    monkeypatch.setattr(stage_policy, "CONTROLS_PAUSED", False)  # Historical enabled-mode contract.
     packet, scene = _articulated_packet(tmp_path)
     construction = _qualified_construction(tmp_path, scene)
     source_packet = _runtime_source_packet(tmp_path)
@@ -3087,6 +3869,11 @@ def test_canonical_allocator_attaches_controls_without_new_gpu(
         allocator,
         "validate_native_task_arena_warm_attempt_authority",
         lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda: tmp_path / "valid-identity",
     )
 
     def fake_run(**kwargs):
@@ -3160,6 +3947,144 @@ def test_canonical_allocator_attaches_controls_without_new_gpu(
     )
     assert admission["allocation_binding"]["warm_session_digest"] == (
         warm_session["session_digest"]
+    )
+
+    # A missing/bad service identity is an admission blocker, not a dispatch
+    # failure after the single-use warm authority has reached the runner.
+    observed.clear()
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda: (_ for _ in ()).throw(
+            ValueError("native_task_arena_warm_ssh_identity_invalid")
+        ),
+    )
+    for flag, value in (
+        ("--admission-out", tmp_path / "blocked-admission.json"),
+        ("--adapter-output", tmp_path / "blocked-adapter.json"),
+        ("--adp-job-dir", tmp_path / "blocked-job"),
+    ):
+        args[args.index(flag) + 1] = str(value)
+
+    assert allocator.main(args) == 2
+    assert observed == {}
+    blocked_admission = json.loads(
+        (tmp_path / "blocked-admission.json").read_text()
+    )
+    assert "native_task_arena_warm_ssh_identity_invalid" in blocked_admission[
+        "blockers"
+    ]
+
+
+def test_canonical_allocator_attaches_construction_and_retains_same_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, _scene = _articulated_packet(tmp_path)
+    source_packet = _runtime_source_packet(tmp_path)
+    build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "frozen-construction-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=source_packet,
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    warm_session = {
+        "schema_version": "native_task_arena_warm_session.v1",
+        "session_digest": "sha256:" + "7" * 64,
+        "instance_id": 123,
+    }
+    warm_session_path = tmp_path / "warm-session.json"
+    write_json(warm_session_path, warm_session)
+    warm_authority = {
+        "schema_version": "native_task_arena_warm_attempt_authority.v1",
+        "authorization_digest": "sha256:" + "8" * 64,
+    }
+    warm_authority_path = tmp_path / "warm-authority.json"
+    write_json(warm_authority_path, warm_authority)
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_session",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_attempt_authority",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda: tmp_path / "valid-identity",
+    )
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed", "provider_allocations_performed": 0}
+
+    monkeypatch.setattr(
+        allocator, "run_native_task_arena_warm_controls_vast", fake_run
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "construction-admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "construction-adapter.json"),
+        "--pod-name",
+        "native-task-arena-warm-construction",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(source_packet),
+        "--native-task-arena-bundle-receipt",
+        str(
+            tmp_path
+            / "frozen-construction-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+        ),
+        "--native-task-arena-attempt-authority",
+        str(warm_authority_path),
+        "--native-task-arena-warm-session",
+        str(warm_session_path),
+        "--adp-allowed-active-vast-instance-id",
+        "123",
+        "--adp-job-dir",
+        str(tmp_path / "construction-job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.2",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--execute",
+    ]
+
+    assert allocator.main(args) == 0
+    assert observed["execute"] is True
+    assert observed["close_on_success"] is False
+    assert observed["prepared_bundle"]["execution_mode"] == "construction_canary"
+    admission = json.loads((tmp_path / "construction-admission.json").read_text())
+    assert admission["allocation_binding"]["execution_transport"] == (
+        "retained_warm_instance"
     )
 
 
@@ -3272,3 +4197,70 @@ def test_bundle_accepts_a_packet_restating_the_deployed_servo_limits(
     )
 
     assert receipt["status"] == "ready"
+
+
+def test_camera_framing_expectation_ships_beside_observability() -> None:
+    """The observability gate imports the framing-expectation module lazily,
+    inside the measurement call, so the closure import probes above cannot
+    see the edge: they import shipped modules at top level only.  Without
+    this pin the pod discovers the missing module at snapshot time, after
+    environment build, in the middle of a paid run."""
+
+    for names in (
+        CONSTRUCTION_RUNTIME_MODULE_NAMES,
+        CONTROLS_RUNTIME_MODULE_NAMES,
+    ):
+        assert "native_task_camera_observability.py" in names
+        assert "native_task_camera_framing_expectation.py" in names
+
+
+def _incompressible_bytes(size: int) -> bytes:
+    chunks = []
+    counter = 0
+    while sum(len(chunk) for chunk in chunks) < size:
+        chunks.append(hashlib.sha256(counter.to_bytes(8, "big")).digest())
+        counter += 1
+    return b"".join(chunks)[:size]
+
+
+def test_zip_member_compression_stores_entropy_coded_bytes_and_deflates_text(
+    tmp_path: Path,
+) -> None:
+    """Deflating splat and checkpoint payloads burned minutes for nothing.
+
+    The control plane compiled one no-spend canary packet in about four CPU
+    minutes, almost all of it deflating gigabytes of bytes that do not shrink.
+    The member policy stores known containers outright, probes everything
+    else on its first mebibyte, and stays a pure function of the bytes so one
+    sealed source tree always yields one archive.
+    """
+
+    splat = tmp_path / "scene.ply"
+    splat.write_bytes(_incompressible_bytes(3 * 1024 * 1024))
+    text = tmp_path / "packet.json"
+    text.write_text(json.dumps({"rows": ["row"] * 4096}), encoding="utf-8")
+    usdz = tmp_path / "scene.usdz"
+    usdz.write_text("looks compressible but is a container", encoding="utf-8")
+    empty = tmp_path / "empty.bin"
+    empty.write_bytes(b"")
+
+    assert zip_member_compression(splat) == zipfile.ZIP_STORED
+    assert zip_member_compression(usdz) == zipfile.ZIP_STORED
+    assert zip_member_compression(text) == zipfile.ZIP_DEFLATED
+    assert zip_member_compression(empty) == zipfile.ZIP_DEFLATED
+    assert zip_member_compression(splat) == zip_member_compression(splat)
+
+
+def test_destination_collision_binding_preserves_configured_source_identity():
+    from blueprint_pipeline.native_task_arena_destination_qualification_bundle import _collision_binding_matches
+
+    original = "sha256:" + "a" * 64
+    binding = {"source": {"sha256": original, "size_bytes": 23}, "staged_sha256": original, "staged_size_bytes": 23}
+    assert _collision_binding_matches(binding, original)
+    binding.update(staged_sha256="sha256:" + "b" * 64, staged_size_bytes=21)
+    assert not _collision_binding_matches(binding, original)
+    adaptation = {"adaptation": "static_convex_to_triangle_mesh", "derived_from_sha256": original, "candidate_bytes_modified": False, "conversion_scope": "all_static_convex_collision_meshes", "converted_prim_paths": ["/Room/Shelf"]}
+    binding["static_scene_collision_adaptation"] = adaptation
+    assert _collision_binding_matches(binding, original)
+    adaptation["derived_from_sha256"] = "sha256:" + "c" * 64
+    assert not _collision_binding_matches(binding, original)

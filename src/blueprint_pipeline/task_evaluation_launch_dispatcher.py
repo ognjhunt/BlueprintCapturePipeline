@@ -17,12 +17,28 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .adp_articulated_task_success_contract import (
+    confirmed_task_success_contract_matches_published,
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+)
+from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    DEFAULT_RESERVATION_ROOT,
+    reserve_control_plane_disk,
+)
+from .episode_interpretation_batch_authority import (
+    validate_episode_interpretation_batch_authority_shape,
+)
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .paid_attempt_authority import (
     JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
@@ -32,18 +48,39 @@ from .task_evaluation_standing_launch_authorization import (
     STANDING_AUTHORIZATION_DIR_ENV,
     StandingAuthorizationError,
     consume_standing_authorization_once,
-    consumption_totals,
-    standing_authorization_admits,
+    standing_authorization_decision,
 )
+from .task_evaluation_scene_execution_authority import scene_execution_authority_blockers
 from .task_evaluation_immutable_input_resolver import (
     STAGING_RECEIPT_ENV,
     STAGING_SCHEMA_VERSION,
 )
-
+from .task_evaluation_launch_terminal_evidence import (
+    terminal_evidence as _build_terminal_evidence,
+)
+from .task_evaluation_launch_context import (
+    is_identifier as _is_identifier,
+    validate_task_evaluation_run_context,
+)
+from .task_evaluation_scene_configuration_publication_readiness import (
+    scene_configuration_publication_readiness_decision,
+)
+from .task_evaluation_policy_run_contract import (
+    TaskEvaluationPolicyRunContractError,
+    validate_policy_run_setup,
+)
+from .launch_profile_immutable_inputs import immutable_input_digest
+from .launch_immutable_input_writer import (
+    TaskEvaluationLaunchError,
+    stage_directory_projections,
+    write_exclusive_private_bytes as _write_exclusive_private_bytes,
+)
+from . import task_evaluation_policy_canary_setup as policy_canary_setup
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
+LAUNCH_RECEIPT_DIGEST_CANONICALIZATION = "rfc8785"
 LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION = "task_evaluation_launch_profile_catalog.v1"
 IMMUTABLE_INPUT_STAGING_SCHEMA_VERSION = STAGING_SCHEMA_VERSION
 CANONICAL_ALLOCATOR_ENTRYPOINT = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
@@ -101,11 +138,12 @@ PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
     "execution_admission",
     "claim_ceiling",
 )
-
-
-class TaskEvaluationLaunchError(ValueError):
-    """Raised when a launch request or profile fails closed."""
-
+PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = (
+    "source_commit",
+    "task_evaluation_run",
+    "policy_run_setup",
+    "internal_policy_canary_setup",
+)
 
 def standing_authorization_directory(state_root: str | Path) -> str:
     """Where this host keeps standing authorizations.
@@ -121,45 +159,25 @@ def standing_authorization_directory(state_root: str | Path) -> str:
     Defaulting is safe in the direction that matters: a host with no
     authorization on disk is still refused, with no blocker of its own.
     """
-
     configured = str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip()
     if configured:
         return configured
     return str(Path(state_root).expanduser().resolve().parent / "standing-authorizations")
 
-
 def _standing_authorization_decision(
     profile: Mapping[str, Any], live_requested: bool, state_root: str | Path
 ) -> dict[str, Any]:
     """Consult the standing per-profile authorization, if this host has one."""
-    if not live_requested:
-        return {"admitted": False, "blockers": []}
-    directory = standing_authorization_directory(state_root)
-    if not directory:
-        return {"admitted": False, "blockers": []}
-    profile_id = str(profile.get("profile_id") or "")
-    try:
-        launches, spend = consumption_totals(directory=directory, profile_id=profile_id)
-    except StandingAuthorizationError as exc:
-        # Spend we cannot account for must not be treated as zero.
-        return {"admitted": False, "blockers": [str(exc)]}
-    return standing_authorization_admits(
-        profile=profile,
-        directory=directory,
-        launches_consumed=launches,
-        spend_consumed_usd=spend,
-    )
-
+    return standing_authorization_decision(profile, live_requested=live_requested,
+                                           directory=standing_authorization_directory(state_root))
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
 
 def canonical_digest(value: Mapping[str, Any], *, digest_field: str) -> str:
     payload = dict(value)
     payload.pop(digest_field, None)
     return _DIGEST_PREFIX + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
-
 
 def _is_digest(value: Any) -> bool:
     text = str(value or "")
@@ -170,15 +188,6 @@ def _is_digest(value: Any) -> bool:
     )
 
 
-def _is_identifier(value: Any) -> bool:
-    text = str(value or "")
-    return (
-        bool(text)
-        and len(text) <= 192
-        and all(character.isalnum() or character in "._-" for character in text)
-    )
-
-
 def _is_uri(value: Any, *, authority: bool = False) -> bool:
     text = str(value or "")
     return text.startswith(_AUTHORITY_URI_SCHEMES if authority else _URI_SCHEMES)
@@ -186,7 +195,6 @@ def _is_uri(value: Any, *, authority: bool = False) -> bool:
 
 def _native_policy_binding_blockers(profile: Mapping[str, Any]) -> list[str]:
     """Validate private identity metadata for the frozen native policy lane."""
-
     raw = profile.get("native_policy_binding")
     if raw is None:
         return []
@@ -198,9 +206,8 @@ def _native_policy_binding_blockers(profile: Mapping[str, Any]) -> list[str]:
     rights = _mapping(binding.get("rights"))
     raw_campaign = binding.get("policy_campaign")
     blockers: list[str] = []
-    if (
-        binding.get("schema_version") != "native_task_arena_policy_binding.v1"
-        or not _is_identifier(binding.get("candidate_id"))
+    if binding.get("schema_version") != "native_task_arena_policy_binding.v1" or not _is_identifier(
+        binding.get("candidate_id")
     ):
         blockers.append("native_policy_binding_identity_invalid")
     if (
@@ -210,9 +217,7 @@ def _native_policy_binding_blockers(profile: Mapping[str, Any]) -> list[str]:
         or not _is_digest(robot.get("config_digest"))
     ):
         blockers.append("native_policy_binding_robot_invalid")
-    if not _is_identifier(task.get("task_id")) or not _is_digest(
-        task.get("config_digest")
-    ):
+    if not _is_identifier(task.get("task_id")) or not _is_digest(task.get("config_digest")):
         blockers.append("native_policy_binding_task_invalid")
     if (
         not _is_digest(policy.get("spec_digest"))
@@ -232,9 +237,9 @@ def _native_policy_binding_blockers(profile: Mapping[str, Any]) -> list[str]:
         or any(character not in "0123456789abcdef" for character in image_digest)
     ):
         blockers.append("native_policy_binding_arena_container_invalid")
-    if not _is_digest(
-        rights.get("scene_policy_readiness_digest")
-    ) or not _is_digest(rights.get("candidate_rights_binding_digest")):
+    if not _is_digest(rights.get("scene_policy_readiness_digest")) or not _is_digest(
+        rights.get("candidate_rights_binding_digest")
+    ):
         blockers.append("native_policy_binding_rights_invalid")
     if raw_campaign is not None:
         campaign = _mapping(raw_campaign)
@@ -260,10 +265,8 @@ def _native_policy_binding_blockers(profile: Mapping[str, Any]) -> list[str]:
             or campaign.get("sibling_member_id") == campaign.get("member_id")
             or not _is_identifier(campaign.get("sibling_launch_id"))
             or campaign.get("sibling_launch_id") == campaign.get("launch_id")
-            or re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", resource_name)
-            is None
-            or re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", sibling_name)
-            is None
+            or re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", resource_name) is None
+            or re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", sibling_name) is None
             or resource_name == sibling_name
         ):
             blockers.append("native_policy_binding_campaign_invalid")
@@ -327,6 +330,10 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
             blockers.append(f"{field}_invalid")
     if not _is_digest(request.get("launch_profile_digest")):
         blockers.append("launch_profile_digest_invalid")
+    if "source_commit" in request and not re.fullmatch(
+        r"[0-9a-f]{40}", str(request.get("source_commit") or "")
+    ):
+        blockers.append("launch_source_commit_invalid")
     _validate_reference(request.get("source_bundle"), field="source_bundle", blockers=blockers)
     source_bundle = _mapping(request.get("source_bundle"))
     if not _is_identifier(source_bundle.get("bundle_id")):
@@ -390,19 +397,124 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
         blockers.append("launch_request_secret_value_forbidden")
     if request.get("request_digest") != canonical_digest(request, digest_field="request_digest"):
         blockers.append("launch_request_digest_mismatch")
-    return sorted(set(blockers))
+    if request.get("run_kind") == "internal_policy_canary":
+        allowed_fields = {
+            "schema_version",
+            "launch_id",
+            "run_id",
+            "launch_profile_id",
+            "launch_profile_digest",
+            "source_commit",
+            "source_bundle",
+            "evaluation_run_spec",
+            "source_launch_id",
+            "offering_digest",
+            "setup_digest",
+            "preset_id",
+            "run_kind",
+            "claim_ceiling",
+            "scene_revision_digest",
+            "scene_controls_status_at_submission",
+            "task_success_contract",
+            "task_success_contract_digest",
+            "episode_interpretation_source_rights_admission",
+            "episode_interpretation_authority",
+            "team_namespace",
+            "robot_preset_id",
+            "policy_candidate_ids",
+            "episode_plan",
+            "notification",
+            "authorization",
+            "required_controls",
+            "controls_qualification_bypassed",
+            "scene_promotion_permitted",
+            "official_ranking_permitted",
+            "idempotency_key",
+            "request_digest",
+        }
+        if not set(request).issubset(allowed_fields):
+            blockers.append("policy_canary_launch_request_fields_invalid")
+        try:
+            task_success_contract = validate_task_success_contract(
+                _mapping(request.get("task_success_contract")),
+                task_kind=task_kind_of_contract(_mapping(request.get("task_success_contract"))),
+            )
+        except TaskNeutralScoringError as exc:
+            blockers.append("policy_canary_task_success_contract_invalid:" + str(exc))
+        else:
+            if (
+                request.get("task_success_contract_digest")
+                != task_success_contract["contract_digest"]
+            ):
+                blockers.append("policy_canary_task_success_contract_digest_mismatch")
+        if (
+            request.get("episode_interpretation_authority") is not None
+            or request.get("episode_interpretation_source_rights_admission") is not None
+        ):
+            try:
+                interpretation_authority = (
+                    validate_episode_interpretation_batch_authority_shape(
+                        _mapping(request.get("episode_interpretation_authority"))
+                    )
+                )
+                source_rights = _mapping(
+                    request.get("episode_interpretation_source_rights_admission")
+                )
+                if (
+                    interpretation_authority.get("run_id") != request.get("run_id")
+                    or source_rights.get("run_id") != request.get("run_id")
+                    or source_rights.get("external_disclosure_authorized") is not True
+                    or source_rights.get("provider_training_authorized") is not False
+                    or source_rights.get("public_redistribution_authorized") is not False
+                    or source_rights.get("accepted_by")
+                    != interpretation_authority.get("accepted_by")
+                    or source_rights.get("accepted_on")
+                    != interpretation_authority.get("accepted_on")
+                    or source_rights.get("disclosed_artifact_roles")
+                    != interpretation_authority.get("allowed_artifact_roles")
+                    or source_rights.get("admission_digest")
+                    != canonical_digest(source_rights, digest_field="admission_digest")
+                    or interpretation_authority.get("source_rights_admission_digest")
+                    != source_rights.get("admission_digest")
+                ):
+                    raise ValueError("binding mismatch")
+            except ValueError:
+                blockers.append("policy_canary_episode_interpretation_authority_invalid")
+    return policy_canary_setup.normalize_policy_canary_launch_request_blockers(
+        request, blockers)
 
 
-def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
+def _validate_launch_profile(
+    value: Mapping[str, Any], *, reopen_external_lineage: bool
+) -> list[str]:
     profile = _mapping(value)
     blockers: list[str] = []
     blockers.extend(_native_policy_binding_blockers(profile))
+    blockers.extend(scene_execution_authority_blockers(profile, reopen_records=reopen_external_lineage))
     if profile.get("schema_version") != LAUNCH_PROFILE_SCHEMA_VERSION:
         blockers.append("launch_profile_schema_version_mismatch")
     if not _is_identifier(profile.get("profile_id")):
         blockers.append("launch_profile_id_invalid")
     if profile.get("program_id") != "arm-decision-proof-v1":
         blockers.append("launch_profile_program_mismatch")
+    if "source_commit" in profile and not re.fullmatch(
+        r"[0-9a-f]{40}", str(profile.get("source_commit") or "")
+    ):
+        blockers.append("launch_profile_source_commit_invalid")
+    if "task_evaluation_run" in profile:
+        blockers.extend(
+            validate_task_evaluation_run_context(
+                profile.get("task_evaluation_run"),
+                blocker_prefix="launch_profile_task_evaluation_run",
+            )
+        )
+    if "policy_run_setup" in profile:
+        try:
+            validate_policy_run_setup(_mapping(profile.get("policy_run_setup")))
+        except TaskEvaluationPolicyRunContractError as exc:
+            blockers.append(f"launch_profile_policy_run_setup_invalid:{exc}")
+    blockers.extend(policy_canary_setup.launch_profile_policy_canary_setup_blockers(
+        profile, prefix="launch_profile_policy_canary_setup_invalid"))
     _validate_reference(profile.get("source_bundle"), field="source_bundle", blockers=blockers)
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):
@@ -450,39 +562,31 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
         blockers.append("launch_profile_allocator_argv_placeholder_invalid")
     elif "--probe-kind" in argv:
         probe_index = argv.index("--probe-kind")
-        probe_kind = (
-            argv[probe_index + 1] if probe_index + 1 < len(argv) else None
-        )
+        probe_kind = argv[probe_index + 1] if probe_index + 1 < len(argv) else None
+        if (
+            probe_kind == "task-evaluation-scene-configuration"
+            and "task_evaluation_run" not in profile
+        ):
+            blockers.append("launch_profile_task_evaluation_run_missing")
         if probe_kind == "adp-usd-joint-agent":
             lineage = profile.get("same_goal_spend_lineage")
             if not isinstance(lineage, Mapping):
                 blockers.append("joint_agent_prior_spend_lineage_missing")
-            elif (
-                lineage.get("schema_version")
-                != JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA
-            ):
+            elif lineage.get("schema_version") != JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA:
                 blockers.append("joint_agent_prior_spend_lineage_invalid")
             else:
                 ordinal = lineage.get("attempt_ordinal")
-                if (
-                    isinstance(ordinal, bool)
-                    or not isinstance(ordinal, int)
-                    or ordinal < 1
-                ):
+                if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1:
                     blockers.append("joint_agent_prior_spend_lineage_invalid")
-                else:
+                elif reopen_external_lineage:
                     try:
-                        observed = validate_bound_lane_prior_spend(
-                            lineage, lane="joint_agent"
-                        )
+                        observed = validate_bound_lane_prior_spend(lineage, lane="joint_agent")
                     except ValueError:
                         blockers.append("joint_agent_prior_spend_lineage_invalid")
                     else:
                         expected_prior_count = ordinal - 1
                         if len(observed["prior_terminal_attempts"]) != expected_prior_count:
-                            blockers.append(
-                                "joint_agent_prior_spend_lineage_ordinal_mismatch"
-                            )
+                            blockers.append("joint_agent_prior_spend_lineage_ordinal_mismatch")
     max_spend = allocator.get("max_spend_usd")
     if not isinstance(max_spend, (int, float)) or isinstance(max_spend, bool) or max_spend <= 0:
         blockers.append("launch_profile_max_spend_invalid")
@@ -590,9 +694,7 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
     if standing_requirement is not None:
         requirement = _mapping(standing_requirement)
         expected_requirement = {
-            "schema_version": (
-                "task_evaluation_standing_launch_authorization_requirement.v1"
-            ),
+            "schema_version": ("task_evaluation_standing_launch_authorization_requirement.v1"),
             "required_for_live_execution": True,
             "maximum_launches": 1,
             "consumption_must_precede_allocator": True,
@@ -602,13 +704,35 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
     if profile.get("claim_ceiling") not in {
         "development_only",
         "partner_run_pending_physical_join",
-    }:
+    } | ({"diagnostic_policy_execution"} if "internal_policy_canary_setup" in profile else set()):
         blockers.append("launch_profile_claim_ceiling_invalid")
     if profile.get("profile_digest") != canonical_digest(profile, digest_field="profile_digest"):
         blockers.append("launch_profile_digest_mismatch")
-    if _contains_secret_key(profile):
+    secret_scan = dict(profile)
+    # The separately validated preparation template may name canonical
+    # ``secret-file:...`` references but cannot contain a secret value.
+    secret_scan.pop("policy_run_setup", None)
+    secret_scan.pop("internal_policy_canary_setup", None)
+    secret_scan.pop("internal_policy_canary_execution_plan", None)
+    if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_secret_value_forbidden")
     return sorted(set(blockers))
+
+
+def validate_launch_profile_structure(value: Mapping[str, Any]) -> list[str]:
+    """Validate a profile document without reopening its bound local evidence.
+
+    Catalog projection uses this pass before checking the profile's declared
+    immutable inputs. Execution, publication, and standing-authority paths use
+    :func:`validate_launch_profile`, which still reopens the external lineage.
+    """
+    return _validate_launch_profile(value, reopen_external_lineage=False)
+
+
+def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
+    """Validate a profile and reopen every external lineage it binds."""
+
+    return _validate_launch_profile(value, reopen_external_lineage=True)
 
 
 def _has_unknown_placeholder(value: str) -> bool:
@@ -622,13 +746,15 @@ def _render_launch_path(value: str, *, run_root: Path) -> str:
     return value.replace(LAUNCH_RUN_ROOT_PLACEHOLDER, str(run_root))
 
 
-def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the only profile fields a public WebApp selector may observe."""
-
-    blockers = validate_launch_profile(profile)
-    if blockers:
-        raise TaskEvaluationLaunchError(",".join(blockers))
+def _project_public_launch_profile_descriptor(
+    profile: Mapping[str, Any],
+) -> dict[str, Any]:
     descriptor = {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
+    for field in PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS:
+        if field in profile and not (
+            field == "policy_run_setup" and "internal_policy_canary_setup" in profile
+        ):
+            descriptor[field] = profile[field]
     allocator = _mapping(profile.get("allocator"))
     descriptor["required_authorization"] = {
         "max_spend_usd": allocator.get("max_spend_usd"),
@@ -637,13 +763,56 @@ def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, An
     return descriptor
 
 
+def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Return public fields after full profile and external-lineage validation."""
+
+    blockers = validate_launch_profile(profile)
+    if blockers:
+        raise TaskEvaluationLaunchError(",".join(blockers))
+    return _project_public_launch_profile_descriptor(profile)
+
+
+def catalog_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Return public fields after catalog-safe structural validation only.
+
+    The catalog reconciler must verify the declared immutable inputs before it
+    calls this projection. This helper never authorizes execution; the full
+    public descriptor and every paid-path gate continue to reopen lineage.
+    """
+
+    blockers = validate_launch_profile_structure(profile)
+    if blockers:
+        raise TaskEvaluationLaunchError(",".join(blockers))
+    return _project_public_launch_profile_descriptor(profile)
+
+
 def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[str]:
     """Fail closed on a public projection that could smuggle execution details."""
 
     descriptor = _mapping(value)
     blockers: list[str] = []
-    if set(descriptor) != {*PUBLIC_PROFILE_DESCRIPTOR_FIELDS, "required_authorization"}:
+    required_fields = {*PUBLIC_PROFILE_DESCRIPTOR_FIELDS, "required_authorization"}
+    allowed_fields = required_fields | set(PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS)
+    if not required_fields.issubset(descriptor) or not set(descriptor).issubset(allowed_fields):
         blockers.append("launch_profile_public_descriptor_fields_invalid")
+    if "source_commit" in descriptor and not re.fullmatch(
+        r"[0-9a-f]{40}", str(descriptor.get("source_commit") or "")
+    ):
+        blockers.append("launch_profile_public_source_commit_invalid")
+    if "task_evaluation_run" in descriptor:
+        blockers.extend(
+            validate_task_evaluation_run_context(
+                descriptor.get("task_evaluation_run"),
+                blocker_prefix="launch_profile_public_task_evaluation_run",
+            )
+        )
+    if "policy_run_setup" in descriptor:
+        try:
+            validate_policy_run_setup(_mapping(descriptor.get("policy_run_setup")))
+        except TaskEvaluationPolicyRunContractError as exc:
+            blockers.append(f"launch_profile_public_policy_run_setup_invalid:{exc}")
+    if "internal_policy_canary_setup" in descriptor:
+        blockers.extend(policy_canary_setup.policy_canary_setup_blockers(descriptor["internal_policy_canary_setup"], prefix="launch_profile_public_policy_canary_setup_invalid"))
     authorization = _mapping(descriptor.get("required_authorization"))
     if set(authorization) != {"max_spend_usd", "hard_ttl_seconds"}:
         blockers.append("launch_profile_public_required_authorization_fields_invalid")
@@ -714,9 +883,12 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
     if descriptor.get("claim_ceiling") not in {
         "development_only",
         "partner_run_pending_physical_join",
-    }:
+    } | ({"diagnostic_policy_execution"} if "internal_policy_canary_setup" in descriptor else set()):
         blockers.append("launch_profile_public_claim_ceiling_invalid")
-    if _contains_secret_key(descriptor):
+    secret_scan = dict(descriptor)
+    secret_scan.pop("policy_run_setup", None)
+    secret_scan.pop("internal_policy_canary_setup", None)
+    if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_public_secret_value_forbidden")
     return sorted(set(blockers))
 
@@ -732,7 +904,6 @@ def load_public_launch_profile_catalog(
     max_profiles: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
 ) -> dict[str, Any]:
     """Load a publisher-generated catalog without exposing its filesystem path."""
-
     source_input = Path(path_value).expanduser()
     if source_input.is_symlink():
         raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
@@ -791,22 +962,52 @@ def validate_launch_request_against_public_catalog(
         ("required_controls", "required_controls"),
         ("claim_ceiling", "claim_ceiling"),
     ):
-        if request.get(request_field) != descriptor.get(descriptor_field):
+        expected = descriptor.get(descriptor_field)
+        requested = (
+            policy_canary_setup.bound_policy_canary_required_controls(
+                request, _mapping(expected)
+            )
+            if request_field == "required_controls"
+            else request.get(request_field)
+        )
+        if requested != expected:
             blockers.append(f"launch_profile_public_catalog_{request_field}_mismatch")
+    if "source_commit" in descriptor and request.get("source_commit") != descriptor.get(
+        "source_commit"
+    ):
+        blockers.append("launch_profile_public_catalog_source_commit_mismatch")
+    public_setup = _mapping(descriptor.get("internal_policy_canary_setup"))
+    if public_setup:
+        published = _mapping(public_setup.get("task_success_contract"))
+        if not confirmed_task_success_contract_matches_published(
+            task_kind=task_kind_of_contract(published), published=published,
+            selected=_mapping(request.get("task_success_contract"))):
+            blockers.append(
+                "launch_profile_public_catalog_task_success_contract_mismatch"
+            )
+        if request.get("task_success_contract_digest") != _mapping(
+            request.get("task_success_contract")
+        ).get("contract_digest"):
+            blockers.append(
+                "launch_profile_public_catalog_task_success_contract_digest_mismatch"
+            )
     return blockers
 
 
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
-    payload = (_canonical_json(value) + "\n").encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("xb") as stream:
-            stream.write(payload)
-        return True
-    except FileExistsError:
-        if path.read_bytes() != payload:
-            raise TaskEvaluationLaunchError(f"immutable_launch_conflict:{path.name}")
-        return False
+    from .task_evaluation_release_reference_lock import release_reference_lock
+
+    with release_reference_lock(path.parents[2], exclusive=False):
+        payload = (_canonical_json(value) + "\n").encode("utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("xb") as stream:
+                stream.write(payload)
+            return True
+        except FileExistsError:
+            if path.read_bytes() != payload:
+                raise TaskEvaluationLaunchError(f"immutable_launch_conflict:{path.name}")
+            return False
 
 
 def stage_launch_request(*, value: Mapping[str, Any], queue_root: str | Path) -> dict[str, Any]:
@@ -872,42 +1073,9 @@ def verify_profile_immutable_inputs(profile: Mapping[str, Any]) -> list[str]:
         if raw_path.is_symlink() or not raw_path.is_file():
             blockers.append(f"launch_profile_immutable_input_missing:{name}")
             continue
-        if _file_digest(raw_path.resolve()) != immutable_input.get("digest"):
+        if immutable_input_digest(raw_path.resolve()) != immutable_input.get("digest"):
             blockers.append(f"launch_profile_immutable_input_digest_mismatch:{name}")
     return sorted(set(blockers))
-
-
-def _write_exclusive_private_bytes(path: Path, payload: bytes) -> bool:
-    """Create one private file, allowing only byte-identical concurrent creation."""
-
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError:
-            if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
-                raise TaskEvaluationLaunchError(
-                    f"immutable_input_staging_conflict:{path.name}"
-                )
-            return False
-        directory_descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-        return True
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _stage_profile_immutable_inputs(
@@ -916,6 +1084,67 @@ def _stage_profile_immutable_inputs(
     run_root: Path,
     allocator_argv: Sequence[str],
 ) -> tuple[dict[str, Any], list[str]]:
+    """Reserve the copy footprint on the run volume before staging inputs."""
+
+    planned_sources = {
+        str(_mapping(item).get("path") or ""):
+        Path(str(_mapping(item).get("path") or "")).expanduser().resolve()
+        for item in profile.get("immutable_inputs") or []
+    }
+    sources = set(planned_sources.values())
+    projections, directory_bindings = _immutable_input_directory_projections(sources, allocator_argv)
+    expected_bytes = (
+        sum(source.stat().st_size for source in sources)
+        + sum(source.stat().st_size for contained in projections.values() for source in contained)
+        + 64 * 1024 * 1024
+    )
+    with reserve_control_plane_disk(
+        "launch_dispatch",
+        target_root=run_root.parent,
+        reservation_root=os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT",
+                                   str(DEFAULT_RESERVATION_ROOT)),
+        expected_bytes=expected_bytes,
+        workspace=run_root,
+        workload="launch_immutable_inputs",
+    ):
+        return _stage_profile_immutable_inputs_reserved(
+            profile=profile, run_root=run_root, allocator_argv=allocator_argv,
+            projections=projections, planned_sources=planned_sources,
+            directory_bindings=directory_bindings,
+        )
+
+
+def _immutable_input_directory_projections(
+    sources: set[Path], allocator_argv: Sequence[str]
+) -> tuple[dict[Path, set[Path]], dict[int, Path]]:
+    """Plan each directory copy once, including overlapping parent directories."""
+
+    projections: dict[Path, set[Path]] = {}
+    directory_bindings: dict[int, Path] = {}
+    for index, argument in enumerate(allocator_argv):
+        candidate = Path(argument).expanduser()
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        source_directory = candidate.resolve()
+        directory_bindings[index] = source_directory
+        contained = {source for source in sources if source.is_relative_to(source_directory)}
+        if not contained:
+            continue
+        if candidate.is_symlink():
+            raise TaskEvaluationLaunchError("immutable_input_allocator_directory_symlink")
+        projections[source_directory] = contained
+    return projections, directory_bindings
+
+
+def _stage_profile_immutable_inputs_reserved(
+    *,
+    profile: Mapping[str, Any],
+    run_root: Path,
+    allocator_argv: Sequence[str],
+    projections: Mapping[Path, set[Path]],
+    planned_sources: Mapping[str, Path],
+    directory_bindings: Mapping[int, Path],
+) -> tuple[dict[str, Any], list[str]]:
     """Snapshot immutable inputs and redirect exact allocator path arguments."""
 
     stage_root = run_root / "immutable_inputs"
@@ -923,9 +1152,7 @@ def _stage_profile_immutable_inputs(
     try:
         stage_root.chmod(0o700)
     except OSError as exc:
-        raise TaskEvaluationLaunchError(
-            "immutable_input_staging_directory_not_private"
-        ) from exc
+        raise TaskEvaluationLaunchError("immutable_input_staging_directory_not_private") from exc
 
     rows: list[dict[str, Any]] = []
     replacements: dict[str, str] = {}
@@ -938,32 +1165,48 @@ def _stage_profile_immutable_inputs(
         source = Path(declared_source).expanduser()
         expected_digest = str(immutable_input.get("digest") or "")
         if source.is_symlink() or not source.is_file():
-            raise TaskEvaluationLaunchError(
-                f"immutable_input_staging_source_missing:{name}"
-            )
+            raise TaskEvaluationLaunchError(f"immutable_input_staging_source_missing:{name}")
         source = source.resolve()
+        if source != planned_sources.get(declared_source):
+            raise TaskEvaluationLaunchError(f"immutable_input_staging_source_changed:{name}")
         payload = source.read_bytes()
         observed_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
         if observed_digest != expected_digest:
             raise TaskEvaluationLaunchError(
                 f"immutable_input_staging_source_digest_mismatch:{name}"
             )
-        destination = (
-            stage_root
-            / f"{index:03d}-{expected_digest[len(_DIGEST_PREFIX):]}.input"
-        )
+        already_staged = staged_sources.get(source)
+        if already_staged is not None:
+            # A profile may bind one file under two logical names (the scene
+            # configuration lane declares its bundle receipt as both the
+            # source bundle manifest and the evaluation run spec).  The
+            # digest checks above already proved this row matches the bytes
+            # on disk, so the source keeps its single staged copy instead of
+            # colliding with it.
+            readback = already_staged.read_bytes()
+            staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
+            if readback != payload or staged_digest != expected_digest:
+                raise TaskEvaluationLaunchError(f"immutable_input_staging_duplicate_source:{name}")
+            rows.append(
+                {
+                    "name": name,
+                    "source_path": str(source),
+                    "expected_digest": expected_digest,
+                    "staged_path": str(already_staged),
+                    "staged_size_bytes": len(readback),
+                    "staged_digest": staged_digest,
+                }
+            )
+            continue
+        destination = stage_root / f"{index:03d}-{expected_digest[len(_DIGEST_PREFIX) :]}.input"
         _write_exclusive_private_bytes(destination, payload)
         readback = destination.read_bytes()
         staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
         if readback != payload or staged_digest != expected_digest:
-            raise TaskEvaluationLaunchError(
-                f"immutable_input_staging_readback_mismatch:{name}"
-            )
+            raise TaskEvaluationLaunchError(f"immutable_input_staging_readback_mismatch:{name}")
         prior = replacements.get(str(source))
         if prior is not None and prior != str(destination):
-            raise TaskEvaluationLaunchError(
-                f"immutable_input_staging_duplicate_source:{name}"
-            )
+            raise TaskEvaluationLaunchError(f"immutable_input_staging_duplicate_source:{name}")
         replacements[str(source)] = str(destination)
         staged_sources[source] = destination
         for spelling in {declared_source, str(source)}:
@@ -984,70 +1227,9 @@ def _stage_profile_immutable_inputs(
             }
         )
 
-    directory_replacements: dict[str, str] = {}
-    directory_rows: list[dict[str, Any]] = []
-    for argument in allocator_argv:
-        candidate = Path(argument).expanduser()
-        if not candidate.exists() or not candidate.is_dir():
-            continue
-        source_directory = candidate.resolve()
-        contained = {
-            source: staged
-            for source, staged in staged_sources.items()
-            if source.is_relative_to(source_directory)
-        }
-        if not contained:
-            continue
-        if candidate.is_symlink():
-            raise TaskEvaluationLaunchError(
-                "immutable_input_allocator_directory_symlink"
-            )
-        if str(source_directory) in directory_replacements:
-            continue
-        directory_key = hashlib.sha256(
-            str(source_directory).encode("utf-8")
-        ).hexdigest()
-        projection = stage_root / "directories" / directory_key
-        projection.mkdir(mode=0o700, parents=True, exist_ok=True)
-        projection.chmod(0o700)
-        projected_inputs: list[dict[str, Any]] = []
-        for source, staged in sorted(
-            contained.items(), key=lambda item: str(item[0])
-        ):
-            relative_path = source.relative_to(source_directory)
-            if relative_path.is_absolute() or ".." in relative_path.parts:
-                raise TaskEvaluationLaunchError(
-                    "immutable_input_directory_projection_path_escape"
-                )
-            projected = projection / relative_path
-            payload = staged.read_bytes()
-            _write_exclusive_private_bytes(projected, payload)
-            projected.chmod(0o600)
-            readback = projected.read_bytes()
-            digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
-            expected_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
-            if readback != payload or digest != expected_digest:
-                raise TaskEvaluationLaunchError(
-                    "immutable_input_directory_projection_readback_mismatch"
-                )
-            projected_inputs.append(
-                {
-                    "source_path": str(source),
-                    "relative_path": str(relative_path),
-                    "projected_path": str(projected),
-                    "digest": digest,
-                    "size_bytes": len(readback),
-                }
-            )
-        directory_replacements[str(source_directory)] = str(projection)
-        directory_rows.append(
-            {
-                "source_directory": str(source_directory),
-                "staged_directory": str(projection),
-                "inputs": projected_inputs,
-                "allocator_argv_indices": [],
-            }
-        )
+    directory_replacements, directory_rows = stage_directory_projections(
+        stage_root, projections, staged_sources, digest_prefix=_DIGEST_PREFIX,
+    )
 
     rewritten: list[str] = []
     rewrite_indices: dict[str, list[int]] = {path: [] for path in replacements}
@@ -1065,28 +1247,30 @@ def _stage_profile_immutable_inputs(
             rewrite_indices[canonical_source].append(index)
             continue
         directory_argument = Path(argument).expanduser()
+        planned_directory = directory_bindings.get(index)
         canonical_directory = None
-        if directory_argument.exists() and directory_argument.is_dir():
-            canonical_directory = str(directory_argument.resolve())
+        if planned_directory is not None:
+            if not directory_argument.is_dir() or directory_argument.resolve() != planned_directory:
+                raise TaskEvaluationLaunchError("immutable_input_allocator_directory_changed")
+            canonical_directory = str(planned_directory)
+        elif directory_argument.is_dir():
+            current_directory = directory_argument.resolve()
+            if any(source.is_relative_to(current_directory) for source in planned_sources.values()):
+                raise TaskEvaluationLaunchError("immutable_input_allocator_directory_changed")
+            canonical_directory = str(current_directory)
         if canonical_directory in directory_replacements:
             rewritten.append(directory_replacements[canonical_directory])
-            next(
-                row
-                for row in directory_rows
-                if row["source_directory"] == canonical_directory
-            )["allocator_argv_indices"].append(index)
+            next(row for row in directory_rows if row["source_directory"] == canonical_directory)[
+                "allocator_argv_indices"
+            ].append(index)
             continue
         if any(path and path in argument for path in replacement_sources):
-            raise TaskEvaluationLaunchError(
-                "immutable_input_allocator_path_not_exactly_rewritable"
-            )
+            raise TaskEvaluationLaunchError("immutable_input_allocator_path_not_exactly_rewritable")
         embedded_value = argument.rsplit("=", 1)[-1]
         embedded_directory = Path(embedded_value).expanduser()
         if embedded_value != argument and embedded_directory.is_dir():
             if embedded_directory.is_symlink():
-                raise TaskEvaluationLaunchError(
-                    "immutable_input_allocator_directory_symlink"
-                )
+                raise TaskEvaluationLaunchError("immutable_input_allocator_directory_symlink")
             if str(embedded_directory.resolve()) in directory_replacements:
                 raise TaskEvaluationLaunchError(
                     "immutable_input_allocator_path_not_exactly_rewritable"
@@ -1099,9 +1283,7 @@ def _stage_profile_immutable_inputs(
                 )
         lexical_argument = Path(os.path.abspath(str(Path(argument).expanduser())))
         if str(lexical_argument) in source_parent_paths:
-            raise TaskEvaluationLaunchError(
-                "immutable_input_allocator_path_not_exactly_rewritable"
-            )
+            raise TaskEvaluationLaunchError("immutable_input_allocator_path_not_exactly_rewritable")
         rewritten.append(argument)
 
     for row in rows:
@@ -1119,17 +1301,11 @@ def _stage_profile_immutable_inputs(
         "raw_secret_values_recorded": False,
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path = run_root / "immutable_input_staging_receipt.json"
-    _write_exclusive_private_bytes(
-        receipt_path, (_canonical_json(receipt) + "\n").encode("utf-8")
-    )
+    _write_exclusive_private_bytes(receipt_path, (_canonical_json(receipt) + "\n").encode("utf-8"))
     if _read_json(receipt_path) != receipt:
-        raise TaskEvaluationLaunchError(
-            "immutable_input_staging_receipt_readback_mismatch"
-        )
+        raise TaskEvaluationLaunchError("immutable_input_staging_receipt_readback_mismatch")
     return receipt, rewritten
 
 
@@ -1153,55 +1329,139 @@ def _scoped_runtime_environment(values: Mapping[str, Any]):
 def _terminal_evidence(
     profile: Mapping[str, Any], *, execute: bool, run_root: Path
 ) -> dict[str, Any]:
-    terminal = _mapping(profile.get("terminal_contract"))
-    result_path = Path(
-        _render_launch_path(str(terminal.get("result_path") or ""), run_root=run_root)
-    ).expanduser().resolve()
-    if not execute:
-        return {
-            "status": "not_required_for_dry_run",
-            "result": _artifact(result_path),
-            "blockers": [],
-        }
-    blockers: list[str] = []
-    result: dict[str, Any] = {}
-    if not result_path.is_file():
-        blockers.append("allocator_terminal_result_missing")
-    else:
-        try:
-            result = _read_json(result_path)
-        except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
-            blockers.append("allocator_terminal_result_invalid")
-    if result:
-        if result.get("status") not in terminal.get("success_statuses", []):
-            blockers.append("allocator_terminal_status_not_success")
-        for field, expected in _mapping(terminal.get("required_values")).items():
-            if result.get(field) != expected:
-                blockers.append(f"allocator_terminal_value_mismatch:{field}")
-        artifacts: dict[str, Any] = {}
-        for field in terminal.get("required_path_fields") or []:
-            raw = str(result.get(field) or "").strip()
-            if not raw:
-                # `Path("").resolve()` is the process working directory, so an
-                # unset field used to be recorded as a descriptor naming the
-                # release checkout -- evidence that a reader could mistake for
-                # a real artifact that had merely gone missing. A field the
-                # result never set has no path.
-                artifacts[str(field)] = {"path": None, "exists": False, "digest": None}
-                blockers.append(f"allocator_terminal_artifact_missing:{field}")
+    return _build_terminal_evidence(
+        profile,
+        execute=execute,
+        run_root=run_root,
+        render_launch_path=_render_launch_path,
+        artifact=_artifact,
+        read_json=_read_json,
+    )
+
+
+def _allocator_boundary_artifact_evidence(
+    allocator_argv: Sequence[str],
+    *,
+    allocator_invoked: bool,
+    live_requested: bool,
+    terminal_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Distinguish allocator invocation from evidence of a paid boundary.
+
+    The canonical allocator writes its admission artifact before it can call a
+    provider.  A dispatcher that is terminated while preparing a native bundle
+    can therefore honestly retain both facts: live execution was requested and
+    the allocator process was invoked, while no provider mutation was attempted.
+    Absence is used only across the canonical output paths bound in the profile;
+    an admission, bound request, adapter output, or terminal result keeps the
+    conservative provider-attempt classification.
+    """
+
+    def _paths_after(flag: str) -> list[Path]:
+        paths: list[Path] = []
+        for index, argument in enumerate(allocator_argv):
+            if argument == flag and index + 1 < len(allocator_argv):
+                raw_path = str(allocator_argv[index + 1]).strip()
+            elif argument.startswith(flag + "="):
+                raw_path = argument.split("=", 1)[1].strip()
+            else:
                 continue
-            artifact_path = Path(raw).expanduser().resolve()
-            artifacts[str(field)] = _artifact(artifact_path)
-            if not artifact_path.is_file():
-                blockers.append(f"allocator_terminal_artifact_missing:{field}")
+            if raw_path and not raw_path.startswith("--"):
+                paths.append(Path(raw_path).expanduser().resolve())
+        return paths
+
+    admission_paths = _paths_after("--admission-out")
+    bound_request_paths = _paths_after("--bound-request-out")
+    adapter_output_paths = _paths_after("--adapter-output")
+    admission_path_configured = bool(admission_paths)
+    bound_request_path_configured = bool(bound_request_paths)
+    adapter_output_path_configured = bool(adapter_output_paths)
+    all_boundary_paths_configured = all(
+        (
+            admission_path_configured,
+            bound_request_path_configured,
+            adapter_output_path_configured,
+        )
+    )
+    admission_present = any(path.is_file() for path in admission_paths)
+    bound_request_present = any(path.is_file() for path in bound_request_paths)
+    adapter_output_present = any(path.is_file() for path in adapter_output_paths)
+    result_descriptor = _mapping(terminal_evidence.get("result"))
+    terminal_result_present = result_descriptor.get("exists") is True
+    boundary_artifacts_present = any(
+        (
+            admission_present,
+            bound_request_present,
+            adapter_output_present,
+            terminal_result_present,
+        )
+    )
+    if not live_requested:
+        status = "not_live_requested"
+    elif not all_boundary_paths_configured:
+        status = "boundary_artifact_paths_unconfigured"
+    elif not allocator_invoked:
+        status = "allocator_not_invoked"
+    elif boundary_artifacts_present:
+        status = "allocator_boundary_artifacts_present"
     else:
-        artifacts = {}
+        status = "absent_before_paid_admission"
     return {
-        "status": "passed" if not blockers else "blocked",
-        "result": _artifact(result_path),
-        "artifacts": artifacts,
-        "blockers": sorted(set(blockers)),
+        "schema_version": "task_evaluation_provider_mutation_evidence.v1",
+        "status": status,
+        "allocator_invoked": allocator_invoked,
+        "admission_artifact_path_configured": admission_path_configured,
+        "bound_request_artifact_path_configured": bound_request_path_configured,
+        "adapter_output_artifact_path_configured": adapter_output_path_configured,
+        "all_boundary_artifact_paths_configured": all_boundary_paths_configured,
+        "admission_artifact_present": admission_present,
+        "bound_request_artifact_present": bound_request_present,
+        "adapter_output_artifact_present": adapter_output_present,
+        "terminal_result_artifact_present": terminal_result_present,
+        "raw_secret_values_recorded": False,
     }
+
+
+def _native_policy_terminal_visual_evidence(
+    profile: Mapping[str, Any],
+    *,
+    live_requested: bool,
+    allocator_invoked: bool,
+    provider_mutation_evidence: Mapping[str, Any],
+    terminal_evidence: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Seal a typed media gap only where pre-observation is proven.
+
+    If the allocator returned a policy result, its exact visual-evidence object
+    remains authoritative.  When no result or paid-boundary artifact exists,
+    the canonical ordering proves the run stopped before a provider—and thus
+    before a first observation.  Once boundary evidence exists, this layer does
+    not guess whether an observation occurred.
+    """
+
+    if not live_requested or not _mapping(profile.get("native_policy_binding")):
+        return None
+    retained = _mapping(terminal_evidence.get("visual_evidence"))
+    if retained:
+        return retained
+    result_descriptor = _mapping(terminal_evidence.get("result"))
+    if result_descriptor.get("exists") is not True and provider_mutation_evidence.get("status") in {
+        "allocator_not_invoked",
+        "absent_before_paid_admission",
+    }:
+        reason = (
+            "allocator_terminated_before_paid_admission"
+            if allocator_invoked
+            else "allocator_not_invoked_before_paid_admission"
+        )
+        return {
+            "status": "unavailable_before_first_observation",
+            "media_gap": {
+                "type": "before_first_observation",
+                "reason": reason,
+            },
+        }
+    return None
 
 
 def dispatch_launch_request(
@@ -1213,6 +1473,7 @@ def dispatch_launch_request(
     execute_launch_id: str | None = None,
     public_catalog_path: str | Path | None = None,
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
+    publication_readiness_probe: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     request_source = Path(request_path).expanduser().resolve()
     request = _read_json(request_source)
@@ -1252,20 +1513,21 @@ def dispatch_launch_request(
             _mapping(profile.get("evaluation_run_spec"))
         ):
             blockers.append("evaluation_run_spec_profile_binding_mismatch")
-        request_controls = _mapping(request.get("required_controls"))
         profile_controls = _mapping(profile.get("required_controls"))
-        if request_controls != profile_controls:
+        bound_request_controls = policy_canary_setup.bound_policy_canary_required_controls(
+            request, profile_controls)
+        if bound_request_controls != profile_controls:
             blockers.append("launch_required_controls_profile_binding_mismatch")
         if request.get("claim_ceiling") != profile.get("claim_ceiling"):
             blockers.append("launch_claim_ceiling_profile_binding_mismatch")
-        policy_campaign = _mapping(
-            _mapping(profile.get("native_policy_binding")).get(
-                "policy_campaign"
-            )
-        )
-        if policy_campaign and request.get("launch_id") != policy_campaign.get(
-            "launch_id"
+        if "source_commit" in profile and request.get("source_commit") != profile.get(
+            "source_commit"
         ):
+            blockers.append("launch_source_commit_profile_binding_mismatch")
+        policy_campaign = _mapping(
+            _mapping(profile.get("native_policy_binding")).get("policy_campaign")
+        )
+        if policy_campaign and request.get("launch_id") != policy_campaign.get("launch_id"):
             blockers.append("native_policy_campaign_launch_id_mismatch")
         approved_spend = _mapping(_mapping(request.get("authorization")).get("spend")).get(
             "max_spend_usd"
@@ -1274,6 +1536,10 @@ def dispatch_launch_request(
         if isinstance(approved_spend, (int, float)) and isinstance(profile_spend, (int, float)):
             if profile_spend > approved_spend:
                 blockers.append("launch_profile_exceeds_approved_spend")
+
+    if canary_receipt := policy_canary_setup.maybe_dispatch_policy_canary_preparation(
+        request=request, profile=profile, blockers=blockers, state_root=state_root):
+        return canary_receipt
 
     live_requested = bool(execute)
     execution_scope_launch_id = str(execute_launch_id or "").strip()
@@ -1288,9 +1554,7 @@ def dispatch_launch_request(
     if live_requested and one_use_standing_required:
         if not standing.get("admitted"):
             blockers.append("one_use_standing_authorization_required")
-        elif standing.get("max_launches") != standing_requirement.get(
-            "maximum_launches"
-        ):
+        elif standing.get("max_launches") != standing_requirement.get("maximum_launches"):
             blockers.append("one_use_standing_authorization_launch_limit_mismatch")
     if live_requested and not standing.get("admitted"):
         if not execution_scope_launch_id:
@@ -1329,10 +1593,22 @@ def dispatch_launch_request(
         prior_receipt = _read_json(prior_receipt_path)
         if prior_receipt.get("request_digest") != request.get("request_digest"):
             raise TaskEvaluationLaunchError("launch_receipt_request_binding_mismatch")
+        from .task_evaluation_scene_storage_release import release_terminal_scene_activation_pin
+        release_terminal_scene_activation_pin(run_root=run_root, receipt=prior_receipt)
         return prior_receipt
     _write_immutable(run_root / "launch_request.json", request)
     if profile:
         _write_immutable(run_root / "launch_profile.json", profile)
+    publication_readiness, publication_blocker = scene_configuration_publication_readiness_decision(
+        request=request,
+        profile=profile,
+        live_requested=live_requested,
+        existing_blockers=bool(blockers),
+        probe=publication_readiness_probe,
+    )
+    if publication_blocker:
+        blockers.append(publication_blocker)
+    _write_immutable(run_root / "publication_readiness.json", publication_readiness)
     immutable_input_staging: dict[str, Any] = {
         "schema_version": IMMUTABLE_INPUT_STAGING_SCHEMA_VERSION,
         "status": "not_started",
@@ -1347,13 +1623,13 @@ def dispatch_launch_request(
             for item in list(allocator.get("argv") or [])
         ]
         try:
-            immutable_input_staging, allocator_argv = (
-                _stage_profile_immutable_inputs(
-                    profile=profile,
-                    run_root=run_root,
-                    allocator_argv=rendered_allocator_argv,
-                )
+            immutable_input_staging, allocator_argv = _stage_profile_immutable_inputs(
+                profile=profile,
+                run_root=run_root,
+                allocator_argv=rendered_allocator_argv,
             )
+        except ControlPlaneDiskBudgetError:
+            blockers.append("task_evaluation_launch_disk_budget_exceeded")
         except (OSError, TaskEvaluationLaunchError) as exc:
             blockers.append(f"immutable_input_staging_failed:{exc}")
     bound = {
@@ -1370,9 +1646,7 @@ def dispatch_launch_request(
         "execute_env_allowed": live_allowed,
         "secret_profile_id_match": secret_profile_match,
         "profile_live_enabled": execution_admission.get("live_enabled"),
-        "immutable_input_staging_receipt_digest": immutable_input_staging.get(
-            "receipt_digest"
-        ),
+        "immutable_input_staging_receipt_digest": immutable_input_staging.get("receipt_digest"),
     }
     bound["binding_digest"] = canonical_digest(bound, digest_field="binding_digest")
     _write_immutable(run_root / "launch_binding.json", bound)
@@ -1454,6 +1728,10 @@ def dispatch_launch_request(
         except (OSError, StandingAuthorizationError, TypeError, ValueError):
             blockers.append("standing_authorization_consumption_not_recorded")
 
+    if live_requested and profile:
+        from .task_evaluation_owner_dispatch_scope import owner_dispatch_blockers
+        blockers.extend(owner_dispatch_blockers(profile))
+        blockers.extend(scene_execution_authority_blockers(profile))
     if not blockers and profile:
         argv = [
             "gpu-canary",
@@ -1467,9 +1745,7 @@ def dispatch_launch_request(
                 child_environment.update(
                     {
                         str(key): str(value)
-                        for key, value in _mapping(
-                            profile.get("runtime_environment")
-                        ).items()
+                        for key, value in _mapping(profile.get("runtime_environment")).items()
                     }
                 )
                 child_environment[STAGING_RECEIPT_ENV] = str(
@@ -1488,13 +1764,7 @@ def dispatch_launch_request(
                     text=True,
                     env=child_environment,
                     timeout=(
-                        int(
-                            _mapping(profile.get("allocator")).get(
-                                "hard_ttl_seconds"
-                            )
-                            or 1
-                        )
-                        + 300
+                        int(_mapping(profile.get("allocator")).get("hard_ttl_seconds") or 1) + 300
                     ),
                 )
                 allocator_exit_code = completed.returncode
@@ -1513,8 +1783,7 @@ def dispatch_launch_request(
                         {
                             **_mapping(profile.get("runtime_environment")),
                             STAGING_RECEIPT_ENV: str(
-                                run_root
-                                / "immutable_input_staging_receipt.json"
+                                run_root / "immutable_input_staging_receipt.json"
                             ),
                         }
                     ),
@@ -1538,6 +1807,27 @@ def dispatch_launch_request(
             "blockers": ["launch_profile_missing"],
         }
     )
+    allocator_invoked = allocator_exit_code is not None
+    provider_mutation_evidence = _allocator_boundary_artifact_evidence(
+        allocator_argv,
+        allocator_invoked=allocator_invoked,
+        live_requested=live_requested,
+        terminal_evidence=terminal,
+    )
+    provider_mutation_attempted = bool(
+        live_requested
+        and allocator_invoked
+        and provider_mutation_evidence.get("status") != "absent_before_paid_admission"
+    )
+    visual_evidence = _native_policy_terminal_visual_evidence(
+        profile,
+        live_requested=live_requested,
+        allocator_invoked=allocator_invoked,
+        provider_mutation_evidence=provider_mutation_evidence,
+        terminal_evidence=terminal,
+    )
+    if visual_evidence is not None:
+        terminal["visual_evidence"] = visual_evidence
     blockers.extend(terminal.get("blockers") or [])
     if blockers:
         status = "blocked"
@@ -1555,9 +1845,12 @@ def dispatch_launch_request(
         "binding_digest": bound["binding_digest"],
         "canonical_allocator": CANONICAL_ALLOCATOR_ENTRYPOINT,
         "allocator_exit_code": allocator_exit_code,
+        "allocator_invoked": allocator_invoked,
         "execute_requested": live_requested,
         "execute_launch_id": execution_scope_launch_id if live_requested else None,
-        "provider_mutation_attempted": bool(live_requested and allocator_exit_code is not None),
+        "provider_mutation_attempted": provider_mutation_attempted,
+        "provider_mutation_evidence": provider_mutation_evidence,
+        "publication_readiness": publication_readiness,
         "prelaunch_skill_execution": prelaunch_skill_execution,
         "immutable_input_staging": {
             key: immutable_input_staging.get(key)
@@ -1574,9 +1867,18 @@ def dispatch_launch_request(
         "raw_secret_values_recorded": False,
         "agent_operator_used": False,
         "claim_ceiling": request.get("claim_ceiling"),
+        "receipt_digest_canonicalization": (LAUNCH_RECEIPT_DIGEST_CANONICALIZATION),
     }
-    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    if visual_evidence is not None:
+        receipt["visual_evidence"] = visual_evidence
+    if "source_commit" in profile:
+        receipt["source_commit"] = profile["source_commit"]
+    receipt["receipt_digest"] = cross_runtime_canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
     _write_immutable(run_root / "launch_receipt.json", receipt)
+    from .task_evaluation_scene_storage_release import release_terminal_scene_activation_pin
+    release_terminal_scene_activation_pin(run_root=run_root, receipt=receipt)
     from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp
 
     sync_result = sync_launch_receipt_to_webapp(receipt=receipt)
@@ -1633,16 +1935,14 @@ def process_launch_queue(
     # a stale one silently filtered every newer request out of the queue.
     standing_root = Path(standing_authorization_directory(state_root)).expanduser()
     standing_present = standing_root.is_dir() and any(standing_root.glob("*.json"))
-    sources = sorted(pending.glob("*.json"))
+    from .task_evaluation_owner_dispatch_scope import owner_launch_sources
+    sources = owner_launch_sources(sorted(pending.glob("*.json")), Path(profile_dir).expanduser().resolve())
     if execute and armed and standing_present:
         scoped_sources = [
-            source
-            for source in sources
-            if source.name.startswith(f"{execution_scope_launch_id}-")
+            source for source in sources if source.name.startswith(f"{execution_scope_launch_id}-")
         ]
         terminal_scope_exists = any(
-            directory.is_dir()
-            and any(directory.glob(f"{execution_scope_launch_id}-*.json"))
+            directory.is_dir() and any(directory.glob(f"{execution_scope_launch_id}-*.json"))
             for directory in (queue / "completed", queue / "blocked")
         )
         if not scoped_sources and terminal_scope_exists:
@@ -1674,10 +1974,9 @@ def process_launch_queue(
         # to protect, and `dispatch_launch_request` still refuses any launch its
         # profile's standing authorization does not admit.
         sources = [
-            source
-            for source in sources
-            if source.name.startswith(f"{execution_scope_launch_id}-")
+            source for source in sources if source.name.startswith(f"{execution_scope_launch_id}-")
         ]
+
     def claim(source: Path) -> Path | None:
         claimed = processing / source.name
         # The dispatcher may be started manually while the systemd-triggered
@@ -1687,8 +1986,7 @@ def process_launch_queue(
         # Terminal filenames are durable idempotency records too: a duplicate
         # upload of an already completed or blocked request is never replayed.
         if any(
-            (queue / directory / source.name).exists()
-            for directory in ("completed", "blocked")
+            (queue / directory / source.name).exists() for directory in ("completed", "blocked")
         ):
             return None
         try:
@@ -1741,15 +2039,9 @@ def process_launch_queue(
             }
         if receipt.get("retain_processing_for_reconciliation") is True:
             return receipt
+        completed = {"completed", "dry_run_completed", "queued_for_no_spend_preparation"}
         destination_dir = queue / (
-            "completed"
-            if receipt.get("status")
-            in {
-                "completed",
-                "dry_run_completed",
-            }
-            else "blocked"
-        )
+            "completed" if receipt.get("status") in completed else "blocked")
         destination_dir.mkdir(parents=True, exist_ok=True)
         os.replace(claimed, destination_dir / claimed.name)
         return receipt

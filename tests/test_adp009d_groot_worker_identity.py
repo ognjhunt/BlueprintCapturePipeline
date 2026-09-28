@@ -57,6 +57,18 @@ def test_checkpoint_inventory_binds_paths_sizes_and_bytes_but_not_hf_cache(tmp_p
     }
 
 
+def test_checkpoint_interface_binding_names_exact_loaded_processor_config() -> None:
+    assert identity.expected_checkpoint_interface_binding() == {
+        "processor_config": {
+            "path": "processor_config.json",
+            "size_bytes": 2_833,
+            "digest_algorithm": "git_blob_sha1",
+            "digest": "55b4d74b3565274662ba33eefe9bdb0ca75df3e9",
+        },
+        "video_delta_indices": [0],
+    }
+
+
 def test_identity_is_verified_only_after_source_bytes_and_environment_are_observed(
     tmp_path, monkeypatch
 ) -> None:

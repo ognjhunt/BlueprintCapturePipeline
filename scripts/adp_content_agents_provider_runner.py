@@ -14,18 +14,29 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
+import yaml
+
 
 SCHEMA_VERSION = "adp_content_agents_vast_result.v1"
 TIMEOUT_SECONDS = 2400
 SUBPROCESS_PROGRESS_INTERVAL_SECONDS = 60.0
 # Production CAD inputs can contain many independently planned mesh prims. Keep
-# each paid stage bounded, while giving the planning-heavy material and physics
-# agents enough time to finish before the live profile's 14,400-second ceiling.
+# each phase bounded; the total runner budget below arbitrates the sequential
+# phases inside the component driver's stricter deadline.
 AGENT_TIMEOUT_SECONDS = {
     "material": 3_600,
     "texture": 1_200,
     "physics": 3_600,
 }
+VALIDATION_TIMEOUT_SECONDS = 600
+# The component driver owns a 7,000-second subprocess deadline.  Keep one
+# explicit inner sequence deadline below it so the runner can write a typed
+# result instead of letting the caller kill a late valid phase without one.
+RUNNER_TOTAL_BUDGET_SECONDS = 6_000
+# Texture exports carry their generated maps in a sibling tree. Run texture
+# last so the final candidate keeps those portable references while retaining
+# the material and physics authored by the two preceding agents.
+AGENT_EXECUTION_ORDER = ("material", "physics", "texture")
 
 
 def _progress(stage: str) -> None:
@@ -42,12 +53,63 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _canonical_digest(value: dict[str, Any], *, digest_field: str) -> str:
+    normalized = dict(value)
+    normalized.pop(digest_field, None)
+    encoded = json.dumps(
+        normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def _redact(value: str, env: dict[str, str]) -> str:
     redacted = value
     for name, secret in env.items():
         if secret and any(marker in name.upper() for marker in ("KEY", "TOKEN", "SECRET")):
             redacted = redacted.replace(secret, "REDACTED_SECRET")
     return redacted
+
+
+def _credential_values(env: dict[str, str]) -> tuple[str, ...]:
+    """Return exact credential and secret-file-path values passed to agents."""
+
+    values = []
+    for name, value in env.items():
+        upper = name.upper()
+        if (
+            value
+            and any(marker in upper for marker in ("KEY", "TOKEN", "SECRET"))
+            and not upper.endswith("_ID")
+        ):
+            values.append(value)
+    return tuple(dict.fromkeys(values))
+
+
+def _file_contains_any(path: Path, values: Sequence[str]) -> bool:
+    needles = tuple(value.encode("utf-8") for value in values if value)
+    if not needles:
+        return False
+    overlap = max(len(needle) for needle in needles) - 1
+    tail = b""
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            payload = tail + chunk
+            if any(needle in payload for needle in needles):
+                return True
+            tail = payload[-overlap:] if overlap > 0 else b""
+    return False
+
+
+def _assert_secret_free_tree(root: Path, *, env: dict[str, str]) -> None:
+    secrets = _credential_values(env)
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if any(secret in relative for secret in secrets) or _file_contains_any(
+            path, secrets
+        ):
+            raise ValueError("content_agents_output_secret_detected")
 
 
 def _run(
@@ -128,9 +190,10 @@ def _files(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _copy_evidence(source: Path, destination: Path) -> None:
+def _copy_evidence(source: Path, destination: Path, *, env: dict[str, str]) -> None:
     if not source.is_dir():
         return
+    _assert_secret_free_tree(source, env=env)
     for path in source.rglob("*"):
         if not path.is_file() or path.stat().st_size > 100_000_000:
             continue
@@ -174,6 +237,80 @@ def _physics_output(work: Path) -> Path | None:
     )
     preferred = [path for path in candidates if "physics" in path.name.lower()]
     return (preferred or candidates or [None])[0]
+
+
+def _agent_authored_output(
+    name: str, work: Path, *, input_usd: Path
+) -> Path | None:
+    """Return the exact authored USD that the next paid agent must consume."""
+
+    if name == "material":
+        candidate = work / "output/output.usd"
+        return candidate if candidate.is_file() else None
+    if name == "texture":
+        candidate = work / "output/textured_output.usd"
+        return candidate if candidate.is_file() else None
+    if name == "physics":
+        suffix = input_usd.suffix.lower()
+        if suffix == ".usdz":
+            suffix = ".usda"
+        candidate = work / "physics" / f"{input_usd.stem}_physics{suffix}"
+        return candidate if candidate.is_file() else None
+    raise ValueError(f"content_agents_agent_unknown:{name}")
+
+
+def _resolved_agent_config(
+    source: Path, *, agent_name: str, input_usd: Path, destination: Path
+) -> Path:
+    """Write a runtime config bound to the previous agent's exact USD output.
+
+    The immutable shipped config remains unchanged and digest-verifiable.  Only
+    this derived runtime copy is rewritten, next to the original so every other
+    package-relative path keeps the same meaning.
+    """
+
+    payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not input_usd.is_file():
+        raise ValueError("content_agents_runtime_config_input_invalid")
+    input_config = payload.get("input")
+    if not isinstance(input_config, dict):
+        raise ValueError("content_agents_runtime_config_input_invalid")
+    input_config["usd_path"] = os.path.relpath(
+        input_usd.resolve(), start=destination.parent.resolve()
+    )
+    if agent_name == "texture":
+        from pxr import Usd, UsdShade
+
+        target_prims = payload.get("target_prims")
+        material_specs = payload.get("material_textures")
+        stage = Usd.Stage.Open(str(input_usd))
+        bound_material_paths: set[str] = set()
+        if (
+            stage is None
+            or not isinstance(target_prims, list)
+            or not target_prims
+            or not isinstance(material_specs, dict)
+            or len(material_specs) != 1
+        ):
+            raise ValueError("content_agents_texture_material_binding_invalid")
+        for prim_path in target_prims:
+            prim = stage.GetPrimAtPath(str(prim_path))
+            if not prim.IsValid():
+                raise ValueError("content_agents_texture_material_binding_invalid")
+            material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
+            if not material or not material.GetPrim().IsValid():
+                raise ValueError("content_agents_texture_material_binding_invalid")
+            bound_material_paths.add(str(material.GetPath()))
+        if len(bound_material_paths) != 1:
+            raise ValueError("content_agents_texture_material_binding_invalid")
+        material_path = bound_material_paths.pop()
+        material_spec = dict(next(iter(material_specs.values())))
+        material_spec["material_path"] = material_path
+        payload["material_textures"] = {material_path: material_spec}
+    destination.write_text(
+        yaml.safe_dump(payload, sort_keys=False, width=100), encoding="utf-8"
+    )
+    return destination
 
 
 def _validation_stage(source_usd: Path, destination: Path) -> None:
@@ -367,6 +504,7 @@ def main() -> int:
     env["WU_OVRTX_AUTO_PROVISION"] = "0"
     env["WU_OVRTX_VENV_DIR"] = str(source_root / ".ovrtx_venv")
     env["NVIDIA_DRIVER_CAPABILITIES"] = "all"
+    runner_deadline = time.monotonic() + RUNNER_TOTAL_BUDGET_SECONDS
 
     input_usd, joint_agent_plan = _runtime_input_plan(runtime_root)
 
@@ -391,7 +529,10 @@ def main() -> int:
     }
     agents: dict[str, Any] = {}
     blockers: list[str] = list(native_blockers)
-    for name in ("material", "texture", "physics"):
+    current_input = input_usd
+    final_authored_output: Path | None = None
+    upstream_agent_succeeded = True
+    for name in AGENT_EXECUTION_ORDER:
         if native_blockers:
             agents[name] = {
                 f"{name}_agent_attempted": False,
@@ -401,44 +542,125 @@ def main() -> int:
                 "retry_count": 0,
             }
             continue
+        if not upstream_agent_succeeded:
+            agents[name] = {
+                f"{name}_agent_attempted": False,
+                f"{name}_agent_executed": False,
+                "reason": "skipped_after_upstream_agent_failure",
+                "produced_artifacts": [],
+                "retry_count": 0,
+            }
+            continue
         executable, config, work = agent_specs[name]
-        command = [str(bin_dir / executable), "run", str(config)]
+        remaining_seconds = runner_deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            blockers.append(f"content_agents_runner_budget_exhausted_before:{name}")
+            agents[name] = {
+                f"{name}_agent_attempted": False,
+                f"{name}_agent_executed": False,
+                "reason": "runner_total_budget_exhausted",
+                "produced_artifacts": [],
+                "retry_count": 0,
+            }
+            upstream_agent_succeeded = False
+            continue
+        try:
+            resolved_config = _resolved_agent_config(
+                config,
+                agent_name=name,
+                input_usd=current_input,
+                destination=config.parent / f"runtime_{name}_agent.yaml",
+            )
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            blocker = (
+                str(exc)
+                if str(exc).startswith("content_agents_")
+                else "content_agents_runtime_config_input_invalid"
+            )
+            blockers.append(blocker)
+            agents[name] = {
+                f"{name}_agent_attempted": False,
+                f"{name}_agent_executed": False,
+                "reason": blocker,
+                "produced_artifacts": [],
+                "retry_count": 0,
+            }
+            upstream_agent_succeeded = False
+            continue
+        command = [str(bin_dir / executable), "run", str(resolved_config)]
         if name in {"material", "physics"}:
             command.append("--clean")
         _progress(f"{name}_agent_started")
+        budget_limited = remaining_seconds < AGENT_TIMEOUT_SECONDS[name]
         execution = _run(
             command,
             log_path=output_root / f"{name}-agent.log",
             env=env,
-            timeout=AGENT_TIMEOUT_SECONDS[name],
+            timeout=min(AGENT_TIMEOUT_SECONDS[name], remaining_seconds),
         )
-        produced = _files(work)
-        success = execution["returncode"] == 0 and bool(produced)
+        try:
+            _copy_evidence(work, output_root / f"{name}_workdir", env=env)
+            produced = _files(work)
+        except ValueError as exc:
+            if str(exc) != "content_agents_output_secret_detected":
+                raise
+            shutil.rmtree(work, ignore_errors=True)
+            produced = []
+            blockers.append(str(exc))
+        authored_output = _agent_authored_output(
+            name, work, input_usd=current_input
+        )
+        success = (
+            execution["returncode"] == 0
+            and bool(produced)
+            and authored_output is not None
+        )
+        if execution["timed_out"] and budget_limited:
+            blockers.append(f"content_agents_runner_budget_exhausted_during:{name}")
         if not success:
             blockers.append(f"{name}_agent_full_execution_failed")
-        _copy_evidence(work, output_root / f"{name}_workdir")
+            if execution["returncode"] == 0 and authored_output is None:
+                blockers.append(f"{name}_agent_authored_output_missing")
         agents[name] = {
             f"{name}_agent_attempted": True,
             f"{name}_agent_executed": success,
             "execution": execution,
+            "input_usd_sha256": _sha256(current_input),
+            "resolved_config_sha256": _sha256(resolved_config),
+            "authored_output": (
+                {
+                    "relative_path": authored_output.relative_to(runtime_root).as_posix(),
+                    "size_bytes": authored_output.stat().st_size,
+                    "sha256": _sha256(authored_output),
+                }
+                if authored_output is not None
+                else None
+            ),
             "produced_artifacts": produced,
             "retry_count": 0,
         }
+        upstream_agent_succeeded = success
+        if success and authored_output is not None:
+            current_input = authored_output
+            final_authored_output = authored_output
         _progress(f"{name}_agent_completed")
 
     validation: dict[str, Any] = {
         "validation_agent_attempted": False,
         "validation_agent_executed": False,
     }
-    physics_output = (
-        _physics_output(agent_specs["physics"][2]) if not native_blockers else None
-    )
+    physics_output = final_authored_output if not native_blockers else None
     if native_blockers:
         validation["reason"] = "skipped_after_native_probe_failure"
     elif physics_output is None:
         blockers.append("physics_agent_output_missing_for_validation")
     else:
         try:
+            remaining_seconds = runner_deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise TimeoutError(
+                    "content_agents_runner_budget_exhausted_before:validation"
+                )
             stage_path = output_root / "physics_agent_validation_stage.usda"
             _validation_stage(physics_output, stage_path)
             validation_dir = output_root / "validation_agent"
@@ -460,7 +682,7 @@ def main() -> int:
                 command,
                 log_path=output_root / "validation-agent.log",
                 env=env,
-                timeout=600,
+                timeout=min(VALIDATION_TIMEOUT_SECONDS, remaining_seconds),
             )
             validation_result_path = validation_dir / "validation_result.json"
             payload = (
@@ -489,7 +711,11 @@ def main() -> int:
                 "validation_agent_executed": False,
                 "error_type": type(exc).__name__,
             }
-            blockers.append("validation_agent_static_check_failed")
+            blockers.append(
+                str(exc)
+                if str(exc).startswith("content_agents_runner_budget_exhausted_before:")
+                else "validation_agent_static_check_failed"
+            )
     agents["validation"] = validation
     agents["joint"] = {
         **joint_agent_plan,
@@ -503,6 +729,18 @@ def main() -> int:
         "source_tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
         "source_version": "0.5.2",
         "input_usd_sha256": _sha256(input_usd),
+        "agent_execution_order": list(AGENT_EXECUTION_ORDER),
+        "authored_candidate": (
+            {
+                "relative_path": final_authored_output.relative_to(
+                    runtime_root
+                ).as_posix(),
+                "size_bytes": final_authored_output.stat().st_size,
+                "sha256": _sha256(final_authored_output),
+            }
+            if final_authored_output is not None
+            else None
+        ),
         "gpu_probe": gpu,
         "agents": agents,
         "material_agent_executed": agents["material"]["material_agent_executed"],
@@ -533,7 +771,11 @@ def main() -> int:
             "physical_evidence": False,
         },
         "raw_secret_values_recorded": False,
+        "result_digest": "",
     }
+    result["result_digest"] = _canonical_digest(
+        result, digest_field="result_digest"
+    )
     result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     _progress("result_written")
     return 0 if not blockers else 1

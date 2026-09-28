@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import time
 import urllib.error
 from pathlib import Path
@@ -35,6 +37,9 @@ from .sam31_gpu_admission import (
     CHECKPOINT_REPOSITORY_REVISION,
     OFFICIAL_CODE_REVISION,
     OPERATION,
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
+    sam31_capacity_request,
 )
 from .sam31_source_track_canary_worker import RUNTIME_RESULT_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
@@ -42,6 +47,9 @@ from .scene_placement.semantic_source_track_import import (
     RESULT_SCHEMA_VERSION as SOURCE_TRACK_RESULT_SCHEMA_VERSION,
 )
 from .vast_independent_watchdog_control import write_started_vast_instance_id
+from .sam31_output_recovery import (
+    MAX_RESULT_BYTES, PUBLIC_KEY_ENV, prepare_sam31_output_recovery, receive_sam31_output,
+)
 
 
 EXECUTION_SCHEMA_VERSION = "semantic_sam31_vast_source_track_execution.v1"
@@ -52,7 +60,6 @@ PRELAUNCH_INVENTORY_RECEIPT_NAME = "prelaunch_provider_inventory_block.json"
 PRELAUNCH_PROVIDER_ZERO_SCHEMA_VERSION = "semantic_sam31_vast_provider_zero_no_allocation.v1"
 PAID_LANE = "semantic_sam31_gpu_canary"
 NAME_PREFIX = "blueprint-sam31-source-tracks-"
-MAX_RESULT_BYTES = 64 * 1024**2
 
 INPUT_GET_ENV = "BLUEPRINT_SAM31_INPUT_BUNDLE_GET_URL"
 OUTPUT_PUT_ENV = "BLUEPRINT_SAM31_OUTPUT_PUT_URL"
@@ -145,6 +152,8 @@ def _write_prelaunch_inventory_block_receipt(
         "request_digest": request.get("request_digest"),
         "bound_request_digest": request.get("bound_request_digest"),
         "provider_mutations_performed": 0,
+        "provider_launch_invoked": False,
+        "failure_phase": "prelaunch_inventory_read",
         "initial_provider_zero_status": _provider_zero_status_from_snapshots(initial_snapshots),
         "provider_zero_status": _provider_zero_status_from_snapshots(postfailure_snapshots),
         "inventory_snapshots": initial_snapshots,
@@ -254,12 +263,12 @@ def _nested_keys(value: Any) -> set[str]:
     return set()
 
 
-def _default_result_fetcher(url: str) -> Mapping[str, Any]:
+def _default_result_fetcher(url: str, *, timeout_seconds: float = 30.) -> Mapping[str, Any]:
     try:
         response = safe_http_request(
             url,
             method="GET",
-            timeout_seconds=30,
+            timeout_seconds=min(30., max(.1, timeout_seconds)),
             policy=presigned_transfer_policy(url, max_response_bytes=MAX_RESULT_BYTES),
             max_response_bytes=MAX_RESULT_BYTES,
         )
@@ -312,6 +321,22 @@ def _bootstrap_script() -> str:
     """Download exact inputs, fetch and verify the checkpoint, run, then upload."""
 
     return r"""set -euo pipefail
+# Install only the existing recovery PUBLIC key; private key bytes never leave the host.
+python - <<'PYKEY'
+import os
+from pathlib import Path
+key = os.environ["BLUEPRINT_SAM31_RECOVERY_PUBLIC_KEY"]
+root = Path("/root/.ssh")
+root.mkdir(parents=True, exist_ok=True, mode=0o700)
+root.chmod(0o700)
+path = root / "authorized_keys"
+existing = path.read_text().splitlines() if path.exists() else []
+if key not in existing:
+    with path.open("a") as stream:
+        stream.write(key + "\n")
+path.chmod(0o600)
+PYKEY
+unset BLUEPRINT_SAM31_RECOVERY_PUBLIC_KEY
 bundle_path=/work/sam31_input_bundle.zip
 result_path=/work/sam31_source_track_result.json
 checkpoint_path=/models/sam31/sam3.1_multiplex.pt
@@ -458,6 +483,43 @@ def validate_sam31_runtime_result(
     return result
 
 
+def frozen_sam31_launch_policy(bound_request: Mapping[str, Any], preflight: Mapping[str, Any]) -> dict[str, Any]:
+    """Reopen the admitted resource policy, not the advisory offer's properties."""
+    if canonical_digest(preflight) != bound_request.get("bound_preflight_digest"):
+        raise Sam31VastCanaryError("sam31_launch_preflight_binding_changed")
+    supplied = preflight.get("capacity_request")
+    if not isinstance(supplied, Mapping):
+        raise Sam31VastCanaryError("sam31_launch_capacity_policy_missing")
+    expected = sam31_capacity_request(container_disk_bytes=preflight.get("container_disk_bytes"),
+        max_hourly_rate_usd=supplied.get("max_hourly_rate_usd"))
+    if dict(supplied) != expected:
+        raise Sam31VastCanaryError("sam31_launch_capacity_policy_changed")
+    if expected["max_hourly_rate_usd"] * bound_request["hard_ttl_seconds"] / 3600 > bound_request["max_spend_usd"]:
+        raise Sam31VastCanaryError("sam31_launch_capacity_exceeds_spend_cap")
+    return expected
+
+
+def _retain_launch_outcome(root, result, request):
+    # Deliberately omit free-form provider messages, request payloads, URLs and
+    # environment values. Stable reason codes and numeric HTTP/offer evidence
+    # are enough to distinguish credit, capacity and rejected-create failures.
+    codes = [value for value in (result.get("blockers") or []) if isinstance(value, str)
+             and re.fullmatch(r"[a-z][a-z0-9_:-]{0,199}", value)]
+    numeric = {"offer_search_status", "offer_count", "create_http_status", "create_status", "ask_id", "hourly_rate_usd"}
+    attempts = [{key: value for key, value in row.items() if key in numeric
+                 and type(value) in (int, float) and math.isfinite(value)}
+                for row in (result.get("attempts") or []) if isinstance(row, Mapping)]
+    value = {"schema_version": "semantic_sam31_provider_launch_outcome.v1",
+        "bound_request_digest": request["bound_request_digest"],
+        "status": result.get("status") if result.get("status") in {"blocked", "launched", "failed"} else "unknown",
+        "blockers": codes, "attempts": attempts,
+        "allocation_outcome_ambiguous": result.get("allocation_outcome_ambiguous") is True,
+        "raw_secret_values_recorded": False}
+    value["launch_outcome_digest"] = canonical_digest(value, digest_field="launch_outcome_digest")
+    write_json(root / "provider_launch_outcome.json", value)
+    return codes
+
+
 def run_sam31_vast_source_track_canary(
     *,
     bound_request: Mapping[str, Any],
@@ -488,6 +550,10 @@ def run_sam31_vast_source_track_canary(
         request.get("bound_provider") != "vast"
         or request.get("provider_mutation_authorized") is not True
         or request.get("operation") != OPERATION
+        or request.get("allowed_geolocation_country_codes")
+        != list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES)
+        or request.get("preferred_geolocation_regex")
+        != SAM31_PREFERRED_GEOLOCATION_REGEX
         or provider.name != "vast"
     ):
         raise Sam31VastCanaryError("sam31_bound_request_not_executable")
@@ -498,6 +564,7 @@ def run_sam31_vast_source_track_canary(
     retry_cap = int(request.get("retry_cap") or 0)
     if retry_cap < 0 or hard_ttl <= 0 or max_spend <= 0:
         raise Sam31VastCanaryError("sam31_execution_bounds_invalid")
+    capacity_policy = frozen_sam31_launch_policy(request, preflight)
 
     root = Path(job_dir)
     pending_dir = root / "pending_teardowns"
@@ -549,6 +616,13 @@ def run_sam31_vast_source_track_canary(
                 global_before=global_before,
             )
 
+    # Inventory transport may back off on rate limiting. It cannot grant a
+    # launch after the original independent watchdog has expired or shortened
+    # below the required interval, and it never extends that deadline.
+    if not validator(watchdog, float(clock()), hard_ttl):
+        raise Sam31VastCanaryError("sam31_independent_watchdog_not_live")
+
+    recovery = prepare_sam31_output_recovery(root=root, hard_ttl_seconds=hard_ttl)
     reconciliation = build_paid_provider_lane_reconciliation(
         provider="vast",
         lane=PAID_LANE,
@@ -578,6 +652,7 @@ def run_sam31_vast_source_track_canary(
     instance_id: str | None = None
     launch_result: dict[str, Any] = {}
     validated_result: dict[str, Any] | None = None
+    delivery: dict[str, Any] = {"status":"not_attempted", "route":None}
     normalized_source_track_result_path = root / "semantic_source_track_import_result.v1.json"
     blockers: list[str] = []
     provider_mutations = 0
@@ -586,6 +661,7 @@ def run_sam31_vast_source_track_canary(
             INPUT_GET_ENV: input_bundle_get_url,
             OUTPUT_PUT_ENV: output_put_url,
             HF_TOKEN_ENV: hf_token,
+            PUBLIC_KEY_ENV: recovery["public_key"],
             "BLUEPRINT_SAM31_CANARY_REQUEST_DIGEST": request_digest,
             "BLUEPRINT_SAM31_BOUND_REQUEST_DIGEST": str(request.get("bound_request_digest") or ""),
             "BLUEPRINT_CONTAINER_IMAGE_DIGEST": image,
@@ -604,14 +680,20 @@ def run_sam31_vast_source_track_canary(
             env=env,
             bootstrap_argv=["-lc", _bootstrap_script()],
             entrypoint=["bash"],
-            container_disk_gb=max(40, int(preflight.get("container_disk_bytes") or 0) // 1024**3),
+            container_disk_gb=capacity_policy["container_disk_gb"],
             volume_gb=0,
-            max_hourly_rate_usd=float(preflight.get("on_demand_price_usd_per_hour") or 0),
-            min_gpu_ram_mb=max(24_000, int(preflight.get("gpu_memory_bytes") or 0) // 1_000_000),
+            max_hourly_rate_usd=capacity_policy["max_hourly_rate_usd"],
+            min_gpu_ram_mb=capacity_policy["min_gpu_ram_mb"],
             requires_rtx=False,
-            vast_launch_mode="args",
+            vast_launch_mode="ssh_direct",
+            allowed_geolocation_country_codes=(
+                SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+            ),
+            preferred_geolocation_regex=SAM31_PREFERRED_GEOLOCATION_REGEX,
         )
         provider_request = provider.build_request(spec, root)
+        provider_request.update(capacity_policy)
+        provider_request["maximum_create_attempts"] = 1
         provider_request["prelaunch_spend_guard"] = {
             "schema_version": "semantic_sam31_gpu_prelaunch_spend_guard.v1",
             "required_before_provider_launch": True,
@@ -657,34 +739,27 @@ def run_sam31_vast_source_track_canary(
                     blockers.append("sam31_watchdog_instance_binding_path_invalid")
                 else:
                     write_started_vast_instance_id(watchdog_instance_path, int(instance_id))
-            raw_result: dict[str, Any] | None = None
-            while float(clock()) - started_at <= hard_ttl:
-                try:
-                    raw_result = dict(result_fetcher(output_get_url))
-                    break
-                except (FileNotFoundError, TimeoutError):
-                    if float(clock()) - started_at >= hard_ttl:
-                        break
-                    sleeper(
-                        min(
-                            5.0,
-                            max(0.0, hard_ttl - (float(clock()) - started_at)),
-                        )
-                    )
-            if raw_result is None:
-                blockers.append("sam31_canary_output_timeout")
+            # Reserve recovery time inside the original watchdog deadline.
+            watchdog_deadline = float(watchdog.get("watchdog_deadline_epoch") or watchdog.get("deadline_epoch") or started_at+hard_ttl)
+            deadline = min(started_at+hard_ttl, watchdog_deadline)
+            reserve = recovery["receipt"]["recovery_reserve_seconds"]
+            def bounded_fetcher(url):
+                if result_fetcher is _default_result_fetcher:
+                    return _default_result_fetcher(url,
+                        timeout_seconds=max(.1, deadline-float(clock())-reserve))
+                return result_fetcher(url)
+            validated_result, delivery = receive_sam31_output(root=root, provider=provider,
+                instance_id=instance_id, output_get_url=output_get_url, result_fetcher=bounded_fetcher,
+                validator=lambda raw: validate_sam31_runtime_result(raw, bound_request=request),
+                clock=clock, sleeper=sleeper, deadline=deadline,
+                recovery_reserve_seconds=reserve)
+            write_json(root / "output_delivery_receipt.json", delivery)
+            if validated_result is None:
+                blockers.extend(delivery.get("blockers") or ["sam31_output_delivery_unrecoverable"])
             else:
-                write_json(root / "provider_runtime_result.json", raw_result)
-                try:
-                    validated_result = validate_sam31_runtime_result(
-                        raw_result, bound_request=request
-                    )
-                    write_json(
-                        normalized_source_track_result_path,
-                        dict(validated_result["normalized_source_tracks"]),
-                    )
-                except Sam31VastCanaryError as exc:
-                    blockers.extend(str(exc).split(";"))
+                write_json(root / "provider_runtime_result.json", validated_result)
+                write_json(normalized_source_track_result_path,
+                           dict(validated_result["normalized_source_tracks"]))
     finally:
         terminate_result: dict[str, Any] = {
             "status": "not_required" if instance_id is None else "not_attempted"
@@ -712,6 +787,10 @@ def run_sam31_vast_source_track_canary(
             "request_digest": request_digest,
             "bound_request_digest": request.get("bound_request_digest"),
             "worker_image_digest": image,
+            "allowed_geolocation_country_codes": list(
+                SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+            ),
+            "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
             "instance_id": instance_id,
             "terminate_result": terminate_result,
             "provider_zero_verified": provider_zero,
@@ -768,9 +847,16 @@ def run_sam31_vast_source_track_canary(
             provider_zero_receipt, digest_field="provider_zero_digest"
         )
         write_json(root / "provider_zero_verification.json", provider_zero_receipt)
+        # Diagnostic I/O must not sit between a successful create and recording
+        # its instance ID: even an ENOSPC here occurs after exact teardown.
+        launch_blockers = _retain_launch_outcome(root, launch_result, request)
+        if instance_id is None:
+            blockers.extend(launch_blockers)
 
     duration = max(0.0, float(clock()) - started_at)
-    hourly = float(preflight.get("on_demand_price_usd_per_hour") or 0)
+    # A fresh search may choose another conforming offer. Reserve the frozen
+    # all-in ceiling here; official billing remains a separate reconciliation.
+    hourly = capacity_policy["max_hourly_rate_usd"]
     cost = hourly * duration / 3600.0 if instance_id else 0.0
     if cost > max_spend:
         blockers.append("sam31_budget_exhausted")
@@ -785,6 +871,10 @@ def run_sam31_vast_source_track_canary(
         "source_track_run_request_digest": request.get("source_track_run_request_digest"),
         "checkpoint_digest": CHECKPOINT_DIGEST,
         "provider": "vast",
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "instance_id": instance_id,
         "provider_runtime_result_digest": (
             validated_result.get("runtime_result_digest") if validated_result else None
@@ -799,6 +889,8 @@ def run_sam31_vast_source_track_canary(
             if validated_result
             else None
         ),
+        "output_delivery": delivery,
+        "output_recovery_readiness": recovery["receipt"],
         "duration_seconds": duration,
         "cost_usd": cost,
         "provider_mutations_performed": provider_mutations,

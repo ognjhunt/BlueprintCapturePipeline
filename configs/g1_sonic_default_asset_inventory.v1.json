@@ -1,0 +1,22 @@
+{
+  "schema_version": "g1_sonic_asset_inventory.v1",
+  "source_repository": "https://huggingface.co/nvidia/GEAR-SONIC",
+  "source_revision": "6733128a3d8a523b1418b06bca3cdf61c8b0987f",
+  "variant_id": "default",
+  "model_license": "NVIDIA Open Model License",
+  "rights_review_required": true,
+  "files": [
+    {
+      "role": "encoder",
+      "path": "model_encoder.onnx",
+      "sha256": "013ab0287236aa2721e13f1e936d699db982302d0de0bfcdae76d5c3245362d3",
+      "size_bytes": 50100513
+    },
+    {
+      "role": "decoder",
+      "path": "model_decoder.onnx",
+      "sha256": "c7241a123eaa36b5d64bad19540efde93cac1ad443bd4572fd12ca99898118ed",
+      "size_bytes": 40900688
+    }
+  ]
+}

@@ -16,9 +16,19 @@ from .native_task_arena_construction_bundle import (
 from .native_task_arena_controls_bundle import (
     RESULT_FILENAME as CONTROLS_RESULT_FILENAME,
 )
+from .native_task_arena_destination_qualification_bundle import (
+    RESULT_FILENAME as DESTINATION_QUALIFICATION_RESULT_FILENAME,
+)
 from .native_task_arena_policy_bundle import RESULT_FILENAME as POLICY_RESULT_FILENAME
 from .native_task_arena_policy_diagnostic_bundle import (
     RESULT_FILENAME as POLICY_DIAGNOSTIC_RESULT_FILENAME,
+)
+from .native_task_arena_policy_canary_session import (
+    PROVIDER_RESULT_FILENAME as POLICY_CANARY_RESULT_FILENAME,
+    RESULT_SCHEMA_VERSION as POLICY_CANARY_RESULT_SCHEMA_VERSION,
+    consume_session_authority_once,
+    validate_provider_bundle as validate_policy_canary_provider_bundle,
+    validate_session_authority as validate_policy_canary_session_authority,
 )
 from .native_task_arena_runtime_preflight_bundle import (
     RESULT_FILENAME as RUNTIME_PREFLIGHT_RESULT_FILENAME,
@@ -29,14 +39,21 @@ from .native_task_arena_paid_authority import (
     validate_native_task_arena_paid_attempt_authority,
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_MINIMUM_DRIVER_VERSION as MINIMUM_DRIVER_VERSION
 
 
 PROBE_KIND = "native-task-arena-construction"
 RESULT_SCHEMA_VERSION = "native_task_arena_vast_run.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/native-task-arena"
-MINIMUM_DRIVER_VERSION = "580.65.06"
 NO_POLICY_MIN_GPU_RAM_MB = 24_000
 NO_POLICY_PREFERRED_GPU_KEYWORDS = ("L40S", "RTX 6000 Ada", "RTX 4090")
+# Runtime layers and evidence are served from Blueprint's US object store.
+# A soft geolocation preference selected Chile and North Macedonia twice,
+# consuming most of a 30-minute render probe before the 4.09 GB layer arrived.
+# Keep every native-task allocation in the same country as those immutable
+# inputs; the state-level regex remains a ranking preference inside this hard
+# boundary.
+NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES = ("US",)
 # Policy provisioning still fetches a revision-pinned source tree and locked
 # packages outside the sealed checkpoint/runtime packets.  The completed pi0.5
 # episode used 4.66 GB beyond its three immutable byte sources.  Reserve 8 GB
@@ -46,6 +63,42 @@ POLICY_PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 8_000_000_000
 POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES = 4_500_000_000
 POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES = 1_000_000_000
 POLICY_RESULT_UPLOAD_BYTES = 1_000_000_000
+POLICY_CAMERA_RESOLUTION_ENV = "BLUEPRINT_ADP009D_CAMERA_RESOLUTION"
+POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES = frozenset(
+    {POLICY_CAMERA_RESOLUTION_ENV}
+)
+
+
+def _validated_policy_provider_runtime_environment(
+    values: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Return the narrow, non-secret environment allowed inside the provider.
+
+    The dispatcher validates profile environment keys, but the canonical
+    allocator and this transport are also callable directly. Bind the
+    scientific render size explicitly at every boundary rather than forwarding
+    inherited host state or silently letting the pod fall back to 320x180.
+    """
+
+    import re
+
+    normalized = dict(values or {})
+    if set(normalized) - POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES:
+        raise ValueError("native_task_arena_policy_runtime_environment_invalid")
+    resolution = normalized.get(POLICY_CAMERA_RESOLUTION_ENV)
+    if resolution is None:
+        return {}
+    if not isinstance(resolution, str):
+        raise ValueError("native_task_arena_policy_camera_resolution_invalid")
+    resolution = resolution.strip().lower()
+    match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", resolution)
+    if resolution != "policy" and match is None:
+        raise ValueError("native_task_arena_policy_camera_resolution_invalid")
+    if match is not None and (
+        int(match.group(1)) < 320 or int(match.group(2)) < 180
+    ):
+        raise ValueError("native_task_arena_policy_camera_resolution_below_policy_input")
+    return {POLICY_CAMERA_RESOLUTION_ENV: resolution}
 
 
 def _policy_provider_transfer_byte_budget(
@@ -85,6 +138,7 @@ def run_native_task_arena_vast(
     hard_ttl_seconds: int = 5_400,
     allowed_active_instance_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
+    retain_warm_instance: bool = False,
 ) -> dict[str, Any]:
     """Run one zero-retry construction gate through the shared Vast transport."""
 
@@ -108,6 +162,7 @@ def run_native_task_arena_vast(
             hard_cap_usd=hard_cap_usd,
             hard_ttl_seconds=hard_ttl_seconds,
             allowed_active_instance_ids=allowed_ids,
+            retain_warm_session=retain_warm_instance,
         )
         if paid_attempt_authority is not None
         else None
@@ -139,7 +194,7 @@ def run_native_task_arena_vast(
         provider_bundle_kind=PROVIDER_BUNDLE_KIND,
         result_schema_version=RESULT_SCHEMA_VERSION,
         object_store_key_prefix=DEFAULT_KEY_PREFIX,
-        instance_label_prefix="blueprint-native-task-arena-",
+        instance_label_prefix="blueprint-task-evaluation-native-arena-construction-",
         blocker_prefix="native_task_arena",
         # Construction loads Isaac, NuRec, and one robot/scene but no policy
         # checkpoint. NVIDIA lists 8 GB minimum and 16 GB "good" for Isaac;
@@ -155,7 +210,98 @@ def run_native_task_arena_vast(
         preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
         authorization_consumption=consumption,
+        retain_warm_instance=retain_warm_instance,
+    )
+
+
+def run_native_task_arena_destination_qualification_vast(
+    *,
+    job_dir: str | Path,
+    prepared_bundle: Mapping[str, Any],
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    machine_avoidlist_path: str | Path | None = None,
+    max_hourly_rate_usd: float = 0.80,
+    hard_cap_usd: float = 1.00,
+    hard_ttl_seconds: int = 1_800,
+    allowed_active_instance_ids: Sequence[int] = (),
+    paid_attempt_authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one zero-retry, policy-free destination qualification probe."""
+
+    if (
+        prepared_bundle.get("schema_version")
+        != "native_task_arena_provider_bundle.v1"
+        or prepared_bundle.get("execution_mode") != "destination_qualification"
+        or prepared_bundle.get("policy_candidate_id") is not None
+        or prepared_bundle.get("candidate_policy_queried") is not False
+        or prepared_bundle.get("expected_output_filename")
+        != DESTINATION_QUALIFICATION_RESULT_FILENAME
+    ):
+        raise ValueError("native_task_arena_destination_qualification_bundle_invalid")
+    allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
+    authority = (
+        validate_native_task_arena_paid_attempt_authority(
+            paid_attempt_authority,
+            prepared_bundle=prepared_bundle,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+            allowed_active_instance_ids=allowed_ids,
+        )
+        if paid_attempt_authority is not None
+        else None
+    )
+    if execute and authority is None:
+        raise ValueError("native_task_arena_paid_execution_authority_missing")
+    consumption = consume_native_task_arena_authority_once(authority) if execute else None
+    if consumption is not None and consumption.get("status") != "consumed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": consumption,
+            "blockers": list(consumption.get("blockers") or []),
+        }
+    job = Path(job_dir).expanduser().resolve()
+    return run_arena_native_control_vast(
+        approval_path=".",
+        job_dir=job,
+        paid_resource_admission_grant=paid_resource_admission_grant,
+        execute=execute,
+        prepared_bundle=prepared_bundle,
+        machine_avoidlist_path=machine_avoidlist_path,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        expected_output_filename=DESTINATION_QUALIFICATION_RESULT_FILENAME,
+        container_image=str(prepared_bundle["container_image"]),
+        provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+        result_schema_version=RESULT_SCHEMA_VERSION,
+        object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/destination-qualification",
+        instance_label_prefix="blueprint-native-task-destination-qualification-",
+        blocker_prefix="native_task_arena_destination_qualification",
+        min_gpu_ram_mb=NO_POLICY_MIN_GPU_RAM_MB,
+        allowed_active_instance_ids=allowed_ids,
+        vast_launch_lock_file=(
+            job / "native_task_arena_destination_qualification_paid_launch.lock"
+            if allowed_ids
+            else None
+        ),
+        candidate_policy_query_expected=False,
+        preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
+        minimum_driver_version=MINIMUM_DRIVER_VERSION,
+        require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        authorization_consumption=consumption,
+        stale_offer_create_retry_limit=0,
     )
 
 
@@ -200,7 +346,7 @@ def run_native_task_arena_runtime_preflight_vast(
         provider_bundle_kind=PROVIDER_BUNDLE_KIND,
         result_schema_version=RUNTIME_PREFLIGHT_RESULT_SCHEMA_VERSION,
         object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/runtime-preflight",
-        instance_label_prefix="blueprint-native-task-arena-preflight-",
+        instance_label_prefix="blueprint-task-evaluation-native-arena-preflight-",
         blocker_prefix="native_task_arena_runtime_preflight",
         # This no-motion preflight captures three 320x180 cameras and runs no
         # policy or training workload.  NVIDIA lists 16 GB as the Isaac Sim
@@ -224,6 +370,9 @@ def run_native_task_arena_runtime_preflight_vast(
         },
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
     )
 
 
@@ -309,6 +458,9 @@ def run_native_task_arena_controls_vast(
         preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
         authorization_consumption=consumption,
         retain_warm_instance=retain_warm_instance,
     )
@@ -327,6 +479,7 @@ def run_native_task_arena_policy_vast(
     allowed_active_instance_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
     authorize_gated_backbone: bool = False,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run one admitted candidate through the same zero-retry Vast transport."""
 
@@ -346,6 +499,7 @@ def run_native_task_arena_policy_vast(
         expected_output_filename=POLICY_RESULT_FILENAME,
         label_prefix="blueprint-native-task-policy-",
         blocker_prefix="native_task_arena_policy",
+        provider_runtime_environment=provider_runtime_environment,
     )
 
 
@@ -362,6 +516,7 @@ def run_native_task_arena_policy_diagnostic_vast(
     allowed_active_instance_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
     authorize_gated_backbone: bool = False,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run a canonical policy diagnostic that is ineligible for scoring."""
 
@@ -381,6 +536,112 @@ def run_native_task_arena_policy_diagnostic_vast(
         expected_output_filename=POLICY_DIAGNOSTIC_RESULT_FILENAME,
         label_prefix="blueprint-native-task-policy-diagnostic-",
         blocker_prefix="native_task_arena_policy_diagnostic",
+        provider_runtime_environment=provider_runtime_environment,
+    )
+
+
+def run_native_task_arena_policy_canary_session_vast(
+    *,
+    job_dir: str | Path,
+    prepared_bundle: Mapping[str, Any],
+    session_authority: Mapping[str, Any] | None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    machine_avoidlist_path: str | Path | None = None,
+    max_hourly_rate_usd: float = 0.80,
+    hard_cap_usd: float = 4.00,
+    hard_ttl_seconds: int = 14_400,
+    allowed_active_instance_ids: Sequence[int] = (),
+    provider_runtime_environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run the paired Quick-10 bundle through one canonical Vast allocation."""
+
+    if session_authority is None:
+        if execute:
+            raise ValueError("policy_canary_session_authority_missing")
+        authority = None
+    else:
+        authority = validate_policy_canary_session_authority(session_authority)
+        validate_policy_canary_provider_bundle(prepared_bundle, authority=authority)
+        if (
+            float(authority["hard_cap_usd"]) != float(hard_cap_usd)
+            or int(authority["hard_ttl_seconds"]) != int(hard_ttl_seconds)
+        ):
+            raise ValueError("policy_canary_session_resource_bounds_mismatch")
+    if authority is None:
+        raise ValueError("policy_canary_session_authority_missing")
+    validated_environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
+    from .native_task_arena_paired_witness_staging import build_paired_witness_binding
+    witness_binding = build_paired_witness_binding(prepared_bundle, authority, validated_environment)
+    witness_capacity = witness_binding['maximum_archive_bytes']
+    consumption = (
+        consume_session_authority_once(
+            authority,
+            consumption_path=Path(job_dir) / "policy_canary_session_consumption.json",
+        )
+        if execute
+        else None
+    )
+    if consumption is not None and consumption.get("status") != "consumed":
+        return {
+            "schema_version": POLICY_CANARY_RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "provider_allocations_observed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": consumption,
+            "blockers": list(consumption.get("blockers") or []),
+        }
+    owner = authority.get("scene_execution_owner")
+    def owner_pre_create() -> dict[str, Any]:
+        from .task_evaluation_scene_execution_authority import require_scene_execution_authority
+        if not isinstance(owner, Mapping):
+            raise ValueError("policy_canary_scene_execution_owner_invalid")
+        require_scene_execution_authority(owner, maximum_spend_usd=hard_cap_usd, provider="vast")
+        return {"status": "consumed", "authority_digest": authority["authority_digest"],
+                "scene_attempt_id": owner["scene_attempt_id"]}
+
+    pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
+    groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
+    return run_arena_native_control_vast(
+        pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
+        approval_path=".",
+        job_dir=job_dir,
+        paid_resource_admission_grant=paid_resource_admission_grant,
+        execute=execute,
+        prepared_bundle=prepared_bundle,
+        machine_avoidlist_path=machine_avoidlist_path,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        expected_output_filename=POLICY_CANARY_RESULT_FILENAME,
+        container_image=str(prepared_bundle["container_image"]),
+        provider_bundle_kind="native_task_arena_policy_canary_session",
+        result_schema_version=POLICY_CANARY_RESULT_SCHEMA_VERSION,
+        object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/policy-canary-session",
+        instance_label_prefix="blueprint-native-task-policy-canary-",
+        instance_label_exact=str(authority["resource_name"]),
+        blocker_prefix="native_task_arena_policy_canary_session",
+        min_gpu_ram_mb=46_000,
+        min_compute_cap=POLICY_MIN_COMPUTE_CAP,
+        allowed_active_instance_ids=tuple(
+            sorted({int(value) for value in allowed_active_instance_ids})
+        ),
+        vast_launch_lock_file=None,
+        candidate_policy_query_expected=True,
+        forward_hf_token=True,
+        preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
+        minimum_driver_version=MINIMUM_DRIVER_VERSION,
+        require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        authorization_consumption=consumption,
+        stale_offer_create_retry_limit=0,
+        expected_provider_download_bytes=pi_download + groot_download + witness_capacity,
+        expected_provider_upload_bytes=8_000_000_000 + witness_capacity,
+        provider_runtime_environment=validated_environment,
+        paired_witness_binding=witness_binding,
     )
 
 
@@ -401,6 +662,7 @@ def _run_native_task_arena_policy_vast(
     expected_output_filename: str,
     label_prefix: str,
     blocker_prefix: str,
+    provider_runtime_environment: Mapping[str, str] | None,
 ) -> dict[str, Any]:
 
     candidate = str(prepared_bundle.get("policy_candidate_id") or "")
@@ -450,6 +712,9 @@ def _run_native_task_arena_policy_vast(
         raise ValueError("native_task_arena_groot_gated_backbone_authority_missing")
     if candidate != "groot_n17_droid" and authorize_gated_backbone:
         raise ValueError("native_task_arena_gated_backbone_authority_without_groot")
+    validated_provider_environment = _validated_policy_provider_runtime_environment(
+        provider_runtime_environment
+    )
     expected_download_bytes, expected_upload_bytes = _policy_provider_transfer_byte_budget(
         candidate
     )
@@ -494,6 +759,9 @@ def _run_native_task_arena_policy_vast(
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
         authorization_consumption=consumption,
         # The paid authority is retry-0. Vast's ordinary convenience retry for
         # a stale offer is therefore disabled explicitly for every policy
@@ -501,6 +769,7 @@ def _run_native_task_arena_policy_vast(
         stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=expected_download_bytes,
         expected_provider_upload_bytes=expected_upload_bytes,
+        provider_runtime_environment=validated_provider_environment,
     )
 
 
@@ -509,12 +778,17 @@ __all__ = [
     "MINIMUM_DRIVER_VERSION",
     "NO_POLICY_MIN_GPU_RAM_MB",
     "NO_POLICY_PREFERRED_GPU_KEYWORDS",
+    "NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES",
+    "POLICY_CAMERA_RESOLUTION_ENV",
+    "POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES",
     "POLICY_MIN_COMPUTE_CAP",
     "PROBE_KIND",
     "RESULT_SCHEMA_VERSION",
     "run_native_task_arena_vast",
+    "run_native_task_arena_destination_qualification_vast",
     "run_native_task_arena_runtime_preflight_vast",
     "run_native_task_arena_controls_vast",
     "run_native_task_arena_policy_vast",
     "run_native_task_arena_policy_diagnostic_vast",
+    "run_native_task_arena_policy_canary_session_vast",
 ]

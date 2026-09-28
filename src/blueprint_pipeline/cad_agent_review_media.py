@@ -15,9 +15,10 @@ import json
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from PIL import Image, ImageDraw, ImageOps
+if TYPE_CHECKING:
+    from PIL import Image, ImageDraw
 
 try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
@@ -117,6 +118,8 @@ def _verified_visual_image_record(
     """Verify that a purported reference or snapshot is an actual decodable image."""
 
     verified = _verified_file_record(record, role=role)
+    from PIL import Image
+
     try:
         with Image.open(verified["path"]) as image:
             image.verify()
@@ -286,6 +289,8 @@ def _rows_from_matrix(matrix: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _open_thumbnail(record: Mapping[str, Any], *, size: tuple[int, int]) -> Image.Image:
+    from PIL import Image, ImageOps
+
     try:
         image = Image.open(str(record["path"]))
         image.load()
@@ -299,6 +304,8 @@ def _open_reference_strip(
     records: Sequence[Mapping[str, Any]], *, size: tuple[int, int]
 ) -> Image.Image:
     """Show every manifest-bound observed frame rather than one convenient thumbnail."""
+
+    from PIL import Image
 
     if not records:
         raise CadAgentReviewMediaError("cad_review_reference_missing")
@@ -348,6 +355,8 @@ def _render_contact_sheet(
     output_path: Path,
     title: str,
 ) -> None:
+    from PIL import Image, ImageDraw
+
     backend_ids = sorted(ADMITTED_BACKENDS)
     columns = ["observed_reference", *backend_ids]
     cell_w = 460

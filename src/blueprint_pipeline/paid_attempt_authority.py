@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .vast_evidence_contracts import valid_vast_provider_zero_api_call
 
 
 ALLOWLIST_GROUPS = ("external_provider_owned", "same_goal_concurrent")
@@ -24,6 +25,7 @@ ZERO_CHARGE_ABSENCE_EVIDENCE_KIND = (
 )
 NO_PROVIDER_ALLOCATION_EVIDENCE_KIND = "provider_zero_no_allocation"
 ZERO_CHARGE_BILLING_GRACE = timedelta(minutes=10)
+ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
 JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA = (
     "joint_agent_same_goal_spend_lineage.v1"
 )
@@ -83,6 +85,43 @@ def _finite(value: Any) -> bool:
         and isinstance(value, (int, float))
         and math.isfinite(float(value))
         and float(value) >= 0
+    )
+
+
+def valid_adp_paid_provider_zero(value: Mapping[str, Any]) -> bool:
+    """Validate the canonical Vast-only provider-zero receipt."""
+
+    return bool(
+        value.get("schema_version") == ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION
+        and value.get("provider") == "vast"
+        and value.get("api_confirmed") is True
+        and value.get("provider_zero") is True
+        and value.get("global_live_resource_count") == 0
+        and value.get("inventory") == []
+        and valid_vast_provider_zero_api_call(value.get("api_command"))
+        and isinstance(value.get("stderr_present"), bool)
+        and value.get("raw_secret_values_recorded") is False
+        and value.get("provider_zero_digest")
+        == canonical_digest(value, digest_field="provider_zero_digest")
+    )
+
+
+def _provider_zero_evidence_passed(
+    zero: Mapping[str, Any], *, lane: str
+) -> bool:
+    if lane == "task_evaluation_scene_configuration_diagnostic":
+        return zero.get("provider_zero") is True
+    if zero.get("schema_version") == ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION:
+        return valid_adp_paid_provider_zero(zero)
+    return bool(
+        zero.get(
+            "provider_zero_verified",
+            zero.get(
+                "provider_zero_confirmed",
+                zero.get("provider_zero_api_confirmed"),
+            ),
+        )
+        is True
     )
 
 
@@ -186,6 +225,37 @@ def validate_same_goal_spend_reconciliation(
             source_value = _read_json(
                 source_path, code="same_goal_spend_source_invalid"
             )
+            if (
+                entry.get("lane") == "native_task_arena"
+                and role == "terminal_result"
+                and source_value.get("schema_version")
+                == "task_evaluation_native_direct_execution_adoption.v1"
+            ):
+                from .native_task_arena_direct_execution_closeout import (  # noqa: PLC0415
+                    validate_native_direct_execution_adoption,
+                )
+
+                if validate_native_direct_execution_adoption(source_path) != source_value:
+                    raise ValueError("same_goal_spend_source_invalid")
+            if (
+                entry.get("lane")
+                == "task_evaluation_scene_configuration_diagnostic"
+                and role == "terminal_result"
+            ):
+                from .task_evaluation_scene_configuration_diagnostic_spend import (  # noqa: PLC0415
+                    validate_scene_configuration_diagnostic_terminal_evidence,
+                )
+
+                try:
+                    reopened_terminal, _terminal_record = (
+                        validate_scene_configuration_diagnostic_terminal_evidence(
+                            source_path
+                        )
+                    )
+                except ValueError as exc:
+                    raise ValueError("same_goal_spend_source_invalid") from exc
+                if reopened_terminal != source_value:
+                    raise ValueError("same_goal_spend_source_invalid")
             digest_field = source_record.get("digest_field")
             if (
                 not role
@@ -351,15 +421,22 @@ def bind_lane_prior_spend(
         "official_billing_response",
         "provider_billing_source_receipt",
     }
+    if lane == "task_evaluation_scene_configuration":
+        required_roles.add("provider_adapter_result")
     for result_path in result_paths:
         result = _read_json(result_path, code="prior_terminal_attempt_invalid")
+        accepted_statuses = {
+            "completed",
+            "blocked",
+            "sealed_completed_attempt",
+            "sealed_blocked_attempt",
+        }
+        if lane == "task_evaluation_scene_configuration_diagnostic":
+            accepted_statuses.add(
+                "diagnostic_attempt_terminal_and_vast_provider_zero"
+            )
         if (
-            result.get("status") not in {
-                "completed",
-                "blocked",
-                "sealed_completed_attempt",
-                "sealed_blocked_attempt",
-            }
+            result.get("status") not in accepted_statuses
             or result.get("continuing_spend_from_this_run", result.get("continuing_spend"))
             is not False
         ):
@@ -471,14 +548,7 @@ def bind_lane_prior_spend(
                 )
             )
             or (not no_allocation and instance_id not in teardown_instance_ids)
-            or zero.get(
-                "provider_zero_verified",
-                zero.get(
-                    "provider_zero_confirmed",
-                    zero.get("provider_zero_api_confirmed"),
-                ),
-            )
-            is not True
+            or not _provider_zero_evidence_passed(zero, lane=lane)
             or zero.get("continuing_spend_from_this_run", False) is not False
             or ((zero_charge_absence or no_allocation) and float(entry["cost_usd"]) != 0.0)
             or (
@@ -489,7 +559,33 @@ def bind_lane_prior_spend(
             )
         ):
             raise ValueError("prior_terminal_billing_or_zero_invalid")
-        estimate = result.get("estimated_cost_usd", result.get("cost_usd"))
+        estimate_source = result
+        if lane == "task_evaluation_scene_configuration":
+            adapter_source = sources.get("provider_adapter_result")
+            adapter_record = (
+                adapter_source.get("record")
+                if isinstance(adapter_source, Mapping)
+                else None
+            )
+            adapter_path = _bound_record(
+                adapter_record, code="prior_provider_adapter_result_unbound"
+            )
+            adapter = _read_json(
+                adapter_path, code="prior_provider_adapter_result_invalid"
+            )
+            if (
+                adapter.get("schema_version") != "vast_provider_adapter_result.v1"
+                or adapter.get("status") != "completed"
+                or adapter.get("continuing_spend_from_this_run") is not False
+                or adapter.get("vast_instance_ids") != teardown_instance_ids
+                or adapter.get("provider_bundle_sha256")
+                != result.get("bundle_sha256")
+            ):
+                raise ValueError("prior_provider_adapter_result_invalid")
+            estimate_source = adapter
+        estimate = estimate_source.get(
+            "estimated_cost_usd", estimate_source.get("cost_usd")
+        )
         if not _finite(estimate):
             raise ValueError("prior_terminal_attempt_estimate_invalid")
         rows.append(

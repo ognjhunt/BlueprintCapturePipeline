@@ -69,6 +69,22 @@ def rehearse(*, runtime: Path, output: Path) -> dict[str, Any]:
     if not runtime.is_dir() or runtime.is_symlink():
         raise RehearsalError("retained_scene_render_runtime_path_invalid")
     request = _json_object(runtime / "render_request.json")
+    if request.get("render_scope") == "source_calibration":
+        if (request.get("schema_version") != "adp009d_source_calibration_gpu_renderer_runtime_request.v1"
+                or set(request.get("layers", {})) != {"images", "target_support", "scene_without_target"}
+                or request.get("camera_count") != 16 or request.get("expected_png_count") != 48):
+            raise RehearsalError("source_calibration_runtime_request_invalid")
+        for record in request["layers"].values():
+            if _standard_ply_count(_checked_file(runtime, record)) != record.get("gaussian_count"):
+                raise RehearsalError("source_calibration_runtime_count_invalid")
+        _checked_file(runtime, request["camera_contract"])
+        result = {"schema_version": "provider_bundle_rehearsal.v1", "status": "passed",
+                  "released_renderer_executed": False, "gpu_runtime_started": False,
+                  "paid_inference_performed": False, "provider_mutations_performed": 0,
+                  "verified_task_lanes": 1, "verified_layers": 3, "expected_png_count": 48, "blockers": []}
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "provider_bundle_rehearsal.json").write_text(json.dumps(result) + "\n")
+        return result
     deleted = _checked_file(runtime, request.get("shared_deleted_source_layer"))
     retained = _checked_file(runtime, request.get("shared_retained_scene"))
     _checked_file(runtime, request.get("candidate_set"))

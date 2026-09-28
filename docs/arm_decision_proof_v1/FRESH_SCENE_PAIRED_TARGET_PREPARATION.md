@@ -18,6 +18,31 @@ Gaussian contribution accounting, derived PLY byte accounting, digests,
 rights/spend admission, immutable receipts, outside-support checks, and
 provider-zero closure.
 
+## Visual scene preselection
+
+Before selecting a scene or task object, build the local visual review pack:
+
+```bash
+python -m blueprint_pipeline.interiorgs_preselection_review_pack \
+  --scene-id <publisher-scene-id> \
+  --splat <scene>/3dgs_compressed.ply \
+  --labels <scene>/labels.json \
+  --structure <scene>/structure.json \
+  --target-ins-id <publisher-instance-id> \
+  --approved-root <dataset-root> \
+  --approved-root <review-output-parent> \
+  --out <review-output-parent>/<scene-and-target> \
+  --repo-root <checkout-with-pinned-renderer-runtime> \
+  --browser-executable <existing-chrome-or-chromium> \
+  --graphics-backend metal
+```
+
+The resulting `index.html`, contact sheet, labeled object/support tables, exact
+room and target camera rows, and digest-bound manifest are selection
+reconnaissance only. They never become appearance-fidelity, collision, physics,
+reachability, task, or evaluation authority, and moving a camera cannot recover
+uncaptured regions.
+
 ## Required stages
 
 1. `calibrated_scene_views`
@@ -118,6 +143,116 @@ provider-zero closure.
    - Run paired-target ArtiFixer3D first. Render and retain calibrated review
      frames. Run 3D+ only after raw 3D review passes and never let 3D+ become the
      primary removal painter.
+   - Every new production configuration requires the independent digest-bound
+     appearance grader. `paused_ungraded` remains readable only as historical
+     evidence and is not an admissible launch-request mode.
+   - When the grader rejects an upright camera because the source object remains,
+     the fill is implausible, non-target content changed, or the view conflicts
+     with other cameras, issue one bounded new image edit for only the rejected
+     cameras and exact repair masks. Re-run ArtiFixer and grade all cameras again.
+     Never repaint an orientation or camera-calibration failure.
+
+## Rigid destination tasks
+
+`pick_and_place` launches may bind one additional passive SimReady destination
+at `task.destination`. This is additive to the configured movable subject. It
+does not turn every scene object into a runtime asset and it does not hard-code
+a bowl, tray, or task name into the canary.
+
+The destination must provide immutable, file-backed references for its USD
+asset, `task_evaluation_rigid_destination_rights_admission.v1` receipt, static qualification, Isaac-native import
+qualification, and
+`task_evaluation_rigid_destination_geometry.v1` record. The geometry record
+binds the world pose, the authored `inside` or `on` relationship, the exact
+rigid-body paths that may support the subject, a support-height interval, and
+destination-local interior bounds. The compiler independently re-derives the
+subject scoring-frame collision bounds from the subject's exact static
+qualification, then shrinks the interior volume by that full footprint. The
+scorer transforms every subject sample into the live destination frame, so it
+requires whole-subject containment instead of accepting a center point that
+leaves part of the object outside.
+
+The episode compiler copies the destination into the sealed runtime packet as
+the singular `task_support` asset. The runtime resets it independently from the
+movable subject, requires its live pose to remain within the qualified reset
+tolerance, and routes destination contact sensing to its exact rigid-body
+paths. A scene-specific
+`task_evaluation_rigid_destination_placement_qualification.v1` receipt must bind
+the exact configured revision/collision, destination bytes and qualifications,
+pose, nonpenetration, support stability, all three cameras, and repeated native
+reset readback. The DROID instruction names the configured subject and visible
+destination dynamically, for example `Pick up and place the open book into the
+blue document tray.` Planar-push launches retain their existing target-region
+contract and must not include `task.destination`.
+
+The native probe emits
+`task_evaluation_rigid_destination_native_observation.v1`; it does not emit the
+qualification decision itself. Materialize the decision on the control plane
+with `python -m
+blueprint_pipeline.task_evaluation_rigid_destination_placement_qualification`,
+passing the exact observation, configured collision, destination asset,
+static/native qualification, and destination geometry files. The materializer
+recomputes digests, pose errors, penetration, support stability, per-camera
+pixel gates, and repeated-reset tolerances. A caller-authored summary boolean is
+not accepted as placement evidence.
+
+A supplemental destination has no source object, so nothing before the
+scene-configuration run can produce its Isaac-native import qualification or
+its task geometry. The production ordering is therefore:
+
+1. Author the destination on the control plane
+   (`task_evaluation_passive_destination_cad_agent` →
+   `task_evaluation_passive_destination_simready`), which yields the asset,
+   authoring receipt, static qualification, rights admission, and SimReady
+   result. The SimReady result is `static_qualified_pending_native_import_and_placement`.
+2. Submit the `scene_configuration` request with `task.destination` carrying the
+   identity, relation, label, asset, rights admission, static qualification,
+   `native_probe`, and `pose_world` — and **without**
+   `native_import_qualification` or `geometry`. The construction recipe binds
+   the same destination as `supplemental_destination` (identity, relation,
+   asset, static qualification, rights admission, authoring receipt, SimReady
+   result); preparation refuses a recipe that drifts from the request or a
+   destination declared on only one side.
+3. Inside the provider run, stage 4 re-runs the static qualifier on the exact
+   destination bytes and refuses a declared receipt it cannot reproduce; stage 5
+   settles the destination in the same Isaac session as the subject and seals a
+   second `task_evaluation_replacement_native_import_result.v1` bound to the
+   destination identity, asset, and static receipt.
+4. Publication derives `task_evaluation_rigid_destination_geometry.v1` from the
+   subject's stage-4 scoring-frame bounds, the destination's SimReady interior,
+   the authored probe limits, and the request pose; the containment volume is
+   shrunk by the whole oriented subject and tolerates only the authored
+   maximum penetration below the floor, so a destination the subject cannot
+   fit into is refused instead of scored. The revision's
+   `task_template.destination` then carries the published native-import and
+   geometry references, and the `destination_qualification` request copies
+   that complete destination from the offering.
+
+Destination tasks use the v3 configured-controls autostart/progression plan.
+The production worker compiles a qualification-only Arena packet before a
+placement receipt exists, launches `native-task-arena-destination-qualification`
+with no policy loaded, seals three repeated reset/settle samples plus exact
+support and forbidden-contact forces, transformed penetration, camera
+calibration, semantic pixel counts, and render artifacts, then materializes and
+publishes the placement qualification. Construction is submitted only from the
+zero-closed destination predecessor and final episode preparation is rebuilt
+with the published qualification reference. Operator-authored observation JSON
+or a manual phase skip is not an admitted path.
+
+Before a destination is used in a paid episode, retain its authoring source and
+parameters, renderer/kernel/export versions, USD bytes and digest, license and
+provider-disclosure authority, static validators, Isaac import/readback, exact
+mass/collider/material properties, and camera-visible review frames. Generated
+geometry remains `development_only` support and never replaces observed source
+geometry.
+
+CAD authoring is a production-stage dependency, not an operator preflight.
+Deployment provisions and verifies the pinned `text-to-cad` and
+`Multi-Agent-CAD` sources, the released scene-configuration component seals
+their exact archives and source receipt, and the provider worker exposes the
+validated runtime root to the authoring stage. Missing, dirty, or identity-
+drifted CAD sources block before model execution; a laptop-installed skill is
+never accepted as production lineage.
 
 ## Droplet capability contract
 

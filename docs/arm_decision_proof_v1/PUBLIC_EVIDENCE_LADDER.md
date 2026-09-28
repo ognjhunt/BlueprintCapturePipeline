@@ -1,5 +1,8 @@
 # ADP-009 Public Evidence Ladder And SimReady Replacement Test Program
 
+> Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](LIVE_LANE_REACHABILITY.md).
+
+
 Status: **bounded construction rehearsal accepted; Franka rehearsal active**
 Approved: 2026-08-04
 Amended: 2026-08-06

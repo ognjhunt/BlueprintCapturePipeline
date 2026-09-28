@@ -1,0 +1,244 @@
+"""Automatically provision current-release controls from a delivered older scene.
+
+Only the exact holds cancelled before controls eligibility may take this path.
+It never reconfigures the scene or allocates a provider; the ordinary controls
+worker still owns CPU placement and every subsequent paid admission.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import os
+from pathlib import Path
+import time
+from typing import Any, Mapping
+
+from .decision_evidence_contracts import canonical_digest
+
+
+def terminal_adoption_source(*, config: Mapping[str, Any], intent_id: str,
+                             expected_production_commit: str) -> dict[str, Any] | None:
+    from . import task_evaluation_scene_intake as intake
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
+    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_controls_autoprovision import _json, _require
+
+    directory = Path(config['scene_root']) / intent_id
+    retired = []
+    for path in (directory/'attempts').glob('*.json'):
+        attempt = intake._read(path, 'attempt_digest')
+        cancellation = validated_cancellation(directory, attempt)
+        if cancellation is not None and cancellation.get('status') == 'cancelled_before_controls_eligibility':
+            retired.append((attempt, cancellation))
+    if not retired:
+        return None
+    # Every blocked launch that retired its unstarted controls leaves three
+    # cancelled rows; an intent that was blocked and retried more than once
+    # (InteriorGS 840938, 2026-09-13: two blocked launches, six rows) is a
+    # normal state, not a scope error. Judge each launch's trio on its own and
+    # adopt only from the launch that actually delivered the scene.
+    groups: dict[Any, list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    for attempt, cancellation in retired:
+        groups.setdefault(cancellation['original_blocked_launch_receipt'].get('launch_id'), []).append((attempt, cancellation))
+    _require(None not in groups and all(len(rows) == 3 for rows in groups.values()), 'terminal_adoption_retired_scope_invalid')
+    launch_root = Path(config.get('launch_state_root') or os.getenv('BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT') or str(directory.parent.parent/'task-evaluation-launch-runs'))
+    delivered = []
+    for launch_id in sorted(groups):
+        _require(isinstance(launch_id, str) and Path(launch_id).name == launch_id, 'terminal_adoption_launch_id_invalid')
+        receipt_path = launch_root/launch_id/'launch_receipt.json'
+        if receipt_path.is_file() and _json(receipt_path).get('status') == 'completed':
+            delivered.append(launch_id)
+    if not delivered:
+        return None
+    _require(len(delivered) == 1, 'terminal_adoption_source_ambiguous')
+    launch_id = delivered[0]
+    retired = groups[launch_id]
+    run_root = launch_root/launch_id
+    terminal, receipt, zero = _validate_source(run_root)
+    if receipt['source_commit'] == expected_production_commit:
+        return None
+    _require(all(a['source_commit'] == receipt['source_commit'] for a, _ in retired), 'terminal_adoption_source_commit_mismatch')
+    sync = _json(run_root/'webapp_sync_succeeded.json')
+    adoption = {'mode': 'explicit_terminal_adoption', 'source_launch_id': launch_id,
+        'source_launch_receipt_digest': receipt['receipt_digest'], 'terminal_result_digest': terminal['result_digest'],
+        'configured_scene_revision_digest': terminal['configured_scene_revision_digest'],
+        'publication_result_digest': terminal['publication_result_digest'],
+        'webapp_sync_result_digest': sync['sync_result_digest'], 'provider_zero_receipt_digest': zero['provider_zero_receipt_digest']}
+    return {'adoption': adoption, 'source_commit': receipt['source_commit'],
+            'retired_attempts': [a for a, _ in retired], 'launch_id': launch_id}
+
+
+def validate_embedded_intent_replacement(*, run_root: Path, original_path: Path,
+                                        replacement_path: Path) -> None:
+    from .task_evaluation_configured_controls_autostart import validate_configured_controls_autostart_intent
+    from .task_evaluation_controls_autoprovision import _json, _require
+    from .task_evaluation_scene_intake import ROOT_ENV
+
+    original = validate_configured_controls_autostart_intent(_json(original_path))
+    replacement = validate_configured_controls_autostart_intent(_json(replacement_path))
+    if replacement.get('evaluation_authority') is not None:
+        from .task_evaluation_team_run_authority import evaluation_owner
+        binding = replacement['evaluation_authority']
+        _require(all(original.get(k) == replacement.get(k) for k in ('team_namespace', 'scene_id', 'task_id'))
+            and binding['source_launch_id'] == run_root.name, 'team_evaluation_source_mismatch')
+        evaluation_owner(source_profile=_json(run_root/'launch_profile.json'), authority=binding,
+            source_launch_id=run_root.name, configured_scene_revision_digest=binding['configured_scene_revision_digest'],
+            evaluation_run_id=replacement['evaluation_run_id'])
+        return
+    authorization = _json(Path(replacement['phases']['construction']['authorization_path']))
+    owner = authorization['scene_owner_attempt']['scene_attempt_binding']
+    source = terminal_adoption_source(config={'scene_root': os.environ[ROOT_ENV],
+        'launch_state_root': str(run_root.parent)}, intent_id=owner['intent_id'],
+        expected_production_commit=replacement['expected_production_commit'])
+    _require(source is not None and source['launch_id'] == run_root.name
+        and source['adoption'] == replacement['configuration_adoption']
+        and source['source_commit'] == original['expected_production_commit']
+        and original['configuration_adoption'] == {'mode': 'same_commit_automatic'},
+        'terminal_adoption_embedded_replacement_invalid')
+    original_owner = _json(Path(original['phases']['construction']['authorization_path']))['scene_owner_attempt']['scene_attempt_binding']
+    _require(all(original_owner[k] == owner[k] for k in ('intent_id', 'intent_digest'))
+        and all(original.get(k) == replacement.get(k) for k in ('team_namespace', 'scene_id', 'task_id')),
+        'terminal_adoption_embedded_owner_mismatch')
+
+
+def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: Mapping[str, Any],
+        intent_id: str, expected_production_commit: str, now: float | None = None) -> dict[str, Any] | None:
+    from . import task_evaluation_controls_autoprovision as worker
+    from . import task_evaluation_scene_intake as intake
+    from . import task_evaluation_configured_controls_continuation_provisioning as producer
+    from .task_evaluation_scene_execution_authority import bind_scene_attempt
+    from .task_evaluation_scene_spend import publish_current_scene_project_spend
+
+    moment = time.time() if now is None else now
+    directory = Path(config['scene_root'])/intent_id
+    intent = worker._scene_intent(directory/'intent.json')
+    worker._require(intent['authenticated_issuer'] in config['trusted_clients'], 'owner_intent_invalid')
+    from .task_evaluation_team_run_controller import source_for_evaluation
+    source = source_for_evaluation(config=config, intent=intent, now=moment)
+    selected_evaluation = source is not None
+    if source is None:
+        source = terminal_adoption_source(config=config, intent_id=intent_id, expected_production_commit=expected_production_commit)
+    if source is None:
+        return None
+    worker._require(not (directory/'revoked.json').exists(), 'authority_revoked')
+    expiry = intake.effective_execution_expiry(directory, intent)
+    worker._require(moment < expiry, 'authority_expired')
+    request = intake.validate_request(intent['request'], now=intent['accepted_at_epoch'])
+    from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
+    binding, robot_assignment = resolve_controls_robot_binding(
+        directory=directory, intent=intent, catalog=catalog, now=moment)
+    if selected_evaluation and request['task'].get('robot_binding_digest') is not None:
+        from .task_evaluation_team_run_context import configuration_binding_digest
+        worker._require(request['task']['robot_binding_digest'] == configuration_binding_digest(binding),
+            'team_evaluation_robot_binding_changed')
+    from . import task_evaluation_completed_placement_adoption as completed
+    completed_placement = completed.discover(config=config,
+        intent_id=intent_id, source=source, expected_commit=expected_production_commit)
+    from . import task_evaluation_visual_review_continuation as visual
+    review_continuation = (None if selected_evaluation or completed_placement is not None else visual.discover(
+        config=config,intent_id=intent_id,source=source,expected_commit=expected_production_commit))
+    from .task_evaluation_terminal_adoption_retirement import retire_unmaterialized_adoptions
+    if completed_placement is not None:
+        completed.retire_unused_native(config=config,intent_id=intent_id,packet=completed_placement)
+    elif not selected_evaluation:
+        retire_unmaterialized_adoptions(config=config, intent_id=intent_id,
+            source=source, expected_production_commit=expected_production_commit,
+            visual_review_continuation=review_continuation)
+    worker._require(isinstance(binding, dict) and binding.get('expected_production_commit') == expected_production_commit, 'runtime_release_mismatch')
+    robot = worker._asset(binding['robot_asset_usd'])
+    cameras = worker._asset(binding['embodiment_camera_template'])
+    runtime = Path(binding['runtime_source_payload_dir'])
+    worker._require(worker.payload_digest(runtime) == binding['runtime_digest'], 'runtime_digest_mismatch')
+    original_caps = ({'construction': binding.get('phase_hard_cap_usd', producer.DEFAULT_PHASE_HARD_CAP_USD),
+        'controls': binding.get('phase_hard_cap_usd', producer.DEFAULT_PHASE_HARD_CAP_USD),
+        'placement': producer.DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD} if selected_evaluation else
+        {a['attempt_id'].rsplit('-', 1)[-1]: a['maximum_spend_usd'] for a in source['retired_attempts']})
+    worker._require(set(original_caps) == {'construction', 'controls', 'placement'}, 'terminal_adoption_phase_caps_invalid')
+    cap = min(float(binding.get('phase_hard_cap_usd', producer.DEFAULT_PHASE_HARD_CAP_USD)),
+              float(original_caps['construction']), float(original_caps['controls']))
+    inference_cap = min(producer.DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD, float(original_caps['placement']))
+    if review_continuation is not None:
+        cap = min(cap, visual.NATIVE_CAP)
+        inference_cap = visual.REVIEW_CAP
+    preparation_queue_root = Path(source.get('preparation_queue_root', config['preparation_queue_root']))
+    link = worker._configured_scene_preparation_link(intent=source.get('source_intent', intent),
+        preparation_queue_root=preparation_queue_root, expected_production_commit=source['source_commit'])
+    worker._require(link is not None, 'terminal_adoption_preparation_missing')
+    preparation_context = producer._preparation_context(
+        preparation_result_path=preparation_queue_root/'results'/link['result_filename'],
+        preparation_queue_root=preparation_queue_root,expected_production_commit=source['source_commit'])
+    native_phases = producer.phase_names(preparation_context)
+    if completed_placement is not None:
+        import math
+        retained = completed.validate_adoption(completed_placement)
+        total = sum(worker._json(Path(p['launch_authority_path']))['max_spend_usd'] for p in retained['intent']['phases'].values())
+        cap = min(cap, math.floor(total / len(native_phases) * 1_000_000) / 1_000_000)
+        inference_cap = 0.0
+    identity = {'owner_intent_digest': intent['intent_digest'], 'adoption': source['adoption'],
+                'execution_source_commit': expected_production_commit, 'catalog_binding_digest': canonical_digest({k:v for k,v in binding.items() if k not in {'project_spend_reconciliation', 'project_spend_observed_at_epoch'}})}
+    if selected_evaluation:
+        identity['evaluation_authority'] = source['evaluation_authority']
+    if robot_assignment is not None:
+        identity['robot_assignment_digest'] = robot_assignment['assignment_digest']
+    if review_continuation is not None:
+        identity['visual_review_continuation'] = review_continuation
+    if completed_placement is not None:
+        identity['completed_placement_adoption'] = completed_placement
+    key = canonical_digest(identity).removeprefix('sha256:')
+    root = Path(config['controls_root'])/'terminal-adoptions'/intent_id/key
+    worker._require(root.is_absolute() and not any(p.is_symlink() for p in (root, *root.parents)), 'controls_root_unsafe')
+    root.mkdir(mode=0o750, parents=True, exist_ok=True)
+    with intake._lock(root):
+        receipt_path = root/'terminal_adoption_provisioning.json'
+        if receipt_path.exists():
+            retained_result = worker._sealed(receipt_path, 'receipt_digest')
+            worker._require(all(retained_result.get(k) == v for k, v in identity.items()), 'terminal_adoption_identity_changed')
+            producer.install_intent_into_registry(intent_path=retained_result['provisioning']['intent_path'],
+                intent_root=config['intent_root'], expected_production_commit=expected_production_commit,
+                service_group=config.get('service_group', 'blueprint'))
+            return retained_result
+        phases = {}
+        reservations = [(phase,'vast',cap) for phase in native_phases]
+        if completed_placement is None:
+            reservations.append(('placement','openai',inference_cap))
+        for phase, provider, amount in reservations:
+            attempt = intake.reserve_scene_attempt(queue_root=config['scene_root'], intent_id=intent_id,
+                attempt_id='controls-'+key[:40]+'-'+phase, source_commit=expected_production_commit,
+                runtime_digest=binding['runtime_digest'], input_digest='sha256:'+key,
+                provider=provider, maximum_spend_usd=amount, now=moment,
+                visual_review_authority=(visual.reference(review_continuation['review_authority'])
+                    if phase == 'placement' and review_continuation is not None else None))
+            if phase != 'placement':
+                phases[phase] = bind_scene_attempt(attempt)
+        retained_path = root/'terminal_adoption_inputs.json'
+        if not retained_path.exists():
+            current = worker._json(Path(binding['project_spend_current_path']))
+            spend = publish_current_scene_project_spend(scene_root=config['scene_root'],
+                seed_reconciliation_path=current['path'], output_root=root/'spend', current_path=root/'spend-current.json', now=moment)
+            retained = worker._seal({**identity, 'issued_at_epoch': moment, 'spend_path': spend['pointer']['path']}, 'receipt_digest')
+            intake.write_exclusive(retained_path, retained)
+        retained = worker._sealed(retained_path, 'receipt_digest')
+        worker._require(all(retained.get(k) == v for k, v in identity.items()), 'terminal_adoption_inputs_changed')
+        issued = retained['issued_at_epoch']
+        authority = 'scene-intent:'+intent['intent_digest']
+        result = producer.provision_configured_controls_continuation(expected_production_commit=expected_production_commit,
+            visual_review_continuation=review_continuation,
+            completed_placement_adoption=completed_placement,
+            configuration_source_commit=source['source_commit'], configuration_adoption=source['adoption'],
+            preparation_result_path=preparation_queue_root/'results'/link['result_filename'],
+            preparation_queue_root=preparation_queue_root, robot_asset_usd_path=robot,
+            runtime_source_payload_dir=runtime, embodiment_camera_template_path=cameras,
+            project_spend_reconciliation_path=retained['spend_path'], controls_root=root/'inputs',
+            profile_dir=config['profile_dir'], authorization_reference=authority, authorized_by=request['owner']['user_id'],
+            release_reference=authority, openai_project_id=binding['openai_project_id'], openai_api_key_id=binding['openai_api_key_id'],
+            **producer.bounded_native_phase_budget(cap),
+            max_inference_cost_usd=inference_cap, authority_valid_seconds=int(expiry-issued),
+            now=datetime.fromtimestamp(issued, timezone.utc), external_layer_bucket=(producer._live_external_layer_bucket() or binding.get('external_layer_bucket')),
+            scene_phase_attempts=phases, scene_intake_root=config['scene_root'],
+            **({'evaluation_run_id': request['submission_id'], 'evaluation_authority': source['evaluation_authority']}
+                if selected_evaluation else {}))
+        installed = producer.install_intent_into_registry(intent_path=result['intent_path'], intent_root=config['intent_root'],
+            expected_production_commit=expected_production_commit, service_group=config.get('service_group','blueprint'))
+        receipt = worker._seal({'status':'installed_terminal_adoption', **identity, 'intent_id':intent_id,
+            'provisioning':result, 'installation':installed, 'provider_mutation_performed':False}, 'receipt_digest')
+        intake.write_exclusive(receipt_path, receipt)
+        return receipt

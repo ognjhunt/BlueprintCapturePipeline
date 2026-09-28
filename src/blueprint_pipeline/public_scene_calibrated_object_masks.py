@@ -25,7 +25,9 @@ import numpy as np
 from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .dual_task_rehearsal_contract import validate_task_freeze_set
+from .public_scene_removal_selection import (
+    validate_source_preparation_task_selection_set as validate_task_freeze_set,
+)
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 from .scene_placement.semantic_source_track_import import (
     MASK_ENCODING,
@@ -151,7 +153,7 @@ def _track_map(value: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return result
 
 
-def _frame_map(value: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def _frame_map(value: Mapping[str, Any], *, task_input_packet_path: str | Path | None = None) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for raw in value.get("frame_masks") or []:
         if not isinstance(raw, Mapping):
@@ -174,6 +176,9 @@ def _frame_map(value: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         ):
             raise CalibratedObjectMaskError(["calibrated_masks_frame_registry_invalid"])
         result[frame_id] = row
+    if task_input_packet_path is not None:
+        from .public_scene_sam31_frame_inventory import complete_sparse_frame_inventory
+        return complete_sparse_frame_inventory(value, result, task_input_packet_path)
     return result
 
 
@@ -299,7 +304,7 @@ def materialize_calibrated_object_mask_set(
             raise CalibratedObjectMaskError([f"calibrated_masks_task_inputs_invalid:{task_id}"])
         source_tracks = _verified_source_tracks(source_track_path)
         tracks = _track_map(source_tracks)
-        frames = _frame_map(source_tracks)
+        frames = _frame_map(source_tracks, task_input_packet_path=task_input.get("task_input_packet_path"))
         cameras = _camera_rows(camera_path)
         camera_frame_map = {
             str(camera_id).strip(): str(frame_id).strip()

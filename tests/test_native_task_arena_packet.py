@@ -9,11 +9,18 @@ import pytest
 from tests.test_native_task_appearance_frame_alignment import write_appearance_usdz
 
 from blueprint_pipeline.common import sha256_file
+from blueprint_pipeline.gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
+from blueprint_pipeline.native_g1_embodiment import ACTION_INTERFACE as G1_ACTION_INTERFACE
+from blueprint_pipeline.native_task_arena_runtime import (
+    _resolve_portable_robot,
+    validate_native_task_arena_runtime_plan,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_packet import (
     NativeTaskArenaPacketError,
     materialize_native_task_arena_appearance_variant_request,
     materialize_native_task_arena_packet,
+    validate_native_task_arena_packet_request,
 )
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
@@ -129,13 +136,13 @@ def _camera(role: str) -> dict:
             0.0,
             0.0,
             0.0,
-            1.0,
+            -1.0,
             0.0,
             0.0,
             0.0,
             0.0,
-            1.0,
-            0.0,
+            -1.0,
+            2.0,
             0.0,
             0.0,
             0.0,
@@ -229,7 +236,20 @@ def Xform "Root"
         "scene_appearance": ("scene_appearance.usdz", None),
         "task_object": (
             "task_object.usda",
-            articulated_asset if articulated else b"#usda 1.0\n# rigid\n",
+            articulated_asset if articulated else b"""#usda 1.0
+(
+    defaultPrim = "Asset"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Asset"
+{
+    def Mesh "body"
+    {
+        point3f[] points = [(-0.06, -0.06, 0.0), (0.06, 0.06, 0.12)]
+    }
+}
+""",
         ),
     }
     assets = []
@@ -362,19 +382,36 @@ def Xform "Root"
     return request
 
 
+@pytest.mark.parametrize("direct_3dgrut", [False, True])
 def test_particlefield_appearance_variant_request_binds_authoring_receipt(
-    tmp_path: Path,
+    tmp_path: Path, direct_3dgrut: bool
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     base = _request(evidence, articulated=True)
+    base["appearance_variant"] = {
+        "representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": _sha("b"),
+        "representation_conversion_performed": True,
+        "exact_learned_arrays_preserved": True,
+    }
+    base["request_digest"] = canonical_digest(base, digest_field="request_digest")
+    with pytest.raises(
+        NativeTaskArenaPacketError,
+        match="native_task_arena_particlefield_quality_missing_or_invalid",
+    ):
+        validate_native_task_arena_packet_request(base)
     base_path = tmp_path / "base_request.json"
     base_path.write_text(json.dumps(base), encoding="utf-8")
     asset = evidence / "particlefield" / "scene_appearance.usdc"
     asset.parent.mkdir()
     asset.write_bytes(b"particlefield fixture")
     receipt = {
-        "schema_version": "particlefield_3dgs_authoring_receipt.v1",
+        "schema_version": (
+            "nvidia_3dgrut_particlefield_transcode.v1"
+            if direct_3dgrut
+            else "particlefield_3dgs_authoring_receipt.v1"
+        ),
         "status": "completed",
         "schema": "ParticleField3DGaussianSplat",
         "output": str(asset),
@@ -384,10 +421,48 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "splat_count": 1_000_000,
         "sh_degree": 3,
         "sh_primvar_element_size": 16,
-        "sh_primvar_interpolation": "vertex",
-        "display_color_fallback_authored": True,
-        "particlefield_emissive_material_binding_authored": True,
-        "particlefield_emissive_material_inputs": "mdl_defaults",
+        "sh_primvar_interpolation": (
+            "constant" if direct_3dgrut else "vertex"
+        ),
+        "display_color_fallback_authored": not direct_3dgrut,
+        "particlefield_emissive_material_binding_authored": False,
+        "particlefield_emissive_material_inputs": None,
+        "particlefield_custom_render_hints_authored": False,
+        "particlefield_authoring_implementation": (
+            "nvidia_3dgrut_direct_nurec_transcode"
+            if direct_3dgrut
+            else "nvidia_usd_convert_gsplat"
+        ),
+        "upstream_converter": (
+            {
+                "repository": "https://github.com/nv-tlabs/3dgrut.git",
+                "source_revision": "a37ef721012dea0f29c0fcfff2d525023b4e854a",
+                "module": "threedgrut.export.scripts.transcode",
+                "module_sha256": _sha("c"),
+                "source_identity_verified": True,
+            }
+            if direct_3dgrut
+            else {
+                "distribution": "usd-convert-gsplat",
+                "version": "0.1.15",
+                "source_revision": "621017ebf78394488260c70ec4eadd70ff621131",
+            }
+        ),
+        "upstream_projection_mode_hint": (
+            "perspective" if direct_3dgrut else None
+        ),
+        "upstream_sorting_mode_hint": (
+            "cameraDistance" if direct_3dgrut else None
+        ),
+        "upstream_color_space": (
+            "srgb_rec709_display" if direct_3dgrut else None
+        ),
+        "gaussian_field_quality": {
+            "schema_version": "gaussian_field_quality.v1",
+            "status": "qualified",
+            "blockers": [],
+            "learned_tensors_mutated": False,
+        },
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(
@@ -418,22 +493,52 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "request_digest"
     ]
     assert variant["appearance_variant"]["sh_primvar_element_size"] == 16
-    assert variant["appearance_variant"]["sh_primvar_interpolation"] == "vertex"
-    assert variant["appearance_variant"]["display_color_fallback_authored"] is True
+    assert variant["appearance_variant"]["sh_primvar_interpolation"] == (
+        "constant" if direct_3dgrut else "vertex"
+    )
+    assert variant["appearance_variant"]["display_color_fallback_authored"] is (
+        not direct_3dgrut
+    )
     assert variant["appearance_variant"][
         "particlefield_emissive_material_binding_authored"
-    ] is True
+    ] is False
+    assert variant["appearance_variant"]["particlefield_custom_render_hints_authored"] is False
+    assert variant["appearance_variant"]["particlefield_authoring_implementation"] == (
+        "nvidia_3dgrut_direct_nurec_transcode"
+        if direct_3dgrut
+        else "nvidia_usd_convert_gsplat"
+    )
+    assert variant["appearance_variant"]["upstream_sorting_mode_hint"] == (
+        "cameraDistance" if direct_3dgrut else None
+    )
+    assert variant["appearance_variant"]["gaussian_field_quality"]["status"] == (
+        "qualified"
+    )
     assert variant["request_digest"] == canonical_digest(
         variant, digest_field="request_digest"
     )
     assert json.loads(output.read_text()) == variant
+
+    missing_quality = json.loads(json.dumps(variant))
+    missing_quality["appearance_variant"].pop("gaussian_field_quality")
+    missing_quality["request_digest"] = canonical_digest(
+        missing_quality, digest_field="request_digest"
+    )
+    with pytest.raises(
+        NativeTaskArenaPacketError,
+        match="native_task_arena_particlefield_quality_missing_or_invalid",
+    ):
+        validate_native_task_arena_packet_request(missing_quality)
 
     for missing in (
         "sh_primvar_element_size",
         "sh_primvar_interpolation",
         "display_color_fallback_authored",
         "particlefield_emissive_material_binding_authored",
-        "particlefield_emissive_material_inputs",
+        "particlefield_custom_render_hints_authored",
+        "particlefield_authoring_implementation",
+        "upstream_converter",
+        "gaussian_field_quality",
     ):
         invalid = dict(receipt)
         invalid.pop(missing)
@@ -451,6 +556,157 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
                 evidence_root=evidence,
                 output_path=output,
             )
+
+
+def test_packet_control_search_authority_is_typed_and_self_digested(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path, articulated=True)
+    authority = {
+        "schema_version": "task_evaluation_control_search_authority.v1",
+        "enabled": True,
+        "claim_ceiling": "development_only_control_search",
+        "provider_allocations_performed": 0,
+        "requested_vector_env_count": 256,
+        "maximum_vector_env_count": 1_024,
+        "seeds_per_candidate": 1,
+        "shortlist_size": 16,
+        "appearance_mode": "omitted",
+        "camera_mode": "disabled",
+        "full_fidelity_replay_required": True,
+        "authority_digest": "",
+    }
+    authority["authority_digest"] = canonical_digest(
+        authority, digest_field="authority_digest"
+    )
+    request["native_construction_feedback"] = {
+        "control_search": authority
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    assert validate_native_task_arena_packet_request(request) == request
+
+    request["native_construction_feedback"]["control_search"][
+        "camera_mode"
+    ] = "enabled"
+    request["native_construction_feedback"]["control_search"][
+        "authority_digest"
+    ] = canonical_digest(
+        request["native_construction_feedback"]["control_search"],
+        digest_field="authority_digest",
+    )
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    with pytest.raises(
+        NativeTaskArenaPacketError,
+        match="native_task_arena_control_search_authority_invalid",
+    ):
+        validate_native_task_arena_packet_request(request)
+
+
+def test_packet_stages_g1_asset_for_portable_scene_plan(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=True)
+    asset = evidence / "robot" / "g1.usda"
+    asset.parent.mkdir()
+    dependency = asset.parent / "attachment.usda"
+    dependency.write_text('#usda 1.0\ndef Xform "Attachment" {}\n', encoding="utf-8")
+    asset.write_text(
+        '''#usda 1.0
+(
+    defaultPrim = "G1"
+)
+def Xform "G1"
+{
+    def Xform "pelvis" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "right_finger_tip" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "right_thumb_tip" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "attachment" (references = @attachment.usda@</Attachment>) {}
+    def Shader "Material" {
+        uniform token info:implementationSource = "sourceAsset"
+        uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+    }
+}
+''',
+        encoding="utf-8",
+    )
+    digest = f"sha256:{sha256_file(asset)}"
+    joints = {name: 0.0 for name in PROTOCOL_V4_FULL_JOINT_ORDER}
+    robot = {
+        "robot_id": "unitree_g1",
+        "hand_id": "unitree_dex3_1",
+        "action_interface": G1_ACTION_INTERFACE,
+        "usd_sha256": digest,
+        "asset_source": {
+            "root": "evidence",
+            "relative_path": "robot/g1.usda",
+            "size_bytes": asset.stat().st_size,
+            "sha256": digest,
+        },
+        "base_pose_world": request["robot_base_pose_world"],
+        "joint_reset_positions_rad": joints,
+        "joint_position_limits_rad": {name: [-1.0, 1.0] for name in joints},
+        "actuator_parameters": {
+            name: {"stiffness": 100, "damping": 2, "effort_limit": 25, "velocity_limit": 10}
+            for name in joints
+        },
+        "task_contact_body_paths": [
+            "{ENV_REGEX_NS}/Robot/right_finger_tip",
+            "{ENV_REGEX_NS}/Robot/right_thumb_tip",
+        ],
+        "grasp_frame": {
+            "kind": "body_midpoint",
+            "body_names": ["right_finger_tip", "right_thumb_tip"],
+        },
+    }
+    head = _camera("wrist")
+    head.update(role="head", parent_prim_path="{ENV_REGEX_NS}/Robot/pelvis")
+    request.update(
+        robot_configuration=robot,
+        robot_joint_reset_positions_rad=joints,
+        cameras=[head, _camera("overview")],
+    )
+    request["task_state_binding"]["robot_gripper_contact_prim_pattern"] = (
+        "{ENV_REGEX_NS}/Robot/right_finger_tip"
+    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+
+    output = tmp_path / "packet"
+    receipt = materialize_native_task_arena_packet(
+        request=request, evidence_root=evidence, output_dir=output
+    )
+    plan = json.loads((output / "native_task_arena_scene_plan.v1.json").read_text())
+
+    assert receipt["robot_asset_binding"]["staged_sha256"] == digest
+    assert receipt["robot_asset_binding"]["dependency_bindings"] == [{
+        "relative_path": "assets/attachment.usda",
+        "size_bytes": dependency.stat().st_size,
+        "sha256": f"sha256:{sha256_file(dependency)}",
+    }]
+    assert plan["robot"]["usd_path"] == "assets/robot_unitree_g1.usda"
+    assert plan["robot"]["grasp_frame"] == robot["grasp_frame"]
+    assert plan["robot"]["usd_runtime_asset_dependencies"] == ["OmniPBR.mdl"]
+    assert receipt["robot_asset_binding"]["runtime_asset_dependencies"] == ["OmniPBR.mdl"]
+    assert _resolve_portable_robot(plan, bundle_root=output)["usd_path"] == str(
+        output / "assets" / "robot_unitree_g1.usda"
+    )
+    assert validate_native_task_arena_runtime_plan(plan, bundle_root=output) == plan
+    for invalid in (["unlisted.mdl"], [["OmniPBR.mdl"]], ["OmniPBR.mdl", "OmniPBR.mdl"]):
+        bad_plan = json.loads(json.dumps(plan))
+        bad_plan["robot"]["usd_runtime_asset_dependencies"] = invalid
+        with pytest.raises(ValueError, match="robot_runtime_asset_manifest_invalid"):
+            _resolve_portable_robot(bad_plan, bundle_root=output)
+    (output / "assets" / "attachment.usda").write_text("tampered")
+    with pytest.raises(ValueError, match="robot_dependency_identity_mismatch"):
+        _resolve_portable_robot(plan, bundle_root=output)
+    (output / "assets" / "attachment.usda").write_bytes(dependency.read_bytes())
+    (output / "assets" / "robot_unitree_g1.usda").write_text("tampered")
+    with pytest.raises(ValueError, match="robot_asset_identity_mismatch"):
+        _resolve_portable_robot(plan, bundle_root=output)
 
 
 @pytest.mark.parametrize("articulated", [False, True])
@@ -493,6 +749,70 @@ def test_original_and_second_scene_share_one_packet_materializer(
     }
 
 
+@pytest.mark.parametrize("articulated", [False, True])
+def test_packet_preserves_exact_static_support_topology_for_both_task_types(
+    tmp_path: Path, articulated: bool
+) -> None:
+    """Rigid and articulated tasks share the exact static-scene collision path."""
+
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdPhysics
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=articulated)
+    collision_row = next(
+        row for row in request["assets"] if row["semantic_role"] == "scene_collision"
+    )
+    collision = evidence / collision_row["source"]["relative_path"]
+    sealed = '''#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Root"
+{
+    def Mesh "captured_support" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+    )
+    {
+        uniform token physics:approximation = "convexDecomposition"
+        point3f[] points = [(0,0,0), (1,0,0), (1,1,0), (0,1,0)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0,1,2,3]
+    }
+}
+'''
+    collision.write_text(sealed, encoding="utf-8")
+    collision_row["source"]["size_bytes"] = collision.stat().st_size
+    collision_row["source"]["sha256"] = f"sha256:{sha256_file(collision)}"
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    output = tmp_path / "packet"
+    receipt = materialize_native_task_arena_packet(
+        request=request, evidence_root=evidence, output_dir=output
+    )
+
+    binding = next(
+        row
+        for row in receipt["source_bindings"]
+        if row["semantic_role"] == "scene_collision"
+    )
+    adaptation = binding["static_scene_collision_adaptation"]
+    assert adaptation["adaptation"] == "static_convex_to_triangle_mesh"
+    assert adaptation["converted_prim_paths"] == ["/Root/captured_support"]
+    assert binding["staged_sha256"] != collision_row["source"]["sha256"]
+    assert collision.read_text(encoding="utf-8") == sealed
+    stage = Usd.Stage.Open(str(output / "assets" / collision_row["filename"]))
+    support = stage.GetPrimAtPath("/Root/captured_support")
+    assert (
+        UsdPhysics.MeshCollisionAPI(support).GetApproximationAttr().Get() == "none"
+    )
+
+
 def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
     tmp_path: Path,
 ) -> None:
@@ -512,7 +832,20 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
     )
     rigid_path = evidence / "rigid_b" / "rigid_b.usda"
     rigid_path.parent.mkdir()
-    rigid_path.write_bytes(b"#usda 1.0\n# rigid-b\n")
+    rigid_path.write_bytes(b"""#usda 1.0
+(
+    defaultPrim = "Asset"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Asset"
+{
+    def Mesh "body"
+    {
+        point3f[] points = [(-0.06, -0.06, 0.0), (0.06, 0.06, 0.12)]
+    }
+}
+""")
     articulated_request["assets"].append(
         {
             "semantic_role": "replacement",
@@ -869,3 +1202,126 @@ def test_checked_second_scene_request_and_receipt_are_self_consistent() -> None:
         receipt, digest_field="receipt_digest"
     )
     assert receipt["native_application_claimed"] is False
+
+
+def test_packet_hardlinks_verified_sources_only_inside_the_opted_in_tree(
+    tmp_path: Path,
+) -> None:
+    """A packet may share bytes only with sources the caller will retire with it.
+
+    The episode compiler extracts multi-gigabyte assets and then wrote a second
+    copy into the packet, doubling the disk every no-spend canary consumed on a
+    host that reached 100% during the 2026-09-01 launch.  Linking is opt-in and
+    scoped to one tree; a long-lived evidence store outside it keeps the copy so
+    retained evidence never shares an inode with a packet.
+    """
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=True)
+    source = evidence / "task_object" / "task_object.usda"
+
+    materialize_native_task_arena_packet(
+        request=request, evidence_root=evidence, output_dir=tmp_path / "copied"
+    )
+    materialize_native_task_arena_packet(
+        request=request,
+        evidence_root=evidence,
+        output_dir=tmp_path / "linked",
+        link_sources_within=evidence,
+    )
+    materialize_native_task_arena_packet(
+        request=request,
+        evidence_root=evidence,
+        output_dir=tmp_path / "unrelated-scope",
+        link_sources_within=tmp_path / "somewhere-else",
+    )
+
+    copied = tmp_path / "copied" / "assets" / "task_object.usda"
+    linked = tmp_path / "linked" / "assets" / "task_object.usda"
+    scoped_out = tmp_path / "unrelated-scope" / "assets" / "task_object.usda"
+    assert copied.read_bytes() == linked.read_bytes() == source.read_bytes()
+    assert linked.stat().st_ino == source.stat().st_ino
+    assert copied.stat().st_ino != source.stat().st_ino
+    assert scoped_out.stat().st_ino != source.stat().st_ino
+    # Collision bytes that need no GPU re-authoring are verified source bytes
+    # like any other asset, so inside the opted-in tree they link as well.
+    collision_source = evidence / "scene_collision" / "scene_collision.usda"
+    linked_collision = tmp_path / "linked" / "assets" / "scene_collision.usda"
+    assert linked_collision.read_bytes() == collision_source.read_bytes()
+    assert linked_collision.stat().st_ino == collision_source.stat().st_ino
+
+
+@pytest.mark.parametrize(
+    ("label", "accepted"),
+    [("mdl_defaults", True), ("display_referred_srgb", True), ("linear_scene_referred", False)],
+)
+def test_particlefield_receipt_admits_only_known_emissive_material_input_labels(
+    tmp_path: Path, label: str, accepted: bool
+) -> None:
+    """Sealed receipts say ``mdl_defaults``; new ones declare the sRGB contract."""
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    base = _request(evidence, articulated=True)
+    base["appearance_variant"] = {
+        "representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": _sha("b"),
+        "representation_conversion_performed": True,
+        "exact_learned_arrays_preserved": True,
+    }
+    base["request_digest"] = canonical_digest(base, digest_field="request_digest")
+    base_path = tmp_path / "base_request.json"
+    base_path.write_text(json.dumps(base), encoding="utf-8")
+    asset = evidence / "particlefield" / "scene_appearance.usdc"
+    asset.parent.mkdir()
+    asset.write_bytes(b"particlefield fixture")
+    receipt = {
+        "schema_version": "particlefield_3dgs_authoring_receipt.v1",
+        "status": "completed",
+        "schema": "ParticleField3DGaussianSplat",
+        "output": str(asset),
+        "output_bytes": asset.stat().st_size,
+        "output_sha256": "sha256:" + sha256_file(asset),
+        "source_sha256": _sha("a"),
+        "splat_count": 1_000_000,
+        "sh_degree": 3,
+        "sh_primvar_element_size": 16,
+        "sh_primvar_interpolation": "vertex",
+        "display_color_fallback_authored": True,
+        "particlefield_emissive_material_binding_authored": True,
+        "particlefield_emissive_material_inputs": label,
+        "gaussian_field_quality": {
+            "schema_version": "gaussian_field_quality.v1",
+            "status": "qualified",
+            "blockers": [],
+            "learned_tensors_mutated": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = tmp_path / "authoring_receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    output = tmp_path / "variant_request.json"
+
+    if not accepted:
+        with pytest.raises(
+            NativeTaskArenaPacketError,
+            match="native_task_arena_appearance_variant_receipt_invalid",
+        ):
+            materialize_native_task_arena_appearance_variant_request(
+                base_request_path=base_path,
+                appearance_authoring_receipt_path=receipt_path,
+                evidence_root=evidence,
+                output_path=output,
+            )
+        return
+
+    variant = materialize_native_task_arena_appearance_variant_request(
+        base_request_path=base_path,
+        appearance_authoring_receipt_path=receipt_path,
+        evidence_root=evidence,
+        output_path=output,
+    )
+
+    assert variant["appearance_variant"]["particlefield_emissive_material_inputs"] == label

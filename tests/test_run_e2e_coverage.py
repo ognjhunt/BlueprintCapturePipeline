@@ -206,6 +206,58 @@ def test_run_end_to_end_uses_existing_descriptor_without_optional_lanes(
     assert result["support_validation"] is None
 
 
+def test_retry_rematerializes_restaged_descriptor_before_resuming_pipeline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    raw_root = capture_root / "raw"
+    raw_root.mkdir()
+    (raw_root / "capture_upload_complete.json").write_text("{}")
+    descriptor_path = capture_root / "capture_descriptor.json"
+    qa_path = capture_root / "qa_report.json"
+    cloud_descriptor = '{"capture_source": "unknown"}'
+    descriptor_path.write_text(cloud_descriptor)
+    descriptor = {"metadata": {"capture_entry_source": "browser_self_capture"}}
+    qa = {"status": "verified"}
+    calls = {"materialization": 0, "pipeline": 0}
+
+    def materialize(**_kwargs):
+        calls["materialization"] += 1
+        descriptor_path.write_text(json.dumps(descriptor))
+        qa_path.write_text(json.dumps(qa))
+        return {"descriptor": descriptor, "qa_report": qa}
+
+    def pipeline(**_kwargs):
+        calls["pipeline"] += 1
+        assert json.loads(descriptor_path.read_text()) == descriptor
+        assert json.loads(qa_path.read_text()) == qa
+        if calls["pipeline"] == 1:
+            raise PipelineError("retryable preparation failure")
+        return {"status": "completed", "lanes": ["current"]}
+
+    monkeypatch.setattr(run_e2e, "build_capture_preflight_report", lambda _root: {"status": "ready"})
+    monkeypatch.setattr(run_e2e, "materialize_capture_bundle", materialize)
+    monkeypatch.setattr(run_e2e, "run_capture_pipeline", pipeline)
+    with pytest.raises(PipelineError, match="retryable preparation failure"):
+        run_e2e.run_end_to_end(capture_root=str(capture_root), provider="openai")
+
+    # The listener downloads these original cloud records again on redelivery.
+    descriptor_path.write_text(cloud_descriptor)
+    qa_path.write_text('{}')
+    result = run_e2e.run_end_to_end(
+        capture_root=str(capture_root), provider="openai", resume_completed_stages=True
+    )
+    assert result["pipeline_status"] == "completed"
+    assert calls == {"materialization": 2, "pipeline": 2}
+    # Completed provider stages remain reusable on subsequent retries.
+    descriptor_path.write_text(cloud_descriptor)
+    qa_path.write_text('{}')
+    run_e2e.run_end_to_end(
+        capture_root=str(capture_root), provider="openai", resume_completed_stages=True
+    )
+    assert calls == {"materialization": 3, "pipeline": 2}
+
+
 def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path: Path) -> None:
     capture_root = _capture_root(tmp_path)
     (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")

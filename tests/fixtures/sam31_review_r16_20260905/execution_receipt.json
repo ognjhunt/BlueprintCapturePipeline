@@ -1,0 +1,745 @@
+{
+  "schema_version": "public_scene_sam31_ai_visual_review_execution.v1",
+  "status": "ai_visual_review_execution_completed",
+  "candidate": {
+    "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/public_scene_sam31_track_selection_review_candidate.v1.json",
+    "size_bytes": 18827,
+    "sha256": "sha256:d5979123e38abaf6133ad711c8859398de177750213fd24b4a0ad5af18ff89cf",
+    "candidate_digest": "sha256:539e020ca1537b332fed905303684e1bcdbb90fa1be7e5778a87fa742cbc0151"
+  },
+  "rights_attestation": {
+    "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/review-rights.json",
+    "size_bytes": 2776,
+    "sha256": "sha256:cfc5608e93eefe6ad45d9faaff94a433752beb5e637fb4a38bce52f2eaf4f758",
+    "attestation_digest": "sha256:27f0c734228790cec2ec54362fea90bc511f9e9cbb99f2a685373a3beeb61593"
+  },
+  "reviewer": {
+    "kind": "ai",
+    "identity": "blueprint-openai-agents-sdk-sam31-visual-reviewer",
+    "runtime": "openai_agents_sdk",
+    "model": "gpt-5.6-terra",
+    "model_version": "gpt-5.6-terra",
+    "sdk_version": "0.19.4",
+    "method": "exact_overlay_visual_inspection"
+  },
+  "reviewed_at": "2026-09-05T21:54:24.489995Z",
+  "run_id": "sam31-ai-visual-review-539e020ca1537b33",
+  "capability": "public_scene_sam31_track_selection_visual_review",
+  "decision": "accepted",
+  "review_media_digest": "sha256:16f91cb31d98f49c465015b6e9dbd2f28d4cb5bfae9c6fe15c665a566158a5c5",
+  "review_frame_count": 16,
+  "frame_inventory": [
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-01",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 0,
+      "mask_observation_status": "normalized_empty_no_above_threshold_observation",
+      "overlay_sha256": "sha256:eaff7ffe0eae8b1d3c996bb6e738f5cfd531600c208811ba5d672706b67faff7",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1522788,
+        "sha256": "sha256:eaff7ffe0eae8b1d3c996bb6e738f5cfd531600c208811ba5d672706b67faff7",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-01.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-02",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 0,
+      "mask_observation_status": "normalized_empty_no_above_threshold_observation",
+      "overlay_sha256": "sha256:95da064aead203babae821e254fc88d0c524eaf10f11fcb5666d9bf5bb8e9c15",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1828094,
+        "sha256": "sha256:95da064aead203babae821e254fc88d0c524eaf10f11fcb5666d9bf5bb8e9c15",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-02.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-03",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 0,
+      "mask_observation_status": "normalized_empty_no_above_threshold_observation",
+      "overlay_sha256": "sha256:c6df97d68c53a9e92e787eb0dff5bc6374e67be0999a39965472da841a9d3f9a",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1545926,
+        "sha256": "sha256:c6df97d68c53a9e92e787eb0dff5bc6374e67be0999a39965472da841a9d3f9a",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-03.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-04",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 0,
+      "mask_observation_status": "normalized_empty_no_above_threshold_observation",
+      "overlay_sha256": "sha256:10d1e6c57a4b12469cf38a3fc0b356263c06782f68421cafb0d2c57e8f15985f",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1847571,
+        "sha256": "sha256:10d1e6c57a4b12469cf38a3fc0b356263c06782f68421cafb0d2c57e8f15985f",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-04.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-05",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 0,
+      "mask_observation_status": "normalized_empty_no_above_threshold_observation",
+      "overlay_sha256": "sha256:5a1a80351ae2e49f044e6bbcb687f37de4cc4220b68b05aa6cd454d376f28604",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1589291,
+        "sha256": "sha256:5a1a80351ae2e49f044e6bbcb687f37de4cc4220b68b05aa6cd454d376f28604",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-05.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-06",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 0,
+      "mask_observation_status": "normalized_empty_no_above_threshold_observation",
+      "overlay_sha256": "sha256:c44fe67a6f1792d5243c9746a441e76a5ec5996ca07593e445cd0f7f8c6fb020",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1631551,
+        "sha256": "sha256:c44fe67a6f1792d5243c9746a441e76a5ec5996ca07593e445cd0f7f8c6fb020",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-06.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-07",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 0,
+      "mask_observation_status": "normalized_empty_no_above_threshold_observation",
+      "overlay_sha256": "sha256:890d9d39d4715bdcbe935258e783a3407986e9b96e9348df5abec3cb2956f036",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1698636,
+        "sha256": "sha256:890d9d39d4715bdcbe935258e783a3407986e9b96e9348df5abec3cb2956f036",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-07.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-08",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 78382,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:9d999e64e35f9f6144835071ad4d2a025df0e3c38b54c04035c70b051b22dcaa",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1704861,
+        "sha256": "sha256:9d999e64e35f9f6144835071ad4d2a025df0e3c38b54c04035c70b051b22dcaa",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-08.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-09",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 118821,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:c55d418a0204ff66f2ad236da8a9d0f39becb4e8d5199ee73f50f74fc11288e4",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1281779,
+        "sha256": "sha256:c55d418a0204ff66f2ad236da8a9d0f39becb4e8d5199ee73f50f74fc11288e4",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-09.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-10",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 99749,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:326a2891abfdbe74b01fd14b646fd7ab22e8287cf3e61a7c37c0b7dfcbf3ed13",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1623899,
+        "sha256": "sha256:326a2891abfdbe74b01fd14b646fd7ab22e8287cf3e61a7c37c0b7dfcbf3ed13",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-10.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-11",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 55260,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:932a12b1bab6c030139bbc198e0086f0434c743d166e9fb2386a674ac5661de5",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1625092,
+        "sha256": "sha256:932a12b1bab6c030139bbc198e0086f0434c743d166e9fb2386a674ac5661de5",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-11.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-12",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 167013,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:04c69dd6a24bb7c50be4dbda02a3013a491713f042fe44198754e43ece67f07e",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1428266,
+        "sha256": "sha256:04c69dd6a24bb7c50be4dbda02a3013a491713f042fe44198754e43ece67f07e",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-12.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-13",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 55173,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:ffc1c163a672db306c5402ca9b0c94cde07a4df604ff1f12e96ccbe0d49f85b2",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1415930,
+        "sha256": "sha256:ffc1c163a672db306c5402ca9b0c94cde07a4df604ff1f12e96ccbe0d49f85b2",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-13.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-14",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 56297,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:a3965b537943790e2dd9484232f2912218ab89d244e9520c32c95da4b09ae3e0",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1542624,
+        "sha256": "sha256:a3965b537943790e2dd9484232f2912218ab89d244e9520c32c95da4b09ae3e0",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-14.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-15",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 167813,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:b2af3a473101e2a93b383c50c2d0b148056dee63bbd842aa447eec53cbaee01d",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1611517,
+        "sha256": "sha256:b2af3a473101e2a93b383c50c2d0b148056dee63bbd842aa447eec53cbaee01d",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-15.png"
+      }
+    },
+    {
+      "task_id": "scene-841757-book-to-tray",
+      "camera_id": "source-16",
+      "selected_track_ids": [
+        "sam31-selected-source-subject-0"
+      ],
+      "selected_track_labels": [
+        "open book"
+      ],
+      "foreground_pixel_count": 168004,
+      "mask_observation_status": "above_threshold_selected_mask",
+      "overlay_sha256": "sha256:05c0375f99b0d76a6e2908bb1237e9f3a31b68ed5d8a7d48e89b2cc5280a5976",
+      "overlay_width_height_bound_by_candidate": true,
+      "overlay": {
+        "size_bytes": 1803283,
+        "sha256": "sha256:05c0375f99b0d76a6e2908bb1237e9f3a31b68ed5d8a7d48e89b2cc5280a5976",
+        "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/candidate/review_media/scene-841757-book-to-tray/source-16.png"
+      }
+    }
+  ],
+  "structured_output": {
+    "decision": "accepted",
+    "summary": "All overlays pass identity/contamination review: empty-mask frames contain no magenta, and nonempty masks select only the open book.",
+    "frames": [
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-01",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Book is visible; overlay has no magenta pixels."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-02",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Book is visible; overlay has no magenta pixels."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-03",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Book is visible; overlay has no magenta pixels."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-04",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Book is visible; overlay has no magenta pixels."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-05",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Book is visible; overlay has no magenta pixels."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-06",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Book is visible; overlay has no magenta pixels."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-07",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Book is visible; overlay has no magenta pixels."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-08",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-09",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-10",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-11",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-12",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-13",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-14",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-15",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      },
+      {
+        "task_id": "scene-841757-book-to-tray",
+        "camera_id": "source-16",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": true,
+        "decision": "accepted",
+        "rationale": "Magenta selects the open book only."
+      }
+    ]
+  },
+  "structured_output_digest": "sha256:99eeb899524526f87352fa065ca4909071e82911333bf2f3ac06c9759bb19f9b",
+  "input_digest": "sha256:b39504fffa0870fca661218dfeab714c63d61be502965cc80c7b4b524aadb4cd",
+  "input_transport": "digest_rehashed_png_data_urls",
+  "provider_called": true,
+  "provider": "openai",
+  "response_store": false,
+  "tracing_disabled": true,
+  "trace_sensitive_data_included": false,
+  "usage": {
+    "requests": 1,
+    "input_tokens": 33017,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 947,
+    "output_tokens_details": {
+      "reasoning_tokens": 62
+    },
+    "total_tokens": 33964,
+    "request_usage_entries": [
+      {
+        "input_tokens": 33017,
+        "output_tokens": 947,
+        "total_tokens": 33964,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 62
+        }
+      }
+    ],
+    "schema_version": "openai_prompt_cache_usage.v1",
+    "model": "gpt-5.6-terra",
+    "provider_response_id": "resp_010f8ba5625f13d0016a9c8f854f4c87d299ac82111a2d714b",
+    "provider_response_status": null,
+    "cached_tokens": 0,
+    "cache_write_tokens": 0,
+    "uncached_input_tokens": 33017,
+    "reasoning_tokens": 62,
+    "cache_hit_ratio": 0.0,
+    "request_count": 1,
+    "uncached_input_cost_usd": 0.066034,
+    "cache_write_cost_usd": 0.0,
+    "cached_read_cost_usd": 0.0,
+    "output_cost_usd": 0.011364,
+    "estimated_total_cost_usd": 0.077398,
+    "estimated_cost_without_caching_usd": 0.077398,
+    "estimated_savings_usd": 0.0,
+    "per_request_costs": [
+      {
+        "request_index": 0,
+        "input_tokens": 33017,
+        "output_tokens": 947,
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "uncached_input_tokens": 33017,
+        "reasoning_tokens": 62,
+        "long_context_pricing_applied": false,
+        "uncached_input_cost_usd": 0.066034,
+        "cache_write_cost_usd": 0.0,
+        "cached_read_cost_usd": 0.0,
+        "output_cost_usd": 0.011364,
+        "estimated_total_cost_usd": 0.077398,
+        "estimated_cost_without_caching_usd": 0.077398
+      }
+    ],
+    "cost_status": "model_pricing_estimate_not_official_billing",
+    "usage_receipt_digest": "sha256:fc1f7018408a14420615fe9a6dfae03c9ce2aee314cdc9d86a9847a2830bafbe",
+    "provider_request_id": "req_3b564d9a6e164c6b947b875c94d0a80b",
+    "cache_policy": {
+      "schema_version": "openai_prompt_cache_policy.v1",
+      "status": "disabled",
+      "model_family": "gpt-5.6-terra",
+      "mode": "explicit",
+      "family": "public_scene_sam31_track_selection_visual_review",
+      "contract_version": "gpt56-explicit-v1",
+      "stable_prefix_digest": "sha256:c721c73ecf28f89bd9ecf51b3536e2df1ee7ff04d0125b104fecc77627c236c6",
+      "tool_schema_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "output_schema_digest": "sha256:7d7eeb68355c697905c55fd5367e664e41e511fe802810d61a43a6855b4f7829",
+      "parallel_tool_calls": null,
+      "context_management_digest": "sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "reasoning_effort": "default",
+      "verbosity": "low",
+      "privacy_scope": "blueprint_internal",
+      "processing_region": "default",
+      "expected_reuse_count": 0,
+      "expected_reuse_probability": 0.0,
+      "ttl": "30m",
+      "explicit_breakpoints": [],
+      "dynamic_suffix_fields": [],
+      "decision_reason": "stable_prefix_below_model_minimum",
+      "economics": {
+        "stable_prefix_tokens": 0,
+        "expected_reuse_probability": 0.0,
+        "expected_reuse_count": 0,
+        "expected_cache_reads": 0.0,
+        "break_even_reuse_probability": null,
+        "uncached_expected_cost_usd": 0.0,
+        "cached_expected_cost_usd": 0.0,
+        "expected_savings_usd": 0.0,
+        "maximum_loss_if_never_reused_usd": 0.0
+      },
+      "policy_digest": "sha256:967d050b7033641e87ea1405671bb81f53a1c7393e451b6064effbb107463486",
+      "cache_key_digest": null
+    },
+    "breakpoint_digests": [],
+    "projected_max_cost_per_request_usd": 0.536,
+    "projected_max_cost_usd": 0.536,
+    "cumulative_reserved_cost_usd": 0.077398
+  },
+  "cost_usd": 0.077398,
+  "cost_status": "model_pricing_estimate_not_official_billing",
+  "official_openai_cost_reservation": {
+    "schema_version": "openai_official_cost_run_reservation.v1",
+    "status": "reserved_before_openai_call",
+    "lane_id": "public_scene_sam31_track_selection_visual_review",
+    "run_id": "sam31-ai-visual-review-539e020ca1537b33",
+    "request_digest": "sha256:b39504fffa0870fca661218dfeab714c63d61be502965cc80c7b4b524aadb4cd",
+    "candidate_digest": "sha256:539e020ca1537b332fed905303684e1bcdbb90fa1be7e5778a87fa742cbc0151",
+    "authorization_receipt_digest": "sha256:27f0c734228790cec2ec54362fea90bc511f9e9cbb99f2a685373a3beeb61593",
+    "maximum_cost_usd": 1.0,
+    "provider_reservation": {
+      "schema_version": "candidate_policy_cost_reservation.v1",
+      "status": "reserved",
+      "authority_id": "openai_organization_costs_api@1",
+      "provider_id": "openai",
+      "paid_resource_class": "sam31_ai_visual_review",
+      "cost_authority_binding_digest": "sha256:3326dfb1e0359ed00c267bf893291bf6bfd5dde2ce9267258d5ca84723a99c2a",
+      "candidate_id": "sam31-ai-visual-review-539e020ca1537b33",
+      "candidate_evaluation_suite_digest": "sha256:539e020ca1537b332fed905303684e1bcdbb90fa1be7e5778a87fa742cbc0151",
+      "authorization_receipt_digest": "sha256:27f0c734228790cec2ec54362fea90bc511f9e9cbb99f2a685373a3beeb61593",
+      "reserved_max_cost_usd": 1.0,
+      "reserved_at": "2026-09-05T21:54:00.212194+00:00",
+      "attribution_start_time": 1788566400,
+      "candidate_runtime_window_end": "2026-09-05T22:54:00.212194+00:00",
+      "attribution_end_time": 1788652800,
+      "reconciliation_not_before": "2026-09-07T00:00:00+00:00",
+      "project_id": "proj_BF4Al8t1uIcV6ffGr5jsr1ml",
+      "api_key_id": "key_AnKNnbRUaNjzaIGZ",
+      "exclusive_scope_attestation_digest": "sha256:c0559d4d861aaa63835b7d66e17a9c79a55ee69ee3ae41c590e94a90546e15bb",
+      "baseline_cost_snapshot": {
+        "schema_version": "openai_organization_cost_snapshot.v1",
+        "status": "complete",
+        "source": "openai_organization_costs_api",
+        "documentation_url": "https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs",
+        "project_id": "proj_BF4Al8t1uIcV6ffGr5jsr1ml",
+        "api_key_id": "key_AnKNnbRUaNjzaIGZ",
+        "start_time": 1788566400,
+        "end_time": 1788652800,
+        "observed_at": "2026-09-05T21:54:01.080745+00:00",
+        "bucket_width": "1d",
+        "page_count": 1,
+        "bucket_count": 1,
+        "result_count": 0,
+        "total_cost_usd": 0.0,
+        "source_page_digests": [
+          "sha256:87f59e1eeee53b3f06af972af349a893ea73b5a6a9c4141f08114b289bc84da6"
+        ],
+        "raw_admin_key_recorded": false,
+        "candidate_reported_usage_used": false,
+        "proof_effect": "none",
+        "openai_cost_snapshot_digest": "sha256:d2db3893b889b1fd6468a100621992b036c9fea2fcf65cd21a765cccc8a704c9"
+      },
+      "baseline_cost_usd": 0.0,
+      "candidate_reported_usage_is_authoritative": false,
+      "proof_effect": "none",
+      "cost_reservation_digest": "sha256:0a33069153962ff370d576999e3d325d10263afb78411957b6bb2bd33badc485"
+    },
+    "zero_cost_baseline_confirmed": true,
+    "exclusive_scope_attestation_digest": "sha256:c0559d4d861aaa63835b7d66e17a9c79a55ee69ee3ae41c590e94a90546e15bb",
+    "provider_call_performed": false,
+    "strict_official_billing_satisfied": false,
+    "proof_effect": "none",
+    "reservation_receipt_digest": "sha256:a05eb445ed5a40efad5d5760a43ac2ce7d39c975568ade1374580a9654a28737"
+  },
+  "official_openai_cost_reservation_record": {
+    "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/sdk-review/official_openai_cost/openai_official_cost_run_reservation.v1.json",
+    "size_bytes": 3343,
+    "sha256": "sha256:fab79d683d8c4f347e7249a61af46e35acae2a8be04c60169aa175c8446b6770"
+  },
+  "official_openai_cost_completion": {
+    "schema_version": "openai_official_cost_run_completion.v1",
+    "status": "official_cost_reporting_pending",
+    "lane_id": "public_scene_sam31_track_selection_visual_review",
+    "run_id": "sam31-ai-visual-review-539e020ca1537b33",
+    "request_digest": "sha256:b39504fffa0870fca661218dfeab714c63d61be502965cc80c7b4b524aadb4cd",
+    "candidate_digest": "sha256:539e020ca1537b332fed905303684e1bcdbb90fa1be7e5778a87fa742cbc0151",
+    "authorization_receipt_digest": "sha256:27f0c734228790cec2ec54362fea90bc511f9e9cbb99f2a685373a3beeb61593",
+    "reservation_receipt_digest": "sha256:a05eb445ed5a40efad5d5760a43ac2ce7d39c975568ade1374580a9654a28737",
+    "cost_reservation_digest": "sha256:0a33069153962ff370d576999e3d325d10263afb78411957b6bb2bd33badc485",
+    "provider_call_performed": true,
+    "runtime_result_digest": "sha256:99eeb899524526f87352fa065ca4909071e82911333bf2f3ac06c9759bb19f9b",
+    "runtime_exception_type": null,
+    "official_completion_snapshot": {
+      "schema_version": "openai_organization_cost_snapshot.v1",
+      "status": "complete",
+      "source": "openai_organization_costs_api",
+      "documentation_url": "https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs",
+      "project_id": "proj_BF4Al8t1uIcV6ffGr5jsr1ml",
+      "api_key_id": "key_AnKNnbRUaNjzaIGZ",
+      "start_time": 1788566400,
+      "end_time": 1788652800,
+      "observed_at": "2026-09-05T21:54:24.480664+00:00",
+      "bucket_width": "1d",
+      "page_count": 1,
+      "bucket_count": 1,
+      "result_count": 0,
+      "total_cost_usd": 0.0,
+      "source_page_digests": [
+        "sha256:87f59e1eeee53b3f06af972af349a893ea73b5a6a9c4141f08114b289bc84da6"
+      ],
+      "raw_admin_key_recorded": false,
+      "candidate_reported_usage_used": false,
+      "proof_effect": "none",
+      "openai_cost_snapshot_digest": "sha256:05970710675e339ad79ce278ffbe9bd7a50653dcb5076a6f24ed3a6502570f3b"
+    },
+    "provider_observed_cost_usd": 0.0,
+    "cost_is_final": false,
+    "strict_official_billing_satisfied": false,
+    "reconciliation_not_before": "2026-09-07T00:00:00+00:00",
+    "candidate_reported_cost_accepted": false,
+    "raw_admin_key_recorded": false,
+    "proof_effect": "none",
+    "completed_at": "2026-09-05T21:54:24.480810+00:00",
+    "completion_receipt_digest": "sha256:dacda833ed21c6ae6a219d48e09c666454c46042ffd44fd2bb4ca2051dc61284"
+  },
+  "official_openai_cost_completion_record": {
+    "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/sdk-review/official_openai_cost/openai_official_cost_run_completion.v1.json",
+    "size_bytes": 2332,
+    "sha256": "sha256:f9bcaf12952348484d3ca1f3ed4a84c0af6e92f65eb429dfae1ebbcda5c04088"
+  },
+  "official_openai_billing_status": "official_cost_reporting_pending",
+  "strict_official_billing_satisfied": false,
+  "inference_reservation_manifest": {
+    "schema_version": "task_evaluation_inference_reservation_manifest.v1",
+    "run_id": "sam31-ai-visual-review-539e020ca1537b33",
+    "reservations": [
+      {
+        "reservation_id": "sha256:14083d499913aab871732e62e8d2628a2cd2df55d06c3d0144fabf0889698637",
+        "reservation_digest": "sha256:48502217d6865f40612f94ed170695ee87ac209b3d8bb5a3263f3944cd32407f",
+        "reservation_path": "inference_reservations/reserved/14083d499913aab871732e62e8d2628a2cd2df55d06c3d0144fabf0889698637.json",
+        "projected_max_cost_usd": 0.536,
+        "reconciled_actual_cost_usd": 0.077398,
+        "released_reservation_usd": 0.45860200000000007,
+        "status": "completed",
+        "completion_digest": "sha256:14abb9c1ea09e55bbbe46740eada0f71385b79d77c7810031b5bfa2cb85cdc8f",
+        "completion_path": "inference_reservations/completed/14083d499913aab871732e62e8d2628a2cd2df55d06c3d0144fabf0889698637.json"
+      }
+    ],
+    "reservation_count": 1,
+    "in_flight_unknown_count": 0,
+    "reserved_max_cost_usd": 0.077398,
+    "projected_max_cost_usd_total": 0.536,
+    "proof_effect": "none",
+    "inference_reservation_manifest_digest": "sha256:63d91551d7356beec00c22dd26054d27ff3c709ee6d27cb552755885c3d099f2"
+  },
+  "inference_reservation_manifest_record": {
+    "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6029003f6fcb849abd54d3fa4d455c61ef393ca76f391bc3cf232c2d1d911433/sam31-8359e690c3369b201a3ad07f9324bb8d094fa8d4eb294231aa1050164e6a1fb9/artifacts/sdk-review/inference_reservations/manifest.json",
+    "size_bytes": 1181,
+    "sha256": "sha256:10b45901f4dd8b5edb8c4b2e59b65db65daba9be1221aecf64d1e2f9e5e07ea7"
+  },
+  "blockers": [],
+  "raw_secret_values_recorded": false,
+  "claim_boundary": {
+    "visual_track_selection_review_only": true,
+    "human_review_completed": false,
+    "per_view_segmentation_completeness_qualified": false,
+    "geometry_qualified": false,
+    "physical_evidence": false
+  },
+  "execution_receipt_digest": "sha256:0455e8c25964ce3c96dbd02e1d76a193c3f5b9363487f3820416b79da16dc5a6"
+}

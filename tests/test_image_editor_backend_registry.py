@@ -68,7 +68,7 @@ def test_gpt_image_2_omits_the_unsupported_input_fidelity_parameter() -> None:
     assert execution["input_fidelity_parameter_supported"] is False
     assert "input_fidelity" not in execution["default_options"]
     assert canonical_digest(backend) == (
-        "sha256:fd4669469e0d4f8155acb6687824817ce13147a39bb5f417734a987584b69fb7"
+        "sha256:fe45d8b94ab623ca050cb6ad6da8712d9b028fa220bd3dad2a6666723c61ba70"
     )
 
 
@@ -82,6 +82,24 @@ def test_the_bundle_takes_its_admissible_set_from_the_registry() -> None:
     )
     source = Path(bundle.__file__).read_text(encoding="utf-8")
     assert 'frozenset({"artifixer"' not in source, "the literal set came back"
+
+
+def test_new_scene_repairs_select_sunburst_with_separate_provenance() -> None:
+    from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver import (
+        _SEMANTIC_BACKEND_ID,
+    )
+
+    registry = load_registry()
+    current = registry[_SEMANTIC_BACKEND_ID]
+    previous = registry["openai_gpt_image_2_2026_04_21_semantic_teacher"]
+    execution = current["execution"]
+    assert execution["model_snapshot"] == "gpt-image-2.5-sunburst-2026-09-08"
+    assert canonical_digest(current) != canonical_digest(previous)
+    assert execution["pricing_binding"]["usd_per_million_tokens"] == (
+        previous["execution"]["pricing_binding"]["usd_per_million_tokens"]
+    )
+    assert execution["default_options"] == {"output_format": "png", "quality": "high"}
+    assert execution["pricing_binding"]["max_cost_per_request_usd"] == 0.3
 
 
 def test_a_new_backend_is_admitted_by_adding_a_row(tmp_path: Path) -> None:

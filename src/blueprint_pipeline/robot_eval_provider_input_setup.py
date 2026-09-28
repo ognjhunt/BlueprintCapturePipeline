@@ -99,6 +99,7 @@ LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS = {
     "build_sam31_source_tracks_live_profile.py": "content_addressed_full_readback",
     "build_semantic_teacher_image_edit_live_profile.py": "content_addressed_full_readback",
     "build_simready_isaac_live_profile.py": "content_addressed_full_readback",
+    "build_task_evaluation_scene_configuration_live_profile.py": "content_addressed_full_readback",
 }
 
 
@@ -306,7 +307,11 @@ def _upload_file_to_s3_compatible(
     parsed = urlparse(destination_uri)
     endpoint_url = _first_env_or_file_value(R2_ENDPOINT_ENV_VAR_ALTERNATIVES) or None
     kwargs: Dict[str, Any] = {}
-    if parsed.scheme == "r2" and endpoint_url:
+    # The canonical production object store is S3-compatible DigitalOcean
+    # Spaces and intentionally uses ordinary ``s3://`` references.  Honor the
+    # operator-owned endpoint for both accepted S3-compatible spellings; only
+    # doing so for ``r2://`` silently sent ``s3://`` publications to AWS.
+    if parsed.scheme in {"s3", "r2"} and endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
     region = _first_env_or_file_value(S3_REGION_ENV_VAR_ALTERNATIVES)
     if region:
@@ -368,7 +373,7 @@ def _validate_uploaded_object(source: Path, destination_uri: str) -> Dict[str, A
             parsed = urlparse(destination_uri)
             endpoint_url = _first_env_or_file_value(R2_ENDPOINT_ENV_VAR_ALTERNATIVES) or None
             kwargs: Dict[str, Any] = {}
-            if parsed.scheme == "r2" and endpoint_url:
+            if parsed.scheme in {"s3", "r2"} and endpoint_url:
                 kwargs["endpoint_url"] = endpoint_url
             region = _first_env_or_file_value(S3_REGION_ENV_VAR_ALTERNATIVES)
             if region:

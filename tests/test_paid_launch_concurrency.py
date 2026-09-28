@@ -7,13 +7,19 @@ authorization.
 
 What must not change: each attempt still carries its own hard cap, TTL, and
 watchdog, so the worst case is N times one attempt's ceiling rather than an
-unbounded fleet. And the deploy has to be exclusive with *every* slot, not just
-the one that kept the historical filename.
+unbounded fleet. And no launch may *start* during a deploy, in any slot, not
+just the one that kept the historical filename.
+
+Runs that started before a deploy keep their slots: the deploy closes a gate
+that launches take while acquiring a slot, holds every free slot, and never
+retires a release tree a live process runs from. A deploy therefore stops
+waiting out the longest paid run in flight.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -265,3 +271,189 @@ def test_the_deploy_repair_skips_slots_that_do_not_exist(tmp_path: Path) -> None
 
     assert receipt["repaired_slots"] == []
     assert not base.exists()
+
+
+def test_the_deploy_does_not_remutate_already_usable_lock_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True)
+    slots = vpa.vast_launch_lock_paths(base)
+    for slot in slots:
+        slot.touch(mode=0o600)
+        slot.chmod(0o600)
+
+    original_chmod = Path.chmod
+
+    def forbidden_slot_chmod(path: Path, mode: int, **kwargs: object) -> None:
+        if path in slots:
+            raise PermissionError("already-usable lock slot must not be rewritten")
+        original_chmod(path, mode, **kwargs)
+
+    def forbidden_chown(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("already-usable lock slot must not be re-owned")
+
+    monkeypatch.setattr(Path, "chmod", forbidden_slot_chmod)
+
+    receipt = deploy._repair_paid_launch_lock_slots(
+        [str(base)],
+        owner_uid=os.getuid(),
+        owner_gid=os.getgid(),
+        chown=forbidden_chown,
+    )
+
+    assert receipt["repaired_slots"] == []
+
+
+def _slots(tmp_path: Path) -> tuple[Path, list[Path]]:
+    base = tmp_path / "locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    slots = vpa.vast_launch_lock_paths(base)
+    for slot in slots:
+        slot.touch()
+    vpa.vast_launch_gate_path(base).touch()
+    return base, slots
+
+
+def test_a_deploy_proceeds_past_runs_in_flight_and_names_them(tmp_path: Path) -> None:
+    base, slots = _slots(tmp_path)
+    running, _ = _acquire(tmp_path, "long-gpu-run", base)
+    assert running is not None
+
+    with deploy._holding_paid_launch_gate([str(base)]) as in_flight:
+        assert [run["slot"] for run in in_flight] == [slots[0].name]
+        assert in_flight[0]["pid"] == os.getpid()
+        assert "long-gpu-run" in in_flight[0]["holder"]
+        # Nothing new starts mid-deploy, although two slots are unused.
+        handle, manifest = _acquire(tmp_path, "job-during-deploy", base)
+        assert handle is None
+        assert manifest["blockers"] == ["vast_paid_launch_lock_busy"]
+        assert manifest["gate_closed_for_deploy"] is True
+
+    handle, manifest = _acquire(tmp_path, "job-after-deploy", base)
+    assert handle is not None and manifest["status"] == "acquired"
+    vpa._release_vast_launch_lock(handle)
+    vpa._release_vast_launch_lock(running)
+
+
+def test_pre_gate_launch_code_cannot_take_a_free_slot_mid_deploy(tmp_path: Path) -> None:
+    """A process still running adapter code from before the gate flocks slots directly."""
+
+    import fcntl
+
+    base, slots = _slots(tmp_path)
+    with deploy._holding_paid_launch_gate([str(base)]) as in_flight:
+        assert in_flight == []
+        for slot in slots:
+            with slot.open("r", encoding="utf-8") as probe:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_a_launch_taking_its_slot_holds_the_deploy_until_the_gate_wait_expires(
+    tmp_path: Path,
+) -> None:
+    import fcntl
+
+    base, _ = _slots(tmp_path)
+    ticks = iter([0.0, 1.0, 2.0, 3.0])
+    with vpa.vast_launch_gate_path(base).open("r", encoding="utf-8") as launch:
+        fcntl.flock(launch.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        with pytest.raises(deploy.ControlPlaneDeployError) as excinfo:
+            with deploy._holding_paid_launch_gate(
+                [str(base)], wait_seconds=2, sleeper=lambda _s: None, clock=lambda: next(ticks)
+            ):
+                pytest.fail("deployed while a launch was taking its slot")
+    assert str(excinfo.value) == "deploy_refused_paid_launch_gate_busy"
+
+
+def test_the_gate_is_released_after_the_slot_is_taken(tmp_path: Path) -> None:
+    import fcntl
+
+    base, _ = _slots(tmp_path)
+    handle, _ = _acquire(tmp_path, "job", base)
+    with vpa.vast_launch_gate_path(base).open("r", encoding="utf-8") as probe:
+        fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+    vpa._release_vast_launch_lock(handle)
+
+
+def test_an_absent_gate_is_not_created_by_the_deploy(tmp_path: Path) -> None:
+    base = tmp_path / "never-launched" / "vast_paid_launch.lock"
+
+    with deploy._holding_paid_launch_gate([str(base)]) as in_flight:
+        assert in_flight == []
+
+    assert not base.parent.exists()
+
+
+def test_an_unusable_gate_fails_the_launch_closed(tmp_path: Path) -> None:
+    base, _ = _slots(tmp_path)
+    gate = vpa.vast_launch_gate_path(base)
+    gate.unlink()
+    gate.mkdir()
+
+    handle, manifest = _acquire(tmp_path, "job", base)
+
+    assert handle is None
+    assert manifest["blockers"] == ["vast_paid_launch_lock_unusable"]
+
+
+def _proc(tmp_path: Path, pid: int, *, cgroup: str = "", cwd: Path | None = None, argv=()) -> Path:
+    root = tmp_path / "proc"
+    entry = root / str(pid)
+    entry.mkdir(parents=True)
+    (entry / "cgroup").write_text(cgroup)
+    (entry / "cmdline").write_bytes(b"\0".join(part.encode() for part in argv))
+    if cwd is not None:
+        (entry / "cwd").symlink_to(cwd)
+    return root
+
+
+def test_a_restart_never_takes_down_a_live_paid_controller(tmp_path: Path) -> None:
+    root = _proc(tmp_path, 41, cgroup="0::/system.slice/blueprint-pipeline-intake.service\n")
+    _proc(tmp_path, 42, cgroup="0::/system.slice/blueprint-native-g1-team-campaign-dispatcher.service\n")
+    run = {"slot": "vast_paid_launch.lock", "holder": "g1-run", "pid": 41}
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="in_restarted_unit:blueprint-pipeline-intake"):
+        deploy._require_in_flight_runs_outside_units(
+            [run], ["blueprint-pipeline-intake.service"], proc_root=root)
+    deploy._require_in_flight_runs_outside_units(
+        [{**run, "pid": 42}], ["blueprint-pipeline-intake.service"], proc_root=root)
+    deploy._require_in_flight_runs_outside_units(
+        [{**run, "pid": 99}], ["blueprint-pipeline-intake.service"], proc_root=root)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="holder_unknown"):
+        deploy._require_in_flight_runs_outside_units(
+            [{**run, "pid": None}], ["blueprint-pipeline-intake.service"], proc_root=root)
+
+
+def test_releases_a_live_process_runs_from_are_found_by_cwd_or_argv(tmp_path: Path) -> None:
+    releases = tmp_path / "releases"
+    runtimes = tmp_path / "system-runtimes"
+    old, older = releases / ("a" * 40), releases / ("b" * 40)
+    renderer = runtimes / "splat-render" / ("c" * 40)
+    toolchain = runtimes / "scene-configuration" / ("d" * 40)
+    (old / "src").mkdir(parents=True)
+    older.mkdir(parents=True)
+    (renderer / "bin").mkdir(parents=True)
+    toolchain.mkdir(parents=True)
+    (releases / "scratch").mkdir()
+    root = _proc(tmp_path, 7, cwd=old / "src")
+    _proc(tmp_path, 8, argv=("python", str(older / "scripts/run.py")))
+    _proc(tmp_path, 9, cwd=tmp_path, argv=("bash",))
+    # A renderer or toolchain process pins its runtime tree, not just its release.
+    _proc(tmp_path, 10, argv=(str(renderer / "bin" / "node"), "render.js"))
+    _proc(tmp_path, 11, cwd=toolchain)
+    # A path under a managed root that is not a commit tree is never reported.
+    _proc(tmp_path, 12, argv=("python", str(releases / "scratch" / "probe.py")))
+    # A path passed as --flag=/abs/path pins its tree too.
+    flagged = releases / ("e" * 40)
+    flagged.mkdir()
+    _proc(tmp_path, 13, argv=("python", "-m", "tool", f"--repo-root={flagged}/src"))
+
+    assert deploy._live_release_commits(releases, proc_root=root) == [
+        "a" * 40, "b" * 40, "e" * 40,
+    ]
+    assert deploy._live_release_commits(releases, runtime_root=runtimes, proc_root=root) == [
+        "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
+    ]

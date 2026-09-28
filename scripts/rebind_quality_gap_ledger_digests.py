@@ -8,6 +8,7 @@ import hashlib
 import json
 import subprocess
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -280,7 +281,30 @@ def _replace_or_extend_evidence(
     return int(before != rows)
 
 
-def rebind(ledger: dict[str, Any]) -> int:
+def rebind(ledger: dict[str, Any], *, reevaluate_at: datetime | None = None) -> int:
+    """Rehash repository evidence; optionally renew its existing unbound window.
+
+    Renewal checks the bytes again and preserves the original window duration.
+    It cannot renew signed closure evidence or turn a test mapping into a run.
+    """
+    policy = ledger["freshness_policy"]
+    if reevaluate_at is not None:
+        prior = datetime.fromisoformat(policy["evaluated_at"])
+        until = datetime.fromisoformat(policy["fresh_until"])
+        if (reevaluate_at.tzinfo is None or reevaluate_at > datetime.now(timezone.utc)
+                or reevaluate_at < prior or until <= prior):
+            raise ValueError("freshness_reevaluation_time_invalid")
+        if ledger["closure_authority_policy"]["enabled"] is not False:
+            raise ValueError("freshness_reevaluation_cannot_renew_closure")
+        for gap in ledger.get("gaps", []):
+            for criterion in gap.get("criteria", []):
+                for artifact in criterion.get("evidence_artifacts", []):
+                    if (artifact.get("supports_closure") is not False
+                            or artifact.get("commit") is not None
+                            or artifact.get("release_id") is not None):
+                        raise ValueError("freshness_reevaluation_cannot_renew_closure")
+        policy["evaluated_at"] = reevaluate_at.isoformat()
+        policy["fresh_until"] = (reevaluate_at + (until - prior)).isoformat()
     changed = 0
     baseline_criteria = _baseline_criteria()
     ledger["schema_version"] = "blueprint.public_launch_sc3_quality_gap_ledger.v3"
@@ -293,6 +317,11 @@ def rebind(ledger: dict[str, Any]) -> int:
             changed += _replace_or_extend_evidence(
                 criterion, baseline_criteria.get(str(criterion.get("criterion_id") or ""))
             )
+            if reevaluate_at is not None:
+                criterion["freshness"].update({
+                    "evaluated_at": policy["evaluated_at"],
+                    "fresh_until": policy["fresh_until"],
+                })
             for artifact in criterion.get("evidence_artifacts", []):
                 relative = Path(str(artifact.get("path") or ""))
                 candidate = (ROOT / relative).resolve()
@@ -306,6 +335,16 @@ def rebind(ledger: dict[str, Any]) -> int:
                 if artifact.get("sha256") != digest:
                     artifact["sha256"] = digest
                     changed += 1
+                if reevaluate_at is not None:
+                    if (artifact.get("supports_closure") is not False
+                            or artifact.get("commit") is not None
+                            or artifact.get("release_id") is not None):
+                        raise ValueError("freshness_reevaluation_cannot_renew_closure")
+                    artifact.update({
+                        "freshness_evaluated_at": policy["evaluated_at"],
+                        "fresh_until": policy["fresh_until"],
+                        "freshness_status": "current_unbound",
+                    })
             remediating = any(
                 artifact.get("supports_remediation") is True
                 for artifact in criterion.get("evidence_artifacts", [])
@@ -348,10 +387,14 @@ def rebind(ledger: dict[str, Any]) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
+    parser.add_argument(
+        "--reevaluate-at", type=datetime.fromisoformat,
+        help="Explicit timezone-aware reevaluation time; rehashes bytes and preserves the prior window length.",
+    )
     args = parser.parse_args()
     ledger_path = args.ledger.expanduser().resolve()
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    changed = rebind(ledger)
+    changed = rebind(ledger, reevaluate_at=args.reevaluate_at)
     ledger_path.write_text(
         json.dumps(ledger, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",

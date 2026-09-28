@@ -1,0 +1,101 @@
+[Unit]
+Description=Advance configured scenes into canonical Franka controls
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target blueprint-task-evaluation-launch-reconciler.service
+
+[Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+# The controls-autoprovision worker installs write-once 0440 controls intents
+# into the canonical registry the activation+progression consumer reads, so this
+# directory must be writable by the service (Spec B). The deploy makes the
+# directory group-writable; the intent files themselves stay immutable.
+ReadWritePaths=/var/lib/blueprint /etc/blueprint/task-evaluation-configured-controls-plans /etc/blueprint/task-evaluation-launch-profiles /etc/blueprint/task-evaluation-configured-controls-intents
+ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
+TasksMax=512
+LimitNOFILE=4096
+MemoryMax=8G
+CPUQuota=200%
+# A complete articulated placement screen can take more than 15 minutes on
+# the four-core controller. A real drawer search used 20 minutes before the
+# guarded reviewer started. Keep enough bounded time for review and handoff.
+TimeoutStartSec=45min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT=/etc/blueprint/task-evaluation-configured-controls-plans
+Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT=/etc/blueprint/task-evaluation-configured-controls-intents
+# Persistent-owner selection scope (Spec C). Selection grants no execution
+# authority; every owner reservation, frozen profile, standing grant, release,
+# spend, expiry, revocation and provider-zero gate still runs. This does not
+# touch any execute/dry-run hold.
+Environment=BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE=persistent_owner_only
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
+Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
+Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/prepared-references
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations
+Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE=/etc/blueprint/provider-secrets/blueprint_task_evaluation_launch_submit_secret
+Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL=https://tryblueprint.io/api/internal/task-evaluation-launch-submissions
+Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_ACTIVATION_INTENT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
+Environment=BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR=/var/lib/blueprint/pipeline-control-plane/standing-authorizations
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+# Resolve new private scene outputs alongside original legacy-store task inputs.
+# Keep WAM bindings unchanged; the reader selects credentials by exact bucket.
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+# Shared owner-store identity (scene-intake root + trusted clients) so scene_store()
+# resolves the persistent owner (Spec C). Materialized by the scene-preparation
+# installer; optional so its absence leaves the legacy lane, never a hard failure.
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
+# Controls-autoprovision config pointer (Spec B). The deploy writes this file
+# ONLY after the config and its digest-bound Franka/camera/runtime assets
+# validate, so BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG never
+# names a missing file (which would fail progression_owner_scope closed and stop
+# every scene). Absent file => legacy no-autoprovision lane.
+EnvironmentFile=-/etc/blueprint/task-evaluation-controls-autoprovision.env
+# Placement review deliberately reuses the already-provisioned scene visual-
+# review key. systemd applies EnvironmentFile values after Environment values
+# regardless of their textual order, so ExecStart rebinds the generic SDK key
+# path to the admitted role immediately before execution. The intent still
+# supplies the exact project/key identity and finite cost authority.
+Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review
+Environment=OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review
+Environment=OPENAI_ADMIN_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_admin_api_key
+Environment=BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation_artifixer_visual_review.json
+Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true
+Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock
+Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" OPENAI_API_KEY_FILE="$${OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_configured_controls_progression_worker --plan-root "$${BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT}" --autostart-intent-root "$${BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}" --launch-state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --progression-root "$${BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT}" --preparation-queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT}" --episode-compilation-queue-root "$${BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT}" --activation-queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT}" --repo-root "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" --webapp-secret-file "$${BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE}" --webapp-endpoint "$${BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL}" --scene-configuration-activation-intent-root "$${BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_ACTIVATION_INTENT_ROOT}" --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --standing-authorization-dir "$${BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR}" --webapp-catalog "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG}" --policy-canary-notification-email "$${BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL:-}"'

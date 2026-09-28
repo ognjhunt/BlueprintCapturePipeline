@@ -1,0 +1,675 @@
+"""Sealed run evidence moves to the artifact store behind a digest-bound pointer, and comes back."""
+
+from __future__ import annotations
+
+import functools
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from types import SimpleNamespace
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
+from blueprint_pipeline.control_plane_evidence_offload import (
+    ABANDONED_TERMINAL_RECEIPT,
+    EXECUTE_ACK,
+    POINTER_SUFFIX,
+    ControlPlaneEvidenceOffloadError,
+    apply_evidence_offload,
+    build_evidence_offload_manifest,
+    restore_offloaded_evidence,
+)
+from tests.test_task_evaluation_configured_scene_object_store import (
+    _ContentAddressedClient,
+)
+
+
+BUCKET = "blueprint-production-inputs"
+
+
+@pytest.fixture(autouse=True)
+def isolated_disk_ledger(tmp_path, monkeypatch):
+    from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
+    monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.reserve_control_plane_disk",
+                        functools.partial(reserve_control_plane_disk,
+                            disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
+    monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.DEFAULT_RESERVATION_ROOT",
+                        tmp_path / "disk-reservations")
+
+
+def test_archive_disk_refusal_keeps_source_without_creating_temporary_archive(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+    from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
+    root = tmp_path / "runs"
+    root.mkdir()
+    directory = _run(root, "run", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    def refuse(*args, **kwargs):
+        assert args == ("evidence_offload",)
+        assert kwargs["expected_bytes"] > 2048
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
+    monkeypatch.setattr(offload, "reserve_control_plane_disk", refuse)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK)
+    assert result["offloaded_count"] == 0
+    assert result["skipped"][0]["reason"] == "offload_failed:ControlPlaneDiskBudgetError"
+    assert directory.exists()
+    assert not list(root.glob(".*.offload-*"))
+
+
+def test_archive_footprint_counts_hardlinked_payload_once(tmp_path):
+    from blueprint_pipeline.control_plane_evidence_offload import _archive_footprint
+    path = tmp_path / "large"
+    path.write_bytes(b"x" * (2 * 1024 * 1024))
+    initial = _archive_footprint(tmp_path)
+    os.link(path, tmp_path / "alias")
+    assert 0 < _archive_footprint(tmp_path) - initial < 16384
+
+
+@pytest.mark.slow
+def test_approved_entrypoint_ignores_host_pythonpath(tmp_path: Path) -> None:
+    stale = tmp_path / "blueprint_pipeline"
+    stale.mkdir()
+    (stale / "__init__.py").write_text("raise RuntimeError('stale installed release')")
+    checkout = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, str(checkout / "scripts/apply_approved_evidence_offload.py"), "--help"],
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _unclassified(*_args, **_kwargs) -> None:
+    return None
+
+
+def _run(root: Path, name: str, *, receipt: str | None, age: float, now: float) -> Path:
+    directory = root / name
+    (directory / "episodes").mkdir(parents=True)
+    (directory / "episodes" / "frame.bin").write_bytes(os.urandom(2048))
+    (directory / "status_events.jsonl").write_text('{"stage":"done"}\n', encoding="utf-8")
+    if receipt:
+        (directory / receipt).write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    stamp = now - age
+    for path in [directory, *directory.rglob("*")]:
+        os.utime(path, (stamp, stamp))
+    return directory
+
+
+def test_manifest_lists_only_sealed_runs_past_the_hot_window(tmp_path: Path) -> None:
+    root = tmp_path / "launch-runs"
+    root.mkdir()
+    now = 1_000_000.0
+    sealed = _run(root, "run-sealed", receipt="dispatch_receipt.json", age=20 * 86400, now=now)
+    _run(root, "run-hot", receipt="launch_receipt.json", age=2 * 86400, now=now)
+    _run(root, "run-open", receipt=None, age=30 * 86400, now=now)
+    done = _run(root, "run-done", receipt="dispatch_receipt.json", age=30 * 86400, now=now)
+    (root / f"run-done{POINTER_SUFFIX}").write_text("{}", encoding="utf-8")
+    (root / "stray.txt").write_text("x", encoding="utf-8")
+
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=14 * 86400, now=lambda: now, classifier=_unclassified
+    )
+
+    assert [row["name"] for row in manifest["candidates"]] == [sealed.name]
+    assert manifest["candidates"][0]["terminal_receipt"] == "dispatch_receipt.json"
+    assert manifest["candidates"][0]["file_count"] == 3
+    assert manifest["retained_counts"] == {
+        "active_or_unsealed": 1,
+        "hot": 1,
+        "already_offloaded": 1,
+        "unsafe": 1,
+    }
+    assert manifest["evidence_hot_roots_scanned"] is False
+    assert done.is_dir()
+    # The real classifier refuses anything that is not sealed run evidence.
+    with pytest.raises(ValueError, match="control_plane_evidence_offload_root_class:unclassified"):
+        build_evidence_offload_manifest(evidence_roots=[root], now=lambda: now)
+    with pytest.raises(ValueError, match="control_plane_evidence_offload_root_class:evidence_hot"):
+        build_evidence_offload_manifest(
+            evidence_roots=["/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard"],
+            now=lambda: now,
+        )
+
+
+def _bytes_under(directory: Path) -> int:
+    return sum(path.lstat().st_size for path in directory.rglob("*") if path.is_file() and not path.is_symlink())
+
+
+def test_evidence_manifest_names_each_retention_reason_with_bytes(tmp_path: Path, monkeypatch) -> None:
+    """2026-09-27: an applied tick with offload enabled reclaimed nothing, and its manifest
+    folded four different reasons into one ``active_or_unsealed`` counter. Each reason
+    is now counted on its own, with the bytes it keeps, and each tree is walked once."""
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+
+    root = tmp_path / "launch-runs"
+    root.mkdir()
+    now, day = 5_000_000.0, 86400
+    runs: dict[str, Path] = {}
+
+    def run(name: str, size: int, *, receipt: str | None = "dispatch_receipt.json", age: float = 30 * day) -> Path:
+        directory = root / name
+        (directory / "episodes").mkdir(parents=True)
+        (directory / "episodes" / "frame.bin").write_bytes(b"x" * size)
+        if receipt:
+            (directory / receipt).write_text('{"status": "completed"}', encoding="utf-8")
+        for path in [directory, *directory.rglob("*")]:
+            os.utime(path, (now - age, now - age))
+        runs[name] = directory
+        return directory
+
+    registry = run("run-registry", 1000) / "artifacts" / "result_delivery"
+    registry.mkdir(parents=True)
+    (registry / "artifact_registry.json").write_text("{}", encoding="utf-8")
+    run("run-offloaded", 1100)
+    (root / f"run-offloaded{POINTER_SUFFIX}").write_text("{}", encoding="utf-8")
+    protection = {
+        "run-pin": "protected_pin",
+        "run-process": "protected_process",
+        "run-process-inventory": "protected_process_inventory_unreadable",
+        "run-queue": "protected_queue",
+        "run-settlement": "protected_settlement",
+        "run-settlement-unreadable": "protected_unreadable_settlement",
+    }
+    for offset, name in enumerate(protection):
+        run(name, 1200 + offset)
+    run("run-unsealed", 1300, receipt=None, age=day)
+    run("run-hot", 1400, age=day)
+    run("run-candidate", 1500)
+    (root / "run-link").symlink_to(runs["run-candidate"])
+    (root / "stray.txt").write_bytes(b"s" * 7)
+    walked: list[str] = []
+    real_snapshot = offload._tree_snapshot
+
+    def counted(directory: Path):
+        walked.append(directory.name)
+        return real_snapshot(directory)
+
+    monkeypatch.setattr(offload, "_tree_snapshot", counted)
+
+    # One hook: a checker that returns a string names the reason.
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=2 * day, abandoned_after_seconds=3 * day,
+        now=lambda: now, classifier=_unclassified, protection_checker=lambda directory: protection.get(directory.name),
+    )
+
+    bytes_of = {name: _bytes_under(directory) for name, directory in runs.items()}
+    assert manifest["retained_by_reason"] == {
+        "unsafe": {"count": 2, "bytes": os.lstat(root / "run-link").st_size + 7},
+        "result_registry": {"count": 1, "bytes": bytes_of["run-registry"]},
+        "already_offloaded": {"count": 1, "bytes": bytes_of["run-offloaded"]},
+        **{reason: {"count": 1, "bytes": bytes_of[name]} for name, reason in protection.items()},
+        "unsealed_recent": {"count": 1, "bytes": bytes_of["run-unsealed"]},
+        "hot": {"count": 1, "bytes": bytes_of["run-hot"]},
+    }
+    assert [row["name"] for row in manifest["candidates"]] == ["run-candidate"]
+    assert manifest["candidate_bytes"] == bytes_of["run-candidate"]
+    # The coarse counters every existing reader uses are unchanged.
+    assert manifest["retained_counts"] == {"active_or_unsealed": 8, "hot": 1, "already_offloaded": 1, "unsafe": 2}
+    # Every directory is walked exactly once, and a link or stray file never is.
+    assert sorted(walked) == sorted(runs)
+    # What that sizing cost is on the record.
+    assert manifest["walked_file_count"] == sum(
+        1 for directory in runs.values() for path in directory.rglob("*") if path.is_file())
+    assert isinstance(manifest["walk_seconds"], float) and manifest["walk_seconds"] >= 0
+
+    # Without an abandonment window an unsealed run is kept for that reason, and a
+    # checker that returns True still protects, counted as ``protected``.
+    legacy = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=2 * day, now=lambda: now, classifier=_unclassified,
+        protection_checker=lambda directory: directory.name in protection,
+    )
+    assert legacy["retained_by_reason"]["protected"] == {
+        "count": len(protection), "bytes": sum(bytes_of[name] for name in protection)}
+    assert legacy["retained_by_reason"]["unsealed_no_window"] == {"count": 1, "bytes": bytes_of["run-unsealed"]}
+    assert legacy["retained_counts"] == manifest["retained_counts"]
+    assert [row["name"] for row in legacy["candidates"]] == ["run-candidate"]
+    import inspect
+
+    assert "protection_reason" not in inspect.signature(build_evidence_offload_manifest).parameters
+
+
+def test_local_write_during_archive_publication_prevents_eviction(tmp_path):
+    root = tmp_path / "runs"
+    root.mkdir()
+    directory = _run(root, "run-1", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    client = _ContentAddressedClient()
+    def publisher(**kwargs):
+        result = store.publish_configured_scene_artifact(**kwargs, client=client, bucket=BUCKET)
+        (directory / "episodes" / "frame.bin").write_bytes(b"new evidence")
+        return result
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=publisher)
+    assert result["offloaded_count"] == 0
+    assert result["skipped"] == [{"name": "run-1", "reason": "candidate_changed_during_archive"}]
+    assert (directory / "episodes" / "frame.bin").read_bytes() == b"new evidence"
+    assert not (root / ("run-1" + POINTER_SUFFIX)).exists()
+
+
+@pytest.mark.parametrize("hardlinked", [False, True])
+def test_offload_publishes_verifies_points_then_removes_and_restore_round_trips(
+    tmp_path: Path, hardlinked: bool,
+) -> None:
+    root = tmp_path / "launch-runs"
+    root.mkdir()
+    now = 2_000_000.0
+    directory = _run(root, "run-1", receipt="dispatch_receipt.json", age=30 * 86400, now=now)
+    if hardlinked:
+        os.link(directory / "episodes" / "frame.bin", directory / "episodes" / "frame-copy.bin")
+        os.utime(directory / "episodes", (now - 30 * 86400,) * 2)
+    original = {
+        path.relative_to(directory).as_posix(): path.read_bytes()
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+    client = _ContentAddressedClient()
+    publisher = functools.partial(
+        store.publish_configured_scene_artifact, client=client, bucket=BUCKET
+    )
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=14 * 86400, now=lambda: now, classifier=_unclassified
+    )
+
+    with pytest.raises(
+        ControlPlaneEvidenceOffloadError,
+        match="control_plane_evidence_offload_apply_not_authorized",
+    ):
+        apply_evidence_offload(manifest, ack="wrong", publisher=publisher, now=lambda: now)
+    receipt = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=publisher, now=lambda: now)
+
+    assert receipt["offloaded_count"] == 1 and receipt["skipped"] == []
+    assert receipt["evidence_deleted"] is False
+    assert not directory.exists()
+    pointer_path = root / f"run-1{POINTER_SUFFIX}"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assert pointer["status"] == "offloaded"
+    assert pointer["directory"] == "run-1"
+    assert pointer["terminal_receipt"] == "dispatch_receipt.json"
+    assert pointer["uri"].endswith(f"/artifacts/control-plane-evidence/sha256/{pointer['digest'].removeprefix('sha256:')}/{Path(receipt['offloaded'][0]['uri']).name}")
+    assert {row["relative_path"] for row in pointer["members"]} == set(original)
+    for row in pointer["members"]:
+        assert row["sha256"] == "sha256:" + hashlib.sha256(original[row["relative_path"]]).hexdigest()
+    assert client.upload_count == 1
+    stored = client.objects[(BUCKET, pointer["uri"].split(f"s3://{BUCKET}/", 1)[1])]
+    assert hashlib.sha256(stored).hexdigest() == pointer["digest"].removeprefix("sha256:")
+    assert not list(root.glob(".run-1.offload-*"))
+
+    def materializer(*, reference, destination, maximum_size_bytes):
+        payload = client.objects[(BUCKET, reference["uri"].split(f"s3://{BUCKET}/", 1)[1])]
+        assert len(payload) <= maximum_size_bytes
+        Path(destination).write_bytes(payload)
+        return {"status": "materialized"}
+
+    restored = restore_offloaded_evidence(
+        pointer_path=pointer_path, destination=tmp_path / "restored" / "run-1", materializer=materializer
+    )
+    assert restored["status"] == "restored"
+    assert {
+        path.relative_to(tmp_path / "restored" / "run-1").as_posix(): path.read_bytes()
+        for path in (tmp_path / "restored" / "run-1").rglob("*")
+        if path.is_file()
+    } == original
+
+    # A second tick sees the pointer and does not offload the run again.
+    again = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=14 * 86400, now=lambda: now, classifier=_unclassified
+    )
+    assert again["candidate_count"] == 0
+    assert pointer_path.is_file() and not directory.exists()
+    # A directory that reappears beside its pointer is never offloaded twice.
+    directory.mkdir()
+    (directory / "dispatch_receipt.json").write_text("{}", encoding="utf-8")
+    twice = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=0, now=lambda: now, classifier=_unclassified
+    )
+    assert twice["candidate_count"] == 0 and twice["retained_counts"]["already_offloaded"] == 1
+
+
+def test_offload_keeps_the_directory_when_publication_or_verification_fails(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "canaries"
+    root.mkdir()
+    now = 3_000_000.0
+    directory = _run(root, "run-2", receipt="dispatch_receipt.json", age=30 * 86400, now=now)
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=0, now=lambda: now, classifier=_unclassified
+    )
+
+    def failing_publisher(**_kwargs):
+        raise store.TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_publication_failed"
+        )
+
+    failed = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=failing_publisher, now=lambda: now)
+    assert failed["offloaded_count"] == 0
+    assert failed["skipped"] == [
+        {"name": "run-2", "reason": "offload_failed:TaskEvaluationConfiguredSceneObjectStoreError"}
+    ]
+    assert directory.is_dir() and not (root / f"run-2{POINTER_SUFFIX}").exists()
+    assert not list(root.glob(".run-2.offload-*"))
+
+    def lying_publisher(*, path, artifact_kind):
+        return {
+            "uri": "s3://elsewhere/x",
+            "digest": "sha256:" + "0" * 64,
+            "size_bytes": Path(path).stat().st_size,
+            "full_byte_service_account_readback_passed": True,
+        }
+
+    mismatch = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=lying_publisher, now=lambda: now)
+    assert mismatch["skipped"] == [
+        {"name": "run-2", "reason": "offload_failed:ControlPlaneEvidenceOffloadError"}
+    ]
+    assert directory.is_dir()
+
+    # A candidate whose seal changed after the dry run is skipped, not offloaded.
+    (directory / "dispatch_receipt.json").unlink()
+    changed = apply_evidence_offload(
+        manifest,
+        ack=EXECUTE_ACK,
+        publisher=functools.partial(
+            store.publish_configured_scene_artifact, client=_ContentAddressedClient(), bucket=BUCKET
+        ),
+        now=lambda: now,
+    )
+    assert changed["skipped"] == [{"name": "run-2", "reason": "candidate_changed"}]
+    assert directory.is_dir()
+
+
+@pytest.mark.parametrize("uri", [None, 42, ["s3://bucket/key"]])
+def test_offload_refuses_to_evict_behind_a_reference_without_a_string_uri(tmp_path: Path, uri) -> None:
+    """The pointer's URI is the only way back to the archive. A publisher whose reference checks out
+    in every other way but has no string URI is refused like any other mismatch: no pointer is
+    written and nothing is evicted."""
+
+    root = tmp_path / "canaries"
+    root.mkdir()
+    now = 3_000_000.0
+    directory = _run(root, "run-1", receipt="dispatch_receipt.json", age=30 * 86400, now=now)
+    before = {path.relative_to(directory).as_posix(): path.read_bytes()
+              for path in directory.rglob("*") if path.is_file()}
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=0, now=lambda: now, classifier=_unclassified)
+    honest = functools.partial(store.publish_configured_scene_artifact, client=_ContentAddressedClient(), bucket=BUCKET)
+
+    def without_uri(**kwargs):
+        return {**honest(**kwargs), "uri": uri}
+
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=without_uri, now=lambda: now)
+
+    assert result["offloaded_count"] == 0
+    assert result["skipped"] == [{"name": "run-1", "reason": "offload_failed:ControlPlaneEvidenceOffloadError"}]
+    assert {path.relative_to(directory).as_posix(): path.read_bytes()
+            for path in directory.rglob("*") if path.is_file()} == before
+    assert not (root / f"run-1{POINTER_SUFFIX}").exists()
+    assert not list(root.glob(".run-1.offload-*"))
+
+
+def test_unsealed_directory_idle_past_the_abandonment_window_is_sealed_as_abandoned(
+    tmp_path: Path,
+) -> None:
+    """Without a terminal receipt a run directory was retained forever as
+    "active".  Twenty-three such directories sat on the production host from
+    workers that were superseded or torn down.  Idle past the window they are
+    archived like any sealed run; nothing is deleted and restore is unchanged."""
+    root = tmp_path / "policy-canaries"
+    root.mkdir()
+    now = 3_000_000.0
+    abandoned = _run(root, "run-abandoned", receipt=None, age=5 * 86400, now=now)
+    _run(root, "run-active", receipt=None, age=3600, now=now)
+
+    without = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=86400, now=lambda: now, classifier=_unclassified
+    )
+    assert without["candidates"] == [] and without["retained_counts"]["active_or_unsealed"] == 2
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root],
+        hot_window_seconds=86400,
+        abandoned_after_seconds=3 * 86400,
+        now=lambda: now,
+        classifier=_unclassified,
+    )
+    assert [row["name"] for row in manifest["candidates"]] == ["run-abandoned"]
+    assert manifest["candidates"][0]["terminal_receipt"] == ABANDONED_TERMINAL_RECEIPT
+    assert manifest["retained_counts"]["active_or_unsealed"] == 1
+
+    client = _ContentAddressedClient()
+    publisher = functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET)
+    receipt = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=publisher, now=lambda: now)
+    assert receipt["offloaded_count"] == 1 and not abandoned.exists()
+    pointer = json.loads((root / f"run-abandoned{POINTER_SUFFIX}").read_text(encoding="utf-8"))
+    assert pointer["terminal_receipt"] == ABANDONED_TERMINAL_RECEIPT
+    assert (root / "run-active").exists()
+
+
+def test_an_abandoned_candidate_touched_after_the_dry_run_is_kept(tmp_path: Path) -> None:
+    root = tmp_path / "policy-canaries"
+    root.mkdir()
+    now = 3_000_000.0
+    directory = _run(root, "run-abandoned", receipt=None, age=5 * 86400, now=now)
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root],
+        hot_window_seconds=86400,
+        abandoned_after_seconds=3 * 86400,
+        now=lambda: now,
+        classifier=_unclassified,
+    )
+    (directory / "status_events.jsonl").write_text('{"stage":"resumed"}\n', encoding="utf-8")
+    client = _ContentAddressedClient()
+    publisher = functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET)
+
+    receipt = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=publisher, now=lambda: now)
+
+    assert receipt["offloaded_count"] == 0
+    assert receipt["skipped"] == [{"name": "run-abandoned", "reason": "candidate_changed"}]
+    assert directory.exists() and client.upload_count == 0
+    with pytest.raises(ControlPlaneEvidenceOffloadError, match="input_invalid"):
+        build_evidence_offload_manifest(
+            evidence_roots=[root],
+            hot_window_seconds=86400,
+            abandoned_after_seconds=-1,
+            now=lambda: now,
+            classifier=_unclassified,
+        )
+
+
+def test_pointer_adopts_the_evidence_root_owner_so_the_service_user_can_read_it(tmp_path, monkeypatch):
+    """The GC unit runs as root; the pointer it leaves behind is the ONLY durable
+    reference to the archived run. A root-owned 0440 pointer is unreadable by the
+    ``blueprint`` service user (observed on the production host), so the terminal
+    reconciler could never derive the result publication from it. The pointer
+    must adopt the evidence root's owner/group (a no-op when the GC already runs
+    as that user)."""
+    import os as _os
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    _run(root, "run-1", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    client = _ContentAddressedClient()
+    chowned = []
+    monkeypatch.setattr(_os, "chown", lambda path, uid, gid: chowned.append((Path(path).name, uid, gid)))
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    pointer = root / ("run-1" + POINTER_SUFFIX)
+    assert result["offloaded_count"] == 1 and pointer.is_file()
+    owner = root.stat()
+    assert chowned and chowned[-1][1:] == (owner.st_uid, owner.st_gid)
+    assert chowned[-1][0].startswith(".run-1.pointer-")  # adopted BEFORE the atomic publish
+    assert oct(pointer.stat().st_mode & 0o777) == "0o440"
+
+
+def test_pointer_ownership_failure_keeps_the_evidence(tmp_path, monkeypatch):
+    """If the pointer cannot be made readable by the evidence owner, the run
+    directory must NOT be deleted: an unreadable pointer would strand the evidence."""
+    import os as _os
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    directory = _run(root, "run-1", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    client = _ContentAddressedClient()
+
+    def refuse(path, uid, gid):
+        raise PermissionError("chown refused")
+
+    monkeypatch.setattr(_os, "chown", refuse)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert result["offloaded_count"] == 0
+    assert result["skipped"] == [{"name": "run-1", "reason": "offload_failed:PermissionError"}]
+    assert directory.is_dir() and (directory / "dispatch_receipt.json").is_file()
+    assert not (root / ("run-1" + POINTER_SUFFIX)).exists()
+
+
+def test_offload_preserves_exact_settlement_receipt_without_releasing_paid_hold(tmp_path):
+    from blueprint_pipeline import task_evaluation_terminal_scene_attempt_settlement as settlement
+    from blueprint_pipeline.task_evaluation_retained_controls_evidence import validated_cancellation
+    from tests.test_terminal_scene_attempt_settlement import _fixture, _settle
+
+    fx = _fixture(tmp_path)
+    _settle(fx)
+    attempts = [json.loads(p.read_text()) for p in (fx['directory'] / 'attempts').glob('*.json')]
+    before = {a['attempt_id']: settlement.retained_hold(validated_cancellation(fx['directory'], a))
+              for a in attempts}
+    client = _ContentAddressedClient()
+    manifest = build_evidence_offload_manifest(evidence_roots=[fx['launches']], hot_window_seconds=0,
+        classifier=_unclassified)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert result['offloaded_count'] == 1
+    assert not (fx['launches'] / fx['launch_id']).exists()
+    after = {a['attempt_id']: settlement.retained_hold(validated_cancellation(fx['directory'], a))
+             for a in attempts}
+    assert before == after
+    assert sum(h['retained_spend_usd'] for h in after.values()) == pytest.approx(21.26)
+
+
+@pytest.mark.parametrize('fault', ['bytes', 'seal', 'member', 'directory', 'missing', 'local_tamper', 'symlink'])
+def test_archived_accounting_receipt_fails_closed(tmp_path, fault):
+    import base64
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_retained_controls_evidence import _file
+
+    root = tmp_path / 'runs'
+    root.mkdir()
+    run = _run(root, 'run', receipt='launch_receipt.json', age=100, now=1000)
+    receipt = run / 'launch_receipt.json'
+    expected = _file(receipt)
+    client = _ContentAddressedClient()
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK, now=lambda: 1000,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert result['offloaded_count'] == 1
+    assert _file(receipt) == expected
+    pointer_path = root / ('run' + POINTER_SUFFIX)
+    pointer = json.loads(pointer_path.read_text())
+    if fault == 'bytes':
+        pointer['retained_receipt_bytes']['launch_receipt.json'] = base64.b64encode(b'{}').decode()
+    elif fault == 'member':
+        pointer['members'] = [m for m in pointer['members'] if m['relative_path'] != 'launch_receipt.json']
+    elif fault == 'directory':
+        pointer['directory'] = 'foreign-run'
+    elif fault == 'missing':
+        pointer.pop('retained_receipt_bytes')  # Legacy pointers require explicit restoration.
+    elif fault == 'local_tamper':
+        run.mkdir()
+        receipt.write_text('{}')
+        assert _file(receipt) != expected
+        return
+    elif fault == 'symlink':
+        alias = root / 'alias.json'
+        pointer_path.rename(alias)
+        pointer_path.symlink_to(alias)
+        with pytest.raises(ValueError):
+            _file(receipt)
+        return
+    pointer['pointer_digest'] = canonical_digest(pointer, digest_field='pointer_digest')
+    if fault == 'seal':
+        pointer['pointer_digest'] = 'sha256:' + '0' * 64
+    pointer_path.chmod(0o640)
+    pointer_path.write_text(json.dumps(pointer))
+    with pytest.raises(ValueError):
+        _file(receipt)
+
+
+@pytest.mark.parametrize('ownership_fails', [False, True])
+def test_restore_adopts_service_owner_before_publishing(tmp_path, monkeypatch, ownership_fails):
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+    root = tmp_path / 'runs'
+    root.mkdir()
+    run = _run(root, 'run', receipt='launch_receipt.json', age=100, now=1000)
+    client = _ContentAddressedClient()
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    apply_evidence_offload(manifest, ack=EXECUTE_ACK, now=lambda: 1000,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    pointer_path = root / ('run' + POINTER_SUFFIX)
+    pointer = json.loads(pointer_path.read_text())
+    calls = []
+    def adopt(path, parent):
+        assert not run.exists()
+        assert parent == root
+        calls.append(str(path))
+        if ownership_fails:
+            raise PermissionError('cannot adopt service owner')
+    monkeypatch.setattr(offload, '_adopt_root_owner', adopt)
+    def materialize(*, reference, destination, maximum_size_bytes):
+        Path(destination).write_bytes(client.objects[(BUCKET, reference['uri'].split(f's3://{BUCKET}/', 1)[1])])
+    if ownership_fails:
+        with pytest.raises(PermissionError):
+            restore_offloaded_evidence(pointer_path=pointer_path, destination=run, materializer=materialize)
+        assert not run.exists()
+    else:
+        restore_offloaded_evidence(pointer_path=pointer_path, destination=run, materializer=materialize)
+        assert len(calls) == 2 + len(pointer['members'])  # tree plus episodes directory
+        assert run.is_dir()
+    assert not list(root.glob('.restore-*'))
+
+
+def test_oversized_accounting_receipt_keeps_original_run(tmp_path):
+    from blueprint_pipeline.control_plane_retained_receipt import MAX_RECEIPT_BYTES
+    root = tmp_path / 'runs'
+    root.mkdir()
+    run = _run(root, 'run', receipt='launch_receipt.json', age=100, now=1000)
+    (run / 'launch_receipt.json').write_text(json.dumps({'data': 'x' * MAX_RECEIPT_BYTES}))
+    client = _ContentAddressedClient()
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        classifier=_unclassified)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert result['offloaded_count'] == 0
+    assert run.is_dir()
+    assert not (root / ('run' + POINTER_SUFFIX)).exists()
+
+
+def test_explicit_members_pack_exactly_those_files_and_never_follow_links(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_evidence_offload import _HashingSink, _pack_stream
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "one.bin").write_bytes(b"1")
+    (tmp_path / "two.bin").write_bytes(b"22")
+    (tmp_path / "skip.bin").write_bytes(b"3")
+
+    listed = _pack_stream(tmp_path, _HashingSink(), members=["two.bin", "a/one.bin"])
+    walked = _pack_stream(tmp_path, _HashingSink())
+
+    assert [row["relative_path"] for row in listed] == ["two.bin", "a/one.bin"]
+    assert listed[0] == {"relative_path": "two.bin", "size_bytes": 2,
+                         "sha256": "sha256:" + hashlib.sha256(b"22").hexdigest()}
+    assert [row["relative_path"] for row in walked] == ["skip.bin", "two.bin", "a/one.bin"]
+    (tmp_path / "link").symlink_to(tmp_path / "two.bin")
+    (tmp_path / "linked-dir").symlink_to(tmp_path / "a")
+    for bad in (["link"], ["linked-dir/one.bin"], ["../x"], ["/etc/hosts"], ["missing"], ["a"], [""]):
+        with pytest.raises(ControlPlaneEvidenceOffloadError, match="member_invalid"):
+            _pack_stream(tmp_path, _HashingSink(), members=bad)

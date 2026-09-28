@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def geolocation_selection_kwargs(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep advisory and allocation geography filters identical."""
+    result: dict[str, Any] = {
+        "preferred_geolocation_regex": str(request.get("preferred_geolocation_regex") or "").strip(),
+    }
+    raw = request.get("allowed_geolocation_country_codes")
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        countries = [str(item) for item in raw if str(item).strip()]
+        if countries:
+            result["allowed_geolocation_country_codes"] = countries
+    return result
 
 
 def _number(value: Any) -> float | None:

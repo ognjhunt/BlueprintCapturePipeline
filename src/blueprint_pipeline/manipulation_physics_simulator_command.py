@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .mujoco_gl_environment import import_mujoco_with_scoped_gl_default as _import_mujoco
 
 
 MANIPULATION_PHYSICS_OUTPUT_SCHEMA_VERSION = "mujoco_manipulation_physics_output.v1"
@@ -653,12 +654,8 @@ def run_mujoco_manipulation_physics(
     friction: float = 1.2,
     render_frames: bool = False,
 ) -> dict[str, Any]:
-    if platform.system().lower() == "linux":
-        import os
-
-        os.environ.setdefault("MUJOCO_GL", "egl")
     try:
-        import mujoco  # type: ignore[import-not-found]
+        mujoco, _ = _import_mujoco(default="egl", platform_name=platform.system())
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("mujoco is required for manipulation physics proof") from exc
 

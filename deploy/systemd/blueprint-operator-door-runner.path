@@ -1,0 +1,9 @@
+[Unit]
+Description=Start the operator door runner when a request is spooled
+
+[Path]
+PathExistsGlob=/var/lib/blueprint-operator-door/requests/pending/*.json
+Unit=blueprint-operator-door-runner.service
+
+[Install]
+WantedBy=paths.target

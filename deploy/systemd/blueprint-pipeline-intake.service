@@ -5,6 +5,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
 User=blueprint
 Group=blueprint
 UMask=0077
@@ -34,15 +35,30 @@ MemoryMax=8G
 CPUQuota=200%
 Type=simple
 Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=/etc/blueprint/agent-execution.json
 Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
 Environment=PRIVACY_PIPELINE_ENABLED=true
 Environment=PRIVACY_FAIL_CLOSED=true
 Environment=PIPELINE_SYNC_REQUIRED=true
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_TARGET_ROOT=/var/lib/blueprint/task-evaluation-inputs
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS=launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,handoff_staging=/var/lib/blueprint/pubsub-handoffs
+Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH=/var/lib/blueprint/task-evaluation-inputs/g1-team-campaign-registry.json
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-campaigns
 Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
+Environment=BLUEPRINT_TASK_EVALUATION_RESULT_ARTIFACT_CACHE_ROOT=/var/lib/blueprint/pipeline-control-plane/result-artifact-cache
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 WorkingDirectory=/
-ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
-ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-live-pipeline-intake-service ]; then exec .venv/bin/blueprint-live-pipeline-intake-service; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_intake_service; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_intake_service'
+ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -n "$${BLUEPRINT_PIPELINE_PYTHON:-}" ] && [ -x "$${BLUEPRINT_PIPELINE_PYTHON}" ]; then exec "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.production_runtime_env_guard; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -n "$${BLUEPRINT_PIPELINE_PYTHON:-}" ] && [ -x "$${BLUEPRINT_PIPELINE_PYTHON}" ]; then exec "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.live_pipeline_intake_service; fi; if [ -x .venv/bin/blueprint-live-pipeline-intake-service ]; then exec .venv/bin/blueprint-live-pipeline-intake-service; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_intake_service; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_intake_service'
 Restart=on-failure
 RestartSec=5
 Nice=5

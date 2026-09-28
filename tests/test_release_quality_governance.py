@@ -37,6 +37,152 @@ NOW = datetime(2026, 7, 9, 12, tzinfo=timezone.utc)
 GPU_IMAGE_URI = f"registry.example/blueprint/unitree@sha256:{'b' * 64}"
 
 
+def test_policy_episode_module_stays_under_default_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/adp009d_policy_episode.py"
+    assert relative not in policy["grandfathered_module_line_limits"]
+    line_count = len((root / relative).read_text(encoding="utf-8").splitlines())
+    assert line_count <= policy["default_max_python_module_lines"]
+
+
+def test_repository_source_governance_policy_is_satisfied() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    result = validate_source_governance(
+        root=root,
+        policy=policy,
+        today=date.fromisoformat(policy["baseline_date"]),
+    )
+    assert result["status"] == "passed", result["blockers"]
+
+
+def test_launch_dispatcher_stays_under_its_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py"
+    dispatcher_source = (root / relative).read_text(encoding="utf-8")
+    line_count = len(dispatcher_source.splitlines())
+    assert line_count <= policy["grandfathered_module_line_limits"][relative]
+    assert (
+        "from .task_evaluation_launch_terminal_evidence import ("
+        in dispatcher_source
+    )
+    assert (
+        root
+        / "src/blueprint_pipeline/task_evaluation_launch_terminal_evidence.py"
+    ).is_file()
+
+
+def test_paid_allocator_stays_under_its_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/paid_resource_allocator.py"
+    allocator_source = (root / relative).read_text(encoding="utf-8")
+    line_count = len(allocator_source.splitlines())
+    assert line_count <= policy["grandfathered_module_line_limits"][relative]
+    assert (
+        "from .task_evaluation_scene_configuration_allocator import ("
+        in allocator_source
+    )
+    assert (
+        root
+        / "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py"
+    ).is_file()
+
+
+def test_content_agents_vast_stays_under_its_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/adp_content_agents_vast.py"
+    lane_source = (root / relative).read_text(encoding="utf-8")
+    line_count = len(lane_source.splitlines())
+    assert line_count <= policy["grandfathered_module_line_limits"][relative]
+    assert "from .adp_content_agents_vast_cli import run" in lane_source
+    assert (
+        root / "src/blueprint_pipeline/adp_content_agents_vast_cli.py"
+    ).is_file()
+
+
+def test_simready_host_import_stays_under_its_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/simready_cad_agent_host_import.py"
+    importer_source = (root / relative).read_text(encoding="utf-8")
+    line_count = len(importer_source.splitlines())
+    assert line_count <= policy["grandfathered_module_line_limits"][relative]
+    assert "from .simready_cad_agent_host_ownership import (" in importer_source
+    assert (
+        root / "src/blueprint_pipeline/simready_cad_agent_host_ownership.py"
+    ).is_file()
+
+
+def test_vast_adapter_stays_under_its_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/vast_provider_adapter.py"
+    adapter_source = (root / relative).read_text(encoding="utf-8")
+    line_count = len(adapter_source.splitlines())
+    assert line_count <= policy["grandfathered_module_line_limits"][relative]
+    assert "from .vast_provider_adapter_cli import main as cli_main" in adapter_source
+    assert (
+        root / "src/blueprint_pipeline/vast_provider_adapter_cli.py"
+    ).is_file()
+
+
+def test_live_intake_stays_under_its_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/live_pipeline_intake_service.py"
+    intake_source = (root / relative).read_text(encoding="utf-8")
+    line_count = len(intake_source.splitlines())
+    assert line_count <= policy["grandfathered_module_line_limits"][relative]
+    assert "from .live_pipeline_intake_runtime_controls import (" in intake_source
+    assert (
+        root
+        / "src/blueprint_pipeline/live_pipeline_intake_runtime_controls.py"
+    ).is_file()
+
+
+def test_project_cli_budget_keeps_one_canonical_wam_fixture_entrypoint() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    pyproject_source = (root / "pyproject.toml").read_text(encoding="utf-8")
+    canonical = (
+        'blueprint-run-wam-fixture-evaluator = '
+        '"blueprint_pipeline.wam_fixture_evaluator:main"'
+    )
+    assert canonical in pyproject_source
+    assert "blueprint-run-wam-eval-job =" not in pyproject_source
+    result = validate_source_governance(
+        root=root,
+        policy=policy,
+        today=date.fromisoformat(policy["baseline_date"]),
+    )
+    assert not any(
+        blocker.startswith("project_script_budget_exceeded:")
+        for blocker in result["blockers"]
+    )
+
+
 def _bandit_finding(root: Path, *, severity: str = "MEDIUM") -> dict[str, object]:
     source = root / "src" / "example.py"
     source.parent.mkdir(parents=True, exist_ok=True)

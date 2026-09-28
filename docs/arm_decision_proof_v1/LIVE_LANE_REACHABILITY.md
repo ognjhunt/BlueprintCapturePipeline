@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **34 dispatched, 18 website-reachable, 16 named
+Current executable inventory: **38 dispatched, 20 website-reachable, 18 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
@@ -49,6 +49,7 @@ attempt completed. Production proof additionally requires:
 | `adp009b-exact-simready-isaac` | `build_simready_isaac_live_profile.py` |
 | `adp009d-franka-native-microcheck` | `build_adp009d_840313_live_profile.py` |
 | `native-task-arena-construction` | `build_native_task_arena_live_profile.py` |
+| `native-task-arena-destination-qualification` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-controls` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-policy` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-policy-diagnostic` | `build_native_task_arena_live_profile.py` |
@@ -57,6 +58,7 @@ attempt completed. Production proof additionally requires:
 | `reconstruction-worker-smoke` | `build_reconstruction_worker_smoke_live_profile.py` |
 | `semantic-sam31-source-tracks` | `build_sam31_source_tracks_live_profile.py` |
 | `semantic-teacher-image-edit` | `build_semantic_teacher_image_edit_live_profile.py` |
+| `task-evaluation-scene-configuration` | `build_task_evaluation_scene_configuration_live_profile.py` |
 
 The construction, controls, and qualified policy rows are ordered stages of
 one chain, not independent campaigns. The policy-diagnostic row is a separately
@@ -73,7 +75,7 @@ campaign cap. The import cannot be authorized first.
 
 ## Named non-reachable probe kinds
 
-These fifteen allocator branches are deliberate decisions, not builder debt.
+These seventeen allocator branches are deliberate decisions, not builder debt.
 
 ### Retired appearance/reference approaches (7)
 
@@ -108,6 +110,25 @@ world-model, and post-training work remains frozen.
 
 This is not a website lane. The allocator runs it against a profile before any
 provider mutation.
+
+### Owner-approved internal development campaign (1)
+
+- `native-g1-development-campaign`
+
+This scene 841757 G1 simulation campaign is controller operated for internal
+development. It has no website profile and cannot imply physical proof or
+public clip rights.
+
+### Selected G1 signed-queue allocator (1)
+
+- `native-g1-team-policy` — `not_a_website_lane`. As with the built-in G1
+  campaign, the separately signed team queue invokes this allocator branch;
+  it does not enter through a generic website scene launch profile. The
+  dispatcher and actual installed-command tests cover that distinct bridge.
+  Issue #2245 and draft PR #2351 still own settlement, paired OCI/archive
+  runtimes, exact website deployment and live end-to-end qualification before
+  the existing configurator can fulfill this choice. This inventory decision
+  neither claims that product flow works nor removes those required gates.
 
 ## Terminal and production rules
 

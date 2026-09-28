@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .native_g1_usd_dependency_closure import G1_KIT_RUNTIME_ASSETS
 
 #: Every logical contact sensor the scene plan is allowed to emit.
 #:
@@ -38,11 +39,16 @@ LOGICAL_CONTACT_SENSOR_IDS = frozenset(
         "task_scene_collision",
         # the task object against the surface it is supported by
         "task_support_contact",
+        "task_initial_support_contact",
         # any robot link touching the static scene
         "robot_scene_contact",
         # non-fingertip robot links -- knuckles, outer fingers, wrist --
         # striking the task object body. A forbidden contact, not a grasp.
         "robot_task_forbidden_collision",
+        # qualification-only sensors on a passive destination against the
+        # exact configured-scene support and forbidden bodies.
+        "destination_scene_support_contact",
+        "destination_scene_forbidden_contact",
     }
 )
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
@@ -55,6 +61,50 @@ class NativeTaskArenaRuntimeError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def visible_target_marker_parameters(plan: Mapping[str, Any]) -> tuple[tuple[float, float, float], float] | None:
+    """Resolve an explicit non-colliding tabletop cue without inventing support height."""
+    marker = (plan.get("task_spec") or {}).get("visible_target_marker")
+    explicit = marker is not None
+    if marker is None:
+        marker = (plan.get("policy_canary_embodiment_profile") or {}).get("visible_target_marker")
+    if marker is None:
+        return None
+    try:
+        if not isinstance(marker, Mapping) or marker.get("non_colliding") is not True or marker.get("shape") not in {"flat_green_disc", "flat_yellow_disc"}:
+            raise ValueError("shape")
+        radius = float(marker["radius_m"])
+        if explicit:
+            if marker.get("schema_version") != "native_task_target_marker.v1":
+                raise ValueError("schema")
+            position = [float(v) for v in marker["surface_position_world_m"]]
+            position[2] += 0.001
+        else:
+            position = [float(v) for v in marker["position_world_m"]]
+            position[2] -= 0.063
+        if len(position) != 3 or not all(math.isfinite(v) for v in position) or not math.isfinite(radius) or not 0 < radius <= 0.5:
+            raise ValueError("geometry")
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise NativeTaskArenaRuntimeError(["native_task_target_marker_invalid"]) from exc
+    return (position[0], position[1], position[2]), radius
+
+
+def g1_navigation_marker_parameters(
+    plan: Mapping[str, Any],
+) -> tuple[tuple[float, float, float], float] | None:
+    """Place the G1 floor goal alongside the task's existing manipulation cue."""
+    task_spec = plan.get("task_spec") or {}
+    if task_spec.get("g1_navigation_goal") is None:
+        return None
+    if (plan.get("robot") or {}).get("robot_id") != "unitree_g1":
+        raise NativeTaskArenaRuntimeError(["native_g1_navigation_marker_robot_invalid"])
+    from .native_g1_navigation_goal import validate_g1_navigation_goal
+
+    goal = validate_g1_navigation_goal(task_spec)
+    marker = goal["visible_target_marker"]
+    center = marker["surface_position_world_m"]
+    return (center[0], center[1], center[2] + 0.001), marker["radius_m"]
 
 
 def build_task_subject_link_dynamic_friction_override(
@@ -322,6 +372,82 @@ def _resolve_portable_assets(
     return objects
 
 
+def _resolve_portable_robot(
+    plan: Mapping[str, Any], *, bundle_root: str | Path | None
+) -> dict[str, Any]:
+    """Resolve a robot USD inside the packet before any Isaac import or spawn."""
+
+    robot = json.loads(json.dumps(plan["robot"]))
+    if robot.get("robot_id") == "franka_panda":
+        return robot
+    path = str(robot.get("usd_path") or "")
+    if Path(path).is_absolute():
+        return robot
+    pure = PurePosixPath(path)
+    if bundle_root is None or not path or pure.is_absolute() or ".." in pure.parts:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_path_invalid"])
+    raw_root = Path(bundle_root).expanduser()
+    if raw_root.is_symlink():
+        raise NativeTaskArenaRuntimeError(["native_task_arena_runtime_bundle_root_invalid"])
+    root = raw_root.resolve()
+    candidate = root.joinpath(*pure.parts)
+    resolved = candidate.resolve()
+    if (
+        not root.is_dir()
+        or _has_symlink_component(candidate, root=root)
+        or root not in resolved.parents
+        or not resolved.is_file()
+    ):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_missing"])
+    if (
+        resolved.stat().st_size != robot.get("usd_size_bytes")
+        or _sha256(resolved) != robot.get("usd_sha256")
+    ):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_identity_mismatch"])
+    bindings = robot.get("usd_dependency_bindings")
+    if not isinstance(bindings, list):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_missing"])
+    runtime_assets = robot.get("usd_runtime_asset_dependencies")
+    if (
+        not isinstance(runtime_assets, list)
+        or any(not isinstance(asset, str) for asset in runtime_assets)
+        or runtime_assets != sorted(set(runtime_assets))
+        or any(asset not in G1_KIT_RUNTIME_ASSETS for asset in runtime_assets)
+    ):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_runtime_asset_manifest_invalid"])
+    seen: set[str] = set()
+    for binding in bindings:
+        if not isinstance(binding, Mapping):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_invalid"])
+        relative_path = str(binding.get("relative_path") or "")
+        dep_path = PurePosixPath(relative_path)
+        if (
+            not relative_path
+            or dep_path.is_absolute()
+            or ".." in dep_path.parts
+            or dep_path.parts[0] != "assets"
+            or relative_path in seen
+            or relative_path == path
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_invalid"])
+        seen.add(relative_path)
+        dep_candidate = root.joinpath(*dep_path.parts)
+        dep_resolved = dep_candidate.resolve()
+        if (
+            _has_symlink_component(dep_candidate, root=root)
+            or root not in dep_resolved.parents
+            or not dep_resolved.is_file()
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_missing"])
+        if (
+            dep_resolved.stat().st_size != binding.get("size_bytes")
+            or _sha256(dep_resolved) != binding.get("sha256")
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_identity_mismatch"])
+    robot["usd_path"] = str(resolved)
+    return robot
+
+
 def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
     """Convert a proper 3x3 rotation to a canonical XYZW quaternion."""
 
@@ -364,7 +490,7 @@ def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
     return quaternion
 
 
-def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
+def camera_runtime_parameters(camera: Mapping[str, Any], *, robot_id: str = "franka_panda") -> dict[str, Any]:
     """Convert one calibrated OpenCV pose/intrinsics row to Isaac CameraCfg data."""
 
     role = str(camera.get("role") or "")
@@ -396,7 +522,12 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
     rotation = [matrix[0:3], matrix[4:7], matrix[8:11]]
     pose_frame = str(camera.get("pose_frame") or "")
     parent = str(camera.get("parent_prim_path") or "")
-    expected_frame = "robot_body" if role == "wrist" else "world"
+    from .native_task_robot_registry import native_robot_adapter
+
+    camera_roles = {key: (name, frame) for key, name, frame in native_robot_adapter(robot_id).camera_roles}
+    if role not in camera_roles:
+        raise NativeTaskArenaRuntimeError([f"native_task_arena_camera_role_invalid:{role}"])
+    runtime_name, expected_frame = camera_roles[role]
     if (
         pose_frame != expected_frame
         or not parent
@@ -408,15 +539,6 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise NativeTaskArenaRuntimeError(
             [f"native_task_arena_camera_parent_invalid:{role}"]
-        )
-    runtime_name = {
-        "external": "external_camera",
-        "wrist": "wrist_camera",
-        "overview": "external_camera_2",
-    }.get(role)
-    if runtime_name is None:
-        raise NativeTaskArenaRuntimeError(
-            [f"native_task_arena_camera_role_invalid:{role}"]
         )
     return {
         "role": role,
@@ -435,11 +557,15 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
         "focal_length_mm": fx * PINHOLE_HORIZONTAL_APERTURE_MM / width,
         "horizontal_aperture_mm": PINHOLE_HORIZONTAL_APERTURE_MM,
         "vertical_aperture_mm": PINHOLE_HORIZONTAL_APERTURE_MM * height / width,
-        "data_types": (
-            ["rgb", "rgb_hdr", "distance_to_camera", "semantic_segmentation"]
-            if role in {"external", "wrist"}
-            else ["rgb", "rgb_hdr", "semantic_segmentation"]
-        ),
+        # No ``rgb_hdr``: Isaac Lab's camera turns
+        # ``/rtx/rtpt/gaussian/skipTonemapping/enabled`` off whenever an HDR
+        # annotator or ISP is requested, which pushes the display-referred
+        # ParticleField splat through the HDR pipeline instead of compositing
+        # it as-is.  The ``rgb`` annotator is then a per-channel clamp of
+        # radiance up to 60x display white (scene-839873 r13), and that clamp
+        # is the exact frame ``read_policy_inputs`` hands the policies.  The
+        # retained-frame HDR display encode only ever masked it for reviewers.
+        "data_types": ["rgb", "distance_to_camera", "semantic_segmentation"],
         "policy_input": bool(camera["policy_input"]),
         "review_only": bool(camera["review_only"]),
     }
@@ -449,7 +575,13 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
 #: forbidden-contact channel is diagnostic: its absence is not a defect, and
 #: its presence must not be mistaken for an unknown channel.
 OPTIONAL_CONTACT_CHANNELS = frozenset(
-    {"task_scene_collision", "robot_task_forbidden_collision"}
+    {
+        "task_initial_support_contact",
+        "task_scene_collision",
+        "robot_task_forbidden_collision",
+        "destination_scene_support_contact",
+        "destination_scene_forbidden_contact",
+    }
 )
 
 
@@ -665,6 +797,71 @@ def verify_grounded_articulation(staged_usd: str | Path) -> dict[str, Any]:
     }
 
 
+def author_passive_joint_friction_overlay(
+    source_usd: str | Path, destination: str | Path, *, joint_prim_path: str,
+) -> dict[str, Any] | None:
+    """Add a labelled, bounded prismatic breakaway prior to a derived runtime copy.
+
+    This only adapts legacy task joints with no authored PhysX joint friction.
+    The sealed candidate stays untouched. Published pull force is not treated
+    as a measured static joint coefficient; this 1..15 N prior is the same
+    development-only interval admitted at website preparation.
+    """
+    from pxr import Sdf, Usd, UsdPhysics
+
+    source = Path(source_usd).expanduser().resolve()
+    stage = Usd.Stage.Open(str(source))
+    prim = stage.GetPrimAtPath(joint_prim_path) if stage else None
+    if prim is None or not prim.IsValid() or not prim.IsA(UsdPhysics.PrismaticJoint):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_target_invalid"])
+    axis = "linear"
+    static_name = f"physxJointAxis:{axis}:staticFrictionEffort"
+    dynamic_name = f"physxJointAxis:{axis}:dynamicFrictionEffort"
+    static_attr, dynamic_attr = prim.GetAttribute(static_name), prim.GetAttribute(dynamic_name)
+    if static_attr.IsValid() or dynamic_attr.IsValid():
+        if not static_attr.IsValid() or not dynamic_attr.IsValid():
+            raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_partial_source"])
+        static, dynamic = float(static_attr.Get()), float(dynamic_attr.Get())
+        if not (math.isfinite(static) and math.isfinite(dynamic) and 0 <= dynamic <= static):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_source_invalid"])
+        return None
+    static, dynamic = 8.0, 1.0
+    prim.AddAppliedSchema("PhysxJointAxisAPI:linear")
+    prim.CreateAttribute(static_name, Sdf.ValueTypeNames.Float, custom=False).Set(static)
+    prim.CreateAttribute(dynamic_name, Sdf.ValueTypeNames.Float, custom=False).Set(dynamic)
+    prim.SetCustomDataByKey("blueprint:passiveFrictionBasis", "estimated_unobserved_joint_resistance_prior")
+    output = Path(destination).expanduser().resolve()
+    if output == source:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_would_mutate_source"])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage.GetRootLayer().Export(str(output))
+    result = {"joint_prim_path": joint_prim_path, "static_effort_n": static,
+              "dynamic_effort_n": dynamic, "admitted_interval_n": [1.0, 15.0],
+              "basis": "estimated_unobserved_joint_resistance_prior",
+              "physical_measurement_proven": False, "source_sha256": _sha256(source)}
+    verify_passive_joint_friction_overlay(output, result)
+    return result
+
+
+def verify_passive_joint_friction_overlay(staged_usd: str | Path, declared: Mapping[str, Any]) -> None:
+    """Read exact authored PhysX axis values back before a GPU can be rented."""
+    from pxr import Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(Path(staged_usd).expanduser().resolve()))
+    prim = stage.GetPrimAtPath(str(declared.get("joint_prim_path") or "")) if stage else None
+    if prim is None or not prim.IsValid() or not prim.IsA(UsdPhysics.PrismaticJoint):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_readback_invalid"])
+    schemas = prim.GetMetadata("apiSchemas")
+    attrs = [prim.GetAttribute(f"physxJointAxis:linear:{name}")
+             for name in ("staticFrictionEffort", "dynamicFrictionEffort")]
+    if (schemas is None or "PhysxJointAxisAPI:linear" not in schemas.GetAppliedItems()
+            or any(not attr.IsValid() for attr in attrs)
+            or [float(attr.Get()) for attr in attrs]
+            != [float(declared["static_effort_n"]), float(declared["dynamic_effort_n"])]
+            or prim.GetCustomDataByKey("blueprint:passiveFrictionBasis") != declared.get("basis")):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_readback_mismatch"])
+
+
 #: PhysX refuses to build GPU-compatible convex hulls for very thin shapes
 #: ("oblong"), and ONE such mesh silently demotes the whole simulation to the
 #: CPU pipeline -- surfacing later as a cuda/cpu device mismatch in whatever
@@ -700,14 +897,16 @@ def _bbox_aspect_ratio(mesh: Any) -> float:
 def author_gpu_compatible_scene_collision(
     source_usd: str | Path, destination: str | Path
 ) -> dict[str, Any] | None:
-    """Re-approximate static convex collision that PhysX cannot GPU-cook.
+    """Author static scene collision as the source triangle mesh.
 
-    Static scene geometry does not need convex decomposition at all: a
-    triangle-mesh collider (approximation ``none``) is the standard static
-    representation and is GPU-compatible regardless of shape. Convert every
-    convex-approximated collision mesh whose bounding-box aspect ratio exceeds
-    the GPU cook tolerance, in a derived copy; sealed bytes untouched,
-    provenance recorded. Returns ``None`` when nothing needs converting.
+    Static scene geometry does not need a convex approximation: a triangle-mesh
+    collider (approximation ``none``) is the standard static representation and
+    is GPU-compatible regardless of shape.  More importantly, convexifying a
+    captured support surface changes its contact topology; a rigid task object
+    can fall through a support triangle that is present in the sealed mesh but
+    absent from the cooked convex approximation. Convert every convex-authored
+    static collision mesh in a derived copy. Sealed bytes remain untouched and
+    provenance is recorded. Returns ``None`` when nothing needs converting.
     """
 
     from pxr import Usd, UsdGeom, UsdPhysics
@@ -719,8 +918,6 @@ def author_gpu_compatible_scene_collision(
         value = approximation.Get() if approximation else None
         if str(value or "") not in {"convexDecomposition", "convexHull"}:
             continue
-        if _bbox_aspect_ratio(mesh) <= GPU_CONVEX_MAX_ASPECT_RATIO:
-            continue
         UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Set("none")
         converted.append(prim.GetPath().pathString)
     if not converted:
@@ -730,8 +927,9 @@ def author_gpu_compatible_scene_collision(
     stage.GetRootLayer().Export(str(output))
     verify_gpu_compatible_scene_collision(output)
     return {
-        "adaptation": "static_convex_over_aspect_ratio_to_triangle_mesh",
+        "adaptation": "static_convex_to_triangle_mesh",
         "converted_prim_paths": sorted(converted),
+        "conversion_scope": "all_static_convex_collision_meshes",
         "maximum_convex_hull_aspect_ratio": GPU_CONVEX_MAX_ASPECT_RATIO,
         "candidate_bytes_modified": False,
         "derived_from_sha256": _sha256(source),
@@ -822,9 +1020,11 @@ def validate_native_task_arena_runtime_plan(
     """
 
     plan = _validated_plan(scene_plan)
+    from .native_task_robot_registry import validate_native_robot_plan
+    validate_native_robot_plan(_resolve_portable_robot(plan, bundle_root=bundle_root))
     _resolve_portable_assets(plan, bundle_root=bundle_root)
     for camera in plan.get("cameras") or []:
-        camera_runtime_parameters(camera)
+        camera_runtime_parameters(camera, robot_id=str(plan["robot"]["robot_id"]))
     validate_contact_sensor_plan(plan)
     _validate_articulation_adaptability(plan, bundle_root=bundle_root)
     return plan
@@ -885,6 +1085,8 @@ def _validate_articulation_adaptability(
         # create: no kinematic links, and a valid anchor when grounded
         verified = verify_grounded_articulation(usd)
         declared = row.get("articulation_adaptation")
+        if isinstance(declared, Mapping) and isinstance(declared.get("passive_joint_friction"), Mapping):
+            verify_passive_joint_friction_overlay(usd, declared["passive_joint_friction"])
         declared_base = (
             declared.get("fixed_base_body_prim_path")
             if isinstance(declared, Mapping)
@@ -907,14 +1109,31 @@ def build_native_task_arena_environment(
     device: str = "cuda:0",
     bundle_root: str | Path | None = None,
     preconstruction_receipt: Mapping[str, Any] | None = None,
+    num_envs: int = 1,
+    enable_cameras: bool = True,
+    include_scene_appearance: bool = True,
+    render_mode: str | None = "rgb_array",
 ) -> NativeTaskArenaEnvironment:
     """Instantiate the pinned Arena environment from one immutable plan."""
 
+    if (
+        not isinstance(num_envs, int)
+        or isinstance(num_envs, bool)
+        or not 1 <= num_envs <= 1_024
+        or not isinstance(enable_cameras, bool)
+        or not isinstance(include_scene_appearance, bool)
+        or render_mode not in {None, "rgb_array"}
+    ):
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_vector_runtime_configuration_invalid"]
+        )
     plan = _validated_plan(scene_plan)
     runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
     scenario_applications = list(
         (plan.get("scenario") or {}).get("parameter_applications") or []
     )
+    from . import native_rigid_friction_scenario
+    rigid_material_overrides = native_rigid_friction_scenario.prepare(runtime_objects, scenario_applications)
     material_override_readbacks: dict[str, dict[str, Any]] = {}
     for application in scenario_applications:
         if application.get("readback_kind") != (
@@ -973,9 +1192,7 @@ def build_native_task_arena_environment(
     from isaaclab_arena.assets.asset import Asset
     from isaaclab_arena.assets.object import Object
     from isaaclab_arena.assets.object_base import ObjectType
-    from isaaclab_arena.embodiments.droid.droid import (
-        DroidAbsoluteJointPositionEmbodiment,
-    )
+    from blueprint_pipeline.native_task_robot_registry import build_native_robot_embodiment
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
     from isaaclab_arena.environments.arena_env_builder_cfg import (
         ArenaEnvBuilderCfg,
@@ -1060,24 +1277,10 @@ def build_native_task_arena_environment(
         contract_xyzw_to_native_xyzw,
     )
 
-    robot = plan["robot"]
+    robot = _resolve_portable_robot(plan, bundle_root=bundle_root)
     robot_pose = robot["base_pose_world"]
-    embodiment = DroidAbsoluteJointPositionEmbodiment(
-        enable_cameras=True,
-        initial_pose=Pose(
-            position_xyz=tuple(robot_pose["position_world_m"]),
-            rotation_xyzw=tuple(robot_pose["orientation_xyzw"]),
-        ),
-        initial_joint_pose=list(robot["joint_reset_positions_rad"].values()),
-    )
+    embodiment = build_native_robot_embodiment(robot, enable_cameras=enable_cameras, pose_class=Pose)
     exact_robot_reset = dict(robot["joint_reset_positions_rad"])
-    embodiment.event_config.init_franka_arm_pose.params["default_pose"] = list(
-        exact_robot_reset.values()
-    )
-    embodiment.event_config.randomize_franka_joint_state.params["mean"] = 0.0
-    embodiment.event_config.randomize_franka_joint_state.params["std"] = 0.0
-    embodiment.get_scene_cfg()
-    embodiment.scene_config.stand = None
     embodiment.initial_pose = None
     # Beta2's AssetBaseCfg.InitialStateCfg.rot, articulation root/body pose
     # buffers, and DifferentialIK pose commands are all documented XYZW.  The
@@ -1093,27 +1296,42 @@ def build_native_task_arena_environment(
     )
     embodiment.scene_config.robot.spawn.semantic_tags = [("class", "robot")]
 
+    droid_profile = plan.get("policy_canary_embodiment_profile")
+    preserve_policy_cameras = bool(
+        isinstance(droid_profile, Mapping)
+        and (droid_profile.get("preserve_official_policy_camera_calibration") is True
+             or droid_profile.get("preserve_official_policy_camera_intrinsics") is True)
+    )
+    policy_camera_roles = set(
+        droid_profile.get("policy_camera_roles") or []
+        if isinstance(droid_profile, Mapping)
+        else []
+    )
     camera_names: dict[str, str] = {}
     camera_configuration_readback: dict[str, dict[str, Any]] = {}
-    for camera in plan["cameras"]:
-        parameters = camera_runtime_parameters(camera)
+    for camera in plan["cameras"] if enable_cameras else ():
+        parameters = camera_runtime_parameters(camera, robot_id=str(robot["robot_id"]))
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
-        camera_cfg.prim_path = parameters["prim_path"]
-        camera_cfg.offset.pos = tuple(parameters["offset_position_m"])
-        # Preserve XYZW here too. A predecessor conversion (r17) blinded both
-        # world cameras: measured
-        # It was tried (r17) and it blinded both world cameras: measured
-        # task_object pixels per camera, same scene and same thresholds --
-        #
-        #   r13, assigned directly : external 21871, overview 9053, wrist 51939
-        #   r17, converted to wxyz : external     0, overview    0, wrist  5326
-        #
-        # All Beta2 pose seams are XYZW; the wrist survived only because its
-        # parent prim dominated the mistaken world rotation.
-        camera_cfg.offset.rot = tuple(parameters["offset_rotation_xyzw"])
-        camera_cfg.offset.convention = parameters["isaac_offset_convention"]
-        camera_cfg.width = parameters["width"]
-        camera_cfg.height = parameters["height"]
+        official_policy_camera = (
+            preserve_policy_cameras and parameters["role"] in policy_camera_roles
+        )
+        if official_policy_camera and parameters["role"] == "external" and plan.get("policy_canary_camera_start_configuration") is not None:
+            from .native_task_camera_start_configuration import external_camera_offset_position
+            camera_cfg.offset.pos = tuple(external_camera_offset_position(plan))
+        if not official_policy_camera:
+            camera_cfg.prim_path = parameters["prim_path"]
+            camera_cfg.offset.pos = tuple(parameters["offset_position_m"])
+            # Preserve XYZW here too. A predecessor conversion (r17) blinded
+            # both world cameras. All Beta2 pose seams are XYZW.
+            camera_cfg.offset.rot = tuple(parameters["offset_rotation_xyzw"])
+            camera_cfg.offset.convention = parameters["isaac_offset_convention"]
+            camera_cfg.width = parameters["width"]
+            camera_cfg.height = parameters["height"]
+            camera_cfg.spawn.focal_length = parameters["focal_length_mm"]
+            camera_cfg.spawn.horizontal_aperture = parameters[
+                "horizontal_aperture_mm"
+            ]
+            camera_cfg.spawn.vertical_aperture = parameters["vertical_aperture_mm"]
         camera_cfg.data_types = list(parameters["data_types"])
         camera_cfg.colorize_semantic_segmentation = False
         camera_cfg.renderer_cfg = IsaacRtxRendererCfg(
@@ -1121,12 +1339,14 @@ def build_native_task_arena_environment(
         )
         camera_cfg.update_period = 0.0
         camera_cfg.update_latest_camera_pose = True
-        camera_cfg.spawn.focal_length = parameters["focal_length_mm"]
-        camera_cfg.spawn.horizontal_aperture = parameters["horizontal_aperture_mm"]
-        camera_cfg.spawn.vertical_aperture = parameters["vertical_aperture_mm"]
         camera_names[parameters["role"]] = parameters["runtime_name"]
         camera_configuration_readback[parameters["role"]] = {
             "runtime_name": parameters["runtime_name"],
+            "calibration_source": (
+                "official_arena_droid"
+                if official_policy_camera
+                else "resolved_scene_plan"
+            ),
             "offset_position_m": list(camera_cfg.offset.pos),
             "offset_rotation_xyzw": list(camera_cfg.offset.rot),
             "focal_length_mm": float(camera_cfg.spawn.focal_length),
@@ -1138,6 +1358,8 @@ def build_native_task_arena_environment(
     task_object: Any | None = None
     for row in runtime_objects:
         role = row["semantic_role"]
+        if role == "scene_appearance" and not include_scene_appearance:
+            continue
         runtime_name = str(row.get("name") or role)
         task_subject = row.get("task_subject") is True or role == "task_object"
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
@@ -1153,6 +1375,8 @@ def build_native_task_arena_environment(
             articulation_adaptations[runtime_name] = dict(adaptation)
         if task_subject:
             spawn_addon["semantic_tags"] = [("class", "task_object")]
+        elif role == "task_support":
+            spawn_addon["semantic_tags"] = [("class", "task_support")]
         elif role == "replacement":
             spawn_addon["semantic_tags"] = [("class", "inactive_replacement")]
         object_kwargs: dict[str, Any] = {
@@ -1167,7 +1391,7 @@ def build_native_task_arena_environment(
             "spawn_cfg_addon": spawn_addon,
         }
         object_class = Object
-        if task_subject or role == "replacement":
+        if task_subject or role in {"replacement", "task_support"}:
             object_class = ResettableObject
             object_kwargs.update(
                 reset_event_name=f"reset_{runtime_name}_state",
@@ -1208,6 +1432,48 @@ def build_native_task_arena_environment(
             task_object = obj
         assets.append(obj)
         scene_asset_names[runtime_name] = runtime_name
+
+    task_marker = visible_target_marker_parameters(plan)
+    navigation_marker = g1_navigation_marker_parameters(plan)
+    for marker_name, marker_parameters, yellow_marker in (
+        ("policy_target_marker", task_marker, False),
+        ("g1_navigation_goal_marker", navigation_marker, True),
+    ):
+        if marker_parameters is None:
+            continue
+        marker_position, marker_radius = marker_parameters
+        if marker_name == "policy_target_marker":
+            explicit_marker = (plan.get("task_spec") or {}).get("visible_target_marker")
+            yellow_marker = (
+                isinstance(explicit_marker, Mapping)
+                and explicit_marker.get("shape") == "flat_yellow_disc"
+            )
+        marker = SpawnerObject(
+            name=marker_name,
+            prim_path="{ENV_REGEX_NS}/" + marker_name,
+            spawner_cfg=sim_utils.CylinderCfg(
+                semantic_tags=[(
+                    "class",
+                    "navigation_goal_marker"
+                    if marker_name == "g1_navigation_goal_marker" else "task_target_marker",
+                )],
+                radius=marker_radius,
+                height=0.002,
+                axis="Z",
+                collision_props=None,
+                rigid_props=None,
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.95, 0.78, 0.04) if yellow_marker else (0.03, 0.8, 0.12),
+                    emissive_color=(0.12, 0.08, 0.0) if yellow_marker else (0.0, 0.12, 0.0),
+                    roughness=0.8,
+                ),
+            ),
+        )
+        marker.object_cfg.init_state = marker.object_cfg.init_state.replace(
+            pos=marker_position
+        )
+        assets.append(marker)
+        scene_asset_names[marker_name] = marker_name
 
     # One source of truth: the same pure check the host-side pre-spend gate
     # runs, so the two can never disagree about what this runtime accepts.
@@ -1289,6 +1555,18 @@ def build_native_task_arena_environment(
         cfg.sim.render_interval = cadence["control_decimation"]
         cfg.decimation = cadence["control_decimation"]
         cfg.episode_length_s = cadence["episode_length_seconds"]
+        # Isaac Lab defaults to zero reset rerenders, which leaves camera
+        # images at the previous pose even after the joint reset and forward.
+        # Refresh before reset() returns observations, without a physics step.
+        cfg.num_rerenders_on_reset = 1 if enable_cameras else 0
+        # Pinned Isaac's PhysxManager publishes /isaaclab/fabric_enabled, but
+        # FabricFrameView reads /physics/fabricEnabled and otherwise reads USD.
+        # PhysX disables USD pose writes with Fabric enabled. Bind its legacy
+        # reader before camera views are constructed, preserving live link poses.
+        from isaaclab.app.settings_manager import SettingsManager
+
+        cfg.sim.use_fabric = True
+        SettingsManager.instance().set("/physics/fabricEnabled", cfg.sim.use_fabric)
         cfg.sim.physics = PhysxCfg(
             solver_type=1,
             enable_enhanced_determinism=True,
@@ -1307,7 +1585,7 @@ def build_native_task_arena_environment(
     builder = ArenaEnvBuilder(
         arena_env,
         ArenaEnvBuilderCfg(
-            num_envs=1,
+            num_envs=num_envs,
             env_spacing=2.0,
             seed=int(plan["scenario"]["seed"]),
             solve_relations=False,
@@ -1327,8 +1605,22 @@ def build_native_task_arena_environment(
             language_instruction=None,
         ),
     )
-    env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
-    scenario_native_readback: dict[str, Any] = {}
+    env, cfg = builder.make_registered_and_return_cfg(render_mode=render_mode)
+    direct_camera_aim = None
+    native_camera_attachment = None
+    if enable_cameras and plan.get("operator_wrist_camera_aim") is not None:
+        from .native_task_direct_camera_aim import install_direct_wrist_camera_aim
+        direct_camera_aim = install_direct_wrist_camera_aim(
+            env=env, camera_name=camera_names["wrist"],
+            target=plan["task_spec"]["start_pose_world"][:3])
+        camera_configuration_readback["wrist"]["calibration_source"] = "operator_requested_target_facing_rigid_mount"
+        direct_camera_aim["operator_authority"] = dict(plan["operator_wrist_camera_aim"])
+        camera_configuration_readback["wrist"]["offset_rotation_xyzw"] = list(env.unwrapped.scene[camera_names["wrist"]].cfg.offset.rot)
+    elif enable_cameras and "wrist" in camera_names:
+        from .native_task_direct_camera_aim import install_native_wrist_camera_attachment
+        native_camera_attachment = install_native_wrist_camera_attachment(
+            env=env, camera_name=camera_names["wrist"])
+    scenario_native_readback: dict[str, Any] = native_rigid_friction_scenario.verify(env, rigid_material_overrides)
     if light_application is not None or any(
         row.get("readback_kind") == "task_subject_link_dynamic_friction"
         for row in scenario_applications
@@ -1384,6 +1676,15 @@ def build_native_task_arena_environment(
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
             "cameras": camera_configuration_readback,
+            "direct_wrist_camera_aim": direct_camera_aim,
+            "native_wrist_camera_attachment": native_camera_attachment,
+            "camera_rerenders_on_reset": cfg.num_rerenders_on_reset,
+            "control_search_runtime": {
+                "num_envs": num_envs,
+                "cameras_enabled": enable_cameras,
+                "scene_appearance_included": include_scene_appearance,
+                "render_mode": render_mode,
+            },
             "scenario_parameters": scenario_native_readback,
             # Never silent: an asset spawned with its authored kinematic base
             # made dynamic and grounded is recorded, so a reader can see the

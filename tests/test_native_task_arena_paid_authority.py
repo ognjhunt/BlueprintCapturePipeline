@@ -4,12 +4,14 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.native_task_arena_paid_authority as paid
+import blueprint_pipeline.native_task_arena_pre_spend_evidence as pre_spend_evidence
 import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher
 from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
     STAGING_RECEIPT_ENV,
@@ -17,6 +19,25 @@ from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
 
 
 COMMIT = "a" * 40
+
+
+@pytest.fixture(autouse=True)
+def _local_immutable_input_reservations(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+    actual_reserve = dispatcher.reserve_control_plane_disk
+
+    def reserve_on_roomy_test_disk(role, **kwargs):
+        return actual_reserve(
+            role,
+            disk_usage=lambda _path: SimpleNamespace(
+                total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
 
 
 def _sha(path: Path) -> str:
@@ -137,10 +158,9 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
     )
 
     assert authority["aggregate_goal_spend_before_attempt_usd"] == 11.236507
-    # A current program-level ceiling may explicitly supersede the lower
-    # immutable ceiling recorded by the predecessor.  Per-attempt limits and
-    # the predecessor's spend still remain digest-bound.
-    assert authority["aggregate_goal_spend_cap_usd"] == 50.0
+    # New authority tracks cumulative spend without imposing a fixed campaign
+    # ceiling: only this single attempt's hard cap is added to prior spend.
+    assert authority["aggregate_goal_spend_cap_usd"] == 11.736507
     assert authority["prior_terminal_attempt"]["attempt_cost_usd"] == 0.092936
     assert authority["prior_terminal_attempt"]["actual_provider_charge_usd"] == 0.025
     assert authority["prior_terminal_attempt"]["terminal_result"]["path"] == str(
@@ -219,12 +239,12 @@ def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
     project_record = _record(reconciliation_path)
     project_spend = {
         "receipt_digest": "sha256:" + "8" * 64,
-        "total_cost_usd": 39.791914,
+        "total_cost_usd": 56.271914,
         "entries": [{"attempt_id": "prior-project-attempt"}],
     }
     monkeypatch.setattr(
         paid,
-        "validate_same_goal_spend_reconciliation",
+        "validate_project_spend_reconciliation",
         lambda *_args, **_kwargs: (project_spend, project_record),
     )
     zero = {
@@ -262,7 +282,8 @@ def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
 
     assert authority["lineage_kind"] == "project_spend_genesis"
     assert authority["prior_terminal_attempts"] == []
-    assert authority["aggregate_goal_spend_before_attempt_usd"] == 39.791914
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 56.271914
+    assert authority["aggregate_goal_spend_cap_usd"] == 57.021914
     assert authority["project_spend_reconciliation"] == project_record
     assert authority["initial_provider_zero"]["provider_zero_digest"] == zero[
         "provider_zero_digest"
@@ -274,6 +295,224 @@ def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
         hard_cap_usd=0.75,
         hard_ttl_seconds=3_300,
     )["authorization_digest"] == authority["authorization_digest"]
+
+    prepared["bound_runtime_inputs"] = [
+        {
+            "relative_path": (
+                "runtime_inputs/"
+                "native_construction_terminal_feedback_adoption.v1.json"
+            ),
+            "size_bytes": 128,
+            "sha256": "sha256:" + "9" * 64,
+        }
+    ]
+    feedback_authority = paid.materialize_native_task_arena_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        project_spend_reconciliation_path=reconciliation_path,
+        initial_provider_zero_path=zero_path,
+        authorization_reference="user-authorized feedback continuation",
+        authorized_by="user",
+        authorized_on="2026-08-25T14:30:00+00:00",
+        blueprint_commit=COMMIT,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        output_path=tmp_path / "feedback-authority.json",
+        retain_warm_session=True,
+    )
+    assert feedback_authority["lineage_kind"] == (
+        "project_spend_feedback_continuation"
+    )
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        feedback_authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        retain_warm_session=True,
+    )["authorization_digest"] == feedback_authority["authorization_digest"]
+
+    prepared["bound_runtime_inputs"] = []
+    with pytest.raises(ValueError, match="prior_terminal_spend_invalid"):
+        paid.validate_native_task_arena_paid_attempt_authority(
+            feedback_authority,
+            prepared_bundle=prepared,
+            max_hourly_rate_usd=0.8,
+            hard_cap_usd=0.75,
+            hard_ttl_seconds=3_300,
+            retain_warm_session=True,
+        )
+
+    prepared.update(
+        {
+            "control_search_authority_digest": "sha256:" + "7" * 64,
+            "warm_control_search_continuation_requested": True,
+        }
+    )
+    control_search_authority = (
+        paid.materialize_native_task_arena_paid_attempt_authority(
+            bundle_receipt_path=receipt_path,
+            project_spend_reconciliation_path=reconciliation_path,
+            initial_provider_zero_path=zero_path,
+            authorization_reference="user-authorized initial control search",
+            authorized_by="user",
+            authorized_on="2026-08-25T14:30:00+00:00",
+            blueprint_commit=COMMIT,
+            max_hourly_rate_usd=0.8,
+            hard_cap_usd=0.75,
+            hard_ttl_seconds=3_300,
+            output_path=tmp_path / "control-search-authority.json",
+            retain_warm_session=True,
+        )
+    )
+    assert control_search_authority["lineage_kind"] == (
+        "project_spend_control_search_continuation"
+    )
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        control_search_authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        retain_warm_session=True,
+    )["authorization_digest"] == control_search_authority[
+        "authorization_digest"
+    ]
+
+    staged_project = tmp_path / "staged" / "project-spend.input"
+    staged_project.parent.mkdir()
+    staged_project.write_bytes(reconciliation_path.read_bytes())
+    original_resolver = paid.resolve_immutable_input
+
+    def resolve_staged_project(
+        original_path: str | Path,
+        *,
+        expected_digest: str,
+        expected_size_bytes: int,
+    ) -> Path:
+        if Path(original_path).resolve() == reconciliation_path.resolve():
+            return staged_project
+        return original_resolver(
+            original_path,
+            expected_digest=expected_digest,
+            expected_size_bytes=expected_size_bytes,
+        )
+
+    monkeypatch.setattr(paid, "resolve_immutable_input", resolve_staged_project)
+    monkeypatch.setattr(
+        paid,
+        "validate_project_spend_reconciliation",
+        lambda path, **_kwargs: (project_spend, _record(Path(path))),
+    )
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+    )["authorization_digest"] == authority["authorization_digest"]
+
+
+def test_terminal_continuation_uses_newer_conservative_project_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    predecessor = _predecessor(tmp_path / "predecessor")
+    receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
+    monkeypatch.setattr(
+        paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared
+    )
+    reconciled = {
+        "prior_terminal_attempts": [
+            {"result": _record(predecessor["canonical_result"])}
+        ],
+        "reconciliation": _record(predecessor["canonical_result"]),
+        "actual_total_usd": 0.025,
+    }
+    monkeypatch.setattr(paid, "bind_lane_prior_spend", lambda **_kwargs: reconciled)
+    monkeypatch.setattr(
+        paid, "validate_bound_lane_prior_spend", lambda *_args, **_kwargs: reconciled
+    )
+    project_path = tmp_path / "project-spend.json"
+    write_json(project_path, {"total_cost_usd": 43.197914})
+    project_record = _record(project_path)
+    monkeypatch.setattr(
+        paid,
+        "validate_project_spend_reconciliation",
+        lambda path, **_kwargs: (
+            {"total_cost_usd": 43.197914},
+            _record(Path(path)),
+        ),
+    )
+
+    authority = paid.materialize_native_task_arena_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_authority_path=predecessor["authority"],
+        prior_result_path=predecessor["result"],
+        prior_provider_zero_path=predecessor["zero"],
+        prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
+        project_spend_reconciliation_path=project_path,
+        authorization_reference="user-authorized conservative continuation",
+        authorized_by="user",
+        authorized_on="2026-08-25T20:41:55Z",
+        blueprint_commit=COMMIT,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        output_path=tmp_path / "authority.json",
+    )
+
+    assert authority["lineage_kind"] == "terminal_predecessor"
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 43.197914
+    assert authority["project_spend_reconciliation"] == project_record
+
+    staged_project_path = tmp_path / "staged" / "project-spend.input"
+    staged_project_path.parent.mkdir()
+    staged_project_path.write_bytes(project_path.read_bytes())
+    original_resolver = paid.resolve_immutable_input
+
+    def resolve_staged_project(
+        original_path: str | Path,
+        *,
+        expected_digest: str,
+        expected_size_bytes: int,
+    ) -> Path:
+        if Path(original_path).resolve() == project_path.resolve():
+            assert expected_digest == project_record["sha256"]
+            assert expected_size_bytes == project_record["size_bytes"]
+            return staged_project_path
+        return original_resolver(
+            original_path,
+            expected_digest=expected_digest,
+            expected_size_bytes=expected_size_bytes,
+        )
+
+    monkeypatch.setattr(paid, "resolve_immutable_input", resolve_staged_project)
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+    )["authorization_digest"] == authority["authorization_digest"]
+
+    monkeypatch.setattr(
+        paid,
+        "validate_project_spend_reconciliation",
+        lambda path, **_kwargs: (
+            {"total_cost_usd": 43.197914},
+            {**_record(Path(path)), "sha256": "sha256:" + "f" * 64},
+        ),
+    )
+    with pytest.raises(
+        ValueError, match="native_task_arena_authority_invalid:prior_terminal_spend_invalid"
+    ):
+        paid.validate_native_task_arena_paid_attempt_authority(
+            authority,
+            prepared_bundle=prepared,
+            max_hourly_rate_usd=0.8,
+            hard_cap_usd=0.75,
+            hard_ttl_seconds=3_300,
+        )
 
 
 def test_new_lane_genesis_refuses_stale_provider_zero(
@@ -287,7 +526,7 @@ def test_new_lane_genesis_refuses_stale_provider_zero(
     write_json(reconciliation_path, {"sealed": True})
     monkeypatch.setattr(
         paid,
-        "validate_same_goal_spend_reconciliation",
+        "validate_project_spend_reconciliation",
         lambda *_args, **_kwargs: (
             {"receipt_digest": "sha256:" + "8" * 64, "total_cost_usd": 1.0},
             _record(reconciliation_path),
@@ -328,13 +567,16 @@ def test_new_lane_genesis_refuses_stale_provider_zero(
         )
 
 
+@pytest.mark.parametrize("execution_mode", ["construction_canary", "controls"])
 def test_warm_retention_intent_is_digest_bound(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    execution_mode: str,
 ) -> None:
     predecessor = _predecessor(tmp_path / "predecessor")
     receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
-    prepared["execution_mode"] = "controls"
-    write_json(receipt_path, {"execution_mode": "controls"})
+    prepared["execution_mode"] = execution_mode
+    write_json(receipt_path, {"execution_mode": execution_mode})
     monkeypatch.setattr(
         paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared
     )
@@ -359,7 +601,7 @@ def test_warm_retention_intent_is_digest_bound(
         prior_result_path=predecessor["result"],
         prior_provider_zero_path=predecessor["zero"],
         prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
-        authorization_reference="user-directed warm controls session",
+        authorization_reference="user-directed warm Arena session",
         authorized_by="user",
         authorized_on="2026-08-21",
         blueprint_commit=COMMIT,
@@ -1086,12 +1328,18 @@ def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
     }
 
 
-def _pre_spend_blocked_fixture(root: Path) -> dict[str, Path]:
+def _pre_spend_blocked_fixture(
+    root: Path, *, canonical_allocator_shape: bool = False
+) -> dict[str, Path]:
     root.mkdir()
     attempt_root = (
         root
         / "allocator"
-        / "arena-policy-diagnostic-job"
+        / (
+            "scene839873-execution-cold"
+            if canonical_allocator_shape
+            else "arena-policy-diagnostic-job"
+        )
         / "attempts"
         / "attempt_001"
     )
@@ -1135,6 +1383,28 @@ def _pre_spend_blocked_fixture(root: Path) -> dict[str, Path]:
             "spend_gate_closed:explicit_spend_approval_missing",
         ],
     }
+    if canonical_allocator_shape:
+        result.update(
+            {
+                "estimated_cost_usd": 0.0,
+                "continuing_spend_from_this_run": False,
+                "all_staged_objects_absent": True,
+            }
+        )
+        write_json(
+            provider_run / "vast_teardown_manifest.json",
+            {
+                "schema_version": "vast_teardown_manifest.v1",
+                "generated_at": observed_at.isoformat(),
+                "status": "not_required_provider_adapter_never_invoked",
+                "vast_instance_ids": [],
+                "teardown_actions_performed": [],
+                "continuing_spend_from_this_run": False,
+                "zero_continuing_spend_scope": (
+                    "The lane failed before entering the provider adapter."
+                ),
+            },
+        )
     result_path = attempt_root / "adp_arena_vast_result.json"
     write_json(result_path, result)
     consumption = {
@@ -1208,6 +1478,64 @@ def test_pre_spend_block_closes_without_claiming_policy_execution(
     )
     assert chain["attempt_cost_usd"] == 0.0
     assert chain["aggregate_goal_spend_after_attempt_usd"] == 39.540914
+
+
+def test_pre_spend_block_closes_canonical_allocator_result_shape(
+    tmp_path: Path,
+) -> None:
+    fixture = _pre_spend_blocked_fixture(
+        tmp_path / "attempt", canonical_allocator_shape=True
+    )
+    original = json.loads(fixture["result"].read_text())
+    assert pre_spend_evidence.validate_pre_spend_original_evidence(
+        original=original,
+        provider_run=fixture["result"].parent / "vast_provider_run",
+    ) is not None
+
+    value = paid.materialize_native_task_arena_pre_spend_closeout(
+        authority_path=fixture["authority"],
+        allocator_result_path=fixture["result"],
+        authority_consumption_path=fixture["consumption"],
+        api_provider_zero_path=fixture["api_zero"],
+        output_dir=tmp_path / "closeout",
+    )
+
+    result = json.loads(Path(value["terminal_result_path"]).read_text())
+    assert result["estimated_cost_usd"] == 0.0
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["original_pre_spend_teardown"]["path"].endswith(
+        "/vast_provider_run/vast_teardown_manifest.json"
+    )
+
+
+@pytest.mark.parametrize("tamper", ["instance", "cost", "continuing_spend"])
+def test_pre_spend_block_rejects_nonzero_canonical_allocator_evidence(
+    tmp_path: Path, tamper: str
+) -> None:
+    fixture = _pre_spend_blocked_fixture(
+        tmp_path / "attempt", canonical_allocator_shape=True
+    )
+    result = json.loads(fixture["result"].read_text())
+    teardown_path = fixture["result"].parent / "vast_provider_run/vast_teardown_manifest.json"
+    if tamper == "instance":
+        teardown = json.loads(teardown_path.read_text())
+        teardown["vast_instance_ids"] = [49131378]
+        write_json(teardown_path, teardown)
+    elif tamper == "cost":
+        result["estimated_cost_usd"] = 0.01
+        write_json(fixture["result"], result)
+    else:
+        result["continuing_spend_from_this_run"] = True
+        write_json(fixture["result"], result)
+
+    with pytest.raises(ValueError, match="native_task_arena_pre_spend"):
+        paid.materialize_native_task_arena_pre_spend_closeout(
+            authority_path=fixture["authority"],
+            allocator_result_path=fixture["result"],
+            authority_consumption_path=fixture["consumption"],
+            api_provider_zero_path=fixture["api_zero"],
+            output_dir=tmp_path / "closeout",
+        )
 
 
 def test_watchdog_not_armed_preallocation_failure_closes_without_claiming_execution(

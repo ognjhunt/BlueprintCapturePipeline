@@ -25,6 +25,7 @@ from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     build_arena_native_control_bundle,
 )
 from blueprint_pipeline.common import write_json
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
@@ -301,16 +302,19 @@ def test_live_transport_emits_allocator_artifact_manifest(
             provider / "vast_teardown_manifest.json",
             {"continuing_spend_from_this_run": False},
         )
+        native_result = {
+            "status": "completed",
+            "candidate_policy_queried": False,
+            "blockers": [],
+            "result_digest": "",
+        }
+        native_result["result_digest"] = canonical_digest(
+            native_result, digest_field="result_digest"
+        )
         with zipfile.ZipFile(provider / "vast_provider_runtime_output.zip", "w") as archive:
             archive.writestr(
                 "adp_arena_native_canary.json",
-                json.dumps(
-                    {
-                        "status": "completed",
-                        "candidate_policy_queried": False,
-                        "blockers": [],
-                    }
-                ),
+                json.dumps(native_result),
             )
             archive.writestr("lossless_frames/frame_000001.png", b"lossless")
         return {
@@ -352,9 +356,20 @@ def test_live_transport_emits_allocator_artifact_manifest(
         hard_ttl_seconds=3600,
         require_independent_watchdog=True,
         max_compute_cap=0,
+        provider_runtime_environment={
+            "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
+        },
+        allowed_geolocation_country_codes=("US",),
     )
 
     assert result["status"] == "completed"
+    persisted_native_result = json.loads(
+        Path(result["native_control_result_path"]).read_text(encoding="utf-8")
+    )
+    assert (
+        result["native_control_result_digest"]
+        == persisted_native_result["result_digest"]
+    )
     assert watchdog_events == ["armed", "adapter", "closed"]
     assert observed_adapter["instance_label_prefix"] == watchdog_handle.pod_name_prefix
     assert (
@@ -363,6 +378,10 @@ def test_live_transport_emits_allocator_artifact_manifest(
     )
     assert observed_adapter["retention_watchdog_handoff"]["status"] == "armed"
     assert observed_adapter["max_compute_cap"] == 0
+    assert observed_adapter["provider_runtime_environment"] == {
+        "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
+    }
+    assert observed_adapter["allowed_geolocation_country_codes"] == ("US",)
     manifest_path = Path(result["artifact_manifest_path"])
     manifest = json.loads(manifest_path.read_text())
     assert manifest["status"] == "completed"
@@ -377,11 +396,15 @@ def test_live_transport_emits_allocator_artifact_manifest(
     }
 
 
-@pytest.mark.parametrize("provider_create_attempted", [False, True])
+@pytest.mark.parametrize(
+    "provider_create_attempted,definite_refusal",
+    [(False, False), (True, False), (True, True)],
+)
 def test_policy_transport_seals_typed_media_gap_before_first_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     provider_create_attempted: bool,
+    definite_refusal: bool,
 ) -> None:
     bundle_path = tmp_path / "bundle.zip"
     bundle_path.write_bytes(b"bundle")
@@ -409,21 +432,39 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
             "status": "blocked",
             "blockers": ["provider_bundle_readiness_parse_failed"],
             "estimated_cost_usd": 0.00014 if provider_create_attempted else 0.0,
-            "vast_instance_ids": [48650527] if provider_create_attempted else [],
+            "vast_instance_ids": [48650527] if provider_create_attempted and not definite_refusal else [],
             "continuing_spend_from_this_run": False,
             "provider_create_attempted": provider_create_attempted,
         }
+        if definite_refusal:
+            adapter.update(
+                status="failed",
+                vast_side_effects_may_have_occurred=False,
+                create_failure_diagnosis={
+                    "http_status_code": 410,
+                    "definite_create_refusal": True,
+                    "create_inventory_verified": True,
+                    "create_inventory_http_status_code": 200,
+                    "create_produced_no_instance": True,
+                    "matching_attempt_instance_ids": [],
+                    "attempted_labels": ["test-policy"],
+                },
+                provider_attempt_classification={
+                    "classification": "pre_execution_provider_null",
+                    "scientific_attempt_consumed": False,
+                },
+            )
         write_json(provider / "vast_provider_adapter_result.json", adapter)
         write_json(
             provider / "vast_teardown_manifest.json",
             {
                 "status": (
                     "destroyed"
-                    if provider_create_attempted
+                    if provider_create_attempted and not definite_refusal
                     else "not_required_blueprint_bundle_preflight_blocked"
                 ),
                 "vast_instance_ids": (
-                    [48650527] if provider_create_attempted else []
+                    [48650527] if provider_create_attempted and not definite_refusal else []
                 ),
                 "continuing_spend_from_this_run": False,
             },
@@ -460,11 +501,11 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
             {
                 "status": (
                     "provider_terminal"
-                    if provider_create_attempted
+                    if provider_create_attempted and not definite_refusal
                     else "cancelled_no_allocation"
                 )
             }
-            if kwargs["provider_allocation_impossible"] is not provider_create_attempted
+            if kwargs["provider_allocation_impossible"] is (not provider_create_attempted or definite_refusal)
             else pytest.fail("watchdog close did not bind allocation truth")
         ),
     )

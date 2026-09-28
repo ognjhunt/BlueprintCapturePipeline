@@ -1,0 +1,722 @@
+"""Paid G1 admission must bind exact bytes and reject incomplete outcomes."""
+
+from __future__ import annotations
+
+import ast
+import fcntl
+import hashlib
+import json
+import subprocess
+import sys
+import zipfile
+from datetime import date
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline import native_g1_paid_campaign as lane
+from blueprint_pipeline.native_g1_provider_bundle import (
+    MANIFEST,
+    PROVIDER_BUNDLE_KIND,
+    SCHEMA,
+    _contract_dependency,
+    _runtime_code_files,
+    _verify_embedded_pi_tokenizer,
+    _entrypoint,
+    _review_g1_runtime_wheels,
+    load_verified_g1_provider_bundle,
+)
+from blueprint_pipeline.native_task_g1_runtime_lock import G1_RUNTIME_DEPENDENCY_WHEELS
+from blueprint_pipeline.provider_runtime_bundle_contract import (
+    provider_runtime_contract_blockers,
+)
+from blueprint_pipeline import vast_provider_adapter as vast
+from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
+from blueprint_pipeline.vast_independent_watchdog_control import (
+    validate_independent_vast_watchdog_names,
+)
+
+
+@pytest.fixture(autouse=True)
+def _fake_private_checkpoint_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Paid controller tests isolate cache transfer from the provider mock."""
+
+    monkeypatch.setenv(lane.CACHE_ROOT_ENV, str(tmp_path / "checkpoint-cache"))
+    gate = tmp_path / "vast_paid_launch.gate.lock"
+    gate.touch()
+    monkeypatch.setattr(lane, "vast_launch_gate_path", lambda: gate)
+    monkeypatch.setenv(lane.SPEND_ADMISSION_LOCK_PATH_ENV, str(tmp_path / "lock.json"))
+    monkeypatch.setattr(lane, "_load_spend_admission_lock", lambda _path: {})
+    monkeypatch.setattr(lane, "validate_spend_admission_lock", lambda *_args, **_kwargs: [])
+    secret = tmp_path / "private-cache-urls.json"
+    secret.write_text("private-test-url")
+    monkeypatch.setattr(lane, "stage_g1_checkpoint_cache", lambda **_kwargs: {
+        "status": "completed", "file_count": 24, "cache_hit_count": 24,
+        "upload_count": 0, "inventory_rows_digest": "sha256:" + "1" * 64,
+        "signed_url_file_path": str(secret), "raw_signed_urls_recorded": False,
+    })
+    monkeypatch.setattr(lane, "close_g1_checkpoint_cache", lambda _path: {
+        "status": "completed", "signed_url_file_removed": True,
+    })
+
+
+def _args(tmp_path: Path, **changes: object) -> SimpleNamespace:
+    value = {
+        "provider": "vast",
+        "adp_job_dir": str(tmp_path / "job"),
+        "admission_out": str(tmp_path / "admission.json"),
+        "adapter_output": str(tmp_path / "result.json"),
+        "adp_max_hourly_rate_usd": 1.0,
+        "adp_max_spend_usd": 4.0,
+        "adp_hard_ttl_seconds": 7200,
+        "adp_allowed_active_vast_instance_id": [],
+        "adp_machine_avoidlist": None,
+        "execute": True,
+        "g1_campaign_bundle_receipt": None,
+        "g1_campaign_manipulation_packet": None,
+        "g1_campaign_movement_packet": None,
+        "g1_campaign_book_handoff": None,
+        "g1_campaign_navigation_authority": None,
+        "g1_campaign_publisher_source": None,
+        "g1_campaign_runtime_source_receipt": None,
+        "g1_campaign_rights_review": [],
+    }
+    value.update(changes)
+    return SimpleNamespace(**value)
+
+
+def test_g1_bundle_requires_exact_current_wheel_owner_review(tmp_path: Path) -> None:
+    wheels = [dict(row) for row in G1_RUNTIME_DEPENDENCY_WHEELS]
+    policy = {
+        "schema_version": "blueprint.runtime_dependency_license_policy.v1",
+        "review_policy": {
+            "review_owner": "@ognjhunt",
+            "exact_name_and_version_match_required": True,
+            "new_or_changed_components_block_until_reviewed": True,
+            "reviewed_on": "2026-09-25",
+            "expires_on": "2027-09-25",
+        },
+        "components": {
+            f"{row['package']}=={row['version']}": {
+                "approved": True,
+                "owner": "@ognjhunt",
+                "license_expression": row["license_spdx"],
+                "source": "reviewed exact wheel license",
+                "reviewed_on": "2026-09-25",
+                "expires_on": "2027-09-25",
+            }
+            for row in wheels
+        },
+    }
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(policy))
+    runtime_source = {"runtime_dependency_wheels": wheels}
+    reviewed = _review_g1_runtime_wheels(
+        runtime_source, path, as_of=date(2026, 9, 26)
+    )
+    assert reviewed["status"] == "exact_g1_wheels_approved"
+    assert len(reviewed["exact_requirements"]) == len(wheels)
+
+    policy["components"].pop("pin==4.1.0")
+    path.write_text(json.dumps(policy))
+    with pytest.raises(ValueError, match="g1_provider_bundle_dependency_review_missing:pin==4.1.0"):
+        _review_g1_runtime_wheels(runtime_source, path, as_of=date(2026, 9, 26))
+
+    policy["components"]["pin==4.1.0"] = {
+        "approved": True, "owner": "@ognjhunt", "license_expression": "BSD-3-Clause",
+        "source": "reviewed exact wheel license", "reviewed_on": "2026-09-25",
+        "expires_on": "2026-09-25",
+    }
+    path.write_text(json.dumps(policy))
+    with pytest.raises(ValueError, match="g1_provider_bundle_dependency_review_invalid:pin==4.1.0"):
+        _review_g1_runtime_wheels(runtime_source, path, as_of=date(2026, 9, 26))
+
+    runtime_source["runtime_dependency_wheels"][-1]["version"] = "0.0.0"
+    with pytest.raises(ValueError, match="g1_provider_bundle_dependency_wheel_set_invalid"):
+        _review_g1_runtime_wheels(runtime_source, path, as_of=date(2026, 9, 26))
+
+
+def test_exact_main_and_sealed_receipt_required_before_paid_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        lane, "run_arena_native_control_vast",
+        lambda **_kwargs: pytest.fail("provider called without admission"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path),
+        control_identity={
+            "orchestrator_source_commit": "a" * 40,
+            "origin_main_commit": "b" * 40,
+            "remote_main_commit": "b" * 40,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert "g1_paid_campaign_controller_not_exact_main" in result["blockers"]
+    assert "g1_paid_campaign_execute_requires_dry_run_bundle_receipt" in result["blockers"]
+    assert json.loads((tmp_path / "admission.json").read_text())["status"] == "blocked"
+
+
+def test_paid_g1_rejects_untrusted_guard_actor_before_checkpoint_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    monkeypatch.setenv(lane.SPEND_ADMISSION_LOCK_PATH_ENV, str(tmp_path / "lock.json"))
+    monkeypatch.setattr(
+        lane, "_load_spend_admission_lock",
+        lambda _path: {"_load_blocker": "spend_admission_lock_owner_untrusted"},
+    )
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: pytest.fail("checkpoint staging ran before actor preflight"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["spend_admission_lock_owner_untrusted"]
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_paid_g1_requires_spend_lock_path_before_bundle_or_cache_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    monkeypatch.delenv(lane.SPEND_ADMISSION_LOCK_PATH_ENV)
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_args, **_kwargs: pytest.fail("bundle read before spend-lock preflight"),
+    )
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: pytest.fail("checkpoint staging before spend-lock preflight"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["g1_paid_campaign_spend_admission_lock_path_missing"]
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_paid_g1_checks_credit_before_checkpoint_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    monkeypatch.setattr(lane, "_early_spend_lock_blockers", lambda: [])
+    monkeypatch.setattr(
+        lane, "_early_provider_credit_blockers",
+        lambda required_usd: ["provider_credit_insufficient"]
+        if required_usd == 4.0 else pytest.fail("wrong credit requirement"),
+    )
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: pytest.fail("checkpoint staging ran before credit preflight"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["provider_credit_insufficient"]
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_paid_g1_refuses_active_deploy_before_checkpoint_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    gate = lane.vast_launch_gate_path()
+    monkeypatch.setattr(lane, "_early_provider_credit_blockers", lambda _cap: [])
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: pytest.fail("checkpoint staging ran while deploy held gate"),
+    )
+    with gate.open("r") as deploy:
+        fcntl.flock(deploy.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = lane.dispatch_g1_paid_campaign(
+            _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+            control_identity={
+                "orchestrator_source_commit": commit,
+                "origin_main_commit": commit,
+                "remote_main_commit": commit,
+            },
+            control_blockers=[],
+        )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["g1_paid_campaign_deploy_in_progress"]
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_paid_g1_holds_deploy_gate_until_provider_create_authority_is_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    gate = lane.vast_launch_gate_path()
+    monkeypatch.setattr(lane, "_early_provider_credit_blockers", lambda _cap: [])
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_args, **_kwargs: {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64},
+    )
+
+    def deploy_is_waiting() -> None:
+        with gate.open("r") as deploy:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(deploy.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def stage(**_kwargs: object) -> dict[str, object]:
+        deploy_is_waiting()
+        return {
+            "status": "completed", "file_count": 24, "cache_hit_count": 24,
+            "upload_count": 0, "inventory_rows_digest": "sha256:" + "1" * 64,
+            "signed_url_file_path": str(tmp_path / "private-cache-urls.json"),
+            "raw_signed_urls_recorded": False,
+        }
+
+    def run(**kwargs: object) -> dict[str, object]:
+        deploy_is_waiting()
+        hook = kwargs["pre_provider_mutation_hook"]
+        assert callable(hook)
+        assert hook()["status"] == "consumed"
+        with gate.open("r") as deploy:
+            fcntl.flock(deploy.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return {"status": "blocked", "blockers": ["test_no_provider"],
+                "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(lane, "stage_g1_checkpoint_cache", stage)
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", run)
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["blockers"] == ["test_no_provider"]
+    assert (tmp_path / "job" / "native_g1_paid_attempt_consumption.v1.json").is_file()
+
+
+def test_paid_g1_releases_deploy_gate_after_checkpoint_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    gate = lane.vast_launch_gate_path()
+    monkeypatch.setattr(lane, "_early_provider_credit_blockers", lambda _cap: [])
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_args, **_kwargs: {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64},
+    )
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad cache")),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["blockers"] == ["g1_private_checkpoint_cache_staging_failed:ValueError"]
+    with gate.open("r") as deploy:
+        fcntl.flock(deploy.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_early_credit_guard_is_read_only_and_admits_only_funded_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers, provider_credit_admission
+
+    monkeypatch.delenv(provider_credit_admission.ENABLED_ENV, raising=False)
+    monkeypatch.setattr(
+        gpu_render_providers.VastRenderProvider,
+        "_key",
+        lambda _self: pytest.fail("disabled credit guard read credentials"),
+    )
+    assert lane._early_provider_credit_blockers(9.0) == []
+
+    monkeypatch.setenv(provider_credit_admission.ENABLED_ENV, "true")
+    monkeypatch.setattr(gpu_render_providers.VastRenderProvider, "_key", lambda _self: "fake-key")
+    observed = []
+
+    def credit_check(*, api_key: str, required_usd: float) -> dict:
+        observed.append((api_key, required_usd))
+        return {"status": "blocked", "blockers": ["provider_credit_insufficient"]}
+
+    monkeypatch.setattr(
+        provider_credit_admission, "configured_vast_credit_admission", credit_check
+    )
+    assert lane._early_provider_credit_blockers(9.0) == ["provider_credit_insufficient"]
+    assert observed == [("fake-key", 9.0)]
+
+
+def test_paid_g1_refuses_missing_private_checkpoint_cache_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    monkeypatch.delenv(lane.CACHE_ROOT_ENV)
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_a, **_k: {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64},
+    )
+    monkeypatch.setattr(
+        lane, "run_arena_native_control_vast",
+        lambda **_kwargs: pytest.fail("provider called without private cache"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["g1_private_checkpoint_cache_root_missing"]
+    assert result["provider_mutations_performed"] == 0
+    assert json.loads((tmp_path / "admission.json").read_text())["status"] == "blocked"
+
+
+def test_no_spend_dry_run_stages_private_cache_before_declaring_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    bundle = {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64}
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+    seen: dict[str, object] = {}
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {"status": "ready_no_spend"}
+
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", fake_run)
+    args = _args(tmp_path, execute=False,
+                 g1_campaign_bundle_receipt=str(tmp_path / "receipt.json"))
+    result = lane.dispatch_g1_paid_campaign(
+        args,
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "ready_no_spend"
+    assert seen["execute"] is False
+    assert seen["runtime_secret_file_paths"] == {
+        lane.PROVIDER_CACHE_FILE_ENV: str(tmp_path / "private-cache-urls.json")
+    }
+    assert json.loads((tmp_path / "admission.json").read_text())["status"] == "admitted"
+
+
+def test_private_cache_url_closeout_failure_blocks_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_a, **_k: {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64},
+    )
+    monkeypatch.setattr(
+        lane, "run_arena_native_control_vast", lambda **_k: {"status": "ready_no_spend"},
+    )
+    monkeypatch.setattr(lane, "close_g1_checkpoint_cache", lambda _path: {
+        "status": "blocked", "signed_url_file_removed": False,
+    })
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, execute=False,
+              g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["g1_private_checkpoint_cache_closeout_failed"]
+
+
+def test_active_deployed_release_survives_main_advance_but_rechecks_before_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    identity = {
+        "orchestrator_source_commit": commit,
+        "origin_main_commit": commit,
+        "remote_main_commit": "b" * 40,
+    }
+    receipt = {"value": "sha256:" + "1" * 64}
+    def deployed(_root: Path, _commit: str) -> dict[str, object]:
+        return {
+            "status": "verified_active_release", "blockers": [],
+            "source_commit": commit, "receipt_sha256": receipt["value"],
+            "provenance_sha256": "sha256:" + "2" * 64,
+            "release_admission_mode": "development_iteration",
+            "evidence_grade": "development_only",
+        }
+    monkeypatch.setattr(lane, "inspect_active_deployed_release", deployed)
+    bundle = {"bundle_sha256": "sha256:" + "3" * 64}
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        receipt["value"] = "sha256:" + "4" * 64
+        return kwargs["pre_provider_mutation_hook"]()
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", fake_run)
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity=identity, control_blockers=[],
+        control_recheck=lambda: ([], identity),
+    )
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["status"] == "admitted"
+    assert admission["release_authority"]["receipt_sha256"] == "sha256:" + "1" * 64
+    assert result["blockers"] == ["g1_paid_campaign_controller_identity_changed_before_create"]
+    assert not (tmp_path / "job/native_g1_paid_attempt_consumption.v1.json").exists()
+
+
+def test_bundle_receipt_rejects_mutated_bytes(tmp_path: Path) -> None:
+    commit = "a" * 40
+    dependency, sources = _contract_dependency()
+    manifest = {
+        "schema_version": SCHEMA,
+        "status": "ready",
+        "provider_bundle_kind": PROVIDER_BUNDLE_KIND,
+        "implementation_commit": commit,
+        "contract_python_dependencies": [dependency],
+    }
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(MANIFEST, json.dumps(manifest))
+        for relative, source in sources:
+            archive.write(source, "provider_runtime/" + relative)
+    receipt = {
+        **manifest,
+        "bundle_path": str(archive_path),
+        "bundle_size_bytes": archive_path.stat().st_size,
+        "bundle_sha256": "sha256:" + hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+    }
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(receipt))
+    assert load_verified_g1_provider_bundle(
+        path, expected_implementation_commit=commit
+    )["bundle_sha256"] == receipt["bundle_sha256"]
+    extraction = tmp_path / "extracted"
+    with zipfile.ZipFile(archive_path) as archive:
+        archive.extractall(extraction)
+    probe = subprocess.run(
+        [sys.executable, "-I", "-S", "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); import rfc8785; "
+         "assert rfc8785.dumps({'x': 1}) == b'{\"x\":1}'",
+         str(extraction / "provider_runtime")],
+        capture_output=True, text=True, check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    with zipfile.ZipFile(archive_path, "a") as archive:
+        archive.writestr("extra.txt", "changed")
+    with pytest.raises(ValueError, match="g1_provider_bundle_receipt_binding_invalid"):
+        load_verified_g1_provider_bundle(path, expected_implementation_commit=commit)
+
+
+def test_g1_campaign_bundle_refuses_missing_pi_tokenizer_assets(tmp_path: Path) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("placeholder", "x")
+    with zipfile.ZipFile(archive_path) as archive:
+        with pytest.raises(ValueError, match="pi_tokenizer_binding_invalid"):
+            _verify_embedded_pi_tokenizer(archive, {"candidate_ids": list(lane.PAIR_ORDER)})
+
+
+def test_bundle_code_closure_includes_shared_subpackages() -> None:
+    package = Path(lane.__file__).resolve().parent
+    relative = {path.relative_to(package).as_posix() for path in _runtime_code_files(package)}
+    assert "native_g1_provider_runtime.py" in relative
+    assert "core/common.py" in relative
+    assert "__pycache__" not in relative
+
+
+def test_g1_provider_kind_uses_isaac_and_retains_episode_media() -> None:
+    actual_entrypoint = _entrypoint()
+    for embedded_python in actual_entrypoint.split("<<'PY'\n")[1:]:
+        ast.parse(embedded_python.split("\nPY\n", 1)[0])
+    assert actual_entrypoint.index("BLUEPRINT_G1_STAGE_STARTED:media-toolchain") < actual_entrypoint.index(
+        "native_task_runtime_source_provision"
+    )
+    assert "apt-get install -y -qq ffmpeg" in actual_entrypoint
+    assert "g1_provider_media_toolchain_unavailable" in actual_entrypoint
+    assert validate_independent_vast_watchdog_names(
+        pod_name_prefix=lane.INSTANCE_LABEL_PREFIX
+    )[0] == lane.INSTANCE_LABEL_PREFIX
+    assert vast._is_isaac_provider_bundle(PROVIDER_BUNDLE_KIND)
+    assert vast._provider_expected_video_count(PROVIDER_BUNDLE_KIND) == 0
+    assert vast._resolve_launch_mode(
+        requested="auto",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+    ) == "ssh_direct"
+    entrypoint = " ".join((
+        "native_task_runtime_source_provision", "native_g1_provider_runtime",
+        "native_g1_provider_campaign_result.v1.json",
+        "g1_provider_runner_exited_without_terminal_result",
+    ))
+    runner = " ".join((
+        "verify_g1_provider_inputs", "execute_g1_policy_runtime_build",
+        "run_g1_development_pair", "_query_count", "development_only",
+    ))
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []
+    script = vast._probe_shell_script(
+        "https://example.invalid/heartbeat",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+    )
+    assert "preserve_all_output = True" in script
+    assert "if preserve_all_output or size <= size_limit" in script
+
+
+def test_returned_g1_terminal_result_is_detected_by_provider_adapter(tmp_path: Path) -> None:
+    path = tmp_path / "output.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "native_g1_provider_campaign_result.v1.json",
+            json.dumps({"status": "completed", "blockers": []}),
+        )
+    inspected = inspect_provider_runtime_output_zip(path, expected_video_count=0)
+    assert inspected["runtime_result_present"] is True
+    assert inspected["runtime_result_status"] == "completed"
+
+
+def test_completed_transport_without_episode_evidence_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    bundle = {
+        "status": "ready",
+        "bundle_sha256": "sha256:" + "b" * 64,
+        "campaign_plan_digest": "sha256:" + "c" * 64,
+    }
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+    monkeypatch.setattr(
+        lane, "run_arena_native_control_vast",
+        lambda **_kwargs: {
+            "status": "completed",
+            "attempt_root": str(tmp_path / "missing-evidence"),
+            "continuing_spend_from_this_run": False,
+            "blockers": [],
+        },
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["blockers"] == ["g1_paid_campaign_output_verification_failed:ValueError"]
+
+
+def test_completed_verified_run_writes_private_review_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_g1_private_review as review_module
+
+    commit = "a" * 40
+    digest = "sha256:" + "b" * 64
+    bundle = {"status": "ready", "bundle_sha256": digest}
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", lambda **_k: {
+        "status": "completed", "continuing_spend_from_this_run": False, "blockers": [],
+    })
+    monkeypatch.setattr(lane, "verify_g1_paid_output", lambda *_a, **_k: {
+        "status": "verified_development_only",
+    })
+    monkeypatch.setattr(review_module, "project_g1_private_review", lambda **_k: {
+        "schema_version": review_module.SCHEMA,
+        "status": "verified_private_development_review",
+        "review_digest": digest,
+    })
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    path = tmp_path / "job/native_g1_private_review.v1.json"
+    assert result["status"] == "completed"
+    assert result["g1_private_review"] == {"path": str(path), "review_digest": digest}
+    assert json.loads(path.read_text())["status"] == "verified_private_development_review"
+
+
+def test_precreate_consumes_one_exact_bundle_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    bundle = {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64}
+    identity = {
+        "orchestrator_source_commit": commit,
+        "origin_main_commit": commit,
+        "remote_main_commit": commit,
+    }
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        hook = kwargs["pre_provider_mutation_hook"]
+        assert callable(hook)
+        first = hook()
+        second = hook()
+        assert first["status"] == "consumed"
+        assert first["bundle_sha256"] == bundle["bundle_sha256"]
+        assert second["blockers"] == ["g1_paid_campaign_attempt_already_consumed"]
+        return {"status": "blocked", "blockers": ["test_stopped_before_provider_create"]}
+
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", fake_run)
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity=identity,
+        control_blockers=[],
+        control_recheck=lambda: ([], identity),
+    )
+    assert result["status"] == "blocked"
+    consumption = json.loads(
+        (tmp_path / "job/native_g1_paid_attempt_consumption.v1.json").read_text()
+    )
+    assert consumption["status"] == "consumed"

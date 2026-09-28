@@ -44,6 +44,8 @@ from .spend_authority_consumption_root import (
     SpendAuthorityRootError,
     prepare_consumption_root,
 )
+from .provider_machine_avoidlist import stage_machine_avoidlist_for_attempt
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _VAST_STALE_OFFER_RETRY_ENV, pre_mutation_offer_reselection_attempts
 
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
 #: The Vast instance label this lane creates. The independent watchdog arms on
@@ -54,7 +56,6 @@ PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
 OUTPUT_RELOCATION_SCHEMA = "adp009d_retained_scene_gpu_render_output_relocation.v1"
 _VAST_MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
-_VAST_STALE_OFFER_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
 
 def _sha256(path: Path) -> str:
@@ -81,6 +82,9 @@ def validate_retained_scene_render_bundle(
     """Fail closed on every immutable input and dry-run binding."""
 
     value = dict(bundle)
+    if value.get("schema_version") == "adp009d_source_calibration_gpu_render_bundle.v1":
+        from .source_calibration_render_packet import validate_source_calibration_bundle
+        return validate_source_calibration_bundle(value, expected_commit=expected_commit)
     path = Path(str(value.get("bundle_path") or "")).expanduser().resolve()
     errors: list[str] = []
     if value.get("schema_version") != BUNDLE_SCHEMA or value.get("status") != "ready":
@@ -197,7 +201,9 @@ def validate_retained_scene_render_paid_attempt_authority(
         errors.append("schema_invalid")
     if value.get("authority_kind") != "explicit_user_direction_in_current_goal":
         errors.append("authority_kind_invalid")
-    if value.get("purpose") != "exact_retained_scene_gpu_render":
+    expected_purpose = ("exact_source_calibration_gpu_render" if prepared_bundle.get("render_scope") == "source_calibration"
+                        else "exact_retained_scene_gpu_render")
+    if value.get("purpose") != expected_purpose:
         errors.append("purpose_invalid")
     if value.get("provider") != "vast" or value.get("paid_compute_authorized") is not True:
         errors.append("provider_or_paid_authority_invalid")
@@ -448,8 +454,25 @@ def materialize_retained_scene_render_output_relocation(
 
 
 def _extract_provider_output(
-    path: Path, destination: Path
+    path: Path, destination: Path, *, prepared_bundle: Mapping[str, Any] | None = None
 ) -> tuple[dict[str, Any], list[str], dict[str, Any] | None]:
+    if prepared_bundle is not None and prepared_bundle.get("render_scope") == "source_calibration":
+        from .source_calibration_render_return import materialize_source_calibration_return, RESULT_SCHEMA as SOURCE_RESULT
+        from .provider_archive import extract_provider_archive
+        try:
+            extract_provider_archive(path, destination)
+            result_path = destination / (SOURCE_RESULT + ".json")
+            result = _read(result_path)
+            if result.get("status") != "completed":
+                return result, list(result.get("blockers") or ["source_calibration_provider_failed"]), None
+            prepared = _read(Path(prepared_bundle["source_context"]["prepared_inputs"]["path"]))
+            return_path = destination / "source_calibration_render_return.v1.json"
+            returned = materialize_source_calibration_return(prepared_inputs=prepared,
+                result_path=result_path, output_path=return_path)
+            return result, [], {"schema_version": "source_calibration_return_relocation.v1",
+                                "return_path": str(return_path), "return_digest": returned["return_digest"]}
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+            return {}, ["source_calibration_return_invalid:" + redacted_failure_detail(exc)], None
     blockers: list[str] = []
     root = destination.resolve()
     try:
@@ -484,7 +507,7 @@ def _authority_environment():
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ[_VAST_STALE_OFFER_RETRY_ENV] = "0"
+        os.environ[_VAST_STALE_OFFER_RETRY_ENV] = pre_mutation_offer_reselection_attempts()
         yield
     finally:
         for name, value in previous.items():
@@ -511,6 +534,9 @@ def run_retained_scene_render_vast(
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
     bundle = validate_retained_scene_render_bundle(prepared_bundle)
+    source_calibration = bundle.get("render_scope") == "source_calibration"
+    if source_calibration and (hard_ttl_seconds != 1800 or allowed_active_instance_ids):
+        raise ValueError("source_calibration_render_resource_bounds_invalid")
     if max_hourly_rate_usd <= 0 or hard_ttl_seconds < 1800:
         raise ValueError("retained_scene_render_budget_or_ttl_invalid")
     if not execute:
@@ -539,12 +565,22 @@ def run_retained_scene_render_vast(
         hard_ttl_seconds=hard_ttl_seconds,
         allowed_active_instance_ids=allowed_active_instance_ids,
     )
+    attempt_avoidlist = stage_machine_avoidlist_for_attempt(
+        source_path=machine_avoidlist_path, destination_path=job / "provider_machine_avoidlist.json")
     bundle_path = Path(str(bundle["bundle_path"])).resolve()
+    staging_options: dict[str, Any] = {}
+    private_store = None
+    if source_calibration:
+        from .source_calibration_private_store import verify_private_source_store
+        private_store = verify_private_source_store(output_path=job / "source_calibration_private_store_readback.v1.json")
+        staging_options = private_store["staging_kwargs"]
     staging_dir = job / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
         bundle_path=bundle_path,
-        key_prefix="blueprint/arm-decision-proof-v1/retained-scene-render",
+        key_prefix=("blueprint/arm-decision-proof-v1/private-source-calibration-inputs"
+                    if source_calibration else "blueprint/arm-decision-proof-v1/retained-scene-render"),
+        **staging_options,
         expiration_seconds=hard_ttl_seconds + 1800,
     )
     if staging.get("status") != "completed":
@@ -563,7 +599,7 @@ def run_retained_scene_render_vast(
         pod_name_prefix=RETAINED_RENDER_INSTANCE_LABEL_PREFIX,
     )
     if watchdog is None:
-        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir, **staging_options)
         return {
             "schema_version": RESULT_SCHEMA,
             "generated_at": utc_now_iso(),
@@ -577,7 +613,7 @@ def run_retained_scene_render_vast(
         authority, blueprint_commit=str(bundle["blueprint_commit"])
     )
     if consumption.get("status") != "consumed":
-        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir, **staging_options)
         watchdog_close = close_independent_vast_watchdog(
             job_dir=job,
             handle=watchdog,
@@ -638,7 +674,10 @@ def run_retained_scene_render_vast(
                 preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000"),
                 prefer_isaac_rt=False,
                 allowed_active_instance_ids=allowed_active_instance_ids,
-                machine_avoidlist_path=machine_avoidlist_path,
+                machine_avoidlist_path=attempt_avoidlist,
+                **({"allowed_geolocation_country_codes": ("US",),
+                    "preferred_geolocation_regex": bundle["preferred_geolocation_regex"]}
+                   if source_calibration else {}),
                 vast_launch_lock_file=job.parent / "retained_scene_render_paid_launch.lock",
                 # Bound to the armed prefix rather than restated.
                 instance_label_prefix=watchdog.pod_name_prefix,
@@ -656,7 +695,7 @@ def run_retained_scene_render_vast(
             provider_run, reason="vast_adapter_failed"
         )
     finally:
-        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir, **staging_options)
     teardown_path = provider_run / "vast_teardown_manifest.json"
     teardown = _read(teardown_path) if teardown_path.is_file() else {}
     instance_ids = [
@@ -674,8 +713,12 @@ def run_retained_scene_render_vast(
         ),
     )
     execution, blockers, relocation = _extract_provider_output(
-        output_zip, job / "immutable_execution"
+        output_zip, job / "immutable_execution",
+        **({"prepared_bundle": bundle} if source_calibration else {}),
     )
+    if source_calibration and (len(instance_ids) != 1 or watchdog_close.get("provider_absence_confirmed") is not True
+                               or watchdog_close.get("status") != "provider_terminal"):
+        blockers.append("source_calibration_exact_instance_global_zero_unproven")
     if execution.get("status") != "completed":
         blockers.append("provider_render_not_completed")
     if (
@@ -742,6 +785,10 @@ def run_retained_scene_render_vast(
         "schema_version": RESULT_SCHEMA,
         "generated_at": utc_now_iso(),
         "status": "completed" if not blockers else "blocked",
+        "render_scope": bundle.get("render_scope"),
+        "source_calibration_return": relocation if source_calibration else None,
+        "private_source_store_readback": private_store["readback"] if private_store else None,
+        "vast_instance_ids": instance_ids,
         "bundle_sha256": bundle["bundle_sha256"],
         "authorization_consumption": consumption,
         "provider_adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
@@ -753,7 +800,8 @@ def run_retained_scene_render_vast(
         # nonexistent file would let a later reader think one was produced.
         "teardown_manifest_path": str(teardown_path) if teardown_path.is_file() else None,
         "execution_result_path": str(
-            job / "immutable_execution/adp009d_retained_scene_gpu_render_result.v1.json"
+            job / "immutable_execution" / ("adp009d_source_calibration_gpu_render_result.v1.json"
+                if source_calibration else "adp009d_retained_scene_gpu_render_result.v1.json")
         ),
         "output_relocation_receipt": (
             {
@@ -764,7 +812,7 @@ def run_retained_scene_render_vast(
                 ),
                 "receipt_digest": relocation.get("receipt_digest"),
             }
-            if relocation is not None
+            if relocation is not None and not source_calibration
             else None
         ),
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),

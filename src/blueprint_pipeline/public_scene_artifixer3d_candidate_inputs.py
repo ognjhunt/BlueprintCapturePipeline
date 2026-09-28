@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from .artifixer_source_geometry_admission import admit_source_geometry
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 from .gaussian_splat_decode import read_standard_3dgs_ply
@@ -244,12 +245,14 @@ def _camera_row(row: Any) -> dict[str, Any]:
     mask = _bound_absolute(row.get("exact_residual_mask"), code="artifixer3d_exact_mask_invalid")
     rgb = _image(before, mode="RGB", code="artifixer3d_retained_frame_invalid")
     mask_pixels = _image(mask, mode="L", code="artifixer3d_exact_mask_invalid")
+    frame_role = row.get("frame_role", "semantic_edit")
     if (
         rgb.shape[:2] != mask_pixels.shape
         or rgb.shape[1] != int(intrinsics["width"])
         or rgb.shape[0] != int(intrinsics["height"])
         or set(mask_pixels.tobytes()) - {0, 255}
-        or not np.any(mask_pixels)
+        or frame_role not in {"semantic_edit", "source_preservation"}
+        or bool(np.any(mask_pixels)) != (frame_role == "semantic_edit")
         or int(np.count_nonzero(mask_pixels))
         != (row.get("exact_residual_mask") or {}).get("pixel_count")
     ):
@@ -258,6 +261,7 @@ def _camera_row(row: Any) -> dict[str, Any]:
     return {
         "task_id": task_id,
         "camera_id": camera_id,
+        "frame_role": frame_role,
         "T_world_camera_opencv": matrix_array,
         "T_world_camera_opengl": matrix_array @ CAMERA_CONVENTION_FLIP,
         "intrinsics": {
@@ -615,6 +619,9 @@ def materialize_artifixer3d_candidate_inputs(
             raise ArtiFixer3DCandidateInputError(["artifixer3d_selected_task_set_invalid"])
         task_ids = sorted(task_ids)
     normalized = [row for row in normalized if row["task_id"] in set(task_ids)]
+    if any(not any(row["task_id"] == task_id and row["frame_role"] == "semantic_edit"
+                   for row in normalized) for task_id in task_ids):
+        raise ArtiFixer3DCandidateInputError(["artifixer3d_task_repair_support_missing"])
     if set(object_absent_receipts) - set(task_ids):
         raise ArtiFixer3DCandidateInputError(["artifixer3d_object_absent_reference_task_invalid"])
 
@@ -624,6 +631,16 @@ def materialize_artifixer3d_candidate_inputs(
     output.mkdir(parents=True, exist_ok=True)
     shared_seed_root = output / "shared_initialization"
     shared_seed_root.mkdir()
+    original_retained_splat_path = retained_splat_path
+    try:
+        retained_splat_path, geometry_admission = admit_source_geometry(
+            source=retained_splat_path, cameras=normalized,
+            output_root=shared_seed_root / "source_geometry_admission",
+        )
+    except ValueError as exc:
+        raise ArtiFixer3DCandidateInputError([str(exc)]) from exc
+    if retained_splat_path != original_retained_splat_path:
+        retained_splat = read_standard_3dgs_ply(retained_splat_path)
     shared_points = shared_seed_root / "points3D.bin"
     _write_colmap_points3d(shared_points, retained_splat)
     task_receipts: list[dict[str, Any]] = []
@@ -740,6 +757,7 @@ def materialize_artifixer3d_candidate_inputs(
                     "frame_index": index,
                     "camera_id": row["camera_id"],
                     "input_retained_frame": _record(row["before_path"]),
+                    "frame_role": row["frame_role"],
                     "input_exact_repair_mask": _record(row["mask_path"]),
                     "masked_reference_rgb": _record(reference_path, root=task_root),
                     "rendered_rgb": _record(render_path, root=task_root),
@@ -885,6 +903,8 @@ def materialize_artifixer3d_candidate_inputs(
             **_record(retained_splat_path),
             "retained_gaussian_count": retained_splat.count,
         },
+        "original_shared_retained_scene": _record(original_retained_splat_path),
+        "source_geometry_admission": geometry_admission,
         "shared_colmap_initialization_points3D": _record(shared_points),
         "execution_authority": execution_authority,
         "replacement_object_count": len(task_ids),

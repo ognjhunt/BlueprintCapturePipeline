@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from typing import Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT_SECONDS = 120
+DEFAULT_WORKER_COUNT = 4
 MAX_CHANGED_FILES = 50
 MAX_IMPACTED_TEST_FILES = 40
 
@@ -30,6 +32,7 @@ SENTINEL_TESTS = (
     "tests/test_paid_resource_admission.py::test_shared_chokepoint_grants_only_exact_admitted_contract",
     "tests/test_paid_resource_allocator_verifier.py::test_unmanifested_script_mutator_is_rejected",
     "tests/test_release_engineering_contracts.py::test_risk_based_verification_workflows_are_bounded",
+    "tests/test_lane_writer_governance.py::test_reviewed_lane_writer_manifest_is_satisfied",
 )
 
 CROSS_CUTTING_FILES = {
@@ -119,10 +122,24 @@ def _matching_tests(
     if direct in test_sources:
         candidates.add(direct)
 
-    tokens = {changed_path, path.name}
+    # An unanchored basename also matches unrelated longer filenames (for
+    # example service.py inside live_pipeline_intake_service.py). Preserve
+    # literal file-loader references without creating that false dependency.
+    tokens = {changed_path, f'"{path.name}"', f"'{path.name}'"}
+    if path.name == "__init__.py":
+        # Every package shares this basename, so only a test naming this exact
+        # file (or, under src, importing this package) counts as coverage.
+        tokens = {changed_path}
+    module_patterns: list[str] = []
     if changed_path.startswith("src/blueprint_pipeline/") and path.suffix == ".py":
         module = changed_path.removeprefix("src/").removesuffix(".py").replace("/", ".")
-        tokens.add(module)
+        if path.name == "__init__.py":
+            module = module.removesuffix(".__init__")
+        parent, _, module_name = module.rpartition(".")
+        module_patterns = [
+            rf"(?<![A-Za-z0-9_]){re.escape(module)}(?![A-Za-z0-9_])",
+            rf"\bfrom\s+{re.escape(parent)}\s+import\s+(?:\(\s*)?{re.escape(module_name)}(?![A-Za-z0-9_])",
+        ]
     elif changed_path.startswith("scripts/"):
         tokens.add(f"scripts/{path.name}")
         # A script test loads its subject by bare module name --
@@ -138,7 +155,8 @@ def _matching_tests(
     for test_path, source in test_sources.items():
         if test_path == "tests/test_impacted_test_selection.py":
             continue
-        if any(token and token in source for token in tokens):
+        if (any(token and token in source for token in tokens)
+                or any(re.search(pattern, source) for pattern in module_patterns)):
             candidates.add(test_path)
     return candidates
 
@@ -246,6 +264,8 @@ def run_pytest(
         "-m",
         "pytest",
         "-q",
+        "-n",
+        str(max(1, min(DEFAULT_WORKER_COUNT, os.cpu_count() or 1))),
         "-p",
         "no:cacheprovider",
         "-m",

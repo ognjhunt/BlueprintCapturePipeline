@@ -1,0 +1,167 @@
+"""Every production root a unit names has a storage class, and reclaim tools honour it."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline.control_plane_storage_roots import (
+    STORAGE_CLASSES,
+    STORAGE_ROOTS,
+    classify_path,
+    require_storage_class,
+    roots_of_class,
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SYSTEMD_DIR = REPO_ROOT / "deploy" / "systemd"
+_HOST_PATH = re.compile(r"(/var/lib/blueprint[A-Za-z0-9_./-]*|/opt/blueprint[A-Za-z0-9_./-]*)")
+# Paths that are not storage: the interpreter and file arguments inside the venv.
+_NOT_STORAGE = ("/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python",)
+
+
+def test_every_root_named_by_a_production_unit_is_classified() -> None:
+    unclassified: set[str] = set()
+    for unit in sorted(SYSTEMD_DIR.glob("blueprint-*")):
+        # A path a unit is denied (InaccessiblePaths=) is not storage it uses.
+        text = "\n".join(
+            line for line in unit.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("InaccessiblePaths=")
+        )
+        for match in _HOST_PATH.findall(text):
+            path = match.rstrip("/")
+            if path in _NOT_STORAGE:
+                continue
+            root = classify_path(path)
+            if root is None or root.storage_class == "container" and path not in {
+                r.path for r in STORAGE_ROOTS
+            }:
+                # A path inside a container root without a more specific class
+                # is exactly the unclassified growth this table exists to stop.
+                unclassified.add(path)
+    assert unclassified == set(), sorted(unclassified)
+
+
+def test_storage_table_is_well_formed() -> None:
+    seen: set[str] = set()
+    for root in STORAGE_ROOTS:
+        assert root.storage_class in STORAGE_CLASSES, root
+        assert root.owner in {"blueprint", "root"}, root
+        assert root.path.startswith(("/var/lib/blueprint", "/opt/blueprint", "/mnt/blueprint-work")), root
+        assert root.path not in seen, root
+        seen.add(root.path)
+    # The spend guard is hot evidence and never a reclaim target of any class.
+    guard = classify_path("/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit")
+    assert guard is not None and guard.storage_class == "evidence_hot"
+    assert "/var/lib/blueprint/task-evaluation-inputs/prepared-references" in roots_of_class("cache")
+    assert "/var/lib/blueprint/pipeline-control-plane/profile-install-staging" in roots_of_class("cache")
+    assert "/var/lib/blueprint/pipeline-control-plane/policy-canary-presubmission" in roots_of_class(
+        "cache"
+    )
+    assert "/var/lib/blueprint/pipeline-control-plane/episode-interpretation-rights" in roots_of_class(
+        "evidence_hot"
+    )
+    assert "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs" in roots_of_class(
+        "evidence_cold"
+    )
+    assert "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions" in roots_of_class(
+        "work"
+    )
+    assert "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations" in roots_of_class(
+        "cache"
+    )
+
+
+def test_most_specific_root_wins_and_tools_refuse_wrong_classes() -> None:
+    nested = classify_path(
+        "/var/lib/blueprint/task-evaluation-inputs/compiled-episodes/content-addressed/"
+        "adapter-members/sha256/abc"
+    )
+    assert nested is not None and nested.storage_class == "cache"
+    assert classify_path("/var/lib/blueprint/pipeline-control-plane").storage_class == "container"
+    assert classify_path("/srv/elsewhere") is None
+
+    root = require_storage_class(
+        "/var/lib/blueprint/task-evaluation-inputs/prepared-references",
+        expected="cache",
+        code="fixture_code",
+    )
+    assert root.storage_class == "cache"
+    with pytest.raises(ValueError, match="^fixture_code:evidence_hot$"):
+        require_storage_class(
+            "/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard",
+            expected="cache",
+            code="fixture_code",
+        )
+    with pytest.raises(ValueError, match="^fixture_code:unclassified$"):
+        require_storage_class("/srv/elsewhere", expected="cache", code="fixture_code")
+    with pytest.raises(ValueError, match="control_plane_storage_class_invalid"):
+        roots_of_class("bogus")
+
+
+def test_scene_workspaces_and_their_receipts_are_classified():
+    base = "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes"
+    assert classify_path(f"{base}/site-capture-1/captures/c/raw/v.mov").storage_class == "scene_workspace"
+    assert classify_path(f"{base}/site-capture-1").storage_class == "scene_workspace"
+    assert classify_path(f"{base}/site-capture-1.retired.v1.json").storage_class == "evidence_hot"
+    assert classify_path("/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com").storage_class == "work"
+    assert "/var/lib/blueprint/pubsub-handoffs/*/scenes/*" in roots_of_class("scene_workspace")
+
+
+def test_a_pattern_segment_matches_exactly_one_path_component():
+    base = "/var/lib/blueprint/pubsub-handoffs"
+    # The scenes/ directory itself holds workspaces and receipts; it is not a workspace.
+    assert classify_path(f"{base}/bucket/scenes").storage_class == "work"
+    # `*` never spans a separator, so a scene two levels down is not a bucket's scene.
+    assert classify_path(f"{base}/bucket/nested/scenes/s").storage_class == "work"
+    # The more specific literal wins over a pattern of the same depth.
+    assert classify_path(f"{base}/bucket/scenes/s.retired.v1.json").storage_class == "evidence_hot"
+    assert classify_path(f"{base}/bucket/scenes/s.retired.v1.json.tmp").storage_class == "scene_workspace"
+    website = classify_path("/var/lib/blueprint/pipeline-control-plane/website-source-bindings/x.json")
+    assert (website.path, website.storage_class) == (
+        "/var/lib/blueprint/pipeline-control-plane/website-source-bindings", "work")
+
+
+def test_chain_preflight_treats_scene_workspaces_as_written_storage():
+    from blueprint_pipeline.task_evaluation_production_chain_preflight import WRITTEN_STORAGE_CLASSES
+
+    assert "scene_workspace" in WRITTEN_STORAGE_CLASSES
+
+
+@pytest.mark.parametrize(("path", "storage_class", "owner"), [
+    ("/var/lib/blueprint/pipeline-control-plane/completed-replay-cache-retention", "evidence_hot", "root"),
+    ("/var/lib/blueprint/pipeline-control-plane/scene-project-spend", "evidence_hot", "blueprint"),
+    ("/var/lib/blueprint/task-evaluation-inputs/task-evaluation-terminal-results", "evidence_hot", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/result-artifact-cache", "cache", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents", "work", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents", "work", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/release-leases", "ledger", "root"),
+    ("/var/lib/blueprint/pipeline-control-plane/cleanup-receipts", "evidence_hot", "root"),
+])
+def test_owner_delivery_and_replay_roots_keep_their_retention_law(path, storage_class, owner):
+    root = classify_path(path + "/retained-record.json")
+    assert root is not None
+    assert (root.path, root.storage_class, root.owner) == (path, storage_class, owner)
+    if storage_class == "evidence_hot":
+        with pytest.raises(ValueError, match="cannot_evict:evidence_hot"):
+            require_storage_class(path, expected="cache", code="cannot_evict")
+
+
+def test_the_scene_digest_cache_follows_the_handoff_spool_to_the_volume():
+    root = classify_path("/var/lib/blueprint/pubsub-handoffs/.scene-workspace-inventory/b/s.json")
+    assert (root.storage_class, root.owner) == ("cache", "root")
+    assert classify_path("/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json").storage_class == "evidence_hot"
+
+
+@pytest.mark.parametrize("path, expected_root", [
+    ("/mnt/blueprint-work/lanes/agent-a/job-1/output.bin", "/mnt/blueprint-work/lanes/*"),
+    ("/var/lib/blueprint/task-evaluation-inputs/lanes/agent-b/job-2/output.bin",
+     "/var/lib/blueprint/task-evaluation-inputs/lanes/*"),
+])
+def test_lane_scratch_roots_are_classified_per_lane(path, expected_root):
+    root = classify_path(path)
+    assert root is not None
+    assert (root.storage_class, root.path) == ("lane_scratch", expected_root)

@@ -13,6 +13,7 @@ from .capture_intake import (
     build_capture_admission,
     verify_capture_intake_bytes,
 )
+from .intake_packet_fields import normalize_intake_packet
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
 from .materialization import preview_capture_bundle
 
@@ -74,6 +75,14 @@ def _required_raw_entries(
     manifest: Mapping[str, Any],
     capture_context: Mapping[str, Any],
 ) -> Dict[str, Path]:
+    if manifest.get("capture_source") == "browser_self_capture":
+        # Website task/rights are fetched and authenticated by the package
+        # orchestrator before preparation spend. Device-only intake sidecars
+        # do not exist for these uploads and must not be fabricated.
+        return {
+            "manifest": context.raw_root / "manifest.json",
+            "capture_upload_complete": context.raw_complete_path,
+        }
     required = {
         "manifest": context.raw_root / "manifest.json",
         "capture_context": context.raw_root / "capture_context.json",
@@ -105,7 +114,7 @@ def _video_candidates(raw_root: Path, manifest: Mapping[str, Any]) -> List[str]:
 def build_capture_preflight_report(capture_root: str | Path) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     manifest = optional_read_json(context.raw_root / "manifest.json") or {}
-    intake = optional_read_json(context.raw_root / "intake_packet.json") or {}
+    intake = normalize_intake_packet(optional_read_json(context.raw_root / "intake_packet.json") or {})
     capture_context = optional_read_json(context.raw_root / "capture_context.json") or {}
     required_entries = _required_raw_entries(
         context,

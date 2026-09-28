@@ -236,3 +236,20 @@ def test_a_saturated_joint_is_pulled_back_rather_than_refusing() -> None:
     )
 
     assert command == pytest.approx([0.015])
+
+
+def test_stale_command_outside_scalar_lead_recovers_with_actuator_limit() -> None:
+    """A native joint jump rebases only when an actuator-safe lead exists."""
+
+    command = bounded_absolute_joint_setpoint(
+        measured_joint_positions_rad=[0.0],
+        desired_joint_positions_rad=[1.0],
+        previous_commanded_joint_positions_rad=[5.0],
+        max_command_slew_per_step_rad=0.03,
+        max_setpoint_lead_rad=0.2,
+        max_setpoint_lead_rad_per_joint=[0.015],
+    )
+
+    # The stale setpoint is discarded toward reality, and the new setpoint is
+    # still capped at the actuator-safe lead (at least one slew step).
+    assert command == pytest.approx([0.03])

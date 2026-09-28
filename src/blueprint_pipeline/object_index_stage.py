@@ -1231,6 +1231,23 @@ def _build_objects(
     return objects
 
 
+def _combine_object_candidates(
+    normalized_3d_candidates: Sequence[Mapping[str, Any]],
+    image_detection_candidates: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Preserve candidates from both backend interface shapes.
+
+    Provider-normalized 3D rows and clustered image detections express
+    different evidence. Neither is permitted to erase the other merely because
+    it arrived through the alternate backend shape.
+    """
+
+    return [
+        *[dict(item) for item in normalized_3d_candidates],
+        *[dict(item) for item in image_detection_candidates],
+    ]
+
+
 def _apply_llm_task_relevance(
     *,
     runner,
@@ -2026,18 +2043,19 @@ def run_object_index_stage(
         articulation_candidates.extend(artic)
         task_candidates.extend(tasks)
 
-    merged_clusters: List[Sequence[Mapping[str, Any]]] = []
-    if existing_objects:
-        objects = existing_objects
-    else:
-        merged_clusters = _cluster_detections(_dedupe_same_frame(detections), keyframes_by_index)
-        objects = _build_objects(
-            clusters=merged_clusters,
-            keyframes_by_index=keyframes_by_index,
-            descriptor=descriptor,
-            raw_root=context.capture_root,
-            crops_dir=crops_dir,
-        )
+    # Backends that emit already-normalized 3D candidates (for example Splat
+    # Analyzer) supplement image detections; they must never suppress them. A
+    # previous either/or branch silently discarded every YOLO/GDINO/SAM object
+    # as soon as any backend returned an ``objects`` row.
+    merged_clusters = _cluster_detections(_dedupe_same_frame(detections), keyframes_by_index)
+    detected_objects = _build_objects(
+        clusters=merged_clusters,
+        keyframes_by_index=keyframes_by_index,
+        descriptor=descriptor,
+        raw_root=context.capture_root,
+        crops_dir=crops_dir,
+    )
+    objects = _combine_object_candidates(existing_objects, detected_objects)
     llm_task_relevance = _apply_llm_task_relevance(
         runner=enrichment_runner,
         descriptor=descriptor,
@@ -2162,7 +2180,7 @@ def run_object_index_stage(
     )
 
     filtered_detection_count = max(0, len(detections) - len(objects))
-    clustered_object_count = len(existing_objects) if existing_objects else len(merged_clusters)
+    clustered_object_count = len(existing_objects) + len(merged_clusters)
     empty_index_cause = None
 
     def _is_required_report(report: Mapping[str, Any]) -> bool:

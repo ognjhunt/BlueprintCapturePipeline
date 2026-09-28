@@ -38,12 +38,12 @@ def test_gpt_image_2_preflight_executes_bounded_generation(tmp_path: Path) -> No
     )
 
     assert result["status"] == "qualified"
-    assert result["model"] == "gpt-image-2"
+    assert result["model"] == "gpt-image-2.5-sunburst"
     assert result["output"]["width"] == 1024
     assert result["output"]["bytes_retained"] is False
     assert result["estimated_output_cost_usd"] == 0.006
     assert observed["payload"] == {
-        "model": "gpt-image-2",
+        "model": "gpt-image-2.5-sunburst",
         "prompt": (
             "A single solid red square centered on a plain white background, "
             "flat geometric icon, no text, no logos."

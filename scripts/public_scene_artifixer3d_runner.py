@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 import hashlib
 import json
 import os
@@ -35,6 +35,11 @@ DUAL_TARGET_INPUT_FILENAME = f"{DUAL_TARGET_INPUT_SCHEMA}.json"
 DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
 DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE = "dual_target_artifixer3d_render_only"
 CHECKPOINT_REUSE_SCHEMA = "public_scene_artifixer3d_checkpoint_reuse.v1"
+# The pinned NuRec template casts .gaussians_nodes.gaussians.positions to
+# float16, so a gaussian outside this magnitude silently becomes inf and ships
+# a scene the frame-alignment gate then refuses. Measure representability here,
+# where the checkpoint is still addressable, instead of after the export.
+NATIVE_EXPORT_POSITION_MAGNITUDE_LIMIT = 65504.0
 NATIVE_APPEARANCE_EXPORT_SCHEMA = "public_scene_artifixer3d_native_appearance_export.v1"
 DUAL_TARGET_PHASES = [
     "dual_target_input_validation",
@@ -59,12 +64,27 @@ DUAL_TARGET_LOSS_OVERRIDES = {
     "loss.lambda_lpips_override": 0.1,
     "loss.lambda_reconlosses_override": 0.0,
 }
+RETAINED_GEOMETRY_POLICY = {
+    "mode": "freeze_retained_source_geometry",
+    "optimize_position": False,
+    "optimize_rotation": False,
+    "optimize_scale": False,
+    "mcmc_relocation_permitted": False,
+    "mcmc_addition_permitted": False,
+    "mcmc_perturbation_permitted": False,
+    "post_training_exact_tensor_match_required": True,
+}
+DECLARED_GEOMETRY_POLICY = {**RETAINED_GEOMETRY_POLICY,
+                            "mode": "freeze_declared_appearance_initialization"}
+
+
+def _geometry_policy_valid(policy):
+    return policy == RETAINED_GEOMETRY_POLICY or policy == DECLARED_GEOMETRY_POLICY
+
 # Read from the registry rather than a second copy of the same literals: this
 # module and the bundle module each had their own set, so admitting a backend in
 # one and not the other was a silent disagreement waiting to happen.
-DIRECT_EDITOR_BACKENDS = set(
-    registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY)
-)
+DIRECT_EDITOR_BACKENDS = set(registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY))
 SEMANTIC_EDITOR_PROMPT = (
     "Reconstruct the natural empty background where the solid black masked hole "
     "appears. Continue the surrounding floor, wall, cabinet, desk, curtain, and "
@@ -208,6 +228,18 @@ def _bound(root: Path, record: Any, code: str) -> Path:
     return path
 
 
+def _dual_target_loss_is_bound(artifixer3d):
+    from blueprint_pipeline.artifixer_appearance_freeze import CORRECTED_ONLY_LOSS_OVERRIDES
+    if not isinstance(artifixer3d, Mapping):
+        return False
+    supervision = artifixer3d.get("training_supervision")
+    if supervision not in (None, "masked_original_anchors", "corrected_only"):
+        return False
+    expected = (CORRECTED_ONLY_LOSS_OVERRIDES if supervision == "corrected_only"
+                else DUAL_TARGET_LOSS_OVERRIDES)
+    return artifixer3d.get("loss_overrides") == expected
+
+
 def _dual_target_request_is_bound(request: Mapping[str, Any]) -> bool:
     artifixer3d = request.get("artifixer3d")
     return (
@@ -224,7 +256,8 @@ def _dual_target_request_is_bound(request: Mapping[str, Any]) -> bool:
         == "unconstrained_for_raw_representation_review"
         and request.get("outside_support_invariance_gate") == "deferred_until_final_soft_composite"
         and isinstance(artifixer3d, Mapping)
-        and artifixer3d.get("loss_overrides") == DUAL_TARGET_LOSS_OVERRIDES
+        and _dual_target_loss_is_bound(artifixer3d)
+        and _geometry_policy_valid(artifixer3d.get("geometry_policy"))
         and artifixer3d.get("anchor_mask_reduction") == "full_frame_mean"
         and isinstance(artifixer3d.get("steps"), int)
         and not isinstance(artifixer3d.get("steps"), bool)
@@ -264,7 +297,8 @@ def _render_only_request_is_bound(
         != "unconstrained_for_raw_representation_review"
         or request.get("outside_support_invariance_gate") != "deferred_until_final_soft_composite"
         or not isinstance(artifixer3d, Mapping)
-        or artifixer3d.get("loss_overrides") != DUAL_TARGET_LOSS_OVERRIDES
+        or not _dual_target_loss_is_bound(artifixer3d)
+        or not _geometry_policy_valid(artifixer3d.get("geometry_policy"))
         or artifixer3d.get("anchor_mask_reduction") != "full_frame_mean"
         or artifixer3d.get("training_permitted") is not False
         or artifixer3d.get("distillation_input_replay_only") is not True
@@ -413,6 +447,11 @@ def _dual_target_candidate_is_bound(candidate: Mapping[str, Any]) -> bool:
     for task in tasks:
         if not isinstance(task, Mapping):
             return False
+        from blueprint_pipeline.semantic_target_training_selection import validate_training_partition
+        try:
+            expected_anchors, expected_teachers = validate_training_partition(task)
+        except (ValueError, KeyError, TypeError):
+            return False
         physical_count = task.get("physical_camera_count")
         training_count = task.get("training_record_count")
         frames = task.get("frames")
@@ -427,8 +466,7 @@ def _dual_target_candidate_is_bound(candidate: Mapping[str, Any]) -> bool:
             or len(frames) != physical_count
             or not isinstance(selected, list)
             or not isinstance(teachers, list)
-            or len(selected) != physical_count
-            or len(teachers) != physical_count
+            or len(selected) + len(teachers) != training_count
         ):
             return False
         frame_anchor_indices: list[int] = []
@@ -458,7 +496,10 @@ def _dual_target_candidate_is_bound(candidate: Mapping[str, Any]) -> bool:
             ):
                 return False
             frame_anchor_indices.append(anchor_index)
-            frame_teacher_indices.append(teacher_index)
+            if frame.get("semantic_teacher_excluded_from_training"):
+                frame_anchor_indices.append(teacher_index)
+            else:
+                frame_teacher_indices.append(teacher_index)
         if (
             selected != frame_anchor_indices
             or teachers != frame_teacher_indices
@@ -585,6 +626,10 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
         raise ValueError("artifixer3d_semantic_editor_binding_invalid")
     for row in manifest.get("candidate_files") or []:
         _bound(runtime / "input", row, "artifixer3d_candidate_file_invalid")
+    if dual_target:
+        if candidate.get("appearance_initialization") != request["artifixer3d"].get("appearance_initialization"):
+            raise ValueError("artifixer3d_appearance_initialization_binding_mismatch")
+        _validated_appearance_initialization(runtime / "input", request)
     for row in manifest.get("source_files") or []:
         _bound(runtime / "ArtiFixer_official", row, "artifixer3d_source_file_invalid")
     if (
@@ -773,7 +818,14 @@ class _CheckpointExportModel:
         "features_specular",
     )
 
-    def __init__(self, checkpoint: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        checkpoint: Mapping[str, Any],
+        *,
+        reference_splat: Any,
+        geometry_policy: Mapping[str, Any],
+        appearance_initialization: Mapping[str, Any] | None = None,
+    ) -> None:
         missing = [name for name in self._TENSOR_FIELDS if name not in checkpoint]
         if missing:
             raise ValueError("artifixer3d_native_export_checkpoint_fields_missing")
@@ -802,6 +854,119 @@ class _CheckpointExportModel:
             or tuple(self.features_specular.shape) != (count, expected_specular)
         ):
             raise ValueError("artifixer3d_native_export_checkpoint_features_invalid")
+        self._validate_representable_positions(count)
+        self._validate_retained_geometry_exact(reference_splat, geometry_policy)
+        self._validate_source_relative_geometry(reference_splat)
+        if geometry_policy == DECLARED_GEOMETRY_POLICY:
+            from blueprint_pipeline.artifixer_appearance_freeze import verify_frozen_appearance
+            if not appearance_initialization:
+                raise ValueError("artifixer3d_appearance_initialization_missing")
+            self.geometry_protection.update(verify_frozen_appearance(
+                model=self, reference=reference_splat,
+                partition=appearance_initialization["parameter_partition"]))
+            self.geometry_protection["initialization_receipt_digest"] = appearance_initialization["receipt_digest"]
+
+    def _validate_retained_geometry_exact(
+        self, reference_splat: Any, geometry_policy: Mapping[str, Any]
+    ) -> None:
+        """Prove training changed appearance tensors only, never source geometry."""
+
+        import numpy as np
+
+        if not _geometry_policy_valid(dict(geometry_policy)):
+            raise ValueError("artifixer3d_native_export_geometry_policy_invalid")
+        expected = {
+            "positions": np.asarray(reference_splat.xyz, dtype=np.float32),
+            "rotation": np.asarray(reference_splat.quats, dtype=np.float32),
+            "scale": np.asarray(reference_splat.scales, dtype=np.float32),
+        }
+        mismatches: list[str] = []
+        maximum_absolute_drift: dict[str, float] = {}
+        for name, reference in expected.items():
+            learned = np.asarray(getattr(self, name).detach(), dtype=np.float32)
+            if learned.shape != reference.shape:
+                mismatches.append(f"{name}_shape")
+                maximum_absolute_drift[name] = float("inf")
+                continue
+            difference = np.abs(learned.astype(np.float64) - reference.astype(np.float64))
+            maximum_absolute_drift[name] = float(difference.max(initial=0.0))
+            if not np.array_equal(learned, reference):
+                mismatches.append(name)
+        self.geometry_protection = {
+            "mode": geometry_policy["mode"],
+            "status": "qualified" if not mismatches else "blocked",
+            "reference_gaussian_count": int(reference_splat.count),
+            "checkpoint_gaussian_count": int(self.positions.shape[0]),
+            "exact_position_tensor_match": "positions" not in mismatches
+            and "positions_shape" not in mismatches,
+            "exact_rotation_tensor_match": "rotation" not in mismatches
+            and "rotation_shape" not in mismatches,
+            "exact_scale_tensor_match": "scale" not in mismatches
+            and "scale_shape" not in mismatches,
+            "maximum_absolute_drift": maximum_absolute_drift,
+            "blockers": [f"retained_geometry_{name}_mismatch" for name in mismatches],
+        }
+        if mismatches:
+            raise ValueError(
+                "artifixer3d_native_export_retained_geometry_mismatch:"
+                + ",".join(mismatches)
+            )
+
+    def _validate_representable_positions(self, count: int) -> None:
+        """Refuse every unrepresentable center; never mutate learned tensors."""
+
+        import numpy as np
+
+        positions = np.asarray(self.positions.detach(), dtype=np.float64)
+        keep = np.isfinite(positions).all(axis=1) & (
+            np.abs(positions) <= NATIVE_EXPORT_POSITION_MAGNITUDE_LIMIT
+        ).all(axis=1)
+        retained = int(keep.sum())
+        unrepresentable = count - retained
+        self.unrepresentable_position_count = unrepresentable
+        self.exported_gaussian_count = count
+        if unrepresentable:
+            raise ValueError(
+                f"artifixer3d_native_export_positions_unrepresentable:{unrepresentable}/{count}"
+            )
+
+    def _validate_source_relative_geometry(self, reference_splat: Any) -> None:
+        """Bind the trained tensors to the immutable retained Gaussian field."""
+
+        import numpy as np
+
+        from blueprint_pipeline.gaussian_field_quality import (
+            measure_source_relative_gaussian_drift,
+        )
+
+        candidate_log_scales = np.asarray(self.scale.detach(), dtype=np.float64)
+        reference_log_scales = np.asarray(reference_splat.scales, dtype=np.float64)
+        with np.errstate(over="ignore", invalid="ignore"):
+            candidate_scales = np.exp(candidate_log_scales)
+            reference_scales = np.exp(reference_log_scales)
+        raw_density = np.asarray(self.density.detach(), dtype=np.float64).reshape(-1)
+        with np.errstate(over="ignore", invalid="ignore"):
+            candidate_opacities = 1.0 / (1.0 + np.exp(-raw_density))
+        try:
+            quality = measure_source_relative_gaussian_drift(
+                reference_positions=reference_splat.xyz,
+                reference_activated_scales=reference_scales,
+                candidate_positions=np.asarray(self.positions.detach(), dtype=np.float64),
+                candidate_activated_scales=candidate_scales,
+                candidate_opacities=candidate_opacities,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"artifixer3d_native_export_gaussian_field_drift_invalid:{type(exc).__name__}"
+            ) from exc
+        self.gaussian_field_drift_quality = quality
+        if quality.get("status") != "qualified" or quality.get("blockers"):
+            error = ValueError(
+                "artifixer3d_native_export_gaussian_field_drift_invalid:"
+                + ",".join(str(value) for value in quality.get("blockers") or ())
+            )
+            error.geometry_quality = quality
+            raise error
 
     def get_positions(self):
         return self.positions
@@ -834,7 +999,14 @@ class _CheckpointExportModel:
         return self.features_specular
 
 
-def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path) -> dict[str, Any]:
+def _export_checkpoint_native_appearance(
+    *,
+    checkpoint: Path,
+    task_output: Path,
+    reference_gaussian_ply: Path,
+    geometry_policy: Mapping[str, Any],
+    appearance_initialization: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Serialize one bound checkpoint to standard PLY and Isaac-ready USDZ.
 
     The trained coordinates are retained verbatim.  Two separate transforms
@@ -857,6 +1029,7 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
     from threedgrut.export.ply_exporter import PLYExporter
     from threedgrut.export.usdz_exporter import USDZExporter
 
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
     from blueprint_pipeline.nurec_usdz_layer_transform import (
         pin_nurec_usdz_layer_transform_to_identity,
     )
@@ -878,7 +1051,16 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
         config.export_usdz.apply_normalizing_transform = False
     except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError("artifixer3d_native_export_config_invalid") from exc
-    model = _CheckpointExportModel(checkpoint_value)
+    try:
+        reference_splat = read_standard_3dgs_ply(reference_gaussian_ply)
+    except (OSError, ValueError) as exc:
+        raise ValueError("artifixer3d_native_export_reference_gaussians_invalid") from exc
+    model = _CheckpointExportModel(
+        checkpoint_value,
+        reference_splat=reference_splat,
+        geometry_policy=geometry_policy,
+        appearance_initialization=appearance_initialization,
+    )
     ply_path = output_root / "repaired_scene.ply"
     usdz_path = output_root / "repaired_scene.usdz"
     PLYExporter().export(model, ply_path, dataset=None, conf=config)
@@ -897,6 +1079,13 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
         "status": "native_appearance_candidates_exported_pending_native_import_and_multiview_review",
         "source_checkpoint": _file_record(checkpoint),
         "gaussian_count": int(model.positions.shape[0]),
+        # A successful export never prunes learned tensors.  The zero count is
+        # retained in the receipt as evidence that no row needed mutation.
+        "exported_gaussian_count": int(model.exported_gaussian_count),
+        "unrepresentable_position_count": int(model.unrepresentable_position_count),
+        "position_magnitude_limit": NATIVE_EXPORT_POSITION_MAGNITUDE_LIMIT,
+        "gaussian_field_source_relative_drift": model.gaussian_field_drift_quality,
+        "geometry_protection": model.geometry_protection,
         "coordinate_contract": {
             "source_gaussian_tensor_coordinates_preserved": True,
             "camera_derived_normalizing_transform_applied": False,
@@ -938,6 +1127,52 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
     result["export_digest"] = _canonical_digest(result, "export_digest")
     del checkpoint_value
     return result
+
+
+def _retained_reference_gaussian_ply(input_root: Path) -> Path:
+    """Resolve the one immutable retained field shared by every task."""
+
+    matches = sorted((input_root / "shared_initialization").glob("*.ply"))
+    if len(matches) != 1 or matches[0].is_symlink() or not matches[0].is_file():
+        raise ValueError("artifixer3d_native_export_reference_gaussians_not_exact")
+    return matches[0]
+
+
+def _validated_appearance_initialization(input_root: Path, request):
+    from blueprint_pipeline.artifixer_appearance_freeze import validate_partition
+    binding = request["artifixer3d"].get("appearance_initialization")
+    declared = request["artifixer3d"]["geometry_policy"] == DECLARED_GEOMETRY_POLICY
+    if not declared:
+        if binding is not None:
+            raise ValueError("artifixer3d_appearance_initialization_mode_mismatch")
+        return None
+    if not isinstance(binding, Mapping):
+        raise ValueError("artifixer3d_appearance_initialization_missing")
+    receipt_path = _bound(input_root, binding["receipt"], "artifixer3d_appearance_initialization_unbound")
+    receipt = _read(receipt_path, "artifixer3d_appearance_initialization_unreadable")
+    reference = _retained_reference_gaussian_ply(input_root)
+    expected_sha = _sha256(reference)
+    if (receipt.get("schema_version") != "artifixer_registered_background_initialization.v1"
+            or receipt.get("receipt_digest") != _canonical_digest(receipt, "receipt_digest")
+            or receipt["receipt_digest"] != binding.get("receipt_digest")
+            or receipt.get("geometry_mode") != DECLARED_GEOMETRY_POLICY["mode"]
+            or receipt.get("parameter_partition") != binding.get("parameter_partition")
+            or receipt.get("initialization", {}).get("sha256") != expected_sha
+            or binding.get("initialization_sha256") != expected_sha
+            or receipt.get("policy", {}).get("original_appearance_frozen") is not
+                (binding.get("parameter_partition", {}).get("local_appearance_policy") is None)
+            or receipt.get("policy", {}).get("generated_geometry_and_opacity_frozen") is not True):
+        raise ValueError("artifixer3d_appearance_initialization_receipt_invalid")
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
+    reference_data = read_standard_3dgs_ply(reference)
+    validate_partition(binding["parameter_partition"], reference_data.count)
+    from blueprint_pipeline.artifixer_appearance_freeze import local_appearance_mask
+    editable = local_appearance_mask(reference_data, binding["parameter_partition"])
+    local = binding["parameter_partition"].get("local_appearance_policy") is not None
+    if local and (request["artifixer3d"].get("training_supervision") != "corrected_only"
+                  or int(editable.sum()) != binding["parameter_partition"].get("editable_source_count")):
+        raise ValueError("artifixer3d_local_appearance_supervision_mismatch")
+    return binding
 
 
 def _align_and_validate_usdz(path: Path) -> list[dict[str, Any]]:
@@ -1018,6 +1253,64 @@ def _hydra_value(value: Any) -> str:
     return str(value)
 
 
+def _retained_geometry_training_overrides(
+    *, steps: int, geometry_policy: Mapping[str, Any]
+) -> list[str]:
+    """Disable optimizer and MCMC geometry mutation for every retained splat."""
+
+    if not _geometry_policy_valid(geometry_policy):
+        raise ValueError("artifixer3d_geometry_policy_invalid")
+    disabled_strategy_iteration = steps + 1
+    overrides = [
+        # COLMAP points3D carries centers and colors only. Initializing from
+        # it silently invents rotations and scales before an optimizer freeze
+        # can help. The standard 3DGS PLY carries the complete retained field.
+        "initialization.method=point_cloud",
+        "model.optimize_position=false",
+        "model.optimize_rotation=false",
+        "model.optimize_scale=false",
+        f"strategy.relocate.start_iteration={disabled_strategy_iteration}",
+        f"strategy.relocate.end_iteration={disabled_strategy_iteration}",
+        f"strategy.add.start_iteration={disabled_strategy_iteration}",
+        f"strategy.add.end_iteration={disabled_strategy_iteration}",
+        f"strategy.perturb.start_iteration={disabled_strategy_iteration}",
+        f"strategy.perturb.end_iteration={disabled_strategy_iteration}",
+        "strategy.perturb.noise_lr=0.0",
+    ]
+    if geometry_policy == DECLARED_GEOMETRY_POLICY:
+        overrides += ["model.optimize_density=false",
+                      "model.progressive_training.init_n_features=3"]
+    return overrides
+
+
+def _stage_retained_geometry_initialization(
+    *, input_root: Path, distillation_input_dir: Path
+) -> dict[str, Any]:
+    """Stage the full retained 3DGS PLY where 3DGRUT point-cloud init reads it."""
+
+    source = _retained_reference_gaussian_ply(input_root)
+    destination = distillation_input_dir / "point_cloud.ply"
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("artifixer3d_retained_initialization_destination_exists")
+    shutil.copyfile(source, destination)
+    source_record = _file_record(source)
+    staged_record = _file_record(destination)
+    if (
+        destination.is_symlink()
+        or source_record["size_bytes"] != staged_record["size_bytes"]
+        or source_record["sha256"] != staged_record["sha256"]
+    ):
+        raise ValueError("artifixer3d_retained_initialization_copy_mismatch")
+    return {
+        "initialization_method": "point_cloud",
+        "complete_standard_3dgs_ply_used": True,
+        "colmap_points3d_used_for_gaussian_geometry": False,
+        "byte_exact": True,
+        "source": source_record,
+        "staged": staged_record,
+    }
+
+
 def _prepare_dual_target_teacher_frames(
     *, task: Mapping[str, Any], staged_task: Path, task_output: Path
 ) -> tuple[Path, list[dict[str, Any]]]:
@@ -1030,6 +1323,8 @@ def _prepare_dual_target_teacher_frames(
     teacher_root.mkdir(parents=True)
     rows: list[dict[str, Any]] = []
     for frame in task["frames"]:
+        if frame.get("semantic_teacher_excluded_from_training"):
+            continue
         physical_index = int(frame["physical_camera_index"])
         teacher_index = int(frame["semantic_teacher_training_index"])
         original = _bound(
@@ -1081,7 +1376,13 @@ def _stage_dual_target_anchor_masks(
 
     image_root = distillation_input_dir / "images"
     rows: list[dict[str, Any]] = []
+    anchor_frames = []
     for frame in task["frames"]:
+        anchor_frames.append(frame)
+        if frame.get("semantic_teacher_excluded_from_training"):
+            anchor_frames.append({**frame, "anchor_training_index": frame["semantic_teacher_training_index"],
+                                  "anchor_loss_mask": frame["excluded_teacher_anchor_mask"]})
+    for frame in anchor_frames:
         anchor_index = int(frame["anchor_training_index"])
         matches = [
             path
@@ -1218,6 +1519,44 @@ def _normalize_dual_target_review_frames(
     return rows
 
 
+def _prepare_corrected_only_training(*, task, transforms_path, teacher_root, staged_task):
+    """Make the released trainer's actual camera set contain accepted edits only.
+
+    Original paired images remain provenance/review artifacts. They are absent
+    from these transforms, COLMAP training images, and selected-anchor list.
+    """
+    transforms = json.loads(transforms_path.read_text())
+    source_rows = transforms["frames"]
+    output = staged_task / "corrected_only_training"
+    output.mkdir()
+    corrected = output / "teachers"
+    corrected.mkdir()
+    rows, frames = [], []
+    for frame in task["frames"]:
+        if frame.get("semantic_teacher_excluded_from_training"):
+            continue
+        old_index = frame["semantic_teacher_training_index"]
+        index = len(frames)
+        source = teacher_root / f"{old_index:05d}.png"
+        expected = frame["semantic_teacher_override_rgb"]["sha256"]
+        if _sha256(source) != expected:
+            raise ValueError("artifixer_corrected_training_image_changed")
+        destination = corrected / f"{index:05d}.png"
+        shutil.copyfile(source, destination)
+        frames.append({**source_rows[old_index], "file_path": str(destination),
+                       "training_role": "whole_frame_semantic_teacher"})
+        rows.append({"training_index": index, "camera_id": frame["camera_id"],
+                     "source_teacher_index": old_index, "sha256": expected})
+    if not frames or [r["source_teacher_index"] for r in rows] != task["semantic_teacher_indices"]:
+        raise ValueError("artifixer_corrected_training_partition_invalid")
+    path = output / "transforms.json"
+    selected = output / "selected_indices.json"
+    _write(path, {**transforms, "frames": frames})
+    _write(selected, [])
+    _write(output / "training_frames.json", rows)
+    return path, selected, corrected, rows
+
+
 def _prepare_dual_target_distillation_replay(
     *,
     task: Mapping[str, Any],
@@ -1246,6 +1585,18 @@ def _prepare_dual_target_distillation_replay(
         task["transforms"],
         "artifixer3d_dual_target_transforms_unbound",
     )
+    if task.get("training_view_selection") is not None:
+        from blueprint_pipeline.semantic_target_training_selection import validate_selection
+        physical = task["training_view_selection"]["source_transforms"]["frames"]
+        training_frames = json.loads(transforms_path.read_text())["frames"]
+        for i, original in enumerate(physical):
+            for row in training_frames[2*i:2*i+2]:
+                if any(row.get(k) != v for k,v in original.items() if k != "file_path"):
+                    raise ValueError("artifixer_training_selection_pose_mismatch")
+        validate_selection(task["training_view_selection"],
+            transforms=task["training_view_selection"]["source_transforms"],
+            teacher_frames=[{"camera_id": f["camera_id"], "whole_frame_semantic_teacher": f["source_whole_frame_semantic_teacher"]}
+                            for f in task["frames"]])
     selected_path = _bound(
         staged_task,
         task["selected_anchor_indices_file"],
@@ -1262,6 +1613,16 @@ def _prepare_dual_target_distillation_replay(
         task["review_trajectory"],
         "artifixer3d_dual_target_review_trajectory_unbound",
     )
+    corrected_rows = None
+    if request["artifixer3d"].get("training_supervision") == "corrected_only":
+        transforms_path, selected_path, teacher_root, corrected_rows = _prepare_corrected_only_training(
+            task=task, transforms_path=transforms_path, teacher_root=teacher_root,
+            staged_task=staged_task)
+        teacher_rows = [
+            {**row, "source_semantic_teacher_training_index": row["semantic_teacher_training_index"],
+             "semantic_teacher_training_index": index}
+            for index, row in enumerate(teacher_rows)
+        ]
     split_path = staged_task / "split.dual_target_distill.json"
     _write(
         split_path,
@@ -1285,7 +1646,17 @@ def _prepare_dual_target_distillation_replay(
     with log.open("w", encoding="utf-8") as stream:
         with redirect_stdout(stream), redirect_stderr(stream):
             artifixer3d.materialize_distillation_input(scene, paths, teacher_root)
-    anchor_mask_rows = _stage_dual_target_anchor_masks(
+    if corrected_rows is not None:
+        image_dir = paths.distillation_input_dir / "images"
+        expected_images = {f"frame_{r['training_index']:05d}.png": r["sha256"] for r in corrected_rows}
+        actual_images = {p.name: _sha256(p) for p in image_dir.iterdir() if p.is_file()}
+        if actual_images != expected_images or json.loads(paths.distillation_selected_indices_path.read_text()) != []:
+            raise ValueError("artifixer_corrected_training_materialization_mismatch")
+    retained_initialization = _stage_retained_geometry_initialization(
+        input_root=input_root,
+        distillation_input_dir=paths.distillation_input_dir,
+    )
+    anchor_mask_rows = [] if corrected_rows is not None else _stage_dual_target_anchor_masks(
         task=task,
         staged_task=staged_task,
         distillation_input_dir=paths.distillation_input_dir,
@@ -1298,7 +1669,9 @@ def _prepare_dual_target_distillation_replay(
         "scene": scene,
         "steps": steps,
         "paths": paths,
+        "retained_initialization": retained_initialization,
         "anchor_mask_rows": anchor_mask_rows,
+        "corrected_training_frames": corrected_rows,
     }
 
 
@@ -1344,16 +1717,71 @@ def _dual_target_task_runtime(
         f"{name}={_hydra_value(value)}"
         for name, value in request["artifixer3d"]["loss_overrides"].items()
     )
-    with log.open("a", encoding="utf-8") as stream:
-        with redirect_stdout(stream), redirect_stderr(stream):
-            threedgrut_training.train_3dgrut(
-                request["artifixer3d"]["config_name"],
-                overrides,
-                threedgrut_training.DEFAULT_THREEDGRUT_CONFIG_DIR,
-            )
+    geometry_policy = request["artifixer3d"]["geometry_policy"]
+    overrides.extend(
+        _retained_geometry_training_overrides(
+            steps=steps,
+            geometry_policy=geometry_policy,
+        )
+    )
+    appearance_initialization = _validated_appearance_initialization(input_root, request)
+    freeze_context = nullcontext()
+    if appearance_initialization is not None:
+        from threedgrut.model.model import MixtureOfGaussians
+        from blueprint_pipeline.artifixer_appearance_freeze import freeze_source_appearance
+        from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
+        freeze_context = freeze_source_appearance(MixtureOfGaussians,
+            reference=read_standard_3dgs_ply(_retained_reference_gaussian_ply(input_root)),
+            partition=appearance_initialization["parameter_partition"])
+    training_exception = None
+    from importlib.metadata import version
+    from blueprint_pipeline.artifixer_metric_state import bounded_perceptual_metric_state
+    metric_state = {}
+    try:
+        with log.open("a", encoding="utf-8") as stream, freeze_context:
+            with redirect_stdout(stream), redirect_stderr(stream), bounded_perceptual_metric_state(
+                threedgrut_training.Trainer3DGRUT, torchmetrics_version=version("torchmetrics")
+            ) as metric_state:
+                threedgrut_training.train_3dgrut(
+                    request["artifixer3d"]["config_name"],
+                    overrides,
+                    threedgrut_training.DEFAULT_THREEDGRUT_CONFIG_DIR,
+                )
+    except Exception as exc:
+        training_exception = exc
     checkpoint = artifixer3d.artifixer3d_checkpoint(scene, paths, steps)
     if not checkpoint.is_file():
+        if training_exception is not None:
+            raise training_exception
         raise ValueError("artifixer3d_checkpoint_missing_or_ambiguous")
+    from blueprint_pipeline.artifixer_training_recovery import (
+        retain_export_outcome,
+        retain_native_exports,
+        retain_review_frames,
+        retain_training_checkpoint,
+    )
+
+    recovery_root = retain_training_checkpoint(
+        checkpoint=checkpoint, reference=_retained_reference_gaussian_ply(input_root),
+        log=log, request=dict(request),
+        destination=output_root.parent / "retained_training_evidence" / task_id,
+    )
+    if training_exception is not None:
+        retain_export_outcome(recovery_root, exception=training_exception)
+        raise training_exception
+    try:
+        native_appearance = _export_checkpoint_native_appearance(
+            checkpoint=checkpoint,
+            task_output=task_output,
+            reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
+            geometry_policy=geometry_policy,
+            appearance_initialization=appearance_initialization,
+        )
+    except Exception as exc:
+        retain_export_outcome(recovery_root, exception=exc)
+        raise
+    retain_native_exports(recovery_root, native_appearance)
+    retain_export_outcome(recovery_root)
     with log.open("a", encoding="utf-8") as stream:
         with redirect_stdout(stream), redirect_stderr(stream):
             review_dir = artifixer3d.render_artifixer3d(
@@ -1372,19 +1800,27 @@ def _dual_target_task_runtime(
     )
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
-    native_appearance = _export_checkpoint_native_appearance(
-        checkpoint=checkpoint, task_output=task_output
-    )
+    retain_review_frames(recovery_root, review_rows)
     return {
         "task_id": task_id,
         "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
-        "training_record_count": task["training_record_count"],
-        "selected_anchor_indices": task["selected_anchor_indices"],
-        "semantic_teacher_indices": task["semantic_teacher_indices"],
+        "training_record_count": (len(prepared["corrected_training_frames"])
+                                  if prepared.get("corrected_training_frames") is not None
+                                  else task["training_record_count"]),
+        "training_supervision": request["artifixer3d"].get("training_supervision", "masked_original_anchors"),
+        "training_metric_state": metric_state,
+        "corrected_training_frames": prepared.get("corrected_training_frames"),
+        "selected_anchor_indices": ([] if prepared.get("corrected_training_frames") is not None else task["selected_anchor_indices"]),
+        "semantic_teacher_indices": (list(range(len(prepared["corrected_training_frames"])))
+                                     if prepared.get("corrected_training_frames") is not None
+                                     else task["semantic_teacher_indices"]),
+        "source_semantic_teacher_indices": task["semantic_teacher_indices"],
         "semantic_teacher_frames": prepared["teacher_rows"],
         "anchor_loss_masks": prepared["anchor_mask_rows"],
         "anchor_mask_reduction": request["artifixer3d"]["anchor_mask_reduction"],
         "loss_overrides": request["artifixer3d"]["loss_overrides"],
+        "geometry_policy": geometry_policy,
+        "retained_geometry_initialization": prepared["retained_initialization"],
         "artifixer3d_checkpoint": _file_record(checkpoint),
         "artifixer3d_log_sha256": _sha256(log),
         "artifixer3d_plus_log_sha256": None,
@@ -1411,7 +1847,12 @@ def _dual_target_render_only_task_runtime(
 
     from data_processing import artifixer3d
 
+    from blueprint_pipeline.artifixer_training_recovery import (
+        retain_native_exports, retain_review_frames,
+    )
+
     task_id = str(task["task_id"])
+    recovery_root = output_root.parent / "retained_training_evidence" / task_id
     task_output = output_root / "tasks" / task_id
     log = task_output / "logs" / "artifixer3d_render_only.log"
     prepared = _prepare_dual_target_distillation_replay(
@@ -1430,6 +1871,14 @@ def _dual_target_render_only_task_runtime(
         checkpoint_rows[0]["checkpoint"],
         "artifixer3d_checkpoint_reuse_checkpoint_unbound",
     )
+    native_appearance = _export_checkpoint_native_appearance(
+        checkpoint=checkpoint,
+        task_output=task_output,
+        reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
+        geometry_policy=request["artifixer3d"]["geometry_policy"],
+        appearance_initialization=_validated_appearance_initialization(input_root, request),
+    )
+    retain_native_exports(recovery_root, native_appearance)
     with log.open("a", encoding="utf-8") as stream:
         with redirect_stdout(stream), redirect_stderr(stream):
             review_dir = artifixer3d.render_artifixer3d(
@@ -1448,9 +1897,7 @@ def _dual_target_render_only_task_runtime(
     )
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
-    native_appearance = _export_checkpoint_native_appearance(
-        checkpoint=checkpoint, task_output=task_output
-    )
+    retain_review_frames(recovery_root, review_rows)
     return {
         "task_id": task_id,
         "pipeline_mode": DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
@@ -1460,13 +1907,21 @@ def _dual_target_render_only_task_runtime(
         "training_executed": False,
         "direct_artifixer_executed": False,
         "artifixer3d_plus_executed": False,
-        "training_record_count": task["training_record_count"],
-        "selected_anchor_indices": task["selected_anchor_indices"],
-        "semantic_teacher_indices": task["semantic_teacher_indices"],
+        "training_record_count": (len(prepared["corrected_training_frames"])
+                                  if prepared.get("corrected_training_frames") is not None
+                                  else task["training_record_count"]),
+        "training_supervision": request["artifixer3d"].get("training_supervision", "masked_original_anchors"),
+        "corrected_training_frames": prepared.get("corrected_training_frames"),
+        "selected_anchor_indices": ([] if prepared.get("corrected_training_frames") is not None else task["selected_anchor_indices"]),
+        "semantic_teacher_indices": (list(range(len(prepared["corrected_training_frames"])))
+                                     if prepared.get("corrected_training_frames") is not None
+                                     else task["semantic_teacher_indices"]),
+        "source_semantic_teacher_indices": task["semantic_teacher_indices"],
         "semantic_teacher_frames": prepared["teacher_rows"],
         "anchor_loss_masks": prepared["anchor_mask_rows"],
         "anchor_mask_reduction": request["artifixer3d"]["anchor_mask_reduction"],
         "loss_overrides": request["artifixer3d"]["loss_overrides"],
+        "geometry_policy": request["artifixer3d"]["geometry_policy"],
         "artifixer3d_checkpoint": _file_record(checkpoint),
         "artifixer3d_log_sha256": _sha256(log),
         "artifixer3d_plus_log_sha256": None,
@@ -1946,6 +2401,9 @@ def main() -> int:
             rehearsal=args.rehearsal,
         )
     except Exception as exc:  # preserve the typed terminal runtime failure
+        from blueprint_pipeline.artifixer_training_recovery import retained_training_progress
+
+        retained_training = retained_training_progress(output)
         progress = _read_task_progress(output / TASK_PROGRESS_FILENAME)
         completed_tasks = list(progress["tasks"]) if progress is not None else []
         result = {
@@ -1954,7 +2412,9 @@ def main() -> int:
             "tasks": completed_tasks,
             "completed_task_count": len(completed_tasks),
             "completed_task_ids": [task["task_id"] for task in completed_tasks],
-            "partial_task_evidence_preserved": bool(completed_tasks),
+            "partial_task_evidence_preserved": bool(completed_tasks or retained_training),
+            "retained_training_progress": retained_training,
+            "optimization_complete_task_count": len(retained_training),
             "task_progress_digest": (progress["progress_digest"] if progress is not None else None),
             "model_loaded": False,
             "artifixer_direct_inference_executed": False,

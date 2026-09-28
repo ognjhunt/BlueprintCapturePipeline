@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -31,6 +32,8 @@ CAPTURE_AUTHORITY_PROFILES = {
     "camera_360_native",
     "monocular_video",
     "precomputed_external_reconstruction",
+    "provided_scene_mesh",
+    "provided_scene_splat",
     "public_processed_rgbd_pose_sequence",
 }
 
@@ -75,6 +78,8 @@ _REQUIRED_STREAMS = {
     "camera_360_native": {"retained_original", "camera_metadata"},
     "monocular_video": {"retained_video"},
     "precomputed_external_reconstruction": {"external_reconstruction"},
+    "provided_scene_mesh": {"scene_mesh"},
+    "provided_scene_splat": {"scene_splat"},
     "public_processed_rgbd_pose_sequence": {
         "processed_rgb_observations",
         "camera_poses",
@@ -311,6 +316,8 @@ def _recapture_plan(profile: str, missing: Sequence[str]) -> list[dict[str, Any]
         "coordinate_frame_semantics": "Export the site/world coordinate-frame, gravity, up-axis, handedness, and transform semantics.",
         "camera_metadata": "Export the 360 camera model, stitch/equirectangular layout, orientation, and firmware metadata.",
         "external_reconstruction": "Attach the external reconstruction files and their provider/runtime manifest.",
+        "scene_mesh": "Attach the original scene mesh with declared units and up axis; this is provided geometry, not capture observations.",
+        "scene_splat": "Attach the completed standard 3DGS PLY with declared units and up axis; it is not collision or physical evidence.",
     }
     return [
         {
@@ -341,6 +348,8 @@ def _claim_ceiling(profile: str, streams: Mapping[str, str], *, admitted: bool) 
         {"retained_video", "retained_original", "processed_rgb_observations"}
         & available
     )
+    if profile in {"provided_scene_mesh", "provided_scene_splat"}:
+        calibrated_pose = observed_video = False
     return {
         "capture_admitted": admitted,
         "task_candidate_discovery": admitted and observed_video,
@@ -388,6 +397,16 @@ def build_capture_admission(envelope_value: Mapping[str, Any]) -> dict[str, Any]
         )
     if profile == "precomputed_external_reconstruction":
         reduced_authority_reasons.append("derived_reconstruction_cannot_replace_source_capture_authority")
+    if profile == "provided_scene_mesh":
+        reduced_authority_reasons.extend([
+            "provided_mesh_is_not_observed_capture", "mesh_units_are_declared_not_measured",
+            "mesh_collision_and_physics_require_independent_native_validation",
+        ])
+    if profile == "provided_scene_splat":
+        reduced_authority_reasons.extend([
+            "provided_splat_is_not_observed_capture", "splat_units_are_declared_not_measured",
+            "splat_is_not_collision_or_physics_evidence",
+        ])
     if profile == "public_processed_rgbd_pose_sequence":
         reduced_authority_reasons.extend(
             [
@@ -438,11 +457,28 @@ def _write_json_once(path: Path, value: Mapping[str, Any]) -> None:
             raise CaptureIntakeError([f"immutable_artifact_conflict:{path.name}"])
 
 
+def _seal_content_object_permissions(object_path: Path) -> None:
+    """Install the immutable mode only when the shared inode needs it."""
+
+    if stat.S_IMODE(object_path.stat().st_mode) != 0o440:
+        try:
+            object_path.chmod(0o440)
+        except OSError as exc:
+            raise CaptureIntakeError(
+                ["content_addressed_object_permission_install_failed"]
+            ) from exc
+    if stat.S_IMODE(object_path.stat().st_mode) != 0o440:
+        raise CaptureIntakeError(
+            ["content_addressed_object_permission_readback_failed"]
+        )
+
+
 def _store_object(source: Path, object_path: Path, expected_digest: str) -> None:
     object_path.parent.mkdir(parents=True, exist_ok=True)
     if object_path.exists():
         if not object_path.is_file() or _file_digest(object_path) != expected_digest:
             raise CaptureIntakeError(["content_addressed_object_conflict"])
+        _seal_content_object_permissions(object_path)
         return
     descriptor, temporary_name = tempfile.mkstemp(prefix=".capture-object-", dir=object_path.parent)
     os.close(descriptor)
@@ -456,7 +492,7 @@ def _store_object(source: Path, object_path: Path, expected_digest: str) -> None
         except FileExistsError:
             if _file_digest(object_path) != expected_digest:
                 raise CaptureIntakeError(["content_addressed_object_conflict"])
-        object_path.chmod(0o440)
+        _seal_content_object_permissions(object_path)
     finally:
         temporary.unlink(missing_ok=True)
 

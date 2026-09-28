@@ -120,6 +120,16 @@ def test_installer_reconciles_a_ledger_stranded_at_a_previous_root() -> None:
     )
 
 
+def test_installer_creates_the_storage_pins_root_before_units_start() -> None:
+    text = _installer()
+    assert '"${STATE_DIR}/storage-pins"' in text
+    creation = text.index('"${STATE_DIR}/storage-pins"')
+    daemon_reload = text.index("systemctl daemon-reload")
+    assert creation < daemon_reload
+    before = text[max(0, creation - 500) : creation]
+    assert 'install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}"' in before
+
+
 def test_installer_refuses_to_continue_when_reconciliation_fails() -> None:
     """Installing over an unadopted ledger ships a host with no single-use gate."""
     text = _installer()
@@ -136,3 +146,24 @@ def test_ledger_reconciliation_runs_as_the_service_account() -> None:
     assert 'runuser -u "${SERVICE_USER}"' in block, (
         "adopted records must carry the ownership the consumption check requires"
     )
+
+
+INSTALLER = REPO_ROOT / "scripts" / "install_live_pipeline_control_plane.sh"
+
+
+def test_installer_bounds_the_journal_and_ages_var_tmp_from_the_repo() -> None:
+    """Both were hand-applied on the production host; a rebuild must not forget them.
+
+    The journal cap keeps archived logs from eating the root disk, and /var/tmp
+    had no age rule at all, so audit and debug scratch accumulated for weeks.
+    """
+    text = INSTALLER.read_text(encoding="utf-8")
+    journald = REPO_ROOT / "deploy/host/journald.conf.d/50-blueprint-cap.conf"
+    tmpfiles = REPO_ROOT / "deploy/host/tmpfiles.d/blueprint-var-tmp.conf"
+    assert journald.is_file() and tmpfiles.is_file()
+    assert "SystemMaxUse=1G" in journald.read_text() and "MaxRetentionSec=14day" in journald.read_text()
+    assert re.search(r"^d /var/tmp 1777 root root 14d$", tmpfiles.read_text(), re.MULTILINE)
+    assert "deploy/host/journald.conf.d/50-blueprint-cap.conf" in text
+    assert "/etc/systemd/journald.conf.d/50-blueprint-cap.conf" in text
+    assert "deploy/host/tmpfiles.d/blueprint-var-tmp.conf" in text
+    assert "/etc/tmpfiles.d/blueprint-var-tmp.conf" in text

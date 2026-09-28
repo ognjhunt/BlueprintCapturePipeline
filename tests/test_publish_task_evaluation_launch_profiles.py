@@ -38,6 +38,69 @@ _SPEC.loader.exec_module(publisher)
 COMMIT = "0" * 40
 
 
+def _window_template(*, commit: str) -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema_version": "task_evaluation_configured_controls_release_window_template.v1",
+        "status": "authorized_for_dynamic_release",
+        "team_namespace": "blueprint-adp",
+        "expected_production_commit": commit,
+        "allowed_mutations": [
+            "catalog_synchronization",
+            "profile_publication",
+            "standing_authorization",
+        ],
+        "provider_allowlist": ["vast"],
+        "maximum_hard_cap_usd": 4.0,
+        "valid_for_seconds": 3600,
+        "released_by": "Blueprint-owner",
+        "release_reference": "ADP-009D policy canary no-spend activation",
+        "provider_resource_allocation_allowed": False,
+        "paid_request_allowed": False,
+        "template_digest": "",
+    }
+    value["template_digest"] = canonical_digest(
+        value, digest_field="template_digest"
+    )
+    return value
+
+
+def test_policy_canary_profile_fetches_release_window_template_before_publication(
+    tmp_path: Path,
+) -> None:
+    template = _window_template(commit="1" * 40)
+    payload = (json.dumps(template, sort_keys=True) + "\n").encode()
+    profile = {
+        "source_commit": "2" * 40,
+        "task_evaluation_run": {"team_namespace": "blueprint-adp"},
+        "internal_policy_canary_execution_plan": {
+            "activation_automation": {
+                "release_window_template": {
+                    "uri": "s3://example/template.json",
+                    "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                    "size_bytes": len(payload),
+                }
+            }
+        },
+    }
+
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="launch_profile_policy_canary_release_window_template_invalid",
+    ):
+        publisher._validate_policy_canary_release_window_template_reference(
+            profile,
+            fetcher=lambda _uri, destination, _maximum: destination.write_bytes(
+                payload
+            ),
+        )
+
+    profile["source_commit"] = "1" * 40
+    publisher._validate_policy_canary_release_window_template_reference(
+        profile,
+        fetcher=lambda _uri, destination, _maximum: destination.write_bytes(payload),
+    )
+
+
 def _profile(tmp_path: Path, profile_id: str) -> dict:
     """A minimal profile that passes both fail-closed validators."""
     manifest = tmp_path / f"{profile_id}-source.json"
@@ -452,3 +515,381 @@ def test_production_input_parents_get_exact_traversal_without_recursive_handoff(
     assert stat.S_IMODE(unrelated.stat().st_mode) == 0o700
     assert stat.S_IMODE(token.stat().st_mode) == 0o600
     assert token.read_text(encoding="utf-8") == "secret"
+
+
+def test_lineage_parents_another_operator_owns_are_verified_not_rechowned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parent that already grants service traversal is never re-owned.
+
+    Shared-project lineage inputs (a prior run's provider zero, a baseline
+    authority) are published by whichever operator ran that lane, so their
+    parent directories are owned by that operator and cannot be chowned by
+    this service account.  When such a directory already carries the service
+    group and the group execute bit, the access requirement is met and the
+    privileged mutation is pure liability.
+    """
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    set_root = control_root / "task-evaluation-inputs" / "other-operator-staging"
+    lineage_dir = set_root / "prior_run"
+    lineage_dir.mkdir(parents=True)
+
+    fixture = _profile(tmp_path, "profile-foreign-lineage-parent")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    immutable.chmod(0o440)
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    # The requirement is already satisfied: right group, group traversal on.
+    for directory in (set_root, lineage_dir):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o710)
+
+    foreign = {set_root.resolve(), lineage_dir.resolve()}
+    real_chmod = Path.chmod
+
+    def refuse_foreign_chmod(path, mode, *args, **kwargs):
+        if path.resolve() in foreign:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(Path, "chmod", refuse_foreign_chmod)
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+        webapp_catalog_out=control_root / "state" / "catalog.json",
+        service_account=account,
+        service_group=group,
+    )
+
+    assert stat.S_IMODE(set_root.stat().st_mode) == 0o710
+    assert stat.S_IMODE(lineage_dir.stat().st_mode) == 0o710
+
+
+def test_unreachable_lineage_parent_this_service_cannot_fix_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verification must not become a way to publish an unreadable input."""
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    set_root = control_root / "task-evaluation-inputs" / "sealed-staging"
+    lineage_dir = set_root / "prior_run"
+    lineage_dir.mkdir(parents=True)
+
+    fixture = _profile(tmp_path, "profile-sealed-lineage-parent")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    immutable.chmod(0o440)
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    # Group traversal is absent, so the requirement is genuinely unmet.
+    for directory in (set_root, lineage_dir):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o700)
+
+    foreign = {set_root.resolve(), lineage_dir.resolve()}
+    real_chmod = Path.chmod
+
+    def refuse_foreign_chmod(path, mode, *args, **kwargs):
+        if path.resolve() in foreign:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(Path, "chmod", refuse_foreign_chmod)
+
+    with pytest.raises(publisher.TaskEvaluationLaunchError) as excinfo:
+        publisher.publish_profiles(
+            profile_paths=[fixture["path"]],
+            profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+            webapp_catalog_out=control_root / "state" / "catalog.json",
+            service_account=account,
+            service_group=group,
+        )
+
+    assert "immutable_input_parent_permission_install_failed" in str(excinfo.value)
+
+
+def test_matching_group_parent_adds_traversal_without_rechown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    lineage_dir = control_root / "task-evaluation-inputs" / "same-group" / "prior"
+    lineage_dir.mkdir(parents=True)
+    fixture = _profile(tmp_path, "profile-same-group-parent")
+    source = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(source.read_bytes())
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    for directory in (lineage_dir.parent, lineage_dir):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o700)
+
+    protected = {lineage_dir.parent.resolve(), lineage_dir.resolve()}
+    real_chown = os.chown
+
+    def refuse_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() in protected:
+            raise AssertionError("matching group must not be rechowned")
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(publisher.os, "chown", refuse_chown)
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+        webapp_catalog_out=control_root / "state" / "catalog.json",
+        service_account=account,
+        service_group=group,
+    )
+    assert stat.S_IMODE(lineage_dir.stat().st_mode) == 0o710
+
+
+def test_lineage_input_another_operator_owns_is_verified_not_rechowned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An input already sealed to the service group is never re-owned.
+
+    The file half of the shared-project lineage problem: a prior run's
+    provider zero is owned by the operator who ran that lane, so this
+    service cannot chown it -- but that lane already sealed it to exactly
+    the mode and group publication requires.  The service-account digest
+    readback below still proves the file is readable and unmodified, so
+    the chown adds nothing a failure here would have caught.
+    """
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    lineage_dir = control_root / "task-evaluation-inputs" / "other-operator" / "prior"
+    lineage_dir.mkdir(parents=True)
+
+    fixture = _profile(tmp_path, "profile-foreign-lineage-input")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    for directory in (lineage_dir, lineage_dir.parent):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o710)
+    # Already sealed to exactly what publication requires.
+    os.chown(immutable, -1, gid)
+    immutable.chmod(0o440)
+
+    frozen = immutable.resolve()
+    real_chown = os.chown
+
+    def refuse_frozen_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() == frozen:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(publisher.os, "chown", refuse_frozen_chown)
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+        webapp_catalog_out=control_root / "state" / "catalog.json",
+        service_account=account,
+        service_group=group,
+    )
+
+    assert stat.S_IMODE(immutable.stat().st_mode) == 0o440
+
+
+def test_unsealed_input_this_service_cannot_seal_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping a redundant seal must not skip a genuinely needed one."""
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    lineage_dir = control_root / "task-evaluation-inputs" / "unsealed" / "prior"
+    lineage_dir.mkdir(parents=True)
+
+    fixture = _profile(tmp_path, "profile-unsealed-lineage-input")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    for directory in (lineage_dir, lineage_dir.parent):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o710)
+    # Group cannot read it, so the seal is genuinely required.
+    immutable.chmod(0o400)
+
+    frozen = immutable.resolve()
+    real_chown = os.chown
+
+    def refuse_frozen_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() == frozen:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(publisher.os, "chown", refuse_frozen_chown)
+
+    with pytest.raises(publisher.TaskEvaluationLaunchError) as excinfo:
+        publisher.publish_profiles(
+            profile_paths=[fixture["path"]],
+            profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+            webapp_catalog_out=control_root / "state" / "catalog.json",
+            service_account=account,
+            service_group=group,
+        )
+
+    assert "immutable_input_permission_install_failed" in str(excinfo.value)
+
+
+def test_already_sealed_service_dir_and_profile_are_not_re_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Republish must survive a profile directory and profile it does not own.
+
+    A root-run publish leaves both the profile directory (0750) and the
+    published profile (0440) already at exactly the state publication
+    installs, but owned by root. A later service-account republish cannot
+    chown either one, and before this guard it failed with
+    ``launch_profile_directory_permission_install_failed`` or
+    ``launch_profile_permission_install_failed`` on state that was already
+    correct.
+    """
+
+    fixture = _profile(tmp_path, "profile-already-sealed")
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    profile_dir = tmp_path / "etc" / "task-evaluation-launch-profiles"
+    catalog = tmp_path / "state" / "catalog.json"
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=profile_dir,
+        webapp_catalog_out=catalog,
+        service_account=account,
+        service_group=group,
+    )
+
+    published = profile_dir / "profile-already-sealed.json"
+    assert stat.S_IMODE(profile_dir.stat().st_mode) == 0o750
+    assert stat.S_IMODE(published.stat().st_mode) == 0o440
+
+    frozen = {profile_dir.resolve(), published.resolve()}
+    real_chown = os.chown
+
+    def refuse_frozen_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() in frozen:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(publisher.os, "chown", refuse_frozen_chown)
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=profile_dir,
+        webapp_catalog_out=catalog,
+        service_account=account,
+        service_group=group,
+    )
+
+    assert stat.S_IMODE(profile_dir.stat().st_mode) == 0o750
+    assert stat.S_IMODE(published.stat().st_mode) == 0o440
+
+
+@pytest.mark.parametrize("mode", [0o400, 0o440])
+def test_service_owned_readonly_mount_inputs_need_no_permission_rewrite(tmp_path, monkeypatch, mode):
+    from types import SimpleNamespace
+
+    parent = tmp_path / "compiled"
+    parent.mkdir(mode=0o700)
+    source = parent / "receipt.json"
+    source.write_bytes(b"sealed receipt")
+    source.chmod(mode)
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = source.stat().st_gid
+    profile = {"immutable_inputs": [{"name": "evaluation_run_spec", "path": str(source),
+        "digest": "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()}]}
+    monkeypatch.setattr(publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(tmp_path),))
+    monkeypatch.setattr(publisher.os, "statvfs", lambda path: SimpleNamespace(f_flag=os.ST_RDONLY))
+
+    def refuse(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+    monkeypatch.setattr(publisher.os, "chown", refuse)
+    publisher._seal_immutable_input_permissions(profile, target_root=tmp_path / "profiles",
+        account=account, uid=os.geteuid(), gid=gid)
+    profile["immutable_inputs"][0]["digest"] = "sha256:" + "0" * 64
+    with pytest.raises(publisher.TaskEvaluationLaunchError):
+        publisher._seal_immutable_input_permissions(profile, target_root=tmp_path / "profiles",
+            account=account, uid=os.geteuid(), gid=gid)

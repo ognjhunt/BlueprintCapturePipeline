@@ -33,7 +33,8 @@ LimitNOFILE=65536
 MemoryMax=8G
 CPUQuota=200%
 Type=oneshot
-Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_PIPELINE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
 Environment=PRIVACY_PIPELINE_ENABLED=true
 Environment=PRIVACY_FAIL_CLOSED=true
@@ -42,7 +43,7 @@ Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
 Environment=BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
-ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
-ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-run-live-pipeline-control-plane ]; then exec .venv/bin/blueprint-run-live-pipeline-control-plane; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_control_plane; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_control_plane'
-ExecStartPost=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && exec /bin/bash deploy/systemd/blueprint-control-plane-postchecks.sh'
+ExecStartPre=/bin/bash -lc 'cd -P "$${BLUEPRINT_PIPELINE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_PIPELINE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.production_runtime_env_guard'
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_PIPELINE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_PIPELINE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.live_pipeline_control_plane'
+ExecStartPost=/bin/bash -lc 'cd -P "$${BLUEPRINT_PIPELINE_REPO}" && exec /bin/bash deploy/systemd/blueprint-control-plane-postchecks.sh'
 Nice=5

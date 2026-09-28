@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .provider_signed_object_binding import signed_output_object_binding_sha256
 from .secret_artifact_policy import (
     redacted_secret_file_status,
     secret_path_disclosure_policy,
@@ -23,6 +24,10 @@ from .safe_outbound_http import (
     SafeOutboundHttpError,
     presigned_transfer_policy,
     request as safe_http_request,
+)
+from .task_evaluation_configured_scene_object_store import (
+    presign_configured_scene_artifact,
+    publish_configured_scene_artifact,
 )
 
 
@@ -172,8 +177,9 @@ def stage_cached_runtime_dependency_object_store(
     key_prefix: str,
     expiration_seconds: int,
     generated_at: str | None = None,
+    artifact_kind: str = "runtime_dependency",
 ) -> dict[str, Any]:
-    """Publish one immutable runtime layer once and issue a run-local GET URL."""
+    """Publish one immutable dependency once and issue a run-local GET URL."""
 
     generated = generated_at or utc_now_iso()
     job = Path(job_dir).expanduser().resolve()
@@ -182,7 +188,12 @@ def stage_cached_runtime_dependency_object_store(
     digest = _sha256_file(dependency) if dependency.is_file() else ""
     expected = str(expected_sha256 or "").removeprefix("sha256:")
     safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
-    key = f"{safe_prefix}/runtime-dependencies/sha256/{expected}.zip"
+    if artifact_kind == "runtime_dependency":
+        key = f"{safe_prefix}/runtime-dependencies/sha256/{expected}.zip"
+    elif artifact_kind == "g1_checkpoint":
+        key = f"{safe_prefix}/g1-checkpoints/sha256/{expected}.bin"
+    else:
+        raise ValueError("cached_dependency_artifact_kind_invalid")
     blockers: list[str] = []
     if not dependency.is_file() or not expected or digest != expected:
         blockers.append("runtime_dependency_local_identity_mismatch")
@@ -304,6 +315,7 @@ def stage_cached_runtime_dependency_object_store(
         "status": "completed" if url and not blockers else "blocked",
         "dependency_path": str(dependency),
         "dependency_sha256": f"sha256:{digest}" if digest else None,
+        "artifact_kind": artifact_kind,
         "dependency_size_bytes": dependency.stat().st_size
         if dependency.is_file()
         else 0,
@@ -558,34 +570,6 @@ def _write_sensitive_file(path: Path, value: str, *, label: str) -> dict[str, An
     return _file_status(path, label=label, value_present=bool(value))
 
 
-def signed_output_object_binding_sha256(put_url: str, get_url: str) -> str:
-    """Hash the non-secret origin/path identity shared by one PUT/GET pair."""
-
-    identities: list[str] = []
-    for label, value in (("put", put_url), ("get", get_url)):
-        parsed = urlparse(str(value or ""))
-        if (
-            parsed.scheme.lower() != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.fragment
-        ):
-            raise ValueError(f"signed_output_{label}_url_invalid")
-        try:
-            port = parsed.port
-        except ValueError as exc:
-            raise ValueError(f"signed_output_{label}_url_invalid") from exc
-        identity = (
-            parsed.scheme.lower(),
-            parsed.hostname.lower(),
-            port or 443,
-            parsed.path,
-        )
-        identities.append(json.dumps(identity, separators=(",", ":")))
-    if identities[0] != identities[1]:
-        raise ValueError("signed_output_put_get_object_identity_mismatch")
-    return hashlib.sha256(identities[0].encode("utf-8")).hexdigest()
 
 
 def _safe_transfer_exception(exc: Exception) -> dict[str, Any]:
@@ -662,15 +646,80 @@ def cleanup_staged_wam_provider_objects(
         else {}
     )
     blockers: list[str] = []
-    if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("status") != "completed":
+    manifest_status = _string(manifest.get("status"))
+    if (
+        manifest.get("schema_version") != SCHEMA_VERSION
+        or manifest_status not in {"completed", "blocked"}
+    ):
         blockers.append("completed_staging_manifest_required")
-    keys = [str(manifest.get(name) or "") for name in ("bundle_key", "output_key")]
+    bundle_key = str(manifest.get("bundle_key") or "")
+    output_key = str(manifest.get("output_key") or "")
+    keys = [bundle_key, output_key]
+    bundle_retained = manifest.get("bundle_object_retained_for_reuse") is True
+    cleanup_keys = [output_key] if bundle_retained else keys
+    witness = _mapping(manifest.get("paired_witness"))
+    if witness.get("status") == "ready":
+        from .native_task_arena_paired_witness_staging import SUFFIX
+        if witness.get("witness_key") != output_key + SUFFIX:
+            blockers.append("paired_witness_cleanup_key_mismatch")
+        else:
+            cleanup_keys = [*cleanup_keys, witness["witness_key"]]
     if not all(keys) or len(set(keys)) != 2:
         blockers.append("exact_staged_object_keys_required")
     object_store = _mapping(manifest.get("object_store"))
     expected_prefix = _string(object_store.get("key_prefix")).strip("/")
-    if not expected_prefix or any(not key.startswith(expected_prefix + "/") for key in keys):
+    if not expected_prefix or any(
+        not key.startswith(expected_prefix + "/") for key in cleanup_keys
+    ):
         blockers.append("staged_object_key_prefix_mismatch")
+    remote_reference = _mapping(manifest.get("provider_bundle_remote_reference"))
+    if bundle_retained and (
+        remote_reference.get("schema_version")
+        != "task_evaluation_scene_artifact_reference.v1"
+        or remote_reference.get("status") != "remote_verified"
+        or remote_reference.get("artifact_kind") != "provider-bundle"
+        or remote_reference.get("remote_identity_verified") is not True
+        or remote_reference.get("full_byte_service_account_readback_passed")
+        is not True
+        or urlparse(str(remote_reference.get("uri") or "")).path.lstrip("/")
+        != bundle_key
+        or str(remote_reference.get("digest") or "").removeprefix("sha256:")
+        != _string(manifest.get("bundle_sha256"))
+    ):
+        blockers.append("retained_provider_bundle_reference_invalid")
+    if manifest_status == "blocked":
+        binding_path = resolved_job_dir / STAGING_BINDING_FILENAME
+        try:
+            binding = (
+                _mapping(json.loads(binding_path.read_text(encoding="utf-8")))
+                if not binding_path.is_symlink() and binding_path.is_file()
+                else {}
+            )
+        except (OSError, json.JSONDecodeError):
+            binding = {}
+        bundle_sha256 = _string(manifest.get("bundle_sha256"))
+        expected_binding_sha256 = (
+            _staging_binding_sha256(
+                bundle_sha256=bundle_sha256,
+                bundle_key=keys[0],
+                output_key=keys[1],
+            )
+            if len(keys) == 2 and all(keys) and bundle_sha256
+            else ""
+        )
+        if (
+            binding.get("schema_version") != STAGING_BINDING_SCHEMA_VERSION
+            or binding.get("job_dir") != str(resolved_job_dir)
+            or binding.get("bundle_sha256") != bundle_sha256
+            or binding.get("bundle_key") != keys[0]
+            or binding.get("output_key") != keys[1]
+            or binding.get("staging_binding_sha256")
+            != expected_binding_sha256
+            or manifest.get("staging_binding_sha256")
+            != expected_binding_sha256
+            or binding.get("raw_secret_values_recorded") is not False
+        ):
+            blockers.append("blocked_staging_binding_invalid")
 
     access_key, _ = _read_first_file(
         explicit_path=access_key_id_file,
@@ -736,7 +785,7 @@ def cleanup_staged_wam_provider_objects(
                 if endpoint:
                     kwargs["endpoint_url"] = endpoint
                 client = boto3.client("s3", **kwargs)
-                for key in keys:
+                for key in cleanup_keys:
                     client.delete_object(Bucket=bucket_value, Key=key)
                     absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
                     cleanup_rows.append(
@@ -765,11 +814,12 @@ def cleanup_staged_wam_provider_objects(
             "provider_bundle_url.txt",
             "provider_output_put_url.txt",
             "provider_output_get_url.txt",
+            "paired_witness_put_url.txt", "paired_witness_get_url.txt",
+            "paired_witness_authority.json",
         )
     ]
-    if not blockers:
-        for path in signed_url_files:
-            path.unlink(missing_ok=True)
+    for path in signed_url_files:
+        path.unlink(missing_ok=True)
     result = {
         "schema_version": OBJECT_CLEANUP_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -777,11 +827,19 @@ def cleanup_staged_wam_provider_objects(
         "staging_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()
         if manifest_path.is_file()
         else None,
-        "exact_object_count": len(keys) if all(keys) else 0,
+        "exact_object_count": len(cleanup_keys) if all(cleanup_keys) else 0,
         "objects": cleanup_rows,
         "cleanup_attempts": cleanup_attempts,
         "all_objects_absent": bool(cleanup_rows)
         and all(row["absence"].get("absence_confirmed") is True for row in cleanup_rows),
+        "all_ephemeral_objects_absent": bool(cleanup_rows)
+        and all(row["absence"].get("absence_confirmed") is True for row in cleanup_rows),
+        "content_addressed_bundle_retained_for_reuse": bundle_retained,
+        "retained_bundle_key_sha256": (
+            hashlib.sha256(bundle_key.encode("utf-8")).hexdigest()
+            if bundle_retained and bundle_key
+            else None
+        ),
         "signed_url_files_removed": not any(path.exists() for path in signed_url_files),
         "blockers": sorted(set(blockers)),
         "raw_secret_values_recorded": False,
@@ -939,6 +997,8 @@ def stage_wam_provider_bundle_object_store(
     output_content_type: str = "application/zip",
     expiration_seconds: int = 12 * 60 * 60,
     generated_at: str | None = None,
+    retain_content_addressed_bundle: bool = False,
+    paired_witness_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     expiry_metadata = _presigned_url_expiry_metadata(generated, expiration_seconds)
@@ -1064,7 +1124,15 @@ def stage_wam_provider_bundle_object_store(
         "raw_secret_values_recorded": False,
     }
     output_url_object_binding_sha256 = ""
+    paired_witness = {"status": "not_required"}
+    if paired_witness_binding is not None:
+        from .native_task_arena_paired_witness_staging import validate_binding
+        validate_binding(paired_witness_binding)
+        if paired_witness_binding["provider_bundle_sha256"].removeprefix("sha256:") != bundle_sha256:
+            blockers.append("paired_witness_provider_bundle_digest_mismatch")
     binding_initialized = False
+    provider_bundle_remote_reference: dict[str, Any] = {}
+    durable_bundle_url = ""
     if not blockers:
         assert boto3 is not None
         assert Config is not None
@@ -1101,7 +1169,77 @@ def stage_wam_provider_bundle_object_store(
             client_kwargs["endpoint_url"] = endpoint
         try:
             client = boto3.client("s3", **client_kwargs)
-            client.upload_file(str(resolved_bundle), bucket_value, bundle_key)
+            if retain_content_addressed_bundle:
+                # A scene-configuration provider bundle is immutable and often
+                # byte-identical across retries. Publish it once under the
+                # shared CAS namespace, prove the complete remote bytes, and
+                # sign that object instead of uploading a run-local duplicate.
+                # The output remains run-unique and is still deleted below.
+                provider_bundle_remote_reference = publish_configured_scene_artifact(
+                    path=resolved_bundle,
+                    artifact_kind="provider-bundle",
+                )
+                durable_bundle_url = presign_configured_scene_artifact(
+                    reference=provider_bundle_remote_reference,
+                    expiration_seconds=int(expiration_seconds),
+                )
+                parsed_reference = urlparse(
+                    str(provider_bundle_remote_reference.get("uri") or "")
+                )
+                reference_digest = str(
+                    provider_bundle_remote_reference.get("digest") or ""
+                ).removeprefix("sha256:")
+                if (
+                    parsed_reference.scheme != "s3"
+                    or not parsed_reference.netloc
+                    or not parsed_reference.path.lstrip("/")
+                    or reference_digest != bundle_sha256
+                    or provider_bundle_remote_reference.get("size_bytes")
+                    != resolved_bundle.stat().st_size
+                    or provider_bundle_remote_reference.get(
+                        "remote_identity_verified"
+                    )
+                    is not True
+                    or provider_bundle_remote_reference.get(
+                        "full_byte_service_account_readback_passed"
+                    )
+                    is not True
+                ):
+                    blockers.append("durable_provider_bundle_reference_invalid")
+                else:
+                    bundle_key = parsed_reference.path.lstrip("/")
+                    staging_binding_sha256 = _staging_binding_sha256(
+                        bundle_sha256=bundle_sha256,
+                        bundle_key=bundle_key,
+                        output_key=output_key,
+                    )
+                    binding["bundle_key"] = bundle_key
+                    binding["staging_binding_sha256"] = staging_binding_sha256
+                    binding["bundle_object_retained_for_reuse"] = True
+                    # The binding was sealed before the network mutation so a
+                    # concurrent writer cannot race this job directory. Replace
+                    # only our own just-created bytes with the final CAS key and
+                    # prove the replacement before any signed URL is exposed.
+                    binding_bytes = (
+                        json.dumps(binding, indent=2, sort_keys=True) + "\n"
+                    ).encode("utf-8")
+                    temporary_binding = binding_path.with_suffix(".json.next")
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    descriptor = os.open(temporary_binding, flags, 0o600)
+                    try:
+                        with os.fdopen(descriptor, "wb") as handle:
+                            descriptor = -1
+                            handle.write(binding_bytes)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                    finally:
+                        if descriptor >= 0:
+                            os.close(descriptor)
+                    os.replace(temporary_binding, binding_path)
+                    if binding_path.read_bytes() != binding_bytes:
+                        blockers.append("durable_provider_bundle_binding_readback_failed")
+            else:
+                client.upload_file(str(resolved_bundle), bucket_value, bundle_key)
             # The paid worker output key is run-unique and must be absent before
             # its GET URL is handed to a poller.  This prevents a stale object
             # from being consumed as a fresh episode result.
@@ -1124,7 +1262,7 @@ def stage_wam_provider_bundle_object_store(
                 content_type=output_content_type,
             )
             blockers.extend(signed_output_round_trip.get("blockers") or [])
-            bundle_url = client.generate_presigned_url(
+            bundle_url = durable_bundle_url or client.generate_presigned_url(
                 "get_object",
                 # Paid-worker egress proxies have returned stale bytes for a
                 # previously fetched signed object even after the object key
@@ -1160,6 +1298,11 @@ def stage_wam_provider_bundle_object_store(
                     output_put_url,
                     output_get_url,
                 )
+            if not blockers and paired_witness_binding is not None:
+                from .native_task_arena_paired_witness_staging import stage_paired_witness_slot
+                paired_witness = stage_paired_witness_slot(client=client, bucket=bucket_value,
+                    output_key=output_key, binding=paired_witness_binding, job_dir=resolved_job_dir,
+                    generated_at=generated, expiration_seconds=int(expiration_seconds))
             upload_detail = {
                 "status": "completed" if not blockers else "blocked",
                 "bucket_configured": True,
@@ -1168,6 +1311,19 @@ def stage_wam_provider_bundle_object_store(
                 "bundle_key": bundle_key,
                 "output_key": output_key,
                 "bundle_size_bytes": resolved_bundle.stat().st_size,
+                "bundle_cache_hit": provider_bundle_remote_reference.get(
+                    "cache_hit"
+                ),
+                "bundle_upload_performed": provider_bundle_remote_reference.get(
+                    "upload_performed"
+                ),
+                "bundle_remote_identity_verified": (
+                    provider_bundle_remote_reference.get(
+                        "remote_identity_verified"
+                    )
+                    if retain_content_addressed_bundle
+                    else None
+                ),
                 "raw_secret_values_recorded": False,
             }
         except Exception as exc:
@@ -1209,7 +1365,19 @@ def stage_wam_provider_bundle_object_store(
         "bundle_size_bytes": resolved_bundle.stat().st_size if resolved_bundle.is_file() else 0,
         "bundle_sha256": bundle_sha256 or None,
         "bundle_key_content_addressed": bool(
-            binding_initialized and bundle_sha256 and bundle_key.endswith(f"/{bundle_sha256}.zip")
+            binding_initialized
+            and bundle_sha256
+            and (
+                bundle_key.endswith(f"/{bundle_sha256}.zip")
+                or f"/sha256/{bundle_sha256}/" in bundle_key
+            )
+        ),
+        "bundle_object_retained_for_reuse": bool(
+            retain_content_addressed_bundle
+            and provider_bundle_remote_reference.get("status") == "remote_verified"
+        ),
+        "provider_bundle_remote_reference": (
+            provider_bundle_remote_reference or None
         ),
         "staging_binding_sha256": staging_binding_sha256,
         "staging_binding_file": _file_status(
@@ -1231,6 +1399,7 @@ def stage_wam_provider_bundle_object_store(
         "presigned_url_expiry": expiry_metadata,
         "upload_detail": upload_detail,
         "signed_output_round_trip": signed_output_round_trip,
+        "paired_witness": paired_witness,
         "fresh_output_key_absence": output_key_absence,
         "output_key_run_unique": bool(binding_initialized and output_key),
         "output_url_object_binding_sha256": (output_url_object_binding_sha256 or None),

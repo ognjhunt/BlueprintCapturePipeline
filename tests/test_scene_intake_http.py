@@ -1,0 +1,150 @@
+"""The owner-intent endpoint requires exact-byte HMAC and an admitted issuer."""
+
+import hmac
+import json
+import time
+from datetime import datetime, timezone
+
+from fastapi.testclient import TestClient
+
+from blueprint_pipeline import live_pipeline_intake_service as service
+from blueprint_pipeline import task_evaluation_scene_intake as intake
+from tests.test_task_evaluation_scene_intake import request
+
+
+def test_signed_intake_and_nonce_replay(tmp_path, monkeypatch):
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, "test-token")
+    monkeypatch.delenv(service.INTAKE_CLIENT_SECRETS_ENV, raising=False)
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "admission"))
+    monkeypatch.setenv(intake.ROOT_ENV, str(tmp_path / "queue"))
+    monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
+    service._INTAKE_NONCE_CACHE.clear()
+    monkeypatch.setattr(service, "deployment_identity_payload", lambda: {})
+    value = request()
+    now = time.time()
+    value["execution"]["expires_at_epoch"] = now + 1000
+    value["consent"]["accepted_at_epoch"] = now - 1
+    body = json.dumps(value)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    nonce = "scene-intake-nonce-1"
+    signature = hmac.new(b"test-token", f"{timestamp}.webapp.{nonce}.{body}".encode(), "sha256").hexdigest()
+    headers = {"Content-Type": "application/json", "x-blueprint-pipeline-client-id": "webapp",
+        "x-blueprint-pipeline-timestamp": timestamp, "x-blueprint-pipeline-nonce": nonce,
+        "x-blueprint-pipeline-signature": "sha256=" + signature}
+    client = TestClient(service.create_app())
+    endpoint = "/api/live-pipeline/task-evaluation-scene-intents"
+    assert client.post(endpoint, content=body).status_code == 401
+    response = client.post(endpoint, content=body, headers=headers)
+    assert response.status_code == 202, response.text
+    assert response.json()["provider_mutation_performed_inside_http_request"] is False
+    assert client.post(endpoint, content=body, headers=headers).status_code == 401
+    assert len(list((tmp_path / "queue").glob("scene-*"))) == 1
+    status_nonce = "scene-intake-nonce-status"
+    status_signature = hmac.new(b"test-token", f"{timestamp}.webapp.{status_nonce}.".encode(), "sha256").hexdigest()
+    status_headers = {**headers, "x-blueprint-pipeline-nonce": status_nonce,
+                      "x-blueprint-pipeline-signature": "sha256=" + status_signature}
+    inspected = client.get(endpoint + "/" + response.json()["intent_id"], headers=status_headers)
+    assert inspected.status_code == 200, inspected.text
+    assert inspected.json()["request_digest"] == response.json()["request_digest"]
+    assert inspected.json()["owner"] == value["owner"]
+    assert inspected.json()["status"] == "accepted"
+
+
+def test_scene_intake_accepts_and_queues_for_capacity(tmp_path, monkeypatch):
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, "test-token")
+    monkeypatch.delenv(service.INTAKE_CLIENT_SECRETS_ENV, raising=False)
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "admission"))
+    monkeypatch.setenv(intake.ROOT_ENV, str(tmp_path / "queue"))
+    monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
+    service._INTAKE_NONCE_CACHE.clear()
+    monkeypatch.setattr(service, "deployment_identity_payload", lambda: {"disk_headroom": {
+        "status": "low", "refused_roles": ["launch_preparation"],
+        "targets": [{"role": "launch_preparation", "available_bytes": 4 * 1024**3}],
+        "footprints": {"launch_preparation": {"bytes": 6 * 1024**3}}}})
+    summary = tmp_path / "capacity-summary.json"
+    summary.write_text(json.dumps({"observed_at_epoch": time.time(),
+        "reclaim_outlook": {"volume_growth": "planned", "reclaimable_bytes": 0}}))
+    monkeypatch.setenv("BLUEPRINT_CAPACITY_SUMMARY_PATH", str(summary))
+    value = request()
+    now = time.time()
+    value["execution"]["expires_at_epoch"] = now + 1000
+    value["consent"]["accepted_at_epoch"] = now - 1
+    body = json.dumps(value)
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    def headers(nonce):
+        signature = hmac.new(b"test-token", f"{timestamp}.webapp.{nonce}.{body}".encode(), "sha256").hexdigest()
+        return {"Content-Type": "application/json", "x-blueprint-pipeline-client-id": "webapp",
+            "x-blueprint-pipeline-timestamp": timestamp, "x-blueprint-pipeline-nonce": nonce,
+            "x-blueprint-pipeline-signature": "sha256=" + signature}
+
+    endpoint = "/api/live-pipeline/task-evaluation-scene-intents"
+    client = TestClient(service.create_app())
+    assert client.post(endpoint, content=body).status_code == 401
+    response = client.post(endpoint, content=body, headers=headers("queued-1"))
+    assert response.status_code == 202, response.text
+    assert response.json()["capacity"]["state"] == "queued_for_capacity"
+    assert response.json()["capacity"]["refused_roles"] == ["launch_preparation"]
+    assert response.json()["capacity"]["eta_basis"] == "volume_growth"
+    assert response.json()["provider_mutation_performed_inside_http_request"] is False
+    assert response.json()["receipt_digest"] == intake.canonical_digest(
+        response.json(), digest_field="receipt_digest")
+    assert len(list((tmp_path / "queue").glob("scene-*"))) == 1
+    retry = client.post(endpoint, content=body, headers=headers("queued-2"))
+    assert retry.status_code == 202 and retry.json()["intent_id"] == response.json()["intent_id"]
+
+
+def test_scene_intake_reports_available_capacity(tmp_path, monkeypatch):
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, "test-token")
+    monkeypatch.delenv(service.INTAKE_CLIENT_SECRETS_ENV, raising=False)
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "admission"))
+    monkeypatch.setenv(intake.ROOT_ENV, str(tmp_path / "queue"))
+    monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
+    service._INTAKE_NONCE_CACHE.clear()
+    monkeypatch.setattr(service, "deployment_identity_payload", lambda: {"disk_headroom": {
+        "status": "ok", "refused_roles": []}})
+    value = request()
+    now = time.time()
+    value["execution"]["expires_at_epoch"] = now + 1000
+    value["consent"]["accepted_at_epoch"] = now - 1
+    body = json.dumps(value)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    signature = hmac.new(b"test-token", f"{timestamp}.webapp.available-1.{body}".encode(), "sha256").hexdigest()
+    headers = {"Content-Type": "application/json", "x-blueprint-pipeline-client-id": "webapp",
+        "x-blueprint-pipeline-timestamp": timestamp, "x-blueprint-pipeline-nonce": "available-1",
+        "x-blueprint-pipeline-signature": "sha256=" + signature}
+    response = TestClient(service.create_app()).post(
+        "/api/live-pipeline/task-evaluation-scene-intents", content=body, headers=headers)
+    assert response.status_code == 202 and response.json()["capacity"] == {"state": "available"}
+    assert response.json()["receipt_digest"] == intake.canonical_digest(
+        response.json(), digest_field="receipt_digest")
+
+
+def test_registered_public_source_catalog_is_signed_and_does_not_install_source(tmp_path, monkeypatch):
+    from tests.test_task_evaluation_public_scene_bootstrap import source_fixture
+    from blueprint_pipeline.task_evaluation_public_scene_catalog import CATALOG_ENV
+    _values, choice, _intent, config = source_fixture(tmp_path)
+    monkeypatch.setenv(CATALOG_ENV, config['public_source_catalog_path'])
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, 'test-token')
+    monkeypatch.delenv(service.INTAKE_CLIENT_SECRETS_ENV, raising=False)
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / 'nonces'))
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / 'admission'))
+    monkeypatch.setenv(intake.CLIENTS_ENV, 'webapp')
+    monkeypatch.setattr(service, 'deployment_identity_payload', lambda: {})
+    service._INTAKE_NONCE_CACHE.clear()
+    client = TestClient(service.create_app())
+    endpoint = '/api/live-pipeline/task-evaluation-public-scene-sources'
+    assert client.get(endpoint).status_code == 401
+    timestamp = datetime.now(timezone.utc).isoformat()
+    nonce = 'public-source-catalog-nonce'
+    signature = hmac.new(b'test-token', f'{timestamp}.webapp.{nonce}.'.encode(), 'sha256').hexdigest()
+    headers = {'x-blueprint-pipeline-client-id': 'webapp', 'x-blueprint-pipeline-timestamp': timestamp,
+               'x-blueprint-pipeline-nonce': nonce, 'x-blueprint-pipeline-signature': 'sha256=' + signature}
+    response = client.get(endpoint, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()['sources'][0]['binding_id'] == choice['binding_id']
+    assert response.json()['provider_mutation_performed'] is False
+    assert not (tmp_path / 'controller').exists()

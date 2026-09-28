@@ -33,13 +33,18 @@ RUNTIME_RESULT_FILENAMES = (
     "adp009d_ovrtx_live_camera_result.json",
     "adp009d_aura_native_live_camera_result.json",
     "adp009d_retained_scene_gpu_render_result.v1.json",
+    "adp009d_source_calibration_gpu_render_result.v1.json",
     "adp009b_gaussian_excision_result.json",
     "native_task_arena_construction_result.v1.json",
     "native_task_arena_control_result.v1.json",
     "native_task_arena_policy_result.v1.json",
     "native_task_arena_policy_diagnostic_result.v1.json",
+    "native_task_arena_policy_canary_session_result.v1.json",
+    "native_g1_provider_campaign_result.v1.json",
     "native_task_arena_runtime_preflight.v1.json",
+    "task_evaluation_rigid_destination_native_observation.v1.json",
     "paired_target_native_import_runtime_result.v1.json",
+    "task_evaluation_scene_configuration_provider_result.v1.json",
 )
 ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 
@@ -254,6 +259,7 @@ def inspect_provider_runtime_output_zip(
         }
     names: list[str] = []
     runtime_result: dict[str, Any] | None = None
+    runtime_result_member: str | None = None
     entrypoint_diagnostic: dict[str, Any] | None = None
     json_parse_errors: list[str] = []
     mp4s: list[str] = []
@@ -262,12 +268,30 @@ def inspect_provider_runtime_output_zip(
         with zipfile.ZipFile(resolved) as archive:
             names = sorted(archive.namelist())
             mp4s = [name for name in names if name.lower().endswith(".mp4")]
-            for candidate in names:
-                if candidate.endswith(RUNTIME_RESULT_FILENAMES):
+            result_candidates = [
+                candidate
+                for candidate in names
+                if Path(candidate).name in RUNTIME_RESULT_FILENAMES
+            ]
+            # A failed multi-cell canary contains both the authoritative
+            # top-level terminal result and completed child-cell results.  A
+            # lexical scan chose ``cell_runs/00/...`` first and misreported a
+            # blocked run as one completed cell.  Prefer the shallowest exact
+            # result; nested results remain evidence, never the run verdict.
+            result_candidates.sort(key=lambda candidate: (candidate.count("/"), candidate))
+            for candidate in result_candidates:
+                if Path(candidate).name in RUNTIME_RESULT_FILENAMES:
                     try:
                         parsed = json.loads(archive.read(candidate).decode("utf-8"))
                         if isinstance(parsed, Mapping):
+                            if Path(candidate).name == "adp009d_source_calibration_gpu_render_result.v1.json" and (
+                                parsed.get("schema_version") != "adp009d_source_calibration_gpu_render_result.v1"
+                                or parsed.get("render_scope") != "source_calibration"
+                            ):
+                                json_parse_errors.append(f"{candidate}:SourceCalibrationResultIdentityMismatch")
+                                break
                             runtime_result = dict(parsed)
+                            runtime_result_member = candidate
                         break
                     except Exception as exc:
                         json_parse_errors.append(
@@ -321,6 +345,7 @@ def inspect_provider_runtime_output_zip(
         "zip_member_count": len(names),
         "zip_members_preview": names[:50],
         "runtime_result_present": runtime_result is not None,
+        "runtime_result_member": runtime_result_member,
         "runtime_result": runtime_result_summary,
         "runtime_result_status": (
             runtime_result_summary.get("status") if runtime_result_summary else None

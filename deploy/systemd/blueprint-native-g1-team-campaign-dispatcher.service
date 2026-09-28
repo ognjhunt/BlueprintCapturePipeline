@@ -1,0 +1,71 @@
+[Unit]
+Description=Dispatch one authorized Blueprint G1 team development campaign
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target blueprint-gpu-spend-guard.service
+After=network-online.target blueprint-gpu-spend-guard.service
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+# A paid child may arm an independent hard-TTL watchdog. The caller must not
+# kill that watchdog when this oneshot ends or is interrupted.
+KillMode=process
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
+TimeoutStartSec=5h
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH=/var/lib/blueprint/task-evaluation-inputs/g1-team-campaign-registry.json
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-campaigns
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_WORK_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-campaign-work
+Environment=BLUEPRINT_NATIVE_G1_TEAM_POLICY_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-policy-runs
+Environment=BLUEPRINT_NATIVE_G1_TEAM_POLICY_WORK_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-policy-work
+# Operator-owned roots. An absent approval/cache configuration remains pending;
+# signed team intake cannot supply these paths or endpoint credential bytes.
+Environment=BLUEPRINT_NATIVE_G1_TEAM_POLICY_APPROVAL_ROOT=/var/lib/blueprint/task-evaluation-inputs/g1-team-policy-approvals
+Environment=BLUEPRINT_NATIVE_G1_TEAM_POLICY_CREDENTIAL_REGISTRY=/etc/blueprint/provider-secrets/g1-team-policy/registry.json
+Environment=BLUEPRINT_NATIVE_G1_TEAM_POLICY_SONIC_ASSET_DIR=/var/lib/blueprint/task-evaluation-inputs/g1-sonic-assets
+Environment=BLUEPRINT_NATIVE_G1_TEAM_POLICY_TRUSTED_CLIENT=blueprint-webapp
+# Owner-approved development requests enter through authenticated, signed intake.
+# The dispatcher still builds a no-spend bundle and runs allocator dry admission
+# before its one-use paid start; the allocator owns all three guarded GPU slots,
+# budget, watchdog, provider teardown, and exact-release verification.
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE=true
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_MACHINE_AVOIDLIST=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/vast_machine_avoidlist.json
+# The sealed runtime archive is served from the US-East artifact bucket. Prefer
+# a nearby GPU when otherwise comparable offers pass Isaac and budget filters.
+Environment=BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX=_us$
+Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
+Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
+Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
+Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock
+Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.native_g1_team_campaign_dispatcher --queue-root "$${BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT}" --registry-path "$${BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH}" --work-root "$${BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_WORK_ROOT}" --implementation-commit "$$(git rev-parse HEAD)" --selected-queue-root "$${BLUEPRINT_NATIVE_G1_TEAM_POLICY_QUEUE_ROOT}" --selected-work-root "$${BLUEPRINT_NATIVE_G1_TEAM_POLICY_WORK_ROOT}" --selected-approval-root "$${BLUEPRINT_NATIVE_G1_TEAM_POLICY_APPROVAL_ROOT}" --selected-credential-registry-path "$${BLUEPRINT_NATIVE_G1_TEAM_POLICY_CREDENTIAL_REGISTRY}" --selected-sonic-asset-dir "$${BLUEPRINT_NATIVE_G1_TEAM_POLICY_SONIC_ASSET_DIR}" --selected-trusted-client "$${BLUEPRINT_NATIVE_G1_TEAM_POLICY_TRUSTED_CLIENT}") && if [ -f "$${BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_MACHINE_AVOIDLIST:-}" ]; then ARGS+=(--machine-avoidlist-path "$${BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_MACHINE_AVOIDLIST}"); fi && if [ "$${BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE:-false}" = true ]; then ARGS+=(--execute); fi && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'

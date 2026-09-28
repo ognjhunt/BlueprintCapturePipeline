@@ -40,11 +40,6 @@ CANDIDATE_VIEW_SHAPES: dict[str, tuple[int, int]] = {
 DROID_WRIST_VIEW = "observation/wrist_image_left"
 DROID_EXTERIOR_VIEW_1 = "observation/exterior_image_1_left"
 DROID_EXTERIOR_VIEW_2 = "observation/exterior_image_2_left"
-GROOT_HISTORY_STEPS = 15
-GROOT_HISTORICAL_VIEW_KEYS = {
-    DROID_EXTERIOR_VIEW_1: "observation_history/exterior_image_1_left_t_minus_15",
-    DROID_WRIST_VIEW: "observation_history/wrist_image_left_t_minus_15",
-}
 
 # The ADP-009D scene deliberately drops the second exterior camera: the runtime
 # sets ``embodiment.camera_config.external_camera_2 = None`` because it is
@@ -114,7 +109,7 @@ def build_droid_observation(
     gripper_position: float,
     prompt: str,
     eef_9d: Sequence[float] | None = None,
-    historical_camera_rgb: Mapping[str, Any] | None = None,
+    eef_9d_frame_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble one candidate's DROID observation from Isaac camera frames.
 
@@ -158,13 +153,6 @@ def build_droid_observation(
         eef = np.asarray(eef_9d, dtype=float) if eef_9d is not None else None
         if eef is None or eef.shape != (9,) or not np.isfinite(eef).all():
             errors.append("droid_observation_eef_9d_invalid")
-        for view, history_key in GROOT_HISTORICAL_VIEW_KEYS.items():
-            if historical_camera_rgb is None or view not in historical_camera_rgb:
-                errors.append(f"droid_observation_history_view_unavailable:{view}")
-                continue
-            views[history_key] = resize_with_pad(
-                historical_camera_rgb[view], height=height, width=width
-            )
     if errors:
         raise DroidObservationError(errors)
 
@@ -173,8 +161,31 @@ def build_droid_observation(
     observation["observation/gripper_position"] = gripper
     if eef is not None:
         observation["observation/eef_9d"] = eef
+        if isinstance(eef_9d_frame_provenance, Mapping):
+            observation["observation/eef_9d_frame_provenance"] = dict(
+                eef_9d_frame_provenance
+            )
     observation["prompt"] = str(prompt)
     return observation
+
+
+def build_droid_observation_from_inputs(
+    candidate_id: str,
+    camera_rgb: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    prompt: str,
+) -> dict[str, Any]:
+    """Bind one episode-environment read to the candidate observation contract."""
+
+    return build_droid_observation(
+        candidate_id=candidate_id,
+        camera_rgb=camera_rgb,
+        joint_position=inputs["joint_position"],
+        gripper_position=inputs["gripper_position"],
+        prompt=prompt,
+        eef_9d=inputs.get("eef_9d"),
+        eef_9d_frame_provenance=inputs.get("eef_9d_frame_provenance"),
+    )
 
 
 def describe_observation_conversion(
@@ -203,6 +214,9 @@ def describe_observation_conversion(
         "candidate_id": candidate_id,
         "source_resolution_hw": [source_height, source_width],
         "target_resolution_hw": [height, width],
+        "transport_state_dtype": "float32" if candidate_id == "groot_n17_droid" else "float64",
+        "transport_prompt_transform": "strip" if candidate_id == "groot_n17_droid" else "identity",
+        "transport_batch_time_axes": [1, 1] if candidate_id == "groot_n17_droid" else [],
         "required_views": list(CANDIDATE_REQUIRED_VIEWS[candidate_id]),
         "method": "aspect_preserving_resize_with_centred_black_pad",
         "content_resolution_hw": [content_height, content_width],
@@ -213,9 +227,8 @@ def describe_observation_conversion(
     if candidate_id == "groot_n17_droid":
         result.update(
             {
-                "video_delta_indices": [-GROOT_HISTORY_STEPS, 0],
-                "historical_views": dict(GROOT_HISTORICAL_VIEW_KEYS),
-                "history_sampling": "exact_simulator_control_steps",
+                "video_delta_indices": [0],
+                "history_sampling": "not_requested_by_frozen_processor_config",
             }
         )
     return result
@@ -228,10 +241,9 @@ __all__ = [
     "DROID_EXTERIOR_VIEW_2",
     "DROID_OBSERVATION_SCHEMA_VERSION",
     "DROID_WRIST_VIEW",
-    "GROOT_HISTORICAL_VIEW_KEYS",
-    "GROOT_HISTORY_STEPS",
     "DroidObservationError",
     "build_droid_observation",
+    "build_droid_observation_from_inputs",
     "describe_observation_conversion",
     "resize_with_pad",
 ]

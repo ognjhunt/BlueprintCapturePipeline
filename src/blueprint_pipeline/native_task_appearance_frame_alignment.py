@@ -229,6 +229,28 @@ def _particlefield_prim_transform_positions(
     return str(field.GetPath()), rows, positions
 
 
+def usd_geometry_bounds(stage):
+    """Read ordinary USD bounds; never reinterpret a splat/volume as geometry."""
+    from pxr import Usd, UsdGeom
+    prims = list(stage.Traverse())
+    if any(str(p.GetTypeName()).startswith("ParticleField") or p.IsA(UsdGeom.Points)
+           or str(p.GetTypeName()) == "Volume" or p.GetAttribute(NUREC_VOLUME_MARKER).Get()
+           for p in prims):
+        return None
+    if not any(p.IsA(UsdGeom.Gprim) for p in prims):
+        return None
+    if (UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z
+            or UsdGeom.GetStageMetersPerUnit(stage) != 1.0):
+        raise NativeTaskAppearanceFrameAlignmentError(["native_task_appearance_geometry_units_invalid"])
+    box = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]).ComputeWorldBound(stage.GetDefaultPrim()).ComputeAlignedRange()
+    lower, upper = np.asarray(box.GetMin()), np.asarray(box.GetMax())
+    if not np.isfinite([lower, upper]).all() or not (upper > lower).all():
+        raise NativeTaskAppearanceFrameAlignmentError(["native_task_appearance_geometry_bounds_invalid"])
+    return np.asarray([[lower[0] if x == 0 else upper[0], lower[1] if y == 0 else upper[1],
+                        lower[2] if z == 0 else upper[2]]
+                       for x in (0, 1) for y in (0, 1) for z in (0, 1)])
+
+
 def _occupied_bounds(
     positions: np.ndarray, *, quantile: float
 ) -> tuple[list[float], list[float]]:
@@ -308,7 +330,13 @@ def measure_native_task_appearance_frame(
             ["native_task_appearance_asset_missing"]
         )
     particlefield = _particlefield_prim_transform_positions(path)
-    if particlefield is None:
+    from pxr import Usd
+    geometry = usd_geometry_bounds(Usd.Stage.Open(str(path))) if particlefield is None else None
+    if geometry is not None:
+        prim_path, layer_transform, positions = "/", np.eye(4).tolist(), geometry
+        representation, measurement_authority = "usd_geometry", "usd_composed_geometry_bounds"
+        occupancy_quantile = 0.0
+    elif particlefield is None:
         prim_path, layer_transform, payload = _volume_prim_and_transform(path)
         positions = _gaussian_positions(path, payload)
         representation = "nurec_volume"
@@ -339,7 +367,8 @@ def measure_native_task_appearance_frame(
         "representation": representation,
         "appearance_prim_path": prim_path,
         "volume_prim_path": prim_path,
-        "gaussian_count": int(positions.shape[0]),
+        **({"geometry_bound_corner_count": int(positions.shape[0])} if geometry is not None
+           else {"gaussian_count": int(positions.shape[0])}),
         "occupancy_quantile": float(occupancy_quantile),
         "layer_transform_row_major": layer_transform,
         "layer_transform_is_identity": bool(

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import native_task_runtime_source_packet as source_packet
+from blueprint_pipeline.native_task_g1_runtime_lock import G1_RUNTIME_DEPENDENCY_WHEELS
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ARENA_COMMIT,
     ARENA_TREE,
@@ -18,13 +19,41 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
     ISAACLAB_TREE,
     RUNTIME_DEPENDENCY_WHEELS,
+    runtime_dependency_contracts,
     NativeTaskRuntimeSourcePacketError,
     materialize_native_task_runtime_source_packet,
+    extend_native_task_runtime_source_packet,
     verify_native_task_runtime_source_packet,
 )
 from blueprint_pipeline.native_task_runtime_source_provision import (
+    _required_top_level_packages,
     provision_native_task_runtime_sources,
 )
+
+
+def test_package_probe_matches_sealed_runtime_profile_and_wheels() -> None:
+    legacy_base = {"runtime_profile": None, "runtime_dependency_wheels": []}
+    legacy_names = _required_top_level_packages(legacy_base)
+    assert "isaaclab_arena" in legacy_names
+    assert not {"isaaclab_arena_g1", "onnxruntime", "coloredlogs", "humanfriendly", "flatbuffers"}.intersection(legacy_names)
+
+    current_base = {
+        "runtime_profile": "base",
+        "runtime_dependency_wheels": [
+            {"package": name}
+            for name in ("onnxruntime", "coloredlogs", "humanfriendly", "flatbuffers")
+        ],
+    }
+    base_names = _required_top_level_packages(current_base)
+    assert {"onnxruntime", "coloredlogs", "humanfriendly", "flatbuffers"}.issubset(base_names)
+    assert "isaaclab_arena_g1" not in base_names
+
+    g1 = {
+        "runtime_profile": "unitree_g1",
+        "runtime_dependency_wheels": [{"package": "onnxruntime-gpu"}],
+    }
+    g1_names = _required_top_level_packages(g1)
+    assert {"isaaclab_arena_g1", "onnxruntime"}.issubset(g1_names)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -49,6 +78,7 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
             "pyproject.toml": "[build-system]\nrequires=['setuptools']\n",
             "extension.toml": "[package]\nversion='fixture'\n",
             "isaaclab_arena/__init__.py": "VERSION = 'fixture'\n",
+            "isaaclab_arena_g1/__init__.py": "VERSION = 'fixture'\n",
             "ignored.txt": "must not be packaged\n",
         }
     else:
@@ -91,7 +121,9 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
     return repo, _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "HEAD^{tree}")
 
 
-def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
+def _packet(
+    tmp_path: Path, *, output_name: str = "packet", runtime_profile: str = "base"
+) -> dict:
     isaaclab, isaaclab_commit, isaaclab_tree = _repository(
         tmp_path / "lab-root", arena=False
     )
@@ -100,7 +132,8 @@ def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
         output_dir=tmp_path / output_name,
         isaaclab_repo=isaaclab,
         arena_repo=arena,
-        dependency_wheel_dir=_wheelhouse(tmp_path),
+        dependency_wheel_dir=_wheelhouse(tmp_path, runtime_profile=runtime_profile),
+        runtime_profile=runtime_profile,
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
@@ -120,10 +153,85 @@ def test_default_source_pair_is_the_upstream_601_compatible_release_pair() -> No
     assert ARENA_TREE == "a52514015a8573ac03b6448688bfa61f9cea18a9"
 
 
-def _wheelhouse(root: Path) -> Path:
+def test_g1_runtime_profile_seals_its_native_import_closure_without_changing_base(
+    tmp_path: Path,
+) -> None:
+    receipt = _packet(tmp_path, runtime_profile="unitree_g1")
+    verified = verify_native_task_runtime_source_packet(
+        tmp_path / "packet/native_task_runtime_source_packet.v1.json"
+    )
+    assert receipt["runtime_profile"] == verified["runtime_profile"] == "unitree_g1"
+    packages = {row["package"] for row in verified["runtime_dependency_wheels"]}
+    assert {"pin", "coal", "eigenpy", "protobuf", "numpy", "onnxruntime-gpu"}.issubset(packages)
+    assert "onnxruntime" not in packages
+    assert not {"pin", "coal", "protobuf"}.intersection(
+        row["package"] for row in RUNTIME_DEPENDENCY_WHEELS
+    )
+    simulator = tmp_path / "isaac-sim"
+    simulator.mkdir()
+    result = provision_native_task_runtime_sources(
+        source_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
+        source_packet_path=receipt["packet_path"],
+        extraction_dir=tmp_path / "extracted",
+        output_path=tmp_path / "provisioning.json",
+        simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=("manylinux_2_28_x86_64",),
+        run_command=lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 0,
+            stdout=(json.dumps(_successful_import_rows())
+                    if "import_module" in command[-1] else "found"),
+            stderr="",
+        ),
+    )
+    assert result["status"] == "completed"
+    assert result["runtime_profile"] == "unitree_g1"
+    assert "cmeel.prefix/lib/python3.12/site-packages" in Path(
+        result["path_file"]
+    ).read_text(encoding="utf-8")
+
+
+def test_g1_extension_reuses_verified_base_sources_and_wheels(tmp_path: Path) -> None:
+    base = _packet(tmp_path)
+    extension = extend_native_task_runtime_source_packet(
+        base_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
+        output_dir=tmp_path / "g1-packet",
+        dependency_wheel_dir=_wheelhouse(
+            tmp_path / "g1-extra", runtime_profile="unitree_g1", only_extension=True
+        ),
+        runtime_profile="unitree_g1",
+        generated_at="fixed-g1",
+    )
+    verified = verify_native_task_runtime_source_packet(
+        tmp_path / "g1-packet/native_task_runtime_source_packet.v1.json"
+    )
+    assert verified["runtime_profile"] == "unitree_g1"
+    assert len(verified["runtime_dependency_wheels"]) == len(
+        runtime_dependency_contracts("unitree_g1")
+    )
+    assert verify_native_task_runtime_source_packet(
+        tmp_path / "packet/native_task_runtime_source_packet.v1.json"
+    )["packet_sha256"] == base["packet_sha256"]
+    with zipfile.ZipFile(base["packet_path"]) as original, zipfile.ZipFile(
+        extension["packet_path"]
+    ) as expanded:
+        source_name = "runtime_sources/arena/isaaclab_arena_g1/__init__.py"
+        assert original.read(source_name) == expanded.read(source_name)
+        assert any("onnxruntime-1.22.1" in name for name in original.namelist())
+        assert not any("onnxruntime-1.22.1" in name for name in expanded.namelist())
+        assert any("onnxruntime_gpu-1.24.4" in name for name in expanded.namelist())
+
+
+def _wheelhouse(
+    root: Path, *, runtime_profile: str = "base", only_extension: bool = False
+) -> Path:
     wheelhouse = root / "wheelhouse"
-    wheelhouse.mkdir(exist_ok=True)
-    for contract in RUNTIME_DEPENDENCY_WHEELS:
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    contracts = runtime_dependency_contracts(runtime_profile)
+    if only_extension:
+        contracts = G1_RUNTIME_DEPENDENCY_WHEELS
+    for contract in contracts:
         path = wheelhouse / contract["filename"]
         if path.is_file():
             continue
@@ -218,6 +326,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         ("requests", "2.34.2"),
         ("PyYAML", "6.0.3"),
         ("warp-lang", "1.13.0"),
+        ("onnxruntime", "1.22.1"),
     }.issubset(
         {
             (row["package"], row["version"])
@@ -231,6 +340,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         names = set(archive.namelist())
         assert "runtime_sources/isaaclab/ignored.txt" not in names
         assert "runtime_sources/arena/ignored.txt" not in names
+        assert "runtime_sources/arena/isaaclab_arena_g1/__init__.py" in names
         assert (
             "runtime_sources/isaaclab/apps/isaaclab.python.kit" in names
         )
@@ -417,6 +527,7 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert len(path_lines) == 1
     assert path_lines[0].startswith("import sys;sys.path[:0]=[")
     assert result["runtime_dependency_target"] in path_lines[0]
+    assert "cmeel.prefix" not in path_lines[0]
     assert all(path in path_lines[0] for path in result["install_roots"])
 
 
@@ -617,3 +728,53 @@ def test_materialization_batches_each_repository_into_one_exact_git_archive(
 
     assert sum("archive" in command for command in commands) == 3
     assert not any("show" in command for command in commands)
+
+
+def test_stranded_receipt_resolves_archive_by_identity_under_sibling_builds(
+    tmp_path: Path,
+) -> None:
+    """A receipt travels as evidence without its multi-gigabyte archive.
+
+    The compiled-episode adapter retains the receipt beside a log while the
+    archive stays in its build directory, and the recorded absolute path names
+    the build of birth, which has its own retention lifecycle.  The 2026-08-30
+    scene-839873 construction launch blocked exactly here: recorded path gone,
+    no staged sibling, byte-identical archive alive under a sibling build.
+    Resolution is by identity -- exact sealed size prefilter, then the sha256
+    check that remains the sole authority -- so the same bytes under a renamed
+    build resolve while wrong bytes of the right name and size still refuse.
+    """
+
+    receipt = _packet(tmp_path, output_name="builds/build-a")
+    build_a = tmp_path / "builds" / "build-a"
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    stranded = evidence / "native_task_runtime_source_packet.v1.json"
+    stranded.write_bytes(
+        (build_a / "native_task_runtime_source_packet.v1.json").read_bytes()
+    )
+
+    # The build of birth disappears wholesale; the archive survives under a
+    # sibling build directory of the same root.
+    build_a.rename(tmp_path / "builds" / "build-b")
+
+    verified = verify_native_task_runtime_source_packet(stranded)
+    assert verified["verified_packet_path"] == str(
+        tmp_path / "builds" / "build-b" / "native_task_runtime_sources.zip"
+    )
+    assert verified["receipt_digest"] == receipt["receipt_digest"]
+
+    # Same name and exact sealed size with different bytes must not resolve.
+    archive = tmp_path / "builds" / "build-b" / "native_task_runtime_sources.zip"
+    payload = bytearray(archive.read_bytes())
+    payload[len(payload) // 2] ^= 0xFF
+    archive.write_bytes(bytes(payload))
+    with pytest.raises(NativeTaskRuntimeSourcePacketError) as excinfo:
+        verify_native_task_runtime_source_packet(stranded)
+    assert "native_task_runtime_source_packet_missing" in excinfo.value.errors
+
+    # And with the archive gone everywhere the refusal is unchanged.
+    archive.unlink()
+    with pytest.raises(NativeTaskRuntimeSourcePacketError) as missing:
+        verify_native_task_runtime_source_packet(stranded)
+    assert "native_task_runtime_source_packet_missing" in missing.value.errors

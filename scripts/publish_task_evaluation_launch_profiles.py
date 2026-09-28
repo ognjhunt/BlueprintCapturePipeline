@@ -17,8 +17,9 @@ import os
 import pwd
 import stat
 import subprocess  # nosec B404 - fixed runuser/sha256sum argv over validated paths
+import tempfile
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from blueprint_pipeline.host_resident_launch_inputs import PRODUCTION_LAUNCH_INPUT_ROOTS
 from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
@@ -27,11 +28,15 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
+from blueprint_pipeline.task_evaluation_release_reference_lock import (
+    release_reference_lock,
+)
 
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
 DEFAULT_SERVICE_GROUP = "blueprint"
 RUNUSER_PATH = "/usr/sbin/runuser"
 SHA256SUM_PATH = "/usr/bin/sha256sum"
+ReferenceFetcher = Callable[[str, Path, int], None]
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -133,8 +138,12 @@ def _install_parent_traversal(path: Path, *, boundary: Path, gid: int, name: str
         try:
             if directory.is_symlink() or not directory.is_dir():
                 raise OSError(f"unsafe input parent: {directory}")
-            mode = stat.S_IMODE(directory.stat().st_mode)
-            os.chown(directory, -1, gid)
+            info = directory.stat()
+            mode = stat.S_IMODE(info.st_mode)
+            if info.st_gid == gid and mode & stat.S_IXGRP:
+                continue
+            if info.st_gid != gid:
+                os.chown(directory, -1, gid)
             directory.chmod(mode | stat.S_IXGRP)
         except OSError as exc:
             raise TaskEvaluationLaunchError(
@@ -148,6 +157,9 @@ def _install_service_directory(path: Path, *, gid: int) -> None:
     try:
         if path.is_symlink() or not path.is_dir():
             raise OSError(f"unsafe service directory: {path}")
+        installed = path.stat()
+        if installed.st_gid == gid and stat.S_IMODE(installed.st_mode) == 0o750:
+            return
         os.chown(path, -1, gid)
         path.chmod(stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
     except OSError as exc:
@@ -161,13 +173,16 @@ def _seal_published_profile(
 ) -> None:
     """Make the final profile service-readable and prove its exact bytes reopen."""
 
-    try:
-        os.chown(path, -1, gid)
-        path.chmod(stat.S_IRUSR | stat.S_IRGRP)
-    except OSError as exc:
-        raise TaskEvaluationLaunchError(
-            f"launch_profile_permission_install_failed:{path.name}"
-        ) from exc
+    sealed_mode = stat.S_IRUSR | stat.S_IRGRP
+    installed = path.stat()
+    if installed.st_gid != gid or stat.S_IMODE(installed.st_mode) != sealed_mode:
+        try:
+            os.chown(path, -1, gid)
+            path.chmod(sealed_mode)
+        except OSError as exc:
+            raise TaskEvaluationLaunchError(
+                f"launch_profile_permission_install_failed:{path.name}"
+            ) from exc
     observed = _digest_as_account(path, account=account, uid=uid)
     metadata = path.stat()
     if (
@@ -226,6 +241,15 @@ def _seal_immutable_input_permissions(
         inputs[resolved] = (name, str(item.get("digest") or ""))
 
     for path, (name, expected_digest) in inputs.items():
+        info = path.stat()
+        # Compilation inputs are mounted read-only in the activation service.
+        # A sealed file owned by that service needs no group-permission rewrite;
+        # readback as the consumer also proves traversal of its private parents.
+        if (os.statvfs(path).f_flag & os.ST_RDONLY
+                and info.st_uid == uid and info.st_gid == gid
+                and stat.S_IMODE(info.st_mode) in (0o400, 0o440)
+                and _digest_as_account(path, account=account, uid=uid) == expected_digest):
+            continue
         boundary = _production_root_for(path)
         if _under_production_root(target_root):
             if boundary is None:
@@ -233,13 +257,16 @@ def _seal_immutable_input_permissions(
                     f"launch_profile_immutable_input_outside_control_plane:{name}"
                 )
             _install_parent_traversal(path, boundary=boundary, gid=gid, name=name)
-        try:
-            os.chown(path, -1, gid)
-            path.chmod(stat.S_IRUSR | stat.S_IRGRP)
-        except OSError as exc:
-            raise TaskEvaluationLaunchError(
-                f"launch_profile_immutable_input_permission_install_failed:{name}"
-            ) from exc
+        sealed_mode = stat.S_IRUSR | stat.S_IRGRP
+        info = path.stat()
+        if info.st_gid != gid or stat.S_IMODE(info.st_mode) != sealed_mode:
+            try:
+                os.chown(path, -1, gid)
+                path.chmod(sealed_mode)
+            except OSError as exc:
+                raise TaskEvaluationLaunchError(
+                    f"launch_profile_immutable_input_permission_install_failed:{name}"
+                ) from exc
         observed = _digest_as_account(path, account=account, uid=uid)
         mode = stat.S_IMODE(path.stat().st_mode)
         if (
@@ -252,7 +279,72 @@ def _seal_immutable_input_permissions(
             )
 
 
-def publish_profiles(
+def _validate_policy_canary_release_window_template_reference(
+    profile: Mapping[str, Any], *, fetcher: ReferenceFetcher | None = None
+) -> None:
+    plan = profile.get("internal_policy_canary_execution_plan")
+    if not isinstance(plan, Mapping):
+        return
+    automation = plan.get("activation_automation")
+    reference = (
+        automation.get("release_window_template")
+        if isinstance(automation, Mapping)
+        else None
+    )
+    if not isinstance(reference, Mapping):
+        raise TaskEvaluationLaunchError(
+            "launch_profile_policy_canary_release_window_template_invalid"
+        )
+    uri = str(reference.get("uri") or "")
+    digest = str(reference.get("digest") or "")
+    size = reference.get("size_bytes")
+    if (
+        not uri.startswith(("s3://", "gs://", "https://"))
+        or not digest.startswith("sha256:")
+        or not isinstance(size, int)
+        or isinstance(size, bool)
+        or size <= 0
+    ):
+        raise TaskEvaluationLaunchError(
+            "launch_profile_policy_canary_release_window_template_invalid"
+        )
+    if fetcher is None:
+        from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
+            default_reference_fetcher,
+        )
+
+        fetcher = default_reference_fetcher
+    try:
+        with tempfile.TemporaryDirectory(prefix="launch-profile-window-template-") as raw:
+            path = Path(raw) / "template.json"
+            fetcher(uri, path, size)
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.stat().st_size != size
+                or "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() != digest
+            ):
+                raise ValueError("identity_mismatch")
+            template = _read(path)
+            from blueprint_pipeline.task_evaluation_shared_mutation_window import (
+                validate_shared_mutation_window_template,
+            )
+
+            validate_shared_mutation_window_template(
+                template,
+                team_namespace=str(
+                    (profile.get("task_evaluation_run") or {}).get("team_namespace")
+                    or ""
+                ),
+                expected_production_commit=str(profile.get("source_commit") or ""),
+            )
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationLaunchError(
+            "launch_profile_policy_canary_release_window_template_invalid"
+        ) from exc
+
+
+def _publish_profiles_locked(
     *,
     profile_paths: Sequence[str | Path],
     profile_dir: str | Path,
@@ -279,6 +371,7 @@ def publish_profiles(
         blockers.extend(verify_profile_immutable_inputs(profile))
         if blockers:
             raise TaskEvaluationLaunchError(",".join(sorted(set(blockers))))
+        _validate_policy_canary_release_window_template_reference(profile)
         _seal_immutable_input_permissions(
             profile,
             target_root=target_root,
@@ -361,6 +454,26 @@ def publish_profiles(
         "webapp_catalog_contains_allocator_arguments": False,
         "webapp_catalog_contains_secret_values": False,
     }
+
+
+def publish_profiles(
+    *,
+    profile_paths: Sequence[str | Path],
+    profile_dir: str | Path,
+    webapp_catalog_out: str | Path,
+    service_account: str | None = None,
+    service_group: str | None = None,
+) -> dict[str, Any]:
+    catalog_path = Path(webapp_catalog_out).expanduser().resolve()
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    with release_reference_lock(catalog_path.parent, exclusive=False):
+        return _publish_profiles_locked(
+            profile_paths=profile_paths,
+            profile_dir=profile_dir,
+            webapp_catalog_out=webapp_catalog_out,
+            service_account=service_account,
+            service_group=service_group,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

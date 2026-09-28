@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -18,6 +19,10 @@ from .gaussian_splat_decode import (
     read_standard_3dgs_ply,
 )
 
+
+from .task_evaluation_splat_render_runtime import (
+    DEFAULT_ENVIRONMENT_VARIABLE, validate_splat_render_runtime,
+)
 
 REQUEST_SCHEMA = "standard_splat_conversion_request.v1"
 RECEIPT_SCHEMA = "standard_splat_conversion_receipt.v1"
@@ -46,12 +51,15 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _under(root: Path, value: str | Path, *, code: str) -> Path:
+def _under(root: Path, value: str | Path, *, code: str, additional_roots: Sequence[Path] = ()) -> Path:
     candidate = Path(value)
     if not candidate.is_absolute():
         candidate = root / candidate
-    candidate = candidate.expanduser().resolve()
-    if candidate != root and root not in candidate.parents:
+    candidate = candidate.expanduser()
+    if candidate.is_symlink():
+        raise StandardSplatConversionError([code])
+    candidate = candidate.resolve()
+    if not any(candidate == allowed or allowed in candidate.parents for allowed in (root, *additional_roots)):
         raise StandardSplatConversionError([code])
     return candidate
 
@@ -156,20 +164,23 @@ def materialize_standard_splat_conversion(
     data_root: str | Path,
     output_root: str | Path,
     receipt_output: str | Path | None = None,
+    production_runtime_root: str | Path | None = None,
 ) -> dict[str, Any]:
     repo = Path(repo_root).expanduser().resolve()
     data = Path(data_root).expanduser().resolve()
     request_file = _under(
-        repo, request_path, code="standard_splat_request_outside_repo"
+        repo, request_path, additional_roots=(data,), code="standard_splat_request_outside_admitted_roots"
     )
     output = _under(
         data, output_root, code="standard_splat_output_outside_data_root"
     )
     retained_receipt = (
-        _under(repo, receipt_output, code="standard_splat_receipt_outside_repo")
+        _under(repo, receipt_output, additional_roots=(data,), code="standard_splat_receipt_outside_admitted_roots")
         if receipt_output is not None
         else None
     )
+    if retained_receipt is not None and retained_receipt.exists():
+        raise StandardSplatConversionError(["standard_splat_receipt_output_exists"])
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise StandardSplatConversionError(
             ["standard_splat_output_not_empty"]
@@ -201,7 +212,12 @@ def materialize_standard_splat_conversion(
             ["standard_splat_source_bytes_changed"]
         )
     repository = _repository_identity(repo)
-    cli = find_splat_transform_cli(repo)
+    runtime_root = production_runtime_root or os.environ.get(DEFAULT_ENVIRONMENT_VARIABLE)
+    runtime = (validate_splat_render_runtime(runtime_root=runtime_root, repo_root=repo)
+               if runtime_root else None)
+    decoder_root = Path(runtime["renderer_root"]) if runtime else repo
+    node = str(runtime["node"]) if runtime else "node"
+    cli = find_splat_transform_cli(decoder_root)
     if cli is None or not cli.is_file() or cli.is_symlink():
         raise StandardSplatConversionError(
             ["standard_splat_decoder_missing"]
@@ -228,10 +244,21 @@ def materialize_standard_splat_conversion(
     conversion = convert_to_standard_ply(
         source,
         standard,
-        repo_root=repo,
+        repo_root=decoder_root,
+        node=node,
         timeout_seconds=1800,
     )
     if conversion.get("status") != "completed" or not standard.is_file():
+        failure = {
+            "schema_version": "standard_splat_conversion_failure.v1",
+            "status": "blocked", "request_digest": request["request_digest"],
+            "source_commit": repository["commit"], "conversion": conversion,
+            "raw_source_uploaded": False, "failure_digest": "",
+        }
+        failure["failure_digest"] = canonical_digest(failure, digest_field="failure_digest")
+        (output / "standard_splat_conversion_failure.v1.json").write_text(
+            canonical_json(failure) + "\n", encoding="utf-8"
+        )
         raise StandardSplatConversionError(
             [
                 "standard_splat_conversion_failed",
@@ -248,7 +275,7 @@ def materialize_standard_splat_conversion(
             ["standard_splat_source_bytes_changed"]
         )
     command = [
-        "node",
+        node,
         str(cli),
         "-w",
         "-q",
@@ -279,6 +306,7 @@ def materialize_standard_splat_conversion(
             "package_manifest_sha256": _sha256(package_path),
             "command": command,
             "conversion_result": conversion,
+            "production_runtime_identity": runtime["identity"] if runtime else None,
         },
         "rights": dict(request["rights"]),
         "raw_source_uploaded": False,
@@ -308,6 +336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--receipt-output")
+    parser.add_argument("--production-runtime-root")
     args = parser.parse_args(argv)
     receipt = materialize_standard_splat_conversion(
         request_path=args.request,
@@ -315,6 +344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         data_root=args.data_root,
         output_root=args.output_root,
         receipt_output=args.receipt_output,
+        production_runtime_root=args.production_runtime_root,
     )
     print(canonical_json(receipt))
     return 0

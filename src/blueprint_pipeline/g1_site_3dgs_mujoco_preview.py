@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import platform
 import shutil
 import subprocess
@@ -24,6 +23,7 @@ from .mujoco_g1_simulator_command import (
     _resolve_g1_model_root,
     _write_g1_xml_with_absolute_meshes,
 )
+from .mujoco_gl_environment import import_mujoco_with_scoped_gl_default as _import_mujoco
 
 
 SCENE_ASSET_INSPECTION_SCHEMA_VERSION = "g1_site_3dgs_scene_asset_inspection.v1"
@@ -278,7 +278,7 @@ def inspect_optional_scene_metadata(path: str | Path | None, *, metadata_kind: s
 
 def _probe_mujoco_mesh_support(output_dir: Path) -> dict[str, Any]:
     try:
-        import mujoco  # type: ignore[import-not-found]
+        mujoco, _ = _import_mujoco(default="osmesa", platform_name=platform.system())
     except Exception as exc:  # pragma: no cover - environment dependent.
         return {
             "status": "blocked",
@@ -2148,7 +2148,7 @@ def _render_episodes(
     camera_ids: Sequence[str],
 ) -> dict[str, Any]:
     try:
-        import mujoco  # type: ignore[import-not-found]
+        mujoco, _ = _import_mujoco(default="osmesa", platform_name=platform.system())
         from PIL import Image
     except Exception as exc:  # pragma: no cover - environment dependent.
         return {"status": "blocked", "blockers": ["mujoco_or_pillow_import_failed"], "error": str(exc)}
@@ -2636,8 +2636,6 @@ def run_g1_site_3dgs_mujoco_preview(
     fps: int = 8,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    if platform.system().lower() == "linux":
-        os.environ.setdefault("MUJOCO_GL", "osmesa")
     generated = generated_at or utc_now_iso()
     timestamp = (
         generated.replace("+00:00", "Z")

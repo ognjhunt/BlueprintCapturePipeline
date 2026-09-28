@@ -1,0 +1,2138 @@
+"""Bridge a generic scene-configuration stage to released ArtiFixer runtimes.
+
+This module contains no image-editing or reconstruction algorithm.  It converts
+the Website-bound scene/camera/mask contract into the existing semantic-teacher,
+paired-target ArtiFixer3D, native-export, and independent-review contracts, then
+runs those released implementations inside the already allocated parent GPU.
+"""
+
+from __future__ import annotations
+
+import re
+
+import json
+import os
+import shutil
+import sys
+import time
+from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+from PIL import Image
+
+from .core.common import redacted_failure_text
+from .scene_component_process import run_component_process
+from .task_evaluation_scene_configuration_runtime_budget import artifixer_training_timeout_seconds
+from .task_evaluation_scene_configuration_artifixer_artifacts import (
+    PAUSED_RECEIPT_SCHEMA_VERSION as PAUSED_RECEIPT_SCHEMA_VERSION,
+    VISUAL_REVIEW_EXECUTION_SCHEMA_VERSION as VISUAL_REVIEW_EXECUTION_SCHEMA_VERSION,
+    _DIAGNOSTIC_ONLY_ENV as _DIAGNOSTIC_ONLY_ENV,
+    _DIAGNOSTIC_REJECTED_APPEARANCE_STATUS as _DIAGNOSTIC_REJECTED_APPEARANCE_STATUS,
+    _diagnostic_rejection_permitted as _diagnostic_rejection_permitted,
+    TaskEvaluationSceneConfigurationArtifixerError as TaskEvaluationSceneConfigurationArtifixerError,
+    _sha256 as _sha256,
+    _read as _read,
+    _record as _record,
+    _component_record as _component_record,
+    _materialize_selected_task_thumbnail as _materialize_selected_task_thumbnail,
+    _materialize_ungraded_task_thumbnail_and_receipt as _materialize_ungraded_task_thumbnail_and_receipt,
+    _materialize_diagnostic_rejected_artifixer_artifacts as _materialize_diagnostic_rejected_artifixer_artifacts,
+)
+from .decision_evidence_contracts import canonical_digest, canonical_json
+from .fresh_scene_semantic_teacher_image_edit import (
+    NAMED_PROMPT_POLICY,
+    PROMPT_POLICY,
+    valid_object_description,
+    REQUEST_SCHEMA_VERSION,
+    RIGHTS_SCHEMA_VERSION as SEMANTIC_RIGHTS_SCHEMA_VERSION,
+    materialize_semantic_teacher_image_edit_packet,
+)
+from .provider_archive import extract_provider_archive
+from .public_scene_artifixer3d_bundle import (
+    DUAL_TARGET_PIPELINE_MODE,
+    build_artifixer3d_bundle,
+    materialize_artifixer3d_use_attestation,
+)
+from .public_scene_artifixer3d_candidate_inputs import (
+    materialize_artifixer3d_candidate_inputs,
+)
+from .public_scene_artifixer3d_dual_target_inputs import (
+    materialize_dual_target_artifixer3d_inputs,
+    materialize_whole_frame_semantic_teacher_receipt,
+)
+from .semantic_teacher_image_edit_worker import (
+    PRODUCTION_MAX_PARALLEL_REQUESTS,
+    RUNTIME_REQUEST_SCHEMA_VERSION as SEMANTIC_RUNTIME_REQUEST_SCHEMA_VERSION,
+    RUNTIME_RESULT_SCHEMA_VERSION as SEMANTIC_RUNTIME_RESULT_SCHEMA_VERSION,
+    execute_semantic_teacher_image_edits,
+)
+from .task_evaluation_artifixer_ai_visual_review import (
+    DUAL_TARGET_REVIEW_SCHEMA_VERSION,
+    materialize_artifixer_ai_visual_review_rights,
+    run_artifixer_ai_visual_review,
+)
+from .task_evaluation_scene_configuration_component_package import (
+    SCHEMA_VERSION as COMPONENT_PACKAGE_SCHEMA_VERSION,
+)
+from .task_evaluation_scene_configuration_disclosure import (
+    PENDING_PROVIDER_RENDER_STATUS,
+)
+from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
+    diagnostic_checkpoint_scientific_binding_digest,
+    hydrate_scene_configuration_diagnostic_render_inputs,
+    hydrate_scene_configuration_diagnostic_semantic_outputs,
+    materialize_scene_configuration_diagnostic_checkpoint,
+    validate_scene_configuration_diagnostic_checkpoint,
+)
+from .task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
+    artifixer_post_training_binding_digest,
+    hydrate_artifixer_post_training_checkpoint,
+    materialize_artifixer_post_training_checkpoint,
+    validate_artifixer_post_training_checkpoint,
+)
+from .task_evaluation_scene_configuration_artifixer_failure_evidence import (
+    ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
+    ArtifixerRuntimeFailureEvidenceError,
+    failure_evidence_secret_values,
+    read_artifixer_runtime_result,
+)
+from .task_evaluation_scene_configuration_artifixer_selective_repair import (
+    STRICT_LOCALITY_PROMPT_POLICY,
+    TaskEvaluationArtifixerSelectiveRepairError,
+    materialize_selective_repair_request,
+    merge_selective_repair_outputs,
+)
+from .task_evaluation_scene_configuration_appearance_review import (
+    AppearanceReviewContractError,
+    PAUSED_UNGRADED_MODE,
+    PAUSED_UNGRADED_WARNING,
+    REQUIRED_MODE,
+    appearance_review_mode,
+)
+from .task_evaluation_scene_configuration_semantic_locality import (
+    EDITOR_OUTPUT_POLICY,
+    materialize_semantic_locality_seal,
+)
+from .task_evaluation_scene_configuration_render_inputs import (
+    complete_provider_render_inputs,
+)
+from .task_evaluation_scene_configuration_openai_gate import (
+    materialize_stage_scope_attestation,
+    scene_configuration_openai_stage_gate,
+    scene_configuration_openai_stage_scope,
+)
+from .task_evaluation_scene_configuration_render_handoff import (
+    materialize_provider_render_handoff,
+    materialize_capsule_render_handoff,
+)
+from .task_evaluation_scene_configuration_stage_tool import (
+    COMPONENT_RESULT_SCHEMA_VERSION,
+)
+
+
+_INPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"
+_DEPENDENCIES_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"
+_OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
+_RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
+_PACKAGE_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
+_DIAGNOSTIC_CHECKPOINT_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT"
+)
+_ARTIFIXER_POST_TRAINING_CHECKPOINT_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_ARTIFIXER_POST_TRAINING_CHECKPOINT_ROOT"
+)
+_ADAPTER_ID = "artifixer3d_observed_object_removal"
+_VISUAL_REVIEW_COST_SCOPE = (
+    "task_evaluation_scene_configuration_artifixer_visual_review"
+)
+_SEMANTIC_BACKEND_ID = "openai_gpt_image_2_5_sunburst_2026_09_08_semantic_teacher"
+
+
+def _post_training_bindings(
+    *,
+    stage_input: Mapping[str, Any],
+    package_manifest: Mapping[str, Any],
+    tuning: Mapping[str, Any],
+    semantic_teacher_receipt_digest: str,
+) -> dict[str, Any]:
+    """Bind the training inputs while permitting a diagnostic code overlay.
+
+    The source diagnostic checkpoint separately binds the exact render and
+    semantic-teacher bytes.  Release commit, run paths, candidate receipts and
+    the generated bundle digest are intentionally excluded: each is rebuilt
+    under the warm iteration root and therefore changes even when the exact
+    scientific inputs and the retained component package do not.
+    """
+
+    envelope = stage_input.get("construction_envelope") or {}
+    return {
+        "configuration_sha256": stage_input.get("configuration_sha256"),
+        "construction_envelope_digest": (
+            envelope.get("control_plane_envelope_digest")
+            or envelope.get("envelope_digest")
+        ),
+        "component_package_digest": package_manifest.get("package_digest"),
+        "artifixer_tuning": dict(tuning),
+        "semantic_teacher_receipt_digest": semantic_teacher_receipt_digest,
+    }
+
+
+def _required_path(environment: Mapping[str, str], name: str) -> Path:
+    value = str(environment.get(name) or "").strip()
+    if not value:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            f"scene_configuration_artifixer_environment_missing:{name}"
+        )
+    return Path(value).expanduser().resolve()
+
+
+def _artifixer_tuning(configuration: Mapping[str, Any]) -> dict[str, int]:
+    """Resolve nullable website tuning before any paid semantic edit."""
+
+    if configuration.get("artifixer_training_policy") not in (
+        None, "corrected_only_local_appearance", "masked_original_anchors"
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_training_policy_invalid")
+    supplied = {
+        "transition_radius_pixels": configuration.get("transition_radius_pixels"),
+        "artifixer3d_steps": configuration.get("artifixer3d_steps"),
+        "random_seed": configuration.get("random_seed"),
+    }
+    defaults = {
+        "transition_radius_pixels": 3,
+        "artifixer3d_steps": 30_000,
+        "random_seed": 839_873,
+    }
+    resolved = {
+        name: defaults[name] if value is None else value
+        for name, value in supplied.items()
+    }
+    if (
+        isinstance(resolved["transition_radius_pixels"], bool)
+        or not isinstance(resolved["transition_radius_pixels"], int)
+        or resolved["transition_radius_pixels"] < 0
+        or isinstance(resolved["artifixer3d_steps"], bool)
+        or not isinstance(resolved["artifixer3d_steps"], int)
+        or not 1 <= resolved["artifixer3d_steps"] <= 30_000
+        or isinstance(resolved["random_seed"], bool)
+        or not isinstance(resolved["random_seed"], int)
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_tuning_invalid"
+        )
+    return resolved
+
+
+def _materialized(envelope: Mapping[str, Any], contract_path: str) -> tuple[dict[str, Any], Path]:
+    rows = [
+        row
+        for row in envelope.get("materialized_references") or []
+        if isinstance(row, Mapping) and row.get("contract_path") == contract_path
+    ]
+    if len(rows) != 1:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            f"scene_configuration_artifixer_reference_missing:{contract_path}"
+        )
+    row = dict(rows[0])
+    path = Path(str(row.get("materialized_path") or "")).expanduser().resolve()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size != row.get("size_bytes")
+        or _sha256(path) != row.get("digest")
+        or row.get("full_byte_service_account_readback_passed") is not True
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            f"scene_configuration_artifixer_reference_invalid:{contract_path}"
+        )
+    return row, path
+
+
+def _human_authority(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    value = configuration.get("human_authority")
+    if (
+        not isinstance(value, Mapping)
+        or not str(value.get("accepted_by") or "").strip()
+        or not str(value.get("accepted_on") or "").strip()
+        or not str(value.get("authority_reference") or "").strip()
+        or value.get("private_derived_frame_disclosure_authorized") is not True
+        or value.get("provider_retention_terms_accepted") is not True
+        or value.get("provider_training_terms_accepted") is not True
+        or value.get("provider_training_authorized") is not False
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_human_authority_invalid"
+        )
+    return dict(value)
+
+
+def _write_execution_authority(
+    *,
+    envelope: Mapping[str, Any],
+    configuration: Mapping[str, Any],
+    destination: Path,
+) -> tuple[dict[str, Any], Path, str]:
+    human = _human_authority(configuration)
+    rights_row, rights_path = _materialized(envelope, "scene.rights.admission")
+    rights = _read(rights_path, code="scene_configuration_artifixer_rights_admission_invalid")
+    publisher_scene_id = str(rights.get("publisher_scene_id") or rights.get("scene_id") or "")
+    if (
+        not publisher_scene_id
+        or rights.get("status") != "admitted_for_internal_development"
+        or rights.get("private_provider_processing_allowed") is not True
+        or rights.get("provider_training_allowed") is not False
+        or rights.get("public_redistribution_allowed") is not False
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_rights_admission_invalid"
+        )
+    authority: dict[str, Any] = {
+        "schema_version": "third_scene_dual_task_execution_authority.v1",
+        "program_id": "arm-decision-proof-v1",
+        "publisher_scene_id": publisher_scene_id,
+        "authority_kind": "website_human_scene_configuration_authority",
+        "authorized_by": human["accepted_by"],
+        "accepted_on": human["accepted_on"],
+        "authority_reference": human["authority_reference"],
+        "source_rights_admission": {
+            **_record(rights_path),
+            "admission_digest": rights_row["digest"],
+        },
+        "terms": {
+            "internal_noncommercial_research_and_development_only": True,
+            "private_derived_frame_disclosure_authorized": True,
+            "provider_retention_terms_accepted": True,
+            "provider_training_terms_accepted": True,
+            "provider_training_authorized": False,
+            "raw_source_bytes_disclosure_authorized": False,
+            "public_redistribution_authorized": False,
+        },
+        "authority_digest": "",
+    }
+    authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
+    destination.write_text(canonical_json(authority) + "\n", encoding="utf-8")
+    return authority, rights_path, publisher_scene_id
+
+
+def _materialize_preflight(
+    *,
+    envelope: Mapping[str, Any],
+    configuration: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    authority_path: Path,
+    output_path: Path,
+) -> tuple[dict[str, Any], str]:
+    render = envelope.get("render_inputs_result")
+    source_object = configuration.get("source_object")
+    if not isinstance(render, Mapping) or not isinstance(source_object, Mapping):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_render_inputs_invalid"
+        )
+    calibration_path = Path(str((render.get("camera_calibration") or {}).get("path") or ""))
+    calibration_rows = json.loads(calibration_path.read_text(encoding="utf-8"))
+    calibrations = {
+        str(row.get("id") or ""): row for row in calibration_rows if isinstance(row, Mapping)
+    }
+    task_id = "remove-source-object-" + str(source_object["publisher_instance_id"])
+    camera_inputs: list[dict[str, Any]] = []
+    no_repair_support_camera_inputs: list[dict[str, Any]] = []
+    for row in render.get("derived_frames") or []:
+        camera_id = str(row.get("camera_id") or "") if isinstance(row, Mapping) else ""
+        frame = Path(str((row or {}).get("path") or "")).resolve()
+        mask_row = (row or {}).get("repair_support_mask") or (row or {}).get("source_object_mask") or {}
+        mask = Path(str(mask_row.get("path") or "")).resolve()
+        calibration = calibrations.get(camera_id)
+        if not camera_id or calibration is None or not frame.is_file() or not mask.is_file():
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_render_inputs_invalid"
+            )
+        with Image.open(mask) as image:
+            mask_size = image.size
+            histogram = image.convert("L").histogram()
+        with Image.open(frame) as image:
+            frame_size = image.size
+        intrinsics = (calibration.get("spec") or {}).get("intrinsics") or {}
+        if (
+            mask_size != frame_size
+            or frame_size != (intrinsics.get("width"), intrinsics.get("height"))
+            or any(histogram[1:255])
+        ):
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_frame_shape_or_mask_invalid"
+            )
+        pixel_count = histogram[255]
+        # A zero SAM observation is not evidence that the target is absent.
+        # Track-identity acceptance explicitly does not qualify per-view
+        # coverage; do not silently turn missed detections into training targets.
+        if not pixel_count:
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_repair_support_missing:"
+                + camera_id
+            )
+        camera_input = {
+            "task_id": task_id,
+            "camera_id": camera_id,
+            "calibration": calibration,
+            "retained_scene_before": _record(frame),
+            "exact_residual_mask": {**_record(mask), "pixel_count": pixel_count},
+            "frame_role": "semantic_edit" if pixel_count else "source_preservation",
+        }
+        # Full-room source views can have no exact repair support. Keep their
+        # original bytes as training/review views. Their explicit preservation
+        # role must never result in an image-edit request.
+        camera_inputs.append(camera_input)
+        if not pixel_count:
+            no_repair_support_camera_inputs.append(camera_input)
+    retained_row = (render.get("derived_gaussian_cutout") or {}).get(
+        "retained_scene_without_source_object"
+    ) or {}
+    retained = Path(str(retained_row.get("path") or "")).resolve()
+    if not camera_inputs or len(no_repair_support_camera_inputs) == len(camera_inputs):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_repair_support_missing"
+        )
+    if not retained.is_file():
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_render_inputs_invalid"
+        )
+    preflight: dict[str, Any] = {
+        "schema_version": "public_scene_calibrated_exact_segment_repair_preflight.v1",
+        "status": "prepared_no_upload_no_execution",
+        "replacement_object_count": 1,
+        "lanes": [{"task_id": task_id}],
+        "execution": {
+            "provider_mutations_performed": 0,
+            "aura_inpainting_executed": False,
+        },
+        "required_result_checks": {
+            "outside_mask_pixel_delta_required": 0,
+            "locality_mask_dilation_pixels": 0,
+        },
+        "backend_admission": {
+            "execution_authority": {
+                **_record(authority_path),
+                "authority_digest": authority["authority_digest"],
+            }
+        },
+        "shared_retained_scene": {
+            **_record(retained),
+            "retained_gaussian_count": (render.get("derived_gaussian_cutout") or {}).get(
+                "retained_count"
+            ),
+        },
+        "camera_inputs": camera_inputs,
+        "no_repair_support_camera_inputs": no_repair_support_camera_inputs,
+        "camera_input_selection": {
+            "policy": "nonempty_exact_mask_edits_with_unchanged_source_preservation_views",
+            "source_camera_count": len(camera_inputs),
+            "repair_camera_count": len(camera_inputs) - len(no_repair_support_camera_inputs),
+            "no_repair_support_camera_count": len(no_repair_support_camera_inputs),
+            "source_frames_and_masks_modified": False,
+            "unselected_views_retained_in_preflight": True,
+        },
+        "preflight_digest": "",
+    }
+    preflight["preflight_digest"] = canonical_digest(preflight, digest_field="preflight_digest")
+    output_path.write_text(canonical_json(preflight) + "\n", encoding="utf-8")
+    return preflight, task_id
+
+
+def prompt_object_description(configuration: Mapping[str, Any]) -> str | None:
+    """A short, plain description of the removed object for the edit prompt, or None.
+
+    Derived from the sealed scene configuration only: the reviewer's label
+    (``small_dark_bottle_shaped_object``) becomes ``small dark bottle shaped
+    object``; the semantic label is the fallback. Anything outside the prompt's
+    plain-text alphabet is dropped rather than guessed.
+    """
+    source_object = configuration.get("source_object") if isinstance(configuration, Mapping) else None
+    if not isinstance(source_object, Mapping):
+        return None
+    for key in ("review_label", "semantic_label"):
+        raw = source_object.get(key)
+        if not isinstance(raw, str):
+            continue
+        words = re.sub(r"[^a-z0-9 ,'-]", " ", raw.strip().lower().replace("_", " "))
+        text = " ".join(words.split())[:96].strip(" ,-'")
+        if valid_object_description(text):
+            return text
+    return None
+
+
+def _semantic_rights_and_request(
+    *,
+    candidate: Mapping[str, Any],
+    candidate_path: Path,
+    registry_path: Path,
+    configuration: Mapping[str, Any],
+    publisher_scene_id: str,
+    output_root: Path,
+) -> Path:
+    human = _human_authority(configuration)
+    registry = _read(
+        registry_path,
+        code="scene_configuration_artifixer_backend_registry_invalid",
+    )
+    matches = [
+        row
+        for row in registry.get("backends") or []
+        if isinstance(row, Mapping) and row.get("backend_id") == _SEMANTIC_BACKEND_ID
+    ]
+    if len(matches) != 1:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_backend_registry_invalid"
+        )
+    backend = matches[0]
+    execution = backend["execution"]
+    backend_digest = canonical_digest(backend)
+    rights: dict[str, Any] = {
+        "schema_version": SEMANTIC_RIGHTS_SCHEMA_VERSION,
+        "status": "accepted_for_private_derived_semantic_edit",
+        "source_candidate_inputs_receipt_digest": candidate["receipt_digest"],
+        "publisher_scene_id": publisher_scene_id,
+        "backend_id": _SEMANTIC_BACKEND_ID,
+        "backend_entry_digest": backend_digest,
+        "provider_id": execution["provider_id"],
+        "model_snapshot": execution["model_snapshot"],
+        "raw_nonredistributable_source_bytes_included": False,
+        "private_derived_frame_disclosure_authorized": True,
+        "provider_retention_terms_accepted": True,
+        "provider_training_terms_accepted": True,
+        "issued_by_agent": False,
+        "accepted_by": human["accepted_by"],
+        "accepted_on": human["accepted_on"],
+        "human_authority_reference": human["authority_reference"],
+        "attestation_digest": "",
+    }
+    rights["attestation_digest"] = canonical_digest(rights, digest_field="attestation_digest")
+    rights_path = output_root / "semantic_teacher_rights.v1.json"
+    rights_path.write_text(canonical_json(rights) + "\n", encoding="utf-8")
+    request: dict[str, Any] = {
+        "schema_version": REQUEST_SCHEMA_VERSION,
+        "source_candidate_inputs_receipt_path": str(candidate_path),
+        "backend_registry_path": str(registry_path),
+        "backend_id": _SEMANTIC_BACKEND_ID,
+        "rights_attestation_path": str(rights_path),
+        "selected_task_ids": [candidate["tasks"][0]["task_id"]],
+        "prompt_policy": PROMPT_POLICY,
+        "output_format": "png",
+        "retry_count": 0,
+        "request_digest": "",
+    }
+    description = prompt_object_description(configuration)
+    if description is not None:
+        request["prompt_policy"] = NAMED_PROMPT_POLICY
+        request["prompt_object_description"] = description
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    packet_root = output_root / "semantic_teacher_packet"
+    materialize_semantic_teacher_image_edit_packet(request=request, output_root=packet_root)
+    return packet_root
+
+
+def _redact_artifixer_runtime_stream(value: Any, *, secrets: Sequence[str]) -> str:
+    text = str(value or "")
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "REDACTED_SECRET")
+    return redacted_failure_text(text)
+
+
+def _emit_artifixer_runtime_diagnostics(
+    *,
+    completed: Any,
+    runtime_result_path: Path,
+    retained_root: Path | None = None,
+    secret_values: Sequence[str] = (),
+) -> None:
+    """Print the runtime's streams to stderr when its outcome is a failure.
+
+    They are captured here, in this process, and nothing else ever sees them:
+    run ...-f1e07c7f-...-171647Z failed the acceptance check and its receipts
+    carried only "scene_configuration_artifixer_runtime_failed" -- the $0.74
+    GPU run produced no way to learn why. stage_producer.log is the one
+    artifact proven to survive into the exported zip, and it is fed from this
+    process's streams, so the tails go there before any decision is made.
+    """
+
+    runtime_status: Any = None
+    if runtime_result_path.is_file():
+        try:
+            runtime_status = json.loads(
+                runtime_result_path.read_text(encoding="utf-8")
+            ).get("status")
+        except (OSError, UnicodeError, ValueError):
+            runtime_status = "<unreadable>"
+    if completed.returncode == 0 and runtime_status == (
+        ARTIFIXER_RUNTIME_ACCEPTED_STATUS
+    ):
+        return
+    # Full streams go to files under the retained runtime directory: run
+    # ...-183325Z proved the inline route lossy -- the runtime's own wget
+    # progress filled the stage tool's 20 KB relay window and pushed both the
+    # marker and the actual error out of the exported log. Files under the
+    # stage output root survive into the exported zip whole.
+    if retained_root is not None:
+        for stream_name in ("stdout", "stderr"):
+            try:
+                (retained_root / f"artifixer_runtime_{stream_name}.log").write_text(
+                    _redact_artifixer_runtime_stream(
+                        getattr(completed, stream_name, "") or "",
+                        secrets=secret_values,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+    print(
+        "scene_configuration_artifixer_runtime_diagnostics "
+        + json.dumps(
+            {
+                "returncode": completed.returncode,
+                "runtime_result_present": runtime_result_path.is_file(),
+                "runtime_status": runtime_status,
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    for stream_name in ("stdout", "stderr"):
+        text = _redact_artifixer_runtime_stream(
+            getattr(completed, stream_name, "") or "",
+            secrets=secret_values,
+        )
+        lines = [
+            line
+            for line in text.splitlines()
+            # Download progress dominates these streams and carries nothing: a
+            # wget progress row is dots, percentages and rates.
+            if not (set(line) <= set(" .0123456789KMGs%") and len(line) > 20)
+        ]
+        tail = "\n".join(lines)[-4_000:]
+        print(
+            f"--- artifixer runtime {stream_name} tail ---\n{tail}",
+            file=sys.stderr,
+        )
+
+
+def _default_semantic_frame_cost(
+    candidate: Mapping[str, Any],
+    *,
+    maximum_cost_per_request_usd: float | None = None,
+) -> float:
+    """Plan one semantic-teacher request without projecting above its own ceiling.
+
+    The registry's ``max_cost_per_request_usd`` is the fail-closed bound every
+    request is admitted against, and the stage cap is sized as sixteen of them
+    (``MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD``). A planning estimate above
+    that bound can never be spent, so scaling it by source size only refuses
+    passes the cap was built to cover: the 2026-09-13 InteriorGS 840938 run
+    projected $0.46875 x 16 = $7.50 against a $4.80 cap for 1280x1280 views
+    and refused before any paid request, while Sunburst bills a 1280x1280
+    high-quality edit well under the $0.30 registry maximum.
+    """
+    largest_pixels = max(
+        (int(frame["image_pixel_count"])
+         for task in candidate.get("tasks") or []
+         for frame in task.get("frames") or []),
+        default=1024 * 1024,
+    )
+    scaled = round(0.3 * max(1.0, largest_pixels / (1024 * 1024)), 6)
+    if maximum_cost_per_request_usd is None:
+        return scaled
+    return round(min(float(maximum_cost_per_request_usd), scaled), 6)
+
+
+def _semantic_max_cost_per_request(packet_root: Path) -> float | None:
+    """The packet backend's registry-bound maximum cost of one edit request.
+
+    Diagnostic hydration replays a sealed checkpoint and never materializes the
+    packet; ``_semantic_runtime_request`` still fails closed on a missing packet
+    wherever a request is actually built.
+    """
+    packet_path = packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json"
+    if not packet_path.is_file():
+        return None
+    packet = _read(
+        packet_path, code="scene_configuration_artifixer_semantic_packet_invalid"
+    )
+    pricing = ((packet.get("backend") or {}).get("execution") or {}).get(
+        "pricing_binding"
+    )
+    value = (pricing or {}).get("max_cost_per_request_usd")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _semantic_runtime_request(
+    *,
+    packet_root: Path,
+    source_commit: str,
+    maximum_cost_usd: float | None = None,
+    expected_request_cost_usd: float | None = None,
+) -> Path:
+    packet = _read(
+        packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json",
+        code="scene_configuration_artifixer_semantic_packet_invalid",
+    )
+    tasks = []
+    supported_sizes = packet["backend"]["execution"]["supported_output_sizes"]
+    for task in packet["tasks"]:
+        for frame in task["frames"]:
+            if (frame.get("frame_role", "semantic_edit") == "semantic_edit"
+                    and f"{frame.get('width')}x{frame.get('height')}" not in supported_sizes):
+                raise TaskEvaluationSceneConfigurationArtifixerError(
+                    "scene_configuration_artifixer_semantic_frame_size_unsupported"
+                )
+        tasks.append(
+            {
+                "task_id": task["task_id"],
+                "frames": [
+                    {
+                        "frame_index": frame["frame_index"],
+                        "camera_id": frame["camera_id"],
+                        "input_rgb": frame["staged_input_rgb"],
+                        "edit_mask": frame["staged_edit_mask"],
+                        "frame_role": frame.get("frame_role", "semantic_edit"),
+                    }
+                    for frame in task["frames"]
+                ],
+            }
+        )
+    request: dict[str, Any] = {
+        "schema_version": SEMANTIC_RUNTIME_REQUEST_SCHEMA_VERSION,
+        "source_commit_sha": source_commit,
+        "source_packet_digest": packet["packet_digest"],
+        "backend": {
+            "registry_entry": packet["backend"]["registry_entry"],
+            "backend_entry_digest": packet["backend"]["backend_entry_digest"],
+            "execution": packet["backend"]["execution"],
+        },
+        "prompt_policy": packet["backend"]["prompt_policy"],
+        "prompt": packet["backend"]["prompt"],
+        "tasks": tasks,
+        "max_parallel_requests": PRODUCTION_MAX_PARALLEL_REQUESTS,
+        # The stage's own cap, so the worker can stop issuing frame requests
+        # once the observed spend would carry past it. Without this the cap is
+        # only checked at settlement, two days after the money is gone: run
+        # ...4dfc5f8e-r3-web-20260827T050053Z billed $0.877128 against a $0.40
+        # reservation and nothing refused it.
+        "maximum_cost_usd": maximum_cost_usd,
+        # Observed per-frame price of the pinned model, so the worker can prove
+        # the cap covers one complete pass before the first paid request. A
+        # partial pass feeds nothing: run ...-163900Z spent $1.10 on five of
+        # eight frames and the stage still failed.
+        "expected_request_cost_usd": expected_request_cost_usd,
+        "retry_count": 0,
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    path = packet_root / "semantic_teacher_image_edit_runtime_request.v1.json"
+    path.write_text(canonical_json(request) + "\n", encoding="utf-8")
+    return path
+
+
+def _stage_openai_token(environment: Mapping[str, str], *, stage: str) -> str:
+    """Read one stage's exclusive OpenAI key so per-stage attribution holds."""
+
+    scope = scene_configuration_openai_stage_scope(environment, stage=stage)
+    token_path = Path(scope["api_key_file"]).expanduser()
+    if token_path.is_symlink() or not token_path.is_file() or (
+        token_path.stat().st_mode & 0o077
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_secret_file_invalid"
+        )
+    token = token_path.read_text(encoding="utf-8").strip()
+    if not token:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_secret_file_invalid"
+        )
+    return token
+
+
+@contextmanager
+def _temporary_openai_key(token: str):
+    previous = os.environ.get("OPENAI_API_KEY")
+    previous_file = os.environ.pop("OPENAI_API_KEY_FILE", None)
+    os.environ["OPENAI_API_KEY"] = token
+    try:
+        yield
+    finally:
+        if previous_file is not None:
+            os.environ["OPENAI_API_KEY_FILE"] = previous_file
+        if previous is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous
+
+
+def _read_artifixer_runtime_result(
+    *,
+    completed: Any,
+    runtime_result_path: Path,
+    evidence_path: Path,
+    secret_values: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Read one nested result and retain its exact refusal before raising."""
+
+    try:
+        return read_artifixer_runtime_result(
+            completed=completed,
+            runtime_result_path=runtime_result_path,
+            evidence_path=evidence_path,
+            secret_values=secret_values,
+        )
+    except ArtifixerRuntimeFailureEvidenceError as exc:
+        raise TaskEvaluationSceneConfigurationArtifixerError(str(exc)) from exc
+
+
+def _run_artifixer_training_round(
+    *,
+    round_root: Path,
+    teacher_receipt_path: Path,
+    candidate: Mapping[str, Any],
+    candidate_path: Path,
+    package_root: Path,
+    stage_input: Mapping[str, Any],
+    tuning: Mapping[str, int],
+    configuration: Mapping[str, Any],
+    environment: Mapping[str, str],
+    runner: Any,
+    semantic_token: str,
+    source_semantic_checkpoint: Mapping[str, Any],
+    post_training_checkpoint_root: Path | None,
+    post_training_checkpoint_output: Path | None,
+    completed_training_reuse: dict | None = None,
+) -> dict[str, Any]:
+    """Train or hydrate one candidate and bind its exact review frames."""
+
+    if not isinstance(candidate.get("appearance_initialization"), Mapping):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_preserved_source_appearance_required")
+
+    local = candidate["appearance_initialization"]["parameter_partition"].get("local_appearance_policy")
+    expected = configuration.get("artifixer_training_policy") or "corrected_only_local_appearance"
+    actual = local.get("mode") if isinstance(local, Mapping) else "masked_original_anchors"
+    if actual != expected:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_training_policy_binding_mismatch")
+
+    if completed_training_reuse is not None:
+        from .artifixer_completed_training_reuse import hydrate_completed_training
+        reused = hydrate_completed_training(
+            reference=completed_training_reuse, candidate=dict(candidate),
+            teacher_receipt_path=teacher_receipt_path, tuning=dict(tuning),
+            configuration_sha256=stage_input["configuration_sha256"],
+            configuration=configuration)
+        by_camera = {row["camera_id"]: row for row in reused["review_frames"]}
+        round_root.mkdir(parents=True, mode=0o700)
+        (round_root / "completed_training_reuse.json").write_text(
+            canonical_json(reused["reuse_receipt"]) + "\n")
+        return {
+            "review_frames": [{"frame_index": row["frame_index"], "camera_id": row["camera_id"],
+                "source_frame": row["input_retained_frame"],
+                "exact_repair_mask": row["input_exact_repair_mask"],
+                "final_frame": by_camera[row["camera_id"]]["final_frame"]}
+                for row in candidate["tasks"][0]["frames"]],
+            "native_appearance_source": Path(reused["native_appearance_path"]),
+            "post_training_binding_digest": reused["reuse_receipt"]["training_identity_digest"],
+            "runtime_result": reused["runtime_result"], "completed_training_reused": True,
+        }
+    round_root.mkdir(parents=True, mode=0o700)
+    dual_root = round_root / "dual_target_inputs"
+    materialize_dual_target_artifixer3d_inputs(
+        source_candidate_inputs_receipt_path=candidate_path,
+        semantic_teacher_receipt_paths=[teacher_receipt_path],
+        output_root=dual_root,
+        transition_radius_pixels=tuning["transition_radius_pixels"],
+    )
+    dual_path = dual_root / "public_scene_artifixer3d_dual_target_inputs.v1.json"
+    _read(
+        dual_path,
+        code="scene_configuration_artifixer_dual_target_inputs_invalid",
+    )
+    use_attestation_path = round_root / "artifixer3d_use_attestation.v1.json"
+    materialize_artifixer3d_use_attestation(
+        candidate_inputs_receipt_path=dual_path,
+        output_path=use_attestation_path,
+        authorized_by=_human_authority(configuration)["accepted_by"],
+    )
+    package_manifest = _read(
+        package_root / f"{COMPONENT_PACKAGE_SCHEMA_VERSION}.json",
+        code="scene_configuration_artifixer_package_invalid",
+    )
+    blueprint_receipt = _read(
+        package_root / "blueprint_source_receipt.json",
+        code="scene_configuration_artifixer_package_invalid",
+    )
+    bundle_root = round_root / "artifixer_bundle"
+    bundle = build_artifixer3d_bundle(
+        candidate_inputs_receipt_path=dual_path,
+        use_attestation_path=use_attestation_path,
+        artifixer_source_directory=package_root / "artifixer_source",
+        artifixer_source_receipt_path=package_root / "artifixer_source_receipt.json",
+        output_root=bundle_root,
+        repository_root=package_root / "blueprint_runtime",
+        blueprint_source_identity={
+            "commit": stage_input["source_commit"],
+            "tree": blueprint_receipt["tree"],
+            "tracked_files_clean": True,
+            "full_byte_component_package_verified": True,
+            "component_package_digest": package_manifest["package_digest"],
+        },
+        pipeline_mode=DUAL_TARGET_PIPELINE_MODE,
+        artifixer3d_steps=tuning["artifixer3d_steps"],
+        random_seed=tuning["random_seed"],
+    )
+    bindings = _post_training_bindings(
+        stage_input=stage_input,
+        package_manifest=package_manifest,
+        tuning=tuning,
+        semantic_teacher_receipt_digest=str(
+            _read(
+                teacher_receipt_path,
+                code="scene_configuration_artifixer_semantic_receipt_invalid",
+            ).get("receipt_digest")
+            or ""
+        ),
+    )
+    post_training_binding_digest = artifixer_post_training_binding_digest(bindings)
+    source_task = candidate["tasks"][0]
+    runtime_result_path: Path | None = None
+    if post_training_checkpoint_root is not None:
+        validate_artifixer_post_training_checkpoint(
+            checkpoint_root=post_training_checkpoint_root,
+            expected_binding_digest=post_training_binding_digest,
+            expected_source_checkpoint_digest=str(
+                source_semantic_checkpoint.get("checkpoint_digest") or ""
+            ),
+        )
+        hydrated_post_training = hydrate_artifixer_post_training_checkpoint(
+            checkpoint_root=post_training_checkpoint_root,
+            expected_binding_digest=post_training_binding_digest,
+        )
+        runtime_result = hydrated_post_training["runtime_result"]
+        generated_by_camera = {
+            str(row["camera_id"]): row
+            for row in hydrated_post_training["review_frames"]
+        }
+        native_appearance_source = Path(
+            hydrated_post_training["native_appearance_path"]
+        )
+    else:
+        extracted = round_root / "artifixer_execution"
+        extract_provider_archive(Path(bundle["bundle"]["path"]), extracted)
+        artifixer_output = round_root / "artifixer_output"
+        completed = runner(
+            [str(extracted / "provider_runtime/run_public_scene_artifixer3d.sh")],
+            cwd=extracted,
+            env={
+                **environment,
+                "BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR": str(
+                    artifixer_output
+                ),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=artifixer_training_timeout_seconds(environment, now_epoch=time.time()),
+        )
+        runtime_result_path = (
+            artifixer_output / "public_scene_artifixer3d_runtime_result.json"
+        )
+        failure_secrets = failure_evidence_secret_values(
+            environment, known_values=(semantic_token,)
+        )
+        _emit_artifixer_runtime_diagnostics(
+            completed=completed,
+            runtime_result_path=runtime_result_path,
+            retained_root=round_root,
+            secret_values=failure_secrets,
+        )
+        runtime_result = _read_artifixer_runtime_result(
+            completed=completed,
+            runtime_result_path=runtime_result_path,
+            evidence_path=round_root / "artifixer_runtime_failure_evidence.v1.json",
+            secret_values=failure_secrets,
+        )
+        runtime_task = runtime_result["tasks"][0]
+        generated_by_camera = {
+            str(row["camera_id"]): {
+                "frame_index": row.get("frame_index"),
+                "camera_id": row["camera_id"],
+                "final_frame": _record(Path(row["path"])),
+            }
+            for row in runtime_task["artifixer3d_review_frames"]
+        }
+        native_appearance_source = Path(
+            runtime_task["native_appearance"]["isaac_nurec_usdz"]["path"]
+        )
+    review_frames: list[dict[str, Any]] = []
+    for source_frame in source_task["frames"]:
+        camera_id = str(source_frame["camera_id"])
+        generated = generated_by_camera.get(camera_id)
+        if generated is None:
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_warm_review_frame_set_invalid"
+            )
+        review_frames.append(
+            {
+                "frame_index": source_frame["frame_index"],
+                "camera_id": camera_id,
+                "source_frame": source_frame["input_retained_frame"],
+                "exact_repair_mask": source_frame["input_exact_repair_mask"],
+                "final_frame": generated["final_frame"],
+            }
+        )
+    if expected == "corrected_only_local_appearance":
+        from .artifixer_appearance_freeze import CORRECTED_ONLY_LOSS_OVERRIDES
+        trained = runtime_result["tasks"][0]
+        if (trained.get("training_supervision") != "corrected_only"
+                or trained.get("loss_overrides") != CORRECTED_ONLY_LOSS_OVERRIDES
+                or trained.get("selected_anchor_indices") != []):
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_corrected_training_loss_mismatch")
+
+    if post_training_checkpoint_output is not None:
+        if runtime_result_path is None:
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_warm_source_checkpoint_invalid"
+            )
+        materialize_artifixer_post_training_checkpoint(
+            source_diagnostic_checkpoint=source_semantic_checkpoint,
+            bindings=bindings,
+            runtime_result_path=runtime_result_path,
+            review_frames=review_frames,
+            native_appearance_path=native_appearance_source,
+            output_root=post_training_checkpoint_output,
+        )
+    return {
+        "review_frames": review_frames,
+        "native_appearance_source": native_appearance_source,
+        "post_training_binding_digest": post_training_binding_digest,
+        "runtime_result": runtime_result,
+    }
+
+
+def _run_artifixer_visual_review_round(
+    *,
+    review_round: int,
+    round_root: Path,
+    output_root: Path,
+    review_frames: list[Mapping[str, Any]],
+    publisher_scene_id: str,
+    task_id: str,
+    rights_path: Path,
+    configuration: Mapping[str, Any],
+    stage_input: Mapping[str, Any],
+    environment: Mapping[str, str],
+    post_training_binding_digest: str,
+    max_cost_usd: float,
+    review_phase: str = "post_training",
+    completed_review: dict | None = None,
+    human_acceptance: dict | None = None,
+) -> dict[str, Any]:
+    """Call the unchanged independent gate for one exact candidate inventory."""
+
+    review_input: dict[str, Any] = {
+        "schema_version": DUAL_TARGET_REVIEW_SCHEMA_VERSION,
+        "status": "paired_target_frames_pending_independent_visual_review",
+        "publisher_scene_id": publisher_scene_id,
+        "review_phase": review_phase,
+        "target_object_description": prompt_object_description(configuration),
+        "review_scope": "source_anchor_exact_mask_and_generated_full_frame_comparison",
+        "tasks": [
+            {
+                "task_id": task_id,
+                "physical_camera_count": len(review_frames),
+                "frames": review_frames,
+            }
+        ],
+        "outside_support_invariance_proven": False,
+        "outside_support_invariance_claimed": False,
+        "semantic_object_absence_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "appearance_repair_qualified": False,
+        "generated_output_is_capture_or_physical_evidence": False,
+        "receipt_digest": "",
+    }
+    review_input["receipt_digest"] = canonical_digest(
+        review_input, digest_field="receipt_digest"
+    )
+    review_input_path = round_root / f"{DUAL_TARGET_REVIEW_SCHEMA_VERSION}.json"
+    review_input_path.write_text(
+        canonical_json(review_input) + "\n", encoding="utf-8"
+    )
+    if human_acceptance is not None and review_phase == "post_training" and review_round == 0:
+        from .task_evaluation_scene_configuration_appearance_review import reuse_human_approval
+        return reuse_human_approval(reference=human_acceptance, current_input_path=review_input_path,
+            output_root=round_root, publisher_instance_id=str(configuration["source_object"]["publisher_instance_id"]),
+            minimum_frame_count=len(review_frames))
+    if completed_review is not None and review_phase == "post_training" and review_round == 0:
+        from .artifixer_completed_training_reuse import reuse_completed_review
+        return reuse_completed_review(reference=completed_review, current_input_path=review_input_path,
+            output_root=round_root, publisher_instance_id=str(configuration["source_object"]["publisher_instance_id"]),
+            minimum_frame_count=len(review_frames))
+    if review_phase == "pre_training_semantic_targets" and review_round == 0:
+        from .task_evaluation_artifixer_pretraining import (
+            CPU_PREPARATION_ENV, REVIEW_CACHE_ENV, reuse_real_pretraining_review,
+        )
+        if environment.get(CPU_PREPARATION_ENV) == "1" and environment.get(REVIEW_CACHE_ENV):
+            cached = reuse_real_pretraining_review(
+                cache_path=environment[REVIEW_CACHE_ENV], current_input_path=review_input_path,
+                output_root=round_root)
+            if cached is not None:
+                return cached
+    rights_digest = _sha256(rights_path)
+    review_rights_path = round_root / "artifixer_ai_visual_review_rights.v1.json"
+    human = _human_authority(configuration)
+    materialize_artifixer_ai_visual_review_rights(
+        configuration_run_id=str(stage_input["run_id"]),
+        source_scene_rights_admission_digest=rights_digest,
+        accepted_by=human["accepted_by"],
+        accepted_on=human["accepted_on"],
+        human_authority_reference=human["authority_reference"],
+        output_path=review_rights_path,
+    )
+    review_scope = scene_configuration_openai_stage_scope(
+        environment, stage="artifixer_visual_review"
+    )
+    review_attestation_path = materialize_stage_scope_attestation(
+        environment,
+        stage="artifixer_visual_review",
+        output_root=round_root / "artifixer_visual_review_scope",
+    )
+    review_token = _stage_openai_token(
+        environment, stage="artifixer_visual_review"
+    )
+    marker_name = (
+        "artifixer_visual_review_provider_call_started.v1.json"
+        if review_round == 0
+        else f"artifixer_visual_review_provider_call_started_round_{review_round}.v1.json"
+    )
+    if review_phase == "pre_training_semantic_targets":
+        marker_name = f"artifixer_semantic_target_review_provider_call_started_round_{review_round}.v1.json"
+    visual_review_call_marker = output_root / marker_name
+    visual_review_call = {
+        "schema_version": "artifixer_visual_review_provider_call_started.v1",
+        "review_round": review_round,
+        "review_phase": review_phase,
+        "post_training_binding_digest": (
+            post_training_binding_digest if review_phase == "post_training" else None
+        ),
+        "source_candidate_binding_digest": post_training_binding_digest,
+        "review_input_digest": review_input["receipt_digest"],
+        "provider_call_may_have_occurred": True,
+        "marker_digest": "",
+    }
+    visual_review_call["marker_digest"] = canonical_digest(
+        visual_review_call, digest_field="marker_digest"
+    )
+    visual_review_call_marker.write_text(
+        canonical_json(visual_review_call) + "\n", encoding="utf-8"
+    )
+    with _temporary_openai_key(review_token):
+        review = run_artifixer_ai_visual_review(
+            final_composite_receipt_path=review_input_path,
+            rights_attestation_path=review_rights_path,
+            configuration_run_id=str(stage_input["run_id"]),
+            publisher_instance_id=str(
+                configuration["source_object"]["publisher_instance_id"]
+            ),
+            minimum_review_frames=int(configuration["required_views"]["minimum"]),
+            output_root=round_root / "independent_visual_review",
+            openai_cost_scope_attestation_path=review_attestation_path,
+            openai_admin_api_key_file=_required_path(
+                environment, "OPENAI_ADMIN_API_KEY_FILE"
+            ),
+            openai_project_id=str(environment.get("OPENAI_PROJECT_ID") or ""),
+            openai_api_key_id=review_scope["api_key_id"],
+            max_cost_usd=max_cost_usd,
+            cost_lane_id=_VISUAL_REVIEW_COST_SCOPE,
+            paid_resource_class=_VISUAL_REVIEW_COST_SCOPE,
+            require_zero_baseline=False,
+        )
+    return {
+        "review": review,
+        "review_input": review_input,
+        "review_input_path": review_input_path,
+    }
+
+
+
+def _execute_bounded_semantic_target_repair(*, reviewed, semantic_request, semantic_result,
+        locality_seal, expected_frame_cost, semantic_cap, work, values, stage_input, token,
+        repair_camera_ids=None):
+    """Use the existing exact-mask, cost-bound repair mechanism at either phase."""
+    review = reviewed["review"]
+    staged_repair = materialize_selective_repair_request(
+        review_input_path=reviewed["review_input_path"],
+        review_execution_path=review["execution_receipt"]["path"],
+        semantic_runtime_request_path=semantic_request,
+        semantic_runtime_result=semantic_result,
+        semantic_locality_receipt_path=locality_seal["receipt_path"],
+        expected_request_cost_usd=expected_frame_cost,
+        maximum_stage_cost_usd=float(semantic_cap or 0),
+        output_root=work / "selective_semantic_repair_request",
+        **({"repair_camera_ids": repair_camera_ids} if repair_camera_ids is not None else {}),
+    )
+    selected_frame_count = int(
+        staged_repair["plan"]["selected_frame_count"]
+    )
+    try:
+        maximum_openai_requests = int(
+            values.get("BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS")
+            or 0
+        )
+    except (TypeError, ValueError) as exc:
+        raise TaskEvaluationArtifixerSelectiveRepairError(
+            "scene_configuration_artifixer_selective_repair_request_cap_invalid"
+        ) from exc
+    base_request_count = int(semantic_result.get("request_count") or 0)
+    if maximum_openai_requests < base_request_count + selected_frame_count + 3:
+        raise TaskEvaluationArtifixerSelectiveRepairError(
+            "scene_configuration_artifixer_selective_repair_request_cap_insufficient"
+        )
+    if not token:
+        token = _stage_openai_token(
+            values, stage="artifixer_semantic_teacher"
+        )
+    repair_request_path = Path(staged_repair["repair_request_path"])
+    repair_output = work / "selective_semantic_repair_output"
+    repair_cost_gate = scene_configuration_openai_stage_gate(
+        environment=values,
+        stage="artifixer_semantic_teacher",
+        run_id=(
+            f"{stage_input['run_id']}-artifixer-semantic-teacher-selective-repair-1"
+        ),
+        request_digest=_sha256(repair_request_path),
+        candidate_digest=staged_repair["plan"]["plan_digest"],
+        output_root=work / "selective_semantic_repair_official_openai_cost",
+        max_cost_usd=staged_repair["plan"]["remaining_stage_cost_usd"],
+    )
+    repair_cost_gate.reserve()
+    try:
+        repair_result = execute_semantic_teacher_image_edits(
+            runtime_request_path=repair_request_path,
+            output_root=repair_output,
+            token=token,
+        )
+    except Exception as exc:
+        repair_cost_gate.complete(
+            provider_call_performed=True,
+            runtime_result_digest=None,
+            runtime_exception_type=type(exc).__name__,
+        )
+        raise
+    repair_cost_gate.complete(
+        provider_call_performed=True,
+        runtime_result_digest=str(repair_result.get("result_digest") or "")
+        or None,
+        runtime_exception_type=None,
+    )
+    merged = merge_selective_repair_outputs(
+        plan_path=staged_repair["plan_path"],
+        semantic_runtime_request_path=semantic_request,
+        semantic_locality_receipt_path=locality_seal["receipt_path"],
+        source_semantic_output_root=Path(
+            locality_seal["semantic_teacher_frames_root"]
+        ).parents[1],
+        source_semantic_result=semantic_result,
+        repair_output_root=repair_output,
+        output_root=work / "selective_semantic_repair_merged",
+    )
+    return staged_repair, repair_result, merged
+
+def _review_semantic_targets_before_training(
+    *, locality_seal: Mapping[str, Any], round_root: Path,
+    output_root: Path, publisher_scene_id: str, task_id: str, rights_path: Path,
+    configuration: Mapping[str, Any], stage_input: Mapping[str, Any],
+    environment: Mapping[str, str], max_cost_usd: float,
+    return_rejected: bool = False, review_round: int = 0,
+) -> dict[str, Any]:
+    """Review the actual composited training targets before invoking training."""
+    rows = locality_seal["receipt"].get("frames") or []
+    if not rows:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_semantic_target_review_inventory_missing"
+        )
+    root = Path(locality_seal["receipt_path"]).parent
+    frames = [{
+        "frame_index": index, "camera_id": row["camera_id"],
+        "source_frame": row["source_frame"],
+        "exact_repair_mask": row["exact_edit_mask"],
+        "exact_repair_mask_encoding": row.get("edit_mask_encoding"),
+        "final_frame": {**row["sealed_semantic_teacher"],
+            "path": str(root / row["sealed_semantic_teacher"]["relative_path"])},
+    } for index, row in enumerate(rows)]
+    round_root.mkdir(parents=True)
+    reviewed = _run_artifixer_visual_review_round(
+        review_round=review_round, review_phase="pre_training_semantic_targets",
+        round_root=round_root, output_root=output_root, review_frames=frames,
+        publisher_scene_id=publisher_scene_id, task_id=task_id, rights_path=rights_path,
+        configuration=configuration, stage_input=stage_input, environment=environment,
+        post_training_binding_digest=locality_seal["receipt"]["receipt_digest"],
+        max_cost_usd=max_cost_usd,
+    )
+    if not return_rejected and (reviewed["review"].get("decision") != "accepted"
+            or not reviewed["review"].get("review_receipt")):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_semantic_targets_rejected_before_training"
+        )
+    return reviewed
+
+
+def _admit_semantic_training_targets(*, locality_seal, work, output_root,
+        publisher_scene_id, task_id, rights_path, configuration, stage_input, values,
+        visual_review_cap, semantic_request, semantic_result, expected_frame_cost,
+        semantic_cap, token, candidate, candidate_path, teacher_receipt_path):
+    """Review, correct once, or admit a coverage-checked subset for training."""
+    from .public_scene_artifixer3d_dual_target_inputs import _source_task_frames, _validated_transforms
+    from .semantic_target_training_selection import MINIMUM_VIEWS, build_selection, repair_cameras_for_coverage
+
+    per_review_cap = visual_review_cap / 3
+    common = dict(output_root=output_root, publisher_scene_id=publisher_scene_id,
+        task_id=task_id, rights_path=rights_path, configuration=configuration,
+        stage_input=stage_input, environment=values, max_cost_usd=per_review_cap,
+        return_rejected=True)
+    reviewed = _review_semantic_targets_before_training(locality_seal=locality_seal,
+        round_root=work / "semantic_target_review", **common)
+    remaining = visual_review_cap - per_review_cap
+    if reviewed["review"].get("decision") == "accepted" and reviewed["review"].get("review_receipt"):
+        return {"teacher_receipt_path": teacher_receipt_path,
+                "remaining_visual_review_cap": remaining, "semantic_repair_used": False}
+    recovery = work / "semantic_target_recovery"
+    recovery.mkdir()
+    repaired = False
+    teacher_root = locality_seal["semantic_teacher_frames_root"]
+    teacher_identity = {"source_semantic_result_digest": semantic_result["result_digest"]}
+    source_frames = _source_task_frames(candidate["tasks"][0])
+    transforms, _ = _validated_transforms(candidate["tasks"][0], source_frames)
+    execution = _read(Path(reviewed["review"]["execution_receipt"]["path"]),
+                      code="scene_configuration_artifixer_target_review_invalid")
+    try:
+        selection = build_selection(review_input=reviewed["review_input"], review_execution=execution,
+                                    transforms=transforms, minimum_views=MINIMUM_VIEWS)
+    except ValueError as exc:
+        if str(exc) not in {"semantic_target_selection_insufficient_approved_views",
+                            "semantic_target_selection_excluded_view_uncovered"}:
+            raise
+    else:
+        (recovery / "training_view_selection.json").write_text(canonical_json(selection) + "\n")
+        admitted_teacher = recovery / "admitted_whole_frame_semantic_teacher.v1.json"
+        materialize_whole_frame_semantic_teacher_receipt(
+            source_candidate_inputs_receipt_path=candidate_path, task_id=task_id,
+            semantic_teacher_frames_root=teacher_root, editor_identity=teacher_identity,
+            prompt_policy=locality_seal["receipt"].get("policy", STRICT_LOCALITY_PROMPT_POLICY),
+            output_path=admitted_teacher, training_view_selection=selection)
+        return {"teacher_receipt_path": admitted_teacher,
+                "remaining_visual_review_cap": remaining, "semantic_repair_used": True}
+    repair_camera_ids = repair_cameras_for_coverage(
+        review_execution=execution, transforms=transforms, minimum_views=MINIMUM_VIEWS)
+    try:
+        staged, repair_result, merged = _execute_bounded_semantic_target_repair(
+            reviewed=reviewed, semantic_request=semantic_request, semantic_result=semantic_result,
+            locality_seal=locality_seal, expected_frame_cost=expected_frame_cost,
+            semantic_cap=semantic_cap, work=recovery, values=values, stage_input=stage_input, token=token,
+            repair_camera_ids=repair_camera_ids)
+    except TaskEvaluationArtifixerSelectiveRepairError as exc:
+        # Insufficient *additional edit* authority may still leave enough approved
+        # views. Invalid bindings, orientations, and failed provider calls do not.
+        if not any(code in str(exc) for code in ("_cost_insufficient", "_cap_insufficient")):
+            raise
+        (recovery / "repair_not_funded.json").write_text(canonical_json({
+            "status": "additional_edit_not_admitted", "reason": str(exc),
+            "provider_mutation_performed": False}) + "\n")
+    else:
+        repaired = True
+        teacher_root = merged["semantic_teacher_frames_root"]
+        teacher_identity.update({"repair_result_digest": repair_result["result_digest"],
+                                 "repair_merge_digest": merged["receipt"]["merge_digest"]})
+        by_camera = {r["camera_id"]: r for r in merged["receipt"]["frame_inventory"]}
+        revised_seal = {"receipt_path": merged["receipt_path"], "receipt": {
+            "receipt_digest": merged["receipt"]["merge_digest"], "frames": [
+                {**row, "sealed_semantic_teacher": by_camera[row["camera_id"]]}
+                for row in locality_seal["receipt"]["frames"]]}}
+        reviewed = _review_semantic_targets_before_training(locality_seal=revised_seal,
+            round_root=recovery / "semantic_target_review_after_repair", review_round=1, **common)
+        remaining -= per_review_cap
+    selection = None
+    if reviewed["review"].get("decision") != "accepted" or not reviewed["review"].get("review_receipt"):
+        source_frames = _source_task_frames(candidate["tasks"][0])
+        transforms, _ = _validated_transforms(candidate["tasks"][0], source_frames)
+        execution = _read(Path(reviewed["review"]["execution_receipt"]["path"]),
+                          code="scene_configuration_artifixer_target_review_invalid")
+        selection = build_selection(review_input=reviewed["review_input"], review_execution=execution,
+            transforms=transforms, minimum_views=MINIMUM_VIEWS)
+        (recovery / "training_view_selection.json").write_text(canonical_json(selection) + "\n")
+    admitted_teacher = recovery / "admitted_whole_frame_semantic_teacher.v1.json"
+    materialize_whole_frame_semantic_teacher_receipt(
+        source_candidate_inputs_receipt_path=candidate_path, task_id=task_id,
+        semantic_teacher_frames_root=teacher_root, editor_identity=teacher_identity,
+        prompt_policy=locality_seal["receipt"].get("policy", STRICT_LOCALITY_PROMPT_POLICY), output_path=admitted_teacher,
+        training_view_selection=selection)
+    return {"teacher_receipt_path": admitted_teacher, "remaining_visual_review_cap": remaining,
+            # An exclusion must not be undone by a later merge against the old set.
+            "semantic_repair_used": repaired or selection is not None}
+
+
+def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope, configuration,
+        authority, authority_path, rights_path, publisher_scene_id, output_root, work, package_root,
+        review_mode):
+    """CPU and bounded API work only; no ArtiFixer training is invoked here."""
+    # A rights-admitted scene arrives with its render still owed. Finish it
+    # here, on the GPU this stage already occupies, before anything reads
+    # the frames.
+    render_inputs = envelope.get("render_inputs_result")
+    checkpoint_root_value = str(values.get(_DIAGNOSTIC_CHECKPOINT_ENV) or "").strip()
+    checkpoint_root = (
+        Path(checkpoint_root_value).expanduser().resolve()
+        if checkpoint_root_value
+        else None
+    )
+    post_training_checkpoint_value = str(
+        values.get(_ARTIFIXER_POST_TRAINING_CHECKPOINT_ENV) or ""
+    ).strip()
+    post_training_checkpoint_root = (
+        Path(post_training_checkpoint_value).expanduser().resolve()
+        if post_training_checkpoint_value
+        else None
+    )
+    semantic_checkpoint: dict[str, Any] | None = None
+    if checkpoint_root is not None:
+        semantic_checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+            checkpoint_root=checkpoint_root
+        )
+        expected_binding_digest = diagnostic_checkpoint_scientific_binding_digest(
+            stage_input=stage_input,
+            render_inputs=render_inputs,
+        )
+        envelope = {
+            **envelope,
+            "render_inputs_result": (
+                hydrate_scene_configuration_diagnostic_render_inputs(
+                    checkpoint_root=checkpoint_root,
+                    expected_scientific_binding_digest=expected_binding_digest,
+                )
+            ),
+        }
+    elif (
+        isinstance(render_inputs, Mapping)
+        and render_inputs.get("status") == PENDING_PROVIDER_RENDER_STATUS
+    ):
+        if values.get("BLUEPRINT_ARTIFIXER_CPU_PRETRAINING_ONLY") == "1":
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_pretraining_source_frames_required")
+        # The bundle records these paths relative to the provider *runtime*
+        # root ("input/render/source_appearance.ply"), not to this component's
+        # package directory. Joining them to package_root looks under
+        # toolchain/components/<name>/package/, where the staged appearance
+        # has never existed.
+        runtime_root = Path(
+            os.environ.get("BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT")
+            or Path(__file__).resolve().parents[1]
+        )
+        appearance = runtime_root / str(
+            (render_inputs.get("source_appearance") or {}).get("path") or ""
+        )
+        envelope = {
+            **envelope,
+            "render_inputs_result": complete_provider_render_inputs(
+                render_inputs=render_inputs,
+                appearance_path=appearance,
+                source_object=configuration["source_object"],
+                output_root=work / "provider_render",
+                input_root=runtime_root,
+            ),
+        }
+    render_handoff = materialize_provider_render_handoff(
+        render_inputs=envelope["render_inputs_result"], output_root=output_root)
+    _preflight, task_id = _materialize_preflight(
+        envelope=envelope,
+        configuration=configuration,
+        authority=authority,
+        authority_path=work / "execution_authority.v1.json",
+        output_path=work / "calibrated_preflight.v1.json",
+    )
+    candidate_root = work / "candidate_inputs"
+    candidate = materialize_artifixer3d_candidate_inputs(
+        calibrated_residual_preflight_path=work / "calibrated_preflight.v1.json",
+        output_root=candidate_root,
+    )
+    candidate_path = candidate_root / "public_scene_artifixer3d_candidate_inputs.v3.json"
+    registry_path = (
+        package_root
+        / "blueprint_runtime/docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
+    )
+    packet_root = _semantic_rights_and_request(
+        candidate=candidate,
+        candidate_path=candidate_path,
+        registry_path=registry_path,
+        configuration=configuration,
+        publisher_scene_id=publisher_scene_id,
+        output_root=work,
+    )
+    semantic_output = work / "semantic_teacher_output"
+    semantic_cap_raw = values.get(
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD"
+    )
+    semantic_cap = float(semantic_cap_raw) if semantic_cap_raw else None
+    expected_frame_cost_raw = values.get(
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_EXPECTED_FRAME_COST_USD"
+    )
+    expected_frame_cost = (
+        float(expected_frame_cost_raw)
+        if expected_frame_cost_raw
+        # Sunburst usage is not measured here yet. Plan against the registry's
+        # per-request maximum; actual usage remains cost evidence.
+        else _default_semantic_frame_cost(
+            candidate,
+            maximum_cost_per_request_usd=_semantic_max_cost_per_request(packet_root),
+        )
+    )
+    semantic_request = _semantic_runtime_request(
+        packet_root=packet_root,
+        source_commit=str(stage_input["source_commit"]),
+        maximum_cost_usd=semantic_cap,
+        expected_request_cost_usd=expected_frame_cost,
+    )
+    from .semantic_teacher_candidate_reuse import attach_retained_candidates
+    retained_candidates = envelope["render_inputs_result"].get("retained_semantic_candidates", [])
+    if not isinstance(retained_candidates, list) or (checkpoint_root is not None and retained_candidates):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_retained_candidates_invalid"
+        )
+    if not retained_candidates and checkpoint_root is None:
+        # A retry re-paid every edit and review although the frames, masks and
+        # backend were unchanged (InteriorGS 840938, 2026-09-13). Reuse the
+        # last attempt's reviewer-accepted raw edits; rejected views are edited
+        # afresh and the whole set is still reviewed.
+        from .semantic_teacher_candidate_discovery import (
+            CAPSULE_ROOT_ENV, DEFAULT_CAPSULE_ROOT, DISCOVERY_ROOT_ENV,
+            discover_retained_candidates, discovery_enabled,
+        )
+        from .task_evaluation_artifixer_pretraining import LOGICAL_ROOT
+        if discovery_enabled(values):
+            discovery = discover_retained_candidates(
+                runtime_request_path=semantic_request, render=envelope["render_inputs_result"],
+                workspace_root=Path(str(values.get(DISCOVERY_ROOT_ENV) or LOGICAL_ROOT)),
+                capsule_root=Path(str(values.get(CAPSULE_ROOT_ENV) or DEFAULT_CAPSULE_ROOT)),
+                output_root=work / "retained_candidate_discovery")
+            retained_candidates = discovery["candidates"]
+    attach_retained_candidates(runtime_request_path=semantic_request, candidates=retained_candidates)
+    token = ""
+    if checkpoint_root is not None:
+        semantic_result = hydrate_scene_configuration_diagnostic_semantic_outputs(
+            checkpoint_root=checkpoint_root,
+            current_semantic_runtime_request=_read(
+                semantic_request,
+                code="scene_configuration_artifixer_semantic_request_invalid",
+            ),
+            output_root=semantic_output,
+        )
+    else:
+        token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
+        semantic_cost_gate = scene_configuration_openai_stage_gate(
+            environment=values,
+            stage="artifixer_semantic_teacher",
+            run_id=f"{stage_input['run_id']}-artifixer-semantic-teacher",
+            request_digest=_sha256(semantic_request),
+            candidate_digest=str(candidate["receipt_digest"]),
+            output_root=work / "semantic_teacher_official_openai_cost",
+        )
+        semantic_cost_gate.reserve()
+        try:
+            semantic_result = execute_semantic_teacher_image_edits(
+                runtime_request_path=semantic_request,
+                output_root=semantic_output,
+                token=token,
+            )
+        except Exception as exc:
+            semantic_cost_gate.complete(
+                provider_call_performed=True,
+                runtime_result_digest=None,
+                runtime_exception_type=type(exc).__name__,
+            )
+            raise
+        semantic_cost_gate.complete(
+            provider_call_performed=bool(semantic_result.get("request_count")),
+            runtime_result_digest=(
+                str(semantic_result.get("result_digest") or "") or None
+            ),
+            runtime_exception_type=None,
+        )
+    if semantic_result.get("status") != "completed_unreviewed_semantic_teacher_candidates":
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_semantic_teacher_failed"
+        )
+    locality_seal = materialize_semantic_locality_seal(
+        semantic_runtime_request_path=semantic_request,
+        semantic_runtime_result=semantic_result,
+        semantic_output_root=semantic_output,
+        output_root=work / "semantic_teacher_exact_support_locality_seal",
+        preserve_editor_output=True,
+        object_core_records_by_camera={
+            row["camera_id"]: row.get("repair_object_core") or row["source_object_mask"]
+            for row in envelope["render_inputs_result"]["derived_frames"]
+            if row.get("repair_object_core") or row.get("source_object_mask")
+        },
+    )
+    teacher_receipt_path = work / "whole_frame_semantic_teacher.v1.json"
+    materialize_whole_frame_semantic_teacher_receipt(
+        source_candidate_inputs_receipt_path=candidate_path,
+        task_id=task_id,
+        semantic_teacher_frames_root=locality_seal["semantic_teacher_frames_root"],
+        editor_identity={
+            "backend_id": semantic_result["backend_id"],
+            "model_snapshot": semantic_result["model_snapshot"],
+            "result_digest": semantic_result["result_digest"],
+            "semantic_locality_seal_receipt_digest": locality_seal["receipt"][
+                "receipt_digest"
+            ],
+        },
+        prompt_policy=f"{PROMPT_POLICY}+{EDITOR_OUTPUT_POLICY}",
+        output_path=teacher_receipt_path,
+    )
+    if checkpoint_root is None:
+        render_inputs_result_path = work / "provider_render_inputs_result.v1.json"
+        render_inputs_result_path.write_text(
+            canonical_json(envelope["render_inputs_result"]) + "\n",
+            encoding="utf-8",
+        )
+        checkpoint_root = output_root / "diagnostic_checkpoint"
+        semantic_checkpoint = materialize_scene_configuration_diagnostic_checkpoint(
+            stage_production_input_path=stage_input_path,
+            render_inputs_result_path=render_inputs_result_path,
+            semantic_runtime_request_path=semantic_request,
+            semantic_runtime_result_path=(
+                semantic_output
+                / f"{SEMANTIC_RUNTIME_RESULT_SCHEMA_VERSION}.json"
+            ),
+            semantic_teacher_receipt_path=teacher_receipt_path,
+            output_root=checkpoint_root,
+        )
+    if semantic_checkpoint is None or checkpoint_root is None:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_warm_source_checkpoint_invalid"
+        )
+    visual_review_cap = float(
+        values.get(
+            "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD"
+        )
+        or 0
+    )
+    semantic_repair_used = False
+    if review_mode == REQUIRED_MODE:
+        admission = _admit_semantic_training_targets(
+            locality_seal=locality_seal, work=work, output_root=output_root,
+            publisher_scene_id=publisher_scene_id, task_id=task_id, rights_path=rights_path,
+            configuration=configuration, stage_input=stage_input, values=values,
+            visual_review_cap=visual_review_cap, semantic_request=semantic_request,
+            semantic_result=semantic_result, expected_frame_cost=expected_frame_cost,
+            semantic_cap=semantic_cap, token=token, candidate=candidate, candidate_path=candidate_path,
+            teacher_receipt_path=teacher_receipt_path)
+        teacher_receipt_path = admission["teacher_receipt_path"]
+        visual_review_cap = admission["remaining_visual_review_cap"]
+        semantic_repair_used = admission["semantic_repair_used"]
+    required_background_policy = {
+        "policy": "registered_local_subset_of_immutable_segment_contribution_candidate",
+        "preserve_source_appearance": True,
+        "require_registered_mesh_support": True,
+        "require_independent_post_training_review": True,
+    }
+    background_policy = configuration.get("background_support_initialization", required_background_policy)
+    if background_policy != required_background_policy or review_mode != REQUIRED_MODE:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_background_policy_invalid")
+    from .artifixer_background_initialization import prepare_background_supported_inputs
+    candidate, candidate_path, teacher_receipt_path = prepare_background_supported_inputs(
+        envelope=envelope, configuration=configuration, candidate=candidate,
+        teacher_receipt_path=teacher_receipt_path,
+        preflight_path=work / "calibrated_preflight.v1.json",
+        output_root=work / "registered_background_repair")
+    return ({
+        "render_handoff": render_handoff,
+        "render_inputs": envelope["render_inputs_result"],
+        "task_id": task_id,
+        "candidate": candidate,
+        "candidate_path": candidate_path,
+        "teacher_receipt_path": teacher_receipt_path,
+        "semantic_request": semantic_request,
+        "semantic_result": semantic_result,
+        "locality_seal": locality_seal,
+        "semantic_checkpoint": semantic_checkpoint,
+        "checkpoint_root": checkpoint_root,
+        "post_training_checkpoint_root": post_training_checkpoint_root,
+        "semantic_cap": semantic_cap,
+        "expected_frame_cost": expected_frame_cost,
+        "visual_review_cap": visual_review_cap,
+        "semantic_repair_used": semantic_repair_used,
+    }, token)
+
+
+def execute_artifixer_component(
+    *,
+    environment: Mapping[str, str] | None = None,
+    runner: Any = run_component_process,
+) -> dict[str, Any]:
+    """Run the released production chain once inside its parent GPU."""
+
+    values = dict(os.environ if environment is None else environment)
+    stage_input_path = _required_path(values, _INPUT_ENV)
+    stage_input = _read(
+        stage_input_path,
+        code="scene_configuration_artifixer_input_invalid",
+    )
+    dependencies = json.loads(_required_path(values, _DEPENDENCIES_ENV).read_text(encoding="utf-8"))
+    stage = stage_input.get("stage") or {}
+    configuration = stage_input.get("configuration") or {}
+    envelope = stage_input.get("construction_envelope") or {}
+    request = envelope.get("request")
+    try:
+        review_mode = (
+            appearance_review_mode(request)
+            if isinstance(request, Mapping)
+            else REQUIRED_MODE
+        )
+    except AppearanceReviewContractError as exc:
+        raise TaskEvaluationSceneConfigurationArtifixerError(str(exc)) from exc
+    if (
+        stage.get("adapter", {}).get("id") != _ADAPTER_ID
+        or configuration.get("schema_version")
+        != "observed_appearance_object_removal_configuration.v1"
+        or review_mode is None
+        or dependencies != []
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_input_invalid"
+        )
+    tuning = _artifixer_tuning(configuration)
+    output_root = _required_path(values, _OUTPUT_ENV)
+    package_root = _required_path(values, _PACKAGE_ENV)
+    component_result_path = _required_path(values, _RESULT_ENV)
+    work = output_root / "released_artifixer_runtime"
+    work.mkdir(mode=0o700)
+    authority, rights_path, publisher_scene_id = _write_execution_authority(
+        envelope=envelope,
+        configuration=configuration,
+        destination=work / "execution_authority.v1.json",
+    )
+    from .task_evaluation_artifixer_pretraining import (
+        CPU_PREPARATION_ENV, GPU_PREPARATION_REQUIRED_ENV,
+        consume_pretraining_capsule, write_pretraining_state,
+    )
+    prepared = consume_pretraining_capsule(environment=values, stage_input=stage_input)
+    from_capsule = prepared is not None
+    if prepared is None:
+        if values.get(GPU_PREPARATION_REQUIRED_ENV) == "1" and values.get(CPU_PREPARATION_ENV) != "1":
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_pretraining_admission_missing")
+        prepared, token = _prepare_semantic_prefix(
+            values=values, stage_input_path=stage_input_path, stage_input=stage_input,
+            envelope=envelope, configuration=configuration, authority=authority,
+            authority_path=work / "execution_authority.v1.json", rights_path=rights_path,
+            publisher_scene_id=publisher_scene_id, output_root=output_root, work=work,
+            package_root=package_root, review_mode=review_mode)
+    else:
+        token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
+    if values.get(CPU_PREPARATION_ENV) == "1":
+        from .artifixer_completed_training_reuse import (
+            CANDIDATES_ENV, SOURCE_ENV, reuse_from_candidates, stage_completed_training)
+        if values.get(SOURCE_ENV):
+            prepared["completed_training_reuse"] = stage_completed_training(
+                source_launch_root=Path(values[SOURCE_ENV]), prepared=prepared,
+                stage_input=stage_input, tuning=tuning,
+                output_root=output_root / "completed_training_reuse")
+        elif values.get(CANDIDATES_ENV):
+            # Discovered same-intent closed launches: reuse the first exact match, train
+            # fresh when none fits, and keep every rejection as evidence either way.
+            reference, rejections = reuse_from_candidates(
+                candidates=[c for c in values[CANDIDATES_ENV].split(os.pathsep) if c],
+                prepared=prepared, stage_input=stage_input, tuning=tuning,
+                output_root=output_root / "completed_training_reuse")
+            prepared["completed_training_reuse_candidates"] = rejections
+            if reference is not None:
+                prepared["completed_training_reuse"] = reference
+        from .artifixer_completed_training_reuse import REVIEW_ENV, stage_completed_review
+        if values.get(REVIEW_ENV):
+            if not prepared.get("completed_training_reuse"):
+                raise TaskEvaluationSceneConfigurationArtifixerError("completed_review_requires_retained_training")
+            prepared["completed_review"] = stage_completed_review(
+                source_root=Path(values[REVIEW_ENV]), output_root=output_root / "completed_review")
+        from .task_evaluation_scene_configuration_appearance_review import HUMAN_REVIEW_ENV, stage_human_approval
+        if values.get(HUMAN_REVIEW_ENV):
+            if not prepared.get("completed_training_reuse") or not values.get(SOURCE_ENV) or values.get(REVIEW_ENV):
+                raise TaskEvaluationSceneConfigurationArtifixerError("human_appearance_requires_exact_completed_training")
+            prepared["human_appearance_acceptance"] = stage_human_approval(
+                source_root=Path(values[HUMAN_REVIEW_ENV]), source_launch_root=Path(values[SOURCE_ENV]),
+                output_root=output_root / "human_appearance_acceptance",
+                completed_training=prepared["completed_training_reuse"],
+                expected_owner=_human_authority(configuration)["accepted_by"])
+        return write_pretraining_state(state=prepared, stage_input=stage_input,
+            output_path=component_result_path)
+    task_id = prepared["task_id"]
+    candidate = prepared["candidate"]
+    candidate_path = Path(prepared["candidate_path"])
+    teacher_receipt_path = Path(prepared["teacher_receipt_path"])
+    semantic_request = Path(prepared["semantic_request"])
+    semantic_result = prepared["semantic_result"]
+    locality_seal = prepared["locality_seal"]
+    semantic_checkpoint = prepared["semantic_checkpoint"]
+    post_training_checkpoint_root = (Path(prepared["post_training_checkpoint_root"])
+        if prepared.get("post_training_checkpoint_root") else None)
+    semantic_cap = prepared["semantic_cap"]
+    expected_frame_cost = prepared["expected_frame_cost"]
+    visual_review_cap = prepared["visual_review_cap"]
+    semantic_repair_used = prepared["semantic_repair_used"]
+    render_handoff = (materialize_capsule_render_handoff(
+        prepared_render_inputs=prepared["render_inputs"],
+        current_render_inputs=envelope["render_inputs_result"], output_root=output_root)
+        if from_capsule else prepared["render_handoff"])
+    first_round_root = work / "artifixer_candidate_round_0"
+    training = _run_artifixer_training_round(
+        round_root=first_round_root,
+        teacher_receipt_path=teacher_receipt_path,
+        candidate=candidate,
+        candidate_path=candidate_path,
+        package_root=package_root,
+        stage_input=stage_input,
+        tuning=tuning,
+        configuration=configuration,
+        environment=values,
+        runner=runner,
+        semantic_token=token,
+        source_semantic_checkpoint=semantic_checkpoint,
+        post_training_checkpoint_root=post_training_checkpoint_root,
+        completed_training_reuse=prepared.get("completed_training_reuse"),
+        post_training_checkpoint_output=(
+            output_root / "artifixer_post_training_checkpoint"
+            if post_training_checkpoint_root is None
+            else None
+        ),
+    )
+    if review_mode == PAUSED_UNGRADED_MODE:
+        review_frames = training["review_frames"]
+        thumbnail = output_root / "configured_task_thumbnail.png"
+        copied_review = output_root / "appearance_visual_review_receipt.v1.json"
+        thumbnail_selection, pause_receipt = (
+            _materialize_ungraded_task_thumbnail_and_receipt(
+                review_frames=review_frames,
+                publisher_instance_id=str(
+                    configuration["source_object"]["publisher_instance_id"]
+                ),
+                minimum_frame_count=int(
+                    (configuration.get("required_views") or {}).get("minimum")
+                    or len(review_frames)
+                ),
+                thumbnail_destination=thumbnail,
+                receipt_destination=copied_review,
+            )
+        )
+        appearance = output_root / "configured_appearance_without_source_object.usdz"
+        shutil.copyfile(training["native_appearance_source"], appearance)
+        removal: dict[str, Any] = {
+            "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
+            "status": "completed_ungraded_generated_appearance_edit",
+            "visual_review_mode": PAUSED_UNGRADED_MODE,
+            "publisher_instance_id": configuration["source_object"][
+                "publisher_instance_id"
+            ],
+            "raw_interiorgs_bytes_sent_to_external_provider": False,
+            "visual_review_receipt_digest": pause_receipt["receipt_digest"],
+            "visual_review_receipt_sha256": _sha256(copied_review),
+            "semantic_object_free_visual_review_passed": False,
+            "multiview_consistency_review_passed": False,
+            "review_provider_call_performed": False,
+            "ungraded_publication_acknowledged": True,
+            "warning_label": PAUSED_UNGRADED_WARNING,
+            "task_thumbnail_selection": thumbnail_selection,
+            "generated_pixels_labeled": True,
+            "appearance_authority": (
+                "generated_support_not_observed_source_or_physics_truth"
+            ),
+            "result_digest": "",
+        }
+        removal["result_digest"] = canonical_digest(
+            removal, digest_field="result_digest"
+        )
+        removal_path = output_root / "appearance_removal_receipt.v1.json"
+        removal_path.write_text(
+            canonical_json(removal) + "\n", encoding="utf-8"
+        )
+        artifacts = [
+            {
+                "role": "configured_appearance_without_source_object",
+                **_component_record(appearance),
+            },
+            {"role": "appearance_removal_receipt", **_component_record(removal_path)},
+            {
+                "role": "appearance_visual_review_receipt",
+                **_component_record(copied_review),
+            },
+            {"role": "configured_task_thumbnail", **_component_record(thumbnail)},
+            render_handoff,
+        ]
+        result = {
+            "schema_version": COMPONENT_RESULT_SCHEMA_VERSION,
+            "status": "completed",
+            "adapter_id": _ADAPTER_ID,
+            "stage_id": stage["stage_id"],
+            "provider_mutations_performed": 0,
+            "nested_paid_execution_requested": False,
+            "appearance_review_status": PAUSED_UNGRADED_MODE,
+            "appearance_quality_graded": False,
+            "ungraded_publication_authorized": True,
+            "artifacts": artifacts,
+            "result_digest": "",
+        }
+        result["result_digest"] = canonical_digest(
+            result, digest_field="result_digest"
+        )
+        component_result_path.write_text(
+            canonical_json(result) + "\n", encoding="utf-8"
+        )
+        return result
+    reviewed = _run_artifixer_visual_review_round(
+        review_round=0,
+        round_root=first_round_root,
+        output_root=output_root,
+        review_frames=training["review_frames"],
+        publisher_scene_id=publisher_scene_id,
+        task_id=task_id,
+        rights_path=rights_path,
+        configuration=configuration,
+        stage_input=stage_input,
+        environment=values,
+        post_training_binding_digest=training["post_training_binding_digest"],
+        max_cost_usd=(visual_review_cap if semantic_repair_used else visual_review_cap / 2),
+        completed_review=prepared.get("completed_review"),
+        human_acceptance=prepared.get("human_appearance_acceptance"),
+    )
+    review = reviewed["review"]
+    review_frames = training["review_frames"]
+    native_appearance_source = training["native_appearance_source"]
+    if review.get("decision") != "accepted" or not review.get("review_receipt"):
+        try:
+            if semantic_repair_used:
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_semantic_repair_round_exhausted")
+            _read(
+                Path(review["execution_receipt"]["path"]),
+                code="scene_configuration_artifixer_selective_repair_review_invalid",
+            )
+            remaining_visual_review_cost = visual_review_cap / 2
+            if remaining_visual_review_cost <= 0:
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_selective_repair_review_cost_insufficient"
+                )
+            staged_repair, repair_result, merged = _execute_bounded_semantic_target_repair(
+                reviewed=reviewed, semantic_request=semantic_request, semantic_result=semantic_result,
+                locality_seal=locality_seal, expected_frame_cost=expected_frame_cost,
+                semantic_cap=semantic_cap, work=work, values=values, stage_input=stage_input, token=token)
+            repaired_teacher_receipt_path = (
+                work / "whole_frame_semantic_teacher_selective_repair_1.v1.json"
+            )
+            materialize_whole_frame_semantic_teacher_receipt(
+                source_candidate_inputs_receipt_path=candidate_path,
+                task_id=task_id,
+                semantic_teacher_frames_root=merged[
+                    "semantic_teacher_frames_root"
+                ],
+                editor_identity={
+                    "backend_id": repair_result["backend_id"],
+                    "model_snapshot": repair_result["model_snapshot"],
+                    "result_digest": merged["receipt"]["merge_digest"],
+                    "source_semantic_result_digest": semantic_result[
+                        "result_digest"
+                    ],
+                    "selective_repair_result_digest": repair_result[
+                        "result_digest"
+                    ],
+                    "selective_repair_plan_digest": staged_repair["plan"][
+                        "plan_digest"
+                    ],
+                },
+                prompt_policy=locality_seal["receipt"].get("policy", STRICT_LOCALITY_PROMPT_POLICY),
+                output_path=repaired_teacher_receipt_path,
+            )
+            repair_round_root = work / "artifixer_candidate_round_1"
+            training = _run_artifixer_training_round(
+                round_root=repair_round_root,
+                teacher_receipt_path=repaired_teacher_receipt_path,
+                candidate=candidate,
+                candidate_path=candidate_path,
+                package_root=package_root,
+                stage_input=stage_input,
+                tuning=tuning,
+                configuration=configuration,
+                environment=values,
+                runner=runner,
+                semantic_token=token,
+                source_semantic_checkpoint=semantic_checkpoint,
+                post_training_checkpoint_root=None,
+                post_training_checkpoint_output=(
+                    output_root / "artifixer_post_training_checkpoint_repair_1"
+                ),
+            )
+            reviewed = _run_artifixer_visual_review_round(
+                review_round=1,
+                round_root=repair_round_root,
+                output_root=output_root,
+                review_frames=training["review_frames"],
+                publisher_scene_id=publisher_scene_id,
+                task_id=task_id,
+                rights_path=rights_path,
+                configuration=configuration,
+                stage_input=stage_input,
+                environment=values,
+                post_training_binding_digest=training[
+                    "post_training_binding_digest"
+                ],
+                max_cost_usd=remaining_visual_review_cost,
+            )
+            review = reviewed["review"]
+            review_frames = training["review_frames"]
+            native_appearance_source = training["native_appearance_source"]
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            TaskEvaluationArtifixerSelectiveRepairError,
+        ) as exc:
+            refusal: dict[str, Any] = {
+                "schema_version": "task_evaluation_artifixer_selective_repair_refusal.v1",
+                "status": "selective_repair_not_admitted",
+                "failure_code": str(exc),
+                "initial_review_execution_digest": str(
+                    review.get("execution_receipt", {}).get("execution_digest")
+                    or ""
+                ),
+                "provider_mutation_performed_by_refusal": False,
+                "second_repair_round_permitted": False,
+                "refusal_digest": "",
+            }
+            refusal["refusal_digest"] = canonical_digest(
+                refusal, digest_field="refusal_digest"
+            )
+            (output_root / "artifixer_selective_repair_refusal.v1.json").write_text(
+                canonical_json(refusal) + "\n", encoding="utf-8"
+            )
+    if review.get("decision") != "accepted" or not review.get("review_receipt"):
+        diagnostic_only = _diagnostic_rejection_permitted(
+            stage_input=stage_input, environment=values
+        )
+        if diagnostic_only:
+            artifacts = _materialize_diagnostic_rejected_artifixer_artifacts(
+                review=review,
+                review_frames=review_frames,
+                native_appearance_source=native_appearance_source,
+                configuration=configuration,
+                output_root=output_root,
+                render_handoff=render_handoff,
+                source_diagnostic_checkpoint_digest=str(
+                    semantic_checkpoint["checkpoint_digest"]
+                ),
+                post_training_binding_digest=str(
+                    training["post_training_binding_digest"]
+                ),
+            )
+            result = {
+                "schema_version": COMPONENT_RESULT_SCHEMA_VERSION,
+                "status": "completed",
+                "adapter_id": _ADAPTER_ID,
+                "stage_id": stage["stage_id"],
+                "provider_mutations_performed": 0,
+                "nested_paid_execution_requested": False,
+                "diagnostic_only": True,
+                "qualification_eligible": False,
+                "configured_revision_publication_permitted": False,
+                "offering_publication_permitted": False,
+                "terminal_e2e_completion_permitted": False,
+                "artifacts": artifacts,
+                "result_digest": "",
+            }
+            result["result_digest"] = canonical_digest(
+                result, digest_field="result_digest"
+            )
+            component_result_path.write_text(
+                canonical_json(result) + "\n", encoding="utf-8"
+            )
+            return result
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_visual_review_rejected"
+        )
+    review_receipt_path = Path(review["review_receipt"]["path"])
+    review_receipt = _read(
+        review_receipt_path,
+        code="scene_configuration_artifixer_visual_review_receipt_invalid",
+    )
+    thumbnail = output_root / "configured_task_thumbnail.png"
+    thumbnail_selection = _materialize_selected_task_thumbnail(
+        review_receipt=review_receipt,
+        review_frames=review_frames,
+        destination=thumbnail,
+    )
+    appearance = output_root / "configured_appearance_without_source_object.usdz"
+    shutil.copyfile(native_appearance_source, appearance)
+    copied_review = output_root / "appearance_visual_review_receipt.v1.json"
+    shutil.copyfile(review_receipt_path, copied_review)
+    from .task_evaluation_scene_configuration_appearance_review import HUMAN_REVIEW_SCHEMA, HUMAN_REMOVAL_STATUS
+    human_accepted = review_receipt.get("schema_version") == HUMAN_REVIEW_SCHEMA
+    removal: dict[str, Any] = {
+        "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
+        "status": HUMAN_REMOVAL_STATUS if human_accepted else "qualified_generated_appearance_edit",
+        "publisher_instance_id": configuration["source_object"]["publisher_instance_id"],
+        "raw_interiorgs_bytes_sent_to_external_provider": False,
+        "visual_review_receipt_digest": review["review_receipt"]["receipt_digest"],
+        "visual_review_receipt_sha256": _sha256(copied_review),
+        "semantic_object_free_visual_review_passed": not human_accepted,
+        "multiview_consistency_review_passed": not human_accepted,
+        **({"human_visual_approval_passed": True, "ai_visual_review_accepted": False} if human_accepted else {}),
+        "task_thumbnail_selection": thumbnail_selection,
+        "generated_pixels_labeled": True,
+        "appearance_authority": "generated_support_not_observed_source_or_physics_truth",
+        "result_digest": "",
+    }
+    removal["result_digest"] = canonical_digest(removal, digest_field="result_digest")
+    removal_path = output_root / "appearance_removal_receipt.v1.json"
+    removal_path.write_text(canonical_json(removal) + "\n", encoding="utf-8")
+    artifacts = [
+        {"role": "configured_appearance_without_source_object", **_component_record(appearance)},
+        {"role": "appearance_removal_receipt", **_component_record(removal_path)},
+        {"role": "appearance_visual_review_receipt", **_component_record(copied_review)},
+        {"role": "configured_task_thumbnail", **_component_record(thumbnail)},
+        render_handoff,
+    ]
+    result = {
+        "schema_version": COMPONENT_RESULT_SCHEMA_VERSION,
+        "status": "completed",
+        "adapter_id": _ADAPTER_ID,
+        "stage_id": stage["stage_id"],
+        "provider_mutations_performed": 0,
+        "nested_paid_execution_requested": False,
+        "artifacts": artifacts,
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    component_result_path.write_text(canonical_json(result) + "\n", encoding="utf-8")
+    return result
+
+
+def main() -> int:
+    execute_artifixer_component()
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+
+
+__all__ = [
+    "TaskEvaluationSceneConfigurationArtifixerError",
+    "execute_artifixer_component",
+    "main",
+]

@@ -43,6 +43,7 @@ from .wam_provider_object_store import (
 
 
 from .spend_authority_consumption_root import consumption_root
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _RETRY_ENV, pre_mutation_offer_reselection_attempts
 
 PROBE_KIND = "adp-aurafusion360-exact-residual"
 PROVIDER_BUNDLE_KIND = "adp_aura_exact_residual"
@@ -70,7 +71,6 @@ GPU_SELECTION_POLICY = {
     ),
 }
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
-_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 CORRECTED_ATTEMPT_PURPOSE = "manual_corrected_aura_exact_residual_execution"
 SCIENTIFIC_SUCCESSOR_PURPOSE = "manual_successor_aura_exact_residual_execution"
@@ -986,7 +986,7 @@ def _authority_environment():
     try:
         for name in _MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ[_RETRY_ENV] = "0"
+        os.environ[_RETRY_ENV] = pre_mutation_offer_reselection_attempts()
         yield
     finally:
         for name, value in previous.items():

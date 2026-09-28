@@ -1,0 +1,16 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-configured-controls-progression.path.json
+Description=Advance configured-controls progression when an episode compilation result lands
+
+[Path]
+# The policy canary's activation needs only the compilation worker's sealed
+# result.  Waking the progression service on that write removes the two-minute
+# timer wait from every no-spend canary; the timer stays armed as the fallback
+# for results that land while a tick is already running.
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/results
+Unit=blueprint-task-evaluation-configured-controls-progression.service
+
+[Install]
+WantedBy=multi-user.target

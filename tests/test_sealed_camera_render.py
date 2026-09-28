@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import json
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -479,3 +481,235 @@ def test_exact_camera_render_places_known_gaussians_at_predicted_pixels(tmp_path
     assert peak_channel(cx, fy * 0.15 + cy) == 2  # blue at (24, 39)
     background = frame[2:8, 2:8]
     assert float(background.max()) < 60.0
+
+
+def test_browser_environment_supplies_a_writable_home(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The headless browser must never inherit an unwritable service HOME.
+
+    Control-plane services run as an account whose home is ``/nonexistent``
+    under ProtectHome. Chromium builds its crashpad database and profile paths
+    from HOME, and aborts on an int3 CHECK when that path is absent -- which
+    production hit as an opaque ``render_harness_failed`` with zero frames.
+    """
+
+    import os as _os
+
+    from blueprint_pipeline.sealed_camera_render import _browser_process_environment
+
+    caller_home = tmp_path / "caller-home"
+    monkeypatch.setenv("HOME", str(caller_home))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    home = tmp_path / "browser-home"
+    environment = _browser_process_environment(home)
+
+    assert environment["HOME"] == str(home)
+    assert home.is_dir()
+    for variable in (
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    ):
+        target = Path(environment[variable])
+        assert target.is_dir(), variable
+        assert home in target.parents
+    # The rest of the environment is preserved, and the caller's own HOME --
+    # which may be /nonexistent -- is not what the browser receives.
+    assert environment.get("PATH") == _os.environ.get("PATH")
+    assert environment["HOME"] != _os.environ.get("HOME")
+    expected_cache = (
+        caller_home / "Library" / "Caches" / "ms-playwright"
+        if sys.platform == "darwin"
+        else caller_home / ".cache" / "ms-playwright"
+    )
+    assert environment["PLAYWRIGHT_BROWSERS_PATH"] == str(expected_cache)
+
+
+def test_browser_environment_preserves_explicit_playwright_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from blueprint_pipeline.sealed_camera_render import _browser_process_environment
+
+    cache = tmp_path / "pinned-playwright-cache"
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(cache))
+    environment = _browser_process_environment(tmp_path / "browser-home")
+
+    assert environment["PLAYWRIGHT_BROWSERS_PATH"] == str(cache)
+
+
+def test_renderer_launches_the_browser_with_that_home(monkeypatch, tmp_path: Path) -> None:
+    """Pin that the harness subprocess actually receives the prepared HOME."""
+
+    import blueprint_pipeline.sealed_camera_render as scr
+
+    observed: dict[str, str] = {}
+
+    class _Popen:
+        def __init__(self, _command, **kwargs):
+            observed.update(kwargs.get("env") or {})
+            self.returncode = 1
+
+    monkeypatch.setattr(scr.subprocess, "Popen", _Popen)
+    monkeypatch.setattr(
+        scr,
+        "_wait_for_renderer_with_progress_watchdog",
+        lambda **_kwargs: ("", "stopped"),
+    )
+    source = inspect.getsource(scr.render_splat_at_exact_cameras)
+    assert "_browser_process_environment" in source
+    assert "env=" in source
+
+
+def test_render_harness_failure_retains_its_page_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The harness already names the cause; classification must not eat it.
+
+    A control-plane reproduction of scene 839873's stage 1 returned exactly
+    ``render_blocker:render_harness_exception; render_harness_failed`` while
+    the harness's own stdout carried
+    ``THREE.WebGLRenderer: Error creating WebGL context`` and the GPU vendor
+    id that explained it. None of the classifier's substrings matched, so the
+    only readable answer was discarded on the way to the caller.
+    """
+
+    from blueprint_pipeline import sealed_camera_render as module
+
+    module._emit_render_harness_diagnostics(
+        returncode=1,
+        stderr="",
+        stdout='{"status": "blocked"}',
+        harness_output={
+            "status": "blocked",
+            "graphics_backend": "egl",
+            "blockers": ["render_harness_exception"],
+            "page_errors": [
+                "console.error: THREE.WebGLRenderer: A WebGL context could not be"
+                " created. Reason: VENDOR = 0x1af4, DEVICE = 0x1050",
+            ],
+            "error": "page.evaluate: Error: THREE.WebGLRenderer: Error creating"
+            " WebGL context.\n    at setupRenderer (render_entry.mjs:25:20)",
+        },
+    )
+
+    captured = capsys.readouterr().err
+    assert "render_harness_failed" in captured
+    assert "graphics_backend='egl'" in captured
+    assert "VENDOR = 0x1af4" in captured
+    assert "setupRenderer" in captured
+
+
+def test_render_harness_diagnostics_redact_and_bound_their_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Credentials must not travel, and one stream must not bury the log."""
+
+    from blueprint_pipeline import sealed_camera_render as module
+
+    noise = "y" * (module._RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES * 3)
+    module._emit_render_harness_diagnostics(
+        returncode=1,
+        stderr=noise + "\nLAST LINE\n",
+        stdout="signed url https://objects.example.test/o?X-Amz-Signature=deadbeefcafe",
+        harness_output={"status": "blocked"},
+    )
+
+    captured = capsys.readouterr().err
+    assert "LAST LINE" in captured
+    assert "earlier bytes dropped" in captured
+    assert "deadbeefcafe" not in captured
+    assert len(captured) < module._RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES * 2
+
+
+def test_digest_bound_provider_renderer_qualifies_and_nothing_weaker_does() -> None:
+    """A rented provider cannot produce the checkout form of this provenance.
+
+    Run ``adp-new-scene-simple-relocation-839873-6e9b81ed-r2-web-20260827T041233Z``
+    rendered all eight camera frames on the GPU and was then refused with
+    ``render_evaluation_renderer_identity_incomplete``. The bundle extracts the
+    renderer into a plain directory, so ``git rev-parse`` inside it returns
+    nothing and the checkout probe can never pass there.
+
+    What that path has instead is stronger: every renderer file reopened byte
+    for byte against a digest sealed at an exact source commit. That form now
+    qualifies -- and nothing weaker does.
+    """
+
+    from blueprint_pipeline import sealed_camera_render as module
+
+    sealed = {
+        "mode": "digest_bound_provider_bundle_renderer",
+        "schema_version": (
+            "task_evaluation_scene_configuration_provider_renderer.v1"
+        ),
+        "renderer_digest": "sha256:" + "a" * 64,
+        "source_runtime_digest": "sha256:" + "b" * 64,
+        "source_commit": "c" * 40,
+        "platform": "linux-x86_64",
+        "file_count": 42,
+        "provider_full_byte_inventory_reopened": True,
+    }
+    assert module._digest_bound_renderer_identity(sealed)
+
+    # Absent, wrong-mode, malformed, or partially-bound identities do not.
+    assert not module._digest_bound_renderer_identity(None)
+    assert not module._digest_bound_renderer_identity({})
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "mode": "checkout_local_runtime"}
+    )
+    for field in ("renderer_digest", "source_runtime_digest", "source_commit"):
+        assert not module._digest_bound_renderer_identity(
+            {**sealed, field: ""}
+        ), f"an empty {field} must not qualify"
+        assert not module._digest_bound_renderer_identity(
+            {key: value for key, value in sealed.items() if key != field}
+        ), f"a missing {field} must not qualify"
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "renderer_digest": "not-a-digest"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "source_runtime_digest": "sha256:abc"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "source_commit": "not-a-commit"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "schema_version": "provider_renderer.v0"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "platform": "darwin-arm64"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "provider_full_byte_inventory_reopened": False}
+    )
+    for invalid_count in (0, -1, True, None):
+        assert not module._digest_bound_renderer_identity(
+            {**sealed, "file_count": invalid_count}
+        )
+
+
+def test_checkout_renderer_identity_still_requires_a_clean_named_revision() -> None:
+    """The repository path keeps exactly the bar it had before."""
+
+    from blueprint_pipeline import sealed_camera_render as module
+
+    complete = {
+        "repository_revision": "d" * 40,
+        "repository_renderer_files_clean": True,
+        "package_version": "1.2.3",
+        "package_lock_digest": "sha256:" + "e" * 64,
+        "dependency_versions": {"@sparkjsdev/spark": "0.1.0"},
+    }
+    assert module._checkout_renderer_identity_complete(complete)
+    assert not module._checkout_renderer_identity_complete(
+        {**complete, "repository_renderer_files_clean": False}
+    )
+    assert not module._checkout_renderer_identity_complete(
+        {**complete, "repository_revision": None}
+    )
+    assert not module._checkout_renderer_identity_complete(
+        {**complete, "dependency_versions": {}}
+    )

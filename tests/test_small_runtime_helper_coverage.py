@@ -259,6 +259,29 @@ def test_skill_sync_copies_skillpacks_and_main_reports_success(tmp_path: Path, c
     assert "[skill-sync] synced 2 skills" in capsys.readouterr().out
 
 
+def test_production_cad_skillpack_declares_access_to_all_pinned_skills() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    manifests = skill_sync.load_skillpack_manifests(repository)
+    skill_sync._validate_unique_skills(manifests)
+    cad_manifest = next(row for row in manifests if row.get("name") == "cad_authoring")
+    expected = {
+        "cad",
+        "cad-viewer",
+        "urdf",
+        "sdf",
+        "srdf",
+        "step-parts",
+        "implicit-cad",
+        "dxf",
+        "gcode",
+        "multi-agent-cad",
+    }
+    assert set(cad_manifest["skills"]) == expected
+    source_root = repository / cad_manifest["source_root"]
+    for skill in expected:
+        assert (source_root / skill / "SKILL.md").is_file()
+
+
 def test_skill_sync_validates_missing_and_duplicate_skillpacks(tmp_path: Path, capsys) -> None:
     with pytest.raises(PipelineError, match="No skill pack manifests"):
         skill_sync.load_skillpack_manifests(tmp_path)

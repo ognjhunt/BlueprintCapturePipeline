@@ -21,6 +21,33 @@ from blueprint_pipeline.native_task_arena_runtime import (
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
+def test_legacy_prismatic_joint_gets_readback_verified_passive_friction_only_on_derived_asset(tmp_path):
+    from pxr import Usd, UsdGeom, UsdPhysics
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_passive_joint_friction_overlay, verify_passive_joint_friction_overlay,
+    )
+
+    sealed, derived = tmp_path / "sealed.usda", tmp_path / "derived.usda"
+    stage = Usd.Stage.CreateNew(str(sealed))
+    root = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(root.GetPrim())
+    UsdPhysics.PrismaticJoint.Define(stage, "/Asset/joints/task_part_joint")
+    stage.GetRootLayer().Save()
+    original_sha = hashlib.sha256(sealed.read_bytes()).hexdigest()
+    record = author_passive_joint_friction_overlay(
+        sealed, derived, joint_prim_path="/Asset/joints/task_part_joint")
+    assert record["static_effort_n"] == 8.0 and record["dynamic_effort_n"] == 1.0
+    assert record["physical_measurement_proven"] is False
+    assert hashlib.sha256(sealed.read_bytes()).hexdigest() == original_sha
+    verify_passive_joint_friction_overlay(derived, record)
+    assert author_passive_joint_friction_overlay(
+        derived, tmp_path / "unused.usda", joint_prim_path="/Asset/joints/task_part_joint") is None
+    assert not (tmp_path / "unused.usda").exists()
+    altered = {**record, "static_effort_n": 0.0}
+    with pytest.raises(NativeTaskArenaRuntimeError, match="passive_joint_readback_mismatch"):
+        verify_passive_joint_friction_overlay(derived, altered)
+
+
 def _camera(role: str, matrix: list[float] | None = None) -> dict:
     wrist = role == "wrist"
     return {
@@ -95,7 +122,12 @@ def test_calibrated_cameras_map_to_role_neutral_native_cfg(
     assert parameters["vertical_aperture_mm"] == pytest.approx(
         20.955 * 180.0 / 320.0
     )
-    assert "rgb_hdr" in parameters["data_types"]
+    # ``rgb_hdr`` makes Isaac Lab's camera force the gaussian tonemapping
+    # flag off, which turns the display-referred splat into a clamped HDR
+    # render; the policies read ``rgb`` and must get the as-is composite.
+    assert "rgb_hdr" not in parameters["data_types"]
+    assert parameters["data_types"][0] == "rgb"
+    assert "distance_to_camera" in parameters["data_types"]
 
 
 def test_rotation_is_converted_to_xyzw_not_legacy_wxyz() -> None:
@@ -196,8 +228,10 @@ class _CameraCfg:
 
 
 class _Embodiment:
+    last_enable_cameras = None
+
     def __init__(self, *, enable_cameras, initial_pose, initial_joint_pose):
-        assert enable_cameras is True
+        type(self).last_enable_cameras = enable_cameras
         self.initial_pose = initial_pose
         self.initial_joint_pose = initial_joint_pose
         self.event_config = SimpleNamespace(
@@ -233,6 +267,7 @@ class _ArenaEnvironment:
 
 class _ArenaBuilder:
     last = None
+    last_render_mode = None
 
     def __init__(self, arena_env, args):
         self.arena_env = arena_env
@@ -240,7 +275,7 @@ class _ArenaBuilder:
         type(self).last = self
 
     def make_registered_and_return_cfg(self, *, render_mode):
-        assert render_mode == "rgb_array"
+        type(self).last_render_mode = render_mode
         cfg = SimpleNamespace(
             sim=SimpleNamespace(), seed=None, decimation=None, episode_length_s=None
         )
@@ -255,6 +290,13 @@ class _ArenaBuilderCfg:
 
 def _install_fake_native_runtime(monkeypatch) -> None:
     from blueprint_pipeline import native_task_arena_preconstruction
+    from blueprint_pipeline import native_task_direct_camera_aim
+
+    # This fixture stops at the builder's configuration boundary ("native-env"
+    # is a sentinel). Actual scene writes and calibration preservation are
+    # exercised by test_native_task_direct_camera_aim with native edge fakes.
+    monkeypatch.setattr(native_task_direct_camera_aim, 'install_native_wrist_camera_attachment',
+        lambda *, env, camera_name: {'source': 'test_configuration_boundary', 'camera_name': camera_name})
 
     preconstruction = {
         "schema_version": "native_task_arena_preconstruction.v1",
@@ -283,6 +325,8 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     )
     modules = {
         "isaaclab": types.ModuleType("isaaclab"),
+        "isaaclab.app": types.ModuleType("isaaclab.app"),
+        "isaaclab.app.settings_manager": types.ModuleType("isaaclab.app.settings_manager"),
         "isaaclab.envs": types.ModuleType("isaaclab.envs"),
         "isaaclab.envs.mdp": types.ModuleType("isaaclab.envs.mdp"),
         "isaaclab.sim": types.ModuleType("isaaclab.sim"),
@@ -337,6 +381,10 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     }
     modules["isaaclab.envs.mdp"].reset_joints_by_offset = object()
     modules["isaaclab.sim"].DomeLightCfg = lambda **kwargs: SimpleNamespace(**kwargs)
+    modules["isaaclab.sim"].CylinderCfg = lambda **kwargs: SimpleNamespace(**kwargs)
+    modules["isaaclab.sim"].PreviewSurfaceCfg = (
+        lambda **kwargs: SimpleNamespace(**kwargs)
+    )
     modules["isaaclab.managers"].EventTermCfg = (
         lambda **kwargs: SimpleNamespace(**kwargs)
     )
@@ -374,6 +422,10 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     modules[
         "isaaclab_physx.renderers.isaac_rtx_renderer_cfg"
     ].IsaacRtxRendererCfg = lambda **kwargs: SimpleNamespace(**kwargs)
+    settings = {}
+    modules["isaaclab.app.settings_manager"].SettingsManager = SimpleNamespace(
+        instance=lambda: SimpleNamespace(set=settings.__setitem__, get=settings.get)
+    )
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -518,6 +570,9 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         "wrist": "wrist_camera",
         "overview": "external_camera_2",
     }
+    assert _Embodiment.last_enable_cameras is True
+    assert _ArenaBuilder.last.args.num_envs == 1
+    assert _ArenaBuilder.last_render_mode == "rgb_array"
     arena_env = _ArenaBuilder.last.arena_env
     joint_wrench = next(
         asset
@@ -550,6 +605,89 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         arena_env.embodiment.camera_config.external_camera_2,
     ):
         assert camera_cfg.renderer_cfg.colorize_semantic_segmentation is False
+
+
+def test_builder_preserves_official_droid_policy_cameras_and_adds_target_marker(
+    monkeypatch,
+) -> None:
+    from blueprint_pipeline.droid_policy_canary_embodiment import (
+        apply_droid_policy_canary_profile,
+    )
+
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["task_spec"] = {
+        "manipulation_strategy": "planar_push",
+        "source_subject_identity": "scene-839873-mug-replacement",
+        "target_position_world_m": [1.2, 2.0, 0.8],
+    }
+    plan = apply_droid_policy_canary_profile(plan)
+
+    built = build_native_task_arena_environment(plan)
+
+    cameras = built.native_configuration_readback["cameras"]
+    assert cameras["external"]["calibration_source"] == "official_arena_droid"
+    assert cameras["external"]["offset_position_m"] == []
+    assert cameras["wrist"]["calibration_source"] == "official_arena_droid"
+    assert cameras["wrist"]["offset_position_m"] == []
+    assert cameras["overview"]["calibration_source"] == "resolved_scene_plan"
+    marker = next(
+        asset
+        for asset in _ArenaBuilder.last.arena_env.scene.assets
+        if asset.name == "policy_target_marker"
+    )
+    assert marker.object_cfg.init_state.pos == pytest.approx((1.2, 2.0, 0.737))
+
+
+def test_builder_clones_lightweight_control_search_without_rendering(
+    monkeypatch,
+) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["objects"].append(
+        {
+            "semantic_role": "scene_appearance",
+            "prim_path": "{ENV_REGEX_NS}/scene_appearance",
+            "object_type": "BASE",
+            "usd_path": "/provider/assets/appearance.usdc",
+            "visible": True,
+            "pose_world": {
+                "position_world_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+        }
+    )
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    built = build_native_task_arena_environment(
+        plan,
+        num_envs=256,
+        enable_cameras=False,
+        include_scene_appearance=False,
+        render_mode=None,
+    )
+
+    assert _ArenaBuilder.last.args.num_envs == 256
+    assert _ArenaBuilder.last_render_mode is None
+    assert _Embodiment.last_enable_cameras is False
+    assert built.camera_scene_names == {}
+    assert "scene_appearance" not in built.scene_asset_names
+    assert built.scene_asset_names["task_object"] == "task_object"
+    assert built.scene_asset_names["scene_collision"] == "scene_collision"
+    assert built.native_configuration_readback["control_search_runtime"] == {
+        "num_envs": 256,
+        "cameras_enabled": False,
+        "scene_appearance_included": False,
+        "render_mode": None,
+    }
+
+
+def test_builder_refuses_vector_env_count_above_guardrail() -> None:
+    with pytest.raises(
+        NativeTaskArenaRuntimeError,
+        match="native_task_arena_vector_runtime_configuration_invalid",
+    ):
+        build_native_task_arena_environment(_sealed_scene_plan(), num_envs=1_025)
 
 
 def test_builder_keeps_inactive_articulated_replacement_and_its_reset(
@@ -606,6 +744,23 @@ def test_rigid_task_keeps_locked_articulation_and_separate_support_collision_cha
     _install_fake_native_runtime(monkeypatch)
     plan = _sealed_scene_plan()
     plan["task_kind"] = "rigid_pick_place"
+    plan["objects"].append(
+        {
+            "name": "task_support",
+            "semantic_role": "task_support",
+            "asset_id": "document_tray",
+            "task_subject": False,
+            "prim_path": "{ENV_REGEX_NS}/task_support",
+            "object_type": "RIGID",
+            "usd_path": "/provider/assets/document-tray.usda",
+            "visible": True,
+            "pose_world": {
+                "position_world_m": [1.2, 2.0, 0.8],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "reset_state": {"joint_positions": {}},
+        }
+    )
     plan["articulation"]["contact_sensors"][1].update(
         sensor_instance_id="task_support_contact__rigid_00",
         logical_sensor_id="task_support_contact",
@@ -638,6 +793,15 @@ def test_rigid_task_keeps_locked_articulation_and_separate_support_collision_cha
     assert built.contact_sensor_names["task_scene_collision"] == (
         "task_scene_collision__rigid_00",
     )
+    support = next(
+        asset
+        for asset in _ArenaBuilder.last.arena_env.scene.assets
+        if asset.name == "task_support"
+    )
+    assert support.reset_event_name == "reset_task_support_state"
+    assert support.spawn_cfg_addon["semantic_tags"] == [("class", "task_support")]
+    assert support.reset_event_cfg.params["asset_cfg"].name == "task_support"
+    assert support.reset_event_cfg.params["reset_joints"] is False
 
 
 def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> None:
@@ -1115,6 +1279,7 @@ def test_static_scene_convex_is_converted_to_triangle_mesh(tmp_path: Path) -> No
 
     assert adaptation is not None
     assert adaptation["converted_prim_paths"] == ["/Root/wall"]
+    assert adaptation["conversion_scope"] == "all_static_convex_collision_meshes"
     assert adaptation["candidate_bytes_modified"] is False
     # the derived scene now passes the gate, and the sealed bytes are untouched
     verify_gpu_compatible_scene_collision(derived)
@@ -1139,6 +1304,40 @@ def test_a_scene_within_tolerance_is_left_alone(tmp_path: Path) -> None:
 
     assert author_gpu_compatible_scene_collision(scene, derived) is None
     assert not derived.exists()
+
+
+def test_non_oblong_static_convex_scene_is_still_kept_as_exact_mesh(
+    tmp_path: Path,
+) -> None:
+    """Support topology must not depend on a mesh crossing a cook aspect ratio."""
+
+    from pxr import Usd, UsdPhysics
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_gpu_compatible_scene_collision,
+    )
+
+    source = tmp_path / "captured_support.usda"
+    source.write_text(
+        OBLONG_COLLISION_USDA.replace("(1800,0,0)", "(20,0,0)")
+        .replace("(1800,250,0)", "(20,20,0)")
+        .replace("(0,250,0)", "(0,20,0)")
+        .replace("(0,0,11)", "(0,0,20)")
+        .replace("(1800,0,11)", "(20,0,20)")
+        .replace("(1800,250,11)", "(20,20,20)")
+        .replace("(0,250,11)", "(0,20,20)"),
+        encoding="utf-8",
+    )
+    derived = tmp_path / "runtime_support.usda"
+
+    adaptation = author_gpu_compatible_scene_collision(source, derived)
+
+    assert adaptation is not None
+    stage = Usd.Stage.Open(str(derived))
+    support = stage.GetPrimAtPath("/Root/wall")
+    assert (
+        UsdPhysics.MeshCollisionAPI(support).GetApproximationAttr().Get() == "none"
+    )
 
 
 def test_presets_is_left_unset_so_the_callback_physics_survives(monkeypatch) -> None:
@@ -1356,3 +1555,125 @@ def test_task_light_readback_uses_spawned_usd_attribute() -> None:
 
     assert result["observed_intensity"] == pytest.approx(1350.0)
     assert result["observed_intensity_scale"] == pytest.approx(0.9)
+
+
+def test_explicit_tabletop_marker_uses_retained_surface_height():
+    from blueprint_pipeline.native_task_arena_runtime import visible_target_marker_parameters
+    marker = {"schema_version": "native_task_target_marker.v1", "shape": "flat_green_disc", "non_colliding": True, "radius_m": 0.06, "surface_position_world_m": [-2.0292786, -2.952289986, 0.275]}
+    plan = {"task_spec": {"visible_target_marker": marker}}
+    position, radius = visible_target_marker_parameters(plan)
+    assert position == pytest.approx((-2.0292786, -2.952289986, 0.276))
+    assert radius == 0.06
+    marker["non_colliding"] = False
+    with pytest.raises(NativeTaskArenaRuntimeError, match="target_marker_invalid"):
+        visible_target_marker_parameters(plan)
+
+
+def test_legacy_droid_marker_position_is_preserved():
+    from blueprint_pipeline.native_task_arena_runtime import visible_target_marker_parameters
+    plan = {"policy_canary_embodiment_profile": {"visible_target_marker": {"shape": "flat_green_disc", "non_colliding": True, "radius_m": 0.06, "position_world_m": [1, 2, 0.34]}}}
+    position, radius = visible_target_marker_parameters(plan)
+    assert position == pytest.approx((1, 2, 0.277))
+    assert radius == 0.06
+
+
+def test_explicit_marker_gets_distinct_visual_semantics(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+    import sys
+    captured = []
+    def cylinder(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(**kwargs)
+    monkeypatch.setattr(sys.modules["isaaclab.sim"], "CylinderCfg", cylinder)
+    plan = _sealed_scene_plan()
+    plan.setdefault("task_spec", {})["visible_target_marker"] = {"schema_version": "native_task_target_marker.v1",
+        "shape": "flat_green_disc", "non_colliding": True, "radius_m": .06,
+        "surface_position_world_m": [1.,2.,.8]}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    build_native_task_arena_environment(plan)
+    assert captured[-1]["semantic_tags"] == [("class", "task_target_marker")]
+    assert captured[-1]["collision_props"] is None
+    assert captured[-1]["rigid_props"] is None
+
+
+def test_yellow_navigation_goal_marker_is_visible_and_non_colliding(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+    import sys
+    from blueprint_pipeline import native_task_arena_runtime
+    captured = []
+
+    def cylinder(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(sys.modules["isaaclab.sim"], "CylinderCfg", cylinder)
+    plan = _sealed_scene_plan()
+    monkeypatch.setattr(native_task_arena_runtime, "g1_navigation_marker_parameters",
+        lambda _plan: ((1.0, 2.0, 0.001), 0.4))
+    plan.setdefault("task_spec", {})["visible_target_marker"] = {
+        "schema_version": "native_task_target_marker.v1",
+        "shape": "flat_green_disc", "non_colliding": True,
+        "radius_m": 0.06, "surface_position_world_m": [0.5, 0.0, 0.7],
+    }
+    plan["task_spec"]["g1_navigation_goal"] = {
+        "schema_version": "native_g1_navigation_goal.v1",
+        "center_world_m": [1.0, 2.0, 0.0],
+        "acceptance_radius_m": 0.3,
+        "max_root_height_drift_m": 0.2,
+        "settle_window_samples": 2,
+        "task_instruction": "Avoid obstacles and move to the yellow marked area.",
+        "visible_target_marker": {
+            "schema_version": "native_task_target_marker.v1",
+            "shape": "flat_yellow_disc", "non_colliding": True,
+            "radius_m": 0.4, "surface_position_world_m": [1.0, 2.0, 0.0],
+        },
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    built = build_native_task_arena_environment(plan)
+    task_marker, navigation_marker = captured[-2:]
+    assert task_marker["visual_material"].diffuse_color == pytest.approx((0.03, 0.8, 0.12))
+    assert task_marker["semantic_tags"] == [("class", "task_target_marker")]
+    assert navigation_marker["collision_props"] is None
+    assert navigation_marker["visual_material"].diffuse_color == pytest.approx((0.95, 0.78, 0.04))
+    assert navigation_marker["semantic_tags"] == [("class", "navigation_goal_marker")]
+    assert "policy_target_marker" in built.scene_asset_names
+    assert "g1_navigation_goal_marker" in built.scene_asset_names
+
+
+def test_g1_navigation_marker_parameters_preserve_task_marker():
+    from blueprint_pipeline.native_task_arena_runtime import (
+        NativeTaskArenaRuntimeError, g1_navigation_marker_parameters,
+        visible_target_marker_parameters,
+    )
+
+    plan = _sealed_scene_plan()
+    plan["task_spec"] = {
+        "task_kind": "rigid_pick_place",
+        "visible_target_marker": {
+            "schema_version": "native_task_target_marker.v1",
+            "shape": "flat_green_disc", "non_colliding": True,
+            "surface_position_world_m": [0.5, 0.0, 0.7], "radius_m": 0.06,
+        },
+        "g1_navigation_goal": {
+            "schema_version": "native_g1_navigation_goal.v1",
+            "center_world_m": [2.0, 0.0, 0.0],
+            "acceptance_radius_m": 0.3,
+            "max_root_height_drift_m": 0.2,
+            "settle_window_samples": 2,
+            "task_instruction": "Avoid obstacles and move to the yellow marked area.",
+            "visible_target_marker": {
+                "schema_version": "native_task_target_marker.v1",
+                "shape": "flat_yellow_disc", "non_colliding": True,
+                "surface_position_world_m": [2.0, 0.0, 0.0], "radius_m": 0.4,
+            },
+        },
+    }
+    with pytest.raises(NativeTaskArenaRuntimeError, match="navigation_marker_robot_invalid"):
+        g1_navigation_marker_parameters(plan)
+    plan["robot"]["robot_id"] = "unitree_g1"
+    task_position, task_radius = visible_target_marker_parameters(plan)
+    navigation_position, navigation_radius = g1_navigation_marker_parameters(plan)
+    assert task_position == pytest.approx((0.5, 0.0, 0.701))
+    assert task_radius == 0.06
+    assert navigation_position == pytest.approx((2.0, 0.0, 0.001))
+    assert navigation_radius == 0.4

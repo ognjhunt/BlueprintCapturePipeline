@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import fcntl
+import gzip
 import inspect
 import json
 import os
+import re
 import shlex
 import subprocess
 import urllib.error
@@ -15,6 +18,7 @@ import pytest
 
 import blueprint_pipeline.vast_provider_adapter as vpa
 import blueprint_pipeline.vast_cuda_runtime_probe as vcrp
+from blueprint_pipeline.vast_args_payload_transport import VAST_ARGS_GZIP_BASE64_MARKER
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -32,9 +36,34 @@ from blueprint_pipeline.vast_provider_adapter import (
     _url_secret_values,
     run_vast_provider_adapter,
 )
+from blueprint_pipeline.vast_provider_bundle_digest_guard import (
+    provider_bundle_digest_guard,
+)
 
 
 pytestmark = pytest.mark.slow
+
+
+def test_provider_bundle_digest_guard_fails_before_extraction() -> None:
+    guard = provider_bundle_digest_guard(
+        "sha256:" + "a" * 64,
+        '"$WORK_DIR/policy-canary.zip"',
+        "policy_canary_bundle_digest_mismatch",
+        "BLUEPRINT_POLICY_CANARY_BUNDLE_SHA256_VERIFIED",
+    )
+
+    assert "sha256sum" in guard
+    assert "policy_canary_bundle_digest_mismatch" in guard
+    assert "BLUEPRINT_POLICY_CANARY_BUNDLE_SHA256_VERIFIED" in guard
+    assert "bundle_digest_rc=86" in guard
+
+
+def _decoded_compressed_script(value: str) -> str:
+    match = re.search(
+        re.escape(VAST_ARGS_GZIP_BASE64_MARKER) + r"([A-Za-z0-9+/=]+)", value
+    )
+    assert match is not None
+    return gzip.decompress(base64.b64decode(match.group(1))).decode("utf-8")
 
 
 def _created_instance_detail(
@@ -148,7 +177,7 @@ def test_warm_cache_proof_survives_a_truncated_noisy_log_tail() -> None:
         "sha256:" + "a" * 64
     )
 
-    assert vpa._runtime_dependency_cache_ready(
+    assert vpa.runtime_dependency_cache_ready(
         startup_log_text=(
             "Error: remote port forwarding failed for listen port 14060\n"
         ),
@@ -1444,6 +1473,63 @@ def test_instance_liveness_rejects_unrecognized_payload_as_exit(
     }
 
 
+def test_remote_progress_probe_is_only_bound_for_policy_canary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Other paid bundles must not call a policy canary SSH probe returning None."""
+
+    calls: list[tuple[object, Path]] = []
+
+    def fake_probe(connection: object, *, attempt_dir: Path) -> dict[str, object]:
+        calls.append((connection, attempt_dir))
+        return {"status": "observed", "milestones": []}
+
+    monkeypatch.setattr(vpa, "probe_policy_canary_remote_progress", fake_probe)
+    assert vpa._remote_progress_probe_for_bundle(
+        "native_g1_development_campaign", tmp_path
+    ) is None
+    assert vpa._remote_progress_probe_for_bundle("native_task_arena", tmp_path) is None
+    canary = vpa._remote_progress_probe_for_bundle(
+        "native_task_arena_policy_canary_session", tmp_path
+    )
+    assert canary is not None
+    assert canary({"status": "running"}) == {"status": "observed", "milestones": []}
+    assert calls == [
+        ({"status": "running"}, tmp_path / "policy_remote_progress_ssh")
+    ]
+
+
+def test_request_logs_tolerates_null_diagnostic_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _no_sleep: None,
+) -> None:
+    monkeypatch.setattr(
+        vpa, "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log"}),
+    )
+    monkeypatch.setattr(
+        vpa, "_fetch_text", lambda *_args, **_kwargs: "BLUEPRINT_VAST_ONSTART_DONE"
+    )
+    monkeypatch.setattr(
+        vpa, "_instance_liveness",
+        lambda **_kwargs: {"observed": True, "status": "running", "exited": False},
+    )
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=2,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        remote_progress_probe=lambda _connection: None,
+    )
+
+    assert result["break_reason"] == "success_marker_found"
+    assert result["remote_progress_status"] == "unavailable"
+
+
 def test_request_logs_dud_container_flicker_is_not_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1608,6 +1694,98 @@ def test_request_logs_ignores_timestamp_only_ssh_forwarding_noise(
     assert attempts[1]["progress_observed"] is False
     assert attempts[2]["structured_progress_observed"] is True
     assert attempts[2]["progress_observed"] is True
+
+
+def test_request_logs_counts_only_new_pinned_remote_cell_milestones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa, "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    snapshots = iter(
+        ["BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n"] * 4
+        + ["BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED\n"]
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(snapshots))
+    monkeypatch.setattr(
+        vpa, "_instance_liveness",
+        lambda **_kwargs: {
+            "observed": True, "status": "running", "exited": False,
+            "ssh_host": "ssh.vast.ai", "ssh_port": 1234,
+        },
+    )
+    remote_calls = {"count": 0}
+
+    def remote_probe(_connection):
+        remote_calls["count"] += 1
+        milestones = ["REMOTE_STAGE:runtime_source_receipt"]
+        if remote_calls["count"] >= 2:
+            milestones.append(
+                "BLUEPRINT_POLICY_CANARY_PROGRESS:cell=0:stage=static_preflight_passed"
+            )
+        return {"status": "observed", "milestones": milestones}
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123, api_key="secret",
+        output_log_path=tmp_path / "onstart.log", secret_values=["secret"],
+        wait_seconds=0, retry_interval_seconds=1, max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED"],
+        no_progress_seconds=999, remote_progress_probe=remote_probe,
+    )
+    attempts = result["log_poll_attempts"]
+    assert result["break_reason"] == "success_marker_found"
+    assert attempts[0]["remote_progress_observed"] is True
+    assert attempts[1]["remote_progress_observed"] is False
+    assert attempts[3]["remote_progress_observed"] is True
+    assert len(result["remote_progress_milestones"]) == 2
+
+
+def test_request_logs_repeated_remote_milestone_cannot_defeat_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa, "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    monkeypatch.setattr(
+        vpa, "_fetch_text",
+        lambda *_args, **_kwargs: "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n",
+    )
+    monkeypatch.setattr(
+        vpa, "_instance_liveness",
+        lambda **_kwargs: {"observed": True, "status": "running", "exited": False},
+    )
+    result = vpa._request_logs_and_fetch(
+        instance_id=123, api_key="secret",
+        output_log_path=tmp_path / "onstart.log", secret_values=["secret"],
+        wait_seconds=0, retry_interval_seconds=1, max_wait_seconds=999,
+        success_markers=["never seen"], no_progress_seconds=15,
+        remote_progress_probe=lambda _connection: {
+            "status": "observed",
+            "milestones": ["REMOTE_STAGE:runtime_source_receipt"],
+        },
+    )
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["remote_progress_milestones"] == [
+        "REMOTE_STAGE:runtime_source_receipt"
+    ]
 
 
 def test_request_logs_persists_last_redacted_snapshot_before_interruption(
@@ -2268,7 +2446,7 @@ def test_vast_adapter_mocked_live_heartbeat_gpu_and_teardown(
             return 200, {"success": True, "new_contract": 555}
         if method == "GET" and path == "/instances/555/":
             return 200, _created_instance_detail(dph_total=0.42)
-        if method == "PUT" and path == "/instances/request_logs/555":
+        if method == "PUT" and path == "/instances/request_logs/555/":
             return 200, {"success": True, "result_url": f"https://logs.example/{len(calls)}"}
         if method == "DELETE" and path == "/instances/555/":
             return 200, {"success": True, "msg": "Instance destroyed successfully"}
@@ -2382,7 +2560,7 @@ def test_vast_adapter_honors_min_gpu_ram_env_in_offer_selection(
             raise AssertionError("24GB offer should be excluded by min GPU RAM")
         if method == "GET" and path == "/instances/2020/":
             return 200, _created_instance_detail(dph_total=0.42)
-        if method == "PUT" and path == "/instances/request_logs/2020":
+        if method == "PUT" and path == "/instances/request_logs/2020/":
             return 200, {"success": True, "result_url": "https://logs.example/min-gpu"}
         if method == "DELETE" and path == "/instances/2020/":
             return 200, {"success": True}
@@ -2484,7 +2662,7 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
             return 200, {"success": True, "new_contract": 3020}
         if method == "GET" and path == "/instances/3020/":
             return 200, _created_instance_detail(dph_total=0.26)
-        if method == "PUT" and path == "/instances/request_logs/3020":
+        if method == "PUT" and path == "/instances/request_logs/3020/":
             return 200, {"success": True, "result_url": "https://logs.example/stale-retry"}
         if method == "DELETE" and path == "/instances/3020/":
             return 200, {"success": True}
@@ -2524,6 +2702,473 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
     teardown = _read_json(tmp_path / "vast_teardown_manifest.json")
     assert teardown["status"] == "completed"
     assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_vast_adapter_empty_create_400_stays_ambiguous_after_offer_absence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    created_paths: list[str] = []
+    catalog_readback_payloads: list[dict[str, object]] = []
+
+    offers = [
+        {
+            "id": 401,
+            "ask_contract_id": 401,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.25,
+            "driver_version": "580.159.03",
+            "machine_id": 9401,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+        {
+            "id": 402,
+            "ask_contract_id": 402,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.26,
+            "driver_version": "580.159.03",
+            "machine_id": 9402,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+    ]
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            if payload.get("id") == {"eq": 401}:
+                catalog_readback_payloads.append(dict(payload))
+                return 200, {"offers": []}
+            return 200, {"offers": offers}
+        if method == "PUT" and path == "/asks/401/":
+            created_paths.append(path)
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/asks/401/",
+                400,
+                "bad request",
+                {},
+                BytesIO(b""),
+            )
+        if method == "PUT" and path == "/asks/402/":
+            created_paths.append(path)
+            return 200, {"success": True, "new_contract": 4020}
+        if method == "GET" and path == "/instances/4020/":
+            return 200, _created_instance_detail(dph_total=0.26)
+        if method == "PUT" and path == "/instances/request_logs/4020/":
+            return 200, {"success": True, "result_url": "https://logs.example/empty-400"}
+        if method == "DELETE" and path == "/instances/4020/":
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        assert url == "https://logs.example/empty-400"
+        return (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "RTX A6000, 580.159.03, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+        )
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "failed"
+    assert created_paths == ["/asks/401/"]
+    assert len(catalog_readback_payloads) == 1
+    assert catalog_readback_payloads[0]["limit"] == 1
+    retry = result["create_failure_diagnosis"]
+    assert retry["definite_create_refusal"] is False
+    assert retry["status"] == "create_failure_not_proven_safe_to_retry"
+    assert retry["selected_offer_absent_from_fresh_search"] is True
+    assert retry["catalog_readback_http_status_code"] == 200
+    assert retry["catalog_readback_offer_count"] == 0
+
+
+def test_vast_adapter_empty_create_400_stays_ambiguous_after_empty_inventory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """An empty listing cannot prove that an ambiguous create will not appear later."""
+
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    created_paths: list[str] = []
+    instance_listings = 0
+
+    offers = [
+        {
+            "id": 501,
+            "ask_contract_id": 501,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.25,
+            "driver_version": "580.159.03",
+            "machine_id": 9501,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+        {
+            "id": 502,
+            "ask_contract_id": 502,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.26,
+            "driver_version": "580.159.03",
+            "machine_id": 9502,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+    ]
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        nonlocal instance_listings
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            instance_listings += 1
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            if payload.get("id") == {"eq": 501}:
+                # The offer is still listed, so the vanished-offer proof does
+                # not apply -- exactly the production case.
+                return 200, {"offers": [offers[0]]}
+            return 200, {"offers": offers}
+        if method == "PUT" and path == "/asks/501/":
+            created_paths.append(path)
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/asks/501/",
+                400,
+                "bad request",
+                {},
+                BytesIO(b""),
+            )
+        if method == "PUT" and path == "/asks/502/":
+            created_paths.append(path)
+            return 200, {"success": True, "new_contract": 5020}
+        if method == "GET" and path == "/instances/5020/":
+            return 200, _created_instance_detail(dph_total=0.26)
+        if method == "PUT" and path == "/instances/request_logs/5020/":
+            return 200, {"success": True, "result_url": "https://logs.example/no-mutation"}
+        if method == "DELETE" and path == "/instances/5020/":
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        assert url == "https://logs.example/no-mutation"
+        return (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "RTX A6000, 580.159.03, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+        )
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "failed"
+    assert created_paths == ["/asks/501/"]
+    assert result["excluded_machine_ids"] == []
+    retry = result["create_failure_diagnosis"]
+    assert retry["definite_create_refusal"] is False
+    assert retry["status"] == "create_failure_not_proven_safe_to_retry"
+    assert retry["selected_offer_absent_from_fresh_search"] is False
+    assert retry["create_produced_no_instance"] is True
+    assert retry["create_inventory_http_status_code"] == 200
+    teardown = _read_json(tmp_path / "vast_teardown_manifest.json")
+    assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_vast_adapter_fails_closed_when_create_mutation_is_unproven(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """No proof, no retry: an unreadable inventory must still fail closed."""
+
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    created_paths: list[str] = []
+    prelaunch_done = False
+
+    offers = [
+        {
+            "id": 601,
+            "ask_contract_id": 601,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.25,
+            "driver_version": "580.159.03",
+            "machine_id": 9601,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+    ]
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        nonlocal prelaunch_done
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            if not prelaunch_done:
+                prelaunch_done = True
+                return 200, {"instances": []}
+            # The post-create listing is the one that must prove non-mutation.
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/instances/",
+                503,
+                "unavailable",
+                {},
+                BytesIO(b""),
+            )
+        if method == "POST" and path == "/bundles/":
+            if payload.get("id") == {"eq": 601}:
+                return 200, {"offers": offers}
+            return 200, {"offers": offers}
+        if method == "PUT" and path == "/asks/601/":
+            created_paths.append(path)
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/asks/601/",
+                400,
+                "bad request",
+                {},
+                BytesIO(b""),
+            )
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "failed"
+    assert result["blockers"] == ["vast_api_http_error"]
+    assert created_paths == ["/asks/601/"]
+    diagnosis = result["create_failure_diagnosis"]
+    assert diagnosis["status"] == "create_failure_not_proven_safe_to_retry"
+    assert diagnosis["create_produced_no_instance"] is False
+    assert diagnosis["create_inventory_error"] == "HTTPError"
+    assert diagnosis["catalog_readback_offer_count"] == 1
+
+
+def test_vast_adapter_researches_empty_capacity_before_authority_or_create(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    search_count = 0
+    created_paths: list[str] = []
+    authority_calls: list[str] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        nonlocal search_count
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            search_count += 1
+            if search_count == 1:
+                return 200, {"offers": []}
+            return 200, {
+                "offers": [
+                    {
+                        "id": 303,
+                        "ask_contract_id": 303,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram": 49152,
+                        "dph_total": 0.25,
+                        "driver_version": "580.159.03",
+                        "machine_id": 9303,
+                        "num_gpus": 1,
+                        "rentable": True,
+                    }
+                ]
+            }
+        if method == "PUT" and path == "/asks/303/":
+            created_paths.append(path)
+            return 200, {"success": True, "new_contract": 3030}
+        if method == "GET" and path == "/instances/3030/":
+            return 200, _created_instance_detail(dph_total=0.25)
+        if method == "PUT" and path == "/instances/request_logs/3030/":
+            return 200, {"success": True, "result_url": "https://logs.example/search-retry"}
+        if method == "DELETE" and path == "/instances/3030/":
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        assert url == "https://logs.example/search-retry"
+        return (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "RTX A6000, 580.159.03, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+        )
+
+    def consume_authority():  # type: ignore[no-untyped-def]
+        authority_calls.append("consumed")
+        return {"status": "consumed", "blockers": []}
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+        pre_provider_mutation_hook=consume_authority,
+        stale_offer_create_retry_limit=0,
+    )
+
+    assert result["status"] == "completed"
+    assert search_count == 2
+    assert created_paths == ["/asks/303/"]
+    assert authority_calls == ["consumed"]
+    offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
+    assert offer["selected_offer"]["ask_contract_id"] == 303
+    assert offer["create_retry_attempts"] == []
+    assert offer["offer_search_retry_attempts"] == [
+        {
+            "attempt": 0,
+            "authority_consumed": False,
+            "blockers": ["no_vast_offer_at_or_below_max_hourly_rate"],
+            "http_status_code": 200,
+            "offer_count": 0,
+            "provider_mutation_performed": False,
+            "raw_secret_values_recorded": False,
+            "status": "no_qualifying_offer_read_only_retry",
+            "wait_seconds": 60.0,
+        }
+    ]
+
+
+def test_vast_adapter_exhausts_empty_capacity_without_authority_or_create(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV, "2")
+    # 2026-09-12: a thin marketplace refills over minutes; the wait between
+    # read-only re-searches is configurable and recorded, and no sleep happens
+    # after the final exhausted search.
+    monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV, "7.5")
+    sleeps: list[float] = []
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda seconds: sleeps.append(seconds))
+    search_count = 0
+    authority_calls: list[str] = []
+
+    def no_offer_api(**kwargs):  # type: ignore[no-untyped-def]
+        nonlocal search_count
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": []}
+        if kwargs["method"] == "POST" and kwargs["path"] == "/bundles/":
+            search_count += 1
+            return 200, {"offers": []}
+        raise AssertionError("provider create reached after empty capacity")
+
+    monkeypatch.setattr(vpa, "_api_json", no_offer_api)
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        session_max_live_minutes=None,
+        pre_provider_mutation_hook=lambda: authority_calls.append("consumed")
+        or {"status": "consumed"},
+        stale_offer_create_retry_limit=0,
+    )
+
+    assert result["status"] == "blocked"
+    assert search_count == 3
+    assert authority_calls == []
+    assert result["provider_create_attempted"] is False
+    assert result["vast_side_effects_may_have_occurred"] is False
+    offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
+    assert len(offer["offer_search_retry_attempts"]) == 2
+    assert all(
+        row["provider_mutation_performed"] is False
+        and row["authority_consumed"] is False
+        and row["wait_seconds"] == 7.5
+        for row in offer["offer_search_retry_attempts"]
+    )
+    assert [s for s in sleeps if s == 7.5] == [7.5, 7.5]
+
+
+def test_empty_offer_search_retry_interval_defaults_to_minutes_of_patience(monkeypatch) -> None:
+    monkeypatch.delenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV, raising=False)
+    assert vpa._vast_empty_offer_search_retry_interval_seconds() == 60.0
+    assert vpa._vast_empty_offer_search_retry_attempts() * vpa._vast_empty_offer_search_retry_interval_seconds() >= 300
+    for raw, expected in (("90", 90.0), ("0", 0.0), ("abc", 60.0), ("-5", 60.0), ("inf", 60.0)):
+        monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV, raw)
+        assert vpa._vast_empty_offer_search_retry_interval_seconds() == expected
 
 
 def test_vast_adapter_exact_campaign_label_and_zero_stale_offer_retry(
@@ -2600,6 +3245,23 @@ def test_vast_adapter_does_not_retry_unrelated_create_http_400() -> None:
     )
     assert vpa._is_stale_offer_create_http_error(error, "invalid image") is False
 
+    empty_error = urllib.error.HTTPError(
+        "https://vast.invalid/api/v0/asks/301/",
+        400,
+        "bad request",
+        {},
+        BytesIO(b""),
+    )
+    assert vpa._is_stale_offer_create_http_error(empty_error, "") is False
+    assert (
+        vpa._is_stale_offer_create_http_error(
+            empty_error,
+            "",
+            selected_offer_absent_from_fresh_search=True,
+        )
+        is False
+    )
+
 
 def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
     tmp_path: Path,
@@ -2660,7 +3322,7 @@ def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
             return 200, {"success": True, "new_contract": 777}
         if method == "GET" and path == "/instances/777/":
             return 200, _created_instance_detail("exited", dph_total=0.2)
-        if method == "PUT" and path == "/instances/request_logs/777":
+        if method == "PUT" and path == "/instances/request_logs/777/":
             return 200, {"success": True, "result_url": "https://logs.example/isaac"}
         if method == "DELETE" and path == "/instances/777/":
             return 200, {"success": True, "msg": "Instance destroyed successfully"}
@@ -3592,17 +4254,18 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
             assert "onstart" not in payload
             assert "args" not in payload
             assert payload["args_str"].startswith("bash -lc ")
-            assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED" in payload["args_str"]
-            assert "BLUEPRINT_VAST_WORK_DIR:$WORK_DIR" in payload["args_str"]
-            assert "/tmp/blueprint_vast_work" in payload["args_str"]
-            assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED" in payload["args_str"]
+            startup_program = _decoded_compressed_script(payload["args_str"])
+            assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED" in startup_program
+            assert "BLUEPRINT_VAST_WORK_DIR:$WORK_DIR" in startup_program
+            assert "/tmp/blueprint_vast_work" in startup_program
+            assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED" in startup_program
             env = payload["env"]
             assert env["BLUEPRINT_EVAL_MANIFEST_URI"].endswith(tunnel_token)
             assert env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith(tunnel_token)
             return 200, {"success": True, "new_contract": 888}
         if method == "GET" and path == "/instances/888/":
             return 200, _created_instance_detail("exited", dph_total=0.31)
-        if method == "PUT" and path == "/instances/request_logs/888":
+        if method == "PUT" and path == "/instances/request_logs/888/":
             return 200, {"success": True, "result_url": "https://logs.example/provider"}
         if method == "DELETE" and path == "/instances/888/":
             return 200, {"success": True, "msg": "Instance destroyed successfully"}
@@ -3816,7 +4479,7 @@ def test_vast_adapter_unitree_groot_bundle_completes_without_video_smoke(
             return 200, {"new_contract": 4241}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/4241/":
             return 200, _created_instance_detail(dph_total=0.13)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/4241":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/4241/":
             return 200, {"success": True, "result_url": "https://logs.example/unitree"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -3929,7 +4592,7 @@ def test_vast_adapter_infers_provider_start_when_log_tail_drops_early_markers(
             return 200, {"success": True, "new_contract": 889}
         if method == "GET" and path == "/instances/889/":
             return 200, _created_instance_detail("exited", dph_total=0.2)
-        if method == "PUT" and path == "/instances/request_logs/889":
+        if method == "PUT" and path == "/instances/request_logs/889/":
             return 200, {"success": True, "result_url": "https://logs.example/tail"}
         if method == "DELETE" and path == "/instances/889/":
             return 200, {"success": True}
@@ -4024,7 +4687,7 @@ def test_vast_adapter_records_machine_avoidlist_on_heartbeat_blocker(
             return 200, {"success": True, "new_contract": 990}
         if method == "GET" and path == "/instances/990/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if method == "PUT" and path == "/instances/request_logs/990":
+        if method == "PUT" and path == "/instances/request_logs/990/":
             return 200, {"success": True, "result_url": "https://logs.example/heartbeat-blocked"}
         if method == "DELETE" and path == "/instances/990/":
             return 200, {"success": True}
@@ -4106,7 +4769,7 @@ def test_vast_adapter_heartbeat_no_progress_has_startup_specific_timeout(
             return 200, {"success": True, "new_contract": 6061}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/6061/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061/":
             return 200, {"success": True, "result_url": "https://logs.example/empty-startup"}
         if kwargs["method"] == "DELETE" and kwargs["path"] == "/instances/6061/":
             return 200, {"success": True}
@@ -4190,7 +4853,7 @@ def test_vast_adapter_accepts_downstream_markers_when_heartbeat_url_fails(
             return 200, {"new_contract": 7071}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/7071/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071/":
             return 200, {"success": True, "result_url": "https://logs.example/downstream"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -4281,7 +4944,7 @@ def test_vast_adapter_records_machine_avoidlist_on_probe_interrupt(
             return 200, {"success": True, "new_contract": 991}
         if method == "GET" and path == "/instances/991/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if method == "PUT" and path == "/instances/request_logs/991":
+        if method == "PUT" and path == "/instances/request_logs/991/":
             raise KeyboardInterrupt("simulated_request_log_interrupt")
         if method == "DELETE" and path == "/instances/991/":
             return 200, {"success": True}
@@ -5262,6 +5925,47 @@ def test_vast_adapter_blueprint_preflight_branch_matrix(
     ]
 
 
+def test_policy_canary_provider_manifest_uses_its_typed_schema() -> None:
+    manifest = {
+        "schema_version": "native_task_arena_policy_canary_provider_bundle.v1",
+        "status": "ready",
+        "blockers": [],
+        "execution_mode": "internal_policy_canary_paired_session",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "episodes_per_policy": 10,
+        "learned_policy_rollout_count": 20,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "expected_output_filename": (
+            "native_task_arena_policy_canary_session_result.v1.json"
+        ),
+        "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "candidate_policy_queried": False,
+        "provider_zero_required_after_return": True,
+    }
+    manifest["input_digest"] = vpa.canonical_digest(
+        manifest,
+        digest_field="input_digest",
+    )
+
+    readiness = vpa._validate_policy_canary_provider_manifest(manifest)
+
+    assert readiness["local_bundle_ready_for_remote_staging"] is True
+    wrong_schema = dict(manifest)
+    wrong_schema["schema_version"] = "native_task_arena_provider_bundle.v1"
+    wrong_schema["input_digest"] = vpa.canonical_digest(
+        wrong_schema,
+        digest_field="input_digest",
+    )
+    with pytest.raises(
+        ValueError,
+        match="native_task_arena_policy_canary_manifest_invalid",
+    ):
+        vpa._validate_policy_canary_provider_manifest(wrong_schema)
+
+
 def test_vast_adapter_small_provider_helper_edges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5359,6 +6063,58 @@ def test_vast_adapter_small_provider_helper_edges(
         "BLUEPRINT_VAST_PROBE": "true",
         "BLUEPRINT_VAST_PROBE_JOB_DIR_BASENAME": "env",
     }
+    runtime_secret = tmp_path / "openai-key"
+    runtime_secret.write_text("sk-ephemeral-test-value\n", encoding="utf-8")
+    runtime_secret.chmod(0o600)
+    secret_values = vpa._runtime_secret_file_values(
+        {"OPENAI_API_KEY_FILE": runtime_secret}
+    )
+    secret_env = vpa._probe_env(
+        job_dir=tmp_path / "secret-env",
+        enable_isaac_smoke=False,
+        runtime_secret_file_values=secret_values,
+        provider_runtime_environment={
+            "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": "sha256:" + "a" * 64,
+            "OPENAI_PROJECT_ID": "proj_test",
+            "OPENAI_API_KEY_ID": "key_test",
+            "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID": "key_semantic",
+            "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID": "key_review",
+            "OPENAI_CONTENT_AGENTS_API_KEY_ID": "key_content_agents",
+        },
+    )
+    bootstrap_name = (
+        vpa.VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX + "OPENAI_API_KEY_FILE"
+    )
+    assert base64.b64decode(secret_env[bootstrap_name]).decode() == (
+        "sk-ephemeral-test-value"
+    )
+    assert secret_env["BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST"] == (
+        "sha256:" + "a" * 64
+    )
+    assert secret_env["OPENAI_PROJECT_ID"] == "proj_test"
+    assert secret_env["OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID"] == (
+        "key_semantic"
+    )
+    with pytest.raises(
+        ValueError, match="invalid_vast_provider_runtime_environment"
+    ):
+        vpa._probe_env(
+            job_dir=tmp_path / "secret-env-refused",
+            enable_isaac_smoke=False,
+            runtime_secret_file_values=secret_values,
+            provider_runtime_environment={
+                "OPENAI_UNREGISTERED_STAGE_API_KEY_ID": "key_other"
+            },
+        )
+    shell = vpa._probe_shell_script(
+        "https://example.com/heartbeat",
+        provider_bundle_kind="task_evaluation_scene_configuration",
+    )
+    assert "BLUEPRINT_VAST_RUNTIME_SECRET_FILES_READY" in shell
+    assert "sk-ephemeral-test-value" not in shell
+    runtime_secret.chmod(0o644)
+    with pytest.raises(ValueError, match="invalid_vast_runtime_secret_file"):
+        vpa._runtime_secret_file_values({"OPENAI_API_KEY_FILE": runtime_secret})
     monkeypatch.setenv(vpa.VAST_FORWARD_SECRET_ENV_VARS_ENV, "SAFE_NAME,MY_API_KEY")
     monkeypatch.setenv("SAFE_NAME", "not-forwarded")
     monkeypatch.setenv("MY_API_KEY", "forwarded-secret")
@@ -5509,6 +6265,20 @@ def test_vast_adapter_small_provider_helper_edges(
     assert 're.fullmatch(r"sha256:[0-9a-f]{64}", value)' in arena_script
     assert 'downloaded_sha" != "$dependency_sha' in arena_script
     assert 'downloaded_size" != "$dependency_size' in arena_script
+    policy_canary_script = vpa._probe_shell_script(
+        "https://heartbeat.example",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="native_task_arena_policy_canary_session",
+        expected_provider_bundle_sha256="sha256:" + "a" * 64,
+    )
+    assert "BLUEPRINT_RUNTIME_DEPENDENCY_URI" in policy_canary_script
+    assert "native_task_runtime_dependency_cache" in policy_canary_script
+    assert "arena_bundle_digest_mismatch" in policy_canary_script
+    assert "BLUEPRINT_VAST_ARENA_BUNDLE_SHA256_VERIFIED" in policy_canary_script
+    assert policy_canary_script.index("arena_bundle_digest_mismatch") < (
+        policy_canary_script.index("-m zipfile -e")
+    )
     layered_env = vpa._probe_env(
         job_dir=tmp_path / "layered-arena",
         enable_isaac_smoke=True,
@@ -5859,7 +6629,7 @@ def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs
             return 200, {"success": True, "new_contract": 556}
         if method == "GET" and path == "/instances/556/":
             return 200, _created_instance_detail(dph_total=0.42)
-        if method == "PUT" and path == "/instances/request_logs/556":
+        if method == "PUT" and path == "/instances/request_logs/556/":
             return 200, {"success": True, "result_url": "https://logs.example/request"}
         if method == "PUT" and path == "/instances/command/556/":
             assert payload is not None
@@ -5900,6 +6670,99 @@ def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs
     assert heartbeat["container_log_result"]["effective_log_source"] == "command_execute_fallback"
     gpu = _read_json(tmp_path / "vast_gpu_sanity_report.json")
     assert gpu["status"] == "completed"
+
+
+def test_native_arena_falls_back_when_vast_log_transport_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "secret-vast-key"
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text(secret + "\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    monkeypatch.setenv(vpa.VAST_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(vpa.VAST_API_GATE_ENV, "true")
+    monkeypatch.setenv(vpa.VAST_INSTANCE_LAUNCH_GATE_ENV, "true")
+    monkeypatch.delenv(vpa.VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV, raising=False)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        calls.append((method, path))
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 101,
+                        "ask_contract_id": 101,
+                        "gpu_name": "RTX 4090",
+                        "dph_total": 0.42,
+                        "num_gpus": 1,
+                        "rentable": True,
+                        "verified": True,
+                    }
+                ]
+            }
+        if method == "PUT" and path == "/asks/101/":
+            return 200, {"success": True, "new_contract": 556}
+        if method == "GET" and path == "/instances/556/":
+            return 200, _created_instance_detail(dph_total=0.42)
+        if method == "PUT" and path == "/instances/request_logs/556/":
+            return 200, {"success": True, "result_url": "https://logs.example/request"}
+        if method == "PUT" and path == "/instances/command/556/":
+            assert payload is not None
+            assert "BLUEPRINT_VAST_ONSTART_STARTED" in payload["command"]
+            return 200, {"success": True, "result_url": "https://logs.example/execute"}
+        if method == "DELETE" and path == "/instances/556/":
+            return 200, {"success": True, "msg": "Instance destroyed successfully"}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        if url == "https://logs.example/request":
+            raise PermissionError("log transport unavailable")
+        if url == "https://logs.example/execute":
+            return (
+                "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+                "RTX 4090, 590.48, 24576 MiB\n"
+                "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        provider_bundle_kind="native_task_arena",
+    )
+
+    assert result["status"] == "completed"
+    assert ("PUT", "/instances/command/556/") in calls
+    heartbeat = _read_json(tmp_path / "vast_startup_probe_manifest.json")
+    assert heartbeat["status"] == "completed"
+    assert heartbeat["container_log_result"]["break_reason"] == (
+        "log_transport_unavailable"
+    )
+    assert heartbeat["container_log_result"]["effective_log_source"] == (
+        "command_execute_fallback"
+    )
 
 
 def test_execute_and_fetch_records_api_error_without_raising(
@@ -6514,6 +7377,7 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV, "0")
     monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setenv("BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN", "true")
     captured: dict[int, object] = {}
@@ -6637,7 +7501,7 @@ def test_vast_adapter_mocked_wam_bundle_marks_isaac_not_required(
             return 200, {"new_contract": 8181}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/8181/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8181":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8181/":
             return 200, {"success": True, "result_url": "https://logs.example/wam"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -6712,7 +7576,7 @@ def test_vast_adapter_isaac_ngc_missing_blocks_smoke_after_gpu(
             return 200, {"new_contract": 9191}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/9191/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/9191":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/9191/":
             return 200, {"success": True, "result_url": "https://logs.example/isaac-ngc"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -6787,7 +7651,7 @@ def test_vast_adapter_provider_blockers_after_mocked_preflight_pass(
             return 200, {"new_contract": 6161}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/6161/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6161":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6161/":
             return 200, {"success": True, "result_url": "https://logs.example/provider-blockers"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -6930,7 +7794,7 @@ def test_vast_adapter_non_rt_gpu_and_gpu_failure_block_isaac_and_provider(
             return 200, {"instances": []}
         if kwargs["method"] == "GET":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061/":
             return 200, {"success": True, "result_url": "https://logs.example/non-rt"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -7004,7 +7868,7 @@ def test_vast_adapter_provider_marker_missing_branches(
             return 200, {"instances": []}
         if kwargs["method"] == "GET":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071/":
             return 200, {"success": True, "result_url": "https://logs.example/missing-markers"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -7548,7 +8412,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
             return 200, {"new_contract": 8081}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/8081/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8081":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8081/":
             return 200, {"success": True, "result_url": "https://logs.example/wam"}
         if kwargs["method"] == "DELETE":
             mutation_order.append("provider_delete")
@@ -7856,6 +8720,34 @@ def test_instance_liveness_retains_the_provider_ssh_endpoint() -> None:
     assert liveness["status"] == "running"
     assert liveness["ssh_host"] == "ssh5.vast.ai"
     assert liveness["ssh_port"] == 41234
+
+
+def test_instance_liveness_prefers_reachable_direct_ssh_mapping_over_relay() -> None:
+    """Warm proof must not strand a reachable pod behind a broken Vast relay."""
+
+    payload = {
+        "instances": [
+            {
+                "id": 49042956,
+                "actual_status": "running",
+                "ssh_host": "ssh1.vast.ai",
+                "ssh_port": 12956,
+                "public_ipaddr": "50.175.95.210",
+                "ports": {
+                    "22/tcp": [
+                        {"HostIp": "0.0.0.0", "HostPort": "53055"},
+                        {"HostIp": "::", "HostPort": "53055"},
+                    ]
+                },
+            }
+        ]
+    }
+
+    liveness = vpa._instance_liveness_from_payload(payload, instance_id=49042956)
+
+    assert liveness["status"] == "running"
+    assert liveness["ssh_host"] == "50.175.95.210"
+    assert liveness["ssh_port"] == 53055
 
 
 def test_instance_liveness_endpoint_is_absent_not_invented() -> None:
@@ -8693,3 +9585,242 @@ def test_interrupt_result_carries_the_signal_context_not_just_a_blocker() -> Non
     assert '"interrupt_signal_manifest_path"' in block
     for key in ("interrupt_signal", "parent_command", "cgroup", "parent_pid"):
         assert f'"{key}"' in block, key
+
+
+def test_environment_machine_avoidlist_path_survives_across_run_roots(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A proven-bad host must outlive the attempt that proved it.
+
+    Runs ...-202000Z and ...-204021Z paid for the same container-exit failure
+    on two machines back to back: each attempt's default avoidlist lives under
+    its own run root and dies with it, so nothing remembered the first host.
+    """
+
+    stable = tmp_path / "persistent" / "vast_machine_avoidlist.json"
+    stable.parent.mkdir()
+    stable.write_text(
+        json.dumps(
+            {
+                "schema_version": "vast_machine_avoidlist.v1",
+                "status": "active",
+                "machine_ids": [140607, 138964],
+                "entries": [],
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_VAST_MACHINE_AVOIDLIST_PATH", str(stable))
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+
+    searched_payloads: list[dict] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            searched_payloads.append(dict(payload))
+            return 200, {"offers": []}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "run-root" / "job",
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=5,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "blocked"
+    manifest = _read_json(
+        tmp_path / "run-root" / "job" / "vast_offer_selection_manifest.json"
+    )
+    assert manifest["machine_avoidlist_path"] == str(stable)
+    assert sorted(manifest["excluded_machine_ids"]) == [138964, 140607]
+
+
+def _retained_render_bundle(tmp_path, *, manifest: dict, members: list[str]):
+    import zipfile as _zipfile
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    bundle = tmp_path / "bundle.zip"
+    with _zipfile.ZipFile(bundle, "w") as archive:
+        for member in members:
+            archive.writestr(member, b"x")
+        archive.writestr(
+            "provider_runtime/adp_retained_scene_gpu_render_manifest.json", json.dumps(manifest)
+        )
+        archive.writestr("provider_runtime/render_request.json", json.dumps({"render_scope": manifest.get("render_scope")}))
+    return bundle
+
+
+_RETAINED_RENDER_COMMON = [
+    "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh",
+    "provider_runtime/adp_retained_scene_render_provider_runner.mjs",
+    "provider_runtime/renderer/render_splat.mjs",
+]
+
+
+def _retained_render_preflight(tmp_path, bundle):
+    from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
+
+    return _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="2026-09-05T14:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_retained_scene_render",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.test/bundle",
+        provider_output_put_url="https://example.test/output",
+    )
+
+
+def test_source_calibration_render_bundle_is_required_by_its_own_manifest_layers(tmp_path):
+    """The SAM calibration variant shares the retained-scene runner but carries its
+    own authority member and the raw scene's layers.  Requiring the retained
+    variant's entries refused a correct bundle before any provider was rented."""
+    manifest = {
+        "schema_version": "adp009d_source_calibration_gpu_render_bundle.v1",
+        "render_scope": "source_calibration",
+        "layers": {"images": {}, "scene_without_target": {}, "target_support": {}},
+    }
+    complete = _retained_render_bundle(
+        tmp_path / "complete",
+        manifest=manifest,
+        members=_RETAINED_RENDER_COMMON
+        + [
+            "provider_runtime/source_calibration_execution_authority.json",
+            "provider_runtime/input/cameras.v1.json",
+            "provider_runtime/input/images.ply",
+            "provider_runtime/input/scene_without_target.ply",
+            "provider_runtime/input/target_support.ply",
+        ],
+    )
+    preflight = _retained_render_preflight(tmp_path / "complete", complete)
+    assert preflight["missing_zip_entries"] == []
+    assert preflight["zip_required_entries_present"] is True
+    assert preflight["render_scope"] == "source_calibration"
+    assert "provider_runtime_bundle_required_entries_missing" not in preflight["blockers"]
+
+    partial = _retained_render_bundle(
+        tmp_path / "partial",
+        manifest=manifest,
+        members=_RETAINED_RENDER_COMMON
+        + [
+            "provider_runtime/source_calibration_execution_authority.json",
+            "provider_runtime/input/cameras.v1.json",
+            "provider_runtime/input/images.ply",
+        ],
+    )
+    preflight = _retained_render_preflight(tmp_path / "partial", partial)
+    assert preflight["missing_zip_entries"] == [
+        "provider_runtime/input/scene_without_target.ply",
+        "provider_runtime/input/target_support.ply",
+    ]
+    assert "provider_runtime_bundle_required_entries_missing" in preflight["blockers"]
+
+    layerless = _retained_render_bundle(
+        tmp_path / "layerless",
+        manifest={**manifest, "layers": {}},
+        members=_RETAINED_RENDER_COMMON
+        + ["provider_runtime/source_calibration_execution_authority.json", "provider_runtime/input/cameras.v1.json"],
+    )
+    preflight = _retained_render_preflight(tmp_path / "layerless", layerless)
+    assert "source_calibration_render_manifest_layers_invalid" in preflight["blockers"]
+
+
+def test_retained_scene_render_bundle_still_requires_the_retained_layers(tmp_path):
+    bundle = _retained_render_bundle(
+        tmp_path / "retained",
+        manifest={"schema_version": "adp009d_retained_scene_gpu_render_bundle.v1", "render_scope": "retained_scene"},
+        members=_RETAINED_RENDER_COMMON + ["provider_runtime/execution_authority.json"],
+    )
+    preflight = _retained_render_preflight(tmp_path / "retained", bundle)
+    assert preflight["missing_zip_entries"] == [
+        "provider_runtime/input/shared_deleted_source_layer.ply",
+        "provider_runtime/input/shared_retained_scene.ply",
+    ]
+    assert "provider_runtime_bundle_required_entries_missing" in preflight["blockers"]
+
+
+def test_uploaded_result_survives_log_failure_before_teardown(tmp_path, monkeypatch):
+    """Exercise the real adapter ordering, not just its output/log poll helper."""
+    _configure_live_gates(tmp_path, monkeypatch)
+    bundle = tmp_path / "bundle.zip"
+    _write_valid_provider_bundle(bundle)
+    output = tmp_path / "result.zip"
+    events = []
+
+    def api(*, method, path, **kwargs):
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {"offers": [{"id": 303, "ask_contract_id": 303,
+                "gpu_name": "RTX 4090", "dph_total": 0.31, "num_gpus": 1,
+                "rentable": True, "verified": True, "driver_version": "580.95.05"}]}
+        if method == "PUT" and path == "/asks/303/":
+            return 200, {"success": True, "new_contract": 888}
+        if method == "GET" and path == "/instances/888/":
+            return 200, _created_instance_detail(dph_total=0.31)
+        if method == "DELETE" and path == "/instances/888/":
+            events.append("teardown")
+            assert output.is_file(), "teardown must follow preservation of observed output"
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def logs(**kwargs):
+        kwargs["output_log_path"].write_text("")
+        return {"output_log_path": str(kwargs["output_log_path"]),
+                "output_probe_observed": True, "break_reason": "output_available",
+                "log_bytes_ever_read": False, "log_transport_failure_streak": 20}
+
+    def download(**kwargs):
+        import zipfile
+        assert kwargs["url"] == "https://example.invalid/output.zip?signed"
+        events.append("download")
+        with zipfile.ZipFile(kwargs["output_path"], "w") as archive:
+            archive.writestr("native_task_arena_construction_result.v1.json",
+                             json.dumps({"status": "blocked", "blockers": ["pregrasp"]}))
+        return {"status": "completed", "download_attempted": True,
+                "downloaded_size_bytes": kwargs["output_path"].stat().st_size}
+
+    monkeypatch.setattr(vpa, "_api_json", api)
+    monkeypatch.setattr(vpa, "_request_logs_and_fetch", logs)
+    monkeypatch.setattr(vpa, "_download_provider_output_with_capacity_guard", download)
+    monkeypatch.setattr(vpa.time, "sleep", lambda _: None)
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path, mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True, allow_instance_launch=True,
+        provider_bundle=bundle, provider_bundle_url="https://example.invalid/bundle.zip?signed",
+        provider_output_put_url="https://example.invalid/output.zip?signed",
+        provider_output_get_url="https://example.invalid/output.zip?signed",
+        provider_runtime_output_zip=output, enable_blueprint_bundle=True,
+        enable_isaac_smoke=True, poll_interval_seconds=0, startup_timeout_seconds=20,
+    )
+    assert events == ["download", "teardown"]
+    assert output.is_file()
+    assert "vast_heartbeat_log_transport_failed" in result["blockers"]
+    assert result["status"] != "completed"
+    assert result["continuing_spend_from_this_run"] is False
+    receipt = _read_json(tmp_path / "vast_provider_output_preclassification_receipt.json")
+    assert receipt["transfer"]["status"] == "completed"
+    assert receipt["startup_or_scientific_success_claimed"] is False

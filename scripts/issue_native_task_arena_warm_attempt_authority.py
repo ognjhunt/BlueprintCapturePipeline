@@ -8,6 +8,9 @@ from collections.abc import Sequence
 import json
 from pathlib import Path
 
+from blueprint_pipeline.native_task_arena_construction_bundle import (
+    load_verified_native_task_arena_construction_bundle,
+)
 from blueprint_pipeline.native_task_arena_controls_bundle import (
     load_verified_native_task_arena_controls_bundle,
 )
@@ -20,6 +23,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--warm-session", required=True)
     parser.add_argument("--bundle-receipt", required=True)
+    parser.add_argument(
+        "--execution-mode",
+        choices=("construction_canary", "controls"),
+        default="controls",
+    )
     parser.add_argument("--blueprint-commit", required=True)
     parser.add_argument("--packet-receipt-digest", required=True)
     parser.add_argument("--runtime-source-packet-digest", required=True)
@@ -29,7 +37,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
-        bundle = load_verified_native_task_arena_controls_bundle(
+        loader = (
+            load_verified_native_task_arena_construction_bundle
+            if args.execution_mode == "construction_canary"
+            else load_verified_native_task_arena_controls_bundle
+        )
+        bundle = loader(
             args.bundle_receipt,
             expected_implementation_commit=args.blueprint_commit,
             expected_packet_receipt_digest=args.packet_receipt_digest,

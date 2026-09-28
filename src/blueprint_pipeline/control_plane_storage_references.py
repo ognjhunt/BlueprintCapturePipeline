@@ -1,0 +1,256 @@
+"""What still references a run or a derived directory: queue messages and settlement records.
+
+A leaf module shared by the storage GC and the retention reasons it reports,
+so neither reaches into the other's private helpers. The GC re-exports these
+names under their old ones for its existing callers.
+"""
+
+from __future__ import annotations
+
+import errno
+import os
+import re
+import stat
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+
+from .control_plane_retained_receipt import RETAINED_RECEIPTS
+
+QUEUE_STATES = ("pending", "processing")
+MAX_QUEUE_MESSAGE_BYTES = 16 * 1024 * 1024
+# A settled scene attempt keeps reopening the local ``launch_receipt.json`` of the
+# launch it settled against.  Offloading that launch run leaves the accounting and
+# controls readers permanently unable to validate the attempt, which strands the
+# whole intent.  Retention therefore has to read the settlement records too, not
+# just the queues.
+SETTLEMENT_RECORD_GLOBS = (
+    "*/attempts/*.json",
+    "*/cancelled-unstarted-controls/*.json",
+    "*/preparations/*.json",
+)
+
+
+class QueueReferenceUnreadable(ValueError):
+    """A queue root, state directory or row that cannot be read proves nothing about what it names."""
+
+
+class _RowReplaced(QueueReferenceUnreadable):
+    """The name held another file when it was opened than when its lstat was taken."""
+
+
+def queue_reference_text(
+    queue_roots: Sequence[str | Path],
+    states: Sequence[str] | Mapping[str, Sequence[str]] | None = QUEUE_STATES,
+    *,
+    strict: bool = False,
+) -> str:
+    """Concatenate queue messages; a name in them is live.
+
+    ``states`` are the state directories read under each root: one sequence for
+    every root, a mapping from a root's directory name to its states (a root it
+    does not name reads ``QUEUE_STATES``), or None for every directory the root
+    holds. Every row is read through a descriptor that follows no link and waits
+    for no writer (``_row_text``), so no row can block a read. By default only
+    pending and processing rows are read, and a linked, oversized, unreadable or
+    non-UTF-8 row, one that is not a regular file (a FIFO), one swapped after its
+    lstat, or a linked state directory is skipped: every original caller reads
+    that way. ``strict`` raises ``QueueReferenceUnreadable`` for each of those
+    instead, and for a linked queue root, since a row that cannot be read proves
+    nothing about what it names. A missing root or state directory holds no rows
+    either way, and a row that moved to another state between the listing and
+    the read is skipped where it was: a strict caller reads twice and unions, so
+    it is seen where it went.
+    """
+
+    chunks: list[str] = []
+    for raw_root in queue_roots:
+        root = Path(raw_root).expanduser()
+        for state in _queue_states(root, states, strict=strict):
+            directory = root / state
+            if strict:
+                chunks.extend(_strict_rows(directory))
+                continue
+            if not directory.is_dir() or directory.is_symlink():
+                continue
+            for path in sorted(directory.glob("*.json")):
+                try:
+                    chunks.append(_row_text(path))
+                except (FileNotFoundError, QueueReferenceUnreadable):
+                    continue
+    return "\n".join(chunks)
+
+
+def _queue_states(root: Path, states, *, strict: bool) -> list[str]:
+    if strict and root.is_symlink():
+        raise QueueReferenceUnreadable("queue_root_linked")
+    if isinstance(states, Mapping):
+        return list(states.get(root.name, QUEUE_STATES))
+    if states is not None:
+        return list(states)
+    try:
+        if root.is_symlink():
+            return []
+        if not root.is_dir():
+            return []
+        with os.scandir(root) as entries:
+            children = sorted(entries, key=lambda entry: entry.name)
+            linked = [entry.name for entry in children if entry.is_symlink()]
+            if linked and strict:
+                raise QueueReferenceUnreadable("queue_state_linked")
+            return [entry.name for entry in children if not entry.is_symlink() and entry.is_dir()]
+    except OSError as exc:
+        if strict:
+            raise QueueReferenceUnreadable("queue_root_unreadable") from exc
+        return []
+
+
+def _strict_rows(directory: Path) -> list[str]:
+    """Every ``*.json`` row of one state directory, or ``QueueReferenceUnreadable``.
+
+    Each row is read through a descriptor opened without following a link or
+    waiting for a writer (``_read_row``), so a row swapped for a link, a FIFO or
+    another file after its lstat refuses the read instead of hanging it or being
+    read unchecked.
+    """
+
+    try:
+        if directory.is_symlink():
+            raise QueueReferenceUnreadable("queue_state_linked")
+        if not directory.exists():
+            return []
+        if not directory.is_dir():
+            raise QueueReferenceUnreadable("queue_state_not_a_directory")
+        with os.scandir(directory) as entries:
+            names = sorted(entry.name for entry in entries if entry.name.endswith(".json"))
+    except OSError as exc:
+        raise QueueReferenceUnreadable("queue_state_unreadable") from exc
+    rows: list[str] = []
+    for name in names:
+        try:
+            rows.append(_row_text(directory / name))
+        except FileNotFoundError:
+            # Moved to another state since the listing: callers read twice and union, so it is
+            # seen where it went. A row that is linked, not regular, oversized or unreadable is not.
+            continue
+    return rows
+
+
+def _row_text(path: Path) -> str:
+    """One row's text: ``FileNotFoundError`` when it is gone, ``QueueReferenceUnreadable`` when it
+    cannot be read.
+
+    The row must be a regular file within the size limit when its lstat is
+    taken, and is then read by ``_read_row``. The strict reader raises what this
+    refuses; the original reader skips it. A name that held another file when it
+    was opened is read once more: the dispatcher claims a row by creating an
+    empty placeholder in ``processing/`` and replacing the row onto it, so a read
+    between the two sees the name change once. A second change still refuses it.
+    """
+
+    try:
+        return _checked_row_text(path)
+    except _RowReplaced:
+        return _checked_row_text(path)
+
+
+def _checked_row_text(path: Path) -> str:
+    try:
+        observed = path.lstat()
+        if stat.S_ISLNK(observed.st_mode):
+            raise QueueReferenceUnreadable("queue_row_linked")
+        if not stat.S_ISREG(observed.st_mode):
+            raise QueueReferenceUnreadable("queue_row_not_regular")
+        if observed.st_size > MAX_QUEUE_MESSAGE_BYTES:
+            raise QueueReferenceUnreadable("queue_row_oversized")
+        return _read_row(path, observed)
+    except FileNotFoundError:
+        raise
+    except (OSError, UnicodeDecodeError) as exc:
+        raise QueueReferenceUnreadable("queue_row_unreadable") from exc
+
+
+def _read_row(path: Path, observed: os.stat_result) -> str:
+    """The row its lstat ``observed``, read through a descriptor that must still be that file.
+
+    ``O_NOFOLLOW`` refuses a name swapped for a link (``queue_row_linked``) and
+    ``O_NONBLOCK`` keeps a FIFO from blocking the open; what was opened must be
+    a regular file with the observed device and inode (``queue_row_changed``),
+    and no larger than the limit however it grew since.
+    """
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise QueueReferenceUnreadable("queue_row_linked") from exc
+        raise
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
+            raise _RowReplaced("queue_row_changed")
+        raw = stream.read(MAX_QUEUE_MESSAGE_BYTES + 1)
+    if len(raw) > MAX_QUEUE_MESSAGE_BYTES:
+        raise QueueReferenceUnreadable("queue_row_oversized")
+    return raw.decode("utf-8")
+
+
+def settlement_reopens_beyond_retained_receipts(name: str, settlement_text: str) -> bool:
+    """Whether a settlement record reads something of ``name`` the pointer will not keep.
+
+    Offload retains the accounting receipts in ``RETAINED_RECEIPTS`` byte-for-byte
+    inside the pointer, and the settlement readers reopen them through
+    ``read_receipt_bytes``, which falls back to that copy. A record that names
+    the run only as an identifier, or reopens only retained receipts, therefore
+    keeps working after the bulk evidence is archived. Any other path under the
+    run is a reopen the archive would break, so the run stays.
+    """
+
+    for match in re.finditer(re.escape(name) + r"/([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*)", settlement_text):
+        if match.group(1) not in RETAINED_RECEIPTS:
+            return True
+    return False
+
+
+def settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[str, int]:
+    """Concatenate every settlement record; a directory named in it is still read.
+
+    The second element counts records that exist but could not be read.  A
+    configured root that cannot be enumerated must never be silently treated as
+    "nothing is referenced", so the caller protects all evidence for that tick.
+    Each record is read as a queue row is (``_row_text``), so a FIFO record
+    never blocks the read: it is counted, like a linked or oversized one.
+    """
+
+    chunks: list[str] = []
+    unreadable = 0
+    for raw_root in settlement_roots:
+        root = Path(raw_root).expanduser()
+        if root.is_symlink() or not root.is_dir():
+            unreadable += 1
+            continue
+        for pattern in SETTLEMENT_RECORD_GLOBS:
+            try:
+                paths = sorted(root.glob(pattern))
+            except OSError:
+                unreadable += 1
+                continue
+            for path in paths:
+                try:
+                    chunks.append(_row_text(path))
+                except (OSError, QueueReferenceUnreadable):
+                    # A record we decline to read is a record whose references we do not
+                    # know.  Count it rather than skipping it, or a symlinked, oversized
+                    # or FIFO record silently unprotects its run.
+                    unreadable += 1
+    return "\n".join(chunks), unreadable
+
+
+__all__ = [
+    "MAX_QUEUE_MESSAGE_BYTES",
+    "QUEUE_STATES",
+    "QueueReferenceUnreadable",
+    "SETTLEMENT_RECORD_GLOBS",
+    "queue_reference_text",
+    "settlement_reference_text",
+    "settlement_reopens_beyond_retained_receipts",
+]

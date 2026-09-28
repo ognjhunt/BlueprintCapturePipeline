@@ -41,12 +41,18 @@ dependencies = [
     # base must therefore carry usd-core; a geometry/dev-only declaration
     # makes the website dispatcher fail before it can classify any request.
     "usd-core>=24.0",
+    # Production ParticleField authoring follows NVIDIA's public converter
+    # instead of maintaining a second renderer-specific USD interpretation.
+    # Pin the exact release reviewed in NVIDIA_SIGGRAPH_2026_STACK_IMPACT.
+    "usd-convert-gsplat==0.1.15; python_version >= '3.11'",
     "numpy>=1.24.0",
     # Exact-camera frame registration uses scipy.spatial.cKDTree in the core
     # external-scene admission path, so this cannot be left to a transitive
     # runtime extra.
     "scipy>=1.10.0",
     "Pillow>=10.0.0",
+    # Official CPU-only decoder for hosted SAM 3.1 masks.
+    "meta-sam-parser==0.0.5",
     "fastapi>=0.115.0",
     "json-numpy>=2.1.0",
     # NuRec volumes -- the splat format Isaac renders natively -- are gzip
@@ -69,6 +75,9 @@ dependencies = [
     # Canonical agent harness for the Task Evaluation Supervisor and its
     # specialized agents. Blueprint contracts remain the proof authority.
     "openai-agents>=0.19.1,<0.20",
+    # Persistent bounded native-construction search ledger. Optuna is MIT;
+    # JournalStorage keeps ask/tell history durable without a database daemon.
+    "optuna==4.9.0",
     # Bounded, jittered, allowlisted retries for transport_retry_policy —
     # the shared read-retry layer behind provider_transport and the job
     # transport. Mutations are never auto-retried (reconcile-first contract).
@@ -79,6 +88,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Website-only source geometry; install in its own runtime without the default
+# dev group (`uv sync --no-dev --extra website_geometry`). MapAnything requires
+# headless OpenCV 4.10.0.84; measurement development tests require 4.11.0.86.
+website_geometry = [
+    "mapanything @ git+https://github.com/facebookresearch/map-anything.git@3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9",
+]
+# Closed, opt-in CPU authoring closure; the legacy provider profile stays unchanged.
+astra_asset_authoring = [
+    "openai-agents==0.19.1",
+    "usd-core==26.5",
+    "build123d==0.11.1",
+    "langgraph==0.2.76",
+    "langgraph-checkpoint==2.1.2",
+    "langchain-core==0.3.86",
+    "langgraph-sdk==0.1.74",
+    "trimesh==4.12.2",
+]
 cloud = [
     "google-cloud-storage>=2.10.0",
     "google-auth>=2.0.0",
@@ -115,7 +141,8 @@ geometry = [
     "pycollada>=0.8",
 ]
 llm = [
-    "google-genai>=1.0.0",
+    # Agentic video requires typed Part.media_processing and media-tool traces.
+    "google-genai>=2.24.0",
     "openai>=1.0.0",
 ]
 # Compatibility alias retained for existing install commands. The Agents SDK
@@ -183,7 +210,7 @@ dev = [
     "pyelastica==0.3.3.post2",
     "boto3>=1.34.0",
     "botocore>=1.34.0",
-    "opencv-python-headless>=4.10.0",
+    "opencv-python-headless==4.11.0.86",
     # Real loopback ZMQ transport tests for the official GEAR-SONIC executor
     # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
     # fail-closed evidence policy rejects any skip.
@@ -238,7 +265,7 @@ dev = [
     "pyelastica==0.3.3.post2",
     "boto3>=1.34.0",
     "botocore>=1.34.0",
-    "opencv-python-headless>=4.10.0",
+    "opencv-python-headless==4.11.0.86",
     # Real loopback ZMQ transport tests for the official GEAR-SONIC executor
     # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
     # fail-closed evidence policy rejects any skip.
@@ -268,6 +295,7 @@ blueprint-agent-review = "blueprint_pipeline.agent_review_cli:main"
 blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"
 blueprint-compile-evaluation-run = "blueprint_pipeline.evaluation_run_contract:main"
 blueprint-run-evaluation-run = "blueprint_pipeline.evaluation_run_execution:main"
+blueprint-build-exact-workcell-variation-matrix = "blueprint_pipeline.exact_workcell_variation_runtime:main"
 blueprint-route-task-evaluation = "blueprint_pipeline.decision_evidence_cli:main"
 blueprint-task-candidate-control = "blueprint_pipeline.task_candidate_control_plane_cli:main"
 blueprint-compile-site-task-testbed = "blueprint_pipeline.site_task_testbed_compiler_cli:main"
@@ -290,7 +318,6 @@ blueprint-run-policy-autoresearch-mujoco-evaluator = "blueprint_pipeline.policy_
 blueprint-run-policy-autoresearch-owner-gpu-evaluator = "blueprint_pipeline.policy_autoresearch_owner_gpu_evaluator:main"
 blueprint-run-policy-autoresearch-wam-fixture-evaluator = "blueprint_pipeline.policy_autoresearch_wam_fixture_evaluator:main"
 blueprint-run-wam-fixture-evaluator = "blueprint_pipeline.wam_fixture_evaluator:main"
-blueprint-run-wam-eval-job = "blueprint_pipeline.wam_fixture_evaluator:main"
 blueprint-run-roboworld-evaluator-study = "blueprint_pipeline.roboworld_evaluator:main"
 blueprint-build-benchmark-uncertainty-report = "blueprint_pipeline.benchmark_uncertainty:main"
 blueprint-run-major-capability-scenarios = "blueprint_pipeline.major_capability_scenario_suite:main"
@@ -442,6 +469,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"blueprint_pipeline._sam_parser_js" = ["runner.mjs", "LICENSE", "README.md", "VENDORED_SOURCE.md", "package.json", "dist/*.js", "dist/*.d.ts"]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 100
@@ -459,6 +489,12 @@ line-length = 100
 
 [tool.uv]
 required-version = "==0.10.7"
+# MapAnything pins OpenCV 4.10.0.84. The development measurement suite pins
+# 4.11.0.86, so these environments must be installed separately.
+conflicts = [
+    [{ extra = "website_geometry" }, { extra = "dev" }],
+    [{ extra = "website_geometry" }, { group = "dev" }],
+]
 exclude-dependencies = [
     "opencv-python",
 ]

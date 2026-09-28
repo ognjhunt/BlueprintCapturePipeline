@@ -1,0 +1,14 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-scene-object-discovery.path.json
+Description=Watch the durable Blueprint scene-object discovery queue
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries/pending/*.json
+Unit=blueprint-scene-object-discovery.service
+
+[Install]
+WantedBy=multi-user.target
+

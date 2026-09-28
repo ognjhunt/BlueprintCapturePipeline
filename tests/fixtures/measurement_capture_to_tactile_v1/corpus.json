@@ -414,7 +414,7 @@
     "task_outcome": "Whether the public shear-ratio and marker-motion rule observed incipient slip.",
     "topology_contact": "Whether a thresholded tactile contact patch was observed."
   },
-  "numpy_version": "2.4.6",
+  "numpy_version": "2.3.1",
   "physical_measurements_included": false,
   "qualification_labels_included": false,
   "r5_evidence": false,

@@ -7,6 +7,9 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
+from blueprint_pipeline.native_g1_embodiment import ACTION_INTERFACE as G1_ACTION_INTERFACE
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
     FROZEN_CANDIDATES,
@@ -224,6 +227,80 @@ def test_identified_inserted_rigid_task_object_preserves_independent_identity() 
     assert task_object["reset_state"]["joint_positions"] == {}
 
 
+def test_g1_robot_and_cameras_can_be_sealed_without_droid_policy_authority(
+    tmp_path: Path,
+) -> None:
+    fixture = _identified_rigid_fixture()
+    asset = tmp_path / "g1.usda"
+    asset.write_text("#usda 1.0\n", encoding="utf-8")
+    joints = {name: 0.0 for name in PROTOCOL_V4_FULL_JOINT_ORDER}
+    robot = {
+        "robot_id": "unitree_g1",
+        "hand_id": "unitree_dex3_1",
+        "action_interface": G1_ACTION_INTERFACE,
+        "usd_path": str(asset),
+        "usd_sha256": _file_sha(asset),
+        "base_pose_world": _pose(1.75, 1.99, 0.8),
+        "joint_reset_positions_rad": joints,
+        "joint_position_limits_rad": {name: [-1.0, 1.0] for name in joints},
+        "actuator_parameters": {
+            name: {"stiffness": 100, "damping": 2, "effort_limit": 25, "velocity_limit": 10}
+            for name in joints
+        },
+        "task_contact_body_paths": [
+            "{ENV_REGEX_NS}/Robot/right_hand/finger_tip"
+        ],
+    }
+    head = _camera("wrist")
+    head.update(role="head", parent_prim_path="{ENV_REGEX_NS}/Robot/head_link")
+    fixture.update(
+        robot_base_pose_world=robot["base_pose_world"],
+        robot_joint_reset_positions_rad=joints,
+        robot_configuration=robot,
+        cameras=[head, _camera("overview")],
+    )
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    assert contract["robot"] == robot
+    assert [row["role"] for row in contract["cameras"]] == ["head", "overview"]
+    assert contract["candidate_ids"] == []
+
+    fixture["robot_joint_reset_positions_rad"] = dict(joints)
+    fixture["robot_joint_reset_positions_rad"].pop(next(iter(joints)))
+    with pytest.raises(NativeTaskRuntimeContractError, match="robot_configuration_invalid"):
+        materialize_native_task_runtime_contract(**fixture)
+
+
+def test_runtime_preserves_one_passive_destination_support_asset() -> None:
+    fixture = _identified_rigid_fixture()
+    fixture["task_spec"]["destination_support_asset_id"] = "document_tray"
+    fixture["assets"].append(
+        {
+            "semantic_role": "task_support",
+            "asset_id": "document_tray",
+            "object_type": "RIGID",
+            "filename": "document_tray.usda",
+            "sha256": _sha("e"),
+            "pose_world": _pose(1.2, 2.0, 0.8),
+            "reset_state": {"joint_positions": {}},
+        }
+    )
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    support = next(
+        row for row in contract["objects"] if row["semantic_role"] == "task_support"
+    )
+    assert support["asset_id"] == "document_tray"
+    assert support["runtime_name"] == "task_support"
+    assert support["task_subject"] is False
+    assert support["reset_state"]["root_pose_world"] == _pose(1.2, 2.0, 0.8)
+    assert contract["reset_contract"]["per_object_reset_states"][
+        "document_tray"
+    ] == support["reset_state"]
+
+
 def test_identified_inserted_task_object_fails_closed_on_identity_mismatch() -> None:
     fixture = _identified_rigid_fixture()
     fixture["assets"][2]["asset_id"] = "different_can"
@@ -231,6 +308,45 @@ def test_identified_inserted_task_object_fails_closed_on_identity_mismatch() -> 
     with pytest.raises(
         NativeTaskRuntimeContractError,
         match="native_task_runtime_subject_asset_id_invalid",
+    ):
+        materialize_native_task_runtime_contract(**fixture)
+
+
+def test_runtime_contract_refuses_unconfirmed_agent_success_criteria() -> None:
+    fixture = _identified_rigid_fixture()
+    fixture["task_spec"].update(
+        {
+            "start_pose_world": [1.0, 2.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+            "destination_position_bounds_world_m": {
+                "minimum": [1.14, 1.99, 0.79],
+                "maximum": [1.16, 2.01, 0.81],
+            },
+            "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "destination_orientation_tolerance_rad": 0.1,
+            "support_height_interval_m": [0.79, 0.81],
+            "minimum_translation_m": 0.14,
+            "minimum_lift_m": 0.02,
+            "movement_epsilon_m": 0.001,
+            "settle_window_samples": 3,
+            "settle_position_tolerance_m": 0.002,
+            "settle_orientation_tolerance_rad": 0.01,
+            "release_gripper_width_min_m": 0.07,
+        }
+    )
+    fixture["task_spec"]["task_success_contract"] = (
+        seal_rigid_task_success_contract(
+            task_spec=fixture["task_spec"],
+            site_id=fixture["scene_id"],
+            task_id=fixture["task_id"],
+            author_source="agent_proposal",
+            author_id="agent:criteria-drafter",
+            confirmation_status="proposal_only",
+        )
+    )
+
+    with pytest.raises(
+        NativeTaskRuntimeContractError,
+        match="rigid_task_success_contract_unconfirmed",
     ):
         materialize_native_task_runtime_contract(**fixture)
 

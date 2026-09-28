@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/articulated_task_success_contract.v1.schema.json",
+  "title": "Confirmed or proposal-only articulated open/close task success contract",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "scope",
+    "provenance",
+    "criteria",
+    "contract_digest"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nonEmpty": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "interval": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "number"
+      }
+    },
+    "mode": {
+      "enum": [
+        "required",
+        "ignored"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "articulated_task_success_contract.v1"
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "site_id",
+        "task_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "site_id": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "task_id": {
+          "$ref": "#/$defs/nonEmpty"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "author_source",
+        "author_id",
+        "confirmation_status",
+        "confirmed_by_team_id",
+        "proposal_digest"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "author_source": {
+          "enum": [
+            "compatibility_default",
+            "site_robot_team",
+            "task_owner",
+            "agent_proposal"
+          ]
+        },
+        "author_id": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "confirmation_status": {
+          "enum": [
+            "proposal_only",
+            "confirmed"
+          ]
+        },
+        "confirmed_by_team_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/nonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proposal_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "contract_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "criteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_joint",
+        "opening",
+        "hold",
+        "locked_joints",
+        "reset",
+        "motion",
+        "assembly_root",
+        "safety",
+        "temporal_invariants"
+      ],
+      "properties": {
+        "target_joint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "joint_id",
+            "joint_ids"
+          ],
+          "properties": {
+            "joint_id": {
+              "$ref": "#/$defs/nonEmpty"
+            },
+            "joint_ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/nonEmpty"
+              }
+            }
+          }
+        },
+        "opening": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "success_interval",
+            "joint_hard_limits",
+            "reset_position"
+          ],
+          "properties": {
+            "mode": {
+              "const": "required"
+            },
+            "success_interval": {
+              "$ref": "#/$defs/interval"
+            },
+            "joint_hard_limits": {
+              "$ref": "#/$defs/interval"
+            },
+            "reset_position": {
+              "type": "number"
+            }
+          }
+        },
+        "hold": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "window_samples",
+            "maximum_settled_target_speed"
+          ],
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/mode"
+            },
+            "window_samples": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maximum_settled_target_speed": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "locked_joints": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "joint_ids",
+            "motion_tolerance"
+          ],
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/mode"
+            },
+            "joint_ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/nonEmpty"
+              }
+            },
+            "motion_tolerance": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "reset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tolerance"
+          ],
+          "properties": {
+            "tolerance": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "motion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "movement_epsilon"
+          ],
+          "properties": {
+            "movement_epsilon": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "assembly_root": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/mode"
+            }
+          }
+        },
+        "safety": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "const": "required"
+            }
+          }
+        },
+        "temporal_invariants": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "rebound_below_threshold_allowed",
+            "forbidden_collision_allowed",
+            "joint_limit_violation_allowed",
+            "assembly_root_excursion_allowed"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "articulated_task_event_ledger_expectation.v1"
+            },
+            "rebound_below_threshold_allowed": {
+              "const": false
+            },
+            "forbidden_collision_allowed": {
+              "const": false
+            },
+            "joint_limit_violation_allowed": {
+              "const": false
+            },
+            "assembly_root_excursion_allowed": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  }
+}

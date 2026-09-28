@@ -472,6 +472,8 @@ class OpenAIAgentsSDKSupervisorManager:
             model=self.config.model,
             max_turns=min(3, self.config.max_turns),
             max_output_tokens=min(2_000, self.config.max_output_tokens),
+            max_input_tokens=self.config.max_input_tokens,
+            max_tool_output_bytes=self.config.max_tool_output_bytes,
             output_type=AgentsSDKSupervisorManagerOutput,
         )
         invocation = self.invoker.invoke(spec, json.dumps(payload, sort_keys=True))

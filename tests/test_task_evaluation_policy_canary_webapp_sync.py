@@ -1,0 +1,385 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from blueprint_pipeline.decision_evidence_contracts import (
+    cross_runtime_canonical_digest,
+)
+from blueprint_pipeline.task_evaluation_policy_canary_result import (
+    validate_policy_canary_result,
+)
+from blueprint_pipeline.task_evaluation_run_webapp_sync import (
+    build_task_evaluation_policy_canary_webapp_publication,
+    sync_policy_canary_preprovider_blocked_to_webapp,
+    sync_task_evaluation_policy_canary_to_webapp,
+)
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
+
+
+def _artifact(character: str, artifact_id: str) -> dict[str, object]:
+    return {
+        "digest": "sha256:" + character * 64,
+        "size_bytes": 10,
+        "artifact_id": artifact_id,
+    }
+
+
+def _projection() -> tuple[dict[str, object], dict[str, object]]:
+    setup = public_setup()
+    delivery: dict[str, object] = {
+        "schema_version": "task_evaluation_result_delivery.v2",
+        "run_id": "scene-839873-canary-1",
+        "result_status": "blocked",
+        "claim_ceiling": "diagnostic_policy_execution",
+        # JSON.parse normalizes this to the integer-valued JavaScript number
+        # representation. The signed publication must retain digest parity.
+        "posted_cost_usd": 1.0,
+        "delivery_digest": "",
+    }
+    delivery["delivery_digest"] = cross_runtime_canonical_digest(
+        delivery, digest_field="delivery_digest"
+    )
+    result: dict[str, object] = {
+        "schema_version": "task_evaluation_policy_canary_result_projection.v1",
+        "run_id": "scene-839873-canary-1",
+        "request_digest": "sha256:" + "1" * 64,
+        "configuration_digest": "sha256:" + "2" * 64,
+        "result_delivery_digest": delivery["delivery_digest"],
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "scene_controls_status": "configured_controls_pending",
+        "result_status": "blocked",
+        "warning": "Controls pending — results are unqualified.",
+        "counts": {
+            "policy_count": 2,
+            "episodes_per_policy": 10,
+            "learned_policy_rollout_count": 20,
+            "completed_learned_policy_rollout_count": 0,
+            "diagnostic_control_rollout_count": 20,
+            "completed_diagnostic_control_rollout_count": 0,
+        },
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "candidate_results": [
+            {
+                "candidate_id": candidate,
+                "episodes_completed": 0,
+                "interpretable_episode_count": 0,
+                "actions_delivered_episode_count": 0,
+                "metrics": {},
+                "failure_counts": {"pre_provider_blocked": 10},
+            }
+            for candidate in ("pi05_droid", "groot_n17_droid")
+        ],
+        "episodes": [],
+        "comparison": {
+            "matched_cell_count": 0,
+            "winner_declared": False,
+            "official_ranking_contribution": False,
+        },
+        "report": {
+            "result_digest": "sha256:" + "3" * 64,
+            "permanent_result_path": "/internal/task-evaluation-runs/scene-839873-canary-1",
+            "machine_readable_report": _artifact("4", "full-report"),
+            "evidence_manifest": _artifact("5", "evidence-manifest"),
+        },
+        "closure": {
+            "billing": _artifact("6", "billing"),
+            "teardown": _artifact("7", "teardown"),
+            "provider_zero": {
+                **_artifact("8", "provider-zero"),
+                "provider_zero_verified": True,
+            },
+        },
+        "notification_delivery": {
+            "terminal_state": "blocked",
+            "status": "pending",
+            "attempts": 0,
+            "provider": "website_terminal_handler",
+            "message_id": None,
+            "delivered_at": None,
+            "run_result_digest": "sha256:" + "3" * 64,
+        },
+        "blockers": ["provider_capacity_unavailable"],
+        "projection_digest": "",
+    }
+    result["projection_digest"] = cross_runtime_canonical_digest(
+        result, digest_field="projection_digest"
+    )
+    return delivery, validate_policy_canary_result(result)
+
+
+def test_policy_canary_publication_refuses_oversized_inline_delivery() -> None:
+    delivery, result = _projection()
+    delivery["oversized_inline_padding"] = "x" * 4_000_000
+    delivery["delivery_digest"] = cross_runtime_canonical_digest(
+        delivery, digest_field="delivery_digest"
+    )
+    result["result_delivery_digest"] = delivery["delivery_digest"]
+    result["projection_digest"] = cross_runtime_canonical_digest(
+        result, digest_field="projection_digest"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="task_evaluation_policy_canary_publication_too_large",
+    ):
+        build_task_evaluation_policy_canary_webapp_publication(
+            capture_session_id="capture-1",
+            intake_id="intake-1",
+            run_id=delivery["run_id"],
+            request_digest=result["request_digest"],
+            configuration_digest=result["configuration_digest"],
+            result_status=result["result_status"],
+            result_delivery=delivery,
+            policy_canary_result=result,
+        )
+
+
+def test_blocked_episode_does_not_count_as_completed_rollout() -> None:
+    _delivery, result = _projection()
+    evidence = {
+        "checkpoint_digest": "sha256:" + "a" * 64,
+        "runtime_identity_digest": "sha256:" + "b" * 64,
+        "reset_state_digest": "sha256:" + "c" * 64,
+        "reset_state": None,
+        "frame_manifest": None,
+        "review_video": None,
+        "policy_query_receipt": None,
+        "action_sequence": None,
+        "action_delivery_readback": None,
+        "state_trace": None,
+        "contact_force_trace": None,
+        "task_object_trajectory": None,
+        "score_receipt": None,
+        "evidence_gaps": ["before_first_observation"],
+        "typed_media_gap": "provider_runtime_failed_before_first_observation",
+    }
+    result["episodes"] = [
+        {
+            "episode_id": "episode-1",
+            "candidate_id": "pi05_droid",
+            "cell_id": "cell-1",
+            "seed": 1,
+            "terminal_state": "blocked",
+            "candidate_policy_queried": False,
+            "actions_reached_robot": False,
+            "arm_moved": False,
+            "policy_outcome_interpretable": False,
+            "failure_taxonomy": "RuntimeError",
+            "evidence": evidence,
+        }
+    ]
+    result["projection_digest"] = cross_runtime_canonical_digest(
+        result, digest_field="projection_digest"
+    )
+
+    validated = validate_policy_canary_result(result)
+
+    assert validated["counts"]["completed_learned_policy_rollout_count"] == 0
+    assert len(validated["episodes"]) == 1
+
+
+def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
+    delivery, result = _projection()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "schema_version": (
+                        "capture_task_evaluation_policy_canary_publication_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "already_exists": False,
+                    "capture_session_id": "capture-839873",
+                    "intake_id": "intake-839873",
+                    "run_id": result["run_id"],
+                    "request_digest": result["request_digest"],
+                    "configuration_digest": result["configuration_digest"],
+                    "result_delivery_digest": delivery["delivery_digest"],
+                    "policy_canary_projection_digest": result["projection_digest"],
+                    "notification_delivery": {
+                        "terminal_state": "blocked",
+                        "status": "accepted",
+                        "attempts": 1,
+                        "provider": "resend",
+                        "message_id": "message-1",
+                        "delivered_at": None,
+                        "run_result_digest": result["projection_digest"],
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    synced = sync_task_evaluation_policy_canary_to_webapp(
+        capture_session_id="capture-839873",
+        intake_id="intake-839873",
+        run_id=str(result["run_id"]),
+        request_digest=str(result["request_digest"]),
+        configuration_digest=str(result["configuration_digest"]),
+        result_status="blocked",
+        result_delivery=delivery,
+        policy_canary_result=result,
+        endpoint_url="https://webapp.example/api/internal/pipeline/task-evaluation-runs",
+        token="sync-secret",
+        max_attempts=1,
+    )
+
+    assert synced["status"] == "succeeded"
+    assert synced["notification_delivery"]["status"] == "accepted"
+    assert "sync-secret" not in json.dumps(synced)
+
+
+@pytest.mark.parametrize("operator", [False, True])
+def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatch, operator) -> None:
+    delivery, result = _projection()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "schema_version": (
+                        "capture_task_evaluation_policy_canary_publication_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "already_exists": False,
+                    "capture_session_id": "capture-839873",
+                    "intake_id": "intake-839873",
+                    "run_id": result["run_id"],
+                    "request_digest": result["request_digest"],
+                    "configuration_digest": result["configuration_digest"],
+                    "result_delivery_digest": delivery["delivery_digest"],
+                    "policy_canary_projection_digest": result["projection_digest"],
+                    "notification_delivery": {
+                        "terminal_state": "blocked",
+                        "status": "failed",
+                        "attempts": 1,
+                        "provider": "website_transactional_email",
+                        "message_id": None,
+                        "failure_reason": "email_disabled",
+                        "run_result_digest": result["projection_digest"],
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    operator_binding = ({"plan_digest": "sha256:" + "d" * 64,
+                         "operator_registration_digest": "sha256:" + "e" * 64} if operator else {})
+    synced = sync_task_evaluation_policy_canary_to_webapp(
+        capture_session_id="capture-839873",
+        intake_id="intake-839873",
+        run_id=str(result["run_id"]),
+        request_digest=str(result["request_digest"]),
+        configuration_digest=str(result["configuration_digest"]),
+        result_status="blocked",
+        result_delivery=delivery,
+        policy_canary_result=result,
+        **operator_binding,
+        endpoint_url="https://webapp.example/api/internal/pipeline/task-evaluation-runs",
+        token="sync-secret",
+        max_attempts=1,
+    )
+
+    assert synced["status"] == "succeeded"
+    assert synced["notification_delivery"]["status"] == "failed"
+    assert synced["notification_delivery"]["failure_reason"] == "email_disabled"
+    if operator:
+        # The production Website v1 acknowledgement has no optional operator
+        # fields. Retain the identity actually sent so closeout can advance to
+        # the separate stored-publication/inbox/download readback.
+        assert all(synced[key] == value for key, value in operator_binding.items())
+        assert "operator_registration_digest" not in synced["response"]
+        from blueprint_pipeline.operator_policy_canary_terminal_delivery import _sync_matches
+        registration = {key:synced[key] for key in ('run_id','capture_session_id','intake_id','request_digest')}
+        registration['registration_digest'] = operator_binding['operator_registration_digest']
+        runtime = {'configuration_digest':result['configuration_digest'],
+                   'plan_digest':operator_binding['plan_digest']}
+        assert _sync_matches(synced, registration, runtime, delivery, result)
+
+
+def test_preprovider_blocked_sync_requires_terminal_email_readback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            request = captured["request"]
+            payload = json.loads(request.data)
+            return json.dumps(
+                {
+                    "schema_version": ("capture_task_evaluation_policy_canary_blocked_receipt.v1"),
+                    "status": "blocked",
+                    "activation_id": payload["activation_id"],
+                    "request_digest": payload["request_digest"],
+                    "payload_digest": payload["payload_digest"],
+                    "notification_delivery": {
+                        "terminal_state": "blocked",
+                        "status": "accepted",
+                        "attempts": 1,
+                        "provider": "resend",
+                        "message_id": "message-blocked-1",
+                        "delivered_at": None,
+                        "run_result_digest": payload["payload_digest"],
+                    },
+                }
+            ).encode("utf-8")
+
+    captured = {}
+
+    def open_response(request, **_kwargs):
+        captured["request"] = request
+        return Response()
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen",
+        open_response,
+    )
+    token_file = tmp_path / "pipeline-sync-token"
+    token_file.write_text("sync-secret\n", encoding="utf-8")
+    token_file.chmod(0o440)
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN_FILE", str(token_file))
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    synced = sync_policy_canary_preprovider_blocked_to_webapp(
+        activation_id="activation-839873",
+        capture_session_id="capture-839873",
+        intake_id=(
+            "adp-new-scene-simple-relocation-839873-a65bc2af-20260830t094104z-"
+            "paused-ungraded-scene-configuration-revision-corrective-r13-b0868d285d0c"
+        ),
+        request_digest="sha256:" + "1" * 64,
+        blockers=["policy_canary_setup_invalid"],
+        endpoint_url="https://webapp.example/api/internal/pipeline/task-evaluation-runs",
+    )
+
+    assert synced["status"] == "succeeded"
+    assert synced["notification_delivery"]["status"] == "accepted"

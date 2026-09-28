@@ -146,6 +146,8 @@ def _verified_retained_rgb_frame(
     if checked.get("size_bytes") != path.stat().st_size:
         raise ValueError("retained_policy_frame_size_mismatch")
     with Image.open(path) as image:
+        if image.format != "PNG":
+            raise ValueError("retained_policy_frame_format_not_lossless_png")
         if image.mode != "RGB":
             raise ValueError("retained_policy_frame_mode_invalid")
         rgb = np.asarray(image, dtype=np.uint8)
@@ -974,9 +976,6 @@ def validate_multicamera_frame_manifest(
 ) -> dict[str, Any]:
     """Validate and optionally rehash a sealed multi-camera frame manifest."""
 
-    from PIL import Image
-    import numpy as np
-
     checked = _json_mapping(
         manifest, error="multicamera_frame_manifest_not_json_mapping"
     )
@@ -984,8 +983,11 @@ def validate_multicamera_frame_manifest(
     if checked.get("schema_version") != MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION:
         errors.append("multicamera_frame_manifest_schema_invalid")
     required_camera_ids = set(checked.get("required_camera_ids") or [])
-    if not {"external", "wrist"}.issubset(required_camera_ids):
-        errors.append("multicamera_frame_manifest_external_wrist_required")
+    if not required_camera_ids or any(
+        not isinstance(camera_id, str) or not _CAMERA_ID.fullmatch(camera_id)
+        for camera_id in required_camera_ids
+    ):
+        errors.append("multicamera_frame_manifest_required_cameras_invalid")
     observations = checked.get("policy_input_observations")
     if not isinstance(observations, list) or not observations:
         errors.append("multicamera_frame_manifest_policy_inputs_missing")
@@ -995,8 +997,24 @@ def validate_multicamera_frame_manifest(
         errors.append("multicamera_frame_manifest_review_observations_invalid")
         review_observations = []
     terminal = checked.get("terminal_observation")
+    review_only = set(checked.get("review_only_camera_ids") or [])
+    if (
+        len(required_camera_ids) != len(checked.get("required_camera_ids") or [])
+        or not review_only.issubset(required_camera_ids)
+        or not required_camera_ids - review_only
+        or checked.get("policy_input_observation_count") != len(observations)
+        or checked.get("policy_input_frame_count") != len(observations) * len(required_camera_ids - review_only)
+        or checked.get("review_observation_count") != len(review_observations)
+        or checked.get("review_frame_count") != len(review_observations) * len(required_camera_ids)
+    ):
+        errors.append("multicamera_frame_manifest_counts_invalid")
+    for rows, kind in ((observations, "policy-input"), (review_observations, "review-sample")):
+        if any(row.get("kind") != kind for row in rows):
+            errors.append("multicamera_frame_manifest_observation_kind_invalid")
     all_observations = [*observations, *review_observations]
     if isinstance(terminal, Mapping):
+        if terminal.get("kind") != "terminal-observation" or terminal.get("observation_index") != len(all_observations):
+            errors.append("multicamera_frame_manifest_terminal_invalid")
         all_observations.append(dict(terminal))
     else:
         errors.append("multicamera_frame_manifest_terminal_missing")
@@ -1011,7 +1029,7 @@ def validate_multicamera_frame_manifest(
         expected_index += 1
         timestamp_ns = observation.get("timestamp_ns")
         simulation_time_s = observation.get("simulation_time_s")
-        if not isinstance(timestamp_ns, int) or timestamp_ns < previous_timestamp:
+        if isinstance(timestamp_ns, bool) or not isinstance(timestamp_ns, int) or timestamp_ns < 0 or timestamp_ns < previous_timestamp:
             errors.append("multicamera_frame_manifest_timestamp_not_monotonic")
         else:
             previous_timestamp = timestamp_ns
@@ -1019,12 +1037,17 @@ def validate_multicamera_frame_manifest(
             simulation_time = float(simulation_time_s)
         except (TypeError, ValueError):
             simulation_time = -1.0
-        if simulation_time < previous_simulation_time:
+        if not math.isfinite(simulation_time) or simulation_time < 0 or simulation_time < previous_simulation_time:
             errors.append("multicamera_frame_manifest_simulation_time_not_monotonic")
         else:
             previous_simulation_time = simulation_time
         views = observation.get("views")
-        if not isinstance(views, Mapping) or not required_camera_ids.issubset(views):
+        required_here = (
+            required_camera_ids - review_only
+            if observation.get("kind") == "policy-input"
+            else required_camera_ids
+        )
+        if not isinstance(views, Mapping) or not required_here.issubset(views):
             errors.append("multicamera_frame_manifest_required_view_missing")
             continue
         if observation.get("camera_ids") != sorted(views):
@@ -1037,6 +1060,13 @@ def validate_multicamera_frame_manifest(
             frame = dict(raw_frame) if isinstance(raw_frame, Mapping) else {}
             if frame.get("camera_id") != camera_id:
                 errors.append("multicamera_frame_manifest_camera_record_mismatch")
+            if (
+                frame.get("frame_index") != observation.get("observation_index")
+                or frame.get("kind") != observation.get("kind")
+                or frame.get("timestamp_ns") != timestamp_ns
+                or frame.get("simulation_time_s") != simulation_time_s
+            ):
+                errors.append("multicamera_frame_manifest_frame_observation_mismatch")
             if frame.get("frame_digest") != canonical_digest(
                 frame, digest_field="frame_digest"
             ):
@@ -1050,23 +1080,13 @@ def validate_multicamera_frame_manifest(
                 errors.append("multicamera_frame_manifest_calibration_digest_mismatch")
             if not verify_files:
                 continue
-            path = (output_dir / str(frame.get("relative_path") or "")).resolve()
-            root = output_dir.resolve()
-            if root != path and root not in path.parents:
-                errors.append("multicamera_frame_manifest_path_outside_output")
-                continue
-            if path.is_symlink() or not path.is_file():
-                errors.append("multicamera_frame_manifest_file_missing")
-                continue
-            if frame.get("png_sha256") != _file_sha256(path):
-                errors.append("multicamera_frame_manifest_png_digest_mismatch")
-            with Image.open(path) as image:
-                rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
-            raw_digest = "sha256:" + hashlib.sha256(
-                np.ascontiguousarray(rgb).tobytes()
-            ).hexdigest()
-            if frame.get("raw_rgb_sha256") != raw_digest:
-                errors.append("multicamera_frame_manifest_raw_digest_mismatch")
+            try:
+                _verified_retained_rgb_frame(frame, output_dir=output_dir)
+                _validate_camera_calibration(
+                    frame.get("calibration") or {}, width=frame["width"], height=frame["height"]
+                )
+            except (ValueError, OSError) as exc:
+                errors.append("multicamera_frame_manifest_" + str(exc).removeprefix("retained_policy_frame_"))
 
     if checked.get("frame_manifest_digest") != canonical_digest(
         checked, digest_field="frame_manifest_digest"
@@ -1093,13 +1113,14 @@ def finalize_multicamera_visual_evidence(
 
     if not policy_input_observations:
         raise ValueError("multicamera_visual_evidence_policy_inputs_missing")
-    required = sorted(set(str(camera_id) for camera_id in required_camera_ids))
-    if not {"external", "wrist"}.issubset(required):
-        raise ValueError("multicamera_visual_evidence_external_wrist_required")
-    if any(not _CAMERA_ID.fullmatch(camera_id) for camera_id in required):
+    required = sorted(set(required_camera_ids))
+    if not required or any(
+        not isinstance(camera_id, str) or not _CAMERA_ID.fullmatch(camera_id)
+        for camera_id in required
+    ):
         raise ValueError("multicamera_visual_evidence_camera_id_invalid")
-    review_only = sorted(set(str(camera_id) for camera_id in review_only_camera_ids))
-    if not set(review_only).issubset(required):
+    review_only = sorted(set(review_only_camera_ids))
+    if not set(review_only).issubset(required) or not set(required) - set(review_only):
         raise ValueError("multicamera_review_only_camera_not_required")
 
     inputs = [dict(row) for row in policy_input_observations]
@@ -1171,6 +1192,7 @@ def finalize_multicamera_visual_evidence(
         paths = [
             output_dir / observation["views"][camera_id]["relative_path"]
             for observation in all_observations
+            if camera_id in observation["views"]
         ]
         video_path = output_dir / "media" / episode_id / f"{camera_id}.mp4"
         video = _encode_or_resume_episode_video(

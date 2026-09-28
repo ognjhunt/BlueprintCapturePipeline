@@ -1,0 +1,240 @@
+{
+  "schema_version": "task_evaluation_launch_preparation_request.v1",
+  "run_mode": "scene_configuration",
+  "expected_production_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "preparation_id": "team-a-scene-841007-zero-v1",
+  "team_namespace": "team-a",
+  "run_id": "run-scene-841007-zero-v1",
+  "scene": {
+    "mode": "configure_source_scene",
+    "identity": {
+      "id": "interiorgs-841007",
+      "version": "v1"
+    },
+    "source_manifest": {
+      "uri": "s3://blueprint-production-inputs/object-1.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+      "size_bytes": 1001
+    },
+    "appearance": {
+      "kind": "interiorgs",
+      "representation": {
+        "uri": "s3://blueprint-production-inputs/object-2.json",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "size_bytes": 1002
+      },
+      "renderer_qualification": {
+        "uri": "s3://blueprint-production-inputs/object-3.json",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+        "size_bytes": 1003
+      }
+    },
+    "geometry": {
+      "kind": "sage_derived",
+      "collision": {
+        "uri": "s3://blueprint-production-inputs/object-4.json",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+        "size_bytes": 1004
+      },
+      "validation": {
+        "uri": "s3://blueprint-production-inputs/object-5.json",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+        "size_bytes": 1005
+      }
+    },
+    "registration": {
+      "metric_registration": {
+        "uri": "s3://blueprint-production-inputs/object-6.json",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+        "size_bytes": 1006
+      },
+      "support_plane": {
+        "uri": "s3://blueprint-production-inputs/object-7.json",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+        "size_bytes": 1007
+      },
+      "robot_mount_interface": {
+        "uri": "s3://blueprint-production-inputs/object-8.json",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+        "size_bytes": 1008
+      },
+      "workspace_clearance": {
+        "uri": "s3://blueprint-production-inputs/object-33.json",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000022",
+        "size_bytes": 1033
+      },
+      "camera_calibration": {
+        "uri": "s3://blueprint-production-inputs/object-9.json",
+        "digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+        "size_bytes": 1009
+      }
+    },
+    "rights": {
+      "admission": {
+        "uri": "s3://blueprint-production-inputs/object-10.json",
+        "digest": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+        "size_bytes": 1010
+      },
+      "evidence": [
+        {
+          "role": "publisher_terms",
+          "artifact": {
+            "uri": "s3://blueprint-production-inputs/object-24.json",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000019",
+            "size_bytes": 1024
+          }
+        },
+        {
+          "role": "human_authority_record",
+          "artifact": {
+            "uri": "s3://blueprint-production-inputs/object-25.json",
+            "digest": "sha256:000000000000000000000000000000000000000000000000000000000000001a",
+            "size_bytes": 1025
+          }
+        }
+      ],
+      "source_bytes_redistributable": false,
+      "provider_disclosure_scope": "derived_only"
+    }
+  },
+  "construction": {
+    "mode": "production_recipe",
+    "recipe": {
+      "uri": "s3://blueprint-production-inputs/object-29.json",
+      "digest": "sha256:000000000000000000000000000000000000000000000000000000000000001e",
+      "size_bytes": 1029
+    },
+    "output_identity": {
+      "id": "scene-source-object-native-packet",
+      "version": "v1"
+    }
+  },
+  "task": {
+    "identity": {
+      "id": "planar-mug-push",
+      "version": "v1"
+    },
+    "binding_mode": "define_configuration_template",
+    "kind": "rigid_relocation",
+    "strategy": "planar_push",
+    "subject": {
+      "mode": "construct_from_scene_object",
+      "identity": {
+        "id": "source-object-replacement",
+        "version": "v1"
+      },
+      "representation_kind": "simready_usd",
+      "source_object": {
+        "uri": "s3://blueprint-production-inputs/object-30.json",
+        "digest": "sha256:000000000000000000000000000000000000000000000000000000000000001f",
+        "size_bytes": 1030
+      },
+      "rights_admission": {
+        "uri": "s3://blueprint-production-inputs/object-10.json",
+        "digest": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+        "size_bytes": 1010
+      },
+      "provider_disclosure_allowed": true
+    },
+    "definition": {
+      "uri": "s3://blueprint-production-inputs/object-16.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000011",
+      "size_bytes": 1016
+    },
+    "success_criteria": {
+      "uri": "s3://blueprint-production-inputs/object-17.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000012",
+      "size_bytes": 1017
+    },
+    "execution": {
+      "uri": "s3://blueprint-production-inputs/object-18.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000013",
+      "size_bytes": 1018
+    }
+  },
+  "sensors": {
+    "configuration": {
+      "uri": "s3://blueprint-production-inputs/object-19.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000014",
+      "size_bytes": 1019
+    }
+  },
+  "runtime": {
+    "identity": {
+      "id": "native-arena",
+      "version": "v1"
+    },
+    "oci_image": "registry.example/arena@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "entrypoint": [
+      "/opt/blueprint/run-task-evaluation"
+    ],
+    "health_protocol": {
+      "uri": "s3://blueprint-production-inputs/object-20.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000015",
+      "size_bytes": 1020
+    },
+    "requirements": {
+      "cpu_cores": 8,
+      "memory_gib": 32,
+      "gpu_count": 1,
+      "disk_gib": 64
+    },
+    "network": {
+      "default": "deny",
+      "allowlist": []
+    },
+    "secret_refs": [],
+    "mounts": [
+      {
+        "source": {
+          "uri": "s3://blueprint-production-inputs/object-21.json",
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000016",
+          "size_bytes": 1021
+        },
+        "container_path": "/inputs",
+        "mode": "read_only"
+      },
+      {
+        "container_path": "/outputs",
+        "mode": "output"
+      }
+    ],
+    "output_limit_bytes": 20000000000
+  },
+  "execution_adapter": {
+    "kind": "scene_configuration_pipeline",
+    "version": "v1",
+    "runtime_source_bundle": {
+      "uri": "s3://blueprint-production-inputs/object-23.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000018",
+      "size_bytes": 1023
+    }
+  },
+  "publication": {
+    "input_namespace": "team-a-scene-841007-v1",
+    "service_account_readback_required": true
+  },
+  "spend": {
+    "maximum_hourly_rate_usd": 0.8,
+    "hard_cap_usd": 16.76,
+    "hard_ttl_seconds": 27000,
+    "provider_compute_spend_cap_usd": 6.0,
+    "external_service_caps": {
+      "openai": {
+        "maximum_cost_usd": 10.76,
+        "maximum_requests": 32,
+        "stage_max_cost_usd": {
+          "artifixer_semantic_teacher": 4.8,
+          "artifixer_visual_review": 0.96,
+          "content_agents": 5.0
+        }
+      }
+    },
+    "retry_cap": 0,
+    "selected_provider": "vast",
+    "provider_allowlist": [
+      "vast"
+    ]
+  },
+  "replacement_authoring_backend": "astra_cad_blender_v1"
+}

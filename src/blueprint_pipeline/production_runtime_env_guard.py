@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import re
+import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -96,6 +97,15 @@ REQUIRED_TRUE_FLAGS = (
 # needed releasing. A test pins this tuple against `deploy/systemd/*.service`
 # so a new unit cannot ship an unchecked entrypoint.
 CONTROL_PLANE_ENTRYPOINTS = (
+    "blueprint_pipeline.agent_run_executor",
+    "blueprint_pipeline.agent_execution.production",
+    "blueprint_pipeline.agent_execution.stage_recovery",
+    "blueprint_pipeline.completed_replay_cache_retention",
+    "blueprint_pipeline.operator_policy_canary_continuation",
+    "blueprint_pipeline.task_evaluation_scene_progression",
+    "blueprint_pipeline.control_plane_storage_gc",
+    "blueprint_pipeline.control_plane_capacity_controller",
+    "blueprint_pipeline.task_evaluation_production_chain_preflight",
     "blueprint_pipeline.paid_resource_allocator",
     "blueprint_pipeline.live_pipeline_control_plane",
     "blueprint_pipeline.live_pipeline_intake_service",
@@ -110,9 +120,18 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.capture_reconstruction_postshot_allocator",
     "blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup",
     "blueprint_pipeline.task_evaluation_launch_dispatcher",
+    "blueprint_pipeline.task_evaluation_launch_preparation_worker",
+    "blueprint_pipeline.task_evaluation_sam31_preparation_execution",
+    "blueprint_pipeline.scene_object_discovery_worker",
+    "blueprint_pipeline.task_evaluation_launch_activation_worker",
+    "blueprint_pipeline.task_evaluation_episode_compilation_worker",
     "blueprint_pipeline.task_evaluation_launch_reconciler",
     "blueprint_pipeline.task_evaluation_launch_supervisor",
+    "blueprint_pipeline.task_evaluation_policy_canary_dispatcher",
     "blueprint_pipeline.task_evaluation_terminal_resource_release",
+    "blueprint_pipeline.task_evaluation_configured_controls_progression_worker",
+    "blueprint_pipeline.native_g1_team_campaign_dispatcher",
+    "blueprint_pipeline.native_g1_team_campaign_settlement",
 )
 
 ENTRYPOINT_REMEDIATION = (
@@ -206,6 +225,7 @@ def _check_paid_launch_lock_slots(
         DEFAULT_VAST_LAUNCH_LOCK_FILENAME,
         VAST_API_KEY_FILE_ENV,
         VAST_LAUNCH_LOCK_FILE_ENV,
+        vast_launch_gate_path,
         vast_launch_lock_paths,
     )
 
@@ -220,7 +240,9 @@ def _check_paid_launch_lock_slots(
 
     # Rediscovered from the adapter, so changing the ceiling cannot leave a
     # slot unchecked by a list that was never updated alongside it.
-    slots = vast_launch_lock_paths(base)
+    # The deploy gate is provisioned like a slot: a root-owned gate would
+    # refuse every launch just as a root-owned slot does.
+    slots = [*vast_launch_lock_paths(base), vast_launch_gate_path(base)]
     if not base.parent.is_dir():
         # No provider-lock tree on this host. Creating one would scatter state
         # into a directory the deployment never provisioned -- on a developer
@@ -243,7 +265,11 @@ def _check_paid_launch_lock_slots(
         existed = slot.exists()
         try:
             with slot.open("a+", encoding="utf-8"):
-                slot.chmod(0o600)
+                if stat.S_IMODE(slot.stat().st_mode) != 0o600:
+                    slot.chmod(0o600)
+                installed_mode = stat.S_IMODE(slot.stat().st_mode)
+            if installed_mode != 0o600:
+                raise OSError("paid launch lock slot mode readback failed")
         except OSError as exc:
             unusable.append(f"{slot.name}:{type(exc).__name__}")
             blockers.append(f"paid_launch_lock_slot_unusable:{slot.name}")

@@ -314,3 +314,17 @@ def test_every_golden_still_asks_for_the_controls_that_make_a_run_provable(
     assert {"artifact_manifest_path", "teardown_manifest_path"} <= set(
         profile["terminal_contract"]["required_path_fields"]
     )
+
+
+def test_long_website_identity_stays_publishable_and_distinct(tmp_path: Path) -> None:
+    from tests.test_build_retained_scene_render_live_profile import _build, _fixture
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import validate_launch_profile
+
+    paths = _fixture(tmp_path)
+    revision = "site-capture-" + "a" * 180
+    first = _build(paths, revision=revision)
+    second = _build(paths, revision=revision + "b")
+    assert len(first["profile_id"]) <= 192
+    assert first["profile_id"] != second["profile_id"]
+    assert first["profile_id"] == _build(paths, revision=revision)["profile_id"]
+    assert validate_launch_profile(first) == []

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import types
 import zipfile
 
 import pytest
@@ -46,6 +47,7 @@ def _campaign(
     groot_rate: float = 0.5,
     pi_ttl: int = 3600,
     groot_ttl: int = 3600,
+    project_total: float | None = None,
     groot_projection_changes: dict[str, object] | None = None,
 ) -> tuple[Path, dict[str, object], dict[str, dict[str, object]]]:
     bundle_rows: dict[str, dict[str, object]] = {}
@@ -199,6 +201,17 @@ def _campaign(
     }
     monkeypatch.setattr(campaign_module, "validate_terminal_spend_chain", lambda **_kwargs: prior)
     monkeypatch.setattr(campaign_module, "bind_lane_prior_spend", lambda **_kwargs: reconciled)
+    project_path = prior_root / "project-spend.json"
+    if project_total is not None:
+        write_json(project_path, {"total_cost_usd": project_total})
+        monkeypatch.setattr(
+            campaign_module,
+            "validate_project_spend_reconciliation",
+            lambda *_args, **_kwargs: (
+                {"total_cost_usd": project_total},
+                _record(project_path),
+            ),
+        )
     output = tmp_path / "policy-campaign.json"
     value = campaign_module.materialize_native_task_arena_policy_campaign(
         campaign_id="scene-840920-policy-diagnostic-pair-1",
@@ -209,6 +222,9 @@ def _campaign(
         prior_result_path=prior_files["terminal_result"],
         prior_provider_zero_path=prior_files["provider_zero"],
         prior_spend_reconciliation_path=reconciliation_path,
+        project_spend_reconciliation_path=(
+            project_path if project_total is not None else None
+        ),
         controls_allowed_active_instance_ids=[48610674],
         pi05_launch_id="adp-policy-pi05-campaign-1",
         pi05_resource_name=PI_RESOURCE,
@@ -225,6 +241,42 @@ def _campaign(
     return output, value, bundle_rows
 
 
+def test_campaign_uses_newer_conservative_project_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _path, campaign, _bundles = _campaign(
+        tmp_path,
+        monkeypatch,
+        prior_before=38.0,
+        reconciled_total=0.25,
+        project_total=56.271914,
+    )
+
+    assert campaign["prior_official_spend"][
+        "aggregate_goal_spend_before_campaign_usd"
+    ] == 56.271914
+    assert campaign["projected_aggregate_goal_spend_usd"] == 57.271914
+    assert campaign["aggregate_goal_spend_cap_usd"] == 57.271914
+    assert campaign["prior_official_spend"][
+        "project_spend_reconciliation"
+    ]["path"].endswith("project-spend.json")
+
+
+def test_campaign_rejects_project_total_older_than_terminal_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(
+        ValueError, match="native_task_arena_policy_campaign_project_spend_stale"
+    ):
+        _campaign(
+            tmp_path,
+            monkeypatch,
+            prior_before=38.0,
+            reconciled_total=0.25,
+            project_total=38.0,
+        )
+
+
 def test_two_member_campaign_binds_both_caps_and_member_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,6 +284,7 @@ def test_two_member_campaign_binds_both_caps_and_member_authority(
 
     assert campaign["maximum_campaign_spend_usd"] == 1.0
     assert campaign["projected_aggregate_goal_spend_usd"] == 39.25
+    assert campaign["aggregate_goal_spend_cap_usd"] == 39.25
     assert [row["candidate_id"] for row in campaign["members"]] == [
         "pi05_droid",
         "groot_n17_droid",
@@ -296,6 +349,13 @@ def test_campaign_rejects_ttl_projection_above_cap(
 def test_campaign_validator_reads_only_staged_receipts_and_bundles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations"))
+    actual_reserve = dispatcher.reserve_control_plane_disk
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", lambda role, **kwargs: actual_reserve(
+        role, disk_usage=lambda _path: types.SimpleNamespace(
+            total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3,
+        ), **kwargs,
+    ))
     campaign_path, campaign, bundles = _campaign(tmp_path, monkeypatch)
     declared = [campaign_path]
     for member in campaign["members"]:
@@ -438,19 +498,27 @@ def test_single_use_authority_binds_exact_campaign_member_and_rejects_alteration
         )
 
 
-def test_campaign_rejects_sum_of_member_caps_over_fifty(
+def test_campaign_rolls_forward_but_rejects_excess_aggregate_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    campaign_path, campaign, _bundles = _campaign(
+        tmp_path,
+        monkeypatch,
+        prior_before=51.0,
+        reconciled_total=0.25,
+    )
+    assert campaign["projected_aggregate_goal_spend_usd"] == 52.25
+    assert campaign["aggregate_goal_spend_cap_usd"] == 52.25
+
+    tampered = json.loads(campaign_path.read_text(encoding="utf-8"))
+    tampered["aggregate_goal_spend_cap_usd"] = 60.0
+    tampered["campaign_digest"] = canonical_digest(
+        tampered, digest_field="campaign_digest"
+    )
     with pytest.raises(
         ValueError, match="native_task_arena_policy_campaign_aggregate_spend_invalid"
     ):
-        _campaign(
-            tmp_path,
-            monkeypatch,
-            prior_before=49.0,
-            reconciled_total=0.25,
-        )
-    assert not (tmp_path / "policy-campaign.json").exists()
+        campaign_module.validate_native_task_arena_policy_campaign(tampered)
 
 
 @pytest.mark.parametrize(

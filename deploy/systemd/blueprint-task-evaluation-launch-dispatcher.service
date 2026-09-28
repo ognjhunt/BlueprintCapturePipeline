@@ -5,6 +5,7 @@ Wants=network-online.target blueprint-gpu-spend-guard.service
 After=network-online.target blueprint-gpu-spend-guard.service
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
 Type=oneshot
 User=blueprint
 Group=blueprint
@@ -35,9 +36,14 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# CPU CAD/Blender uses the existing Landlock/seccomp sandbox when namespaces
+# are unavailable. These calls restrict the child; no host capabilities are added.
+SystemCallFilter=seccomp landlock_create_ruleset landlock_add_rule landlock_restrict_self
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint
-ReadOnlyPaths=/etc/blueprint/task-evaluation-launch-profiles /etc/blueprint/provider-secrets /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+ReadWritePaths=/workspace
+ReadOnlyPaths=/etc/blueprint/task-evaluation-launch-profiles /etc/blueprint/provider-secrets -/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
 LimitNOFILE=65536
 MemoryMax=8G
@@ -51,7 +57,16 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+# Persistent-owner selection scope (Spec C): the dispatcher claims only launch
+# rows whose profile carries the authenticated persistent-owner binding. This
+# NARROWS selection; it grants no execution authority and touches no execute or
+# dry-run hold. The canonical allocator still reopens the full owner reservation,
+# frozen profile, standing grant, release, spend, expiry, revocation and
+# provider-zero gates before any paid step.
+Environment=BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE=persistent_owner_only
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
+Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
 # Serial remains the safe default. Operators may explicitly raise this to 2 or
 # 3; the dispatcher rejects every other value before claiming a request, and
 # each worker still crosses the canonical allocator's independent spend,
@@ -70,6 +85,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID=
 # credential to the canonical read-only secret directory. The allocator still
 # fails closed when a required file is absent; these paths grant no authority.
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
+Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
 Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock
 Environment=NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key
@@ -81,6 +97,19 @@ Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
 # /nonexistent, so a secret resolved from a developer home cannot be read
 # here; name it the way every other credential on this unit is named.
 Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key
+# Scene configuration reserves and settles OpenAI cost against an operator-
+# attested, project/key-scoped official Costs API window.  Keep the billing
+# credential and human attestation in the same canonical read-only secret
+# directory; project and key IDs remain non-secret values in the environment
+# file loaded below.
+Environment=OPENAI_ADMIN_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_admin_api_key
+Environment=BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation.json
+Environment=OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_artifixer_semantic_teacher
+Environment=OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review
+Environment=OPENAI_CONTENT_AGENTS_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_content_agents
+Environment=BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation_artifixer_semantic_teacher.json
+Environment=BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation_artifixer_visual_review.json
+Environment=BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation_content_agents.json
 # The configured directory is authoritative, so a key that exists only on
 # somebody's workstation cannot stand in for one the deployment never
 # installed. Three sibling units already declare it.
@@ -90,12 +119,31 @@ Environment=BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/pro
 Environment=BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url
 Environment=BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket
 Environment=BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
+# A completed scene configuration must remain publishable to the canonical
+# Website offering surface after a clean host rebuild. EnvironmentFile can
+# override this deployment default for non-production installations.
+Environment=PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launches
+Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PUBLICATION_READINESS_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-publication-readiness
+Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
+Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+# Shared owner-store identity (scene-intake root + trusted clients) so
+# scene_policy_binding.scene_store() can resolve the persistent owner of a
+# selected row (Spec C). Materialized by the scene-preparation installer;
+# optional so its absence never blocks the unit start.
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 WorkingDirectory=/
 # A runtime drop-in may set FORCE_DRY_RUN=true while the canonical environment
 # file still permits execution.  EnvironmentFile values override Environment=
 # values in systemd, so a separate positive dry interlock is required; never
 # rely on an Environment=...EXECUTE=false drop-in as a spend stop.
+ExecStartPre=/bin/bash -lc 'test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -c "import optuna; assert optuna.__version__ == str(4)+chr(46)+str(9)+chr(46)+str(0)"'
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_dispatcher --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --public-catalog "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --max-messages 10 --max-concurrency "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_MAX_CONCURRENCY:-1}") && if [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] && [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true ]; then ARGS+=(--execute); if [ -n "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID:-}" ]; then ARGS+=(--execute-launch-id "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}"); fi; fi; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'
 # KillMode=process deliberately preserves a valid hard-TTL watchdog. Reap every
 # other remaining allocator/provider descendant before the oneshot is closed or

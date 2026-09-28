@@ -36,6 +36,9 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
+from blueprint_pipeline.task_evaluation_release_reference_lock import (
+    release_reference_lock,
+)
 from blueprint_pipeline.task_evaluation_standing_launch_authorization import (
     SCHEMA_VERSION,
     validate_standing_authorization,
@@ -169,7 +172,7 @@ def _install_exact(
     return True
 
 
-def materialize_standing_launch_authorization(
+def _materialize_standing_launch_authorization_locked(
     *,
     profile_path: str | Path,
     output_dir: str | Path,
@@ -247,6 +250,34 @@ def materialize_standing_launch_authorization(
         "expires_at": expiry.isoformat(),
         "provider_mutation_performed": False,
     }
+
+
+def materialize_standing_launch_authorization(
+    *,
+    profile_path: str | Path,
+    output_dir: str | Path,
+    authorized_by: str,
+    authorization_reference: str,
+    issued_at: str,
+    expires_at: str,
+    max_launches: int,
+    max_total_spend_usd: float,
+    service_account: str | None = None,
+) -> dict[str, Any]:
+    authorization_root = Path(output_dir).expanduser().resolve()
+    authorization_root.parent.mkdir(parents=True, exist_ok=True)
+    with release_reference_lock(authorization_root.parent, exclusive=False):
+        return _materialize_standing_launch_authorization_locked(
+            profile_path=profile_path,
+            output_dir=output_dir,
+            authorized_by=authorized_by,
+            authorization_reference=authorization_reference,
+            issued_at=issued_at,
+            expires_at=expires_at,
+            max_launches=max_launches,
+            max_total_spend_usd=max_total_spend_usd,
+            service_account=service_account,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

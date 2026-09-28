@@ -1,4 +1,4 @@
-"""Attach one digest-bound controls bundle to a retained Vast Arena worker."""
+"""Attach one digest-bound construction or controls bundle to a warm worker."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import subprocess
 import time
 from typing import Any
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .adp_isaac_lab_arena_vast import (
@@ -24,7 +25,12 @@ from .gpu_render_providers import (
     _validated_vast_known_hosts_pin,
     enroll_vast_ssh_host_key,
 )
-from .native_task_arena_controls_bundle import RESULT_FILENAME
+from .native_task_arena_construction_worker import (
+    RESULT_FILENAME as CONSTRUCTION_RESULT_FILENAME,
+)
+from .native_task_arena_controls_bundle import (
+    RESULT_FILENAME as CONTROLS_RESULT_FILENAME,
+)
 from .native_task_arena_execution_contract import (
     native_task_arena_execution_transport_completed,
 )
@@ -50,7 +56,11 @@ from .wam_provider_object_store import (
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_warm_vast_run.v1"
-DEFAULT_KEY_PREFIX = "blueprint/adp/native-task-arena/warm-controls"
+DEFAULT_KEY_PREFIX = "blueprint/adp/native-task-arena/warm-attachment"
+WARM_RESULT_FILENAMES = {
+    "construction_canary": CONSTRUCTION_RESULT_FILENAME,
+    "controls": CONTROLS_RESULT_FILENAME,
+}
 POLL_SECONDS = 10
 DEFAULT_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
 VAST_SSH_IDENTITY_FILE_ENV = "BLUEPRINT_VAST_SSH_IDENTITY_FILE"
@@ -75,9 +85,39 @@ def _read_api_key() -> str:
 
 def _read_url(path: Path) -> str:
     value = path.read_text(encoding="utf-8").strip()
-    if not value.startswith("https://"):
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         raise ValueError("native_task_arena_warm_signed_url_invalid")
     return value
+
+
+def validate_native_task_arena_warm_ssh_identity_file(
+    identity_file: str | Path | None = None,
+) -> Path:
+    """Resolve the service-bound SSH key before warm authority consumption."""
+
+    identity = Path(
+        identity_file
+        or os.getenv(VAST_SSH_IDENTITY_FILE_ENV, DEFAULT_SSH_IDENTITY_FILE)
+    ).expanduser()
+    try:
+        identity_mode = identity.stat().st_mode & 0o777
+        resolved = identity.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("native_task_arena_warm_ssh_identity_invalid") from exc
+    if (
+        identity.is_symlink()
+        or not identity.is_file()
+        or identity_mode & 0o077
+        or not os.access(identity, os.R_OK)
+    ):
+        raise ValueError("native_task_arena_warm_ssh_identity_invalid")
+    return resolved
 
 
 def _file_sha256(path: Path) -> str:
@@ -173,6 +213,10 @@ echo BLUEPRINT_ARENA_WARM_PROVIDER_OUTPUT_UPLOAD_OK
 """
 
 
+_DEFAULT_MAX_WARM_SSH_TIMEOUT_SECONDS = 300.0
+_ABSOLUTE_MAX_WARM_SSH_TIMEOUT_SECONDS = 1800.0
+
+
 def _run_pinned_ssh(
     *,
     session: Mapping[str, Any],
@@ -181,6 +225,7 @@ def _run_pinned_ssh(
     stdin: bytes | None = None,
     identity_file: str | Path | None = None,
     timeout_seconds: float = 30.0,
+    maximum_timeout_seconds: float = _DEFAULT_MAX_WARM_SSH_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Run one bounded command on the retained worker over strict pinned SSH."""
 
@@ -201,20 +246,9 @@ def _run_pinned_ssh(
             "raw_secret_values_recorded": False,
         }
     known_hosts, known_hosts_sha256 = pin
-    identity = Path(
-        identity_file
-        or os.getenv(VAST_SSH_IDENTITY_FILE_ENV, DEFAULT_SSH_IDENTITY_FILE)
-    ).expanduser()
     try:
-        identity_mode = identity.stat().st_mode & 0o777
-    except OSError:
-        identity_mode = -1
-    if (
-        identity.is_symlink()
-        or not identity.is_file()
-        or identity_mode < 0
-        or identity_mode & 0o077
-    ):
+        identity = validate_native_task_arena_warm_ssh_identity_file(identity_file)
+    except ValueError:
         return {
             "status": "blocked",
             "blockers": ["native_task_arena_warm_ssh_identity_invalid"],
@@ -228,11 +262,19 @@ def _run_pinned_ssh(
             "known_hosts_sha256": known_hosts_sha256,
             "raw_secret_values_recorded": False,
         }
-    timeout = min(300.0, max(1.0, float(timeout_seconds)))
+    # A probe should stay short, but provisioning a GPU runtime legitimately
+    # compiles CUDA extensions and does not finish inside a five minute probe
+    # budget. Callers opt into a longer ceiling explicitly; the absolute bound
+    # still holds, and the session TTL and spend cap are unchanged.
+    ceiling = min(
+        _ABSOLUTE_MAX_WARM_SSH_TIMEOUT_SECONDS,
+        max(1.0, float(maximum_timeout_seconds)),
+    )
+    timeout = min(ceiling, max(1.0, float(timeout_seconds)))
     command = [
         "ssh",
         "-i",
-        str(identity.resolve(strict=True)),
+        str(identity),
         "-p",
         str(port),
         "-o",
@@ -246,7 +288,7 @@ def _run_pinned_ssh(
         "-o",
         "GlobalKnownHostsFile=/dev/null",
         "-o",
-        f"ConnectTimeout={max(1, int(timeout))}",
+        f"ConnectTimeout={max(1, int(min(30.0, timeout)))}",
         "-o",
         "ServerAliveInterval=5",
         "-o",
@@ -296,6 +338,7 @@ def _dispatch_warm_script_over_ssh(
     session: Mapping[str, Any],
     remote_script: str,
     attempt_key: str,
+    require_dedicated_session: bool = False,
 ) -> dict[str, Any]:
     """Stream the dispatcher over SSH; Vast's execute API caps commands at 512 B."""
 
@@ -336,15 +379,53 @@ def _dispatch_warm_script_over_ssh(
     # that proves the cache hit and output upload. Keep dispatch evidence in a
     # sibling namespace that the workload never mutates.
     remote_dir = f"/workspace/native_task_arena_warm_dispatches/{attempt_key}"
-    wrapper = (
-        "set -euo pipefail; "
-        f"mkdir -p {shlex.quote(remote_dir)}; "
-        f"cat > {shlex.quote(remote_dir + '/run.sh')}; "
-        f"chmod 700 {shlex.quote(remote_dir + '/run.sh')}; "
-        f"nohup bash {shlex.quote(remote_dir + '/run.sh')} > "
-        f"{shlex.quote(remote_dir + '/run.log')} 2>&1 < /dev/null & "
-        "pid=$!; case \"$pid\" in ''|*[!0-9]*) exit 78;; esac; printf '%s\\n' \"$pid\""
-    )
+    run_path = remote_dir + "/run.sh"
+    log_path = remote_dir + "/run.log"
+    if require_dedicated_session:
+        identity_path = remote_dir + "/session.identity"
+        session_runner = """set -euo pipefail
+identity=$1
+run_path=$2
+attempt_key=$3
+export BLUEPRINT_SCENE_WARM_DISPATCH_ATTEMPT="$attempt_key"
+read -r actual_pid actual_pgid actual_sid < <(ps -o pid= -o pgid= -o sid= -p "$$")
+case "$actual_pid:$actual_pgid:$actual_sid" in
+  "$actual_pid:$actual_pid:$actual_pid") ;;
+  *) exit 79;;
+esac
+tmp="$identity.$$"
+printf '%s %s %s\\n' "$actual_pid" "$actual_pgid" "$actual_sid" > "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$identity"
+exec /bin/bash "$run_path"
+"""
+        wrapper = (
+            "set -euo pipefail; "
+            f"mkdir -p {shlex.quote(remote_dir)}; "
+            f"cat > {shlex.quote(run_path)}; "
+            f"chmod 700 {shlex.quote(run_path)}; "
+            f"rm -f {shlex.quote(identity_path)}; "
+            f"nohup setsid /bin/bash -c {shlex.quote(session_runner)} -- "
+            f"{shlex.quote(identity_path)} {shlex.quote(run_path)} "
+            f"{shlex.quote(attempt_key)} > {shlex.quote(log_path)} "
+            "2>&1 < /dev/null & launcher=$!; "
+            "case \"$launcher\" in ''|*[!0-9]*) exit 78;; esac; "
+            "waits=0; while [ ! -s "
+            f"{shlex.quote(identity_path)}"
+            " ] && [ \"$waits\" -lt 50 ]; do waits=$((waits + 1)); sleep 0.1; done; "
+            f"test -s {shlex.quote(identity_path)} || exit 78; "
+            f"cat {shlex.quote(identity_path)}"
+        )
+    else:
+        wrapper = (
+            "set -euo pipefail; "
+            f"mkdir -p {shlex.quote(remote_dir)}; "
+            f"cat > {shlex.quote(run_path)}; "
+            f"chmod 700 {shlex.quote(run_path)}; "
+            f"nohup bash {shlex.quote(run_path)} > "
+            f"{shlex.quote(log_path)} 2>&1 < /dev/null & "
+            "pid=$!; case \"$pid\" in ''|*[!0-9]*) exit 78;; esac; printf '%s\\n' \"$pid\""
+        )
     result = _run_pinned_ssh(
         session=session,
         known_hosts_file=str(enrollment["known_hosts_file"]),
@@ -353,19 +434,47 @@ def _dispatch_warm_script_over_ssh(
         timeout_seconds=30,
     )
     stdout = str(result.get("stdout") or "")
-    pid_match = re.fullmatch(r"([1-9][0-9]*)\n?", stdout)
-    if result.get("status") != "completed" or pid_match is None:
-        result["status"] = "blocked"
-        result["blockers"] = sorted(
-            set(
-                list(result.get("blockers") or [])
-                + ["native_task_arena_warm_dispatch_pid_unproven"]
-            )
+    if require_dedicated_session:
+        identity_match = re.fullmatch(
+            r"([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)\n?",
+            stdout,
         )
+        identity_values = (
+            tuple(int(identity_match.group(index)) for index in range(1, 4))
+            if identity_match is not None
+            else ()
+        )
+        identity_proven = len(identity_values) == 3 and len(set(identity_values)) == 1
+        if result.get("status") == "completed" and identity_proven:
+            result["remote_pid"] = identity_values[0]
+            result["remote_process_group_id"] = identity_values[1]
+            result["remote_session_id"] = identity_values[2]
+        else:
+            result["status"] = "blocked"
+            result["blockers"] = sorted(
+                set(
+                    list(result.get("blockers") or [])
+                    + ["native_task_arena_warm_dispatch_pid_unproven"]
+                )
+            )
     else:
-        result["remote_pid"] = int(pid_match.group(1))
+        pid_match = re.fullmatch(r"([1-9][0-9]*)\n?", stdout)
+        if result.get("status") == "completed" and pid_match is not None:
+            result["remote_pid"] = int(pid_match.group(1))
+        else:
+            result["status"] = "blocked"
+            result["blockers"] = sorted(
+                set(
+                    list(result.get("blockers") or [])
+                    + ["native_task_arena_warm_dispatch_pid_unproven"]
+                )
+            )
     result["host_key_enrollment"] = enrollment
-    result["transport"] = "strict_pinned_ssh_stdin.v1"
+    result["transport"] = (
+        "strict_pinned_ssh_stdin_dedicated_session.v1"
+        if require_dedicated_session
+        else "strict_pinned_ssh_stdin.v1"
+    )
     (job / "warm_dispatch.log").write_text(
         (
             f"status={result.get('status')}\n"
@@ -436,7 +545,9 @@ def _download_when_ready(
             request = urllib.request.Request(
                 url, headers={"User-Agent": "BlueprintArenaWarm/1.0"}
             )
-            with urllib.request.urlopen(request, timeout=30) as response:
+            # The URL is admitted by _read_url before this helper is called:
+            # HTTPS only, with a non-empty host and no embedded credentials.
+            with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
                 payload = response.read()
             if payload:
                 destination.write_bytes(payload)
@@ -455,12 +566,17 @@ def _close_warm_instance(
 ) -> dict[str, Any]:
     """Destroy the retained worker after controls passes and prove its absence."""
 
-    status_code, _response = _api_json(
-        method="DELETE",
-        path=f"/instances/{instance_id}/",
-        api_key=api_key,
-        timeout_seconds=30,
-    )
+    try:
+        status_code, _response = _api_json(
+            method="DELETE",
+            path=f"/instances/{instance_id}/",
+            api_key=api_key,
+            timeout_seconds=30,
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code not in {404, 410}:
+            raise
+        status_code = exc.code
     observations: list[dict[str, Any]] = []
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -522,6 +638,10 @@ def _execute_staged_warm_attempt(
     instance_id: int,
     api_key: str,
 ) -> dict[str, Any]:
+    execution_mode = str(prepared_bundle.get("execution_mode") or "")
+    expected_output_filename = WARM_RESULT_FILENAMES.get(execution_mode)
+    if expected_output_filename is None:
+        raise ValueError("native_task_arena_warm_bundle_mode_invalid")
     bundle_url = _read_url(staging_dir / "provider_bundle_url.txt")
     output_put_url = _read_url(staging_dir / "provider_output_put_url.txt")
     output_get_url = _read_url(staging_dir / "provider_output_get_url.txt")
@@ -576,8 +696,8 @@ def _execute_staged_warm_attempt(
         _extract_provider_output(
             output_zip,
             job / "immutable_execution",
-            result_name=RESULT_FILENAME,
-            blocker_prefix="native_task_arena_warm_controls",
+            result_name=expected_output_filename,
+            blocker_prefix=f"native_task_arena_warm_{execution_mode}",
         )
         if output_ready
         else {"execution": {}, "blockers": ["native_task_arena_warm_output_timeout"]}
@@ -592,7 +712,7 @@ def _execute_staged_warm_attempt(
     }
 
 
-def run_native_task_arena_warm_controls_vast(
+def run_native_task_arena_warm_vast(
     *,
     job_dir: str | Path,
     prepared_bundle: Mapping[str, Any],
@@ -603,7 +723,7 @@ def run_native_task_arena_warm_controls_vast(
     object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
     close_on_success: bool = True,
 ) -> dict[str, Any]:
-    """Run through the same scoped Vast mutation gates as a cold Arena run."""
+    """Run one construction or controls bundle without another allocation."""
 
     kwargs = {
         "job_dir": job_dir,
@@ -616,16 +736,37 @@ def run_native_task_arena_warm_controls_vast(
         "close_on_success": close_on_success,
     }
     if not execute:
-        return _run_native_task_arena_warm_controls_vast(**kwargs)
+        return _run_native_task_arena_warm_vast(**kwargs)
     # The cold Arena path deliberately opens these process-local gates only
     # after paid-resource admission and restores them afterwards. Warm attach
     # has the same provider GET/execute/DELETE surface, so it must use the same
     # scoped authority instead of depending on persistent service env flags.
     with _vast_authority_environment():
-        return _run_native_task_arena_warm_controls_vast(**kwargs)
+        return _run_native_task_arena_warm_vast(**kwargs)
 
 
-def _run_native_task_arena_warm_controls_vast(
+def close_native_task_arena_warm_instance(
+    *, warm_session: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Destroy one exact retained worker after bounded search exhaustion."""
+
+    session = dict(warm_session)
+    instance_id = session.get("instance_id")
+    if (
+        session.get("schema_version") != "native_task_arena_warm_session.v1"
+        or session.get("status") != "ready"
+        or not isinstance(instance_id, int)
+        or session.get("continuing_spend") is not True
+    ):
+        raise ValueError("native_task_arena_warm_close_session_invalid")
+    with _vast_authority_environment():
+        return _close_warm_instance(
+            instance_id=instance_id,
+            api_key=_read_api_key(),
+        )
+
+
+def _run_native_task_arena_warm_vast(
     *,
     job_dir: str | Path,
     prepared_bundle: Mapping[str, Any],
@@ -636,17 +777,20 @@ def _run_native_task_arena_warm_controls_vast(
     object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
     close_on_success: bool = True,
 ) -> dict[str, Any]:
-    """Run one controls bundle on an existing instance; allocate no provider."""
+    """Run one admitted warm bundle on an existing instance; allocate none."""
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
     generated = utc_now_iso()
     bundle_path = Path(str(prepared_bundle.get("bundle_path") or "")).resolve()
+    execution_mode = str(prepared_bundle.get("execution_mode") or "")
+    expected_output_filename = WARM_RESULT_FILENAMES.get(execution_mode)
     if (
         prepared_bundle.get("schema_version")
         != "native_task_arena_provider_bundle.v1"
-        or prepared_bundle.get("execution_mode") != "controls"
-        or prepared_bundle.get("expected_output_filename") != RESULT_FILENAME
+        or expected_output_filename is None
+        or prepared_bundle.get("expected_output_filename")
+        != expected_output_filename
         or not bundle_path.is_file()
         or _file_sha256(bundle_path) != prepared_bundle.get("bundle_sha256")
     ):
@@ -671,12 +815,27 @@ def _run_native_task_arena_warm_controls_vast(
             "provider_allocations_performed": 0,
             "warm_session_digest": session["session_digest"],
             "bundle_sha256": prepared_bundle.get("bundle_sha256"),
+            "execution_mode": execution_mode,
             "blockers": [],
         }
         write_json(job / "native_task_arena_warm_vast_result.json", result)
         return result
     if authority is None or paid_resource_admission_grant is None:
         raise ValueError("native_task_arena_warm_paid_authority_missing")
+    try:
+        validate_native_task_arena_warm_ssh_identity_file()
+    except ValueError:
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "provider_allocations_performed": 0,
+            "authorization_consumption": {"status": "not_consumed"},
+            "blockers": ["native_task_arena_warm_ssh_identity_invalid"],
+            "raw_secret_values_recorded": False,
+        }
+        write_json(job / "native_task_arena_warm_vast_result.json", result)
+        return result
     api_key = _read_api_key()
     if (
         not _truthy(VAST_API_GATE_ENV)
@@ -768,10 +927,11 @@ def _run_native_task_arena_warm_controls_vast(
         blockers.append("native_task_arena_warm_output_upload_unproven")
     if not native_task_arena_execution_transport_completed(
         execution,
-        expected_output_filename=RESULT_FILENAME,
+        expected_output_filename=expected_output_filename,
     ):
         blockers.extend(
-            execution.get("blockers") or ["native_task_arena_warm_controls_not_completed"]
+            execution.get("blockers")
+            or [f"native_task_arena_warm_{execution_mode}_not_completed"]
         )
     if cleanup.get("all_objects_absent") is not True:
         blockers.append("native_task_arena_warm_object_store_cleanup_unproven")
@@ -780,7 +940,11 @@ def _run_native_task_arena_warm_controls_vast(
         "provider_instance_absent": False,
         "continuing_spend_from_this_run": True,
     }
-    if not blockers and close_on_success:
+    # ``close_on_success`` marks the final warm attachment in the admitted
+    # construction -> controls chain.  A scientific/runtime blocker in that
+    # final controls attempt must not silently turn into retained paid spend:
+    # there is no authorized retry after this single-use attachment.
+    if close_on_success:
         closeout = _close_warm_instance(instance_id=instance_id, api_key=api_key)
         if closeout.get("provider_instance_absent") is not True:
             blockers.extend(closeout.get("blockers") or [])
@@ -793,10 +957,19 @@ def _run_native_task_arena_warm_controls_vast(
         "provider_instance_id": instance_id,
         "warm_session_digest": session["session_digest"],
         "bundle_sha256": prepared_bundle.get("bundle_sha256"),
+        "execution_mode": execution_mode,
         "authorization_consumption": consumption,
         "dispatch": outcome.get("dispatch"),
         "remote_log_fetch": outcome.get("remote_log"),
-        "native_control_result_path": extracted.get("result_path"),
+        "native_result_path": extracted.get("result_path"),
+        "native_control_result_path": (
+            extracted.get("result_path") if execution_mode == "controls" else None
+        ),
+        "native_construction_result_path": (
+            extracted.get("result_path")
+            if execution_mode == "construction_canary"
+            else None
+        ),
         "runtime_seconds": round(elapsed, 3),
         "incremental_cost_upper_bound_usd": round(
             float(session.get("max_hourly_rate_usd") or 0.0) * elapsed / 3600,
@@ -837,7 +1010,7 @@ def _run_native_task_arena_warm_controls_vast(
             "continuing_spend_from_this_run": False,
             "zero_continuing_spend_scope": (
                 "The exact retained Vast instance was destroyed and provider "
-                "absence was observed after the successful warm controls attempt."
+                "absence was observed after the successful warm attachment."
             ),
         }
     else:
@@ -856,12 +1029,13 @@ def _run_native_task_arena_warm_controls_vast(
     result = seal_lane_terminal_artifacts(
         result,
         attempt_root=job,
-        lane="native_task_arena_warm_controls",
+        lane=f"native_task_arena_warm_{execution_mode}",
         binding={
             "provider": "vast",
             "provider_instance_id": instance_id,
             "warm_session_digest": session["session_digest"],
             "bundle_sha256": prepared_bundle.get("bundle_sha256"),
+            "execution_mode": execution_mode,
             "provider_allocations_performed": 0,
         },
     )
@@ -871,5 +1045,13 @@ def _run_native_task_arena_warm_controls_vast(
 
 __all__ = [
     "RESULT_SCHEMA_VERSION",
+    "run_native_task_arena_warm_vast",
+    "close_native_task_arena_warm_instance",
     "run_native_task_arena_warm_controls_vast",
+    "validate_native_task_arena_warm_ssh_identity_file",
 ]
+
+
+# Compatibility alias for existing controls callers. The implementation now
+# validates and dispatches both construction_canary and controls bundles.
+run_native_task_arena_warm_controls_vast = run_native_task_arena_warm_vast

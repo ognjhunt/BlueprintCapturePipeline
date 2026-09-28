@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_run_selection.v1.schema.json",
+  "title": "Task Evaluation policy-run server selection v1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "source_launch_id", "offering_digest", "setup_digest", "preset_id"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_policy_run_selection.v1"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "source_launch_id": {"$ref": "#/$defs/identifier"},
+    "offering_digest": {"$ref": "#/$defs/digest"},
+    "setup_digest": {"$ref": "#/$defs/digest"},
+    "preset_id": {"enum": ["quick_10", "standard_100", "deep_500"]},
+    "run_kind": {"enum": ["qualified_evaluation", "internal_policy_canary"]},
+    "claim_ceiling": {"const": "diagnostic_policy_execution"},
+    "scene_revision_digest": {"$ref": "#/$defs/digest"},
+    "scene_controls_status_at_submission": {"const": "configured_controls_pending"},
+    "robot_preset_id": {"$ref": "#/$defs/identifier"},
+    "policy_candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+    "notification": {"type": "object", "required": ["email", "notify_on"], "additionalProperties": false, "properties": {"email": {"type": "string", "format": "email", "maxLength": 254}, "notify_on": {"type": "array", "minItems": 3, "maxItems": 3, "prefixItems": [{"const": "completed"}, {"const": "blocked"}, {"const": "cancelled"}], "items": false}}},
+    "website_request_digest": {"$ref": "#/$defs/digest"}
+    ,"task_success_contract": {"$ref": "#/$defs/taskSuccessContract"}
+    ,"task_success_contract_digest": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [{"if": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]}, "then": {"required": ["claim_ceiling", "scene_revision_digest", "scene_controls_status_at_submission", "robot_preset_id", "policy_candidate_ids", "notification", "website_request_digest", "task_success_contract", "task_success_contract_digest"]}}],
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "taskSuccessContract": {"$ref": "rigid_task_success_contract.v1.schema.json"}
+  }
+}

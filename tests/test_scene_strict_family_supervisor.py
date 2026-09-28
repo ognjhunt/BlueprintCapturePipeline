@@ -294,6 +294,9 @@ def _make_launch(
         "request_digest": request["request_digest"],
         "receipt_digest": receipt["receipt_digest"],
         "response": {
+            "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "status": receipt["status"],
+            "already_exists": False,
             "launch_id": launch_id,
             "run_id": launch_id,
             "request_digest": request["request_digest"],
@@ -513,19 +516,23 @@ def scene_840920_host_layout_fixture(
     return evidence, launches, roots, billings
 
 
-def test_denominator_excludes_diagnostic_from_eighteen_reachable_probes() -> None:
+def test_denominator_excludes_non_family_lanes_from_twenty_reachable_probes() -> None:
     families, derivation = derive_governed_families()
 
     assert len(families) == 15
-    assert derivation["website_reachable_probe_count"] == 18
-    assert derivation["family_probe_count"] == 17
+    assert derivation["website_reachable_probe_count"] == 20
+    assert derivation["family_probe_count"] == 18
     assert derivation["non_family_reachable_probe_kinds"] == [
-        "native-task-arena-policy-diagnostic"
+        "native-task-arena-policy-diagnostic",
+        "task-evaluation-scene-configuration",
     ]
     assert "native-task-arena-policy-diagnostic" not in {
         probe for family in families for probe in family.probe_kinds
     }
-    assert len(next(row for row in families if row.family_id == "native_task_arena").probe_kinds) == 3
+    assert "task-evaluation-scene-configuration" not in {
+        probe for family in families for probe in family.probe_kinds
+    }
+    assert len(next(row for row in families if row.family_id == "native_task_arena").probe_kinds) == 4
     assert len(
         next(
             row

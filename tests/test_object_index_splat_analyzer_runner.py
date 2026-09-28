@@ -146,6 +146,10 @@ def test_fixture_interactions_normalize_to_blueprint_objects(
     assert cabinet["task_relevance"]["score"] >= 0.85
     assert cabinet["articulation_hints"]["interactive"] is True
     assert cabinet["provenance"]["source"] == "splat_analyzer"
+    assert cabinet["provenance"]["asset_sha256"].startswith("sha256:")
+    assert cabinet["provenance"]["asset_size_bytes"] == 3
+    assert cabinet["provenance"]["interactions_sha256"].startswith("sha256:")
+    assert cabinet["provenance"]["interactions_size_bytes"] == interactions.stat().st_size
     assert cabinet["provenance"]["canonical_truth"] is False
     assert cabinet["provenance"]["presentation_only"] is True
     assert cabinet["metric_placement_ready"] is False
@@ -155,6 +159,8 @@ def test_fixture_interactions_normalize_to_blueprint_objects(
     assert cabinet["provenance"]["claim_boundary"]["metric_oriented_box_validated"] is False
     assert result["scene_relationship_candidates"]
     assert result["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert result["splat_asset"]["sha256"].startswith("sha256:")
+    assert result["interactions_binding"]["sha256"].startswith("sha256:")
 
 
 def test_input_preflight_distinguishes_standard_and_supersplat_ply(tmp_path: Path) -> None:

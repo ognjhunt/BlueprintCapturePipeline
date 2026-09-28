@@ -94,11 +94,23 @@ def test_runtime_dependency_layer_uploads_once_then_hits_digest_cache(
         key_prefix="blueprint/arena",
         expiration_seconds=600,
     )
+    checkpoint = object_store.stage_cached_runtime_dependency_object_store(
+        job_dir=tmp_path / "g1-checkpoint",
+        dependency_path=dependency,
+        expected_sha256="sha256:" + digest,
+        key_prefix="blueprint/arena",
+        expiration_seconds=600,
+        artifact_kind="g1_checkpoint",
+    )
 
     assert first["status"] == second["status"] == "completed"
+    assert checkpoint["status"] == "completed"
+    assert checkpoint["artifact_kind"] == "g1_checkpoint"
     assert first["upload_performed"] is True
     assert second["cache_hit"] is True
-    assert client.upload_count == 1
+    assert client.upload_count == 2
+    assert any(key.endswith(f"/g1-checkpoints/sha256/{digest}.bin")
+               for _bucket, key in client.objects)
     closeout = object_store.close_cached_runtime_dependency_staging(
         tmp_path / "run2"
     )
@@ -174,6 +186,141 @@ def test_wam_provider_object_store_blocks_without_file_based_credentials(
     assert (
         "raw_secret" not in persisted.lower() or '"raw_secret_values_recorded": false' in persisted
     )
+
+
+def test_scene_bundle_uses_verified_cas_and_cleanup_retains_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bundle = tmp_path / "provider-bundle.zip"
+    bundle.write_bytes(b"immutable scene bundle")
+    digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    access.write_text("access\n", encoding="utf-8")
+    secret.write_text("secret\n", encoding="utf-8")
+    cas_key = (
+        "blueprint/arm-decision-proof-v1/configured-scenes/artifacts/"
+        f"provider-bundle/sha256/{digest}/{bundle.name}"
+    )
+
+    class FakeConfig:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeNotFound(RuntimeError):
+        response = {
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+            "Error": {"Code": "NoSuchKey"},
+        }
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def head_object(self, *, Bucket: str, Key: str):
+            del Bucket
+            if Key in self.deleted or "runpod_provider_runtime_output_" in Key:
+                raise FakeNotFound("absent")
+            raise AssertionError(f"unexpected head:{Key}")
+
+        def delete_object(self, *, Bucket: str, Key: str):
+            assert Bucket == "scene-artifacts"
+            self.deleted.append(Key)
+            return {"ResponseMetadata": {"HTTPStatusCode": 204}}
+
+        def generate_presigned_url(
+            self, operation: str, *, Params, ExpiresIn, HttpMethod
+        ):
+            del ExpiresIn, HttpMethod
+            return (
+                f"https://s3.us-west-004.backblazeb2.com/{Params['Bucket']}/"
+                f"{Params['Key']}?signature={operation}"
+            )
+
+    client = FakeClient()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda _service, **_kwargs: client),
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig)
+    )
+    monkeypatch.setattr(
+        object_store,
+        "_signed_output_round_trip_preflight",
+        lambda *_args, **_kwargs: {
+            "schema_version": object_store.SIGNED_OUTPUT_ROUND_TRIP_SCHEMA_VERSION,
+            "status": "passed",
+            "blockers": [],
+            "raw_signed_urls_recorded": False,
+            "raw_secret_values_recorded": False,
+        },
+    )
+    publications: list[tuple[Path, str]] = []
+
+    def publish(*, path: Path, artifact_kind: str):
+        publications.append((path, artifact_kind))
+        return {
+            "schema_version": "task_evaluation_scene_artifact_reference.v1",
+            "status": "remote_verified",
+            "artifact_kind": artifact_kind,
+            "uri": f"s3://scene-artifacts/{cas_key}",
+            "digest": "sha256:" + digest,
+            "size_bytes": bundle.stat().st_size,
+            "cache_hit": True,
+            "upload_performed": False,
+            "content_addressed_key": True,
+            "remote_identity_verified": True,
+            "full_byte_service_account_readback_passed": True,
+            "raw_secret_values_recorded": False,
+        }
+
+    monkeypatch.setattr(object_store, "publish_configured_scene_artifact", publish)
+    monkeypatch.setattr(
+        object_store,
+        "presign_configured_scene_artifact",
+        lambda **_kwargs: (
+            "https://s3.us-west-004.backblazeb2.com/scene-artifacts/"
+            f"{cas_key}?signature=get_object"
+        ),
+    )
+    job = tmp_path / "job"
+    manifest = object_store.stage_wam_provider_bundle_object_store(
+        job_dir=job,
+        bundle_path=bundle,
+        access_key_id_file=access,
+        secret_access_key_file=secret,
+        endpoint_url="https://s3.us-west-004.backblazeb2.com",
+        bucket="scene-artifacts",
+        key_prefix="blueprint/arm-decision-proof-v1/scene-configuration",
+        retain_content_addressed_bundle=True,
+        generated_at="2026-08-28T20:00:00Z",
+    )
+
+    assert manifest["status"] == "completed", manifest["blockers"]
+    assert manifest["bundle_key"] == cas_key
+    assert manifest["bundle_object_retained_for_reuse"] is True
+    assert manifest["provider_bundle_remote_reference"]["digest"] == (
+        "sha256:" + digest
+    )
+    assert publications == [(bundle.resolve(), "provider-bundle")]
+
+    cleanup = object_store.cleanup_staged_wam_provider_objects(
+        job,
+        access_key_id_file=access,
+        secret_access_key_file=secret,
+        endpoint_url="https://s3.us-west-004.backblazeb2.com",
+        bucket="scene-artifacts",
+    )
+
+    assert cleanup["status"] == "completed", cleanup["blockers"]
+    assert cleanup["content_addressed_bundle_retained_for_reuse"] is True
+    assert cleanup["all_ephemeral_objects_absent"] is True
+    assert len(client.deleted) == 1
+    assert "runpod_provider_runtime_output_" in client.deleted[0]
+    assert cas_key not in client.deleted
 
 
 def test_refresh_existing_output_get_url_preserves_object_and_extends_access(
@@ -791,6 +938,176 @@ def test_cleanup_staged_objects_is_exact_and_absence_proven(tmp_path: Path, monk
     persisted = (job / "wam_provider_object_store_cleanup.json").read_text(encoding="utf-8")
     assert "signed.example" not in persisted
     assert keys[0] not in persisted
+
+
+def test_cleanup_absence_proves_objects_from_a_bound_blocked_staging_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A post-upload preflight refusal must not strand its exact staged keys."""
+
+    job = tmp_path / "job"
+    job.mkdir()
+    bundle_sha256 = "a" * 64
+    keys = ["blueprint/task/job/bundle.zip", "blueprint/task/job/output.zip"]
+    binding_sha256 = object_store._staging_binding_sha256(
+        bundle_sha256=bundle_sha256,
+        bundle_key=keys[0],
+        output_key=keys[1],
+    )
+    (job / object_store.STAGING_BINDING_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": object_store.STAGING_BINDING_SCHEMA_VERSION,
+                "job_dir": str(job.resolve()),
+                "bundle_sha256": bundle_sha256,
+                "bundle_key": keys[0],
+                "output_key": keys[1],
+                "staging_binding_sha256": binding_sha256,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (job / object_store.STAGING_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": object_store.SCHEMA_VERSION,
+                "status": "blocked",
+                "bundle_sha256": bundle_sha256,
+                "staging_binding_sha256": binding_sha256,
+                "object_store": {"key_prefix": "blueprint/task"},
+                "bundle_key": keys[0],
+                "output_key": keys[1],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in object_store.SIGNED_URL_FILENAMES:
+        (job / name).write_text("https://signed.example/?secret\n", encoding="utf-8")
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    access.write_text("access\n", encoding="utf-8")
+    secret.write_text("secret\n", encoding="utf-8")
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeNotFound(RuntimeError):
+        response = {
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+            "Error": {"Code": "NoSuchKey"},
+        }
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete_object(self, *, Bucket: str, Key: str):
+            assert Bucket == "bucket"
+            self.deleted.append(Key)
+
+        def head_object(self, *, Bucket: str, Key: str):
+            assert Bucket == "bucket"
+            assert Key in self.deleted
+            raise FakeNotFound("absent")
+
+    client = FakeClient()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda _service, **_kwargs: client),
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig)
+    )
+
+    result = object_store.cleanup_staged_wam_provider_objects(
+        job,
+        access_key_id_file=access,
+        secret_access_key_file=secret,
+        bucket="bucket",
+    )
+
+    assert result["status"] == "completed"
+    assert result["all_objects_absent"] is True
+    assert result["signed_url_files_removed"] is True
+    assert client.deleted == keys
+
+
+def test_cleanup_refuses_tampered_blocked_staging_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    bundle_sha256 = "a" * 64
+    bound_keys = ["blueprint/task/job/bundle.zip", "blueprint/task/job/output.zip"]
+    binding_sha256 = object_store._staging_binding_sha256(
+        bundle_sha256=bundle_sha256,
+        bundle_key=bound_keys[0],
+        output_key=bound_keys[1],
+    )
+    (job / object_store.STAGING_BINDING_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": object_store.STAGING_BINDING_SCHEMA_VERSION,
+                "job_dir": str(job.resolve()),
+                "bundle_sha256": bundle_sha256,
+                "bundle_key": bound_keys[0],
+                "output_key": bound_keys[1],
+                "staging_binding_sha256": binding_sha256,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (job / object_store.STAGING_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": object_store.SCHEMA_VERSION,
+                "status": "blocked",
+                "bundle_sha256": bundle_sha256,
+                "staging_binding_sha256": binding_sha256,
+                "object_store": {"key_prefix": "blueprint/task"},
+                "bundle_key": bound_keys[0],
+                "output_key": "blueprint/task/another-tenant/output.zip",
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in object_store.SIGNED_URL_FILENAMES:
+        (job / name).write_text("https://signed.example/?secret\n", encoding="utf-8")
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    access.write_text("access\n", encoding="utf-8")
+    secret.write_text("secret\n", encoding="utf-8")
+
+    class FailIfCalled:
+        def __call__(self, *_args, **_kwargs):
+            raise AssertionError("tampered binding must not reach object deletion")
+
+    monkeypatch.setitem(
+        sys.modules, "boto3", SimpleNamespace(client=FailIfCalled())
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "botocore.client",
+        SimpleNamespace(Config=lambda **_kwargs: object()),
+    )
+
+    result = object_store.cleanup_staged_wam_provider_objects(
+        job,
+        access_key_id_file=access,
+        secret_access_key_file=secret,
+        bucket="bucket",
+    )
+
+    assert result["status"] == "blocked"
+    assert "blocked_staging_binding_invalid" in result["blockers"]
+    assert result["all_objects_absent"] is False
+    assert result["signed_url_files_removed"] is True
 
 
 def test_cleanup_retries_transient_transport_failure_then_proves_absence(

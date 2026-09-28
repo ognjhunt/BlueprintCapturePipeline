@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
-from blueprint_pipeline.common import StageError
+from blueprint_pipeline.common import StageError, PipelineError
 import blueprint_pipeline.site_package_orchestrator as q
 
 
@@ -915,6 +915,32 @@ def _patch_pipeline_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(q, "write_pipeline_sync_result", lambda **_kwargs: None)
 
 
+def test_website_preparation_skips_legacy_privacy_video_and_geometry(tmp_path, monkeypatch):
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _write_descriptor(storage_root, _descriptor(
+        capture_source="unknown", capture_modality="video_only", requested_outputs=["preview_simulation"],
+        metadata={"capture_entry_source": "browser_self_capture", "capture_rights": {"derived_scene_generation_allowed": True}}))
+    _patch_pipeline_side_effects(monkeypatch)
+    monkeypatch.setattr(q, "load_current_website_task_context", lambda **_: {"description": "Pick the box", "confirmed": True, "capture_rights": {"derived_scene_generation_allowed": True}})
+    monkeypatch.setattr(q, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
+    for name in ("run_privacy_postprocess", "infer_capture_fidelity_review", "_prepare_worldlabs_input_video", "build_geometry_stage_contract"):
+        monkeypatch.setattr(q, name, lambda **_: pytest.fail("website must not enter a legacy media stage"))
+    calls = []
+
+    def prepare(**kwargs):
+        calls.append(kwargs)
+        return {"status": "blocked", "mode": "source_geometry_blocked", "privacy_status": "no_people_detected",
+                "privacy_verified": True, "blockers": ["mapanything_local_checkpoint_missing"]}
+
+    monkeypatch.setattr(q, "run_clean_plate_stage", prepare)
+    with pytest.raises(PipelineError, match="mapanything_local_checkpoint_missing"):
+        q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+    assert len(calls) == 1
+    assert calls[0]["policy"].enabled is True
+    assert calls[0]["privacy_processing"]["mode"] == "task_aware_prepared_images"
+    assert calls[0]["worldlabs_input"]["status"] == "awaiting_prepared_images"
+
+
 def test_run_qualification_pipeline_disabled_preflight_and_llm_outputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1087,3 +1113,25 @@ def test_run_qualification_pipeline_enrichment_failure_still_aborts(
             descriptor_gcs_uri=descriptor_uri,
             config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False),
         )
+
+
+@pytest.mark.parametrize("outbox", [{"state": "forward_pending", "id": "scene-1"}, {}])
+def test_website_preparation_finishes_only_at_its_native_outbox(tmp_path, monkeypatch, outbox):
+    import blueprint_pipeline.website_scene_handoff as handoff
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _write_descriptor(storage_root, _descriptor(
+        capture_source="unknown", capture_modality="video_only", requested_outputs=["preview_simulation"],
+        metadata={"capture_entry_source": "browser_self_capture", "capture_rights": {"derived_scene_generation_allowed": True}}))
+    _patch_pipeline_side_effects(monkeypatch)
+    monkeypatch.setattr(q, "load_current_website_task_context", lambda **_: {"description": "Pick the box", "confirmed": True, "capture_rights": {"derived_scene_generation_allowed": True}})
+    monkeypatch.setattr(q, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
+    monkeypatch.setattr(q, "run_clean_plate_stage", lambda **_: {"status": "noop", "privacy_status": "no_people_detected", "privacy_verified": True})
+    monkeypatch.setattr(handoff, "prepare_website_scene_handoff", lambda **_: {"status": "intake_ready", "website_intake_outbox": outbox})
+    monkeypatch.setattr(q, "sync_webapp_pipeline_attachment", lambda **_: pytest.fail("website must use its authenticated outbox"))
+    if outbox:
+        result = q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+        assert result["status"] == "completed"
+        assert result["native_execution_complete"] is False
+    else:
+        with pytest.raises(PipelineError, match="website_native_intake_pending"):
+            q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))

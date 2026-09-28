@@ -66,6 +66,7 @@ from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
     stage_wam_provider_bundle_object_store,
 )
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _VAST_SINGLE_ATTEMPT_ENV, pre_mutation_offer_reselection_attempts
 
 PROBE_KIND = "adp-aurafusion360-interiorgs"
 PROVIDER_BUNDLE_KIND = "adp_aura_interiorgs"
@@ -84,7 +85,6 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
-_VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST = (
     "sha256:1b37189c60b55981bbb6f076109e476074aa570f53a1bbdaa66d01f8e052445a"
 )
@@ -558,7 +558,7 @@ def _authority_environment():
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = "0"
+        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = pre_mutation_offer_reselection_attempts()
         yield
     finally:
         for name, value in previous.items():

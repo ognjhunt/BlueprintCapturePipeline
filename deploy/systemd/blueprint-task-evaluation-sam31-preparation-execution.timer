@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-sam31-preparation-execution.timer.json
+Description=Recheck existing SAM child results and delayed parent wakeups
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=30s
+RandomizedDelaySec=5s
+Persistent=true
+Unit=blueprint-task-evaluation-sam31-preparation-execution.service
+
+[Install]
+WantedBy=timers.target

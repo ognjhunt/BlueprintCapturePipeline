@@ -21,6 +21,7 @@ from typing import Any
 
 import blueprint_pipeline.evaluation_prep_stage as eps
 import blueprint_pipeline.site_package_orchestrator as qual
+from blueprint_pipeline.proof_contracts import build_rights_provenance_review
 
 
 # --------------------------------------------------------------------------------------
@@ -212,6 +213,23 @@ def test_pipe03_privacy_gate_passes_cleared_status_for_delivery_runs() -> None:
         delivery_run=True,
     )
     assert gate.passed is True
+
+
+def test_website_capture_admission_does_not_require_people_removal() -> None:
+    gate = qual._privacy_postprocess_gate(
+        privacy_status="website_capture_admitted", delivery_run=True,
+    )
+    assert gate.passed is True
+
+    review = build_rights_provenance_review(
+        rights_summary={"consent_status": "documented", "permission_document_uri": "gs://site/rights.json",
+                        "derived_scene_generation_allowed": True},
+        privacy_processing={"status": "website_capture_admitted"},
+        provenance_summary={"status": "grounded", "record": {"canonical_truth": True}},
+        site_identity={"site_id": "site-1"}, adjacent_systems=[],
+    )
+    assert review["privacy"]["status"] == "cleared"
+    assert review["rights"]["status"] == "cleared"
 
 
 def test_pipe03_privacy_gate_blocks_fallback_redaction_for_delivery_runs() -> None:

@@ -63,6 +63,7 @@ CANARY_NAME_PREFIXES = (
     # labelled paid stages. Each stage arms before create and hands the exact
     # started Vast instance id to this watchdog.
     "blueprint-native-task-arena-",
+    "blueprint-native-task-destination-qualification-",
     "blueprint-native-task-controls-",
     "blueprint-native-task-policy-",
     "blueprint-native-warehouse-camera-",
@@ -76,6 +77,13 @@ CANARY_NAME_PREFIXES = (
     # than mislabeling the production execution as a generic canary.
     "blueprint-semantic-teacher-",
     "blueprint-adp-arena-",
+    # Website-driven Task Evaluation scene configuration is a bounded, hard-TTL
+    # Vast job. Its Vast adapter labels instances with exactly the prefix armed
+    # here (instance_label_prefix=watchdog.pod_name_prefix), so the name-scoped
+    # sweep matches the instances this lane actually creates.
+    "blueprint-task-evaluation-scene-config-",
+    "blueprint-task-evaluation-native-arena-preflight-",
+    "blueprint-task-evaluation-native-arena-construction-",
     # Exact SimReady Isaac probes are independently watched under the same
     # collision-free prefix passed to their Vast adapter.
     "blueprint-adp009b-simready-",
@@ -164,6 +172,7 @@ def _vast_billable_inventory(
             VAST_TERMINAL_INSTANCE_STATUSES,
             _api_json,
             _instance_list_rows,
+            _instance_inventory_valid,
             _instance_status,
         )
 
@@ -185,7 +194,7 @@ def _vast_billable_inventory(
             "error_type": type(exc).__name__,
             "raw_provider_response_recorded": False,
         }
-    if not 200 <= int(http_status) < 300 or not isinstance(payload, Mapping):
+    if not 200 <= int(http_status) < 300 or not _instance_inventory_valid(payload):
         return {
             "status": "blocked",
             "provider": "vast",
@@ -907,6 +916,7 @@ def run_watchdog(
             receipt = {}
         if isinstance(receipt, Mapping) and receipt.get("pod_name_prefix") == pod_name_prefix:
             from .paid_lane_guard import (
+                bind_pending_teardown_instance,
                 cancel_pending_teardown,
                 close_pending_teardown,
             )
@@ -947,12 +957,15 @@ def run_watchdog(
             if pre_provider_absent and not pending_path:
                 pending_close = {"status": "cancelled_no_allocation"}
             elif pending_valid and effective_pod_id:
+                bind_pending_teardown_instance(pending_path, effective_pod_id)
                 pending_close = close_pending_teardown(
                     pending_path,
                     {
                         "status": "PASS",
                         "provider_absence_confirmed": True,
                         "instance_id": effective_pod_id,
+                        "allocation_id": effective_pod_id,
+                        "provider": resolved_provider,
                     },
                 )
             elif pending_valid:

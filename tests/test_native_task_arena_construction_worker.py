@@ -11,15 +11,80 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
     _initial_contact_blocked,
     _load_and_verify_manifest,
     _pad_centers_from_finger_body_offsets,
+    _pad_offsets_from_relative_geometry,
     _pose_arrival_readback,
+    _prepare_site_appearance_renderer,
     _requested_arm_reset,
     _retain_task_path_samples,
     _task_joint_reset_passed,
     _terminal_grasp_frame_arrival_readback,
-    _verified_construction_phase_plan_path,
+)
+from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
+    verified_construction_phase_plan_path,
+    verified_terminal_feedback_adoption_path,
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
+from blueprint_pipeline import native_task_arena_construction_worker as construction
+
+
+def test_construction_warms_plain_nurec_before_camera_evidence() -> None:
+    class App:
+        updates = 0
+
+        def update(self):
+            self.updates += 1
+
+    app = App()
+    result = _prepare_site_appearance_renderer(
+        simulation_app=app,
+        plan={
+            "appearance_frame_alignment": {"representation": "nurec_volume"}
+        },
+        stage=object(),
+        setup_for_rendering_factory=lambda _stage: (True, True, False, []),
+        warmup_steps=40,
+    )
+
+    assert result["passed"] is True
+    assert result["representation"] == "nurec_volume"
+    assert result["stage_classified_nurec"] is True
+    assert result["app_update_count"] == 45
+    assert app.updates == 45
+
+
+def test_construction_skips_nurec_setup_for_other_appearance_formats() -> None:
+    result = _prepare_site_appearance_renderer(
+        simulation_app=object(),
+        plan={
+            "appearance_frame_alignment": {"representation": "mesh_texture"}
+        },
+    )
+
+    assert result == {
+        "schema_version": "native_task_arena_nurec_warmup.v1",
+        "status": "not_required",
+        "representation": "mesh_texture",
+        "passed": True,
+        "blockers": [],
+    }
+
+
+def test_construction_refuses_nurec_stage_that_renderer_cannot_classify() -> None:
+    result = _prepare_site_appearance_renderer(
+        simulation_app=object(),
+        plan={
+            "appearance_frame_alignment": {"representation": "nurec_volume"}
+        },
+        stage=object(),
+        setup_for_rendering_factory=lambda _stage: (True, False, False, []),
+    )
+
+    assert result["passed"] is False
+    assert result["representation"] == "nurec_volume"
+    assert result["blockers"] == [
+        "native_task_arena_nurec_official_setup_not_qualified"
+    ]
 
 
 def test_physical_pad_centers_follow_finger_bodies_not_their_origins() -> None:
@@ -50,6 +115,22 @@ def test_physical_pad_centers_follow_finger_bodies_not_their_origins() -> None:
     assert centers["right"] == pytest.approx([0.0, -0.05, 0.0])
 
 
+def test_pad_offsets_prefer_coherent_collider_to_finger_frame() -> None:
+    offsets = _pad_offsets_from_relative_geometry(
+        {
+            "selected_pad_colliders": {
+                "left": {"center_inner_finger_body_m": [0.13, 0.052, 0.0]},
+                "right": {"center_inner_finger_body_m": [0.13, -0.052, 0.0]},
+            }
+        }
+    )
+
+    assert offsets == {
+        "left": [0.13, 0.052, 0.0],
+        "right": [0.13, -0.052, 0.0],
+    }
+
+
 def test_worker_source_contains_no_scene_or_task_object_identity() -> None:
     source = Path(
         __import__(
@@ -64,7 +145,8 @@ def test_worker_source_contains_no_scene_or_task_object_identity() -> None:
 
 def test_dependency_matrix_is_declared_as_one_preflight() -> None:
     assert ROBOT_EMBODIMENT_MODULES == {
-        "franka_panda": "isaaclab_arena.embodiments.droid.droid"
+        "franka_panda": "isaaclab_arena.embodiments.droid.droid",
+        "unitree_g1": "isaaclab_arena.embodiments.g1.g1",
     }
     assert {
         "torch",
@@ -125,6 +207,46 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
     )
     assert DEPENDENCY_IMPORTS.index("isaaclab_newton") < DEPENDENCY_IMPORTS.index(
         "isaaclab_arena.environments.arena_env_builder"
+    )
+
+
+def test_franka_dependency_preflight_does_not_require_g1_only_packages(
+    monkeypatch,
+) -> None:
+    g1_only = (
+        "isaaclab_arena_g1", "coloredlogs", "humanfriendly", "flatbuffers",
+        "onnxruntime", "google.protobuf",
+    )
+
+    def import_module(name: str) -> object:
+        if name in g1_only:
+            raise ModuleNotFoundError(name)
+        return SimpleNamespace(__version__="test")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_task_arena_import_scope.install_scoped_arena_embodiment",
+        lambda robot_id: {"robot_id": robot_id},
+    )
+    monkeypatch.setattr(
+        construction, "DEPENDENCY_IMPORTS", ("torch", *g1_only)
+    )
+    monkeypatch.setattr(
+        construction.importlib, "import_module", import_module
+    )
+    monkeypatch.setattr(
+        construction.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="ok", stderr=""),
+    )
+
+    franka = construction.preflight_native_dependency_matrix(robot_id="franka_panda")
+    g1 = construction.preflight_native_dependency_matrix(robot_id="unitree_g1")
+
+    assert franka["all_required_available"] is True
+    assert [row["module"] for row in franka["imports"]] == ["torch"]
+    assert g1["all_required_available"] is False
+    assert g1["blockers"] == sorted(
+        f"native_task_dependency_missing:{name}" for name in g1_only
     )
 
 
@@ -198,14 +320,45 @@ def test_worker_reverifies_frozen_construction_plan_before_native_startup(
         ]
     }
 
-    assert _verified_construction_phase_plan_path(tmp_path, manifest) == plan
+    assert verified_construction_phase_plan_path(tmp_path, manifest) == plan
     plan.write_text("tampered\n", encoding="utf-8")
     try:
-        _verified_construction_phase_plan_path(tmp_path, manifest)
+        verified_construction_phase_plan_path(tmp_path, manifest)
     except RuntimeError as exc:
         assert str(exc) == "native_task_construction_phase_plan_identity_mismatch"
     else:
         raise AssertionError("tampered construction phase plan was accepted")
+
+
+def test_worker_reverifies_optional_terminal_feedback_bootstrap_input(
+    tmp_path: Path,
+) -> None:
+    runtime_inputs = tmp_path / "runtime_inputs"
+    runtime_inputs.mkdir()
+    plan = runtime_inputs / "native_task_construction_phase_plan.v1.json"
+    adoption = (
+        runtime_inputs / "native_construction_terminal_feedback_adoption.v1.json"
+    )
+    plan.write_text("{}\n", encoding="utf-8")
+    adoption.write_text('{"checkpoint_digest":"sha256:fixture"}\n', encoding="utf-8")
+
+    def row(path: Path) -> dict:
+        return {
+            "relative_path": "runtime_inputs/" + path.name,
+            "size_bytes": path.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    manifest = {"bound_runtime_inputs": [row(plan), row(adoption)]}
+    assert verified_construction_phase_plan_path(tmp_path, manifest) == plan
+    assert verified_terminal_feedback_adoption_path(tmp_path, manifest) == adoption
+    adoption.write_text("tampered\n", encoding="utf-8")
+    try:
+        verified_terminal_feedback_adoption_path(tmp_path, manifest)
+    except RuntimeError as exc:
+        assert str(exc) == "native_task_terminal_feedback_adoption_invalid"
+    else:
+        raise AssertionError("tampered terminal feedback adoption was accepted")
 
 
 def test_rigid_initial_support_force_is_not_misclassified_as_penetration() -> None:
@@ -606,10 +759,12 @@ def test_persist_survives_values_json_cannot_encode() -> None:
 class _FakeCameraData:
     """Only what `_camera_snapshot` touches, in the shapes Isaac Lab returns."""
 
-    def __init__(self, *, rgb, semantic, labels) -> None:
+    def __init__(self, *, rgb, semantic, labels, hdr=None) -> None:
         import numpy as np
 
         self.output = {"rgb": rgb[None, ...], "semantic_segmentation": semantic[None, ...]}
+        if hdr is not None:
+            self.output["rgb_hdr"] = hdr[None, ...]
         self.info = {"semantic_segmentation": {"idToLabels": labels}}
         self.intrinsic_matrices = np.eye(3, dtype=np.float32)[None, ...]
         self.pos_w = np.zeros((1, 3), dtype=np.float32)
@@ -626,19 +781,113 @@ class _FakeEnv:
         )()
 
 
-def _snapshot_one_camera(*, rgb, semantic, labels, output_root):
+def _snapshot_one_camera(*, rgb, semantic, labels, output_root, hdr=None):
     from blueprint_pipeline.native_task_arena_construction_worker import (
         _camera_snapshot,
     )
 
     camera = type("_Camera", (), {})()
-    camera.data = _FakeCameraData(rgb=rgb, semantic=semantic, labels=labels)
+    camera.data = _FakeCameraData(rgb=rgb, semantic=semantic, labels=labels, hdr=hdr)
     return _camera_snapshot(
         env=_FakeEnv({"external_cam": camera}),
         camera_scene_names={"external": "external_cam"},
         output_root=output_root,
         snapshot_id="reset",
     )
+
+
+def test_display_encode_rolls_off_highlights_without_channel_fringes() -> None:
+    """The franka-controls run retained HDR frames with a 17% over-white tail
+    (p99 = 11, max = 55); Isaac's per-channel clip rendered them as white
+    blobs with chromatic fringes. The display encode must (a) leave content at
+    or below the knee at its plain sRGB encoding, (b) preserve channel ratios
+    on saturated pixels instead of clipping channels independently, and (c)
+    sanitize non-finite radiance instead of propagating it."""
+
+    import numpy as np
+
+    from blueprint_pipeline.native_task_frame_display_encoding import (
+        DISPLAY_ENCODE_KNEE,
+        display_encode_hdr,
+    )
+
+    low = np.full((4, 4, 3), 0.5, dtype=np.float32)
+    low[0, 0] = [DISPLAY_ENCODE_KNEE, 0.2, 0.01]
+    encoded_low = display_encode_hdr(low)
+    srgb = np.where(
+        low <= 0.0031308, 12.92 * low, 1.055 * np.power(low, 1.0 / 2.4) - 0.055
+    )
+    expected = (np.clip(srgb, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    assert np.array_equal(encoded_low, expected)
+
+    bright = np.zeros((1, 1, 3), dtype=np.float32)
+    bright[0, 0] = [10.0, 5.0, 1.0]
+    encoded_bright = display_encode_hdr(bright)[0, 0].astype(np.int64)
+    # No channel may sit at the clip ceiling while the others carry structure,
+    # and the input ordering must survive.
+    assert encoded_bright[0] < 255
+    assert encoded_bright[0] > encoded_bright[1] > encoded_bright[2]
+
+    hotter = np.zeros((1, 1, 3), dtype=np.float32)
+    hotter[0, 0] = [55.0, 27.5, 5.5]
+    assert int(display_encode_hdr(hotter)[0, 0, 0]) >= int(encoded_bright[0])
+
+    poisoned = np.array([[[np.inf, np.nan, -np.inf]]], dtype=np.float32)
+    sanitized = display_encode_hdr(poisoned)
+    assert sanitized.dtype == np.uint8
+    assert int(sanitized[0, 0, 1]) == 0
+    assert int(sanitized[0, 0, 2]) == 0
+
+
+def test_construction_camera_snapshot_prefers_hdr_derived_display_frame(
+    tmp_path,
+) -> None:
+    """With a linear HDR buffer present the retained PNG must come from the
+    chroma-preserving display encode, recorded as such, and a superbright
+    region must land below the hard-clip ceiling instead of fringing."""
+
+    import numpy as np
+
+    semantic = np.full((64, 64), 7, dtype=np.int32)
+    ldr = np.full((64, 64, 3), 128, dtype=np.uint8)
+    hdr = np.full((64, 64, 3), 0.5, dtype=np.float32)
+    hdr[:16, :16] = [10.0, 5.0, 1.0]
+
+    snapshot = _snapshot_one_camera(
+        rgb=ldr,
+        semantic=semantic,
+        labels={"7": {"class": "task_object"}},
+        output_root=tmp_path,
+        hdr=hdr,
+    )
+
+    row = snapshot["cameras"][0]
+    assert row["rgb_source"] == "rgb_hdr_display_encoded"
+    assert row["rgb_max"] < 255
+    diagnostics = json.loads(
+        (tmp_path / "native_task_camera_snapshot_diagnostics.v1.json").read_text()
+    )
+    assert diagnostics["cameras"][0]["rgb_source"] == "rgb_hdr_display_encoded"
+    assert row["rgb_hdr"]["maximum"] == 10.0
+
+
+def test_construction_camera_snapshot_keeps_ldr_fallback_without_hdr(
+    tmp_path,
+) -> None:
+    import numpy as np
+
+    semantic = np.full((64, 64), 7, dtype=np.int32)
+    textured = (np.arange(64 * 64 * 3, dtype=np.uint64) % 251).astype(np.uint8)
+    textured = textured.reshape(64, 64, 3)
+
+    snapshot = _snapshot_one_camera(
+        rgb=textured,
+        semantic=semantic,
+        labels={"7": {"class": "task_object"}},
+        output_root=tmp_path,
+    )
+
+    assert snapshot["cameras"][0]["rgb_source"] == "isaac_ldr_annotator"
 
 
 def test_construction_camera_snapshot_fails_a_black_frame(tmp_path) -> None:
@@ -778,3 +1027,16 @@ def test_front_entry_construction_uses_off_sim_multistart_then_native_replay() -
     assert "native_execution_remains_" in source
     assert "reset_grasp_pose = servo.current_grasp_frame_pose_world()" in source
     assert "reset_body_pose = servo.current_body_pose_world()" not in source
+
+
+def test_snapshot_retains_distinct_target_marker_pixel_count(tmp_path):
+    import numpy as np
+    semantic = np.full((64,64), 7, dtype=np.int32)
+    semantic[:16,:16] = 8
+    snapshot = _snapshot_one_camera(rgb=np.full((64,64,3),128,dtype=np.uint8),
+        semantic=semantic, labels={"7": {"class": "task_object"}, "8": {"class": "task_target_marker"}},
+        output_root=tmp_path)
+    pixels = snapshot["cameras"][0]["semantic_label_pixels"]
+    assert pixels["task_target_marker"]["pixel_count"] == 256
+    assert pixels["task_support"]["pixel_count"] == 0
+    assert pixels["task_object"]["pixel_count"] == 3840

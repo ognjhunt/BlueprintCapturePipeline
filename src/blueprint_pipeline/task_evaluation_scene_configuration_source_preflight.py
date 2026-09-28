@@ -1,0 +1,323 @@
+"""No-spend cross-checks for immutable scene-configuration source inputs."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from .decision_evidence_contracts import canonical_digest
+
+
+class TaskEvaluationSceneConfigurationSourcePreflightError(ValueError):
+    """Immutable source inputs disagree before provider allocation."""
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _reference(envelope: Mapping[str, Any], contract_path: str) -> tuple[Mapping[str, Any], Path]:
+    rows = [
+        row
+        for row in envelope.get("materialized_references") or []
+        if isinstance(row, Mapping) and row.get("contract_path") == contract_path
+    ]
+    if len(rows) != 1:
+        raise TaskEvaluationSceneConfigurationSourcePreflightError(
+            f"scene_configuration_source_preflight_reference_invalid:{contract_path}"
+        )
+    row = rows[0]
+    path = Path(str(row.get("materialized_path") or "")).resolve()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size != row.get("size_bytes")
+        or _sha256(path) != row.get("digest")
+        or row.get("full_byte_service_account_readback_passed") is not True
+    ):
+        raise TaskEvaluationSceneConfigurationSourcePreflightError(
+            f"scene_configuration_source_preflight_reference_invalid:{contract_path}"
+        )
+    return row, path
+
+
+def _json(path: Path, *, code: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConfigurationSourcePreflightError(code) from exc
+    if not isinstance(value, Mapping):
+        raise TaskEvaluationSceneConfigurationSourcePreflightError(code)
+    return dict(value)
+
+
+def _request_reference_matches(
+    request: Mapping[str, Any], path: tuple[str, ...], row: Mapping[str, Any]
+) -> bool:
+    value: Any = request
+    for part in path:
+        value = value.get(part) if isinstance(value, Mapping) else None
+    return isinstance(value, Mapping) and all(
+        value.get(field) == row.get(field) for field in ("uri", "digest", "size_bytes")
+    )
+
+
+def _dimensions(minimum: Any, maximum: Any) -> list[float]:
+    if (
+        not isinstance(minimum, list)
+        or not isinstance(maximum, list)
+        or len(minimum) != 3
+        or len(maximum) != 3
+    ):
+        return []
+    try:
+        lower = [float(item) for item in minimum]
+        upper = [float(item) for item in maximum]
+    except (TypeError, ValueError):
+        return []
+    dimensions = [upper[index] - lower[index] for index in range(3)]
+    return (
+        dimensions
+        if all(math.isfinite(item) and item > 0.0 for item in dimensions)
+        else []
+    )
+
+
+def _validate_scene_configuration_source_inputs(
+    *,
+    envelope: Mapping[str, Any],
+    configurations: Mapping[str, Mapping[str, Any]],
+    require_render_inputs: bool,
+) -> None:
+    """Prove source, render, and exact collision-target identity before spend."""
+
+    website = any(value.get("schema_version") == "website_prepared_appearance.v1" for value in configurations.values())
+    if (envelope.get("request") or {}).get("scene", {}).get("website_native_inputs") is not None and not website:
+        raise TaskEvaluationSceneConfigurationSourcePreflightError("website_native_inputs_adapter_required")
+    if website:
+        from .website_native_inputs import validate_website_native_inputs, preflight_website_authoring_request
+        from .task_evaluation_scene_configuration_astra_driver import AstraStageError
+        try:
+            validate_website_native_inputs(envelope=envelope, configurations=configurations,
+                                           require_render_inputs=require_render_inputs)
+            preflight_website_authoring_request(envelope=envelope, configurations=configurations)
+        except (ValueError, KeyError, TypeError, OSError, AstraStageError) as exc:
+            raise TaskEvaluationSceneConfigurationSourcePreflightError(str(exc)) from exc
+        return
+    if any(value.get("source_origin") == "owner_provided_completed_asset" for value in configurations.values()):
+        from .task_evaluation_completed_scene_inputs import validate_completed_scene_inputs
+        try:
+            validate_completed_scene_inputs(envelope=envelope, configurations=configurations,
+                                            require_render_inputs=require_render_inputs)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            raise TaskEvaluationSceneConfigurationSourcePreflightError(str(exc)) from exc
+        return
+    stages = (envelope.get("recipe") or {}).get("stage_sequence") or []
+    stage_by_capability = {
+        str(stage.get("capability") or ""): str(stage.get("stage_id") or "")
+        for stage in stages
+        if isinstance(stage, Mapping)
+    }
+    stage_one = configurations.get(
+        stage_by_capability.get("observed_appearance_object_removal", "")
+    )
+    stage_two = configurations.get(stage_by_capability.get("collision_object_excision", ""))
+    stage_three = configurations.get(
+        stage_by_capability.get("rigid_replacement_authoring", "")
+    )
+    if not isinstance(stage_one, Mapping) or not isinstance(stage_two, Mapping):
+        # Other bundle fixtures and future recipes without these capabilities
+        # are outside this source contract.
+        return
+
+    manifest_row, manifest_path = _reference(envelope, "scene.source_manifest")
+    appearance_row, _appearance_path = _reference(
+        envelope, "scene.appearance.representation"
+    )
+    collision_row, _collision_path = _reference(envelope, "scene.geometry.collision")
+    validation_row, validation_path = _reference(envelope, "scene.geometry.validation")
+    request = envelope.get("request") or {}
+    bindings = (
+        (("scene", "source_manifest"), manifest_row),
+        (("scene", "appearance", "representation"), appearance_row),
+        (("scene", "geometry", "collision"), collision_row),
+        (("scene", "geometry", "validation"), validation_row),
+    )
+    if not isinstance(request, Mapping) or any(
+        not _request_reference_matches(request, path, row) for path, row in bindings
+    ):
+        raise TaskEvaluationSceneConfigurationSourcePreflightError(
+            "scene_configuration_source_preflight_request_binding_invalid"
+        )
+
+    manifest = _json(
+        manifest_path, code="scene_configuration_source_preflight_manifest_invalid"
+    )
+    validation = _json(
+        validation_path, code="scene_configuration_source_preflight_validation_invalid"
+    )
+    source_collision = manifest.get("source_collision_object") or {}
+    source_object = manifest.get("source_task_object") or {}
+    source_artifacts = manifest.get("artifacts") or []
+    collision_artifacts = [
+        row
+        for row in source_artifacts
+        if isinstance(row, Mapping) and row.get("role") == "sage_collision_source"
+    ]
+    appearance_artifacts = [
+        row
+        for row in source_artifacts
+        if isinstance(row, Mapping) and row.get("role") == "interiorgs_source_splat"
+    ]
+    partitioned = len(collision_artifacts) == 1 and collision_artifacts[0].get("origin") == "connected_component_partition"
+    derivation_ref = request.get("scene", {}).get("geometry", {}).get("source_derivation")
+    if partitioned or derivation_ref is not None:
+        derivation_row, derivation_path = _reference(envelope, "scene.geometry.source_derivation")
+        derivation = _json(derivation_path, code="scene_configuration_source_partition_invalid")
+        upstream = [row for row in source_artifacts if isinstance(row, Mapping)
+                    and row.get("role") == "sage_collision_publisher_source"]
+        target_parts = [row for row in derivation.get("face_partitions", [])
+                        if row.get("instance_id") == str(source_object.get("publisher_instance_id"))]
+        if (not partitioned or len(upstream) != 1
+                or not _request_reference_matches(request, ("scene", "geometry", "source_derivation"), derivation_row)
+                or collision_artifacts[0].get("partition_receipt") != derivation_ref
+                or derivation.get("schema_version") != "interiorgs_sage_collision_partition.v1"
+                or derivation.get("status") != "geometry_partitioned_pending_native_validation"
+                or derivation.get("receipt_digest") != canonical_digest(derivation, digest_field="receipt_digest")
+                or derivation.get("source_bytes_changed") is not False
+                or derivation.get("source_faces_deleted") != 0
+                or derivation.get("native_collision_cooking_qualified") is not False
+                or derivation.get("source", {}).get("sha256") != upstream[0].get("sha256")
+                or derivation.get("source", {}).get("size_bytes") != upstream[0].get("size_bytes")
+                or collision_artifacts[0].get("upstream_source_sha256") != upstream[0].get("sha256")
+                or derivation.get("output", {}).get("sha256") != collision_row.get("digest")
+                or derivation.get("output", {}).get("size_bytes") != collision_row.get("size_bytes")
+                or len(target_parts) != 1 or target_parts[0].get("output_prim") != source_collision.get("prim_path")
+                or len(target_parts[0].get("source_face_indices", [])) != source_collision.get("face_count")):
+            raise TaskEvaluationSceneConfigurationSourcePreflightError("scene_configuration_source_partition_invalid")
+    render = envelope.get("render_inputs_result") or {}
+    stage_one_source = stage_one.get("source_object") or {}
+    masks = render.get("source_object_masks") or {}
+    recipe = envelope.get("recipe") or {}
+    if (
+        manifest.get("schema_version") != "task_evaluation_scene_source_manifest.v1"
+        or manifest.get("status") != "candidate_source_bytes_retained"
+        or not str(manifest.get("scene_id") or "")
+        or manifest.get("publisher_scene_id") != manifest.get("scene_id")
+        or recipe.get("source_manifest_digest") != manifest_row.get("digest")
+        or recipe.get("scene_identity") != request.get("scene", {}).get("identity")
+        or len(collision_artifacts) != 1
+        or collision_artifacts[0].get("sha256") != collision_row.get("digest")
+        or collision_artifacts[0].get("size_bytes") != collision_row.get("size_bytes")
+        or len(appearance_artifacts) != 1
+        or appearance_artifacts[0].get("sha256") != appearance_row.get("digest")
+        or appearance_artifacts[0].get("size_bytes") != appearance_row.get("size_bytes")
+        or (require_render_inputs and
+            render.get("source_splat_digest") != appearance_row.get("digest"))
+        or stage_one_source.get("publisher_instance_id")
+        != source_object.get("publisher_instance_id")
+        or stage_one_source.get("aabb_min_xyz_m")
+        != source_object.get("source_aabb_min_xyz_m")
+        or stage_one_source.get("aabb_max_xyz_m")
+        != source_object.get("source_aabb_max_xyz_m")
+        or (require_render_inputs and
+            masks.get("source_object_identity", {}).get("publisher_instance_id")
+            != stage_one_source.get("publisher_instance_id"))
+    ):
+        raise TaskEvaluationSceneConfigurationSourcePreflightError(
+            "scene_configuration_source_preflight_manifest_binding_invalid"
+        )
+
+    expected_target = stage_two.get("expected_target") or {}
+    target_path = stage_two.get("exact_target_prim")
+    validation_source = (validation.get("source_files") or {}).get(
+        "sage_collision_usd"
+    ) or {}
+    matches = [
+        row
+        for row in validation.get("whole_object_matches") or []
+        if isinstance(row, Mapping) and row.get("prim_path") == target_path
+    ]
+    if (
+        stage_two.get("collision_source_digest") != collision_row.get("digest")
+        or source_collision.get("prim_path") != target_path
+        or source_collision.get("aabb_min_xyz_m") != expected_target.get("aabb_min_xyz_m")
+        or source_collision.get("aabb_max_xyz_m") != expected_target.get("aabb_max_xyz_m")
+        or source_collision.get("point_count") != expected_target.get("point_count")
+        or source_collision.get("face_count") != expected_target.get("face_count")
+        or validation.get("schema_version") != "interiorgs_sage_collision_identity.v1"
+        or validation.get("receipt_digest")
+        != canonical_digest(validation, digest_field="receipt_digest")
+        or validation.get("whole_object_collision_identity_passed") is not True
+        or validation_source.get("sha256") != collision_row.get("digest")
+        or validation_source.get("size_bytes") != collision_row.get("size_bytes")
+        or len(matches) != 1
+        or matches[0].get("point_count") != expected_target.get("point_count")
+        or matches[0].get("face_count") != expected_target.get("face_count")
+    ):
+        raise TaskEvaluationSceneConfigurationSourcePreflightError(
+            "scene_configuration_source_preflight_collision_target_invalid"
+        )
+
+    if isinstance(stage_three, Mapping):
+        metric_envelope = stage_three.get("metric_envelope") or {}
+        metric_minimum = metric_envelope.get("minimum_xyz_m")
+        metric_maximum = metric_envelope.get("maximum_xyz_m")
+        metric_dimensions = _dimensions(metric_minimum, metric_maximum)
+        target_dimensions = _dimensions(
+            expected_target.get("aabb_min_xyz_m"),
+            expected_target.get("aabb_max_xyz_m"),
+        )
+        tolerance = metric_envelope.get("maximum_dimension_relative_error")
+        if (
+            metric_minimum != stage_one_source.get("aabb_min_xyz_m")
+            or metric_maximum != stage_one_source.get("aabb_max_xyz_m")
+            or not metric_dimensions
+            or not target_dimensions
+            or isinstance(tolerance, bool)
+            or not isinstance(tolerance, (int, float))
+            or not math.isfinite(float(tolerance))
+            or not 0.0 <= float(tolerance) <= 1.0
+            or any(
+                abs(target_dimensions[index] - metric_dimensions[index])
+                / metric_dimensions[index]
+                > float(tolerance)
+                for index in range(3)
+            )
+        ):
+            raise TaskEvaluationSceneConfigurationSourcePreflightError(
+                "scene_configuration_source_preflight_replacement_envelope_invalid"
+            )
+
+
+def validate_scene_configuration_source_preflight(
+    *, envelope: Mapping[str, Any],
+    configurations: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Provider admission: require source bindings AND produced render-input bindings."""
+    _validate_scene_configuration_source_inputs(
+        envelope=envelope, configurations=configurations, require_render_inputs=True)
+
+
+def validate_scene_configuration_source_bindings(
+    *, envelope: Mapping[str, Any],
+    configurations: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Pre-render submission check only; grants no render or allocation authority."""
+    _validate_scene_configuration_source_inputs(
+        envelope=envelope, configurations=configurations, require_render_inputs=False)
+
+
+__all__ = [
+    "validate_scene_configuration_source_bindings",
+    "TaskEvaluationSceneConfigurationSourcePreflightError",
+    "validate_scene_configuration_source_preflight",
+]

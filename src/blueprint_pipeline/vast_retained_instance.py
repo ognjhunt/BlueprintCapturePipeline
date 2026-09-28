@@ -15,6 +15,9 @@ from .retained_gpu_session_lifecycle import record_retained_gpu_state
 
 VAST_RETENTION_SCHEMA_VERSION = "vast_retained_instance_decision.v1"
 NATIVE_TASK_ARENA_WARM_RETENTION_MODE = "native_task_arena_warm_worker"
+SCENE_CONFIGURATION_WARM_RETENTION_MODE = (
+    "task_evaluation_scene_configuration_diagnostic_warm_worker"
+)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -136,6 +139,34 @@ def retention_decision(
         ssh_port = warm.get("ssh_port")
         if isinstance(ssh_port, bool) or not isinstance(ssh_port, int) or ssh_port <= 0:
             blockers.append("retention_native_task_arena_ssh_port_invalid")
+    elif retention_mode == SCENE_CONFIGURATION_WARM_RETENTION_MODE:
+        if warm.get("provider_bundle_kind") != "task_evaluation_scene_configuration":
+            blockers.append("retention_scene_configuration_bundle_kind_invalid")
+        if warm.get("scene_configuration_bundle_downloaded") is not True:
+            blockers.append("retention_scene_configuration_bundle_not_downloaded")
+        if warm.get("scene_configuration_bundle_sha256_verified") is not True:
+            blockers.append(
+                "retention_scene_configuration_bundle_sha256_not_verified"
+            )
+        if warm.get("scene_configuration_entrypoint_started") is not True:
+            blockers.append("retention_scene_configuration_entrypoint_not_started")
+        if warm.get("scene_configuration_runtime_root_ready") is not True:
+            blockers.append("retention_scene_configuration_runtime_root_not_ready")
+        if warm.get("scene_configuration_runtime_secrets_scrubbed") is not True:
+            blockers.append("retention_scene_configuration_runtime_secrets_not_scrubbed")
+        if warm.get("fresh_ssh_runtime_secret_environment_absent") is not True:
+            blockers.append(
+                "retention_scene_configuration_fresh_ssh_secret_environment_not_absent"
+            )
+        if warm.get("instance_running") is not True:
+            blockers.append("retention_scene_configuration_instance_not_running")
+        if warm.get("workload_independent_access_recorded") is not True:
+            blockers.append("retention_scene_configuration_access_not_recorded")
+        if not isinstance(warm.get("ssh_host"), str) or not warm.get("ssh_host"):
+            blockers.append("retention_scene_configuration_ssh_host_missing")
+        ssh_port = warm.get("ssh_port")
+        if isinstance(ssh_port, bool) or not isinstance(ssh_port, int) or ssh_port <= 0:
+            blockers.append("retention_scene_configuration_ssh_port_invalid")
     elif retention_mode == "cosmos_server":
         if cosmos.get("runtime_terminal") is True:
             blockers.append("retention_not_needed_after_terminal_bundle_success")
@@ -152,6 +183,11 @@ def retention_decision(
         "instance_ids": list(instance_ids),
         "watchdog_pid": watchdog.get("watchdog_pid"),
         "watchdog_deadline_epoch": deadline,
+        "watchdog_out_dir": watchdog.get("watchdog_out_dir"),
+        "watchdog_pod_name_prefix": watchdog.get("pod_name_prefix"),
+        "watchdog_started_instance_id_path": watchdog.get(
+            "started_instance_id_path"
+        ),
         "container_health_proven": startup_probe.get("startup_probe_proven") is True,
         "gpu_health_proven": gpu_sanity.get("gpu_sanity_proven") is True,
         "cosmos_server_loaded": cosmos.get("server_loaded") is True,
@@ -312,6 +348,7 @@ def bind_all_in_cost(
 
 
 __all__ = [
+    "SCENE_CONFIGURATION_WARM_RETENTION_MODE",
     "VAST_RETENTION_SCHEMA_VERSION",
     "bind_all_in_cost",
     "record_initial_lifecycle",

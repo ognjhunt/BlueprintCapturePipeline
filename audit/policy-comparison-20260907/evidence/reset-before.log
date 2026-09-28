@@ -1,0 +1,225 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+__________ test_task_reset_drift_blocks_before_first_policy_query[2] ___________
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4831/test_task_reset_drift_blocks_b0')
+bad_reset = 2
+
+    @pytest.mark.parametrize("bad_reset", [2, 3])
+    def test_task_reset_drift_blocks_before_first_policy_query(tmp_path, bad_reset):
+        from blueprint_pipeline.adp009d_policy_episode import PolicyEpisodeError
+        from tests.test_adp009d_policy_episode import _LifecycleEnvironment, _LifecyclePolicy, _run
+    
+        class StaleTaskEnvironment(_LifecycleEnvironment):
+            def read_object_sample(self):
+                sample = super().read_object_sample()
+                if self.reset_count == bad_reset:
+                    sample["can_pose_world"][0] += .10
+                return sample
+    
+        policy = _LifecyclePolicy()
+        progress = {}
+>       with pytest.raises(PolicyEpisodeError, match="reset.*mismatch"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE PolicyEpisodeError
+
+tests/test_policy_comparison_integrity_audit.py:147: Failed
+__________ test_task_reset_drift_blocks_before_first_policy_query[3] ___________
+
+task_spec = {'schema_version': 'adp_task_spec.v1', 'task_kind': 'rigid_pick_place', 'destination_position_world_m': [3.750152333333333, -3.4074919, 0.5264650138348479], 'support_plane_z_m': 0.5264650138348479, ...}
+samples = [{'can_pose_world': [3.5681748, -3.3100837, 0.5264650138348479, 0.0, 0.0, 0.0, ...], 'gripper_width_m': 0.085, 'step_i...tion_world_m': [3.526920119444444, -3.330377075, 0.6464650138348479], 'finger_contact_forces_n': [2.5, 2.5], ...}, ...]
+
+    def score_task_episode_from_spec(
+        *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Dispatch a frozen task spec without scene- or object-name conditionals."""
+    
+        kind = task_spec.get("task_kind")
+        if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
+            return score_articulated_task_episode(task_spec=task_spec, samples=samples)
+        if kind == TASK_KIND_RIGID_PICK_PLACE:
+            if task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:
+                return score_rigid_task_episode(task_spec=task_spec, samples=samples)
+            if task_spec.get("schema_version") != TASK_SPEC_SCHEMA_VERSION:
+                raise TaskNeutralScoringError(["task_spec_schema_invalid"])
+            try:
+>               return score_task_episode(
+                    samples=samples,
+                    destination_position_world_m=task_spec["destination_position_world_m"],
+                    support_plane_z_m=float(task_spec["support_plane_z_m"]),
+                    settle_window_samples=int(task_spec["settle_window_samples"]),
+                    require_sealed_start_pose=bool(task_spec.get("require_sealed_start_pose", True)),
+                )
+
+src/blueprint_pipeline/adp_task_scoring.py:1280: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/blueprint_pipeline/adp009d_task_scoring.py:943: in score_task_episode
+    normalized = normalize_object_samples(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+samples = [{'can_pose_world': [3.5681748, -3.3100837, 0.5264650138348479, 0.0, 0.0, 0.0, ...], 'gripper_width_m': 0.085, 'step_i...tion_world_m': [3.526920119444444, -3.330377075, 0.6464650138348479], 'finger_contact_forces_n': [2.5, 2.5], ...}, ...]
+require_sealed_start_pose = True, quaternion_order = 'xyzw'
+
+    def normalize_object_samples(
+        samples: Sequence[Mapping[str, Any]],
+        *,
+        require_sealed_start_pose: bool = True,
+        quaternion_order: str = QUATERNION_ORDER_XYZW,
+    ) -> tuple[dict[str, Any], ...]:
+        """Validate an episode's extracted state and raise on anything malformed.
+    
+        Each sample carries ``step_index`` and ``can_pose_world`` -- seven numbers,
+        ``(x, y, z, qx, qy, qz, qw)``, exactly Isaac Lab's ``root_pose_w`` row -- and
+        optionally ``gripper_width_m``, ``grasp_frame_position_world_m``, and
+        ``finger_contact_forces_n``.
+    
+        ``require_sealed_start_pose`` gates the canonical-condition check that the
+        episode began at ``CAN_START_POSITION_M``.  It defaults to on because
+        goal-prompt section 3 freezes that start; a scenario family that
+        deliberately relocates the object must switch it off explicitly and say so
+        in its own manifest.  The upright check is never gated: it is the quaternion
+        convention guard, and no settled can on a flat support starts on its side.
+        """
+    
+        if not isinstance(samples, Sequence) or isinstance(samples, (str, bytes)):
+            raise TaskScoringError(["task_scoring_samples_not_a_sequence"])
+        if not samples:
+            raise TaskScoringError(["task_scoring_samples_empty"])
+    
+        errors: list[str] = []
+        normalized: list[dict[str, Any]] = []
+        previous_step: int | None = None
+    
+        for index, sample in enumerate(samples):
+            if not isinstance(sample, Mapping):
+                errors.append(f"task_scoring_sample_{index}_not_a_mapping")
+                continue
+    
+            try:
+                step_index = int(sample["step_index"])
+            except (KeyError, TypeError, ValueError):
+                errors.append(f"task_scoring_sample_{index}_step_index_invalid")
+                step_index = index
+            else:
+                if previous_step is not None and step_index <= previous_step:
+                    errors.append(f"task_scoring_sample_{index}_step_index_not_increasing")
+                previous_step = step_index
+    
+            pose = _finite_vector(sample.get("can_pose_world"), 7)
+            if pose is None:
+                errors.append(f"task_scoring_sample_{index}_can_pose_world_invalid")
+                continue
+            quaternion = pose[3:7]
+            norm = float(np.linalg.norm(quaternion))
+            if abs(norm - 1.0) > QUATERNION_NORM_TOLERANCE:
+                errors.append(f"task_scoring_sample_{index}_quaternion_not_unit_norm")
+                continue
+    
+            normalized.append(
+                {
+                    "step_index": step_index,
+                    "position_m": pose[0:3],
+                    "quaternion": quaternion,
+                    "quaternion_order": quaternion_order,
+                    "tilt_deg": tilt_degrees_from_quaternion(
+                        quaternion, order=quaternion_order
+                    ),
+                    "gripper_width_m": _normalize_gripper_width(
+                        sample.get("gripper_width_m"), errors, index
+                    ),
+                    "grasp_frame_position_m": _finite_vector(
+                        sample.get("grasp_frame_position_world_m"), 3
+                    ),
+                    "finger_contact_forces_n": _normalize_contact_forces(
+                        sample.get("finger_contact_forces_n"), errors, index
+                    ),
+                }
+            )
+    
+        if errors:
+            raise TaskScoringError(errors)
+    
+        start = normalized[0]
+        if start["tilt_deg"] > START_UPRIGHT_MAX_TILT_DEG:
+            # A settled can on a flat support is upright.  The usual cause of a
+            # tilted start is a shifted quaternion payload rather than a real
+            # topple, so the error names that first -- see the module docstring for
+            # what this check can and cannot detect.
+            raise TaskScoringError(["task_scoring_start_pose_not_upright_check_quaternion_order"])
+        if require_sealed_start_pose:
+            sealed = np.asarray(CAN_START_POSITION_M, dtype=float)
+            if _horizontal_distance(start["position_m"], sealed) > HOLD_XY_TOLERANCE_M:
+>               raise TaskScoringError(["task_scoring_start_pose_not_at_sealed_can_position"])
+E               blueprint_pipeline.adp009d_task_scoring.TaskScoringError: task_scoring_start_pose_not_at_sealed_can_position
+
+src/blueprint_pipeline/adp009d_task_scoring.py:458: TaskScoringError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4831/test_task_reset_drift_blocks_b1')
+bad_reset = 3
+
+    @pytest.mark.parametrize("bad_reset", [2, 3])
+    def test_task_reset_drift_blocks_before_first_policy_query(tmp_path, bad_reset):
+        from blueprint_pipeline.adp009d_policy_episode import PolicyEpisodeError
+        from tests.test_adp009d_policy_episode import _LifecycleEnvironment, _LifecyclePolicy, _run
+    
+        class StaleTaskEnvironment(_LifecycleEnvironment):
+            def read_object_sample(self):
+                sample = super().read_object_sample()
+                if self.reset_count == bad_reset:
+                    sample["can_pose_world"][0] += .10
+                return sample
+    
+        policy = _LifecyclePolicy()
+        progress = {}
+        with pytest.raises(PolicyEpisodeError, match="reset.*mismatch"):
+>           _run(environment=StaleTaskEnvironment(), policy=policy,
+                max_policy_queries=1, settle_window_samples=1,
+                media_output_dir=tmp_path, episode_id="stale-task",
+                require_complete_multicamera_media=True, require_prestart_readiness=True,
+                progress=progress)
+
+tests/test_policy_comparison_integrity_audit.py:148: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_adp009d_policy_episode.py:246: in _run
+    return run_policy_episode(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/adp009d_policy_episode.py:1809: in run_policy_episode
+    score = score_task_episode_from_spec(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+task_spec = {'schema_version': 'adp_task_spec.v1', 'task_kind': 'rigid_pick_place', 'destination_position_world_m': [3.750152333333333, -3.4074919, 0.5264650138348479], 'support_plane_z_m': 0.5264650138348479, ...}
+samples = [{'can_pose_world': [3.5681748, -3.3100837, 0.5264650138348479, 0.0, 0.0, 0.0, ...], 'gripper_width_m': 0.085, 'step_i...tion_world_m': [3.526920119444444, -3.330377075, 0.6464650138348479], 'finger_contact_forces_n': [2.5, 2.5], ...}, ...]
+
+    def score_task_episode_from_spec(
+        *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Dispatch a frozen task spec without scene- or object-name conditionals."""
+    
+        kind = task_spec.get("task_kind")
+        if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
+            return score_articulated_task_episode(task_spec=task_spec, samples=samples)
+        if kind == TASK_KIND_RIGID_PICK_PLACE:
+            if task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:
+                return score_rigid_task_episode(task_spec=task_spec, samples=samples)
+            if task_spec.get("schema_version") != TASK_SPEC_SCHEMA_VERSION:
+                raise TaskNeutralScoringError(["task_spec_schema_invalid"])
+            try:
+                return score_task_episode(
+                    samples=samples,
+                    destination_position_world_m=task_spec["destination_position_world_m"],
+                    support_plane_z_m=float(task_spec["support_plane_z_m"]),
+                    settle_window_samples=int(task_spec["settle_window_samples"]),
+                    require_sealed_start_pose=bool(task_spec.get("require_sealed_start_pose", True)),
+                )
+            except (KeyError, TypeError, ValueError, TaskScoringError) as exc:
+                if isinstance(exc, TaskScoringError):
+>                   raise TaskNeutralScoringError(exc.errors) from exc
+E                   blueprint_pipeline.adp_task_scoring.TaskNeutralScoringError: task_scoring_start_pose_not_at_sealed_can_position
+
+src/blueprint_pipeline/adp_task_scoring.py:1289: TaskNeutralScoringError
+=========================== short test summary info ============================
+FAILED tests/test_policy_comparison_integrity_audit.py::test_task_reset_drift_blocks_before_first_policy_query[2]
+FAILED tests/test_policy_comparison_integrity_audit.py::test_task_reset_drift_blocks_before_first_policy_query[3]
+2 failed, 14 deselected in 3.71s

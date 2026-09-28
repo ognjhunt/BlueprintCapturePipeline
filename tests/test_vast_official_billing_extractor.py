@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from blueprint_pipeline import vast_official_billing_extractor as billing
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.provider_billing_reconciler import (
     BILLING_SOURCE_SCHEMA_VERSION,
@@ -43,6 +45,126 @@ CONTENT_AGENTS_RUN_ID = (
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CLI_SCRIPT = REPOSITORY_ROOT / "scripts/materialize_vast_official_same_goal_reconciliation.py"
+
+
+def test_policy_canary_terminal_evidence_binds_exact_vast_closeout(
+    tmp_path: Path,
+) -> None:
+    instance_id = 49_247_792
+    adapter = _write(
+        tmp_path / "attempt/vast_provider_run/vast_provider_adapter_result.json",
+        {
+            "vast_instance_ids": [instance_id],
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    teardown = _write(
+        tmp_path / "attempt/vast_provider_run/vast_teardown_manifest.json",
+        {
+            "vast_instance_ids": [instance_id],
+            "continuing_spend_from_this_run": False,
+            "runner_gpu_teardown_completed": True,
+        },
+    )
+    artifact = _write(tmp_path / "attempt/artifact_manifest.json", {"status": "completed"})
+    _write(
+        tmp_path / "post_teardown_global_provider_zero.json",
+        {
+            "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+            "provider_zero_verified": True,
+            "live_instance_count": 0,
+        },
+    )
+    result = {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1",
+        "status": "completed",
+        "retry_cap": 0,
+        "vast_instance_ids": [instance_id],
+        "independent_watchdog": {
+            "status": "provider_terminal",
+            "instance_ids": [instance_id],
+            "provider_absence_confirmed": True,
+        },
+        "continuing_spend_from_this_run": False,
+        "adapter_result_path": str(adapter),
+        "teardown_manifest_path": str(teardown),
+        "artifact_manifest_path": str(artifact),
+        "provider_closeout": {
+            "provider_zero_confirmed": True,
+            "warm_session_retained": False,
+            "all_staged_objects_absent": True,
+        },
+    }
+    result_path = _write(tmp_path / "allocator_result.json", result)
+
+    evidence = billing._terminal_evidence(
+        instance_id=instance_id, terminal_result_path=result_path
+    )
+
+    assert evidence["provider_zero_verified"] is True
+    assert evidence["terminal_result"]["sha256"] == _sha256(result_path)
+    assert evidence["teardown_manifest"]["sha256"] == _sha256(teardown)
+
+
+def test_policy_canary_terminal_evidence_accepts_watchdog_instance_lineage(
+    tmp_path: Path,
+) -> None:
+    instance_id = 49_609_705
+    provider_run = tmp_path / "attempt/vast_provider_run"
+    adapter = _write(
+        provider_run / "vast_provider_adapter_result.json",
+        {
+            "vast_instance_ids": [instance_id],
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    teardown = _write(
+        provider_run / "vast_teardown_manifest.json",
+        {
+            "vast_instance_ids": [instance_id],
+            "continuing_spend_from_this_run": False,
+            "runner_gpu_teardown_completed": True,
+        },
+    )
+    artifact = _write(tmp_path / "attempt/artifact_manifest.json", {"status": "completed"})
+    _write(
+        tmp_path / "post_teardown_global_provider_zero.json",
+        {
+            "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+            "provider_zero_verified": True,
+            "live_instance_count": 0,
+        },
+    )
+    result_path = _write(
+        tmp_path / "allocator_result.json",
+        {
+            "schema_version": "native_task_arena_policy_canary_session_result.v1",
+            "status": "blocked",
+            "retry_cap": 0,
+            "continuing_spend_from_this_run": False,
+            "independent_watchdog": {
+                "status": "provider_terminal",
+                "instance_ids": [instance_id],
+                "provider_absence_confirmed": True,
+            },
+            "adapter_result_path": str(adapter),
+            "teardown_manifest_path": str(teardown),
+            "artifact_manifest_path": str(artifact),
+            "provider_closeout": {
+                "provider_zero_confirmed": True,
+                "warm_session_retained": False,
+                "all_staged_objects_absent": True,
+            },
+        },
+    )
+
+    evidence = billing._terminal_evidence(
+        instance_id=instance_id, terminal_result_path=result_path
+    )
+
+    assert evidence["provider_zero_verified"] is True
+    assert evidence["terminal_status"] == "blocked"
+    assert evidence["terminal_result"]["sha256"] == _sha256(result_path)
 
 
 def _sha256(path: Path) -> str:

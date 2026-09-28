@@ -7,7 +7,10 @@
       "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
       "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
       "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
+      "src/blueprint_pipeline/native_g1_paid_campaign.py",
+      "src/blueprint_pipeline/native_g1_team_paid_policy.py",
       "src/blueprint_pipeline/paid_resource_allocator.py",
+      "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
       "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
       "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
@@ -16,6 +19,7 @@
       "src/blueprint_pipeline/qualification_control_admission.py",
       "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
+      "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
       "src/blueprint_pipeline/teleport_paid_allocator.py"
     ],
     "require_paid_resource_admission": [
@@ -28,7 +32,10 @@
       "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
       "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
       "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
+      "src/blueprint_pipeline/native_g1_paid_campaign.py",
+      "src/blueprint_pipeline/native_g1_team_paid_policy.py",
       "src/blueprint_pipeline/paid_resource_allocator.py",
+      "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
       "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
       "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
@@ -38,10 +45,22 @@
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
       "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
-      "src/blueprint_pipeline/teleport_paid_allocator.py"
+      "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
+      "src/blueprint_pipeline/teleport_paid_allocator.py",
+      "src/blueprint_pipeline/website_task_context.py"
     ]
   },
   "surfaces": [
+    {
+      "path": "src/blueprint_pipeline/website_task_context.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "reserve_website_preparation_spend",
+        "preparation-spend",
+        "website_preparation_spend_receipt_invalid",
+        "require_paid_resource_admission"
+      ]
+    },
     {
       "path": "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
       "classification": "canonical_adapter",
@@ -238,6 +257,15 @@
       ]
     },
     {
+      "path": "src/blueprint_pipeline/policy_canary_allocator_lane.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_native_task_arena_policy_canary_session_vast"
+      ]
+    },
+    {
       "path": "src/blueprint_pipeline/postshot_license_transport.py",
       "classification": "metered_object_storage_data_plane",
       "required_markers": [
@@ -273,6 +301,24 @@
         "require_paid_resource_admission",
         "require_paid_resource_admission_grant",
         "PAID_RESOURCE_CLASS"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/native_g1_team_paid_policy.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_arena_native_control_vast"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/native_g1_paid_campaign.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_arena_native_control_vast"
       ]
     },
     {
@@ -394,6 +440,24 @@
       ]
     },
     {
+      "path": "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": [
+        "upload_file",
+        "get_object",
+        "full_byte_service_account_readback_passed"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_scene_configuration_vast"
+      ]
+    },
+    {
       "path": "src/blueprint_pipeline/unitree_unifolm_runpod_server.py",
       "classification": "grant_gated_legacy_adapter",
       "required_markers": [
@@ -424,7 +488,13 @@
       "path": "src/blueprint_pipeline/vast_provider_adapter.py",
       "classification": "grant_gated_legacy_adapter",
       "required_markers": [
-        "require_paid_resource_admission_grant",
+        "require_paid_resource_admission_grant"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/vast_provider_adapter_cli.py",
+      "classification": "hard_disabled_legacy_launcher",
+      "required_markers": [
         "legacy_vast_provider_mutation_cli_disabled"
       ]
     },

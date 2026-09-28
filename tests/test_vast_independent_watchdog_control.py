@@ -97,6 +97,121 @@ def _exact_terminal_evidence(
         "raw_secret_values_recorded": False,
     }
 
+BLOCKED_GLOBAL_READ = {
+    "status": "blocked", "provider": "vast", "name_prefix": "", "live_resource_count": None,
+    "resources": [], "api_confirmed": False, "blockers": ["vast_billable_inventory_failed"],
+    "error_type": "HTTPError", "raw_provider_response_recorded": False,
+}
+
+
+def _lane_handle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> control.VastWatchdogHandle:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path, max_live_minutes=3, generated_at="2026-09-12T22:24:52+00:00",
+        pod_name_prefix="blueprint-adp-retained-render-20260912t222452496293000-")
+    assert handle is not None
+    return handle
+
+
+@pytest.mark.parametrize("failed_read", ["final_global_inventory", "initial_global_inventory"])
+def test_terminal_evidence_honors_the_watchdogs_informational_global_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_read: str
+) -> None:
+    """2026-09-12 22:27, scene 840938: the watchdog's final global read hit an HTTPError; it still
+    sealed provider_terminal after two direct absence inspections and a zero lane inventory, and
+    the closer refused it as not exactly bound, stranding a completed render."""
+    handle = _lane_handle(tmp_path, monkeypatch)
+    evidence = _exact_terminal_evidence(handle, 50812297)
+    evidence[failed_read] = dict(BLOCKED_GLOBAL_READ)
+    assert control._terminal_evidence_matches_handle(evidence, handle=handle, instance_id="50812297") is False
+    evidence["global_inventory_informational_only"] = True
+    assert control._terminal_evidence_matches_handle(evidence, handle=handle, instance_id="50812297")
+    # A fully observed foreign lane is informational while a same-lane or
+    # recorded-instance resource defeats the exact teardown claim.
+    foreign = {**evidence, "final_global_inventory": {**evidence["initial_global_inventory"],
+        "status": "observed", "api_confirmed": True, "live_resource_count": 1,
+        "resources": [{"instance_id": "50812298", "name": "someone-else"}]}}
+    assert control._terminal_evidence_matches_handle(foreign, handle=handle, instance_id="50812297")
+    same_lane = {**foreign, "final_global_inventory": {
+        **foreign["final_global_inventory"],
+        "resources": [{"instance_id": "50812298", "name": handle.pod_name_prefix + "leak"}],
+    }}
+    assert control._terminal_evidence_matches_handle(same_lane, handle=handle, instance_id="50812297") is False
+    own_instance = {**foreign, "final_global_inventory": {
+        **foreign["final_global_inventory"],
+        "resources": [{"instance_id": "50812297", "name": "someone-else"}],
+    }}
+    assert control._terminal_evidence_matches_handle(own_instance, handle=handle, instance_id="50812297") is False
+    malformed = {**foreign, "final_global_inventory": {
+        **foreign["final_global_inventory"], "live_resource_count": 2,
+    }}
+    assert control._terminal_evidence_matches_handle(malformed, handle=handle, instance_id="50812297") is False
+    listed = {**evidence, failed_read: {**BLOCKED_GLOBAL_READ, "resources": [{"instance_id": "50812298"}]}}
+    assert control._terminal_evidence_matches_handle(listed, handle=handle, instance_id="50812297") is False
+    unproven = {**evidence, "recorded_vast_instance_teardown": {
+        **evidence["recorded_vast_instance_teardown"],
+        "inspect_attempts": [evidence["recorded_vast_instance_teardown"]["inspect_attempts"][0]]}}
+    assert control._terminal_evidence_matches_handle(unproven, handle=handle, instance_id="50812297") is False
+
+
+def test_bound_campaign_evidence_never_uses_the_informational_global_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path, max_live_minutes=3, generated_at="2026-08-25T00:00:00+00:00",
+        pod_name_prefix="blueprint-native-task-policy-diagnostic-",
+        resource_name_exact="blueprint-native-task-policy-pi05-" + "a" * 32,
+        allowed_active_resource_names=["blueprint-native-task-policy-groot-" + "b" * 32])
+    assert handle is not None
+    evidence = _exact_terminal_evidence(handle, 48620000)
+    evidence["final_global_inventory"] = dict(BLOCKED_GLOBAL_READ)
+    evidence["global_inventory_informational_only"] = True  # a bound campaign cannot opt out
+    assert control._terminal_evidence_matches_handle(evidence, handle=handle, instance_id="48620000") is False
+
+
+def test_close_reports_provider_terminal_with_a_blocked_informational_global_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _lane_handle(tmp_path, monkeypatch)
+    evidence = _exact_terminal_evidence(handle, 50812297)
+    evidence.update(final_global_inventory=dict(BLOCKED_GLOBAL_READ), global_inventory_informational_only=True)
+    (handle.out_dir / control.EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+    handle.process.returncode = 0  # the watchdog already exited after sealing its evidence
+    result = control.close_independent_vast_watchdog(job_dir=tmp_path, handle=handle,
+        instance_ids=[50812297], provider_teardown_completed=True, wait_seconds=0.1)
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert result["global_inventory_read_blocked"] is True
+    assert json.loads((tmp_path / control.HANDOFF_NAME).read_text())["status"] == "provider_terminal"
+
+
+def test_close_reports_lane_terminal_while_another_paid_lane_is_observed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _lane_handle(tmp_path, monkeypatch)
+    evidence = _exact_terminal_evidence(handle, 52668033)
+    evidence["global_inventory_informational_only"] = True
+    foreign = {
+        **evidence["final_global_inventory"],
+        "live_resource_count": 1,
+        "resources": [{
+            "instance_id": "52669076",
+            "name": "blueprint-native-task-policy-canary-bc10e1671bd48f8316de66c29b690a5d",
+        }],
+    }
+    evidence["initial_global_inventory"] = foreign
+    evidence["final_global_inventory"] = foreign
+    (handle.out_dir / control.EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+    handle.process.returncode = 0
+    result = control.close_independent_vast_watchdog(
+        job_dir=tmp_path, handle=handle, instance_ids=[52668033],
+        provider_teardown_completed=True, wait_seconds=0.1,
+    )
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+
+
 def test_watchdog_is_armed_detached_before_allocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -475,10 +590,12 @@ def test_watchdog_without_allocation_retains_double_api_zero(
     class Provider:
         def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
             return {
-                "status": "available",
+                "status": "observed",
+                "provider": "vast",
                 "name_prefix": name_prefix,
                 "api_confirmed": True,
                 "live_resource_count": 0,
+                "resources": [],
             }
 
     monkeypatch.setattr(
@@ -502,6 +619,84 @@ def test_watchdog_without_allocation_retains_double_api_zero(
     assert result["provider_absence_confirmed"] is True
     assert result["final_global_inventory"]["live_resource_count"] == 0
     assert result["provider_mutations_performed"] == 0
+    assert handle.process.poll() == -15
+
+
+def test_watchdog_without_allocation_rejects_contradictory_zero_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+
+    class Provider:
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
+            return {
+                "status": "observed",
+                "provider": "vast",
+                "name_prefix": name_prefix,
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": (
+                    []
+                    if name_prefix
+                    else [{"instance_id": "48901234", "name": "blueprint-live"}]
+                ),
+            }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers.get_render_provider",
+        lambda _provider: Provider(),
+    )
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-task-evaluation-scene-config-",
+    )
+    assert handle is not None
+
+    result = control.close_independent_vast_watchdog_without_allocation(
+        job_dir=tmp_path,
+        handle=handle,
+    )
+
+    assert result["status"] == "retained_until_hard_ttl"
+    assert result["provider_absence_confirmed"] is False
+    assert result["watchdog_retention_liveness_confirmed"] is True
+    assert handle.process.poll() is None
+
+
+def test_watchdog_without_allocation_stays_live_when_zero_is_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+
+    class Provider:
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
+            del name_prefix
+            raise RuntimeError("provider inventory unavailable")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers.get_render_provider",
+        lambda _provider: Provider(),
+    )
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-task-evaluation-scene-config-",
+    )
+    assert handle is not None
+
+    result = control.close_independent_vast_watchdog_without_allocation(
+        job_dir=tmp_path,
+        handle=handle,
+    )
+
+    assert result["status"] == "retained_until_hard_ttl"
+    assert result["reason"] == "provider_zero_unverified_no_allocation"
+    assert result["provider_absence_confirmed"] is False
+    assert result["watchdog_retention_liveness_confirmed"] is True
+    assert handle.process.poll() is None
 
 
 def test_watchdog_stays_armed_when_create_identity_is_ambiguous(
@@ -525,6 +720,35 @@ def test_watchdog_stays_armed_when_create_identity_is_ambiguous(
 
     assert result["status"] == "retained_until_hard_ttl"
     assert result["reason"] == "provider_allocation_identity_ambiguous"
+    assert handle.process.poll() is None
+
+
+def test_watchdog_stays_armed_when_started_id_refutes_no_allocation_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-task-evaluation-scene-config-",
+    )
+    assert handle is not None
+    control.write_started_vast_instance_id(
+        handle.started_instance_id_path, 48_901_234
+    )
+
+    result = control.close_independent_vast_watchdog(
+        job_dir=tmp_path,
+        handle=handle,
+        instance_ids=[],
+        provider_teardown_completed=True,
+        provider_allocation_impossible=True,
+    )
+
+    assert result["status"] == "retained_until_hard_ttl"
+    assert result["reason"] == "provider_allocation_identity_present"
+    assert result["watchdog_retention_liveness_confirmed"] is True
     assert handle.process.poll() is None
 
 
@@ -585,36 +809,42 @@ def test_live_retained_watchdog_publishes_fleet_reaper_lease(
     )
 
 
-def test_systemd_watchdog_refuses_retention_without_kill_mode_contract(
+def test_systemd_watchdog_refuses_allocation_without_kill_mode_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("INVOCATION_ID", "fixture-systemd-invocation")
     monkeypatch.delenv(control.CALLER_EXIT_SURVIVAL_ENV, raising=False)
-    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    process_started = False
+
+    def fake_popen(*_args: Any, **_kwargs: Any) -> _FakeProcess:
+        nonlocal process_started
+        process_started = True
+        raise AssertionError("watchdog process must not start without survival proof")
+
+    monkeypatch.setattr(control.subprocess, "Popen", fake_popen)
     handoff, handle = control.arm_independent_vast_watchdog(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-08-17T00:00:00+00:00",
         pod_name_prefix="blueprint-adp-paired-native-import-",
     )
-    assert handle is not None
+    assert handle is None
+    assert process_started is False
+    assert handoff["status"] == "blocked"
+    assert handoff["watchdog_armed_before_allocation"] is False
+    assert handoff["provider_mutations_performed"] == 0
     assert handoff["caller_exit_survival_contract"] == (
         "systemd_cgroup_survival_unproven"
     )
-
-    result = control.close_independent_vast_watchdog(
-        job_dir=tmp_path,
-        handle=handle,
-        instance_ids=[47999991],
-        provider_teardown_completed=False,
-    )
-
-    assert result["status"] == "watchdog_caller_exit_survival_unproven"
-    assert result["watchdog_retention_liveness_confirmed"] is True
-    assert result["watchdog_caller_exit_survival_confirmed"] is False
-    assert result["blockers"] == [
+    assert handoff["blockers"] == [
         "independent_vast_watchdog_caller_exit_survival_unproven"
     ]
+    evidence = json.loads(
+        (tmp_path / control.WATCHDOG_DIR_NAME / control.EVIDENCE_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert evidence == handoff
 
 
 def test_close_returns_terminal_as_soon_as_evidence_confirms_absence(

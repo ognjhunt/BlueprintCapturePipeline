@@ -77,6 +77,9 @@ def test_candidate_rights_binding_is_deterministic_and_checkpoint_exact(
         assert first["checkpoint_identity"]["content_manifest_digest"] == (
             expected_checkpoint_content_binding()["file_manifest_digest"]
         )
+        assert first["interface_identity"]["policy_input_schema"][
+            "frame_history"
+        ] == [0]
 
 
 @pytest.mark.parametrize(
@@ -100,6 +103,13 @@ def test_candidate_rights_binding_is_deterministic_and_checkpoint_exact(
                 access_probe_status="missing"
             ),
             "candidate_policy_rights_groot_gated_access_invalid",
+        ),
+        (
+            "groot_n17_droid",
+            lambda value: value["interface_identity"]["policy_input_schema"].update(
+                frame_history=[-15, 0]
+            ),
+            "candidate_policy_rights_groot_interface_mismatch",
         ),
     ],
 )

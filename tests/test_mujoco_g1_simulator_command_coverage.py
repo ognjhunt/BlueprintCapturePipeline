@@ -781,17 +781,15 @@ def test_mujoco_package_coverage_closure_and_cli_helpers(
             scenario_eval_matrix_path=linux_matrix,
             render_frames=False,
         )
-    # No frames rendered -> GL must be disabled so `import mujoco` works on GL-less hosts.
-    assert mg.os.environ["MUJOCO_GL"] == "disable"
-    monkeypatch.delenv("MUJOCO_GL", raising=False)
+    # Validation before import and scoped defaults must not leak into later tests.
+    assert "MUJOCO_GL" not in mg.os.environ
     with pytest.raises(RuntimeError, match="contains no executable runs"):
         mg.run_mujoco_g1_simulator_command(
             capture_root=tmp_path,
             scenario_eval_matrix_path=linux_matrix,
             render_frames=True,
         )
-    # Rendering on headless Linux workers keeps the EGL default.
-    assert mg.os.environ["MUJOCO_GL"] == "egl"
+    assert "MUJOCO_GL" not in mg.os.environ
     monkeypatch.setenv("MUJOCO_GL", "osmesa")
     with pytest.raises(RuntimeError, match="contains no executable runs"):
         mg.run_mujoco_g1_simulator_command(

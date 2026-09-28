@@ -1,0 +1,220 @@
+# Scene 841757 repair-target failure
+
+This repairs the ADP-009B construction precursor to the day-14 gate. Completion
+requires a replayable object-free appearance result with independent visual
+review; passing software tests alone does not qualify the scene.
+
+The R11 run exposed two input failures. Seven of sixteen calibrated views had
+empty SAM masks despite a visible book. Treating those views as preservation
+targets left the book intact. In the other views, a tight repair mask and inner
+feather could restore source book edges even when the raw generated candidate
+removed them. The upstream SDK review assessed track identity and contamination;
+it explicitly did not qualify per-view segmentation completeness. The appearance
+run also used the explicit paused/ungraded review mode.
+
+The driver now refuses empty repair support. The SAM input bridge derives a
+separate candidate repair core from the existing calibrated object support and
+SAM mask, with a 32-pixel repair margin. Raw SAM ownership and FlashSplat evidence
+remain unchanged. Compositing retains generated pixels at full opacity over the
+core and preserves source pixels outside repair support. The calibrated region
+and margin are candidate repair allowances, not observed segmentation truth.
+
+Required review mode now reviews the actual composited targets before training,
+using the independent Agents SDK reviewer. Its rubric includes fragments, covers,
+pages, outlines, shadows, material changes, seams, and protected-object damage.
+A failed input review stops training. The review allowance is split between
+pre-training and post-training review without increasing the existing cap.
+
+Raw historical image edits can be selected using
+`semantic_teacher_candidate_reuse.materialize_retained_selection`. The resulting
+`semantic_teacher_retained_candidate_selection.v1` binds the original request,
+result, image bytes, task, camera, and source-frame digest. The bundle accepts
+`--retained-candidate-selection` (or the control-plane environment variable
+`BLUEPRINT_SCENE_CONFIGURATION_RETAINED_CANDIDATE_SELECTION`). A source mismatch
+fails before bundle admission. The runtime constructs a new request, retaining
+both original and current mask identities. Reuse never becomes a new model call
+or a new charge. The checkpoint retains historical receipts and counts reused
+frames separately. Selective repair always requests fresh edits for failed views.
+
+R11 candidates remain unqualified. The retained selection is subject to fresh
+visual review under corrected support. This change does not establish complete
+3D removal, configured-scene qualification, a successful policy evaluation, or
+physical truth.
+
+Focused verification covers repair-core opacity and source preservation,
+corrupted and mismatched reuse evidence, new-call accounting, checkpoint lineage,
+bundle transport, driver rejection before training, and selective repair. The
+policy lifecycle rehearsal and provider import-closure tests protect the later
+paid runtime boundary. No repository-wide suite is required for this bounded
+experimental repair.
+
+The first real host reuse replay refused before allocation because original
+render PNG bytes differ from the RGB PNG re-encoding sent to the editor. Bundle
+admission now verifies the retained render bytes and reproduces the existing
+RGB staging before comparing the original request hash. Changed pixels or
+unbound source bytes still refuse. A service-user replay admitted all six
+selected R11 candidates against the retained render inputs without a model call.
+
+R13 reached the allocated worker, then refused before image generation or
+training because the provider envelope hydrator did not rebase the newly added
+repair-support and object-core paths. Those files were present in the sealed
+bundle, but the component runs with the toolchain directory as its working
+directory. Retained candidate records had the same missing handoff. Both
+provider runners now verify and rebase all five added file roles. Tests exercise
+the component working directory and corruption of each role.
+
+This was a process defect: the previous CPU replay used host-absolute paths and
+did not reproduce provider hydration followed by the component working directory.
+The correction must be replayed from the exact R13 ZIP through the image-request
+boundary in an isolated CPU process before another paid attempt. R13 failure and
+teardown evidence remain preserved; no new image candidates were produced.
+
+### Controls catalog reference after a budget-cap installation
+
+ADP-009, day-14 construction rehearsal: the R14 no-spend provisioner refused
+`public_scene_provision_immutable_conflict` after the controls phase cap was
+reduced from USD 2 to USD 1.75. The canonical installer changed the content
+catalog, while public-scene machinery retained its prior exact-byte reference.
+No R14 intent or provider resource was created by the refusal.
+
+Use `python -m blueprint_pipeline.task_evaluation_public_scene_machinery_refresh`
+with explicit machinery/catalog paths, source commit, and expected machinery
+digest. Preview is the default; `--apply` archives the exact previous machinery
+bytes and atomically refreshes only the catalog reference and machinery seal.
+It validates the new catalog and retained runtime/assets, refuses stale expected
+identity or concurrent changes, and preserves file ownership/mode. Existing
+intent and attempt snapshots are never rewritten. This operator command is a
+configuration maintenance action, not an execution launcher or a scientific claim.
+
+`tests/test_task_evaluation_public_scene_machinery_refresh.py` verifies exact
+archive preservation, idempotence, unchanged unrelated fields, and refusal of
+stale identity, corrupt catalog, changed runtime assets, and a different catalog
+path. The completion artifact is the refresh receipt plus resumed canonical
+provisioning; successful appearance or policy evaluation still requires its own
+execution evidence.
+
+### R14: phase-appropriate target review and bounded recovery
+
+ADP-009 / day-14 construction rehearsal. R14 passed the repaired provider handoff,
+reused six edits and produced ten new ones. Independent review found the source
+book absent in all 16 views, but rejected 15: mostly seams/texture differences,
+plus an incorrect floor-like replacement in source-07. The GPU was destroyed and
+provider-zero confirmed. No training or appearance qualification occurred.
+
+The pre-training path had reused the final-appearance prompt (reject any visible
+seam) and immediately aborted on any rejection. It now uses a distinct training
+admission standard: reject object remnants, wrong materials/geometry, collateral
+changes, orientation errors and major inconsistency; retain minor seams as
+warnings in the rationale. A training acceptance has its own receipt type and
+cannot seal final appearance. The final rendered-image criterion is unchanged.
+
+One exact-mask corrective image-edit round can run before training, with the
+reviewer's camera-specific feedback, preserving accepted sealed images exactly.
+If a view remains rejected, a development-only selection may exclude its teacher:
+at least eight and 75 percent of the original views must remain approved, with
+distinct calibrated poses and two approved axes within 30 degrees of each omitted
+view. This is an explicit training coverage heuristic, not a geometry or fidelity
+proof. The full original final-review trajectory remains required.
+
+The rejected teacher slot becomes a byte-exact original observation with its
+outside-support anchor loss mask; the rejected generated pixels never enter
+teacher staging. Keeping that masked observation slot preserves the released
+training loader's camera indexing. Bundle and provider validators check the
+partition, original bytes, masks, poses and review-bound selection. Final review
+still includes every camera. Only one semantic correction round is allowed in the
+whole stage; an exclusion cannot later be undone by merging the old teacher set.
+
+Three reviewer reservations now fit inside the unchanged USD 6 external-services
+cap: USD 4.80 semantic edits + USD 0.96 review + USD 0.20 content = USD 5.96. Each
+image transport retains retry_count=0; the single corrective operation is bound
+to a new feedback-bearing request and the remaining stage allowance.
+
+The continuation also supports a binding-scoped `retained_prefix_only` preparation
+mode. It creates the existing zero-cost, non-allocating preparation identity and
+requires a verified prefix through segment_cutout before any preparation profile
+or submission can be published. Missing/partial reuse cannot fall back to fresh
+GPU source work. Other source bindings keep their paid-source behavior. This
+avoids reserving USD 4.50 for already-completed source GPU stages while preserving
+the original owner budget and all fresh admission checks.
+
+Focused verification covers per-view repair/exclusion, insufficient or uncovered
+views, rejected pixels absent from the real teacher staging path, anchor masks
+excluding the original object, all final-review cameras retained, separate final
+appearance authority, scoped no-spend source preparation, and cold-source refusal.
+Provider import closure and the policy lifecycle rehearsal remain required before
+paid continuation. The new live model decision and final 3D outcome remain unproven
+until their execution receipts are produced.
+
+
+## R15 retained-parent budget compatibility failure
+
+The 5ee65569 continuation stopped before provider allocation: prefix adoption
+revalidated its historical parent with the new USD 0.96 appearance-review
+minimum, rejecting the original valid USD 0.64 cap as
+`launch_preparation_scene_configuration_external_spend_invalid`. All completed
+render/SAM/cutout evidence remained intact. R15 future execution was revoked to
+avoid repeating this failed preparation. This compatibility boundary was missed
+by the prior semantic-stage replay and must be covered by retained-parent replay.
+
+Historical-parent validation now retains the original two-review budget floor
+while preserving schema, total budget, rights, immutable parent digest and child
+chain checks. New launch validation and its digest API still require the current
+three-review floor. No old bytes or source artifacts are rewritten, and adopting
+evidence grants no execution authority. Focused regression checks prove that the
+same historical request passes evidence validation and fails new-launch admission.
+
+
+R16 exposed the second historical-parent reader in new adoption materialization:
+`task_evaluation_sam31_parent_evidence._parent` still applied current launch
+admission. Existing-adoption replay had passed but did not cover this call.
+Split the retained-parent lookup from the execution-parent lookup, preserving
+current admission for every executable child. A real on-disk parent regression
+checks old-budget reuse, new-execution refusal, byte preservation and refusal of
+a resealed parent whose contents no longer match the child's original digest.
+The already-started 95 focused tests passed before the owner instructed a direct
+GPU restart without further test/replay cycles. No GPU was allocated for R16; its
+future execution was revoked and its failure evidence retained.
+
+
+## R17 loading instance reaped despite its live owner
+
+Instance 50204295 never reached the worker. Host journal evidence shows
+blueprint-gpu-spend-guard terminating it at 21:35:14 UTC, age 8m09s, as
+`unbooted_dud_past_boot_ttl`. Its independent Task Evaluation watchdog was armed
+and performed zero termination actions. The global ownership scan recognized
+legacy render and G1 qualification markers but skipped this canonical Task
+Evaluation watchdog directory.
+
+Protect Task Evaluation ids only while an armed, unexpired watchdog record
+matches a live process's exact module, output directory, provider, resource
+prefix and deadline. Terminal, cancelled, expired or unowned records do not
+protect resources. The eight-minute orphan threshold and paid/deadline limits
+remain unchanged. A focused ownership regression is included for hosted CI; no
+additional local test or replay cycle is started under the owner's direct-restart
+instruction. R17 startup failure, billing and teardown evidence remain retained.
+
+## API preparation before GPU allocation
+
+A real control-plane grading call on the retained 16-view set accepted 15 and
+rejected only source-07's glassy gray material substitution. The execution digest
+is `sha256:10b012ca6647e55d210136277bfbf2edfd0c81cfeab87e65a9bb2f64465f4a0a`;
+usage was 94,417 input and 3,118 output tokens, one request, with a USD 0.22625
+pricing estimate (not settled official billing). Minor seams were warnings.
+
+The production scene allocator now prepares semantic images, applies the
+pre-training reviewer and bounded recovery/coverage policy on the control plane,
+and retains a digest-bound capsule before invoking Vast allocation. CPU
+preparation cannot enter ArtiFixer training or invoke a pending GPU renderer.
+The provider restores and validates the capsule's exact files, run, release and
+scientific inputs, then starts training without repeating preliminary API work.
+All final camera angles and the strict post-training review remain unchanged.
+
+An explicitly configured real-review cache can reuse that earlier model decision
+only when the complete current multimodal input digest matches. It preserves the
+original execution unchanged and records that no new review call occurred.
+Mismatched inputs cause a fresh review. Secrets are staged through the existing
+owner-only secret mechanism and are excluded from the capsule. The generic key
+file cannot override a stage's explicit review key. Capsule URLs stay in private
+startup state and are redacted from retained logs. The shared disk floor remains
+unchanged; semantic preparation reserves a footprint derived from the input
+archive, and retains its immutable archive while releasing its expanded cache.

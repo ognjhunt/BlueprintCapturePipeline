@@ -1,0 +1,82 @@
+.......F.........................F...................................... [ 63%]
+.........................................                                [100%]
+=================================== FAILURES ===================================
+________ test_openpi_preflight_reconfirms_identity_after_prior_episode _________
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4843/test_openpi_preflight_reconfir1')
+
+    def test_openpi_preflight_reconfirms_identity_after_prior_episode(
+        tmp_path: Path,
+    ) -> None:
+        spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+        clients = []
+    
+        class FakeClient:
+            def __init__(self, **kwargs) -> None:
+                del kwargs
+                self.metadata_reads = 0
+                self.inference_calls = 0
+                self.closed = False
+                clients.append(self)
+    
+            def get_server_metadata(self):
+                self.metadata_reads += 1
+                return _runtime_metadata(spec)
+    
+            def infer(self, observation):
+                del observation
+                self.inference_calls += 1
+                return {"actions": np.zeros((10, 8))}
+    
+            def close(self) -> None:
+                self.closed = True
+    
+        client = OpenPIWebsocketDroidPolicyClient(
+            spec=spec,
+            host="127.0.0.1",
+            port=8000,
+            client_factory=FakeClient,
+        )
+        client.infer({"prompt": "pick"})
+    
+        readiness = client.preflight_readiness()
+    
+        assert readiness["identity_verified"] is True
+        assert readiness["candidate_policy_queried"] is False
+        assert readiness["candidate_inference_performed"] is False
+        assert readiness["prior_candidate_policy_query_observed"] is True
+        assert readiness["last_inference_evidence"] is None
+        assert readiness["connection_generation"] == 2
+>       assert client.candidate_policy_queried is True
+E       assert False is True
+E        +  where False = <blueprint_pipeline.openpi_droid_policy_runtime.OpenPIWebsocketDroidPolicyClient object at 0x1100f69f0>.candidate_policy_queried
+
+tests/test_openpi_droid_policy_runtime.py:350: AssertionError
+______ test_groot_preflight_resets_for_next_episode_after_prior_inference ______
+
+    def test_groot_preflight_resets_for_next_episode_after_prior_inference() -> None:
+        fake = _FakePolicyClient()
+        client = GrootN17DroidPolicyClient(
+            spec=GrootN17DroidPolicySpec(),
+            worker_identity_receipt=_receipt(),
+            host="127.0.0.1",
+            client_factory=lambda **kwargs: fake,
+        )
+        client.infer(_observation())
+    
+        readiness = client.preflight_readiness()
+    
+        assert readiness["identity_verified"] is True
+        assert readiness["candidate_policy_queried"] is False
+        assert readiness["candidate_inference_performed"] is False
+        assert readiness["prior_candidate_policy_query_observed"] is True
+        assert readiness["last_inference_evidence"] is None
+>       assert client.candidate_policy_queried is True
+E       assert False is True
+E        +  where False = <blueprint_pipeline.groot_n17_droid_policy_runtime.GrootN17DroidPolicyClient object at 0x111117290>.candidate_policy_queried
+
+tests/test_groot_n17_droid_policy_runtime.py:267: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_openpi_droid_policy_runtime.py::test_openpi_preflight_reconfirms_identity_after_prior_episode
+FAILED tests/test_groot_n17_droid_policy_runtime.py::test_groot_preflight_resets_for_next_episode_after_prior_inference
+2 failed, 111 passed, 1 deselected in 19.59s
