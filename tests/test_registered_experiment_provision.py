@@ -1,3 +1,5 @@
+# ruff: noqa: F811
+
 """Actual fixed default-off installation state, never an owner grant."""
 
 # Covers (for impacted-test selection):
