@@ -25,6 +25,7 @@ from . import control_plane_lane_scratch_decisions as retained
 from . import control_plane_lane_experiment_retirement as installed
 from .control_plane_lane_experiment_publication import _BirthFiles
 from .control_plane_lane_owner_target_publication import _publish_owned_metadata
+from .control_plane_lane_owner_target_versions import OwnerTargetVersionError
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .decision_evidence_contracts import canonical_digest
 from .control_plane_disk_budget import reserve_control_plane_disk
@@ -219,7 +220,12 @@ def issue_needed_checkpoint_cache_intent(*, principal, owner, name, reference_ki
     files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000, monotonic=monotonic))
     try:
         _require(os.geteuid() == 0, "needed_cache_root_required")
-        config = installed._configuration(files, installed_config_path)
+        try:
+            config = installed._configuration(files, installed_config_path)
+        except OwnerTargetVersionError as exc:
+            if str(exc) == "experiment_installed_namespace_changed":
+                raise NeededCheckpointCacheError("needed_cache_namespace_invalid") from None
+            raise
         _require(Path(config.lane_scratch_work_root) == _REGISTERED_ROOTS[0],
                  "needed_cache_namespace_invalid")
         _require(config.needed_checkpoint_cache_creation_enabled is True, "needed_cache_creation_disabled")
@@ -507,7 +513,12 @@ def _current_projection(files, root, gid, *, _lock_held=False):
 
 
 def _read_layout(files, config_path):
-    config = installed._configuration(files, config_path)
+    try:
+        config = installed._configuration(files, config_path)
+    except OwnerTargetVersionError as exc:
+        if str(exc) == "experiment_installed_namespace_changed":
+            raise NeededCheckpointCacheError("needed_cache_namespace_invalid") from None
+        raise
     _require(Path(config.lane_scratch_work_root) == _REGISTERED_ROOTS[0],
              "needed_cache_namespace_invalid")
     return dict(root=Path(config.lane_scratch_work_root),
