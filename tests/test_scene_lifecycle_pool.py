@@ -65,3 +65,64 @@ def test_publication_discovery_is_actual_attempt_sibling_not_submission_child():
     Pool(Reader(), context, args['intent_id']).discovery()
     assert factory+'/attempt-1/publication.json' in seen
     assert factory+'/attempt-1/materialized/submission/publication.json' not in seen
+
+
+def test_fixed_family_discovery_covers_receipts_and_terminal_copies_without_payload_scan():
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_pool import Pool
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_acquisition import AcquisitionError
+    args = fixture()
+    roots, seen, directories = args['roots'], [], []
+    h = 'a'*64
+    owner = roots['terminal_result_root']+'/'+args['intent_id']
+    layouts = {
+        roots['configuration_progression_root']+'/scene-configuration-activations': ('prep-1',),
+        roots['sam_execution_root']: (h,),
+        roots['sam_execution_root']+'/'+h: ('sam31-'+h,),
+        roots['launch_execution_root']: ('run-1',),
+        owner+'/runs': (h,),
+        roots['policy_canary_root']: ('canary-1', 'canary-1.offloaded.v1.json'),
+        roots['activation_output_root']: ('activation-1',),
+        roots['compilation_output_root']: ('compilation-1',),
+    }
+    class Reader:
+        budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+        def entries(self, path):
+            directories.append(path)
+            return layouts.get(path, ())
+        def read_json(self, path):
+            seen.append(path)
+            raise AcquisitionError('scene_lifecycle_metadata_unavailable')
+    context = {'roots': roots, 'parent_routes': args['parent_routes'],
+               'retained_metadata_files': [], 'progression_config': None}
+    Pool(Reader(), context, args['intent_id']).discovery()
+    expected = [
+        roots['configuration_progression_root']+'/scene-configuration-activations/prep-1/activation_progression.json',
+        roots['configuration_progression_root']+'/scene-configuration-activations/prep-1/launch_progression.json',
+        roots['sam_execution_root']+'/'+h+'/sam31-'+h+'/phase_execution_receipt.v1.json',
+        roots['launch_execution_root']+'/run-1/launch_request.json',
+        owner+'/terminal_index_state.json',
+        owner+'/runs/'+h+'/nonexecution_terminal_state.json',
+        owner+'/runs/'+h+'/policy_canary_webapp_sync.json',
+        roots['policy_canary_root']+'/canary-1/artifacts/result_delivery/policy_canary_result_projection.json',
+        roots['policy_canary_root']+'/canary-1.offloaded.v1.json',
+        roots['activation_output_root']+'/activation-1/scene_owner_attempt.json',
+        roots['compilation_output_root']+'/compilation-1/native-arena-adapter/task_evaluation_native_arena_adapter_result.v1.json',
+    ]
+    assert set(expected) <= set(seen)
+    assert all('/payload' not in path and '/frames' not in path for path in directories)
+
+
+def test_unknown_selected_schema_keeps_raw_without_following_fictional_selectors():
+    args = fixture()
+    parent = args['bridge_records']['native_preparation_envelopes'][0]
+    future = json.loads(parent[1])
+    future['schema_version'] = 'future_preparation.v99'
+    future['request_digest'] = 'sha256:'+'b'*64
+    pair = parent[0], json.dumps(future).encode()
+    rows = [decoded('intent', args['seed_records']['intent']), decoded('parent_envelopes', pair)]
+    seed, _, _, bridge, protected = select(rows, {'roots': args['roots'],
+        'retained_metadata_files': [{'role': 'native_preparation_envelopes', 'path': pair[0]}]},
+        args['intent_id'], ReferenceCollectionBudget(monotonic=lambda: 0))
+    assert all(not group for group in bridge.values())
+    assert not seed['preparation_envelopes']
+    assert any(p['path'] == pair[0] and p['status'] == 'kept_unsupported_schema' for p in protected)

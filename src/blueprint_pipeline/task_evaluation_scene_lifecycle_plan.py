@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import json
 import time
 from pathlib import PurePosixPath
 
@@ -124,8 +125,13 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
                             and type(observed_at_epoch) in (int, float) and math.isfinite(observed_at_epoch)
                             and observed_at_epoch >= 0, 'parameters_invalid')
         context = _context(context, budget)
-        acquisition.require(context_anchor is None, 'context_adapter_unavailable')
-        reader = acquisition.Acquisition(budget, context['acquisition_anchors'])
+        if context_anchor is None:
+            reader = acquisition.Acquisition(budget, context['acquisition_anchors'])
+        else:
+            acquisition.require(type(context_anchor) is acquisition.ContextAnchor
+                                and context_anchor.reader.budget is budget, 'context_anchor_invalid')
+            reader = context_anchor.reader
+            context_anchor.coalesced = reader.add_planner_anchors(context['acquisition_anchors'])
         pool = pool_module.Pool(reader, context, intent_id)
         pool.discovery()
         decoded = pool.decode()
@@ -147,9 +153,13 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
         result['measured_members'], result['sharing'], result['unique_observed_allocated_bytes'], _ = measure(
             reader, historical, sink, result['family_obligations'])
         result['family_obligations'] = sink.rows(result['family_obligations'])
-        from .task_evaluation_scene_lifecycle_references import observe
+        if context_anchor is not None:
+            sink.reserve_row({'metadata_only': True, 'anchor_coalesced': context_anchor.coalesced})
+            result['context_acquisition'] = {'metadata_only': True, 'anchor_coalesced': context_anchor.coalesced}
+        from .task_evaluation_scene_lifecycle_references import observe, intersect
         reference_result = observe(context, observed_at_epoch, budget, sink)
         result['reference_observation'] = reference_result
+        result['reference_keeps'] = intersect(result['measured_members'], reference_result, budget, sink)
         result['planner_acquired_raw_bytes'] = reader.physical_read_bytes
         reader.verify()
         sink.check_document(result)
@@ -189,5 +199,46 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
                 reader.close()
             except ValueError:
                 result = fallback('scene_lifecycle_descriptor_cleanup_unproven')
+        if context_anchor is not None and type(context_anchor) is acquisition.ContextAnchor:
+            try:
+                budget.tick()
+                _screen_output(result, budget)
+                budget.measure(result, cap=MAX_OUTPUT_BYTES)
+                budget.tick()
+                context_anchor.serialized = json.dumps(result, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(',', ':'))
+                budget.tick()
+            except (ValueError, TypeError, UnicodeError, OverflowError, RecursionError):
+                result = fallback(budget.failure or 'scene_lifecycle_publication_unproven')
+                context_anchor.serialized = json.dumps(result, sort_keys=True, separators=(',', ':'))
         budget.close()
     return result
+
+
+def _screen_output(value, budget):
+    """Refuse secret-shaped output identities rather than editing their meaning."""
+    pending = [iter(((None, value),))]
+    while pending:
+        budget.available('values', 1)
+        try:
+            key, item = next(pending[-1])
+        except StopIteration:
+            pending.pop()
+            continue
+        budget.charge('values')
+        if isinstance(item, dict):
+            pending.append(iter(item.items()))
+        elif isinstance(item, list):
+            pending.append(iter((key, entry) for entry in item))
+        elif isinstance(item, str) and isinstance(key, str) and (key == 'path' or key == 'uri' or key.endswith('_path')):
+            lowered = item.lower()
+            acquisition.require(not any(marker in lowered for marker in
+                ('x-amz-', 'signature=', 'token=', 'credential=', 'password=', 'api_key=', 'secret=', 'access_key=')),
+                'credential_shaped_output')
+            parts = PurePosixPath(item).parts
+            acquisition.require(not any(part.lower() in {'.env', 'credentials.json', 'secrets.json', 'private_key.pem'}
+                                        for part in _work_items(parts, budget)), 'credential_shaped_output')
+
+
+if __name__ == '__main__':
+    from .task_evaluation_scene_lifecycle_cli import main
+    raise SystemExit(main())

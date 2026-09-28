@@ -74,6 +74,36 @@ class Acquisition:
     def __exit__(self, exc_type, exc, tb):
         self.close()
 
+    def add_planner_anchors(self, anchors):
+        """Keep the initial CLI anchor within the same four physical anchors."""
+        require(isinstance(anchors, list) and 1 <= len(anchors) <= MAX_ANCHORS, 'anchors_invalid')
+        checked = [path(value, self.budget) for value in anchors]
+        require(len(set(checked)) == len(checked) and not any(
+            PurePosixPath(a).is_relative_to(PurePosixPath(b)) for a in checked for b in checked if a != b),
+            'anchors_invalid')
+        coalesced = False
+        for anchor in checked:
+            cached = anchor in self.directories
+            if not cached:
+                self.budget.available('roots', 1)
+            _, info = self._directory(anchor)
+            parent, _, name = anchor.rpartition('/')
+            parent_fd, _ = self._directory(parent or '/')
+            self.budget.tick()
+            named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            require(identity(named) == identity(info), 'metadata_changed')
+            self._observe(anchor, parent_fd, name, info)
+            exact = info.st_dev, info.st_ino
+            selected = {item for _, item in self.anchors}
+            if exact in selected:
+                coalesced = True
+            else:
+                require(len(selected) < MAX_ANCHORS, 'anchors_limit')
+                self.budget.charge('roots')
+            if anchor not in {value for value, _ in self.anchors}:
+                self.anchors.append((anchor, exact))
+        return coalesced
+
     def _open(self, name, flags, parent=None):
         self.budget.tick()
         require(len(self.handles) < MAX_FDS, 'descriptors_limit')
@@ -231,3 +261,10 @@ class Acquisition:
             self._close(fd)
         require(not self.cleanup_failed, 'descriptor_cleanup_failed')
         require(not self.unproven, 'descriptor_ownership_unproven')
+
+
+class ContextAnchor:
+    """CLI-owned acquisition handle; never a scene or installed-root proof."""
+    def __init__(self, reader, file_path):
+        require(type(reader) is Acquisition, 'context_anchor_invalid')
+        self.reader, self.file_path, self.serialized, self.coalesced = reader, file_path, None, False

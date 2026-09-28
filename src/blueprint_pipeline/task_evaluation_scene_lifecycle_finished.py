@@ -55,6 +55,7 @@ def finished(history, decoded, roots, intent_id, now, budget, *, extensions_obse
                 and PurePosixPath(row['path']).name == value['extension_digest'][7:]+'.json'
                 and value.get('scope') == 'execution_time_only' and value.get('intent_id') == intent_id
                 and value.get('intent_digest') == intent['intent_digest'] and value.get('owner') == intent['request']['owner']
+                and isinstance(value.get('authenticated_issuer'), str) and bool(value['authenticated_issuer'].strip())
                 and value.get('authenticated_issuer') == intent.get('authenticated_issuer')
                 and type(value.get('original_expires_at_epoch')) in (int, float)
                 and value['original_expires_at_epoch'] == execution['expires_at_epoch']

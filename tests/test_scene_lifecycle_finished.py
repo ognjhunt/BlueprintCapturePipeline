@@ -70,3 +70,19 @@ def test_resealed_available_extension_contradictions_refuse(change):
     rows.append({'role': 'extensions', 'path': owner+'/execution-window-extensions/'+value['extension_digest'][7:]+'.json', 'value': value})
     with pytest.raises(ValueError):
         observe(rows, args, 900000)
+
+
+def test_extension_missing_authenticated_issuer_never_equals_missing_owner_issuer():
+    args, intent, owner, rows = data()
+    intent.pop('authenticated_issuer')
+    intent = seal(intent, 'intent_digest', cross=True)
+    rows[0]['value'] = intent
+    value = seal({'schema_version': 'task_evaluation_scene_execution_window_extension.v1', 'scope': 'execution_time_only',
+        'intent_id': args['intent_id'], 'intent_digest': intent['intent_digest'], 'owner': intent['request']['owner'],
+        'authorization_reference': 'reviewed', 'original_expires_at_epoch': 100, 'issued_at_epoch': 100,
+        'expires_at_epoch': 200, 'unchanged_execution_bounds': {'maximum_spend_usd': 1},
+        'provider_mutation_performed': False}, 'extension_digest')
+    rows.append({'role': 'extensions', 'path': owner+'/execution-window-extensions/'+value['extension_digest'][7:]+'.json',
+                 'value': value})
+    with pytest.raises(ValueError):
+        observe(rows, args, 900000)

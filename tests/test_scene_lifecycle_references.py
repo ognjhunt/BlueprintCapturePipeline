@@ -70,3 +70,20 @@ def test_refusal_after_input_charge_keeps_actual_charged_delta(tmp_path, monkeyp
     result = invoke(context, budget)
     assert result['raw_accounting']['supplied_reference_input_work_bytes'] == len(actual.raw_bytes)
     assert result['status'] == 'incomplete' and result['references_clear'] is False
+
+
+def test_pin_positive_path_is_kept_and_intersects_componentwise_measured_member(tmp_path):
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_references import intersect
+    context, _ = context_fixture(tmp_path)
+    member = context['roots']['preparation_input_root']+'/prep-1'
+    write_storage_pin(pins_root=context['pins_root'], kind='preparation', owner_id='owner-1', paths=[member+'/payload.bin'],
+                      ttl_seconds=1000, now=lambda: 1000)
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    sink = RetainedEmissionBudget(max_bytes=16*1024*1024, max_rows=10_000, max_references=10_000, work_budget=budget)
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_references import observe
+    observed = observe(context, 1000, budget, sink)
+    keeps = intersect([{'path': member}, {'path': member+'-foreign'}], observed, budget, sink)
+    assert len(keeps) == 1 and keeps[0]['member_path'] == member
+    assert keeps[0]['reason'] == 'positive_historical_reference'
+    assert keeps[0]['protected_path'] == member+'/payload.bin' and keeps[0]['action'] == 'KEEP'

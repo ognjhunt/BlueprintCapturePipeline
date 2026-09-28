@@ -5,19 +5,22 @@ import stat
 from pathlib import PurePosixPath
 
 from .task_evaluation_scene_lifecycle_acquisition import AcquisitionError, require
+from .control_plane_disk_usage import allocated_bytes
 from .task_evaluation_scene_lineage_budget import _work_items, _work_order
 
 KINDS = {
     'capture_dependency': 'capture_pipeline', 'administrative_source_workspace': 'administrative_source_workspace',
     'preparation_workspace': 'preparation_workspace', 'configuration_progression_workspace': 'configuration_progression_workspace',
     'activation_workspace': 'activation_workspace', 'native_activation_workspace': 'activation_workspace',
-    'preparation_projected_file': 'prepared_objects', 'compiled_episode_packet': 'compilation_workspace',
+    'preparation_projected_file': 'prepared_objects', 'prepared_cache_object': 'prepared_objects',
+    'compiled_episode_packet': 'compilation_workspace', 'adapter_packet_root': 'compilation_workspace',
+    'adapter_runtime_source_receipt': 'compilation_workspace',
     'sam_execution_dependency': 'sam_current_child', 'launch_workspace': 'launch_canary_workspace',
     'terminal_index_workspace': 'launch_canary_workspace', 'canary_evidence_workspace': 'launch_canary_workspace',
 }
 
 
-def members(historical, budget):
+def members(historical, budget, sink):
     source = historical['source_family_inventory']
     downstream = source['downstream_inventory']
     layers = [(historical, 'declared_lexical_members'), (source, 'lexical_members'),
@@ -28,18 +31,34 @@ def members(historical, budget):
             path = row['path']
             budget.charge('facts')
             indexed.setdefault(path, []).append(row)
+    receipts = {}
+    for row in _work_items(downstream['seed']['members'], budget):
+        if row.get('kind') == 'preparation_projected_file':
+            budget.charge('facts')
+            receipts.setdefault((row['receipt_digest'], row['receipt_size_bytes']), []).append(row)
+    for cache in _work_items(downstream['seed']['shared_cache_references'], budget):
+        rows = receipts.get((cache['digest'], cache['size_bytes']), ())
+        if not rows:
+            continue
+        sink.available_occurrence()
+        proof = sink.reserve_provenance(p for row in _work_items(rows, budget) for p in row['source_provenance'])
+        member = {'path': cache['path'], 'kind': 'prepared_cache_object',
+                  'binding_strength': 'shared_cache_reference', 'source_provenance': proof}
+        sink.reserve_row(member)
+        budget.charge('facts')
+        indexed.setdefault(cache['path'], []).append(member)
     return indexed
 
 
 def allocated(info):
     blocks = getattr(info, 'st_blocks', None)
     require(blocks is None or type(blocks) is int and blocks >= 0, 'allocated_metadata_invalid')
-    return blocks * 512 if blocks is not None else info.st_size
+    return allocated_bytes(info)
 
 
 def measure(reader, historical, sink, families):
     budget = reader.budget
-    declared = members(historical, budget)
+    declared = members(historical, budget, sink)
     ordered = _work_order(budget, sorted, declared)
     roots, parent_of = [], {}
     for path in _work_items(ordered, budget):
@@ -65,7 +84,16 @@ def measure(reader, historical, sink, families):
                'allocated_method': 'unique_inode_stat_blocks_512_else_stat_size_first_member_attribution',
                'observed_regular_names': 0, 'observed_unique_regular_inodes': 0,
                'exclusive_ownership_proven': False, 'payload_bytes_verified': False, 'action': 'KEEP',
-               'keeps': [], 'source_provenance': proofs}
+               'keeps': ['shared_content_object_not_exclusive'] if any(r['kind'] == 'prepared_cache_object' for r in declared[root]) else [], 'source_provenance': proofs}
+        # Reserve conservative final numeric framing before any subtree access.
+        # No allowance is refunded; emitted rows retain their ordinary charge.
+        numeric_frame = dict(row)
+        for key in ('measured_allocated_bytes', 'observed_allocated_bytes', 'measured_logical_bytes',
+                    'observed_logical_bytes', 'measured_apparent_bytes', 'observed_apparent_bytes',
+                    'observed_regular_names', 'observed_unique_regular_inodes'):
+            numeric_frame[key] = (1 << 128) - 1
+        sink.reserve_row(numeric_frame)
+        row['keeps'] = sink.rows(row['keeps'])
         stack, owned, regular, total, complete = [root], set(), {}, 0, True
         root_device, logical, apparent = None, 0, 0
         while stack:

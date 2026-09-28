@@ -110,8 +110,13 @@ def test_measures_exact_preparation_member_without_opening_payload(tmp_path, mon
     monkeypatch.setattr(os, 'open', opened)
     report = run(context, intent_id)
     row = next(row for row in report['measured_members'] if row['path'] == str(member))
-    assert row['status'] == 'observed_scoped_metadata' and row['measured_allocated_bytes'] > 0
-    assert report['unique_observed_allocated_bytes'] == row['measured_allocated_bytes']
+    assert row['observed_allocated_bytes'] > 0
+    assert report['unique_observed_allocated_bytes'] == row['observed_allocated_bytes']
+    if 'metadata_changed_after_observation' in report['blockers']:
+        assert row['status'] == 'incomplete_scoped_metadata' and row['measured_allocated_bytes'] is None
+    else:
+        assert row['status'] == 'observed_scoped_metadata'
+        assert row['measured_allocated_bytes'] == row['observed_allocated_bytes']
     assert row['action'] == 'KEEP' and row['exclusive_ownership_proven'] is False
 
 
@@ -125,7 +130,12 @@ def test_hardlink_accounted_once_and_external_link_keeps_member(tmp_path):
     assert row['observed_regular_names'] == 2
     assert row['observed_unique_regular_inodes'] == 1
     assert 'external_hardlink_or_unobserved_alias' in row['keeps']
-    assert row['measured_allocated_bytes'] == member.stat().st_blocks * 512 + (member / 'payload.bin').stat().st_blocks * 512
+    from blueprint_pipeline.control_plane_disk_usage import allocated_bytes
+    assert row['observed_allocated_bytes'] == allocated_bytes(member.stat()) + allocated_bytes((member / 'payload.bin').stat())
+    if 'metadata_changed_after_observation' in report['blockers']:
+        assert row['measured_allocated_bytes'] is None
+    else:
+        assert row['measured_allocated_bytes'] == row['observed_allocated_bytes']
 
 
 def test_measurement_reserves_each_member_before_building_the_next(tmp_path, monkeypatch):
@@ -200,3 +210,47 @@ def test_deadline_finalization_uses_fixed_refusal_without_new_traversal(tmp_path
     assert 'measured_members' not in report
     assert report['blockers'] == ['reference_deadline_exceeded']
     assert report['action'] == 'KEEP' and report['cleanup_authorized'] is False
+
+
+def test_sparse_or_inline_zero_block_metadata_uses_existing_conservative_method():
+    from types import SimpleNamespace
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_measurement import allocated
+    assert allocated(SimpleNamespace(st_blocks=0, st_size=4096)) == 4096
+    assert allocated(SimpleNamespace(st_blocks=None, st_size=4096)) == 4096
+    assert allocated(SimpleNamespace(st_blocks=8, st_size=1)) == 4096
+
+
+def test_exact_shared_cache_object_is_measured_without_scanning_store(tmp_path):
+    context, intent_id, member = preparation_fixture(tmp_path)
+    import os
+    from tests.test_scene_inventory_preparations import fixture as prepared
+    receipt = json.loads(prepared()['records']['preparation_results'][0][1])['references'][0]
+    cache = Path(context['roots']['content_store_root']) / receipt['digest'][7:]
+    os.link(member/'payload.bin', cache)
+    (cache.parent/'unrelated-payload.bin').write_bytes(b'unrelated')
+    report = run(context, intent_id)
+    row = next(row for row in report['measured_members'] if row['path'] == str(cache))
+    assert 'prepared_cache_object' in row['kinds'] and 'shared_content_object_not_exclusive' in row['keeps']
+    assert row['payload_bytes_verified'] is False and row['exclusive_ownership_proven'] is False
+    assert all(row['path'] != str(cache.parent) and 'unrelated-payload' not in row['path']
+               for row in report['measured_members'])
+
+
+def test_empty_output_allowance_refuses_before_first_member_stat(tmp_path, monkeypatch):
+    import pytest
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_measurement as m
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    context, _, member = preparation_fixture(tmp_path)
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    sink = RetainedEmissionBudget(max_bytes=1, max_rows=10, max_references=10, work_budget=budget)
+    monkeypatch.setattr(m, 'members', lambda *args: {str(member): [{'kind': 'preparation_workspace', 'source_provenance': []}]})
+    class Reader:
+        def stat(self, path):
+            pytest.fail('measurement entered first stat with no framing allowance')
+        def entries(self, path):
+            pytest.fail('measurement entered child walk with no framing allowance')
+    reader = Reader()
+    reader.budget = budget
+    with pytest.raises(ValueError):
+        m.measure(reader, {}, sink, [])

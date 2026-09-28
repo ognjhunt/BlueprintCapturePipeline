@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
+from pathlib import PurePosixPath
 
 from .control_plane_storage_pin_observation import observe_storage_pins
 from .control_plane_queue_observation import QueueRootContract, observe_queue_states
@@ -70,6 +71,19 @@ def observe(context, now, budget, sink):
             child_scopes.append({'child': name, 'scope': observed.scope, 'complete': observed.complete,
                                  'historical_only': True, 'consumer_fence_checked': False, 'action': 'KEEP'})
             if name == 'pins':
+                declared = {}
+                for pin in _work_items(observed.rows, budget):
+                    for path in _work_items(pin.paths, budget):
+                        budget.charge('facts')
+                        declared.setdefault(path, []).append(pin)
+                for path in _work_items(observed.protected_paths, budget):
+                    for pin in _work_items(declared.get(path, ()), budget):
+                        budget.available('rows', 1)
+                        sink.available_occurrence()
+                        protections.append({'kind': 'positive_pin_path', 'path': path,
+                            'source': {'row_path': pin.row_path, 'raw_sha256': pin.raw_sha256,
+                                       'raw_size_bytes': pin.raw_size_bytes, 'row_identity': _copy(pin.row_identity, budget)},
+                            'binding_status': 'historical_positive_only', 'action': 'KEEP'})
                 for row in _work_items(observed.rows, budget):
                     budget.available('rows', 1)
                     sink.available_occurrence()
@@ -136,3 +150,43 @@ def observe(context, now, budget, sink):
     if not budget.failure:
         sink.check_document(result)
     return result
+
+
+
+def intersect(members, observation, budget, sink):
+    """Componentwise positive historical matches; absence never clears a member."""
+    indexed, selected, seen = {}, sink.rows(), set()
+    for row in _work_items(observation['protections'], budget):
+        if row['kind'] == 'positive_pin_path':
+            protected = row['path']
+        elif row['kind'] == 'local_path_protections':
+            protected = row['observation'].get('path')
+        else:
+            continue
+        if isinstance(protected, str):
+            budget.charge('facts')
+            indexed.setdefault(protected, []).append(row)
+    member_paths = {}
+    for member in _work_items(members, budget):
+        budget.charge('facts')
+        member_paths[member['path']] = member
+    def keep(member, protected, source):
+        key = member, protected, id(source)
+        if key in seen:
+            return
+        sink.available_occurrence()
+        budget.charge('facts')
+        seen.add(key)
+        selected.append({'member_path': member, 'protected_path': protected,
+                         'reason': 'positive_historical_reference', 'observation': source,
+                         'action': 'KEEP', 'references_clear': False})
+    for member in _work_items(member_paths, budget):
+        for ancestor in _work_items((str(p) for p in (PurePosixPath(member), *PurePosixPath(member).parents)), budget):
+            for source in _work_items(indexed.get(ancestor, ()), budget):
+                keep(member, ancestor, source)
+    for protected, sources in _work_items(indexed.items(), budget):
+        for ancestor in _work_items((str(p) for p in (PurePosixPath(protected), *PurePosixPath(protected).parents)), budget):
+            if ancestor in member_paths:
+                for source in _work_items(sources, budget):
+                    keep(ancestor, protected, source)
+    return selected

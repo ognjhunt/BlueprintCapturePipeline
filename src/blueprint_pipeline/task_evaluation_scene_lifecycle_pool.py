@@ -8,6 +8,9 @@ from pathlib import PurePosixPath
 
 from . import task_evaluation_scene_compilation_native_owner_inventory as native
 from . import task_evaluation_scene_preparation_lineage as retained
+from . import task_evaluation_scene_source_attempt_lineage as attempts
+from . import task_evaluation_scene_source_family_contracts as family_contracts
+from . import task_evaluation_scene_downstream_terminal as terminal_contracts
 from .task_evaluation_scene_lifecycle_acquisition import AcquisitionError, require
 from .task_evaluation_scene_lineage_budget import _work_items, _work_parse
 
@@ -17,6 +20,47 @@ STEM = ID + '-' + HEX
 STATES = ('pending', 'processing', 'awaiting_source_preparation', 'awaiting_capacity', 'materialized', 'completed', 'blocked')
 ALL_ROLES = native.prior.downstream.seed_module._ROLES | native.prior.downstream.ROLES | native.prior.ROLES | native.ROLES
 SELECTOR_ROLES = ALL_ROLES | {'revocations', 'extensions', 'progression_config'}
+
+
+# Exact supported producer schemas. Raw-only roles deliberately have no schema
+# promotion; unknown versions remain available as protected acquired identities.
+SCHEMAS = {
+    'intent': {'task_evaluation_scene_intent.v1'},
+    'projection': {'task_evaluation_scene_progression.v1'},
+    'events': {'task_evaluation_scene_progression_event.v1'},
+    'attempts': {attempts._ADMIN_SCHEMA, attempts._PAID_SCHEMA},
+    'source_snapshots': set(attempts._BINDINGS) | set().union(*attempts._MACHINERY.values()) | {'task_evaluation_public_scene_release_binding.v1'},
+    'factories': set(attempts._FACTORIES),
+    'source_submissions': {'task_evaluation_launch_preparation_request.v1', 'task_evaluation_scene_configuration_submission_manifest.v1'},
+    'preparation_links': {'task_evaluation_scene_preparation_link.v1'},
+    'parent_envelopes': {'task_evaluation_launch_preparation_envelope.v1'},
+    'parent_results': {'task_evaluation_launch_preparation_result.v1'},
+    'preparation_results': {'task_evaluation_launch_preparation_result.v1'},
+    'configuration_progressions': {'task_evaluation_scene_configuration_activation_progression.v1'},
+    'launch_progressions': {'task_evaluation_scene_configuration_activation_progression.v1'},
+    'activation_envelopes': {'task_evaluation_launch_activation_envelope.v1'},
+    'activation_results': {'task_evaluation_launch_activation_result.v1'},
+    'compilation_envelopes': {'task_evaluation_episode_compilation_envelope.v1'},
+    'compilation_results': {'task_evaluation_episode_compilation_result.v1'},
+    'launch_profiles': {'task_evaluation_launch_profile.v1'},
+    'launch_requests': {'task_evaluation_launch_request.v1'},
+    'launch_receipts': {'task_evaluation_launch_receipt.v1'},
+    'terminal_states': {'task_evaluation_scene_terminal_index_state.v1', 'task_evaluation_scene_nonexecution_terminal_state.v1'},
+    'canary_dispatches': {'task_evaluation_policy_canary_dispatch.v1', 'task_evaluation_policy_canary_preprovider_blocked.v1'},
+    'source_progress': {'task_evaluation_sam31_preparation_progress.v1'},
+    'source_resume_signals': {'task_evaluation_sam31_preparation_resume.v1'},
+    'sam_execution_progress': {'task_evaluation_sam31_preparation_execution_progress.v1'},
+    'website_handoffs': {'website_scene_handoff.v1'},
+    'submission_publications': {'task_evaluation_scene_configuration_submission_publication.v1'},
+    **family_contracts.SUPPORTED_SCHEMAS,
+    **{role: {schema} for role, schema in terminal_contracts.SCHEMAS.items()},
+    **{role: {schema} for role, (schema, _) in native.c.SCHEMAS.items()},
+}
+
+
+def supported(row):
+    schemas = SCHEMAS.get(row['role'])
+    return schemas is None or row['value'].get('schema_version') in schemas
 
 
 class Pool:
@@ -67,7 +111,7 @@ class Pool:
             if regex.fullmatch(name):
                 self.budget.charge('facts')
                 selected.append(name)
-            elif name.endswith('.json'):
+            else:
                 self.scope(role, directory, 'unsupported_layout')
         self.scope(role, directory, 'observed_selected_layout')
         return selected
@@ -122,10 +166,64 @@ class Pool:
         self.rows('sam_results', roots['sam_queue_root'] + '/results', 'sam31-' + HEX + r'(?:\.conflict-' + HEX + r')?\.json')
         for child in self.names('sam_progress_groups', roots['sam_queue_root'] + '/progress', 'sam31-' + HEX):
             self.rows('sam_execution_progress', roots['sam_queue_root'] + '/progress/' + child, r'[0-9]{6,}\.json')
+        self.fixed_families()
         for selector in self.context['retained_metadata_files']:
             self.read(selector['role'], selector['path'])
         if self.context['progression_config'] is not None:
             self.read('progression_config', self.context['progression_config'])
+
+    def fixed_families(self):
+        roots = self.context['roots']
+        base = roots['configuration_progression_root']+'/scene-configuration-activations'
+        for preparation in self.names('configuration_groups', base, '(?:'+STEM+'|'+ID+')'):
+            for role, name in [('configuration_progressions', 'activation_progression.json'),
+                               ('launch_progressions', 'launch_progression.json')]:
+                self.read(role, base+'/'+preparation+'/'+name)
+        for parent in self.names('sam_receipt_parents', roots['sam_execution_root'], HEX):
+            base = roots['sam_execution_root']+'/'+parent
+            for child in self.names('sam_receipt_children', base, 'sam31-'+HEX):
+                self.read('sam_execution_receipts', base+'/'+child+'/phase_execution_receipt.v1.json')
+        for launch in self.names('launch_groups', roots['launch_execution_root'], ID):
+            self.launch(roots['launch_execution_root']+'/'+launch)
+        owner = roots['terminal_result_root']+'/'+self.intent_id
+        self.terminal(owner)
+        for run in self.names('terminal_run_groups', owner+'/runs', HEX):
+            self.terminal(owner+'/runs/'+run)
+        for canary in self.names('canary_groups', roots['policy_canary_root'], ID):
+            self.canary(roots['policy_canary_root']+'/'+canary)
+        self.rows('canary_offload_pointers', roots['policy_canary_root'], ID+r'\.offloaded\.v1\.json')
+        for activation in self.names('native_owner_groups', roots['activation_output_root'], ID):
+            self.read('native_owner_records', roots['activation_output_root']+'/'+activation+'/scene_owner_attempt.json')
+        for compilation in self.names('adapter_groups', roots['compilation_output_root'], '(?:'+STEM+'|'+ID+')'):
+            self.read('compilation_adapter_results', roots['compilation_output_root']+'/'+compilation+
+                      '/native-arena-adapter/task_evaluation_native_arena_adapter_result.v1.json')
+
+    def launch(self, directory):
+        for role, name in [('launch_profiles', 'launch_profile.json'), ('launch_requests', 'launch_request.json'),
+                           ('launch_receipts', 'launch_receipt.json')]:
+            self.read(role, directory+'/'+name)
+
+    def terminal(self, directory):
+        self.launch(directory)
+        for name in ('terminal_index_state.json', 'nonexecution_terminal_state.json'):
+            self.read('terminal_states', directory+'/'+name)
+        for role, name in [('canary_dispatches', 'dispatch_receipt.json'),
+                           ('canary_dispatches', 'policy_canary_nonexecution.json'),
+                           ('canary_projections', 'policy_canary_result_projection.json'),
+                           ('canary_syncs', 'policy_canary_webapp_sync.json'),
+                           ('provider_zero_receipts', 'provider_zero_closure.json'),
+                           ('terminal_publications', 'terminal_result_publication.json')]:
+            self.read(role, directory+'/'+name)
+
+    def canary(self, directory):
+        for role, name in [('canary_dispatches', 'dispatch_receipt.json'),
+                           ('canary_dispatches', 'preprovider_blocked.json'),
+                           ('canary_dispatches', 'no_provider_allocation_blocked.json'),
+                           ('canary_projections', 'artifacts/result_delivery/policy_canary_result_projection.json'),
+                           ('canary_syncs', 'artifacts/result_delivery/policy_canary_webapp_sync.json'),
+                           ('provider_zero_receipts', 'post_teardown_global_provider_zero.json'),
+                           ('allocator_results', 'allocator_result.json')]:
+            self.read(role, directory+'/'+name)
 
     def decode(self):
         # ALL lexical and actual decoded bounds precede proof hashes or joins.
@@ -162,7 +260,7 @@ def select(decoded, context, intent_id, budget):
         budget.charge('facts', 3)
         raw_index.setdefault((row['path'], row['sha256'], len(row['raw'])), []).append(index)
         by_path.setdefault(row['path'], []).append(index)
-        for key, value in _work_items(row['value'].items(), budget):
+        for key, value in _work_items(row['value'].items() if supported(row) else (), budget):
             if key.endswith('_digest') and isinstance(value, str) and re.fullmatch('sha256:' + HEX, value):
                 budget.charge('facts')
                 canonical.setdefault(value, []).append(index)
@@ -185,6 +283,8 @@ def select(decoded, context, intent_id, budget):
         selected.add(index)
         row = decoded[index]
         value = row['value']
+        if not supported(row):
+            continue
         stack = [value]
         while stack:
             budget.charge('values')
@@ -222,6 +322,11 @@ def select(decoded, context, intent_id, budget):
     for index, row in enumerate(_work_items(decoded, budget)):
         role = row['role']
         value = row['value']
+        if index in selected and not supported(row):
+            budget.charge('facts')
+            protected.append({'role': role, 'path': row['path'], 'sha256': row['sha256'],
+                              'size_bytes': len(row['raw']), 'status': 'kept_unsupported_schema'})
+            continue
         if index not in selected:
             budget.charge('facts')
             protected.append({'role': role, 'path': row['path'], 'sha256': row['sha256'],
