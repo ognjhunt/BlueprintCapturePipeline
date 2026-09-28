@@ -8,6 +8,9 @@ import fcntl
 import hashlib
 import json
 import os
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -387,8 +390,10 @@ def test_derived_row_provenance_path_obeys_the_same_lexical_cap(root, monkeypatc
     incomplete(observe(root), "pin_row_invalid")
 
 
-def test_one_shot_definite_close_failure_retains_ownership_for_cleanup(root, monkeypatch):
-    write(root, pin())
+@pytest.mark.parametrize("has_row", [False, True])
+def test_one_shot_definite_close_failure_retains_ownership_for_cleanup(root, monkeypatch, has_row):
+    if has_row:
+        write(root, pin())
     opened = set()
     real_open, real_close = observer.os.open, observer.os.close
     failed = False
@@ -447,3 +452,114 @@ def test_final_result_canonicalization_fault_is_fixed_incomplete(root, monkeypat
     result = observe(root)
     incomplete(result, "pin_result_invalid")
     assert "PRIVATE_TEST_MARKER" not in str(result)
+
+
+def test_expired_unreleased_pins_and_released_dependencies_stay_protective(root):
+    write(root, pin(kind="activation", owner="active", expires=20,
+                    dependencies=[{"kind": "preparation", "owner_id": "released"}]))
+    write(root, pin(owner="released", paths=["/payload/dependency"], released=40))
+    write(root, pin(kind="compilation", owner="unneeded", paths=["/payload/not-protected"], released=40))
+    result = observe(root)
+    assert result.complete
+    assert result.protected_identities == (observer.PinIdentity("activation", "active"),
+                                           observer.PinIdentity("preparation", "released"))
+    assert result.protected_paths == ("/payload/candidate", "/payload/dependency")
+    assert next(row for row in result.rows if row.owner_id == "active").status == "expired_unreleased"
+
+
+def test_cycles_are_finite_and_duplicate_dependency_values_normalize(root):
+    identity = {"kind": "compilation", "owner_id": "b"}
+    write(root, pin(owner="a", dependencies=[identity, identity]))
+    write(root, pin(kind="compilation", owner="b",
+                    dependencies=[{"kind": "preparation", "owner_id": "a"}]))
+    result = observe(root)
+    assert result.complete
+    assert len(result.protected_identities) == 2
+    assert next(row for row in result.rows if row.owner_id == "a").depends_on == (observer.PinIdentity(**identity),)
+
+
+def test_duplicates_count_toward_value_work_cap_before_normalization(root, monkeypatch):
+    write(root, pin(paths=["/payload/a"] * 3))
+    monkeypatch.setattr(observer, "MAX_VALUES", 2)
+    incomplete(observe(root), "pin_values_limit")
+
+
+def test_valid_partial_rows_survive_later_bad_row_but_never_clear_references(root):
+    write(root, pin(owner="a"))
+    write(root, pin(owner="z"), raw=b'invalid')
+    result = observe(root)
+    incomplete(result, "pin_row_invalid")
+    assert [row.owner_id for row in result.rows] == ["a"]
+    assert result.protected_paths == ("/payload/candidate",)
+
+
+def test_empty_paths_are_producer_compatible_and_still_protect_identity(root):
+    write(root, pin(paths=[]))
+    result = observe(root)
+    assert result.complete
+    assert result.protected_paths == ()
+    assert result.protected_identities == (observer.PinIdentity("preparation", "owner-1"),)
+    assert result.general_reference_inventory_complete is False
+
+
+def test_expiry_boundary_is_unreleased_and_future_release_is_unknown(root):
+    path = write(root, pin(expires=50))
+    assert observe(root).rows[0].status == "expired_unreleased"
+    path.write_text(json.dumps(pin(released=50.01)))
+    incomplete(observe(root), "pin_row_invalid")
+
+
+def test_stable_observations_sort_identically_without_mutation_or_payload_access(root, monkeypatch):
+    write(root, pin(owner="z"))
+    write(root, pin(kind="activation", owner="a"))
+    expected = observe(root)
+    assert [(row.kind, row.owner_id) for row in expected.rows] == [("activation", "a"), ("preparation", "z")]
+    original_open, original_stat = observer.os.open, observer.os.stat
+    def safe_open(name, flags, *args, **kwargs):
+        assert not flags & (os.O_CREAT | os.O_TRUNC | os.O_APPEND | os.O_RDWR | os.O_WRONLY)
+        assert "/payload" not in str(name)
+        return original_open(name, flags, *args, **kwargs)
+    def safe_stat(name, *args, **kwargs):
+        assert "/payload" not in str(name)
+        return original_stat(name, *args, **kwargs)
+    def forbidden(*args, **kwargs):
+        pytest.fail("read-only pin observer must never mutate")
+    monkeypatch.setattr(observer.os, "open", safe_open)
+    monkeypatch.setattr(observer.os, "stat", safe_stat)
+    for name in ("mkdir", "unlink", "replace", "rename", "write"):
+        monkeypatch.setattr(observer.os, name, forbidden)
+    assert observe(root) == expected
+
+
+def test_distinct_fixed_blockers_are_bounded(root, monkeypatch):
+    write(root, pin(owner="a"), raw=b'invalid')
+    (root / "preparation" / ".pin-stage").write_text("stage")
+    monkeypatch.setattr(observer, "MAX_BLOCKERS", 1)
+    result = observe(root)
+    incomplete(result)
+    assert len(result.blockers) <= 2
+    assert "pin_blockers_truncated" in result.blockers
+
+
+@pytest.mark.slow
+def test_cold_import_remains_leaf_only_and_does_not_import_paid_runtime():
+    source = Path(__file__).resolve().parents[1] / "src"
+    environment = dict(os.environ, PYTHONPATH=str(source), PYTHONDONTWRITEBYTECODE="1")
+    code = (
+        "import sys; import blueprint_pipeline.control_plane_storage_pin_observation; "
+        "expected={'blueprint_pipeline','blueprint_pipeline.control_plane_storage_pins',"
+        "'blueprint_pipeline.control_plane_storage_pin_observation'}; "
+        "assert {name for name in sys.modules if name.startswith('blueprint_pipeline')} == expected"
+    )
+    result = subprocess.run([sys.executable, "-c", code], env=environment, capture_output=True,
+                            text=True, timeout=10, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_oversized_lexical_root_refuses_before_component_allocation(monkeypatch):
+    class NoSlice(str):
+        def __getitem__(self, key):
+            pytest.fail("an over-budget path must not be sliced/split into components")
+    monkeypatch.setattr(observer, "MAX_PATH_BYTES", 4)
+    with pytest.raises(observer.StoragePinObservationError, match="^pin_parameters_invalid$"):
+        observer.observe_storage_pins(NoSlice("/oversized"), observed_at_epoch=50)

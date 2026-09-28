@@ -103,8 +103,10 @@ def _path(value: Any) -> str:
                  and not any(ord(c) < 32 or ord(c) == 127 or c in "\\<>*" for c in value))
     except UnicodeError:
         valid = False
+    if not valid:
+        raise StoragePinObservationError("pin_parameters_invalid")
     parts = value[1:].split("/") if value != "/" else []
-    if not valid or len(parts) > MAX_PATH_COMPONENTS or any(p in {"", ".", ".."} for p in parts):
+    if len(parts) > MAX_PATH_COMPONENTS or any(p in {"", ".", ".."} for p in parts):
         raise StoragePinObservationError("pin_parameters_invalid")
     return value
 
@@ -339,7 +341,9 @@ class _Scan:
             for name in names:
                 try:
                     row = self.read_row(fd, kind, name)
+                    self.tick()
                     size = len(json.dumps(asdict(row), ensure_ascii=False).encode("utf-8"))
+                    self.tick()
                     self.output_bytes += size
                     _require(self.output_bytes <= MAX_OUTPUT_BYTES, "pin_output_limit")
                     self.rows.append(row)
@@ -388,7 +392,10 @@ class _Scan:
                                        tuple(sorted(self.blockers)))
         try:
             size = 0
-            for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(asdict(result)):
+            self.tick()
+            document = asdict(result)
+            self.tick()
+            for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(document):
                 self.tick()
                 size += len(chunk.encode("utf-8"))
                 _require(size <= MAX_OUTPUT_BYTES, "pin_output_limit")
@@ -419,8 +426,11 @@ def observe_storage_pins(pins_root: str, *, observed_at_epoch: float,
     except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
         scan.block("pin_inventory_invalid")
     finally:
-        for fd in tuple(reversed(scan.fds)):
-            scan.close(fd)
+        # One bounded second cleanup pass also covers a definite close failure
+        # occurring for the first time in final cleanup. close verifies identity.
+        for _pass in range(2):
+            for fd in tuple(reversed(scan.fds)):
+                scan.close(fd)
     try:
         return scan.result()
     except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
