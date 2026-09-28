@@ -743,6 +743,10 @@ class SceneConfigurationOutputAdmission:
         }
 
     def release(self, outcome: str) -> None:
+        """Free the hold and any growth, once, and leave the registry."""
+
+        if _HELD.get(str(self.job)) is self:
+            del _HELD[str(self.job)]
         for reservation in (self.growth, self.hold):
             if reservation is not None:
                 try:
@@ -789,7 +793,8 @@ def open_scene_configuration_output_admission(
     return SceneConfigurationOutputAdmission(
         mode=mode,
         measured=measured,
-        job=Path(job),
+        # One key for the registry, the lane's seal and the exit wrapper alike.
+        job=Path(job).expanduser().resolve(),
         receipt=receipt,
         expected_upload_bytes=expected_upload_bytes,
         cpu_prefix_phases=phases,
@@ -803,10 +808,21 @@ def release_scene_configuration_output(
 ) -> dict[str, Any]:
     """Release a job's output reservations once its terminal result is sealed."""
 
-    admission = _HELD.pop(str(job), None)
+    admission = _HELD.get(str(job))
     if admission is not None:
         admission.release("completed" if sealed.get("status") == "completed" else "blocked")
     return sealed
+
+
+def _release_quietly(job_dir: Any, outcome: str) -> None:
+    """Cleanup never replaces the lane's own exception or result."""
+
+    try:
+        admission = _HELD.get(str(Path(job_dir).expanduser().resolve()))
+        if admission is not None:
+            admission.release(outcome)
+    except Exception:  # noqa: BLE001 - the ledger drops an entry whose pid has exited
+        pass
 
 
 def releases_output_on_exit(
@@ -825,13 +841,14 @@ def releases_output_on_exit(
         outcome = "failed"
         try:
             result = lane(**arguments)
-            outcome = "completed" if result.get("status") == "completed" else "blocked"
+            outcome = (
+                "completed"
+                if isinstance(result, Mapping) and result.get("status") == "completed"
+                else "blocked"
+            )
             return result
         finally:
-            key = str(Path(arguments["job_dir"]).expanduser().resolve())
-            admission = _HELD.pop(key, None)
-            if admission is not None:
-                admission.release(outcome)
+            _release_quietly(arguments.get("job_dir"), outcome)
 
     return run
 

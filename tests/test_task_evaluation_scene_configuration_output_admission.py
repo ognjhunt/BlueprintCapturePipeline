@@ -1135,6 +1135,47 @@ def test_the_learned_footprint_is_the_output_alone(tmp_path, monkeypatch, shares
     assert (covered >= residue) is (not shares)
 
 
+def test_the_hold_registry_has_one_key_and_cleanup_never_masks_the_lane(
+    tmp_path, monkeypatch
+) -> None:
+    real = tmp_path / "real-job"
+    real.mkdir()
+    alias = tmp_path / "job-alias"
+    alias.symlink_to(real)
+    gate = admission.open_scene_configuration_output_admission(
+        job=alias, receipt={},
+        read_envelope=lambda _r: {"request": {"scene": {"website_native_inputs": {"x": 1}}}},
+        expected_upload_bytes=SMALL_UPLOAD, diagnostic_only=False, retain_warm_session=False,
+        api_pretraining=False, cpu_prestage=False, disk_usage_provider=_Volume(90 * GIB),
+        environment={admission.OUTPUT_ADMISSION_ENV: "measured",
+                     "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT": str(tmp_path / "ledger")},
+    )
+    gate.before_allocation(lambda **_kwargs: pytest.fail("ceiling formula"))
+    # Registered under the resolved path the lane and the exit wrapper use.
+    assert admission._HELD.get(str(real.resolve())) is gate
+    gate.release("blocked")
+    assert str(real.resolve()) not in admission._HELD
+    assert _ledger_rows(tmp_path / "ledger") == []
+
+    class Unreleasable:
+        def release(self, outcome):  # type: ignore[no-untyped-def]
+            raise OSError("ledger unavailable")
+
+    @admission.releases_output_on_exit
+    def failing_lane(*, job_dir):  # type: ignore[no-untyped-def]
+        raise ValueError("the lane's own failure")
+
+    @admission.releases_output_on_exit
+    def sealed_lane(*, job_dir):  # type: ignore[no-untyped-def]
+        return {"status": "blocked"}
+
+    monkeypatch.setitem(admission._HELD, str(real.resolve()), Unreleasable())
+    with pytest.raises(ValueError, match="the lane's own failure"):
+        failing_lane(job_dir=alias)
+    monkeypatch.setitem(admission._HELD, str(real.resolve()), Unreleasable())
+    assert sealed_lane(job_dir=alias) == {"status": "blocked"}
+
+
 def test_up_front_prefix_need_is_what_the_prestage_reserves(tmp_path) -> None:
     receipt, _job = _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
 
