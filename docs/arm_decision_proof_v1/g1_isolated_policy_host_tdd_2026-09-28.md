@@ -1247,3 +1247,54 @@ all46 CPU/package tests pass (1.72s); changed-file Ruff and diff checks pass.
 The production8GB floor is unchanged, malformed/foreign/installation receipts
 cannot be retained as accepted observations, and parent blocked status remains.
 No additional VM boot, install, GPU change, deletion or qualification claim.
+
+## Reviewed next slice: installation in an isolated CPU overlay
+
+The retained9594 native receipt already proves the complete offline resolver
+exit0. Repeating that simulation is unnecessary. The remaining observed gap
+is actual installation/DKMS build, Docker toolkit configuration and execution
+of the archive namespace. ADP-050 Day28 execution and ADP-060 inspectable
+private evidence still require all of these before the VM dispatch can open.
+
+Add an explicit install rehearsal mode to the existing local CPU script. It
+must require retained immutable image bytes and the full same-commit prepared
+package set. Keep the original inspection/simulation default unchanged. The
+new mode has no NIC, GPU, host mounts, provider allocation or policy input;
+all writes occur in a fresh QCOW overlay. Reopen all25 package bytes before
+APT; use no-download, empty lists and disabled repository sources. Validate
+Linux/x86_64/root, exact running kernel and loopback-only network before any
+installation. No user command, package URL or arbitrary install list is input.
+
+After installation, independently verify all25 dpkg package versions and
+configured states, the built nvidia kernel module version, all17 bwrap help
+features, and actual uid/gid65534, zero-capability, private-network namespace
+execution through a readonly directory fd. Configure Docker with the pinned
+toolkit's fixed nvidia-ctk command and verify the runtime after restart. Do not
+pull a container or assert CUDA/driver loading without a GPU. Retain command
+exit codes and bounded diagnostic tails on any failure, with no retry.
+
+Reserve389MB seed bytes plus3GiB overlay and8MiB log ABOVE the existing8GB
+free-space floor. Enforce the same limits while the child lives, with a45min
+overall deadline and30min installer command bound. A resource refusal still
+stops the owned child and retains a valid native result without promoting the
+parent. Installation observations are accepted only in the explicit mode;
+default mode continues to reject receipts declaring installation. Retained
+base, previous observations and package caches must never be rewritten.
+
+Test first: guest-context and package-digest refusals occur before mutation;
+fixed argv cannot download or substitute packages; partial dpkg/module/help/
+namespace/Docker failures stop subsequent commands and preserve exact stage;
+complete fixture observes all boundaries without claiming GPU/provider proof.
+Cover explicit-mode requirements, increased reservation/bounds, immutable
+guest source binding, and mode-aware retained receipts. Review accepted before
+implementation: this is the existing bounded local CPU rehearsal, not the
+pending Plan13b provider decision, a runtime authorization or paid admission.
+
+Installation slice checkpoint: all17 helper cases were observed red for the
+missing implementation. The CPU integration cases then exposed missing
+explicit-mode/source/resource binding and an installation-attempt receipt
+incorrectly retained without its native proof; all are encoded in the repair.
+Final71 focused installation/CPU/package tests pass in2.84s, with changed-file
+Ruff and diff checks passing. The actual CPU installation remains unobserved
+until the pushed clean commit is replayed against the unchanged retained base
+and25 package bytes. No GPU/container/archive dispatch predicate is opened.

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tarfile
 import io
+from types import SimpleNamespace
 
 import pytest
 
@@ -222,3 +223,83 @@ def test_retained_observation_rejects_foreign_or_invalid_receipt(tmp_path, fault
         assert result["guest_observation_retention_blocker"].startswith("g1_vm_cpu_")
     else:
         assert result["guest_observation"]["system_packages"]["manifest_digest"] == binding["manifest_digest"]
+
+
+def test_install_mode_binds_its_source_and_rejects_missing_inputs(tmp_path):
+    with pytest.raises(ValueError, match="install_inputs"):
+        probe.run(root=tmp_path / "run", implementation_commit="a" * 40, install_system_packages=True)
+    assert not (tmp_path / "run").exists()
+    with pytest.raises(ValueError, match="install_inputs"):
+        probe.guest_probe_source(install_system_packages=True)
+    binding = {"implementation_commit": "a" * 40, "source_sha256": "sha256:" + "b" * 64,
+               "manifest_digest": "sha256:" + "c" * 64,
+               "installation_source_sha256": "sha256:" + "d" * 64}
+    source = probe.guest_probe_source(system_packages=binding, install_system_packages=True)
+    assert "rehearse_offline_installation" in source and "system-package-installation.py" in source
+    assert "installation_source_sha256" in source and "runtime_installation_attempted" in source
+    compile(source, "guest_cpu_installation.py", "exec")
+    with pytest.raises(ValueError, match="binding"):
+        probe.guest_probe_source(system_packages=binding)
+
+
+def test_install_resource_budget_is_explicit_and_preserves_inspection_budget():
+    assert probe.resource_bounds(False) == (64 * 1024**2, 900)
+    assert probe.resource_bounds(True) == (3 * 1024**3, 2700)
+    with pytest.raises(ValueError, match="install_inputs"):
+        probe.resource_bounds("yes")
+
+
+def test_installation_reserves_seed_and_full_overlay_before_creating_stage(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe.subprocess, "check_output", lambda argv, **kwargs: "a" * 40 if "rev-parse" in argv else "")
+    module = SimpleNamespace(SYSTEM_PACKAGES={"fixture": {"size_bytes": 10}},
+                             verify_system_packages=lambda *args, **kwargs: {"manifest_digest": "sha256:" + "c" * 64})
+    monkeypatch.setattr(probe.importlib.util, "spec_from_file_location", lambda *args: SimpleNamespace(
+        loader=SimpleNamespace(exec_module=lambda value: None)))
+    monkeypatch.setattr(probe.importlib.util, "module_from_spec", lambda spec: module)
+    monkeypatch.setattr(probe, "file_sha", lambda path: "sha256:" + "b" * 64)
+    reservations = []
+
+    def capacity(path, *, additional_bytes):
+        reservations.append(additional_bytes)
+        raise ValueError("g1_vm_cpu_capacity_insufficient")
+
+    monkeypatch.setattr(probe, "require_capacity", capacity)
+    with pytest.raises(ValueError, match="capacity"):
+        probe.run(root=tmp_path / "run", implementation_commit="a" * 40,
+                  retained_image_root=tmp_path / "retained", system_package_root=tmp_path / "packages",
+                  install_system_packages=True)
+    assert reservations == [10 + 262144 + 3 * 1024**3 + probe.LOG_LIMIT]
+    assert not (tmp_path / "run").exists()
+
+
+@pytest.mark.parametrize("fault", [None, "source", "digest", "gpu", "attempt"])
+def test_installation_observation_retention_requires_bound_cpu_only_receipt(tmp_path, fault):
+    binding = {"implementation_commit": "a" * 40, "source_sha256": "sha256:" + "b" * 64,
+               "manifest_digest": "sha256:" + "c" * 64, "installation_source_sha256": "sha256:" + "d" * 64}
+    guest = json.loads(_terminal_observation(binding).split(probe.TERMINAL, 1)[1])
+    installation = {"schema_version": "g1_vm_system_cpu_installation.v1", "scope": "local_tcg_cpu_only",
+                    "status": "blocked", "runtime_installation_attempted": True,
+                    "gpu_runtime_qualified": False, "provider_mutation_performed": False,
+                    "policy_inference_performed": False, "claim_ceiling": "development_only"}
+    if fault == "gpu":
+        installation["gpu_runtime_qualified"] = True
+    installation["receipt_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+        installation, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    if fault == "digest":
+        installation["receipt_digest"] = "sha256:" + "0" * 64
+    guest["system_installation"] = installation
+    guest["system_packages"]["runtime_installation_performed"] = fault != "attempt"
+    if fault == "source":
+        guest["system_packages"]["installation_source_sha256"] = "sha256:" + "e" * 64
+    guest.pop("receipt_digest")
+    guest["receipt_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+        guest, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    log = tmp_path / "serial.log"
+    log.write_text(probe.TERMINAL + json.dumps(guest))
+    result = {"status": "blocked", "blocker_code": "g1_vm_cpu_capacity_insufficient", "system_packages": binding}
+    probe.retain_guest_observation(result, log)
+    assert result["status"] == "blocked"
+    if fault:
+        assert "guest_observation" not in result
+    else:
+        assert result["guest_observation"]["system_installation"]["runtime_installation_attempted"] is True

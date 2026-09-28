@@ -2,7 +2,8 @@
 """ADP-050 Day28: bounded local CPU inspection of the exact Vast guest disk.
 
 Local artifact writer and public immutable-asset reader. No provider allocation,
-GPU, captured input, policy inference, package installation or cleanup.
+GPU, captured input, policy inference or retained data cleanup. Explicit install
+mode mutates only a fresh offline guest overlay, never the retained base/host.
 """
 
 from __future__ import annotations
@@ -32,6 +33,12 @@ OVERLAY_LIMIT = 64 * 1024**2
 LOG_LIMIT = 8 * 1024**2
 FREE_FLOOR = 8_000_000_000
 TERMINAL = "BLUEPRINT_G1_VM_CPU_RESULT:"
+
+
+def resource_bounds(install_system_packages):
+    if type(install_system_packages) is not bool:
+        raise ValueError("g1_vm_cpu_install_inputs_invalid")
+    return (3 * 1024**3, 2700) if install_system_packages else (OVERLAY_LIMIT, 900)
 
 
 def file_sha(path):
@@ -135,7 +142,10 @@ def download_layer(path):
         raise ValueError("g1_vm_cpu_download_binding_invalid")
 
 
-def guest_probe_source(*, system_packages=None):
+def guest_probe_source(*, system_packages=None, install_system_packages=False):
+    resource_bounds(install_system_packages)
+    if install_system_packages and system_packages is None:
+        raise ValueError('g1_vm_cpu_install_inputs_invalid')
     source = '''import hashlib,json,os,platform,subprocess
 from pathlib import Path
 result={'schema_version':'g1_vm_guest_system_cpu_observation.v1','scope':'local_tcg_cpu_only',
@@ -161,10 +171,13 @@ subprocess.run(['systemctl','poweroff'],timeout=30,check=False)
 '''
     if system_packages is None:
         return source
-    if (set(system_packages) != {'implementation_commit', 'source_sha256', 'manifest_digest'}
+    required = {'implementation_commit', 'source_sha256', 'manifest_digest'}
+    if install_system_packages:
+        required.add('installation_source_sha256')
+    if (set(system_packages) != required
             or re.fullmatch(r'[0-9a-f]{40}', system_packages['implementation_commit']) is None
             or any(re.fullmatch(r'sha256:[0-9a-f]{64}', system_packages[key]) is None
-                   for key in ('source_sha256', 'manifest_digest'))):
+                   for key in required - {'implementation_commit'})):
         raise ValueError('g1_vm_cpu_system_package_binding_invalid')
     diagnostic = '''import runpy,re
 binding=__BINDING__
@@ -201,6 +214,20 @@ except Exception as error:
   'stage':stage,'blocker_code':code if re.fullmatch(r'(g1_vm_system|system_package)_[a-z_]+',code)
   else 'g1_vm_cpu_system_package_probe_failed'}
 '''.replace('__BINDING__', repr(system_packages))
+    if install_system_packages:
+        start = diagnostic.index(" stage='offline_apt_command'")
+        end = diagnostic.index('except Exception as error:')
+        diagnostic = diagnostic[:start] + ''' stage='installation_source_binding'
+ installer=root/'system-package-installation.py'
+ if 'sha256:'+hashlib.sha256(installer.read_bytes()).hexdigest()!=binding['installation_source_sha256']:
+  raise ValueError('system_package_installation_digest_invalid')
+ installer_helpers=runpy.run_path(str(installer))
+ stage='offline_installation'
+ result['system_installation']=installer_helpers['rehearse_offline_installation'](
+  package_root,implementation_commit=binding['implementation_commit'],system_helpers=helpers)
+ result['system_packages']['runtime_installation_performed']=result['system_installation']['runtime_installation_attempted']
+''' + diagnostic[end:]
+        diagnostic = diagnostic.replace("result['probes']['offline_apt_simulation']", "result['probes']['offline_installation']")
     return source.replace('value=json.dumps(result,', diagnostic + 'value=json.dumps(result,', 1)
 
 
@@ -228,17 +255,37 @@ def read_guest_result(text):
     return result
 
 
+def validate_guest_package_binding(guest, expected):
+    actual = guest.get("system_packages") or {}
+    if any(actual.get(key) != value for key, value in expected.items()):
+        raise ValueError("g1_vm_cpu_terminal_package_binding_invalid")
+    if "installation_source_sha256" not in expected:
+        if actual.get("runtime_installation_performed") is not False:
+            raise ValueError("g1_vm_cpu_terminal_package_binding_invalid")
+        return
+    observed = guest.get("system_installation") or {}
+    declared = observed.get("receipt_digest")
+    digest = "sha256:" + hashlib.sha256(json.dumps(
+        {k: v for k, v in observed.items() if k != "receipt_digest"}, sort_keys=True,
+        separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    if (observed.get("schema_version") != "g1_vm_system_cpu_installation.v1"
+            or observed.get("scope") != "local_tcg_cpu_only" or observed.get("claim_ceiling") != "development_only"
+            or observed.get("status") not in {"blocked", "cpu_installation_observed"}
+            or any(observed.get(key) is not False for key in (
+                "gpu_runtime_qualified", "provider_mutation_performed", "policy_inference_performed"))
+            or type(observed.get("runtime_installation_attempted")) is not bool
+            or actual.get("runtime_installation_performed") is not observed.get("runtime_installation_attempted")
+            or declared != digest):
+        raise ValueError("g1_vm_cpu_terminal_installation_binding_invalid")
+
+
 def retain_guest_observation(result, log):
     """Retain observed CPU work without clearing a parent resource refusal."""
     try:
         guest = read_guest_result(log.read_text(errors="replace"))
         expected = result.get("system_packages")
         if expected is not None:
-            actual = guest.get("system_packages") or {}
-            if (any(actual.get(key) != expected[key] for key in (
-                    "implementation_commit", "source_sha256", "manifest_digest"))
-                    or actual.get("runtime_installation_performed") is not False):
-                raise ValueError("g1_vm_cpu_terminal_package_binding_invalid")
+            validate_guest_package_binding(guest, expected)
         result["guest_observation"] = guest
         result["guest_observation_retention"] = "retained_after_parent_refusal"
     except Exception as error:
@@ -266,7 +313,11 @@ def _stop(child):
             child.wait(timeout=20)
 
 
-def run(*, root, implementation_commit, retained_image_root=None, system_package_root=None):
+def run(*, root, implementation_commit, retained_image_root=None, system_package_root=None,
+        install_system_packages=False):
+    overlay_limit, child_timeout = resource_bounds(install_system_packages)
+    if install_system_packages and (retained_image_root is None or system_package_root is None):
+        raise ValueError("g1_vm_cpu_install_inputs_invalid")
     if (not re.fullmatch(r"[0-9a-f]{40}", implementation_commit) or not root.is_absolute()
             or root.exists() or root.is_symlink() or root.parent.resolve() != root.parent):
         raise ValueError("g1_vm_cpu_fresh_stage_required")
@@ -288,7 +339,10 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
         system_binding = {'implementation_commit': implementation_commit,
                           'source_sha256': file_sha(module_path),
                           'manifest_digest': package_manifest['manifest_digest']}
-    require_capacity(root.parent, additional_bytes=required_assets + system_bytes + OVERLAY_LIMIT + LOG_LIMIT)
+        if install_system_packages:
+            installation_path = checkout / 'src/blueprint_pipeline/native_g1_team_vm_system_installation.py'
+            system_binding['installation_source_sha256'] = file_sha(installation_path)
+    require_capacity(root.parent, additional_bytes=required_assets + system_bytes + overlay_limit + LOG_LIMIT)
     binaries = {name: shutil.which(name) for name in ("qemu-img", "qemu-system-x86_64", "hdiutil")}
     if not all(binaries.values()):
         raise ValueError("g1_vm_cpu_local_tools_missing")
@@ -298,6 +352,9 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
               "scope": "local_tcg_cpu_only", "gpu_runtime_qualified": False,
               "policy_inference_performed": False, "provider_mutation_performed": False,
               "claim_ceiling": "development_only", "stage": "layer_download"}
+    result["rehearsal_mode"] = "offline_installation" if install_system_packages else "inspection"
+    result["resource_bounds"] = {"overlay_bytes": overlay_limit, "log_bytes": LOG_LIMIT,
+                                 "child_seconds": child_timeout, "free_floor_bytes": FREE_FLOOR}
     if system_binding is not None:
         result['system_packages'] = system_binding
     child = None
@@ -335,7 +392,11 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
             shutil.copyfile(module_path, seed_root / 'system-package-verifier.py')
             if file_sha(seed_root / 'system-package-verifier.py') != system_binding['source_sha256']:
                 raise ValueError('g1_vm_cpu_system_package_source_changed')
-        source = guest_probe_source(system_packages=system_binding)
+            if install_system_packages:
+                shutil.copyfile(installation_path, seed_root / 'system-package-installation.py')
+                if file_sha(seed_root / 'system-package-installation.py') != system_binding['installation_source_sha256']:
+                    raise ValueError('g1_vm_cpu_system_package_source_changed')
+        source = guest_probe_source(system_packages=system_binding, install_system_packages=install_system_packages)
         encoded = base64.b64encode(source.encode()).decode()
         (seed_root / "meta-data").write_text("instance-id: g1-cpu-" + implementation_commit[:16] + "\nlocal-hostname: g1-cpu-inspection\n")
         (seed_root / "network-config").write_text("version: 2\nethernets: {}\n")
@@ -347,7 +408,7 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
         _command([binaries["hdiutil"], "makehybrid", "-o", str(seed), "-iso", "-joliet",
                   "-default-volume-name", "CIDATA", str(seed_root)], root / "seed.private.log")
         _command([binaries["qemu-img"], "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base), str(overlay)], root / "overlay.private.log")
-        require_capacity(root, additional_bytes=OVERLAY_LIMIT + LOG_LIMIT)
+        require_capacity(root, additional_bytes=overlay_limit + LOG_LIMIT)
         argv = qemu_command(binaries["qemu-system-x86_64"], overlay, seed)
         result["command"] = argv
         result["qemu_executable_sha256"] = file_sha(Path(binaries["qemu-system-x86_64"]).resolve())
@@ -362,7 +423,7 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
             started = time.monotonic()
             while child.poll() is None:
                 require_capacity(root, additional_bytes=0)
-                if (time.monotonic() - started > 900 or overlay.stat().st_size > OVERLAY_LIMIT
+                if (time.monotonic() - started > child_timeout or overlay.stat().st_size > overlay_limit
                         or log.stat().st_size > LOG_LIMIT):
                     raise ValueError("g1_vm_cpu_child_resource_bound_exceeded")
                 time.sleep(1)
@@ -370,6 +431,8 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
         if child.returncode != 0:
             raise ValueError("g1_vm_cpu_guest_child_failed")
         result["guest_observation"] = read_guest_result(log.read_text(errors="replace"))
+        if system_binding is not None:
+            validate_guest_package_binding(result["guest_observation"], system_binding)
         if file_sha(base) != result["guest_disk_sha256"]:
             raise ValueError("g1_vm_cpu_base_image_changed")
         result["status"] = "guest_cpu_observed"
@@ -397,10 +460,13 @@ def main():
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--retained-image-root", type=Path)
     parser.add_argument("--system-package-root", type=Path)
+    parser.add_argument("--install-system-packages", action="store_true",
+                        help="Install only in a fresh retained-image CPU overlay; requires all pinned packages")
     parser.add_argument("--execute-local-cpu", action="store_true", required=True)
     args = parser.parse_args()
     result = run(root=args.root, implementation_commit=args.implementation_commit,
-                 retained_image_root=args.retained_image_root, system_package_root=args.system_package_root)
+                 retained_image_root=args.retained_image_root, system_package_root=args.system_package_root,
+                 install_system_packages=args.install_system_packages)
     return 0 if result["status"] == "guest_cpu_observed" else 1
 
 
