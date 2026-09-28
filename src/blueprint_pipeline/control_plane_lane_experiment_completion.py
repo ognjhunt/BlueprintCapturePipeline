@@ -106,6 +106,46 @@ def complete_native_pair(use, result):
             files.budget.close()
 
 
+def _historical_lease(files, config, entry, value):
+    """A root-selected restoration renews the lease, not the completed execution.
+
+    This action-only check permits historical expiry. Ordinary reader admission
+    retains its separate current, unexpired certificate and lease requirements.
+    """
+    if value['lease'] == entry['lease']:
+        return
+    from .control_plane_lane_experiment_authority import _read
+    from .control_plane_lane_experiment_consumer import _blueprint_gid
+    from .control_plane_lane_owner_target_versions import _epoch, _valid_digest
+
+    gid = _blueprint_gid()
+    public, _ = files.parent(Path(config.experiment_authority_root) / 'HEAD.json')
+    original = actions._birth(files, public, entry, gid)
+    _require(value['lease'] == original['lease'] and entry['restoration'] is not None,
+             'experiment_completion_changed')
+    selected = entry['restoration']
+    raw, _ = _read(files, public, 'restoration-' + selected['sha256'][7:] + '.json', 8192, gid)
+    _require(issuance._selector(raw, files.budget) == selected, 'experiment_restoration_changed')
+    certificate = retained._document(raw, 8192, _work_budget=files.budget)
+    fields = {'schema_version', 'restoration_id', 'intent_id', 'generation', 'birth', 'target_identity',
+              'new_lease', 'manifest', 'restored_at_epoch', 'lease_expires_at_epoch', 'certificate_digest'}
+    _require(set(certificate) == fields
+             and certificate['schema_version'] == 'control_plane_lane_experiment_restoration_certificate.v1'
+             and certificate['certificate_digest'] == canonical_digest(certificate, digest_field='certificate_digest')
+             and all(certificate[key] == entry[key] for key in ('intent_id', 'generation', 'birth', 'target_identity'))
+             and certificate['new_lease'] == entry['lease']
+             and owners._matches(certificate['restoration_id'], owners._CONSENT_ID)
+             and _epoch(value['completed_at_epoch']) and _epoch(certificate['restored_at_epoch'])
+             and _epoch(certificate['lease_expires_at_epoch'])
+             and value['completed_at_epoch'] <= certificate['restored_at_epoch']
+             < certificate['lease_expires_at_epoch'] == entry['expires_at_epoch'],
+             'experiment_restoration_changed')
+    manifest = certificate['manifest']
+    _require(type(manifest) is dict and set(manifest) == {'sha256', 'size_bytes'}
+             and _valid_digest(manifest['sha256']) and type(manifest['size_bytes']) is int
+             and 0 < manifest['size_bytes'] <= 1048576, 'experiment_restoration_changed')
+
+
 def selected_completion(files, config, entry):
     """Historical closure is checked against the current authenticated entry."""
     _require(entry['completion'] is not None, 'experiment_completion_required')
@@ -119,23 +159,25 @@ def selected_completion(files, config, entry):
                   'lifetime_closed', 'child_execution_started', 'completed_at_epoch', 'completion_digest'}
         _require(set(value) == fields
                  and value['completion_digest'] == canonical_digest(value, digest_field='completion_digest')
-                 and all(value[key] == entry[key] for key in ('intent_id','generation','birth','target_identity','lease'))
+                 and all(value[key] == entry[key] for key in ('intent_id','generation','birth','target_identity'))
                  and value['participant_profile'] == 'g1_local_contained_completed.v1'
                  and value['lifetime_closed'] is True and value['child_execution_started'] is True
                  and type(value['workers']) is list and len(value['workers']) == 2
                  and type(value['supervised']) is list and len(value['supervised']) == 2
                  and value['kernel_unit']['kernel']['tasks'] == 0
                  and value['kernel_unit']['finished']['ActiveState'] == 'inactive', 'experiment_completion_changed')
+        _historical_lease(files, config, entry, value)
         return value
     _require(set(value) == {'schema_version', 'intent_id', 'generation', 'birth', 'target_identity', 'lease',
                  'participant_profile', 'pair', 'worker', 'lifetime_closed', 'child_execution_started',
                  'completed_at_epoch', 'completion_digest'}
              and value['schema_version'] == 'control_plane_lane_experiment_producer_completion.v1'
              and value['completion_digest'] == canonical_digest(value, digest_field='completion_digest')
-             and all(value[key] == entry[key] for key in ('intent_id', 'generation', 'birth', 'target_identity', 'lease'))
+             and all(value[key] == entry[key] for key in ('intent_id', 'generation', 'birth', 'target_identity'))
              and value['participant_profile'] == 'g1_local_prelaunch_block.v1'
              and value['lifetime_closed'] is True and value['child_execution_started'] is False,
              'experiment_completion_changed')
+    _historical_lease(files, config, entry, value)
     return value
 
 
