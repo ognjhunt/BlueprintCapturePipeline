@@ -6,8 +6,10 @@ Unknown/active/unresolved references keep the scene. No references-clear flag or
 consumer authority is changed by this read-only evidence.
 """
 import math
+import re
 from pathlib import Path
 
+from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_retirement_access import _canonical, _require, SceneRetirementAccessError
 from .task_evaluation_scene_retirement_authority import selected_document
 from .task_evaluation_scene_retirement_declared_bytes import _selector
@@ -27,6 +29,12 @@ _SUCCESS={
     'activation':{'profile_authority_materialized_no_execution','policy_campaign_queue_materialized_no_execution'},
 }
 _REASON='scene_retirement_reference_closure_unproven'
+_SAM_KEYS={
+    'sam_jobs':{'schema_version','child_id','parent_preparation_id','parent_request_digest','plan_digest',
+                'phase','inputs_digest','expected_source_commit','plan_ref','inputs','job_digest'},
+    'sam_results':{'schema_version','child_id','job_digest','parent_request_digest','plan_digest',
+                   'phase','source_commit','status','artifacts','executor_result','result_digest'},
+}
 
 
 def _rows(value):
@@ -85,6 +93,44 @@ def _current_record(record,selected,allowance):
                 disposition='exact_selected_closed_metadata_retained',action='KEEP')
 
 
+def _selected_sam(protection,selected,fresh,allowance):
+    """Transfer an exact prefix-selected terminal SAM record, never raw history."""
+    allowance.tick()
+    _require(set(protection)=={'kind','path','raw_sha256','raw_size_bytes','scope','action'}
+             and protection['scope'] in {'selected_primary_queue_states_only','preparation_sam_auxiliary_layouts_only'}
+             and protection['action']=='KEEP',_REASON)
+    identity=_selector(protection,'path','raw_sha256','raw_size_bytes')
+    proofs=selected.get(identity,[])
+    _require(proofs and all(p.get('role') in _SAM_KEYS for p in proofs),_REASON)
+    roles={p['role'] for p in proofs}
+    _require(len(roles)==1,_REASON)
+    role=next(iter(roles))
+    root=_canonical(fresh.get('planner_context',{}).get('sam_queue_root'))
+    path=Path(identity[0])
+    _require(path.is_relative_to(root) and len(path.relative_to(root).parts)==2,_REASON)
+    state='completed' if role=='sam_jobs' else 'results'
+    _require(path.parent.name==state,_REASON)
+    try:
+        value=selected_document(dict(zip(('path','sha256','size_bytes'),identity)),maximum=4*1024*1024)
+    except (OSError,ValueError,TypeError,UnicodeError):
+        raise SceneRetirementAccessError('scene_retirement_reference_changed') from None
+    allowance.tick()
+    field='job_digest' if role=='sam_jobs' else 'result_digest'
+    schema='task_evaluation_sam31_preparation_execution_'+('job' if role=='sam_jobs' else 'result')+'.v1'
+    _require(set(value)==_SAM_KEYS[role] and value.get('schema_version')==schema
+             and type(value.get('child_id')) is str and re.fullmatch('sam31-[0-9a-f]{64}',value['child_id'])
+             and value.get(field)==canonical_digest(value,digest_field=field)
+             and all(p.get('seal_field')==field and p.get('seal_digest')==value[field] for p in proofs),_REASON)
+    names={value['child_id']+'.json'}
+    if role=='sam_results':
+        _require(value.get('status')=='completed',_REASON)
+        names.add(value['child_id']+'.conflict-'+value[field][7:]+'.json')
+    _require(path.name in names,_REASON)
+    return dict(source={'row_path':identity[0],'raw_sha256':identity[1],'raw_size_bytes':identity[2],
+                        'role':role,'queue_root':str(root)},canonical_digest=value[field],
+                disposition='exact_selected_closed_metadata_retained',action='KEEP')
+
+
 def validate_current_reference_transfer(fresh,allowance):
     observation=fresh.get('reference_observation')
     _require(type(observation) is dict,'scene_retirement_reference_scope_unproven')
@@ -103,9 +149,16 @@ def validate_current_reference_transfer(fresh,allowance):
         _require(emitted<=1024*1024,'scene_retirement_reference_limit')
         records.append(current)
     released=0
+    auxiliaries=[]
     for protection in _rows(observation.get('protections')):
         allowance.tick()
         _require(type(protection) is dict,_REASON)
+        if protection.get('kind')=='unsupported_queue_observation':
+            current=_selected_sam(protection,selected,fresh,allowance)
+            emitted+=1024+len(current['source']['row_path'].encode('utf-8'))
+            _require(emitted<=1024*1024,'scene_retirement_reference_limit')
+            auxiliaries.append(current)
+            continue
         # Released observations carry retained evidence but protect no live
         # consumer. Every positive/dependent/unreleased/unknown fact still keeps.
         _require(protection.get('kind')=='pin_observation',_REASON)
@@ -116,5 +169,6 @@ def validate_current_reference_transfer(fresh,allowance):
         released+=1
     return dict(scope='selected_closed_metadata_transfer_only',
         transferred_records=records,transferred_record_count=len(records),
+        transferred_auxiliary_records=auxiliaries,
         retained_released_pin_count=released,references_clear=False,consumer_fence_checked=False,
         mutations=0,unknown_scopes_cleared=False)
