@@ -447,14 +447,14 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                                         cap=1048576, protected=True, mode=0o600)
             _require(issuance._selector(manifest_raw, files.budget) == action["manifest"], "experiment_manifest_changed")
             saved_manifest = retained._document(manifest_raw, 1048576, _work_budget=files.budget)
-            index = len(saved_manifest["rows"]) + 1
-            completed, _ = files.read(Path(config.experiment_record_store) / "operations" / action_id / f"e-{index:05d}.json",
-                                       cap=32768, protected=True, mode=0o600)
-            summary = retained._document(completed, 32768, _work_budget=files.budget)
-            _require(summary["event_kind"] == "retired" and summary["body"]["partial"] is False,
-                     "experiment_retired_receipt_missing")
-            return _outcome(action, "retired", "already_retired", receipt=issuance._selector(completed, files.budget),
-                logical=summary["body"]["removed_logical_bytes"], allocated=summary["body"]["eligible_allocated_bytes"])
+            from . import control_plane_lane_experiment_recovery as recovery
+            target, target_fd = _target(files, config, entry)
+            _lease(files, target, entry)
+            original = _birth(files, public, entry, gid)
+            rows = sorted(saved_manifest["rows"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+            receipt, logical, allocated = recovery.retired(files, config, action, expected_action_intent,
+                                                          target, rows, entry, original["marker"])
+            return _outcome(action, "retired", "already_retired", receipt=receipt, logical=logical, allocated=allocated)
         target, target_fd = _target(files, config, entry)
         lease, lease_record = _lease(files, target, entry)
         _require(issued >= lease["expires_at_epoch"] and lease["released_at_epoch"] is None, "experiment_not_expired")
