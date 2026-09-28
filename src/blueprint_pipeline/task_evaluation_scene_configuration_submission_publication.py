@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .task_evaluation_scene_retirement_access import scene_participant
 from .decision_evidence_contracts import canonical_digest
 from .public_scene_host_input_intake import _verified_checkout_head
 from .task_evaluation_configured_scene_object_store import _object_missing, _streaming_readback
@@ -285,6 +286,7 @@ def _namespace_lock(root: Path, namespace: str):
         os.close(descriptor)
 
 
+@scene_participant('manifest_path', 'receipt_path')
 def publish_scene_configuration_submission(
     *, manifest_path: str | Path, receipt_path: str | Path,
     expected_source_commit: str, service_account: str = "blueprint",
