@@ -68,13 +68,14 @@ def verify_local_g1_checkpoint_cache(root: Path, *, _cache_use=None) -> list[dic
     return rows
 
 
-def stage_g1_checkpoint_cache(
+def _stage_g1_checkpoint_cache(
     *, cache_root: Path, job_dir: Path, key_prefix: str,
-    expiration_seconds: int,
+    expiration_seconds: int, _cache_use=None,
 ) -> dict[str, Any]:
     """Upload immutable bytes and seal expiring GET URLs in a private file."""
 
-    rows = verify_local_g1_checkpoint_cache(cache_root)
+    rows = (verify_local_g1_checkpoint_cache(cache_root) if _cache_use is None else
+            verify_local_g1_checkpoint_cache(cache_root, _cache_use=_cache_use))
     job = Path(job_dir)
     if not job.is_absolute() or job.is_symlink() or job.exists():
         raise ValueError("g1_checkpoint_cache_job_invalid")
@@ -94,6 +95,7 @@ def stage_g1_checkpoint_cache(
                 key_prefix=key_prefix,
                 expiration_seconds=expiration_seconds,
                 artifact_kind="g1_checkpoint",
+                **({"_cache_use": _cache_use} if _cache_use is not None else {}),
             )
             if result.get("status") != "completed" or not result.get("remote_identity_verified"):
                 raise ValueError("g1_checkpoint_cache_remote_staging_blocked")
@@ -128,6 +130,24 @@ def stage_g1_checkpoint_cache(
     except BaseException:
         close_g1_checkpoint_cache(job)
         raise
+
+
+def stage_g1_checkpoint_cache(*, cache_root: Path, job_dir: Path, key_prefix: str,
+                              expiration_seconds: int, _cache_use=None) -> dict[str, Any]:
+    """One enrolled lifetime spans verification, all provider calls and cleanup."""
+    from .control_plane_registered_checkpoint_cache import (
+        is_registered_checkpoint_path, require_cache_use, NeededCheckpointCacheUse,
+    )
+    options = dict(cache_root=cache_root, job_dir=job_dir, key_prefix=key_prefix,
+                   expiration_seconds=expiration_seconds)
+    if _cache_use is not None:
+        use = require_cache_use(_cache_use)
+        use.check()
+        return _stage_g1_checkpoint_cache(**options, _cache_use=use)
+    if is_registered_checkpoint_path(cache_root):
+        with NeededCheckpointCacheUse.open_registered(cache_root, mode="read") as use:
+            return _stage_g1_checkpoint_cache(**options, _cache_use=use)
+    return _stage_g1_checkpoint_cache(**options)
 
 
 def close_g1_checkpoint_cache(job_dir: Path) -> dict[str, Any]:
