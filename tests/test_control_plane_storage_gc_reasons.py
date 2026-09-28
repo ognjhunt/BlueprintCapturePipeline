@@ -605,6 +605,42 @@ def test_a_fifo_queue_row_fails_the_strict_read_as_not_regular(tmp_path) -> None
         references.queue_reference_text([queue], strict=True)
 
 
+@pytest.mark.parametrize("when", ["listed", "swapped_after_lstat"])
+def test_a_fifo_queue_row_never_blocks_the_original_reader(tmp_path, monkeypatch, when) -> None:
+    """Every original caller, the storage GC's protection checks among them, reads its queues
+    without ``strict``. That reader opened each row by name, so one FIFO row in a queue directory
+    blocked the tick until systemd stopped it. It now reads each row through the strict reader's
+    descriptor and skips a FIFO, as it skips every row it cannot read, and reads the others."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    (queue / "processing").mkdir()
+    fifo = queue / "pending" / "a-fifo.json"
+    (queue / "pending" / "b-row.json").write_text('{"name": "named-b"}', encoding="utf-8")
+    (queue / "processing" / "c-row.json").write_text('{"name": "named-c"}', encoding="utf-8")
+    if when == "listed":
+        os.mkfifo(fifo)
+    else:
+        fifo.write_text('{"name": "swapped"}', encoding="utf-8")
+        real_lstat = Path.lstat
+
+        def lstat_then_swap(self):
+            observed = real_lstat(self)
+            if self == fifo and stat.S_ISREG(observed.st_mode):
+                fifo.unlink()
+                os.mkfifo(fifo)
+            return observed
+
+        monkeypatch.setattr(Path, "lstat", lstat_then_swap)
+
+    with _fails_instead_of_blocking(5):
+        text = references.queue_reference_text([queue])
+
+    assert text == '{"name": "named-b"}\n{"name": "named-c"}'
+
+
 def test_the_summary_copies_only_the_offloads_own_stages() -> None:
     """A failure's stage reaches the summary only if it is one of the result-artifact
     offload's stages; any other string, however typed it looks, is unrecognized."""

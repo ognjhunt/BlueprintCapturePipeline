@@ -45,15 +45,17 @@ def queue_reference_text(
     ``states`` are the state directories read under each root: one sequence for
     every root, a mapping from a root's directory name to its states (a root it
     does not name reads ``QUEUE_STATES``), or None for every directory the root
-    holds. By default only pending and processing rows are read, and a linked,
-    oversized or unreadable row, or a linked state directory, is skipped: every
-    original caller reads that way. ``strict`` raises ``QueueReferenceUnreadable``
-    for each of those instead, and for a linked queue root, a row that is not a
-    regular file or not UTF-8, or one swapped after its lstat, since a row that
-    cannot be read proves nothing about what it names. A missing root or state
-    directory holds no rows either way, and a row that moved to another state
-    between the listing and the read is skipped where it was: a strict caller
-    reads twice and unions, so it is seen where it went.
+    holds. Every row is read through a descriptor that follows no link and waits
+    for no writer (``_row_text``), so no row can block a read. By default only
+    pending and processing rows are read, and a linked, oversized, unreadable or
+    non-UTF-8 row, one that is not a regular file (a FIFO), one swapped after its
+    lstat, or a linked state directory is skipped: every original caller reads
+    that way. ``strict`` raises ``QueueReferenceUnreadable`` for each of those
+    instead, and for a linked queue root, since a row that cannot be read proves
+    nothing about what it names. A missing root or state directory holds no rows
+    either way, and a row that moved to another state between the listing and
+    the read is skipped where it was: a strict caller reads twice and unions, so
+    it is seen where it went.
     """
 
     chunks: list[str] = []
@@ -68,10 +70,8 @@ def queue_reference_text(
                 continue
             for path in sorted(directory.glob("*.json")):
                 try:
-                    if path.is_symlink() or path.stat().st_size > MAX_QUEUE_MESSAGE_BYTES:
-                        continue
-                    chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
+                    chunks.append(_row_text(path))
+                except (FileNotFoundError, QueueReferenceUnreadable):
                     continue
     return "\n".join(chunks)
 
@@ -122,23 +122,37 @@ def _strict_rows(directory: Path) -> list[str]:
         raise QueueReferenceUnreadable("queue_state_unreadable") from exc
     rows: list[str] = []
     for name in names:
-        path = directory / name
         try:
-            observed = path.lstat()
-            if stat.S_ISLNK(observed.st_mode):
-                raise QueueReferenceUnreadable("queue_row_linked")
-            if not stat.S_ISREG(observed.st_mode):
-                raise QueueReferenceUnreadable("queue_row_not_regular")
-            if observed.st_size > MAX_QUEUE_MESSAGE_BYTES:
-                raise QueueReferenceUnreadable("queue_row_oversized")
-            rows.append(_read_row(path, observed))
+            rows.append(_row_text(directory / name))
         except FileNotFoundError:
             # Moved to another state since the listing: callers read twice and union, so it is
             # seen where it went. A row that is linked, not regular, oversized or unreadable is not.
             continue
-        except (OSError, UnicodeDecodeError) as exc:
-            raise QueueReferenceUnreadable("queue_row_unreadable") from exc
     return rows
+
+
+def _row_text(path: Path) -> str:
+    """One row's text: ``FileNotFoundError`` when it is gone, ``QueueReferenceUnreadable`` when it
+    cannot be read.
+
+    The row must be a regular file within the size limit when its lstat is
+    taken, and is then read by ``_read_row``. The strict reader raises what this
+    refuses; the original reader skips it.
+    """
+
+    try:
+        observed = path.lstat()
+        if stat.S_ISLNK(observed.st_mode):
+            raise QueueReferenceUnreadable("queue_row_linked")
+        if not stat.S_ISREG(observed.st_mode):
+            raise QueueReferenceUnreadable("queue_row_not_regular")
+        if observed.st_size > MAX_QUEUE_MESSAGE_BYTES:
+            raise QueueReferenceUnreadable("queue_row_oversized")
+        return _read_row(path, observed)
+    except FileNotFoundError:
+        raise
+    except (OSError, UnicodeDecodeError) as exc:
+        raise QueueReferenceUnreadable("queue_row_unreadable") from exc
 
 
 def _read_row(path: Path, observed: os.stat_result) -> str:

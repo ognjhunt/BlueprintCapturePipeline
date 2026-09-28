@@ -649,12 +649,14 @@ mutation edge. The extended proofs read queues strictly: they also count a row
 parked in a state that will still run (`LIVE_QUEUE_STATES`, such as a
 preparation awaiting its source preparation), and a row they cannot read keeps
 their candidates as `queue_unreadable`, while a row that merely moved between
-states mid-read is found where it went. The strict reader
-(`control_plane_storage_references.queue_reference_text` with `strict=True`,
-which the result residue offload reads its queues with too) opens each row
-without following a link or waiting for a writer and requires the regular file
-its lstat saw, so a row swapped for a link, a FIFO or another file mid-read
-fails the read instead of hanging the tick. Planning and the releases each read the
+states mid-read is found where it went. Every queue read
+(`control_plane_storage_references.queue_reference_text`) opens each row without
+following a link or waiting for a writer and requires the regular file its
+lstat saw. The strict reader (`strict=True`, which the result residue offload
+reads its queues with too) fails on any row it cannot read, one swapped for a
+link, a FIFO or another file mid-read included; the original reader, which the
+other storage GC checks use, skips such a row, so a FIFO in a queue directory
+never hangs a tick. Planning and the releases each read the
 launch queue and the preparation queue's ended envelopes once (twice over,
 unioned), and the process table is swept once for planning and once per
 release.
