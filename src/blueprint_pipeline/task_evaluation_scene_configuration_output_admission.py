@@ -89,11 +89,13 @@ WORKLOAD = "website_scene_configuration"
 CPU_PREFIX_EXPANSION = 3
 CPU_PREFIX_OVERHEAD_BYTES = 512 * 1024**2
 #: What a CPU phase leaves in the job directory once it released its own
-#: reservation is bounded by one unpacked bundle: the API pretraining capsule
-#: re-archives the extracted bundle with its prepared frames, and the prestage
-#: keeps its capsule and output archive, both archives of its stage outputs.
-#: Each phase's own 3 x unpacked estimate already budgets its outgoing archive
-#: at one unpacked share, so admission counts that share beside the output.
+#: reservation is estimated at one unpacked bundle, not proven: the API
+#: pretraining capsule re-archives the extracted bundle with its prepared
+#: frames, and the prestage keeps its capsule and output archive, both archives
+#: of its stage outputs. Each phase's own 3 x unpacked estimate already budgets
+#: its outgoing archive at one unpacked share, so admission counts that share
+#: beside the output. A prefix that leaves more can still see the deferred hold
+#: refused; compare against the sealed receipts' capsule sizes before tightening.
 CPU_PREFIX_RESIDUE_SHARES = 1
 PREALLOCATION_PHASE = "before_allocation_and_staging"
 #: Where a hold deferred behind a CPU prefix sharing the volume is taken.
