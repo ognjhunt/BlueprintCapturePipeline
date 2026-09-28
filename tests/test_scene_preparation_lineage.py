@@ -1,4 +1,6 @@
-# Covers: src/blueprint_pipeline/task_evaluation_scene_preparation_lineage.py
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/task_evaluation_scene_preparation_lineage.py
+#   src/blueprint_pipeline/task_evaluation_scene_preparation_link_contract.py
 """ADP-009D/day-28: retained lineage proves identity, never retirement authority."""
 from __future__ import annotations
 
@@ -449,6 +451,40 @@ def test_valid_join_never_reads_files_or_calls_current_admission(monkeypatch):
         monkeypatch.setattr(controls, name, forbidden)
     report = lineage.join_scene_preparation_lineage(**args)
     assert report["preparation_count"] == 1
+
+
+@pytest.mark.parametrize("with_activation", [False, True])
+def test_first_join_in_fresh_process_never_imports_runtime_paths(with_activation):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    script = '''
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fixtures", sys.argv[1])
+fixtures = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixtures)
+args = fixtures.fixture()
+if sys.argv[2] == "yes":
+    fixtures.activation(args)
+assert "blueprint_pipeline.task_evaluation_controls_autoprovision" not in sys.modules
+def forbidden(*args, **kwargs):
+    raise AssertionError("first retained-byte join invoked filesystem API")
+for name in ("resolve", "stat", "lstat", "read_bytes", "read_text", "write_bytes", "write_text"):
+    setattr(Path, name, forbidden)
+report = fixtures.lineage.join_scene_preparation_lineage(**args)
+assert report["preparation_count"] == 1
+assert "blueprint_pipeline.task_evaluation_controls_autoprovision" not in sys.modules
+assert "blueprint_pipeline.rigid_task_success_contract_schema" not in sys.modules
+'''
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    result = subprocess.run([sys.executable, "-c", script, str(Path(__file__).absolute()),
+                             "yes" if with_activation else "no"],
+                            env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
 
 
 def test_exact_output_shapes_exclude_retirement_and_spend_claims():

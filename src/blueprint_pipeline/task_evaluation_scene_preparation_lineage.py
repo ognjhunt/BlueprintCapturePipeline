@@ -13,6 +13,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .task_evaluation_scene_preparation_link_contract import validate_preparation_link
 
 MAX_RECORD_BYTES = MAX_TOTAL_BYTES = MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_RECORDS = 10_000
@@ -152,7 +153,6 @@ def _link(value: dict[str, Any], provenance: dict[str, Any], intent: dict[str, A
     variant = "activation" if path.endswith(".activation.json") else "base"
     _require(("scene_configuration_attempt" in value) == (variant == "activation"),
              "link_role_invalid")
-    from .task_evaluation_controls_autoprovision import validate_preparation_link
     try:
         link = validate_preparation_link(value)
     except (ValueError, TypeError, KeyError, OverflowError):
