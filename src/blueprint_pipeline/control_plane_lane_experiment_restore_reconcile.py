@@ -1,6 +1,6 @@
 """Exact owned stage/destination union under the retained restore operation EX.
 
-This is limited to durable stage and directory/link receipts. Unknown destination
+This is limited to durable stage/directory receipts and exact stage inode aliases. Unknown destination
 nodes never become ours from names, equal bytes or absent historical children.
 """
 from __future__ import annotations
@@ -85,7 +85,7 @@ def load(files, store_path, target, target_fd, operation, action, entry, origina
     else:
         _require(False, 'experiment_restore_event_limit')
     files.payload(target, target_fd, expected_payload_bytes=saved['logical_bytes'])
-    staged, modes, mapped = [], {}, {}
+    staged, modes, mapped, pending = [], {}, {}, []
     namespace = {target: {stage_name, *actions._METADATA}, stage_path: set()}
     def register(path):
         namespace.setdefault(path.parent, set()).add(path.name)
@@ -120,7 +120,11 @@ def load(files, store_path, target, target_fd, operation, action, entry, origina
             continue
         _require(source_info is not None or destination_info is not None, 'experiment_restore_stage_changed')
         if destination_info is not None:
-            _require(path in linked, 'experiment_restore_destination_unproven')
+            # The one syscall-before-event interruption is recoverable only
+            # from the sealed original stage inode still visibly linked at
+            # BOTH names. Equal destination bytes or a missing stage token do
+            # not supply that proof. The per-inode checks below run first.
+            _require(path in linked or source_info is not None, 'experiment_restore_destination_unproven')
             register(destination)
         else:
             _require(path not in linked, 'experiment_restore_destination_unproven')
@@ -134,7 +138,7 @@ def load(files, store_path, target, target_fd, operation, action, entry, origina
                      == (token[0], token[1], token[2], token[4], token[5])
                      and current.st_nlink == (2 if source_info is not None and destination_info is not None else 1),
                      'experiment_restore_stage_changed')
-        if path not in linked:
+        if path not in linked and destination_info is None:
             _require(owners._metadata(source_info) == (int(ids[0]), int(ids[1]), stat.S_IFREG | token[0], *token[1:]),
                      'experiment_restore_stage_changed')
         selected_parent, selected_name = (source_parent, source_name) if source_info is not None else (destination_parent, destination_name)
@@ -152,6 +156,12 @@ def load(files, store_path, target, target_fd, operation, action, entry, origina
                      and owners._metadata(os.fstat(fd)) == owners._metadata(current)
                      == owners._metadata(os.stat(selected_name, dir_fd=selected_parent, follow_symlinks=False)),
                      'experiment_restore_stage_changed')
+            if destination_info is not None and path not in linked:
+                # Record the independently proved alias; immutable publication
+                # follows only after complete union/hash checks and a declared
+                # metadata phase. At most the interrupted first event exists.
+                _require(not pending, 'experiment_restore_destination_unproven')
+                pending.append((path, owners._metadata(current), row[4], token[4]))
             if source_info is not None:
                 staged.append((path, source_info, row[4]))
             if destination_info is not None:
@@ -188,6 +198,26 @@ def load(files, store_path, target, target_fd, operation, action, entry, origina
                 files.trim_payload(keep=(stage,))
     target_transition = [getattr(os.fstat(target_fd), key) for key in recovery._STAT]
     files.phase('restore_union_finalize')
+    for path, metadata, digest, size in pending:
+        source_parent, source_name = files.parent(stage_path / path)
+        destination_parent, destination_name = files.parent(target / path)
+        files.location(source_parent)
+        files.location(destination_parent)
+        _require(owners._metadata(os.stat(source_name, dir_fd=source_parent, follow_symlinks=False))
+                 == metadata == owners._metadata(os.stat(destination_name, dir_fd=destination_parent, follow_symlinks=False)),
+                 'experiment_restore_destination_unproven')
+        fd = files.open(source_name, os.O_RDONLY | os.O_NONBLOCK, parent=source_parent)
+        try:
+            files.proof(fd)
+            _require(owners._metadata(os.fstat(fd)) == metadata, 'experiment_restore_destination_unproven')
+            selected = actions._event(files, operation, action, 'restore_member', dict(
+                restore_started=started, index=sorted(p for p in expected if expected[p][1] == 'file').index(path),
+                path=path, sha256=digest, size_bytes=size, identity={
+                    'dev':metadata[0], 'ino':metadata[1], 'type':'file'}), next_index, previous, files.now())
+            previous, next_index = selected, next_index + 1
+            linked[path] = selected
+        finally:
+            files.close(fd)
     return dict(stage=stage, staged=staged, directory_modes=modes, mapped=mapped,
                 created=created, linked=linked, previous=previous, index=next_index,
                 target_transition=target_transition)
