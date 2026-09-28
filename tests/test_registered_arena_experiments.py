@@ -96,7 +96,7 @@ def test_private_arena_claim_recovers_only_original_grant(retirement_installatio
     original = intent_path.read_bytes()
     intent_path.unlink()  # The durable tag claim preceded an interrupted intent publication.
     monkeypatch.setattr(
-        root.secrets, "token_hex", lambda *_: pytest.fail("recovery generated a new identity")
+        root, "_issue", lambda *args, **kw: pytest.fail("recovery issued a new grant")
     )
     recovered = root.recover_arena_issue(
         "r33", principal="operator", owner="owner", installed_config_path=setup[0], now=lambda: 1001
@@ -155,8 +155,8 @@ def test_reserved_arena_lease_never_enters_legacy_mutation(retirement_installati
         scratch.LaneScratchError, match="lane_scratch_registered_authority_required"
     ):
         scratch.renew_lane_scratch(
-            "arena",
-            target.name,
+            lane="arena",
+            name=target.name,
             owner="owner",
             expected_digest=json.loads(original)["lease_digest"],
             ttl_seconds=1800,
