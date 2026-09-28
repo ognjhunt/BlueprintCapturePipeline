@@ -65,7 +65,7 @@ _UNIT_PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "InvocationID"
 
 def _show_unit(intent_id):
     unit = "blueprint-experiment-" + intent_id + ".service"
-    raw = _native_control([_SYSTEMCTL, "show", unit, "--no-pager", "--property=" + ",".join(_UNIT_PROPERTIES)])
+    raw = _native_control([_SYSTEMCTL, "show", unit, "--no-pager", "--all", "--property=" + ",".join(_UNIT_PROPERTIES)])
     rows = raw.splitlines()
     _require(len(rows) <= len(_UNIT_PROPERTIES) and all("=" in row for row in rows), "experiment_unit_observation_failed")
     value = dict(row.split("=", 1) for row in rows)
