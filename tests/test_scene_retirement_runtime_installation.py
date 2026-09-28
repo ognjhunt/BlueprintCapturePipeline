@@ -225,7 +225,7 @@ def test_explicit_refresh_publishes_one_verified_source_sdk_cohort(tmp_path, mon
     assert result["status"] == "refreshed" and selected != module._RUNTIME_ROOT
     assert selected.is_relative_to(module._RUNTIME_ROOT / "generations")
     assert (selected / "src/blueprint_pipeline/__init__.py").read_bytes() == b"# new trusted package\n"
-    assert (selected / "dependencies/trusted_sdk.py").read_bytes() == b"value = 2\n"
+    assert (Path(result["dependencies_root"]) / "trusted_sdk.py").read_bytes() == b"value = 2\n"
     assert old_source.read_bytes() == b"# trusted package\n"
     assert old_dependency.read_bytes() == b"value = 1\n"
     assert result["current"] == _runtime_selector(module._BOOT_ROOT / "CURRENT.json")
@@ -266,3 +266,19 @@ def test_refresh_stale_current_refuses_before_copying_new_generation(tmp_path, m
         module.refresh(source, deps, expected_current={"sha256": "sha256:" + "0" * 64, "size_bytes": 1})
     assert not (module._RUNTIME_ROOT / "generations").exists()
     assert not (module._BOOT_ROOT / "CURRENT.json").exists()
+
+
+def test_source_refresh_reuses_identical_protected_sdk_generation(tmp_path, monkeypatch):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    module.prepare(source, deps)
+    previous = _runtime_selector(module._BOOT_ROOT / "installation.json")
+    (source / "src/blueprint_pipeline/__init__.py").write_bytes(b"# protected source generation two\n")
+    first = module.refresh(source, deps, expected_current=previous)
+    sdk = Path(first["dependencies_root"]) / "trusted_sdk.py"
+    before = sdk.stat()
+    (source / "src/blueprint_pipeline/__init__.py").write_bytes(b"# protected source generation three\n")
+    second = module.refresh(source, deps, expected_current=first["current"])
+    assert second["runtime_root"] != first["runtime_root"]
+    assert second["dependencies_root"] == first["dependencies_root"]
+    after = sdk.stat()
+    assert (before.st_dev, before.st_ino, before.st_mtime_ns) == (after.st_dev, after.st_ino, after.st_mtime_ns)
