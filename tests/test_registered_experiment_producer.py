@@ -371,3 +371,40 @@ def test_actual_runtime_forwards_same_public_use_into_native_supervisor(
                 output_dir=target/request['candidate_id']/'episode', to_tensor=lambda x:x,
                 make_action_tensor=lambda x:x, _registered_use=use)
         assert seen == [True]
+
+
+@pytest.mark.parametrize('fault', ['expired', 'changed_intent', 'disabled'])
+def test_actual_root_contained_runner_refuses_before_any_unit_launch(
+        installation, tmp_path, monkeypatch, fault):  # noqa: F811
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    consumer, target, born, paths, selected = _contained_bootstrap(installation, tmp_path, monkeypatch)
+    intent_id = target.name.removeprefix('registered-')
+    raw = (installation[2]/(intent_id+'.json')).read_bytes()
+    expected = {'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(), 'size_bytes':len(raw)}
+    if fault == 'changed_intent':
+        expected['sha256'] = 'sha256:'+'f'*64
+    elif fault == 'disabled':
+        value = json.loads(installation[0].read_bytes())
+        value['experiment_creation_enabled'] = False
+        installation[0].write_bytes(json.dumps(value).encode())
+    import subprocess
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: pytest.fail('refused authority launched unit'))
+    with pytest.raises(ValueError, match='experiment_|owner_'):
+        contained.run_registered_experiment(intent_id, expected_intent=expected,
+            installed_config_path=installation[0], now=lambda:4000 if fault == 'expired' else 1200)
+
+
+def test_actual_root_unit_arguments_are_fixed_to_native_ordinary_uid_scope():
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent_id = 'a'*32
+    target = Path('/mnt/blueprint-work/lanes/g1')/('registered-'+intent_id)
+    bootstrap = Path('/var/lib/blueprint-operator-door/experiment-authority')/(intent_id+'.producer-bootstrap.json')
+    command = contained._unit_arguments(intent_id, target, bootstrap)
+    assert command[:3] == ['/usr/bin/systemd-run', '--no-block', '--quiet']
+    assert '--unit=blueprint-experiment-'+intent_id in command
+    for prop in ('User=blueprint', 'Group=blueprint', 'UMask=0077', 'NoNewPrivileges=yes',
+                 'CapabilityBoundingSet=', 'ProtectControlGroups=yes', 'KillMode=control-group',
+                 'Delegate=no', 'TasksMax=64', 'TimeoutStopSec=30'):
+        assert '--property='+prop in command
+    assert not any(arg.startswith('--collect') for arg in command)
+    assert command[-6:] == ['-m', contained.__name__, '--producer-bootstrap', str(bootstrap), '--target', str(target)]
