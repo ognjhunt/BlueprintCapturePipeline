@@ -288,7 +288,7 @@ def test_native_charged_read_spends_same_allowance_before_body_read():
     transport.bind_allowance(budget)
     uri='s3://private-artifacts/blueprint/arm-decision-proof-v1/scene-retirement/'+'1'*32+'.tar'
     assert b''.join(transport.read_archive_charged(uri,budget))==b'abcdef'
-    assert seen==[6] and budget.counts['remote_bytes']==6
+    assert seen==[6] and budget.counts['remote_bytes']==7
     with pytest.raises(ValueError):
         list(transport.read_archive_charged(uri,allowance()))
 
@@ -445,7 +445,7 @@ def test_publication_readback_uses_separate_blueprint_store_and_same_charged_ori
         uri, budget, expected_size_bytes=len(published.data))) == published.data
     assert selected == [{'Bucket': 'blueprint', 'Key': uri.split('s3://blueprint/', 1)[1]}]
     assert private.calls == [] and bodies[0].closed
-    assert budget.counts['remote_bytes'] == len(published.data)
+    assert budget.counts['remote_bytes'] == len(published.data)+1
     transport.close()
     assert private.calls == ['close'] and published.calls == ['close']
 
@@ -504,4 +504,40 @@ def test_publication_origin_and_invalid_sdk_caps_refuse_before_object_read(monke
     with pytest.raises(ValueError):
         list(transport.read_published_object_charged(uri, budget, expected_size_bytes=1))
     assert 'get' not in published.calls and published.calls == ['close']
+    transport.close()
+
+
+
+@pytest.mark.parametrize('kind', ['archive-charged', 'archive-un-charged', 'publication'])
+def test_full_original_remote_cap_refuses_before_trailing_eof_probe(monkeypatch, kind):
+    module = bridge()
+    private, published = Client(), Client()
+    budget = allowance(remote_bytes=6)
+    reads = []
+    class Body(io.BytesIO):
+        def read(self, size=-1):
+            reads.append((size, budget.counts['remote_bytes']))
+            return super().read(size)
+    body = Body(b'abcdefZ')
+    selected = published if kind == 'publication' else private
+    selected.get_object = lambda **kw: {'Body': body, 'ContentLength': 6}
+    monkeypatch.setattr(module, 'installed_publication_client', lambda: published)
+    transport = module.SceneArchiveTransport(client=private, bucket='private-artifacts')
+    transport.bind_allowance(budget)
+    archive = 's3://private-artifacts/blueprint/arm-decision-proof-v1/scene-retirement/'+'1'*32+'.tar'
+    if kind == 'publication':
+        chunks = transport.read_published_object_charged(
+            's3://blueprint/task-evaluation/production-inputs/ns/derived/file', budget,
+            expected_size_bytes=6)
+    elif kind == 'archive-charged':
+        chunks = transport.read_archive_charged(archive, budget)
+    else:
+        chunks = transport.read_archive(archive)
+    with pytest.raises(ValueError):
+        for chunk in chunks:
+            if kind == 'archive-un-charged':
+                # The legacy engine charges the yielded body payload itself.
+                budget.charge('remote_bytes', len(chunk))
+    assert [count for count, _ in reads] == [6]
+    assert body.closed and budget.counts['remote_bytes'] == 6
     transport.close()
