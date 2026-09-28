@@ -466,7 +466,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         reference, reference_fd = _pin_fence(files, config, _pins_root, target, issued)
         public = birth_code._authority_lock(files, config.experiment_authority_root, gid)
         refreshed = _current(files, public, gid)
-        _require(refreshed[0] == current[0] and entry["state"] == "active", "experiment_action_current_changed")
+        _require(refreshed[0] == current[0] and entry["state"] in ("active", "retiring"), "experiment_action_current_changed")
         store = issuance._store(files, config.experiment_record_store)
         manifest_raw, _ = files.read(Path(config.experiment_record_store) / (action_id + ".manifest.json"),
                                     cap=1048576, protected=True, mode=0o600)
@@ -475,32 +475,22 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         _require(manifest["schema_version"] == MANIFEST_SCHEMA and manifest["manifest_digest"]
                  == canonical_digest(manifest, digest_field="manifest_digest"), "experiment_manifest_invalid")
         _require(len(manifest["rows"]) <= 4096, "experiment_manifest_limit")
-        occupied = issuance._capacity(files, store, adding_registration=False)
-        reservation_size = len(manifest["rows"]) * 2 * 4096 + 8 * 32768
-        _require(occupied + reservation_size + 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
+        from . import control_plane_lane_experiment_recovery as recovery
+        rows = sorted(manifest["rows"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+        files._store_path = config.experiment_record_store
+        reservation_size = len(rows) * 2 * 4096 + 8 * 32768
         reserve_raw = _encoded(dict(schema_version="control_plane_lane_experiment_reservation.v1",
             operation_id=action_id, reserved_bytes=reservation_size), "reservation_digest", 4096)
-        _publish(files, store, action_id + ".reservation.json", reserve_raw, kind="private")
-        files.location(store)
-        try:
-            os.stat("operations", dir_fd=store, follow_symlinks=False)
-        except FileNotFoundError:
-            operations = _directory(files, store, "operations", create=True)
-        else:
-            operations = _directory(files, store, "operations")
-        operation = _directory(files, operations, action_id, create=True)
-        started = _event(files, operation, action, "started", dict(action=expected_action_intent,
-            birth=entry["birth"], initial_authority=current[0]["record"], manifest=action["manifest"],
-            process_identity={"pid": os.getpid()}, controller_origin_epoch=issued,
-            deadline_epoch=min(issued + 4 * 3600, action["expires_at_epoch"]), reference_authority=reference), 0, None, issued)
-        prepared, old_head = _version(files, public, refreshed, entry | {"state": "retiring"}, gid, action["policy"], issued)
-        _publish(files, store, action_id + ".retiring-head.json", prepared, kind="private")
-        _install_head(files, public, prepared, gid, old_head)
-        retiring = _current(files, public, gid)
-        previous, logical, allocated = started, 0, 0
-        changed_directories = {}
-        rows = sorted(manifest["rows"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+        if entry["state"] == "active":
+            occupied = issuance._capacity(files, store, adding_registration=False)
+            _require(occupied + reservation_size + 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
+        recovery._once(files, store, action_id + ".reservation.json", reserve_raw, kind="private")
+        operation, retiring, previous, logical, allocated, changed_directories, removed_count, receipt = recovery.begin(
+            files, config, action, expected_action_intent, entry, current, refreshed, public, store,
+            target, rows, reference, issued, gid)
         for index, row in enumerate(rows, 1):
+            if index <= removed_count:
+                continue
             _require(now() < action["expires_at_epoch"], "experiment_action_expired")
             files.verify_record(lease_record)
             files.verify()
@@ -528,17 +518,20 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                 previous = _event(files, operation, action, "member_removed", dict(preservation=None,
                     action=expected_action_intent, manifest=action["manifest"], index=index - 1,
                     path=row[0], original_identity=dict(dev=info.st_dev, ino=info.st_ino, type=row[1]),
-                    logical_bytes=info.st_size if row[1] == "file" else 0, eligible_allocated_bytes=info.st_blocks * 512),
+                    logical_bytes=info.st_size if row[1] == "file" else 0, eligible_allocated_bytes=info.st_blocks * 512,
+                    parent_after=dict(path=str(Path(row[0]).parent), identity=dict(dev=updated.st_dev, ino=updated.st_ino, type="directory"),
+                        stat_token=":".join(str(value) for value in changed_directories[str(Path(row[0]).parent)]))),
                     index, previous, issued)
             finally:
                 files.close(fd)
         files.location(target_fd)
         os.fsync(target_fd)
-        receipt = _event(files, operation, action, "retired", dict(preservation=None, manifest=action["manifest"],
+        if receipt is None:
+            receipt = _event(files, operation, action, "retired", dict(preservation=None, manifest=action["manifest"],
             removed_event_count=len(rows), removed_logical_bytes=logical, eligible_allocated_bytes=allocated,
             remaining_metadata=[entry["lease"], original["marker"]], partial=False), len(rows) + 1, previous, issued)
         prepared, old_head = _version(files, public, retiring, entry | {"state": "retired"}, gid, action["policy"], issued)
-        _publish(files, store, action_id + ".retired-head.json", prepared, kind="private")
+        recovery._once(files, store, action_id + ".retired-head.json", prepared, kind="private")
         _install_head(files, public, prepared, gid, old_head)
         return _outcome(action, "retired", "disposable_expired", receipt=receipt, logical=logical, allocated=allocated)
     except OSError:
@@ -565,8 +558,9 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
         actions = []
         if current is not None:
             for entry in current[1]["enrollments"]:
-                if entry["state"] == "active" and entry["operation_id"] is not None:
-                    _require(len(actions) < 2, "experiment_gc_action_limit")
+                if entry["state"] in ("active", "retiring") and entry["operation_id"] is not None:
+                    if len(actions) == 2:
+                        break
                     raw, _ = files.read(Path(config.experiment_record_store) / (entry["operation_id"] + ".action.json"),
                                         cap=32768, protected=True, mode=0o600)
                     actions.append((entry["operation_id"], issuance._selector(raw, files.budget), entry["intent_id"]))
