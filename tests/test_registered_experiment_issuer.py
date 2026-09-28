@@ -6,6 +6,7 @@
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -18,28 +19,34 @@ def encoded(value):
 
 
 @pytest.fixture
-def installation(tmp_path, monkeypatch, root_metadata):  # noqa: F811
+def installation(tmp_path, monkeypatch, root_metadata, request):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
-    package = tmp_path / "installed" / "operator_door"
+    # Protected metadata cannot live beneath pytest's writable Linux runner
+    # temporary ancestor. Keep actual mode/ancestry validation intact and put
+    # only this fixture's private installation beneath the owned home tree.
+    private = tempfile.TemporaryDirectory(prefix='plan12-private-installation-', dir=Path.home().resolve())
+    request.addfinalizer(private.cleanup)
+    installed = Path(private.name).resolve()
+    package = installed / "installed" / "operator_door"
     package.mkdir(parents=True, mode=0o700)
     source = Path(__file__).parents[1] / "deploy/operator-door/operator_door"
     for name in ("__init__.py", "config.py"):
         (package / name).write_bytes((source / name).read_bytes())
         (package / name).chmod(0o600)
-    state = tmp_path / "state"
+    state = installed / "state"
     store = state / "requests/experiment-records"
     store.mkdir(parents=True, mode=0o700)
     (store / ".experiment-authority.lock").write_bytes(b"")
     (store / ".experiment-authority.lock").chmod(0o600)
-    policy = tmp_path / "policy.json"
+    policy = installed / "policy.json"
     policy.write_bytes(encoded(dict(schema_version=owners.POLICY_SCHEMA, enabled=True,
         principals=[dict(principal="operator", owners=["owner"], allowed_actions=["register"],
                          max_consent_seconds=3600)])))
     policy.chmod(0o600)
-    config = tmp_path / "door.json"
+    config = installed / "door.json"
     settings = dict(state_root=str(state), experiment_creation_enabled=True,
-                    lane_owner_policy_file=str(policy), lane_scratch_work_root=str(tmp_path / "work/lanes"),
-                    lane_scratch_inputs_root=str(tmp_path / "inputs/lanes"))
+                    lane_owner_policy_file=str(policy), lane_scratch_work_root=str(installed / "work/lanes"),
+                    lane_scratch_inputs_root=str(installed / "inputs/lanes"))
     config.write_bytes(encoded(settings))
     config.chmod(0o600)
     from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer

@@ -15,7 +15,9 @@ from tests.test_native_g1_development_pair import _paired_requests
 def bootstrap_installation(installation, tmp_path, monkeypatch):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_birth as native
     prepare(installation)
-    paths, _ = _paired_requests(tmp_path)
+    request_root = installation[0].parent / 'producer-requests'
+    request_root.mkdir(mode=0o700)
+    paths, _ = _paired_requests(request_root)
     for path in paths:
         path.chmod(0o640)
     selectors = tuple((path, {'sha256': 'sha256:'+hashlib.sha256(path.read_bytes()).hexdigest(),

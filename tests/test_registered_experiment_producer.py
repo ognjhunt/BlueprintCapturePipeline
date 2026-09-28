@@ -90,7 +90,9 @@ def test_actual_registered_pair_and_worker_preflight_output_holds_target_sh(
     from blueprint_pipeline import native_g1_development_worker as worker
 
     prepare(installation)
-    paths, _ = _paired_requests(tmp_path)
+    request_root = installation[0].parent / 'producer-requests'
+    request_root.mkdir(mode=0o700)
+    paths, _ = _paired_requests(request_root)
     selectors = tuple(
         (
             path,
@@ -165,7 +167,9 @@ def _registered_fixture(
     from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
 
     prepare(installation)
-    paths, _ = _paired_requests(tmp_path)
+    request_root = installation[0].parent / 'producer-requests'
+    request_root.mkdir(mode=0o700)
+    paths, _ = _paired_requests(request_root)
     if profile == "g1_local_contained_completed.v1":
         for path in paths:
             path.chmod(0o640)
