@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tarfile
 import io
@@ -12,6 +13,11 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/rehearse_g1_vm_system_cp
 spec = importlib.util.spec_from_file_location("g1_vm_cpu", SCRIPT)
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
+
+
+@pytest.fixture(autouse=True)
+def fixture_capacity(monkeypatch):
+    monkeypatch.setattr(probe.shutil, "disk_usage", lambda path: type("Usage", (), {"free": 10**12})())
 
 
 @pytest.mark.parametrize("fault", [None, "hash", "size", "link", "extra", "duplicate", "traversal"])
@@ -124,3 +130,95 @@ def test_replay_reverifies_existing_guest_bytes_without_copy_or_download(tmp_pat
         assert digest == "sha256:" + hashlib.sha256(data).hexdigest()
         assert base.read_bytes() == data
         assert sorted(path.name for path in tmp_path.iterdir()) == ["base.qcow2", "layer.tar.gz"]
+
+
+def _terminal_observation(binding=None):
+    value = {"schema_version": "g1_vm_guest_system_cpu_observation.v1",
+             "scope": "local_tcg_cpu_only", "gpu_runtime_qualified": False,
+             "policy_inference_performed": False, "provider_mutation_performed": False,
+             "probes": {"offline_apt_simulation": {"exit_code": 0}}}
+    if binding:
+        value["system_packages"] = {**binding, "runtime_installation_performed": False}
+    value["receipt_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    return probe.TERMINAL + json.dumps(value) + "\n"
+
+
+def test_capacity_refusal_retains_completed_guest_without_promoting_parent(tmp_path, monkeypatch):
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    for name in ("image-manifest.json", "guest-layer.tar.gz", "base.qcow2"):
+        (retained / name).write_bytes(b"unchanged CPU fixture")
+    binary = tmp_path / "binary"
+    binary.write_bytes(b"fixture")
+    monkeypatch.setattr(probe.subprocess, "check_output", lambda argv, **kwargs: "a" * 40 if "rev-parse" in argv else "")
+    monkeypatch.setattr(probe.shutil, "which", lambda name: str(binary))
+    monkeypatch.setattr(probe, "file_sha", lambda path: probe.IMAGE_SHA)
+    monkeypatch.setattr(probe, "verify_retained_guest_disk", lambda *args, **kwargs: probe.IMAGE_SHA)
+    calls = []
+
+    def capacity(path, **kwargs):
+        calls.append(path)
+        if len(calls) == 3:
+            raise ValueError("g1_vm_cpu_capacity_insufficient")
+
+    monkeypatch.setattr(probe, "require_capacity", capacity)
+
+    def command(argv, log):
+        Path(argv[argv.index("-o") + 1] if "makehybrid" in argv else argv[-1]).write_bytes(b"fixture")
+
+    monkeypatch.setattr(probe, "_command", command)
+
+    class Child:
+        pid = 1234
+        stopped = False
+
+        def poll(self):
+            return -15 if self.stopped else None
+
+    child = Child()
+
+    def start(argv, *, stdout, **kwargs):
+        stdout.write(_terminal_observation().encode())
+        stdout.flush()
+        return child
+
+    monkeypatch.setattr(probe.subprocess, "Popen", start)
+    monkeypatch.setattr(probe, "_stop", lambda own_child: setattr(own_child, "stopped", True))
+    result = probe.run(root=tmp_path / "run", implementation_commit="a" * 40, retained_image_root=retained)
+    assert child.stopped and result["child_terminal"] is True
+    assert result["status"] == "blocked" and result["blocker_code"] == "g1_vm_cpu_capacity_insufficient"
+    assert result["guest_observation"]["probes"]["offline_apt_simulation"]["exit_code"] == 0
+    assert result["guest_observation_retention"] == "retained_after_parent_refusal"
+    assert result["gpu_runtime_qualified"] is False and result["policy_inference_performed"] is False
+
+
+@pytest.mark.parametrize("fault", [None, "foreign", "digest", "duplicate", "missing", "installation"])
+def test_retained_observation_rejects_foreign_or_invalid_receipt(tmp_path, fault):
+    binding = {"implementation_commit": "a" * 40, "source_sha256": "sha256:" + "b" * 64,
+               "manifest_digest": "sha256:" + "c" * 64}
+    native_binding = {**binding, "implementation_commit": "d" * 40} if fault == "foreign" else binding
+    text = _terminal_observation(native_binding)
+    if fault == "digest":
+        text = text.replace('"exit_code": 0', '"exit_code": 1')
+    elif fault == "duplicate":
+        text += text
+    elif fault == "missing":
+        text = "boot only"
+    elif fault == "installation":
+        value = json.loads(text.split(probe.TERMINAL, 1)[1])
+        value.pop("receipt_digest")
+        value["system_packages"]["runtime_installation_performed"] = True
+        value["receipt_digest"] = "sha256:" + hashlib.sha256(json.dumps(
+            value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+        text = probe.TERMINAL + json.dumps(value)
+    log = tmp_path / "serial.log"
+    log.write_text(text)
+    result = {"status": "blocked", "blocker_code": "g1_vm_cpu_capacity_insufficient", "system_packages": binding}
+    probe.retain_guest_observation(result, log)
+    assert result["status"] == "blocked" and result["blocker_code"] == "g1_vm_cpu_capacity_insufficient"
+    if fault:
+        assert "guest_observation" not in result
+        assert result["guest_observation_retention_blocker"].startswith("g1_vm_cpu_")
+    else:
+        assert result["guest_observation"]["system_packages"]["manifest_digest"] == binding["manifest_digest"]

@@ -228,6 +228,27 @@ def read_guest_result(text):
     return result
 
 
+def retain_guest_observation(result, log):
+    """Retain observed CPU work without clearing a parent resource refusal."""
+    try:
+        guest = read_guest_result(log.read_text(errors="replace"))
+        expected = result.get("system_packages")
+        if expected is not None:
+            actual = guest.get("system_packages") or {}
+            if (any(actual.get(key) != expected[key] for key in (
+                    "implementation_commit", "source_sha256", "manifest_digest"))
+                    or actual.get("runtime_installation_performed") is not False):
+                raise ValueError("g1_vm_cpu_terminal_package_binding_invalid")
+        result["guest_observation"] = guest
+        result["guest_observation_retention"] = "retained_after_parent_refusal"
+    except Exception as error:
+        message = str(error)
+        result["guest_observation_retention_blocker"] = (
+            message if re.fullmatch(r"g1_vm_cpu_[a-z_]+", message)
+            else "g1_vm_cpu_terminal_receipt_invalid")
+        result["guest_observation_retention_error_type"] = type(error).__name__
+
+
 def _command(argv, log):
     with log.open("xb") as output:
         result = subprocess.run(argv, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=False)
@@ -360,6 +381,8 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
         if child is not None:
             _stop(child)
             result["child_terminal"] = child.poll() is not None
+            if result["status"] == "blocked" and "guest_observation" not in result:
+                retain_guest_observation(result, log)
         result["available_bytes_after"] = shutil.disk_usage(root).free
         value = json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         result["receipt_digest"] = "sha256:" + hashlib.sha256(value).hexdigest()

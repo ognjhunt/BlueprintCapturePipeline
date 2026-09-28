@@ -8,6 +8,19 @@ import pytest
 from blueprint_pipeline import native_g1_team_vm_system_packages as system
 
 
+@pytest.fixture(autouse=True)
+def fixture_capacity(monkeypatch):
+    monkeypatch.setattr(system.shutil, "disk_usage", lambda path: type("Usage", (), {"free": 10**12})())
+
+
+def test_package_capacity_refuses_before_creating_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(system.shutil, "disk_usage", lambda path: type("Usage", (), {"free": 7_999_999_999})())
+    target = tmp_path / "prepared"
+    with pytest.raises(ValueError, match="g1_vm_system_capacity_insufficient"):
+        system._fresh(target, 1)
+    assert not target.exists()
+
+
 def _digest(value):
     return (
         "sha256:"

@@ -1205,3 +1205,45 @@ all existing malformed asset/observation, readonly-link/mode and immutable CLI
 checks remain covered. Publisher filenames and content pins are unchanged.
 Short transport names do not establish guest resolver or installation success;
 fresh same-guest APT simulation follows clean commit/push.
+
+## Reviewed retention after an observed parent capacity refusal
+
+The exact9594 guest emitted a digest-verified native observation with all25
+package identities and offline APT exit0. The parent subsequently stopped the
+child during shutdown when Mac free space fell below8GB. Its parent receipt
+correctly remained blocked, but omitted the native observation because it only
+parsed the serial log following a zero child exit. The retained log recovery
+proved this boundary without rewriting the parent receipt. The built-in paid
+campaign is now independently live; this repair affects only CPU diagnostic
+retention and must not change or restart that campaign.
+
+After stopping the owned child on a parent refusal, retain a single valid native
+CPU observation if present. Verify its declared digest, CPU-only scope and,
+when system packages were supplied, exact source/manifest/verifier bindings
+and no-install declaration. Preserve the original blocked status and blocker;
+do not promote partial CPU observation to full rehearsal, installation, GPU,
+namespace or policy proof. Missing, duplicate, altered or foreign-bound native
+receipts get a separate typed retention diagnostic and never mask the original
+parent refusal. Do not lower any resource bound or rerun already observed APT.
+
+Test first: simulate actual capacity refusal after a valid guest terminal log;
+ensure the original refusal survives with observed APT exit0. Reject wrong
+package binding, altered digest, duplicate marker, absent marker and installation
+claim. Review accepted before implementation: this encodes the demonstrated
+retention gap, leaves launch/rights/spend behavior unchanged and avoids another
+asset-heavy replay solely to recover already finished dependency evidence.
+
+The focused replay exposed four older fixture tests relying on real Mac free
+space. Their tiny synthetic assets must use explicit hermetic capacity rather
+than require8GB on the test machine. Keep the CPU insufficient-capacity case
+and add the same pre-output refusal case for package preparation; production
+capacity floors are unchanged. This test isolation repair is accepted after
+the actual four failures and before changing their fixture environment.
+
+Retention checkpoint: all7 new cases were observed red before implementation,
+including the actual parent resource-refusal path through its owned child.
+After the retention repair and explicit synthetic-fixture capacity isolation,
+all46 CPU/package tests pass (1.72s); changed-file Ruff and diff checks pass.
+The production8GB floor is unchanged, malformed/foreign/installation receipts
+cannot be retained as accepted observations, and parent blocked status remains.
+No additional VM boot, install, GPU change, deletion or qualification claim.
