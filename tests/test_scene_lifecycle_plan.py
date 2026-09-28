@@ -58,6 +58,7 @@ def test_real_history_acquired_and_finished_observed_without_cleanup_authority(t
     assert report['selected_intent_provenance']['path'] == context['roots']['intent_root'] + '/' + intent_id + '/intent.json'
     assert report['historical_lineage']['source_family_inventory']['downstream_inventory']['seed']['history']['chain_validated']
     assert report['mutations'] == 0 and report['action'] == 'KEEP'
+    assert report['planner_context'] == context
     for flag in ('scene_inventory_complete', 'references_clear', 'process_fences_held', 'retirement_eligible',
                  'cleanup_authorized', 'restore_verified', 'fresh_remote_readback_verified'):
         assert report[flag] is False
