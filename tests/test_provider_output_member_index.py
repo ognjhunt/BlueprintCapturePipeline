@@ -542,6 +542,7 @@ def test_zip64_records_are_indexed():
             for row in index["members"]] == [0, 20, 24]
 
 
+@pytest.mark.slow  # hashes 4 GiB of zeros; the zip64 and memory tests keep fast coverage
 def test_virtual_multi_gigabyte_archive_is_indexed_without_allocating_its_bytes(monkeypatch):
     block = 8 * 1024**2
     archive = build_zip([

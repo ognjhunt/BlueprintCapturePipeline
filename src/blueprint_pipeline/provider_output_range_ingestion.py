@@ -30,7 +30,6 @@ import zlib
 from .decision_evidence_contracts import canonical_digest
 from .provider_output_disk_capacity import observe_provider_output_disk_capacity
 from .provider_output_member_index import (
-    MAX_ARCHIVE_ENTRIES,
     MemberInflater,
     ProviderOutputMemberIndexError,
     check_archive_entries,
@@ -45,7 +44,6 @@ from .provider_signed_object_binding import signed_output_object_binding_sha256
 SCHEMA = 'provider_output_ingestion_binding.v1'
 FLOOR_BYTES = 8 * 1024**3
 CHUNK_BYTES = 1024**2
-MAX_ENTRIES = MAX_ARCHIVE_ENTRIES
 MAX_JSON_BYTES = 128 * 1024**2
 MAX_JOURNAL_BYTES = 256 * 1024**2
 
@@ -543,11 +541,32 @@ def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selecti
     Each selected member is one range request for its record data under the
     reader's pinned ETag, inflated in bounded steps and checked against the
     index's CRC-32 and SHA-256 before it is renamed into place read-only (0440).
-    Unselected members are never requested or written. ``reserve(bytes)`` runs
-    before each member is written with the bytes still needed; a typed refusal
-    it raises stops writing and leaves the journal resumable.
-    ``disk_usage_provider``, when given, is sampled before and after each
-    member write. Resuming under another index or selection is refused.
+    Unselected members are never requested or written. ``disk_usage_provider``,
+    when given, is sampled before and after each member write.
+
+    ``reserve(bytes)`` is called before each member write with the total still
+    outstanding for the run: that member and every later one, less what their
+    partial files already hold. Each call supersedes the previous one, so a
+    caller keeps a single reservation and resizes it. A refusal it raises stops
+    writing and leaves the journal resumable.
+
+    On resume a verified member is never fetched again. A member interrupted
+    mid-transfer is fetched again from its data offset with one range request;
+    the bytes its partial file holds are compared, not trusted or rewritten.
+    Only runs that record a member create a journal file, and a resume refuses
+    more than 256 of them.
+
+    Refusals found before the run starts, including taking the lock and
+    checking the binding, raise ``ProviderOutputIngestionError`` and write no
+    receipt: an invalid index or selection or one bound to another index, a
+    CAS reference that is invalid or names another archive, overlapping roots
+    or roots on different devices, symlinked roots or a root holding files this
+    binding did not write, a run already in progress, and a metadata root bound
+    to another index or selection (``provider_output_resume_binding_mismatch``).
+    Every later failure returns a receipt, also written to ``receipt.json``,
+    with status ``blocked`` (``not_ready`` for a missing object): transport and
+    presign failures, ``reserve`` refusals, digest mismatches, a changed remote,
+    journal or member tree, and I/O errors.
     """
     try:
         validate_member_index(index)

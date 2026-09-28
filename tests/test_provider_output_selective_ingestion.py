@@ -227,7 +227,7 @@ def test_runs_that_record_nothing_leave_no_journal_and_never_wedge_resume(tmp_pa
     assert again["status"] == "materialized" and again["resumed_member_count"] == len(EPISODES)
     assert len(list((tmp_path / "ingestion").glob("members-*.jsonl"))) == 1
 
-def test_interrupted_member_resumes_from_its_partial_file(tmp_path, indexed):
+def test_interrupted_member_is_fetched_again_and_its_partial_rechecked(tmp_path, indexed):
     archive, index = indexed
     frame = _rows(index)["runtime/frames/0001.png"]
     store, reservations = RangeStore(archive), []

@@ -34,7 +34,9 @@ local-header, data and record-end offsets; totals with bytes by class
 ``private_url_recorded: false``; and ``index_digest`` over the canonical JSON
 without that field. Which members a consumer materializes is not an archive
 fact. It lives in a separate, versioned selection bound to ``index_digest``
-(``build_member_selection``), never in the index.
+(``build_member_selection``), never in the index. The selection names member
+paths only; a per-member ``consumers`` map, and deriving the selection from a
+consumer contract, are deferred to that contract's change.
 
 Refusals raise ``ProviderOutputMemberIndexError`` whose message is a stable
 code: ``provider_output_archive_*`` for archive bytes and structure (the
@@ -57,8 +59,9 @@ components, ``a/../b`` (which resolves inside the root), components over 255
 bytes (which then fail at the filesystem), NUL-truncated or
 Unicode-path-overridden names, and case-folding or NFC duplicates: only exact
 duplicates are refused, and on a case-insensitive filesystem the later member
-overwrites the earlier. It does not refuse encryption, bzip2/lzma members or
-special file types before extracting, bounds expansion by a ratio of the
+overwrites the earlier. Before extracting it refuses symlinks, but not
+encryption, bzip2/lzma members or other special file types (FIFOs and devices
+are extracted as regular files); it bounds expansion by a ratio of the
 declared archive ceiling, and restores archive permission bits. An index built
 here can therefore refuse an archive that lane would extract.
 """
