@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'lease_lane_lock'])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow)])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -146,6 +146,17 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
                     os.close(lock)
             return actual_truncate(fd, size)
         monkeypatch.setattr(restore.os, 'ftruncate', truncate_under_lane_lock)
+    if certificate_case == 'slow_readback':
+        import time
+        original_get = cloud.get_object
+        delayed = False
+        def slow_get(**kwargs):
+            nonlocal delayed
+            if not delayed:
+                delayed = True
+                time.sleep(6)
+            return original_get(**kwargs)
+        monkeypatch.setattr(cloud, 'get_object', slow_get)
     arguments = dict(expected_restore_intent=grant['restore_intent'], installed_config_path=value[0],
         now=lambda: 2902, _pins_root=value[0].parent / 'pins')
     if certificate_case == 'activation_crash':
