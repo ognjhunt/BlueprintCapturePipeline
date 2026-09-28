@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from . import completed_replay_cache_retention as retention
+from . import control_plane_replay_cache_shared_scratch as shared_scratch
 
 SCHEMA_VERSION = "control_plane_replay_cache_gc.v1"
 REPLAY_PARENT_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS"
@@ -87,6 +88,7 @@ def reclaim_replay_caches(
     classifier: Callable[..., Any],
     minimum_closed_seconds: int = DEFAULT_MINIMUM_CLOSED_SECONDS,
     process_root: Path = Path("/proc"),
+    shared_scratch_enabled: bool = False,
 ) -> dict[str, Any]:
     """Estimate every activation's lookahead; plan and remove its copies only when applying and enabled.
 
@@ -113,6 +115,7 @@ def reclaim_replay_caches(
         "removed_bytes": 0,
     }
     rows: dict[str, list[dict[str, Any]]] = {"kept": [], "skipped": [], "errors": []}
+    lookaheads: list[Path] = []
     for root in roots:
         for activation in sorted(root.iterdir()):
             lookahead = activation / LOOKAHEAD_DIRECTORY
@@ -122,6 +125,7 @@ def reclaim_replay_caches(
             if not activation.is_dir() or not lookahead.is_dir():
                 continue
             report["replay_root_count"] += 1
+            lookaheads.append(lookahead)
             scope = {"replay_root": lookahead, "minimum_closed_seconds": minimum_closed_seconds,
                      "now": now(), **_RULES}
             try:
@@ -139,6 +143,20 @@ def reclaim_replay_caches(
                     rows["skipped"].extend(result["skipped"])
             except Exception as exc:  # noqa: BLE001 - one lookahead never costs the others
                 rows["errors"].append({"root": str(lookahead), "error": type(exc).__name__})
+    # After every lookahead's own pass, so the inodes one replay holds alone are gone first.
+    shared_applies = applying and bool(shared_scratch_enabled)
+    try:
+        shared = shared_scratch.reclaim_shared_scratch(
+            lookaheads, now=now(), minimum_closed_seconds=minimum_closed_seconds, apply=shared_applies,
+            check_readers=applying, process_root=process_root)
+    except Exception as exc:  # noqa: BLE001 - the lookaheads' own passes stand
+        rows["errors"].append({"scope": "shared_scratch", "error": type(exc).__name__})
+        shared = {"status": "error", "error": type(exc).__name__}
+    else:
+        if shared_applies:
+            report["candidate_bytes"] += shared["candidate_bytes"]
+            report["removed_bytes"] += shared["removed_bytes"]
+    report["shared_scratch"] = shared
     for key, values in rows.items():
         report[key] = values[:_MAX_ROWS]
         report[f"omitted_{key}_count"] = max(0, len(values) - _MAX_ROWS)

@@ -1263,6 +1263,7 @@ def run_storage_gc(
     replay_parent_roots: Sequence[str | Path] = (),
     replay_cache_retention_enabled: bool = False,
     replay_cache_retention_alert: str | None = None,
+    replay_cache_shared_scratch_enabled: bool = False,
     extended_pin_proofs_enabled: bool = False,
     extended_pin_proofs_alert: str | None = None,
     standing_authorization_dir: str | Path | None = None,
@@ -1474,7 +1475,7 @@ def run_storage_gc(
     if replay_present:
         _isolated(report, "replay_caches", lambda: reclaim_replay_caches(
             parent_roots=replay_present, apply=apply, enabled=replay_cache_retention_enabled,
-            now=clock, classifier=classifier))
+            now=clock, classifier=classifier, shared_scratch_enabled=replay_cache_shared_scratch_enabled))
         if replay_cache_retention_alert and isinstance(report.get("replay_caches"), dict):
             report["replay_caches"]["alerts"] = [replay_cache_retention_alert]
     scene_present, absent = _existing(scene_workspace_roots)
