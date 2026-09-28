@@ -51,6 +51,10 @@ def test_covers_the_canonical_allocator() -> None:
     assert ALLOCATOR in CONTROL_PLANE_ENTRYPOINTS
 
 
+def test_covers_scene_consumer_startup_fence() -> None:
+    assert 'blueprint_pipeline.task_evaluation_scene_retirement_supervisor' in CONTROL_PLANE_ENTRYPOINTS
+
+
 def test_reports_ready_when_every_entrypoint_imports() -> None:
     report = build_production_runtime_env_guard(READY_ENV, import_module=lambda name: object())
     assert report["status"] == "ready"
