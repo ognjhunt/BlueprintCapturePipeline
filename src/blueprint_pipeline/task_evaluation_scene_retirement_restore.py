@@ -172,10 +172,12 @@ def restore_records(preserved,journal):
     for index,member in enumerate(preserved['members']):
         journal.allowance.tick()
         yield 'restoring',str(index),{'canonical_path':member['path']}
-        yield 'restore_directory_created',str(index),dict(canonical_path=member['path'],relative_path='',restore_identity=identity)
+        yield 'restore_directory_created',str(index),dict(canonical_path=member['path'],relative_path='',
+            restore_identity=identity,parent_identity=identity,restore_uid=2**32-1,restore_gid=2**32-1)
     for row in preserved['directories']:
         journal.allowance.tick()
-        yield 'restore_directory_created',str(row['member_index']),dict(relative_path=row['relative_path'],restore_identity=identity)
+        yield 'restore_directory_created',str(row['member_index']),dict(relative_path=row['relative_path'],
+            restore_identity=identity,parent_identity=identity,restore_uid=2**32-1,restore_gid=2**32-1)
     for row in preserved['files']:
         journal.allowance.tick()
         yield 'restore_file_created',str(row['member_index']),dict(relative_path=row['relative_path'],restore_identity=identity,sha256=row['sha256'])
@@ -184,15 +186,92 @@ def restore_records(preserved,journal):
         yield 'member_restored',str(index),dict(canonical_path=member['path'],outcome='restored',restore_identity=identity)
 
 
+def _created_destinations(preserved,roots,journal):
+    """Only the exact journal-created inode can become a resumed destination."""
+    expected_files={(row['member_index'],row['relative_path']):row for row in preserved['files']}
+    expected_dirs={(row['member_index'],row['relative_path']):row for row in preserved['directories']}
+    expected_dirs.update({(index,''):row for index,row in enumerate(preserved['members'])})
+    directories,files,directory_proofs={},{},{}
+    for event in journal.events:
+        journal.allowance.tick()
+        kind=event['event']
+        if kind not in {'restore_directory_created','restore_file_created'}:
+            continue
+        index=int(event['member_key'])
+        proof=event['evidence']
+        key=index,proof.get('relative_path')
+        expected=expected_dirs if kind=='restore_directory_created' else expected_files
+        target=directories if kind=='restore_directory_created' else files
+        _require(key in expected and key not in target,'scene_retirement_restore_journal_unproven')
+        identity=proof.get('restore_identity')
+        _require(type(identity) is list and len(identity)==3
+                 and all(type(value) is int and value>=0 for value in identity),
+                 'scene_retirement_restore_journal_unproven')
+        if key[1]=='':
+            _require(proof.get('canonical_path')==str(roots[index]),'scene_retirement_restore_journal_unproven')
+        if kind=='restore_file_created':
+            _require(proof.get('sha256')==expected[key]['sha256'],'scene_retirement_restore_journal_unproven')
+        else:
+            _require(all(type(proof.get(field)) is int and 0<=proof[field]<=2**32-1
+                         for field in ('restore_uid','restore_gid'))
+                     and type(proof.get('parent_identity')) is list and len(proof['parent_identity'])==3,
+                     'scene_retirement_restore_journal_unproven')
+            directory_proofs[key]=proof
+        target[key]=tuple(identity)
+    inode_counts={}
+    found_files=[]
+    for index,root in enumerate(roots):
+        if (index,'') not in directories:
+            continue
+        actual_files,actual_dirs=[],[]
+        member=_scan(root,index,journal.allowance,actual_files,actual_dirs)
+        actual_dirs.append(dict(member,relative_path=''))
+        _require({(index,row['relative_path']) for row in actual_files}=={key for key in files if key[0]==index}
+                 and {(index,row['relative_path']) for row in actual_dirs}=={key for key in directories if key[0]==index},
+                 'scene_retirement_restore_inventory_changed')
+        for row in actual_dirs:
+            key=index,row['relative_path']
+            old=directories[key]
+            original=expected_dirs[key]
+            proof=directory_proofs[key]
+            with _opened((root/row['relative_path']).parent,directory=True) as (_,parent):
+                _require(_identity(parent)[:2]==tuple(proof['parent_identity'][:2]),
+                         'scene_retirement_restore_inventory_changed')
+            _require(tuple(row['physical_identity'][:2])==old[:2]
+                     and ((row['uid']==proof['restore_uid'] and row['gid']==proof['restore_gid'] and row['mode']==0o700)
+                          or all(row[field]==original[field] for field in ('mode','uid','gid'))),
+                     'scene_retirement_restore_inventory_changed')
+            directories[key]=tuple(row['physical_identity'])
+        for row in actual_files:
+            key=index,row['relative_path']
+            original=expected_files[key]
+            _require(tuple(row['physical_identity'])==files[key]
+                     and all(row[field]==original[field] for field in ('mode','uid','gid','size_bytes')),
+                     'scene_retirement_restore_inventory_changed')
+            digest=hashlib.sha256()
+            for chunk in _payload(root/row['relative_path'],row,journal.allowance):
+                digest.update(chunk)
+            _require('sha256:'+digest.hexdigest()==original['sha256'],'scene_retirement_restore_payload_changed')
+            inode=tuple(row['physical_identity'][:2])
+            inode_counts[inode]=inode_counts.get(inode,0)+1
+            found_files.append(row)
+    for row in found_files:
+        _require(row['snapshot'][-1]==inode_counts[tuple(row['physical_identity'][:2])],
+                 'scene_retirement_restore_shared_inode')
+    return directories,files
+
+
 def restore_preserved_members(preserved,*,transport,journal):
     """Internal: verify full union FIRST, claim absent roots and publish no-replace."""
     allowance=journal.allowance
     journal.preflight(restore_records(preserved,journal))
     _consume(preserved,transport,allowance)  # No local destination exists or is touched here.
     roots=[Path(row['path']) for row in preserved['members']]
-    directories={}
+    directories,file_identities=_created_destinations(preserved,roots,journal)
     for index,member in enumerate(preserved['members']):
         root=roots[index]
+        if (index,'') in directories:
+            continue
         journal.append('restoring',member_key=str(index),evidence={'canonical_path':str(root)})
         with _opened(root.parent,directory=True) as (parent,info):
             expected=_identity(info)
@@ -208,10 +287,13 @@ def restore_preserved_members(preserved,*,transport,journal):
             _current_parent(root.parent,parent,expected)
             os.fsync(parent)
             journal.append('restore_directory_created',member_key=str(index),evidence={
-                'canonical_path':str(root),'relative_path':'','restore_identity':list(directories[(index,'')])})
+                'canonical_path':str(root),'relative_path':'','restore_identity':list(directories[(index,'')]),
+                'parent_identity':list(expected),'restore_uid':born.st_uid,'restore_gid':born.st_gid})
     for row in sorted(preserved['directories'],key=lambda item:len(Path(item['relative_path']).parts)):
         index=row['member_index']
         relative=Path(row['relative_path'])
+        if (index,str(relative)) in directories:
+            continue
         parent_relative='' if str(relative.parent)=='.' else str(relative.parent)
         parent_path=roots[index]/relative.parent
         expected=directories[(index,parent_relative)]
@@ -227,9 +309,18 @@ def restore_preserved_members(preserved,*,transport,journal):
             _current_parent(parent_path,fd,expected)
             os.fsync(fd)
         journal.append('restore_directory_created',member_key=str(index),evidence={
-            'relative_path':str(relative),'restore_identity':list(directories[(index,str(relative))])})
+            'relative_path':str(relative),'restore_identity':list(directories[(index,str(relative))]),
+            'parent_identity':list(expected),'restore_uid':born.st_uid,'restore_gid':born.st_gid})
     groups={}
-    file_identities={}
+    for row in preserved['files']:
+        key=row['member_index'],row['relative_path']
+        if key not in file_identities or row['hardlink_group'] is None:
+            continue
+        group=row['hardlink_group']
+        if group in groups:
+            _require(groups[group][1][:2]==file_identities[key][:2],'scene_retirement_restore_inventory_changed')
+        else:
+            groups[group]=(roots[key[0]]/key[1],file_identities[key])
     @contextmanager
     def file_sink(row):
         index=row['member_index']
@@ -238,6 +329,12 @@ def restore_preserved_members(preserved,*,transport,journal):
         parent_path=roots[index]/relative.parent
         expected=directories[(index,parent_relative)]
         group=row['hardlink_group']
+        if (index,str(relative)) in file_identities:
+            yield lambda chunk:None  # Entire remote row remains independently verified.
+            with _opened(roots[index]/relative) as (_,info):
+                _require(_identity(info)==file_identities[(index,str(relative))],
+                         'scene_retirement_restore_inventory_changed')
+            return
         with _opened(parent_path,directory=True) as (parent,info):
             _require(_identity(info)==expected)
             if group is not None and group in groups:
@@ -360,6 +457,10 @@ def restore_preserved_members(preserved,*,transport,journal):
     _verify_restored(preserved,roots,directories,file_identities,allowance)
     for index,root in enumerate(roots):
         outcome=dict(canonical_path=str(root),outcome='restored',restore_identity=list(directories[(index,'')]))
-        journal.append('member_restored',member_key=str(index),evidence=outcome)
+        existing=[event for event in journal.events if event['event']=='member_restored' and event['member_key']==str(index)]
+        _require(len(existing)<=1 and (not existing or existing[0]['evidence']==outcome),
+                 'scene_retirement_restore_journal_unproven')
+        if not existing:
+            journal.append('member_restored',member_key=str(index),evidence=outcome)
         outcomes.append(outcome)
     return outcomes
