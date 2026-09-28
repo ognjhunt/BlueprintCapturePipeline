@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow)])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -157,6 +157,21 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
                 time.sleep(6)
             return original_get(**kwargs)
         monkeypatch.setattr(cloud, 'get_object', slow_get)
+    if certificate_case == 'slow_restored_hash':
+        import os
+        import time
+        from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+        actual_read = actions.os.read
+        delayed_hash = False
+        def slow_member_hash(fd, amount):
+            nonlocal delayed_hash
+            # Only a genuinely restored destination file, never metadata or stage IO.
+            destination = target / 'native_g1_development_pair.v1.json'
+            if destination.exists() and os.fstat(fd).st_ino == destination.stat().st_ino and not delayed_hash:
+                delayed_hash = True
+                time.sleep(6)
+            return actual_read(fd, amount)
+        monkeypatch.setattr(actions.os, 'read', slow_member_hash)
     arguments = dict(expected_restore_intent=grant['restore_intent'], installed_config_path=value[0],
         now=lambda: 2902, _pins_root=value[0].parent / 'pins')
     if certificate_case == 'before_stage_crash':
