@@ -32,10 +32,12 @@ class _PublicationState:
     temp_present: bool = True
 
 
-def _parent_guard(files, state):
+def _parent_guard(files, state, *, cleanup=False):
     _require(files.proof(state.parent) == state.parent_proof, "owner_target_publication_failed")
     fd, depth = state.parent, 0
     while fd is not None:
+        if not cleanup:
+            files.budget.tick()
         _require(depth < 64 and fd in files.bindings, "owner_target_publication_failed")
         files.proof(fd)
         parent, name, security = files.bindings[fd]
@@ -59,7 +61,7 @@ def _publication_guard(files, state, *, stage, cleanup=False):
              "owner_target_publication_failed")
     if not cleanup:
         files.budget.tick()
-    _parent_guard(files, state)
+    _parent_guard(files, state, cleanup=cleanup)
     _require(files.proof(state.fd) == state.temp_proof, "owner_target_publication_failed")
     actual = os.fstat(state.fd)
     _require(_typed(actual) == state.temp_proof and actual.st_uid == actual.st_gid == 0
@@ -108,6 +110,8 @@ def _publish_owned_metadata(files, parent, name, payload, *, mode, artifact_kind
     files.budget.charge("output_bytes", len(payload))
     _require(len(files.publication_states) < 2, "owner_target_resource_exhausted")
     parent_proof = files.proof(parent)
+    parent_scope = _PublicationState(parent, -1, "", name, parent_proof, (), artifact_kind, mode)
+    _parent_guard(files, parent_scope)
     try:
         os.stat(name, dir_fd=parent, follow_symlinks=False)
     except FileNotFoundError:
