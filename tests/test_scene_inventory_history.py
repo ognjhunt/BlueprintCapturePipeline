@@ -10,7 +10,7 @@ import json
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
-from test_scene_source_attempt_lineage import fixture as source_fixture, pair, ref
+from tests.test_scene_source_attempt_lineage import fixture as source_fixture, pair, ref
 
 ROLES = ("events", "attempts", "source_snapshots", "factories", "source_submissions",
          "preparation_links", "preparation_envelopes", "preparation_results",

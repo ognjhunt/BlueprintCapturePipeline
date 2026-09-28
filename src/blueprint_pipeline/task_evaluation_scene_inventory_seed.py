@@ -28,7 +28,7 @@ _EVENT_FIELDS = {"schema_version", "intent_id", "intent_digest", "sequence", "pr
 _EVENT_STATUSES = {"accepted", "preparing", "awaiting_source", "awaiting_execution", "running", "completed", "needs_input", "blocked"}
 _REF_ROLES = {"attempt": "attempts", "factory": "factories", "preparation_link": "preparation_links",
               "preparation_result": "preparation_results", "activation_link": "preparation_links"}
-_DEFERRED = {"preparation_failure", "configuration_failure", "failure", "activation", "submission",
+_DEFERRED = {"preparation_failure", "configuration_failure", "failure", "activation", "launch", "submission",
              "publication", "settlement", "lookahead"}
 
 
@@ -140,7 +140,24 @@ def _history(decoded: dict, intent: dict, roots: dict, reasons: set) -> tuple:
             "chain_validated": bool(events), "host_history_complete": False}, events
 
 
-def _obligations(events: dict, decoded: dict, reasons: set) -> tuple:
+def _supported_path(role: str, path: str, roots: dict, intent_id: str) -> bool:
+    root = roots["factory_output_root"] if role == "factory" else roots["preparation_queue_root"] if role == "preparation_result" else roots["intent_root"]
+    try:
+        parts = PurePosixPath(path).relative_to(PurePosixPath(root)).parts
+    except ValueError:
+        return False
+    if role == "preparation_result":
+        return len(parts) == 2 and parts[0] == "results" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}-[0-9a-f]{64}\.json", parts[1]) is not None
+    if not parts or parts[0] != intent_id:
+        return False
+    if role == "factory":
+        return len(parts) in (3, 4) and retained._matches(parts[1], retained._ID) and parts[2:] in (("factory.json",), ("materialized", "factory_receipt.json"))
+    if role == "attempt":
+        return len(parts) == 3 and parts[1] in {"attempts", "preparation-attempts"} and parts[2].endswith(".json") and retained._matches(parts[2][:-5], retained._ID)
+    return len(parts) == 3 and parts[1] == "preparations" and re.fullmatch(r"[0-9a-f]{64}(?:\.activation)?\.json", parts[2]) is not None
+
+
+def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_id: str) -> tuple:
     local, remote, occurrences, deferred = {}, {}, 0, 0
     index = {_identity(row): (role, row) for role, rows in decoded.items() for row in rows}
     def add(role, ref, sequence):
@@ -173,12 +190,13 @@ def _obligations(events: dict, decoded: dict, reasons: set) -> tuple:
     for key, sequences in sorted(local.items()):
         role, path, digest, size = key
         match = index.get((path, digest, size))
-        reason = None if match and match[0] == _REF_ROLES[role] else (
-            "historical_reference_role_unproven" if match else "historical_reference_bytes_unavailable")
+        supported = _supported_path(role, path, roots, intent_id)
+        reason = "historical_reference_role_unproven" if not supported or (match and match[0] != _REF_ROLES[role]) else (
+            None if match else "historical_reference_bytes_unavailable")
         if reason:
             reasons.add(reason)
         rows.append({"role": role, "path": path, "sha256": digest, "size_bytes": size, "event_sequences": sorted(sequences),
-                     "status": "matched_retained_bytes" if reason is None else "kept_deferred" if match else "kept_unresolved",
+                     "status": "matched_retained_bytes" if reason is None else "kept_deferred" if reason == "historical_reference_role_unproven" else "kept_unresolved",
                      "reason": reason, "source_provenance": match[1][1] if reason is None else None})
     for (uri, digest, size), sequences in sorted(remote.items()):
         rows.append({"role": "remote_result_reference", "uri": uri, "digest": digest, "size_bytes": size,
@@ -346,7 +364,7 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
         if contract is not None:
             _require(all(row[field] == contract[field] for field in ("uri", "digest", "size_bytes")), "request_reference_rebound")
             observed.add(row["contract_path"])
-        elif promote:
+        if contract is None or not promote:
             deferred.append({**row, "preparation_id": context["link"]["preparation_id"], "source_provenance": [provenance],
                              "binding_strength": "result_receipt_only", "reason": "deferred_parent_reference_proof"})
         if promote and contract is not None:
@@ -364,7 +382,8 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
             if _identity((value, provenance)) not in budget["provenances"][path]:
                 budget["provenances"][path].add(_identity((value, provenance)))
                 existing["source_provenance"].append(provenance)
-            shared[(row["digest"], row["size_bytes"])] = {"digest": row["digest"], "size_bytes": row["size_bytes"],
+            _require(row["digest"] not in shared or shared[row["digest"]]["size_bytes"] == row["size_bytes"], "cache_identity_conflict")
+            shared[row["digest"]] = {"digest": row["digest"], "size_bytes": row["size_bytes"],
                 "path": retained._child(roots["content_store_root"], row["digest"][7:]), "exclusive_scene_membership": False}
     if promote and set(request_refs) - observed:
         reasons.add("request_projection_missing")
@@ -392,6 +411,10 @@ def _results(decoded: dict, context: dict, roots: dict, reasons: set, members: l
                  and value.get("preparation_id") == link["preparation_id"]
                  and retained._matches(value.get("source_commit"), _COMMIT), "result_invalid")
         retained._seal(value, provenance, "result_digest")
+        missing["count"] += 1
+        _require(missing["count"] <= MAX_REFERENCES, "references_limit")
+        missing["raw"].append({"role": "preparation_result", **{key: provenance[key] for key in ("path", "sha256", "size_bytes")},
+                               "event_sequences": [], "status": "matched_retained_bytes", "reason": None, "source_provenance": provenance})
         status = value.get("status")
         _require(isinstance(status, str), "result_invalid")
         flags = ("provider_mutation_performed", "catalog_mutation_performed", "paid_execution_requested")
@@ -431,7 +454,7 @@ def _results(decoded: dict, context: dict, roots: dict, reasons: set, members: l
 
 
 def _configurations(decoded: dict, context: dict, materialized: dict, roots: dict, reasons: set, members: list, missing: dict) -> None:
-    envelopes = {}
+    envelopes, seen = {}, set()
     identifier = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}\Z")
     for value, provenance in decoded["activation_envelopes"]:
         _require(value.get("schema_version") == "task_evaluation_launch_activation_envelope.v1", "activation_invalid")
@@ -463,6 +486,7 @@ def _configurations(decoded: dict, context: dict, materialized: dict, roots: dic
             _shape(value.get(field), retained._DIGEST, "configuration_invalid")
         _shape(value.get("activation_id"), identifier, "configuration_invalid")
         group = context[preparation_id]
+        seen.add(preparation_id)
         for field in ("team_namespace", "scene_id", "task_id", "expected_production_commit"):
             _require(value.get(field) == group["link"][field], "configuration_identity_invalid")
         _require(value["preparation_request_digest"] == group["link"]["request_digest"], "configuration_identity_invalid")
@@ -484,6 +508,11 @@ def _configurations(decoded: dict, context: dict, materialized: dict, roots: dic
             members.append(_member(str(PurePosixPath(provenance["path"]).parent), "configuration_progression_workspace",
                 {"preparation_id": preparation_id, "request_digest": value["preparation_request_digest"], "result_digest": value["preparation_result_digest"]},
                 list(group["sources"]) + [provenance, result[1], envelope[1]]))
+    for key in sorted(set(context) - seen):
+        reasons.add("configuration_join_unresolved")
+        _missing(context[key], "configuration_progression", retained._child(roots["configuration_progression_root"],
+            "scene-configuration-activations", key, "activation_progression.json"), roots["configuration_progression_root"], set(),
+            "configuration_join_unresolved", missing)
     _require(not envelopes, "activation_unmatched")
 
 
@@ -511,13 +540,18 @@ def _join(intent_id: str, records: Any, roots: Any) -> dict:
     retained._intent(intent, provenance, intent_id, roots["intent_root"])
     reasons, members = set(), []
     history, events = _history(decoded, intent, roots, reasons)
-    obligations, deferred, count = _obligations(events, decoded, reasons)
+    obligations, deferred, count = _obligations(events, decoded, reasons, roots, intent_id)
     missing = {"count": count, "joins": [], "projections": [], "raw": []}
     source_rows = _sources(intent_id, records, roots, reasons, members)
     context = _preparations(decoded, records, intent, roots, reasons, members, missing)
     shared, deferred_results, materialized = _results(decoded, context, roots, reasons, members, missing)
     _configurations(decoded, context, materialized, roots, reasons, members, missing)
-    obligations = sorted(obligations + missing["raw"], key=lambda row: (row["role"], row.get("path", row.get("uri", "")), row.get("sha256", row.get("digest", "")), row["size_bytes"]))
+    def obligation_key(row):
+        return row["role"], row.get("path", row.get("uri", "")), row.get("sha256", row.get("digest", "")), row["size_bytes"]
+    obligation_index = {obligation_key(row): row for row in obligations}
+    for row in missing["raw"]:
+        obligation_index.setdefault(obligation_key(row), row)
+    obligations = [obligation_index[key] for key in sorted(obligation_index)]
     result = {"schema_version": "task_evaluation_scene_inventory_seed.v1", "status": "kept_unresolved" if reasons else "joined_supplied_seed",
               "scope": "supplied_retained_history_and_preparation_records", "intent_id": intent_id,
               "intent_digest": intent["intent_digest"], "intent_provenance": provenance, "history": history,
