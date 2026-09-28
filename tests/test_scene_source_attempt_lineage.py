@@ -159,3 +159,120 @@ def test_administrative_exact_fields_and_zero_contract(extra):
 
 def test_namespace_requires_historical_identifier_not_relative_path():
     refuses(fixture(edits={"request": lambda obj: obj["publication"].update(input_namespace="not/a/namespace")}))
+
+
+@pytest.mark.parametrize("family", list(FAMILIES))
+def test_missing_each_available_proof_is_kept_not_absent(family):
+    for group in ("snapshot_records", "factory_records", "submission_records"):
+        for index in range(len(fixture(family)[group])):
+            args = fixture(family)
+            removed = args[group].pop(index)
+            result = module().join_scene_source_attempt_lineage(**args)
+            row = result["attempts"][0]
+            assert row["status"] == "kept_unresolved"
+            assert row["workspace_membership_bound"] is False
+            assert row["preparation_identity"] is None
+            assert result["bound_workspace_count"] == 0
+            assert removed[0] not in {p["path"] for p in row["source_provenance"]}
+            assert len(row["source_provenance"]) == 6
+
+
+def test_missing_earlier_proof_does_not_hide_available_bad_record_or_edge():
+    for role, group in (("release", "snapshot_records"), ("factory", "factory_records"),
+                        ("manifest", "submission_records")):
+        args = fixture(edits={role: lambda obj: obj.update(schema_version="foreign")})
+        args["snapshot_records"] = args["snapshot_records"][1:]
+        assert args[group]
+        refuses(args)
+    args = fixture(edits={"request": lambda obj: obj.update(expected_production_commit="c" * 40)})
+    args["factory_records"] = []
+    refuses(args)
+
+
+def test_all_missing_proof_lists_three_kept_reasons():
+    args = fixture()
+    for group in ("snapshot_records", "factory_records", "submission_records"):
+        args[group] = []
+    row = module().join_scene_source_attempt_lineage(**args)["attempts"][0]
+    assert row["reasons"] == ["source_factory_missing", "source_snapshot_missing", "source_submission_missing"]
+
+
+def test_public_retained_prefix_uses_exact_raw_snapshot_references():
+    result = module().join_scene_source_attempt_lineage(**fixture("public"))
+    row = result["attempts"][0]
+    assert row["source_family"] == "public" and row["workspace_membership_bound"] is True
+    assert row["snapshot_binding_strength"] == "factory_raw_references"
+    for role in ("intent", "attempt", "source_binding", "machinery", "release"):
+        args = fixture("public", edits={"factory": lambda obj: obj["identity"][role].update(sha256="sha256:" + "c" * 64)})
+        refuses(args)
+
+
+@pytest.mark.parametrize(("role", "edit"), [
+    ("binding", lambda obj: obj.update(intent_task_digest="sha256:" + "c" * 64)),
+    ("machinery", lambda obj: obj.update(retained_prefix_only_binding_ids=[])),
+    ("machinery", lambda obj: obj.update(retained_prefix_only_binding_ids="binding-1")),
+    ("factory", lambda obj: obj["identity"].update(factory_started_at_epoch=True)),
+    ("intent", lambda obj: obj["request"]["source"].update(kind="mesh")),
+])
+def test_public_administrative_family_requires_retained_mode_and_owner_task(role, edit):
+    refuses(fixture("public", edits={role: edit}))
+
+
+def test_all_historical_attempts_survive_and_two_aliases_refuse():
+    args = fixture(alias="attempts")
+    next_args = fixture(attempt_id="source-new", commit="c" * 40)
+    for group in ("attempt_records", "snapshot_records", "factory_records", "submission_records"):
+        args[group] += next_args[group]
+    result = module().join_scene_source_attempt_lineage(**args)
+    assert result["attempt_count"] == result["bound_workspace_count"] == 2
+    assert [row["attempt_id"] for row in result["attempts"]] == [ATTEMPT, "source-new"]
+    assert result["attempts"][0]["attempt_alias"] == "attempts"
+    args = fixture()
+    path, raw = args["attempt_records"][0]
+    args["attempt_records"].append((path.replace("/preparation-attempts/", "/attempts/"), raw))
+    refuses(args, "attempt_ambiguous")
+
+
+@pytest.mark.parametrize("family", list(FAMILIES))
+def test_factory_aliases_are_family_specific_and_preserve_both_raw_proofs(family):
+    args = fixture(family)
+    path, raw = args["factory_records"][0]
+    local = path.removesuffix("/factory.json") + "/materialized/factory_receipt.json"
+    args["factory_records"].append((local, json.dumps(json.loads(raw), indent=1).encode()))
+    if family == "website":
+        refuses(args, "factory_path_invalid")
+        return
+    row = module().join_scene_source_attempt_lineage(**args)["attempts"][0]
+    proofs = [p for p in row["source_provenance"] if p["role"] == "factory"]
+    assert len(proofs) == 2 and proofs[0]["sha256"] != proofs[1]["sha256"]
+    args["factory_records"] = args["factory_records"][1:]
+    assert module().join_scene_source_attempt_lineage(**args)["bound_workspace_count"] == 1
+    value = json.loads(raw)
+    value["claim_scope"] = "changed"
+    value["factory_digest"] = canonical_digest(value, digest_field="factory_digest")
+    args["factory_records"].append(pair(path, value))
+    refuses(args, "factory_ambiguous")
+
+
+def test_paid_attempt_is_explicitly_out_of_scope_not_guessed_source_workspace():
+    args = fixture(edits={"attempt": lambda obj: obj.update(schema_version="task_evaluation_scene_attempt.v1",
+        provider="vast", maximum_spend_usd=50, status="reserved")})
+    path, raw = args["attempt_records"][0]
+    args["attempt_records"] = [(path.replace("/preparation-attempts/", "/attempts/"), raw)]
+    for group in ("snapshot_records", "factory_records", "submission_records"):
+        args[group] = []
+    row = module().join_scene_source_attempt_lineage(**args)["attempts"][0]
+    assert row["status"] == "kept_out_of_scope"
+    assert row["workspace_path"] is None and row["preparation_identity"] is None
+    assert row["reasons"] == ["paid_attempt_out_of_scope"]
+    assert "maximum_spend_usd" not in row and "provider" not in row
+    args["snapshot_records"] = fixture()["snapshot_records"]
+    refuses(args, "record_unmatched")
+
+
+def test_orphan_foreign_records_are_never_dropped():
+    for group in ("snapshot_records", "factory_records", "submission_records"):
+        args = fixture()
+        path, raw = args[group][0]
+        args[group].append((path.replace("/" + ATTEMPT + "/", "/unrelated/"), raw))
+        refuses(args, "record_unmatched")

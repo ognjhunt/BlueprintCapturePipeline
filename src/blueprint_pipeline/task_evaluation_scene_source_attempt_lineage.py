@@ -15,16 +15,20 @@ from .decision_evidence_contracts import canonical_digest
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _NAMESPACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}\Z")
 _ADMIN_SCHEMA = "task_evaluation_scene_preparation_attempt.v1"
+_PAID_SCHEMA = "task_evaluation_scene_attempt.v1"
 _ATTEMPT_FIELDS = {"schema_version", "intent_id", "intent_digest", "attempt_id", "source_commit",
                    "runtime_digest", "input_digest", "provider", "maximum_spend_usd", "status",
                    "paid_authority_granted", "provider_allocation_permitted", "attempt_digest"}
 _BINDINGS = {"task_evaluation_completed_scene_source.v1": "completed",
-             "website_scene_source_binding.v1": "website"}
+             "website_scene_source_binding.v1": "website",
+             "task_evaluation_public_source_binding.v1": "public"}
 _FACTORIES = {"task_evaluation_completed_scene_attempt_factory.v1": "completed",
-              "website_scene_attempt_factory.v1": "website"}
+              "website_scene_attempt_factory.v1": "website",
+              "task_evaluation_public_scene_attempt_factory.v1": "public"}
 _MACHINERY = {"completed": {"task_evaluation_completed_scene_machinery.v1"},
               "website": {"task_evaluation_website_scene_machinery.v1",
-                          "task_evaluation_completed_scene_machinery.v1"}}
+                          "task_evaluation_completed_scene_machinery.v1"},
+              "public": {"task_evaluation_public_scene_machinery.v1"}}
 _SNAPSHOTS = (("source_binding", "source_binding.json", "binding_digest"),
               ("machinery", "machinery.json", "machinery_digest"),
               ("release", "release_binding.json", "release_digest"))
@@ -58,22 +62,27 @@ def _reference(value: Any, path: str, record: tuple | None) -> None:
 def _attempt(value: dict, provenance: dict, intent: dict, directory: str) -> str:
     attempt_id = value.get("attempt_id")
     _shape(attempt_id, retained._ID, "attempt_invalid")
-    _require(value.get("schema_version") == _ADMIN_SCHEMA and set(value) == _ATTEMPT_FIELDS,
-             "attempt_invalid")
+    admin = value.get("schema_version") == _ADMIN_SCHEMA
+    _require(admin or value.get("schema_version") == _PAID_SCHEMA, "attempt_invalid")
+    if admin:
+        _require(set(value) == _ATTEMPT_FIELDS, "attempt_invalid")
     retained._seal(value, provenance, "attempt_digest", cross=True)
     _require(value.get("intent_id") == intent["intent_id"]
              and value.get("intent_digest") == intent["intent_digest"], "attempt_identity_invalid")
     _shape(value.get("source_commit"), _COMMIT, "attempt_invalid")
     for key in ("input_digest", "runtime_digest"):
         _shape(value.get(key), retained._DIGEST, "attempt_invalid")
-    spend = value.get("maximum_spend_usd")
-    _require(value.get("provider") == "control_plane" and type(spend) in (int, float) and spend == 0
-             and value.get("status") == "preparation_only" and value.get("paid_authority_granted") is False
-             and value.get("provider_allocation_permitted") is False, "attempt_invalid")
+    if admin:
+        spend = value.get("maximum_spend_usd")
+        _require(value.get("provider") == "control_plane" and type(spend) in (int, float) and spend == 0
+                 and value.get("status") == "preparation_only" and value.get("paid_authority_granted") is False
+                 and value.get("provider_allocation_permitted") is False, "attempt_invalid")
     aliases = {retained._child(directory, alias, attempt_id + ".json"): alias
                for alias in ("preparation-attempts", "attempts")}
     _require(provenance["path"] in aliases, "attempt_path_invalid")
-    return aliases[provenance["path"]]
+    alias = aliases[provenance["path"]]
+    _require(admin or alias == "attempts", "attempt_path_invalid")
+    return alias
 
 
 def _binding(value: dict, provenance: dict, intent: dict, attempt: dict) -> str:
@@ -84,14 +93,28 @@ def _binding(value: dict, provenance: dict, intent: dict, attempt: dict) -> str:
     _require(value.get("binding_id") == source["binding_id"]
              and value.get("source_content_digest") == source["content_digest"]
              and value.get("owner") == intent["request"]["owner"]
-             and value.get("intent_digest") == intent["intent_digest"]
-             and value.get("task_digest") == intent["task_content_digest"]
              and attempt["input_digest"] == value["binding_digest"], "binding_identity_invalid")
+    if family == "public":
+        _require(source["kind"] == "public_scene" and value.get("status") == "admitted_for_private_processing"
+                 and value.get("intent_task_digest") == intent["task_content_digest"], "binding_invalid")
+    else:
+        _require(value.get("intent_digest") == intent["intent_digest"]
+                 and value.get("task_digest") == intent["task_content_digest"], "binding_identity_invalid")
     if family == "completed":
         _require(source["kind"] in {"mesh", "gaussian_splat"}
                  and value.get("source_kind") == source["kind"]
                  and value.get("status") == "source_task_objects_bound", "binding_invalid")
     return family
+
+
+def _machinery(value: dict, intent: dict, family: str | None) -> None:
+    schema = value.get("schema_version")
+    _require(schema in set().union(*_MACHINERY.values())
+             and (family is None or schema in _MACHINERY[family]), "machinery_invalid")
+    if schema == "task_evaluation_public_scene_machinery.v1":
+        bindings = value.get("retained_prefix_only_binding_ids")
+        _require(isinstance(bindings, list) and all(retained._matches(item, retained._ID) for item in bindings)
+                 and intent["request"]["source"]["binding_id"] in bindings, "machinery_mode_invalid")
 
 
 def _release(value: dict, provenance: dict, attempt: dict) -> None:
@@ -153,53 +176,91 @@ def _factory(value: dict, provenance: dict, intent: dict, attempt: dict, family:
     if chosen == "completed":
         _require(value.get("source_kind") == intent["request"]["source"]["kind"]
                  and value["source_kind"] in {"mesh", "gaussian_splat"}, "factory_invalid")
+    if chosen == "public":
+        _require(intent["request"]["source"]["kind"] == "public_scene", "factory_invalid")
     return chosen
 
 
-def _workspace(intent: dict, attempt: dict, provenance: dict, alias: str, root: str, pools: list[dict]) -> dict:
+def _workspace(intent: dict, intent_provenance: dict, attempt: dict, provenance: dict,
+               alias: str, root: str, pools: list[dict]) -> dict:
     workspace = retained._child(root, intent["intent_id"], attempt["attempt_id"])
-    sources = [provenance]
+    sources, reasons = [provenance], set()
     snapshots = {}
     for role, filename, seal in _SNAPSHOTS:
         record = pools[0].pop(retained._child(workspace, filename), None)
-        _require(record is not None, "snapshot_missing")
+        if record is None:
+            reasons.add("source_snapshot_missing")
+            continue
         record[1]["role"] = role
         retained._seal(*record, seal)
         snapshots[role] = record
         sources.append(record[1])
-    family = _binding(*snapshots["source_binding"], intent, attempt)
-    _require(snapshots["machinery"][0].get("schema_version") in _MACHINERY[family], "machinery_invalid")
-    _release(*snapshots["release"], attempt)
+    family = _binding(*snapshots["source_binding"], intent, attempt) if "source_binding" in snapshots else None
+    if "release" in snapshots:
+        _release(*snapshots["release"], attempt)
     factories = []
     for path in (retained._child(workspace, "factory.json"),
                  retained._child(workspace, "materialized", "factory_receipt.json")):
         record = pools[1].pop(path, None)
         if record is not None:
-            _require(not (family == "website" and path.endswith("/factory_receipt.json")), "factory_path_invalid")
-            _factory(*record, intent, attempt, family)
+            chosen = _factory(*record, intent, attempt, family)
+            _require(not (chosen == "website" and path.endswith("/factory_receipt.json")), "factory_path_invalid")
+            family = chosen
             factories.append(record)
             sources.append(record[1])
-    _require(factories and all(record[0] == factories[0][0] for record in factories), "factory_ambiguous")
-    factory = factories[0][0]
+    _require(not factories or all(record[0] == factories[0][0] for record in factories), "factory_ambiguous")
+    if "machinery" in snapshots:
+        _machinery(snapshots["machinery"][0], intent, family)
+    factory = factories[0][0] if factories else None
+    if factory is None:
+        reasons.add("source_factory_missing")
+    if factory is not None and family == "public":
+        identity = factory.get("identity")
+        _require(isinstance(identity, dict) and set(identity) == {
+            "intent", "attempt", "source_binding", "machinery", "release", "factory_started_at_epoch"},
+            "factory_identity_invalid")
+        started = identity["factory_started_at_epoch"]
+        _require(type(started) in (int, float) and started >= 0, "factory_identity_invalid")
+        _reference(identity["intent"], intent_provenance["path"], (intent, intent_provenance))
+        _reference(identity["attempt"], provenance["path"], (attempt, provenance))
+        for role, filename, _ in _SNAPSHOTS:
+            _reference(identity[role], retained._child(workspace, filename), snapshots.get(role))
     submissions = {}
     for role, filename in _SUBMISSIONS:
         path = retained._child(workspace, "materialized", "submission", filename)
         record = pools[2].pop(path, None)
-        _reference(factory.get(role), path, record)
-        _require(record is not None, "submission_missing")
+        if factory is not None:
+            _reference(factory.get(role), path, record)
+        if record is None:
+            reasons.add("source_submission_missing")
+            continue
         record[1]["role"] = role
         submissions[role] = record
         sources.append(record[1])
-    request = submissions["submission_request"][0]
-    identity = _request(request, intent, attempt)
-    _manifest(*submissions["submission_manifest"], attempt, request)
+    request = submissions["submission_request"][0] if "submission_request" in submissions else None
+    identity = _request(request, intent, attempt) if request is not None else None
+    if "submission_manifest" in submissions:
+        _manifest(*submissions["submission_manifest"], attempt, request)
+    bound = not reasons
     return {"attempt_id": attempt["attempt_id"], "attempt_digest": attempt["attempt_digest"],
             "attempt_schema": attempt["schema_version"], "attempt_alias": alias,
             "source_commit": attempt["source_commit"], "runtime_digest": attempt["runtime_digest"],
-            "input_digest": attempt["input_digest"], "source_family": family, "status": "bound_retained_workspace",
-            "reasons": [], "workspace_path": workspace, "workspace_membership_bound": True,
-            "snapshot_binding_strength": "sealed_snapshots_at_expected_paths", "preparation_identity": identity,
+            "input_digest": attempt["input_digest"], "source_family": family,
+            "status": "bound_retained_workspace" if bound else "kept_unresolved",
+            "reasons": sorted(reasons), "workspace_path": workspace, "workspace_membership_bound": bound,
+            "snapshot_binding_strength": ("factory_raw_references" if family == "public"
+                                          else "sealed_snapshots_at_expected_paths") if bound else None,
+            "preparation_identity": identity if bound else None,
             "source_provenance": sorted(sources, key=lambda row: (row["role"], row["path"]))}
+
+
+def _paid_row(attempt: dict, provenance: dict, alias: str) -> dict:
+    return {"attempt_id": attempt["attempt_id"], "attempt_digest": attempt["attempt_digest"],
+            "attempt_schema": attempt["schema_version"], "attempt_alias": alias,
+            "source_commit": attempt["source_commit"], "runtime_digest": attempt["runtime_digest"],
+            "input_digest": attempt["input_digest"], "source_family": None, "status": "kept_out_of_scope",
+            "reasons": ["paid_attempt_out_of_scope"], "workspace_path": None, "workspace_membership_bound": False,
+            "snapshot_binding_strength": None, "preparation_identity": None, "source_provenance": [provenance]}
 
 
 def join_scene_source_attempt_lineage(*, intent_id: str, intent_record: Any, attempt_records: Any,
@@ -245,7 +306,8 @@ def _join(intent_id, intent_record, attempts, snapshots, factories, submissions,
         alias = _attempt(value, provenance, intent, directory)
         _require(value["attempt_id"] not in ids, "attempt_ambiguous")
         ids.add(value["attempt_id"])
-        rows.append(_workspace(intent, value, provenance, alias, roots["factory_output_root"], pools))
+        rows.append(_workspace(intent, intent_provenance, value, provenance, alias, roots["factory_output_root"], pools)
+                    if value["schema_version"] == _ADMIN_SCHEMA else _paid_row(value, provenance, alias))
     _require(not any(pools), "record_unmatched")
     result = {"schema_version": "task_evaluation_scene_source_attempt_lineage.v1", "status": "joined_supplied_records",
               "scope": "supplied_retained_source_attempt_records", "intent_id": intent_id,
