@@ -270,6 +270,58 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
 run chown -R --no-dereference "${SERVICE_USER}:${SERVICE_GROUP}" \
   "${HANDOFF_DIR}" \
   "${STATE_DIR}"
+# BEGIN scene retirement stores
+# Outside STATE_DIR: its legacy recursive ownership migration must never grant
+# service ownership of private consent, archive or recovery records. Provision
+# storage only; installing these directories does not issue or enable a policy.
+SCENE_RETIREMENT_ROOT="/var/lib/blueprint/scene-retirement"
+SCENE_RETIREMENT_STORES=(
+  "${SCENE_RETIREMENT_ROOT}"
+  "${SCENE_RETIREMENT_ROOT}/coordinator"
+  "${SCENE_RETIREMENT_ROOT}/generations"
+  "${SCENE_RETIREMENT_ROOT}/journals"
+  "${SCENE_RETIREMENT_ROOT}/journals/retired"
+  "${SCENE_RETIREMENT_ROOT}/journals.metadata"
+)
+SCENE_RETIREMENT_MODES=(755 755 700 700 700 750)
+SCENE_RETIREMENT_OWNERS=(root root "${SERVICE_USER}" root root root)
+# Preflight every named directory and ancestry before the first mutation.
+# Existing authority is validated, never repaired or recursively re-owned.
+for SCENE_INDEX in "${!SCENE_RETIREMENT_STORES[@]}"; do
+  SCENE_DIRECTORY="${SCENE_RETIREMENT_STORES[SCENE_INDEX]}"
+  SCENE_ANCESTOR="${SCENE_DIRECTORY}"
+  while [[ "${SCENE_ANCESTOR}" != / ]]; do
+    if [[ -L "${SCENE_ANCESTOR}" ]] || \
+       [[ -e "${SCENE_ANCESTOR}" && ! -d "${SCENE_ANCESTOR}" ]]; then
+      echo "ERROR: scene retirement storage contains a linked or non-directory component" >&2
+      exit 1
+    fi
+    if [[ "${DRY_RUN}" != true && -d "${SCENE_ANCESTOR}" && \
+          "${SCENE_ANCESTOR}" != "${SCENE_DIRECTORY}" ]]; then
+      SCENE_PARENT_UID="$(stat -c '%u' "${SCENE_ANCESTOR}")"
+      SCENE_PARENT_MODE="$(stat -c '%a' "${SCENE_ANCESTOR}")"
+      if [[ "${SCENE_PARENT_UID}" != 0 ]] || (( (8#${SCENE_PARENT_MODE} & 8#022) != 0 )); then
+        echo "ERROR: scene retirement storage ancestry is not root-protected" >&2
+        exit 1
+      fi
+    fi
+    SCENE_ANCESTOR="$(dirname -- "${SCENE_ANCESTOR}")"
+  done
+  if [[ "${DRY_RUN}" != true && -d "${SCENE_DIRECTORY}" ]]; then
+    SCENE_EXPECTED="${SCENE_RETIREMENT_OWNERS[SCENE_INDEX]}:${SERVICE_GROUP}:${SCENE_RETIREMENT_MODES[SCENE_INDEX]}"
+    if [[ "$(stat -c '%U:%G:%a' "${SCENE_DIRECTORY}")" != "${SCENE_EXPECTED}" ]]; then
+      echo "ERROR: existing scene retirement store has unexpected ownership or permissions" >&2
+      exit 1
+    fi
+  fi
+done
+run install -d -m 0755 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}"
+run install -d -m 0755 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/coordinator"
+run install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/generations"
+run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals"
+run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals/retired"
+run install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals.metadata"
+# END scene retirement stores
 # Host hygiene that used to be hand-applied: bound journald and age /var/tmp.
 run install -d -m 0755 /etc/systemd/journald.conf.d /etc/tmpfiles.d
 run install -m 0644 \
