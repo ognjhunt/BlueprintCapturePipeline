@@ -18,6 +18,48 @@ from tests.test_registered_experiment_birth import birth, prepare
 from tests.test_native_g1_development_pair import _paired_requests
 
 
+def test_contained_producer_forwards_admitted_paths_to_actual_native_validator(
+    installation, tmp_path, monkeypatch  # noqa: F811
+):
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    from blueprint_pipeline import native_g1_development_pair as pair
+
+    consumer, target, _, paths, bootstrap = _contained_bootstrap(
+        installation, tmp_path, monkeypatch
+    )
+    original_admit = consumer.RegisteredExperimentUse.admit
+    held = []
+
+    def admit(path, *, _producer_bootstrap_path):
+        use = original_admit(path, _producer_bootstrap_path=_producer_bootstrap_path,
+                             now=lambda: 1200)
+        held.append(use)
+        return use
+
+    monkeypatch.setattr(consumer.RegisteredExperimentUse, 'admit', staticmethod(admit))
+    # This portable case isolates the real input API. Actual kernel membership
+    # and successful child completion remain mandatory in the Linux test.
+    monkeypatch.setattr(contained, '_unit_membership', lambda *args: None)
+
+    class NativeInputVerified(Exception):
+        pass
+
+    def native_pair(*, request_paths, output_dir, mode, _registered_use):
+        assert [str(path) for path in request_paths] == [str(path) for path in paths]
+        assert output_dir == target and mode == 'local' and _registered_use is held[0]
+        _registered_use.check()
+        for path in request_paths:
+            # Exercise actual filesystem Path operations and raw native seals,
+            # without running hardware, providers or fabricating completion.
+            assert pair._sealed_json(path)['request_digest']
+        raise NativeInputVerified
+
+    monkeypatch.setattr(pair, 'run_g1_development_pair', native_pair)
+    with pytest.raises(NativeInputVerified):
+        contained._producer_main(bootstrap, target)
+    assert len(held) == 1 and held[0]._closed and not held[0].files.owned
+
+
 @pytest.mark.parametrize("caller", ["pair", "worker"])
 def test_registered_missing_use_refuses_before_request_or_payload_read(
     tmp_path, monkeypatch, caller
