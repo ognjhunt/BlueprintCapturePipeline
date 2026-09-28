@@ -1368,3 +1368,32 @@ def test_the_capped_runs_rotate_from_tick_to_tick(tmp_path) -> None:
 
     assert attempted == ["run-0", "run-1", "run-2"]
 
+
+def test_a_dry_run_tick_reads_the_queues_once_and_trusts_the_bulk_result(tmp_path, monkeypatch) -> None:
+    """While the phase only plans, a tick reads its queues once for every run and takes each run's
+    bulk result from the per-artifact offload it already ran, instead of running it again."""
+
+    runs = _three_ready_runs(tmp_path)
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    reads, bulk_checks = [], []
+    real_snapshot, real_bulk = residue.queue_snapshot, residue.offload_result_artifacts
+    monkeypatch.setattr(residue, "queue_snapshot", lambda roots: (reads.append(1), real_snapshot(roots))[1])
+    monkeypatch.setattr(residue, "offload_result_artifacts", lambda **kw: (bulk_checks.append(1), real_bulk(**kw))[1])
+
+    report = _tick(runs[0], pins, queue, apply=False)
+
+    assert [row["status"] for row in report["result_residue_offload"]["runs"]] == ["dry_run"] * 3
+    assert (len(reads), len(bulk_checks)) == (1, 0)
+
+
+def test_a_run_added_twice_in_a_tick_is_planned_once(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    tick = residue.ResidueTick(applying=False, enabled=False, hot_window_seconds=2 * DAY, protection_checker=None,
+                               publisher=None, now=lambda: NOW, queue_roots=())
+    bulk = {"status": "dry_run", "candidate_count": 0, "skipped": []}
+
+    tick.add(f.run, bulk)
+    tick.add(f.evidence / ".." / f.evidence.name / f.run.name, bulk)
+
+    assert [row["run"] for row in tick.phase()["runs"]] == [f.run.name]

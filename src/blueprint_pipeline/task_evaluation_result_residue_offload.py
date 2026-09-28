@@ -150,6 +150,7 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -502,44 +503,87 @@ def _dispatch_receipt_reason(root: Path, registry: Mapping[str, Any]) -> str | N
     return None
 
 
-def _queue_row_reason(run_name: str, queue_roots: Sequence[str | Path]) -> str | None:
-    """``dispatch_row_pending`` when a pending or processing queue row names the run, else None.
+@dataclass(frozen=True)
+class QueueRows:
+    """The pending and processing rows of the configured queues, read once: their text, or
+    ``unreadable`` when one could not be read, since it might name any run."""
 
-    In queue mode the canary dispatcher runs a pending or processing envelope
-    whether or not its run is sealed, reopening the run's authority, bundle and
-    allocator records, so such a row keeps the whole run. The read is strict: a
-    row or state directory that is a link, not a regular file or directory, too
-    large or unreadable might name any run (``dispatch_queue_unreadable``).
+    text: str = ""
+    unreadable: bool = False
+
+    def reason(self, run_name: str) -> str | None:
+        """``dispatch_row_pending`` when a row names the run, ``dispatch_queue_unreadable``, or None.
+
+        In queue mode the canary dispatcher runs a pending or processing envelope
+        whether or not its run is sealed, reopening the run's authority, bundle and
+        allocator records, so such a row keeps the whole run.
+        """
+
+        if self.unreadable:
+            return "dispatch_queue_unreadable"
+        return "dispatch_row_pending" if run_name in self.text else None
+
+
+def queue_snapshot(queue_roots: Sequence[str | Path]) -> QueueRows:
+    """Read every pending or processing row of the configured queues, strictly.
+
+    A row or state directory that is a link, not a regular file or directory, too
+    large, unreadable or not UTF-8 makes the snapshot ``unreadable``. A row
+    consumed since it was listed names nothing.
     """
 
-    needle = run_name.encode("utf-8")
+    # TODO(10c-merge): read through control_plane_storage_references.queue_reference_text(strict=True).
+    chunks: list[str] = []
     for raw_root in queue_roots:
         root = Path(raw_root).expanduser()
         for state in QUEUE_STATES:
             directory = root / state
             if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
-                return "dispatch_queue_unreadable"
+                return QueueRows(unreadable=True)
             if not directory.is_dir():
                 continue
             try:
                 names = sorted(entry.name for entry in os.scandir(directory) if entry.name.endswith(".json"))
             except OSError:
-                return "dispatch_queue_unreadable"
+                return QueueRows(unreadable=True)
             for name in names:
                 try:
                     descriptor = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
                 except FileNotFoundError:
                     continue  # consumed since it was listed
                 except OSError:
-                    return "dispatch_queue_unreadable"
+                    return QueueRows(unreadable=True)
                 with os.fdopen(descriptor, "rb") as stream:
                     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                        return "dispatch_queue_unreadable"
+                        return QueueRows(unreadable=True)
                     raw = stream.read(MAX_QUEUE_MESSAGE_BYTES + 1)
                 if len(raw) > MAX_QUEUE_MESSAGE_BYTES:
-                    return "dispatch_queue_unreadable"
-                if needle in raw:
-                    return "dispatch_row_pending"
+                    return QueueRows(unreadable=True)
+                try:
+                    chunks.append(raw.decode("utf-8"))
+                except UnicodeDecodeError:
+                    return QueueRows(unreadable=True)
+    return QueueRows(text="\n".join(chunks))
+
+
+def _bulk_reason(bulk_result: Mapping[str, Any]) -> str | None:
+    """Why a per-artifact offload result keeps the residue, or None when its bulk artifacts are remote.
+
+    A run kept hot or protected keeps its residue for the same reason; one whose
+    bulk offload failed or still has candidates is ``bulk_offload_failed`` or
+    ``bulk_not_remote``. An artifact already evicted counts as remote.
+    """
+
+    status = bulk_result.get("status")
+    if status == "retained_hot_or_active":
+        reason = bulk_result.get("retained_reason")
+        return reason if isinstance(reason, str) else "protected"
+    if status not in ("dry_run", "applied"):
+        return "bulk_offload_failed"
+    skipped = [skip for skip in bulk_result.get("skipped") or () if not (
+        isinstance(skip, Mapping) and skip.get("reason") == "already_evicted")]
+    if skipped or (status == "dry_run" and bulk_result.get("candidate_count") != 0):
+        return "bulk_not_remote"
     return None
 
 
@@ -769,6 +813,8 @@ def offload_result_residue(
     stream_publisher: Callable[..., Mapping[str, Any]] | None = None,
     queue_roots: Sequence[str | Path] = (),
     now: Callable[[], float] = time.time,
+    bulk_result: Mapping[str, Any] | None = None,
+    queue_rows: QueueRows | None = None,
 ) -> dict[str, Any]:
     """Plan, and with ``apply`` offload, one sealed result run's residue; see the module docstring.
 
@@ -777,6 +823,11 @@ def offload_result_residue(
     (``candidate_*``, ``offloaded_*``); and every member it left, as typed
     ``skipped`` rows with ``skipped_by_reason`` counts and bytes. A failure
     records ``failure`` (error type, errno and stage), never a message.
+
+    A plan may take the run's per-artifact offload result (``bulk_result``) and
+    the tick's ``queue_rows`` instead of checking them again; apply always checks
+    both again, the bulk artifacts under the run lock and the queues both before
+    and after publication.
     """
 
     if apply and ack != APPLY_ACK:
@@ -807,7 +858,10 @@ def offload_result_residue(
     row["registry_digest"] = registry["registry_digest"]
     if pointed is not None and pointed["registry_digest"] != registry["registry_digest"]:
         return _retained(row, "pointer_invalid")
-    receipt_reason = _dispatch_receipt_reason(root, registry) or _queue_row_reason(root.name, queue_roots)
+    receipt_reason = _dispatch_receipt_reason(root, registry)
+    if not receipt_reason:
+        rows = queue_rows if queue_rows is not None and not apply else queue_snapshot(queue_roots)
+        receipt_reason = rows.reason(root.name)
     if receipt_reason:
         return _retained(row, receipt_reason)
     with ExitStack() as stack:
@@ -816,7 +870,11 @@ def offload_result_residue(
         registry_stat = registry_path.stat()
         if float(now()) - registry_stat.st_mtime < hot_window_seconds:
             return _retained(row, "hot")
-        pending, failure = _bulk_pending(root, now)
+        if bulk_result is not None and not apply:
+            # A plan trusts the per-artifact offload this tick already ran for the run.
+            pending, failure = _bulk_reason(bulk_result), None
+        else:
+            pending, failure = _bulk_pending(root, now)
         if pending:
             return _retained(row, pending, failure=failure)
         verdict = protection_checker(root) if protection_checker is not None else None
@@ -854,7 +912,7 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
         return _retained(row, "publication_failed", failure=offload_failure(exc, "publish"))
     try:
         row["archive"] = {"uri": reference["uri"], "sha256": digest, "size_bytes": size}
-        queued = _queue_row_reason(root.name, queue_roots)
+        queued = queue_snapshot(queue_roots).reason(root.name)
         if queued:
             return _retained(row, queued)
         current = os.lstat(root)
@@ -1017,31 +1075,25 @@ def residue_row(
     publisher: Callable[..., Mapping[str, Any]] | None,
     now: Callable[[], float],
     queue_roots: Sequence[str | Path] = (),
+    queue_rows: QueueRows | None = None,
 ) -> dict[str, Any]:
     """The storage GC's residue row for one registry run, given its per-artifact offload result.
 
-    Only a run whose bulk offload shows nothing left to move is handed to
-    ``offload_result_residue``. A bulk run kept hot or protected keeps its
-    residue for the same reason; one whose bulk offload failed or still has
-    candidates is ``bulk_offload_failed`` or ``bulk_not_remote``. An exception is
-    an ``error`` row with its type, errno and stage only.
+    Only a run whose bulk offload shows nothing left to move (``_bulk_reason``) is
+    handed to ``offload_result_residue``, with that result and the tick's
+    ``queue_rows``, which a plan uses instead of reading them again. An exception
+    is an ``error`` row with its type, errno and stage only.
     """
 
     name = Path(run_root).name
-    status = bulk_result.get("status")
-    skipped = [skip for skip in bulk_result.get("skipped") or () if not (
-        isinstance(skip, Mapping) and skip.get("reason") == "already_evicted")]
-    if status == "retained_hot_or_active":
-        reason = bulk_result.get("retained_reason")
-        return _retained(_new_row(name, apply=apply, now=now), reason if isinstance(reason, str) else "protected")
-    if status not in ("dry_run", "applied"):
-        return _retained(_new_row(name, apply=apply, now=now), "bulk_offload_failed")
-    if skipped or (status == "dry_run" and bulk_result.get("candidate_count") != 0):
-        return _retained(_new_row(name, apply=apply, now=now), "bulk_not_remote")
+    reason = _bulk_reason(bulk_result)
+    if reason:
+        return _retained(_new_row(name, apply=apply, now=now), reason)
     try:
         return offload_result_residue(
             run_root=run_root, apply=apply, ack=APPLY_ACK if apply else "", hot_window_seconds=hot_window_seconds,
-            protection_checker=protection_checker, publisher=publisher, now=now, queue_roots=queue_roots)
+            protection_checker=protection_checker, publisher=publisher, now=now, queue_roots=queue_roots,
+            bulk_result=bulk_result, queue_rows=queue_rows)
     except Exception as exc:  # noqa: BLE001 - one run never costs the others
         return {"status": "error", "run": name, **offload_failure(exc, "residue")}
 
@@ -1058,6 +1110,10 @@ class ResidueTick:
     turn from a start that moves with each hour of the tick's clock (the timer
     starts a tick an hour after the last one ended), so runs that keep failing
     cannot starve the ones after them. The rows keep the runs' order.
+
+    A run is recorded once however often it is added (an evidence root listed
+    twice, or through a link), and the queues are read once for every plan of the
+    tick; an offload reads them again itself.
     """
 
     def __init__(self, *, applying: bool, enabled: bool, max_runs: int | None = None, **options):
@@ -1065,22 +1121,31 @@ class ResidueTick:
         if not isinstance(max_runs, int) or isinstance(max_runs, bool) or max_runs < 0:
             raise ResultResidueOffloadError("result_residue_max_runs_invalid")
         self.applying, self.enabled, self.max_runs, self.options = bool(applying), bool(enabled), max_runs, options
-        self.runs: list[tuple[str | Path, Mapping[str, Any]]] = []
+        self.runs: dict[Any, tuple[str | Path, Mapping[str, Any]]] = {}
         self.rows: list[dict[str, Any]] | None = None
         self.attempted = 0
 
     def add(self, run_root: str | Path, bulk_result: Mapping[str, Any]) -> None:
-        """Record one registry run and its per-artifact offload result for ``phase``."""
+        """Record one registry run and its per-artifact offload result for ``phase``, once."""
 
-        self.runs.append((run_root, bulk_result))
+        try:
+            info = os.lstat(Path(run_root).expanduser())
+            key: Any = (info.st_dev, info.st_ino)
+        except OSError:
+            key = str(run_root)  # its row says why it cannot be offloaded
+        self.runs.setdefault(key, (run_root, bulk_result))
 
     def _process(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = [{} for _run in self.runs]
-        start = int(float(self.options["now"]()) // 3600) % len(self.runs) if self.runs else 0
-        for index in [*range(start, len(self.runs)), *range(start)]:
-            run_root, bulk_result = self.runs[index]
+        runs = list(self.runs.values())
+        rows: list[dict[str, Any]] = [{} for _run in runs]
+        if not runs:
+            return rows
+        queue_rows = queue_snapshot(self.options.get("queue_roots", ()))
+        start = int(float(self.options["now"]()) // 3600) % len(runs)
+        for index in [*range(start, len(runs)), *range(start)]:
+            run_root, bulk_result = runs[index]
             applying = self.applying and self.attempted < self.max_runs
-            row = residue_row(run_root, bulk_result, apply=applying, **self.options)
+            row = residue_row(run_root, bulk_result, apply=applying, queue_rows=queue_rows, **self.options)
             if row.get("publication_attempted"):
                 self.attempted += 1
             elif self.applying and not applying and row.get("status") == "dry_run" and row.get("candidate_count"):
@@ -1155,6 +1220,7 @@ __all__ = [
     "APPLY_ACK",
     "POINTER_SCHEMA_VERSION",
     "POINTER_SUFFIX",
+    "QueueRows",
     "READER_REOPENED_DIRECTORIES",
     "READER_REOPENED_NAMES",
     "RESIDUE_MAX_RUNS_ENV",
@@ -1164,6 +1230,7 @@ __all__ = [
     "ResidueTick",
     "ResultResidueOffloadError",
     "offload_result_residue",
+    "queue_snapshot",
     "residue_phase",
     "residue_row",
     "restore_result_residue",

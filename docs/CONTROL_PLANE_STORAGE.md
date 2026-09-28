@@ -571,7 +571,9 @@ One tick runs nine phases in order:
    `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_MAX_RUNS_PER_TICK` (default 5)
    publications a tick, failed ones included; later runs wait
    (`deferred_tick_cap`). Each hour's tick starts at another run, so runs that
-   keep failing never starve the ones after them.
+   keep failing never starve the ones after them. A plan reads the queues once
+   a tick and takes a run's bulk state from the per-artifact offload the tick
+   just ran; an offload checks both again under the run lock.
 7. **Scratch directories** idle for three days
    (`BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200`) are reaped by
    age alone: nothing references them.
