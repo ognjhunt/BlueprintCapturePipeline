@@ -28,7 +28,7 @@ def setup(tmp_path):
             target=Path(path)
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_bytes(raw)
-    native=api().join_retained_scene_inventory_seed(**args)
+    native=api().join_retained_scene_inventory_seed(**{key:args[key] for key in ('intent_id','records','roots')})
     proof=next(proof for row in native['members'] for proof in row['source_provenance']
                if proof['role']=='preparation_envelopes')
     root=args['roots']['preparation_queue_root']
