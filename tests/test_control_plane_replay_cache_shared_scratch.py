@@ -483,3 +483,91 @@ def test_interrupted_shared_reclaim_resumes_next_tick(tmp_path, monkeypatch, int
     for child in (second, third):
         assert not any((child / "prepared-references").iterdir())
     assert _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["removed_bytes"] == 0
+
+
+SHARED_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH"
+
+
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def test_summary_reports_shared_scratch_and_its_opt_in(tmp_path, monkeypatch, capsys) -> None:
+    """The unit reads the switch from the operator's environment file like every opt-in, records it
+    in the report's and the summary's opt_in, and an invalid value only plans and alerts. The
+    summary the door reads carries the shared block's counters and typed reasons, never a path, and
+    the phase's candidate and removed totals include the shared bytes it removed. The unit never sets
+    the switch itself, and the example environment documents it off."""
+
+    from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    first = _replay(parent_root, "scene-841007-preparation", "parent-a-1")
+    second = _replay(parent_root, "scene-841012-preparation", "parent-b-1")
+    loose = _store_blob(tmp_path, b"named only in two lookaheads" * 20)
+    in_store = _store_blob(tmp_path, b"still named by the store" * 30)
+    names = [*_linked(loose, first), *_linked(loose, second), *_linked(in_store, first), *_linked(in_store, second)]
+    sizes = {blob: blob.stat().st_size for blob in (loose, in_store)}
+    _moved(loose)
+    for name in (gc_module.CONTENT_STORE_ROOTS_ENV, gc_module.DERIVED_ROOTS_ENV, gc_module.PLAN_ONLY_DERIVED_ROOTS_ENV,
+                 gc_module.QUEUE_ROOTS_ENV, gc_module.EVIDENCE_ROOTS_ENV, gc_module.SETTLEMENT_ROOTS_ENV,
+                 gc_module.SCRATCH_ROOTS_ENV, gc_module.WORKSPACE_BUNDLE_ROOTS_ENV, gc_module.SCENE_WORKSPACE_ROOTS_ENV,
+                 gc_module.EVIDENCE_OFFLOAD_ENV, gc_module.SCENE_WORKSPACE_RETIREMENT_ENV):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv(replay_gc.REPLAY_PARENT_ROOTS_ENV, str(parent_root))
+    monkeypatch.setenv(replay_gc.REPLAY_CACHE_RETENTION_ENV, "1")
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+    report_dir = tmp_path / "storage-gc"
+    command = ["run", "--apply", "--ack", RUN_ACK, "--pins-root", str(tmp_path / "pins"),
+               "--report-out", str(report_dir / "latest.json")]
+
+    monkeypatch.setenv(SHARED_ENV, "sometimes")
+    assert gc_module.main(command) == 0
+    summary = json.loads((report_dir / "summary.json").read_text(encoding="utf-8"))
+    assert "storage_gc_alert:replay_cache_shared_scratch_setting_invalid" in capsys.readouterr().err
+    assert summary["alerts"] == ["replay_cache_shared_scratch_setting_invalid"]
+    assert (summary["opt_in"]["replay_cache_retention"], summary["opt_in"]["replay_cache_shared_scratch"]) == (
+        True, False)
+    assert summary["phases"]["replay_caches"]["shared_scratch"]["enabled"] is False
+    assert all(path.exists() for path in names)
+
+    monkeypatch.setenv(SHARED_ENV, "1")
+    assert gc_module.main(command) == 0
+    report = json.loads((report_dir / "latest.json").read_text(encoding="utf-8"))
+    summary = json.loads((report_dir / "summary.json").read_text(encoding="utf-8"))
+
+    assert report["opt_in"]["replay_cache_shared_scratch"] is summary["opt_in"]["replay_cache_shared_scratch"] is True
+    assert set(summary["opt_in"]) == set(reasons.OPT_INS) and "replay_cache_shared_scratch" in reasons.OPT_INS
+    phase = summary["phases"]["replay_caches"]
+    assert (phase["status"], phase["candidate_bytes"], phase["removed_or_offloaded_bytes"]) == (
+        "applied", sizes[loose], sizes[loose])
+    assert phase["shared_scratch"] == {
+        "enabled": True, "status": "applied", "live_readers_checked": True,
+        "candidate_groups": 1, "candidate_bytes": sizes[loose], "removed_groups": 1, "removed_bytes": sizes[loose],
+        "kept_by_reason": {"linked_outside_lookaheads": {"groups": 1, "bytes": sizes[in_store]}},
+        "holders_by_gate": {"eligible": 2},
+    }
+    assert report["replay_caches"]["shared_scratch"]["kept"][0]["path"] == str(names[2])
+    assert not [value for value in _strings(summary) if "/" in value], "the summary names no path"
+    assert not any(path.exists() for path in names[:2]) and all(path.exists() for path in names[2:])
+    # A report from before the shared rule does not claim there was none, nor that its switch was off.
+    older = reasons.build_storage_gc_summary({"status": "applied", "replay_caches": {
+        "status": "applied", "candidate_bytes": 0, "removed_bytes": 0, "kept": []}})
+    assert "shared_scratch" not in older["phases"]["replay_caches"]
+    assert older["opt_in"]["replay_cache_shared_scratch"] is None
+
+    root = Path(__file__).resolve().parents[1]
+    unit = (root / "deploy/systemd/blueprint-control-plane-storage-gc.service").read_text(encoding="utf-8")
+    example = (root / "deploy/systemd/pipeline-control-plane.env.example").read_text(encoding="utf-8")
+    assert replay_gc.REPLAY_CACHE_SHARED_SCRATCH_ENV == SHARED_ENV
+    assert f"Environment={SHARED_ENV}=" not in unit, "the shared switch stays an operator opt-in"
+    assert f"# {SHARED_ENV}=1" in example and not any(row.startswith(f"{SHARED_ENV}=") for row in example.splitlines())
+    assert example.index("# BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1") < example.index(f"# {SHARED_ENV}=1")

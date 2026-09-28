@@ -43,6 +43,8 @@ SCHEMA_VERSION = "control_plane_replay_cache_gc.v1"
 REPLAY_PARENT_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS"
 REPLAY_CACHE_RETENTION_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION"
 REPLAY_CACHE_RETENTION_INVALID = "replay_cache_retention_setting_invalid"
+REPLAY_CACHE_SHARED_SCRATCH_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH"
+REPLAY_CACHE_SHARED_SCRATCH_INVALID = "replay_cache_shared_scratch_setting_invalid"
 LOOKAHEAD_DIRECTORY = "lookahead"
 DEFAULT_MINIMUM_CLOSED_SECONDS = 60 * 60
 # A finished parent replay's whole scratch inputs, which subsume its store copies; the standalone
@@ -77,6 +79,16 @@ def replay_cache_retention_setting(environ: Mapping[str, str] = os.environ) -> t
     """
 
     return _truthy_setting(environ, REPLAY_CACHE_RETENTION_ENV, REPLAY_CACHE_RETENTION_INVALID)
+
+
+def replay_cache_shared_scratch_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
+    """Whether scratch several lookaheads share may go too, and an alert when its setting is invalid.
+
+    Parsed like the retention opt-in, and it only ever widens it: without that one it removes
+    nothing, and that one never turns it on.
+    """
+
+    return _truthy_setting(environ, REPLAY_CACHE_SHARED_SCRATCH_ENV, REPLAY_CACHE_SHARED_SCRATCH_INVALID)
 
 
 def reclaim_replay_caches(
@@ -169,8 +181,11 @@ __all__ = [
     "DEFAULT_MINIMUM_CLOSED_SECONDS",
     "REPLAY_CACHE_RETENTION_ENV",
     "REPLAY_CACHE_RETENTION_INVALID",
+    "REPLAY_CACHE_SHARED_SCRATCH_ENV",
+    "REPLAY_CACHE_SHARED_SCRATCH_INVALID",
     "REPLAY_PARENT_ROOTS_ENV",
     "SCHEMA_VERSION",
     "reclaim_replay_caches",
     "replay_cache_retention_setting",
+    "replay_cache_shared_scratch_setting",
 ]

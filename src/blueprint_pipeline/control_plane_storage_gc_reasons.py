@@ -225,7 +225,8 @@ PHASES = (
     "replay_caches",
     "scene_workspaces", "lane_scratch",
 )
-OPT_INS = ("evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "extended_pin_proofs", "lane_scratch")
+OPT_INS = ("evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "replay_cache_shared_scratch",
+           "extended_pin_proofs", "lane_scratch")
 _REMOVED_KEYS = ("removed_bytes", "offloaded_bytes", "retired_bytes")
 _MAX_REASONS = 50
 _MAX_FAILURES = 20
@@ -336,6 +337,31 @@ def _terminal_pin_counts(entry: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _shared_scratch_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """The replay cache phase's scratch that several lookaheads share: its switch, counters and
+    typed reasons, each kept reason with its bytes and group count, never a path."""
+
+    def flag(name: str) -> bool | None:
+        return entry[name] if isinstance(entry.get(name), bool) else None
+
+    kept, gates = entry.get("kept_by_reason"), entry.get("holders_by_gate")
+    reasons = None
+    if isinstance(kept, Mapping):
+        rows = _reason_rows({reason: {"count": row.get("groups"), "bytes": row.get("bytes")}
+                             for reason, row in kept.items() if isinstance(row, Mapping)})
+        reasons = {reason: {"groups": row["count"], "bytes": row["bytes"]} for reason, row in rows.items()}
+    return {
+        "enabled": flag("enabled"),
+        "status": _typed(entry.get("status"), "unrecognized_status"),
+        "live_readers_checked": flag("live_readers_checked"),
+        **{key: _integer(entry.get(key))
+           for key in ("candidate_groups", "candidate_bytes", "removed_groups", "removed_bytes")},
+        "kept_by_reason": reasons,
+        "holders_by_gate": {_typed(gate, "unrecognized_gate"): count for gate, count in gates.items()
+                            if _integer(count) is not None} if isinstance(gates, Mapping) else None,
+    }
+
+
 def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
     """One entry for every registry run's per-artifact offload.
 
@@ -407,7 +433,8 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     them), ``alerts``, ``phase_errors``, ``skipped_roots`` (configured roots that
     were absent: the only paths it names), per phase ``candidate_bytes``,
     ``removed_or_offloaded_bytes`` and ``retained_by_reason`` (for the pin phase
-    also ``candidate_count``, ``released_count`` and ``enabled``), ``top_retained``
+    also ``candidate_count``, ``released_count`` and ``enabled``; for the replay
+    cache phase its ``shared_scratch`` counters and reasons), ``top_retained``
     phase rows, and ``top_retained_reasons`` aggregated before phase rows are
     capped. Every reason is
     a typed string; anything else becomes ``unrecognized_reason``.
@@ -426,6 +453,8 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
             phases[key] = _phase_summary(entry)
             if key == "terminal_cache_pins":
                 phases[key].update(_terminal_pin_counts(entry))
+            if key == "replay_caches" and isinstance(entry.get("shared_scratch"), Mapping):
+                phases[key]["shared_scratch"] = _shared_scratch_summary(entry["shared_scratch"])
             by_reason = entry.get("retained_by_reason")
             raw_reasons = by_reason if isinstance(by_reason, Mapping) else entry.get("retained_counts")
             if isinstance(raw_reasons, Mapping):
