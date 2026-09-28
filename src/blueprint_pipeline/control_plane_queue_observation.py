@@ -15,7 +15,9 @@ import stat
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+    from .control_plane_reference_budget import ReferenceCollectionBudget
 
 MAX_ROOTS, MAX_STATES = 16, 16
 MAX_ENTRIES, MAX_ROWS = 20_000, 10_000
@@ -29,7 +31,8 @@ PREFLIGHT_CHECK_CHARS = 1024
 _STATE = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-_RESOURCE_CODES = {"queue_deadline_exceeded", "queue_clock_invalid", "queue_result_invalid"}
+_RESOURCE_CODES = {"queue_deadline_exceeded", "queue_clock_invalid", "queue_result_invalid",
+                   "reference_deadline_exceeded", "reference_clock_invalid", "reference_budget_closed", "reference_output_invalid"}
 
 
 class QueueObservationError(ValueError):
@@ -143,8 +146,9 @@ def _fd_identity(value: os.stat_result) -> tuple[int, int, int]:
 
 class _Scan:
     def __init__(self, contracts: tuple[QueueRootContract, ...], observed: float,
-                 clock: Callable[[], float], budget: float):
+                 clock: Callable[[], float], budget: float, shared: ReferenceCollectionBudget | None = None):
         self.contracts, self.observed, self.clock, self.budget = contracts, observed, clock, budget
+        self.shared = shared
         self.deadline: float | None = None
         self.last_clock: float | None = None
         self.fds: list[int] = []
@@ -161,12 +165,21 @@ class _Scan:
         self._row_bytes_limit = MAX_ROW_BYTES
 
     def block(self, code: str) -> None:
+        if self.shared is not None:
+            self.shared.block(code)
         if code in self.blockers or len(self.blockers) < MAX_BLOCKERS:
             self.blockers.add(code)
         else:
             self.blockers.add("queue_blockers_truncated")
 
     def tick(self) -> None:
+        if self.shared is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            try:
+                self.shared.tick()
+                return
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
         try:
             current = self.clock()
             if not _finite(current):
@@ -180,6 +193,22 @@ class _Scan:
         if self.deadline is None:
             self.deadline = current + self.budget
         _require(current < self.deadline, "queue_deadline_exceeded")
+
+    def shared_charge(self, kind: str, amount: int = 1) -> None:
+        if self.shared is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            try:
+                self.shared.charge(kind, amount)
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
+
+    def shared_retain(self, value: Any) -> None:
+        if self.shared is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            try:
+                self.shared.retain(value)
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
 
     def call(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         self.tick()
@@ -256,6 +285,8 @@ class _Scan:
                 self.tick()
                 self.entries[pass_index] += 1
                 _require(self.entries[pass_index] <= MAX_ENTRIES, "queue_entries_limit")
+                self.shared_charge("entries")
+                self.shared_retain(entry.name)
                 output.append(entry.name)
             self.tick()
         result = tuple(sorted(output))
@@ -293,6 +324,7 @@ class _Scan:
             while pending:
                 self.tick()
                 item = pending.pop()
+                self.shared_charge("values")
                 if isinstance(item, dict):
                     for key, child in item.items():
                         self.tick()
@@ -315,6 +347,12 @@ class _Scan:
         String-aware scanning delegates syntax to JSON's parser; it never
         interprets strings as reference paths. A character is <=4 UTF-8 bytes.
         """
+        if self.shared is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            try:
+                self.shared.preflight(text)
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
         depth = 0
         quoted = escaped = atom = False
         for offset, char in enumerate(text):
@@ -355,17 +393,26 @@ class _Scan:
         _require(name.endswith(".json"), "queue_entry_unknown")
         self.row_count += 1
         _require(self.row_count <= MAX_ROWS, "queue_rows_limit")
+        self.shared_charge("rows")
         fd = self.open(name, _FILE_FLAGS, directory)
         try:
             before = self.call(os.fstat, fd)
             _require(stat.S_ISREG(before.st_mode), "queue_row_unsafe")
             _require(0 <= before.st_size <= self._row_bytes_limit, "queue_row_bytes_limit")
             _require(before.st_size <= MAX_TOTAL_BYTES - self.bytes, "queue_bytes_limit")
+            if self.shared is not None:
+                from .control_plane_reference_budget import ReferenceCollectionBudgetError
+                _require(before.st_size <= 4 * 1024 * 1024, "reference_record_bytes_limit")
+                try:
+                    self.shared.available("raw_bytes", before.st_size)
+                except ReferenceCollectionBudgetError as error:
+                    raise _Blocked(error.code) from None
             raw = bytearray()
             while len(raw) <= before.st_size:
                 chunk = self.call(os.read, fd, min(READ_CHUNK_BYTES, before.st_size + 1 - len(raw)))
                 self.bytes += len(chunk)
                 _require(self.bytes <= MAX_TOTAL_BYTES, "queue_bytes_limit")
+                self.shared_charge("raw_bytes", len(chunk))
                 if not chunk:
                     break
                 raw.extend(chunk)
@@ -378,6 +425,8 @@ class _Scan:
                 row_path = _path(root.rstrip("/") + "/" + state + "/" + name)
             except QueueObservationError:
                 raise _Blocked("queue_row_invalid") from None
+            self.shared_retain({"root_path": root, "state": state, "row_path": row_path, "json_text": text,
+                                "raw_sha256": "sha256:" + "0" * 64, "raw_size_bytes": len(raw), "row_identity": _identity(before)})
             return ObservedQueueRow(root, state, row_path, text,
                                     "sha256:" + hashlib.sha256(raw).hexdigest(), len(raw), _identity(before))
         finally:
@@ -457,6 +506,12 @@ class _Scan:
             rows = tuple(sorted(self.rows, key=lambda row: (row.root_path, row.state, row.row_path)))
             self.tick()
             result = QueueStateObservation(not self.blockers, self.observed, roots, rows, tuple(sorted(self.blockers)))
+            if self.shared is not None:
+                from .control_plane_reference_budget import ReferenceCollectionBudgetError
+                try:
+                    self.shared.measure(result)
+                except ReferenceCollectionBudgetError as error:
+                    raise _Blocked(error.code) from None
             document = asdict(result)
             self.tick()
             self.output_size(document)
@@ -538,15 +593,22 @@ class _Scan:
 
 def observe_queue_states(contracts: Sequence[QueueRootContract], *, observed_at_epoch: float,
                          monotonic: Callable[[], float] = time.monotonic,
-                         time_budget_seconds: float = 5.0) -> QueueStateObservation:
+                         time_budget_seconds: float = 5.0,
+                         budget: ReferenceCollectionBudget | None = None) -> QueueStateObservation:
     """Observe explicitly selected primary states; never repair or clear references."""
+    if budget is not None:
+        from .control_plane_reference_budget import bind_budget
+        bind_budget(budget, monotonic=monotonic, time_budget_seconds=time_budget_seconds,
+                    error=QueueObservationError, code="queue_parameters_invalid")
     normalized = _contracts(contracts)
     if not (_finite(observed_at_epoch) and observed_at_epoch >= 0 and _finite(time_budget_seconds)
             and 0 < time_budget_seconds <= 5 and callable(monotonic)):
         raise QueueObservationError("queue_parameters_invalid")
-    scan = _Scan(normalized, float(observed_at_epoch), monotonic, float(time_budget_seconds))
+    scan = _Scan(normalized, float(observed_at_epoch), monotonic, float(time_budget_seconds), budget)
     exhausted = False
     try:
+        scan.shared_charge("roots", len(normalized))
+        scan.shared_charge("groups", sum(len(row.states) for row in normalized))
         for contract in normalized:
             try:
                 scan.observe_root(contract)
@@ -574,6 +636,8 @@ def observe_queue_states(contracts: Sequence[QueueRootContract], *, observed_at_
                     scan.block(error.code)
                     if error.code.endswith("limit") or error.code in _RESOURCE_CODES:
                         break
+    except _Blocked as error:
+        scan.block(error.code)
     finally:
         for _pass in range(2):
             for fd in tuple(reversed(scan.fds)):

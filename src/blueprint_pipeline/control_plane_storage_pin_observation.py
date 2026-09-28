@@ -16,7 +16,9 @@ import stat
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+    from .control_plane_reference_budget import ReferenceCollectionBudget
 
 from .control_plane_storage_pins import PIN_KINDS, SCHEMA_VERSION
 
@@ -131,11 +133,24 @@ def _number(text: str) -> int | float:
     return value
 
 
-def _json(raw: bytes) -> dict[str, Any]:
+def _json(raw: bytes, *, budget: ReferenceCollectionBudget | None = None) -> dict[str, Any]:
+    if budget is not None:
+        from .control_plane_reference_budget import ReferenceCollectionBudgetError
+        try:
+            budget.preflight(raw.decode("utf-8"))
+        except ReferenceCollectionBudgetError as error:
+            raise _Blocked(error.code) from None
+        except UnicodeError:
+            raise _Blocked("pin_row_invalid") from None
     try:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
                            parse_int=_number, parse_float=_number,
                            parse_constant=lambda text: _number(text))
+        if budget is not None:
+            try:
+                budget.measure(value)
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
         json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
         _require(isinstance(value, dict) and set(value) == _FIELDS)
         return value
@@ -144,10 +159,12 @@ def _json(raw: bytes) -> dict[str, Any]:
 
 
 class _Scan:
-    def __init__(self, root: str, observed: float, clock: Callable[[], float], budget: float):
+    def __init__(self, root: str, observed: float, clock: Callable[[], float], budget: float,
+                 shared: ReferenceCollectionBudget | None = None):
         self.root, self.observed, self.clock = root, observed, clock
         self.deadline: float | None = None
         self.budget = budget
+        self.shared = shared
         self.fds: list[int] = []
         self.fd_identities: dict[int, tuple[int, int, int]] = {}
         self.failed_closes: set[int] = set()
@@ -160,6 +177,13 @@ class _Scan:
         self.row_count = 0
 
     def tick(self) -> None:
+        if self.shared is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            try:
+                self.shared.tick()
+                return
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
         try:
             current = self.clock()
             if not _finite(current):
@@ -174,7 +198,25 @@ class _Scan:
             self.deadline = current + self.budget
         _require(current < self.deadline, "pin_deadline_exceeded")
 
+    def shared_charge(self, kind: str, amount: int = 1) -> None:
+        if self.shared is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            try:
+                self.shared.charge(kind, amount)
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
+
+    def shared_retain(self, value: Any) -> None:
+        if self.shared is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            try:
+                self.shared.retain(value)
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
+
     def block(self, code: str) -> None:
+        if self.shared is not None:
+            self.shared.block(code)
         if code in self.blockers or len(self.blockers) < MAX_BLOCKERS:
             self.blockers.add(code)
         else:
@@ -245,6 +287,8 @@ class _Scan:
                 self.tick()
                 self.entries[pass_index] += 1
                 _require(self.entries[pass_index] <= MAX_ENTRIES, "pin_entries_limit")
+                self.shared_charge("entries")
+                self.shared_retain(entry.name)
                 names.append(entry.name)
             self.tick()
         return tuple(sorted(names))
@@ -253,6 +297,7 @@ class _Scan:
         self.tick()
         self.row_count += 1
         _require(self.row_count <= MAX_ROWS, "pin_rows_limit")
+        self.shared_charge("rows")
         _require(name.endswith(".json") and _ID.fullmatch(name[:-5]) is not None, "pin_entry_unknown")
         fd = self.open(name, _FILE_FLAGS, directory)
         try:
@@ -260,11 +305,18 @@ class _Scan:
             _require(stat.S_ISREG(before.st_mode), "pin_row_unavailable")
             _require(before.st_size <= MAX_ROW_BYTES, "pin_row_bytes_limit")
             _require(before.st_size <= MAX_TOTAL_BYTES - self.bytes, "pin_bytes_limit")
+            if self.shared is not None:
+                from .control_plane_reference_budget import ReferenceCollectionBudgetError
+                try:
+                    self.shared.available("raw_bytes", before.st_size)
+                except ReferenceCollectionBudgetError as error:
+                    raise _Blocked(error.code) from None
             raw = bytearray()
             while len(raw) <= before.st_size:
                 chunk = self.call(os.read, fd, min(READ_CHUNK_BYTES, before.st_size + 1 - len(raw)))
                 self.bytes += len(chunk)
                 _require(self.bytes <= MAX_TOTAL_BYTES, "pin_bytes_limit")
+                self.shared_charge("raw_bytes", len(chunk))
                 if not chunk:
                     break
                 raw.extend(chunk)
@@ -272,7 +324,8 @@ class _Scan:
             current = self.call(os.stat, name, dir_fd=directory, follow_symlinks=False)
             _require(len(raw) == before.st_size and _identity(before) == _identity(after) == _identity(current)
                      and stat.S_ISREG(current.st_mode), "pin_row_changed")
-            row = self.validate(_json(bytes(raw)), kind, name, bytes(raw), _identity(before))
+            value = _json(bytes(raw)) if self.shared is None else _json(bytes(raw), budget=self.shared)
+            row = self.validate(value, kind, name, bytes(raw), _identity(before))
             self.tick()
             return row
         finally:
@@ -290,6 +343,7 @@ class _Scan:
         _require(isinstance(paths, list) and isinstance(dependencies, list))
         self.values += len(paths) + len(dependencies)
         _require(self.values <= MAX_VALUES, "pin_values_limit")
+        self.shared_charge("facts", len(paths) + len(dependencies))
         normalized_paths = set()
         for path in paths:
             self.tick()
@@ -309,6 +363,10 @@ class _Scan:
             row_path = _path(self.root.rstrip("/") + "/" + kind + "/" + name)
         except StoragePinObservationError:
             raise _Blocked("pin_row_invalid") from None
+        self.shared_retain({"kind": kind, "owner_id": name[:-5], "paths": tuple(sorted(normalized_paths)),
+                            "depends_on": tuple(sorted(normalized_dependencies)), "raw_sha256": "sha256:" + "0" * 64,
+                            "raw_size_bytes": len(raw), "row_path": row_path, "row_identity": identity,
+                            "created_at_epoch": created, "expires_at_epoch": expires, "released_at_epoch": released, "status": status})
         return ObservedStoragePin(kind, name[:-5], tuple(sorted(normalized_paths)), tuple(sorted(normalized_dependencies)),
                                   float(created), float(expires), None if released is None else float(released), status,
                                   row_path,
@@ -350,7 +408,9 @@ class _Scan:
                 except OSError:
                     self.block("pin_row_unavailable")
                 except _Blocked as error:
-                    if error.code.endswith("limit") or error.code in {"pin_deadline_exceeded", "pin_clock_invalid"}:
+                    if error.code.endswith("limit") or error.code in {"pin_deadline_exceeded", "pin_clock_invalid", "reference_deadline_exceeded",
+                                                                       "reference_clock_invalid", "reference_budget_closed",
+                                                                       "reference_output_invalid"}:
                         raise
                     self.block(error.code)
         for fd, initial, names in directories:
@@ -417,6 +477,12 @@ class _Scan:
             result = StoragePinObservation(not self.blockers, self.observed, self.root, self.root_identity,
                                            rows, identities, protected_paths, tuple(sorted(self.blockers)))
             self.tick()
+            if self.shared is not None:
+                from .control_plane_reference_budget import ReferenceCollectionBudgetError
+                try:
+                    self.shared.measure(result)
+                except ReferenceCollectionBudgetError as error:
+                    raise _Blocked(error.code) from None
             document = asdict(result)
             self.tick()
             size = 0
@@ -434,14 +500,21 @@ class _Scan:
 
 def observe_storage_pins(pins_root: str, *, observed_at_epoch: float,
                          monotonic: Callable[[], float] = time.monotonic,
-                         time_budget_seconds: float = 5.0) -> StoragePinObservation:
+                         time_budget_seconds: float = 5.0,
+                         budget: ReferenceCollectionBudget | None = None) -> StoragePinObservation:
     """Read one explicit ledger, never repairing it or clearing general references."""
+    if budget is not None:
+        from .control_plane_reference_budget import bind_budget
+        bind_budget(budget, monotonic=monotonic, time_budget_seconds=time_budget_seconds,
+                    error=StoragePinObservationError, code="pin_parameters_invalid")
     root = _path(pins_root)
     if not (_finite(observed_at_epoch) and _finite(time_budget_seconds)
             and 0 < time_budget_seconds <= 5 and callable(monotonic)):
         raise StoragePinObservationError("pin_parameters_invalid")
-    scan = _Scan(root, float(observed_at_epoch), monotonic, float(time_budget_seconds))
+    scan = _Scan(root, float(observed_at_epoch), monotonic, float(time_budget_seconds), budget)
     try:
+        scan.shared_charge("roots")
+        scan.shared_charge("groups", len(PIN_KINDS))
         scan.observe()
     except FileNotFoundError:
         scan.block("pin_root_missing" if scan.root_identity is None else "pin_inventory_changed")
