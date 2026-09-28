@@ -135,6 +135,11 @@ def test_archive_is_deterministic_across_two_passes(tmp_path: Path) -> None:
             assert info.offset_data == row["offset"] and info.size == row["size_bytes"]
             assert _digest(members.extractfile(info).read()) == row["blob"]
 
+    os.chmod(first_root / ADAPTER / "result.json", 0o4640)
+    assert _reason(lambda: archive.index_tree(first_root, host_known={})) == (
+        "remote_cpu_archive_mode_invalid:native-arena-adapter/result.json"
+    )
+    os.chmod(first_root / ADAPTER / "result.json", 0o440)
     (first_root / ADAPTER / "link.json").symlink_to("result.json")
     assert _reason(lambda: archive.index_tree(first_root, host_known={})).startswith(
         "remote_cpu_archive_symlink_refused:native-arena-adapter/link.json"

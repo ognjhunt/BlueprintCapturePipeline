@@ -149,7 +149,9 @@ def _walk(directory: Path, prefix: str, known: Mapping[str, Any], entries: list,
                 raise RemoteCpuArchiveError(f"remote_cpu_archive_mode_invalid:{relative}")
             directories.append({"path": relative, "mode": mode})
             _walk(Path(child.path), relative + "/", known, entries, directories)
-        elif stat.S_ISREG(info.st_mode) and _mode_ok(mode):
+        elif stat.S_ISREG(info.st_mode):
+            if not _mode_ok(mode):
+                raise RemoteCpuArchiveError(f"remote_cpu_archive_mode_invalid:{relative}")
             blob, size = _hash_file(Path(child.path))
             entries.append({"path": relative, "blob": blob, "size_bytes": size, "mode": mode,
                             "origin": known.get(blob, "archive")})
@@ -247,7 +249,9 @@ def blobs_tar_size(index: Mapping[str, Any]) -> int:
 
 
 def write_blobs_tar(root: str | Path, index: Mapping[str, Any], stream: BinaryIO) -> dict[str, Any]:
-    """Stream each archive-origin blob once, hashing on the fly; a changed file fails closed."""
+    """Stream each archive-origin blob once, hashing on the fly; a changed file fails closed.
+
+    ``stream`` must accept whole writes (a buffered file or an upload body of known length)."""
 
     value = _validated_index(index)
     sources: dict[str, str] = {}
@@ -490,7 +494,7 @@ class _Assembly:
         blob = row["blob"]
         try:
             if host is not None:
-                return stack.enter_context(open(host, "rb"))
+                return stack.enter_context(_open_regular(host))
             if row["origin"] == "archive":
                 if row["size_bytes"] == 0:
                     return io.BytesIO(b"")

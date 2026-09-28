@@ -166,6 +166,10 @@ def test_a_second_collector_cannot_transition_a_locked_lease(tmp_path: Path) -> 
         lambda: lease.claim_handoff(root, descriptor=_descriptor(config, nonce="1" * 32), config=config, now=T0 + 8)
     )
     assert lease.claim_handoff(root, descriptor=descriptor, config=config, now=T0 + 9)["state"] == "collecting"
+    unbucketed = _config(transport_bucket=None)
+    assert "remote_cpu_lease_config_invalid:transport_bucket" in _reasons(lambda: lease.claim_handoff(
+        tmp_path / "other-root", descriptor=_descriptor(unbucketed), config=unbucketed, now=T0 + 10,
+    ))
 
 
 def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path) -> None:
@@ -185,6 +189,9 @@ def test_attempts_without_provider_zero_keep_their_capacity_slot(tmp_path: Path)
     assert lease.slots_in_use(root) == 0
     lease.transition(root, job, attempt_id=attempt, to_state="dispatching", now=T0 + 1)
     assert lease.slots_in_use(root) == 1
+    assert "remote_cpu_lease_transport_missing" in _reasons(lambda: lease.transition(
+        root, job, attempt_id=attempt, to_state="dispatched", now=T0 + 1, updates={"worker_identity": _identity(first)},
+    ))
     _dispatch(root, config, other, T0 + 2)
     assert lease.slots_in_use(root) == 2
 

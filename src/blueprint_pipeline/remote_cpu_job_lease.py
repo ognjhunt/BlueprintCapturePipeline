@@ -65,6 +65,7 @@ _LEASE_KEYS = frozenset({
     "deadlines", "heartbeat", "lease_expires_at_epoch", "prior_attempts", "transitions", "lease_digest",
 })
 _JOB_ID = re.compile(r"rcj-[a-z]{2}-[0-9a-f]{24}")
+_BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]")
 _OUTCOME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,255}")
 _MAX_LEASE_BYTES = 256 * 1024
 
@@ -151,9 +152,13 @@ def _write(path: Path, marker: Path, lease: dict[str, Any]) -> dict[str, Any]:
     return lease
 
 
-def _attempt(descriptor: Mapping[str, Any]) -> dict[str, Any]:
-    limits = descriptor["limits"]
+def _attempt(descriptor: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    """The fields each attempt starts afresh, bound to its own validated descriptor and config."""
+
+    limits, execution = descriptor["limits"], descriptor["execution"]
     return {
+        "execution": {name: execution[name] for name in ("project", "region", "job")},
+        "transport_bucket": config["transport_bucket"],
         "attempt": descriptor["attempt"], "attempt_id": descriptor["attempt_id"],
         "descriptor_digest": descriptor["descriptor_digest"],
         "limits": {name: limits[name] for name in (
@@ -176,18 +181,18 @@ def claim_handoff(root: str | Path, *, descriptor: Mapping[str, Any], config: Ma
 
     checked = validate_descriptor(descriptor, config=config)
     job_id = checked["job_id"]
+    if not isinstance(config.get("transport_bucket"), str) or not _BUCKET.fullmatch(config["transport_bucket"]):
+        raise RemoteCpuLeaseError("remote_cpu_lease_config_invalid:transport_bucket")
     with _locked(root, job_id) as (path, marker):
         current = _read(path)
         if current is not None and (current["attempt_id"], current["descriptor_digest"]) == (
                 checked["attempt_id"], checked["descriptor_digest"]):
             return current
         if current is None and checked["attempt"] == 1:
-            execution = checked["execution"]
             lease = {
                 "schema_version": LEASE_SCHEMA_VERSION, "job_id": job_id, "stage": checked["stage"],
-                "queue_row": checked["queue_row"], "transport_bucket": config["transport_bucket"],
-                "execution": {name: execution[name] for name in ("project", "region", "job")},
-                **_attempt(checked), "prior_attempts": [], "transitions": [], "lease_digest": "",
+                "queue_row": checked["queue_row"], **_attempt(checked, config), "prior_attempts": [],
+                "transitions": [], "lease_digest": "",
             }
         elif current is None:
             raise RemoteCpuLeaseError("remote_cpu_lease_prior_attempt_missing")
@@ -199,7 +204,7 @@ def claim_handoff(root: str | Path, *, descriptor: Mapping[str, Any], config: Ma
             raise RemoteCpuLeaseError("remote_cpu_lease_prior_attempt_not_compute_zero")
         else:
             prior = {name: current[name] for name in _ATTEMPT_FIELDS}
-            lease = {**current, **_attempt(checked), "prior_attempts": [*current["prior_attempts"], prior]}
+            lease = {**current, **_attempt(checked, config), "prior_attempts": [*current["prior_attempts"], prior]}
         lease["transitions"] = [*lease["transitions"], {
             "from": None if current is None else current["state"], "to": "claimed",
             "attempt": checked["attempt"], "at_epoch": float(now)}]
@@ -259,6 +264,9 @@ def _enter(lease: dict[str, Any], state: str, now: float) -> None:
         lease["lease_expires_at_epoch"] = min(start_by, hard)
     if state in {"dispatched", "running", "collecting"} and lease["worker_identity"] is None:
         raise RemoteCpuLeaseError("remote_cpu_lease_worker_identity_missing")
+    if state == "dispatched" and lease["transport_object"] is None:
+        # Compute-zero needs the transport deleted at its generation, so it must be on record.
+        raise RemoteCpuLeaseError("remote_cpu_lease_transport_missing")
     if state == "running" and lease["heartbeat"] is None:
         raise RemoteCpuLeaseError("remote_cpu_lease_heartbeat_missing")
     if (state == "expired" or state in TERMINAL_STATES) and not lease["outcome"]:
