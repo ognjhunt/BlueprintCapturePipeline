@@ -1148,3 +1148,67 @@ while descriptor cleanup runs independently after that clock expires. A changed
 raw lease version invalidates the recorded exclusive interval even if its
 canonical sealed meaning is unchanged. Checked report CLI errors emit fixed
 JSON refusals without command arguments; ordinary GC CLI parsing is unchanged.
+
+## Streamed provider output: readers by reference (2026-09-28)
+
+A streamed Quick-10 keeps under `<attempt>/immutable_execution/` only the
+members its consumers read as bytes (the contract's JSON). Every other member
+stays in the promoted archive in B2, described by
+`<attempt>/provider_output_member_index.v1.json` and reached through the view
+descriptor `<attempt>/immutable_execution.member_view.v1.json`
+(`provider_output_member_view`). Each reader looks for a descriptor above the
+path it reads; without one (download mode) it runs exactly its old code.
+
+- **Delivery** registers a member that is not on disk by its index digest and
+  size (same artifact ids), then writes
+  `artifacts/result_delivery/archive_member_references.v1.json`, bound to the
+  registry. That file names the index and the descriptor, so residue offload
+  keeps both, and the descriptor names its ingestion receipt.
+- **Control cell archives** (`result_delivery/controls/cell-NN.zip`) stream the
+  control MP4s and PNGs through the view into the same deterministic ZIP
+  writer, byte-identical to download mode, and control frames are verified by
+  index digest. These archives are not an offloadable role, so they stay on the
+  host. **M3** (the whole run directory, sampled under
+  `workload="policy_canary_streamed"`) is therefore the earlier ~1.1 GB estimate
+  *plus* the deflated control media (60 control MP4s and their frames). Measure
+  it on a retained Quick-10 with
+  `provider_output_member_view plan --archive <zip> --contract ...` (bytes under
+  `control_runs/`) before judging the T2 target.
+- **Downloads** of a member read it from B2 with one range request into the
+  result-artifact cache, under a `result_artifact_download` reservation. The
+  range also carries the registered members that follow it in the archive
+  (at most 64, 8 MiB), cached briefly in-process; the owner readback walks
+  members in archive order, so a whole run costs a few range reads. The storage
+  GC counts these members as already remote.
+- **Interpretation, adoption and rescoring** bind frames, videos and inventory
+  rows by index digest; the v1 interpreter reads only its selected frames, by
+  range. Interpretation receipts carry `source_digest_basis` (the index pass
+  over the pinned archive, bound to a B2 copy whose full readback passed); the
+  input receipt, and so every input bundle digest, is download mode's.
+- **Closeout and billing** accept `object_store_staging/staged_object_absence_proof.v1.json`,
+  written by `provider_output_promotion resume`, in place of a sealed
+  `all_staged_objects_absent: false`. Billing needs only the absence. Closeout
+  closes cleanly when promotion succeeded, or confirmed there was no output
+  for a run that has none; otherwise it seals the run blocked with
+  `policy_canary_provider_output_not_durable`. While the staging dir's current
+  promotion receipt is a checkpoint (witness `pending`), neither accepts the
+  proof (`policy_canary_provider_output_promotion_not_final`).
+- **The existing-run continuation** promotes a gated staging's output under the
+  per-staging lock (10 s wait) before its gated cleanup.
+- **Offline tools** that need a scratch copy of one cell run
+  `python -m blueprint_pipeline.provider_output_member_view materialize --evidence-root <attempt>/immutable_execution --prefix cell_runs/NN/ --output-root <scratch>`.
+
+Two stream-mode records look alarming and are not:
+
+- **Download-manifest zeros.** A completed remote observation downloads
+  nothing, so the adapter's `provider_output_download_manifest` records
+  `download_attempted: false`, `downloaded_size_bytes: 0`,
+  `output_zip_present_after_download: false` and `output_zip_size_bytes: 0`
+  beside `delivery: "remote_only"` and a `remote_object` {size, ETag}. The
+  output *was* received (`provider_runtime_output_zip_received: true`); judge
+  it by `provider_output_remote_observation` and the promotion receipt, never
+  by these zeros, and `provider_runtime_output_zip_path` names no file.
+- **`mp4_ffprobe_validation_not_requested`** in the zip inspection's
+  `mp4_validation.blockers` means no MP4 was copied out for ffprobe, by design.
+  The Quick-10 bundle kind expects no inspection video smoke, so the run is
+  not blocked by it; video smoke is simply not proven by the inspection.
