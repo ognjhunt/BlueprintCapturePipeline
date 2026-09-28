@@ -31,10 +31,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
+import http.client
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
@@ -42,11 +46,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
 DEFAULT_URL = "https://paperclip.tryblueprint.io/api/live-pipeline/operator/v1"
 DEFAULT_TOKEN_FILE = "~/.blueprint-secrets/operator_door_token"
+MAX_CHECKED_PULL_BYTES = 16 * 1024 * 1024
+CHECKED_PULL_CHUNK_BYTES = 1024 * 1024
+MAX_CHECKED_PULL_REQUESTS = 4096
+MAX_CHECKED_HTTP_ERROR_BYTES = 4096
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released"}
@@ -73,7 +82,8 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _request(method: str, route: str, query: dict[str, Any] | None = None, body: Any = None):
+def _request(method: str, route: str, query: dict[str, Any] | None = None, body: Any = None,
+             *, checked_error_max_bytes: int | None = None):
     url = base_url() + route
     if query:
         url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
@@ -84,6 +94,23 @@ def _request(method: str, route: str, query: dict[str, Any] | None = None, body:
     try:
         return urllib.request.urlopen(request, timeout=120)  # nosec B310 - operator-configured URL
     except urllib.error.HTTPError as error:
+        if checked_error_max_bytes is not None:
+            code = ""
+            try:
+                payload = _bounded_body(error, checked_error_max_bytes + 1)
+                if len(payload) <= checked_error_max_bytes:
+                    document = json.loads(payload or b"{}", parse_constant=_invalid_json_constant)
+                    code = document.get("error", "") if isinstance(document, dict) else ""
+            except (DoorError, ValueError, RecursionError, OSError, http.client.HTTPException):
+                pass
+            finally:
+                try:
+                    error.close()
+                except OSError:
+                    pass
+            exit_code = (3 if error.code == 401 or (error.code == 403 and isinstance(code, str)
+                         and code.startswith("scope_missing")) else 5 if error.code >= 500 else 2)
+            raise _checked_remote_error(exit_code) from error
         try:
             code = json.loads(error.read() or b"{}").get("error", "")
         except (ValueError, AttributeError):
@@ -94,6 +121,8 @@ def _request(method: str, route: str, query: dict[str, Any] | None = None, body:
             raise DoorError(5, f"door error {error.code}: {code}") from error
         raise DoorError(2, f"refused: {code or error.code}") from error
     except (urllib.error.URLError, OSError) as error:
+        if checked_error_max_bytes is not None:
+            raise _checked_remote_error(4) from error
         raise DoorError(4, f"cannot reach {base_url()}: {getattr(error, 'reason', error)}") from error
 
 
@@ -120,6 +149,186 @@ def _pull_file(remote: str, local: Path) -> None:
             if eof or not data:
                 break
     partial.replace(local)
+
+
+
+def _invalid_json_constant(_value):
+    raise ValueError("nonfinite JSON")
+
+
+def _checked_remote_error(exit_code: int) -> DoorError:
+    messages = {2: "checked_pull_remote_refused", 3: "checked_pull_unauthorized",
+                4: "checked_pull_network_failed", 5: "checked_pull_server_failed"}
+    return DoorError(exit_code, messages.get(exit_code, "checked_pull_remote_refused"))
+
+
+def _bounded_body(response, limit: int) -> bytes:
+    pieces = []
+    remaining = limit
+    while remaining:
+        part = response.read(remaining)
+        if not isinstance(part, bytes) or len(part) > remaining:
+            raise DoorError(2, "checked_pull_response_invalid")
+        if not part:
+            break
+        pieces.append(part)
+        remaining -= len(part)
+    return b"".join(pieces)
+
+
+def _checked_pull_options(digest: Any, size: Any) -> tuple[str, int]:
+    if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        raise DoorError(2, "checked_pull_options_invalid")
+    if isinstance(size, str):
+        if (len(size) > len(str(MAX_CHECKED_PULL_BYTES))
+                or re.fullmatch(r"0|[1-9][0-9]*", size) is None):
+            raise DoorError(2, "checked_pull_options_invalid")
+        size = int(size)
+    if type(size) is not int or not 0 <= size <= MAX_CHECKED_PULL_BYTES:
+        raise DoorError(2, "checked_pull_options_invalid")
+    return digest, size
+
+
+def _checked_header(headers, name: str) -> int:
+    value = headers.get(name)
+    if (not isinstance(value, str) or len(value) > len(str(MAX_CHECKED_PULL_BYTES))
+            or re.fullmatch(r"0|[1-9][0-9]*", value) is None):
+        raise DoorError(2, "checked_pull_response_invalid")
+    number = int(value)
+    if number > MAX_CHECKED_PULL_BYTES:
+        raise DoorError(2, "checked_pull_response_invalid")
+    return number
+
+
+def _checked_chunk(remote: str, offset: int, length: int, expected_size: int) -> bytes:
+    try:
+        with _request("GET", "/fs/read", {"path": remote, "offset": offset, "length": length},
+                      checked_error_max_bytes=MAX_CHECKED_HTTP_ERROR_BYTES) as response:
+            size = _checked_header(response.headers, "X-Door-Size")
+            start = _checked_header(response.headers, "X-Door-Offset")
+            declared = _checked_header(response.headers, "X-Door-Length")
+            eof = response.headers.get("X-Door-Eof")
+            if size != expected_size or start != offset or declared > length:
+                raise DoorError(2, "checked_pull_response_invalid")
+            data = _bounded_body(response, length + 1)
+            if (len(data) != declared or eof not in ("true", "false")
+                    or (eof == "true") != (offset + len(data) == expected_size)
+                    or (length > 0 and not data)):
+                raise DoorError(2, "checked_pull_response_invalid")
+            return data
+    except DoorError as error:
+        if str(error) == "checked_pull_response_invalid":
+            raise
+        raise _checked_remote_error(error.exit_code) from error
+    except (urllib.error.URLError, OSError) as error:
+        raise _checked_remote_error(4) from error
+    except (http.client.HTTPException, AttributeError, TypeError, ValueError) as error:
+        raise DoorError(2, "checked_pull_response_invalid") from error
+
+
+@contextmanager
+def _checked_parent(local: Path, *, create: bool = False):
+    if ".." in local.parts:
+        raise DoorError(2, "checked_pull_local_write_failed")
+    absolute = Path(os.path.abspath(local))
+    if not absolute.name:
+        raise DoorError(2, "checked_pull_local_write_failed")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    with ExitStack() as descriptors:
+        directory = os.open("/", flags)
+        descriptors.callback(os.close, directory)
+        for component in absolute.parts[1:-1]:
+            if create:
+                try:
+                    os.mkdir(component, dir_fd=directory)
+                except FileExistsError:
+                    pass
+            directory = os.open(component, flags, dir_fd=directory)
+            descriptors.callback(os.close, directory)
+        yield directory, absolute.name
+
+
+def _checked_inode(info) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _checked_current_parent(local: Path, identity: tuple[int, int]) -> None:
+    with _checked_parent(local) as (directory, _name):
+        if _checked_inode(os.fstat(directory)) != identity:
+            raise DoorError(2, "checked_pull_local_write_failed")
+
+
+def _checked_temporary(directory: int, name: str):
+    temporary = f".{name}.{secrets.token_hex(16)}.partial"
+    descriptor = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=directory)
+    return descriptor, temporary
+
+
+def _checked_cleanup(directory: int, temporary: str, identity: tuple[int, int]) -> None:
+    try:
+        current = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISREG(current.st_mode) and _checked_inode(current) == identity:
+        os.unlink(temporary, dir_fd=directory)
+
+
+def _write_checked_file(remote, local, directory, name, expected_sha256, expected_size):
+    parent = _checked_inode(os.fstat(directory))
+    descriptor, temporary = _checked_temporary(directory, name)
+    owned = None
+    try:
+        owned = _checked_inode(os.fstat(descriptor))
+        digest = hashlib.sha256()
+        offset = 0
+        requests = 0
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = None  # The stream owns it only after fdopen succeeds.
+        with stream:
+            while requests == 0 or offset < expected_size:
+                if requests >= MAX_CHECKED_PULL_REQUESTS:
+                    raise DoorError(2, "checked_pull_request_limit")
+                length = min(CHECKED_PULL_CHUNK_BYTES, expected_size - offset)
+                data = _checked_chunk(remote, offset, length, expected_size)
+                stream.write(data)
+                digest.update(data)
+                offset += len(data)
+                requests += 1
+            if "sha256:" + digest.hexdigest() != expected_sha256:
+                raise DoorError(2, "checked_pull_identity_mismatch")
+            stream.flush()
+            os.fsync(stream.fileno())
+            completed = os.fstat(stream.fileno())
+        _checked_current_parent(local, parent)
+        source = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(source.st_mode) or _checked_inode(source) != owned
+                or (source.st_size, source.st_mtime_ns, source.st_ctime_ns)
+                != (completed.st_size, completed.st_mtime_ns, completed.st_ctime_ns)):
+            raise DoorError(2, "checked_pull_local_write_failed")
+        os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        temporary = None
+        _checked_current_parent(local, parent)
+        published = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(published.st_mode) or _checked_inode(published) != owned
+                or published.st_size != expected_size or published.st_mtime_ns != completed.st_mtime_ns):
+            raise DoorError(2, "checked_pull_local_write_failed")
+        return {"path": remote, "saved": str(local), "bytes": offset,
+                "verified_digest": expected_sha256, "verified_bytes": offset}
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None and owned is not None:
+            _checked_cleanup(directory, temporary, owned)
+
+
+def _pull_checked_file(remote: str, local: Path, *, expected_sha256: Any, expected_size: Any) -> dict[str, Any]:
+    expected_sha256, expected_size = _checked_pull_options(expected_sha256, expected_size)
+    try:
+        with _checked_parent(local, create=True) as (directory, name):
+            return _write_checked_file(remote, local, directory, name, expected_sha256, expected_size)
+    except OSError as error:
+        raise DoorError(2, "checked_pull_local_write_failed") from error
 
 
 def _safe_members(archive: tarfile.TarFile, destination: Path):
@@ -298,8 +507,14 @@ def _scratch_duration(value: str) -> int:
     return seconds
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="operator_door.py", description=__doc__,
+def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
+    class Parser(argparse.ArgumentParser):
+        def error(self, message: str) -> None:
+            if checked_mode:
+                raise DoorError(2, "checked_pull_options_invalid")
+            super().error(message)
+
+    parser = Parser(prog="operator_door.py", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("whoami")
@@ -316,6 +531,8 @@ def build_parser() -> argparse.ArgumentParser:
     pull = commands.add_parser("pull")
     pull.add_argument("path")
     pull.add_argument("destination")
+    pull.add_argument("--expected-sha256", help="trusted publication sha256: digest; requires expected size")
+    pull.add_argument("--expected-size", help="trusted canonical byte count, at most 16 MiB; file-only")
     journal = commands.add_parser("journal")
     journal.add_argument("unit")
     journal.add_argument("-n", "--lines", type=int, default=200)
@@ -393,6 +610,11 @@ def run(args: argparse.Namespace) -> int:
         sys.stdout.write(data.decode("utf-8", "replace"))
         sys.stdout.flush()
     elif command == "pull":
+        if args.expected_sha256 is not None or args.expected_size is not None:
+            _print(_pull_checked_file(args.path, Path(args.destination),
+                                      expected_sha256=args.expected_sha256,
+                                      expected_size=args.expected_size))
+            return 0
         listing = _json("GET", "/fs/list", {"path": args.path})
         destination = Path(args.destination)
         if listing.get("type") == "dir":
@@ -444,8 +666,12 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    checked_intent = any(option.startswith(token.split("=", 1)[0])
+                         for token in arguments if token.startswith("--") and len(token) > 2
+                         for option in ("--expected-sha256", "--expected-size"))
     try:
+        args = build_parser(checked_mode=checked_intent).parse_args(arguments)
         return run(args)
     except DoorError as error:
         print(str(error), file=sys.stderr)
