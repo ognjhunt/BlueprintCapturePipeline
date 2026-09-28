@@ -407,6 +407,24 @@ def _linux_contained_phase(root):
     from tests.test_native_g1_development_pair import _paired_requests, _seal_request
     from tests.test_adp_task_scoring import _rigid_v2_spec
 
+    # Disposable-runner diagnostic only: this fixed property allowlist contains
+    # no Environment, credentials or request/private record bodies. Preserve the
+    # actual native return and every production complete-key/security guard.
+    native_control = contained._native_control
+    fixed_query = "--property=" + ",".join(contained._UNIT_PROPERTIES)
+
+    def observed_native_control(arguments):
+        raw = native_control(arguments)
+        if (
+            len(arguments) == 6
+            and arguments[:2] == [contained._SYSTEMCTL, "show"]
+            and arguments[3:] == ["--no-pager", "--all", fixed_query]
+        ):
+            sys.stderr.write("fixed_systemd_unit_observation=" + json.dumps(raw) + "\n")
+        return raw
+
+    contained._native_control = observed_native_control
+
     assert (
         os.geteuid() == 0
         and root.parent == Path("/var/lib")
