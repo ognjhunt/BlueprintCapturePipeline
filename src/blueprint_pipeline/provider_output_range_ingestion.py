@@ -583,6 +583,9 @@ def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selecti
     members, meta = Path(members_root).absolute(), Path(metadata_root).absolute()
     if members == meta or members in meta.parents or meta in members.parents:
         raise ProviderOutputIngestionError('provider_output_selected_roots_invalid')
+    if meta.is_symlink() or members.is_symlink():
+        # Before anything reads or creates them: a dangling link would make mkdir raise untyped.
+        raise ProviderOutputIngestionError('provider_output_evidence_root_unsafe')
     if meta.is_dir() and not (meta / 'binding.json').exists() and any(path.name != 'lock' for path in meta.iterdir()):
         raise ProviderOutputIngestionError('provider_output_evidence_root_not_owned')
     binding = {'schema_version': SELECTED_BINDING_SCHEMA, 'member_index_digest': index['index_digest'],

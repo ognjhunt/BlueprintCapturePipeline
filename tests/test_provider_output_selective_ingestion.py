@@ -284,6 +284,17 @@ def test_roots_on_different_devices_are_refused_before_any_transfer(tmp_path, in
     assert store.requests == [] and not (tmp_path / "ingestion/binding.json").exists()
 
 
+@pytest.mark.parametrize("root", ["members", "ingestion"])
+def test_a_symlinked_root_is_refused_before_it_is_created(tmp_path, indexed, root):
+    archive, index = indexed
+    store = RangeStore(archive)
+    selection = build_member_selection(index, ["runtime/identity.json"], selection_version=CONSUMERS)
+    (tmp_path / root).symlink_to(tmp_path / "elsewhere")  # dangling: mkdir would raise FileExistsError
+    with pytest.raises(ProviderOutputIngestionError, match="^provider_output_evidence_root_unsafe$"):
+        _ingest(tmp_path, store, index, selection)
+    assert store.requests == [] and not (tmp_path / "elsewhere").exists()
+
+
 def test_a_rename_across_mounts_is_a_typed_refusal(tmp_path, indexed, monkeypatch):
     archive, index = indexed
     selection = build_member_selection(index, ["runtime/identity.json"], selection_version=CONSUMERS)
