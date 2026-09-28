@@ -82,3 +82,25 @@ def test_restored_member_requires_full_current_byte_and_exclusive_inode_proof_be
         with pytest.raises(ValueError):
             restore_preserved_members(preserved,transport=transport,journal=journal)
     assert not any(row['event']=='member_restored' for row in journal.events)
+
+
+@pytest.mark.parametrize('limit',['events','bytes'])
+def test_complete_restore_journal_capacity_refuses_before_creating_first_directory(tmp_path,monkeypatch,limit):
+    from blueprint_pipeline import task_evaluation_scene_retirement_journal as journal_module
+    from blueprint_pipeline.task_evaluation_scene_retirement_restore import restore_preserved_members
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    access,member,_,journal=setup_operation(tmp_path,monkeypatch)
+    transport=MemoryTransport([member])
+    preserved=preserve_members([member],transport=transport,allowance=journal.allowance,token='3'*32)
+    with access.exclusive_scene_access():
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+        transport.members=[]
+        if limit=='events':
+            monkeypatch.setattr(journal_module,'MAX_EVENTS',journal.sequence+4)
+        else:
+            monkeypatch.setattr(journal_module,'MAX_JOURNAL_BYTES',journal.bytes+1)
+        with pytest.raises(ValueError,match='scene_retirement_journal_limit'):
+            restore_preserved_members(preserved,transport=transport,journal=journal)
+    assert not member.exists()
