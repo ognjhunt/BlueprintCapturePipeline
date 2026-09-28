@@ -608,13 +608,20 @@ def _closures(run_root: Path) -> dict[str, dict[str, object]]:
     }
 
 
-def _streamed_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _streamed_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, video_bytes: bytes | None = None):
     from tests.provider_output_fixtures import serve_member_views, stream_evidence_tree
 
     download_root, stream_root = tmp_path / "download", tmp_path / "streamed"
     source = download_root / "allocator/attempts/attempt_001/immutable_execution"
     source.mkdir(parents=True)
     result = _result(source)
+    if video_bytes is not None:
+        video = source / "episode-one.external.mp4"
+        video.write_bytes(video_bytes)
+        binding = {"sha256": _sha(video), "size_bytes": len(video_bytes)}
+        next(row for row in result["artifact_inventory"] if row["relative_path"] == video.name).update(binding)
+        result["episodes"][0]["episode"]["visual_evidence"]["videos"]["external"] = binding
+        _reseal(result)
     streamed = stream_evidence_tree(source, stream_root / "allocator/attempts/attempt_001")
     serve_member_views(monkeypatch, streamed.store)
     return result, (download_root, source), (stream_root, streamed)

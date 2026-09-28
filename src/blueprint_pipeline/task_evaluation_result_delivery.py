@@ -824,8 +824,8 @@ def resolve_task_evaluation_result_artifact(
         ) from exc
     path = _inside(evidence_root, str(record.get("relative_path") or ""), role=requested, require_exists=False)
     if not path.exists():
-        from .task_evaluation_result_artifact_store import materialize_result_artifact
-        return materialize_result_artifact(
+        from .task_evaluation_result_artifact_store import materialize_missing_result_artifact
+        return materialize_missing_result_artifact(
             run_root=root, registry=registry, record=dict(record), source_path=path,
         )
     if _sha256(path) != record.get("sha256") or path.stat().st_size != record.get("size_bytes"):

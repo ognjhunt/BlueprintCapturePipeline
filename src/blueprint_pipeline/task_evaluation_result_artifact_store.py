@@ -4,6 +4,11 @@ The scientific registry and closure metadata remain immutable and local. Only
 registered bulk payloads are evicted, after full remote byte readback and a
 fsynced, registry-bound private reference. Downloads materialize one artifact
 under a disk reservation; the response releases it even on disconnect.
+
+A streamed run's artifacts that never came to the host stay in the promoted
+provider archive, named by ``archive_member_references.v1.json``
+(``task_evaluation_result_archive_members``): a download reads such a member
+with one B2 range request, and the offload counts it as already remote.
 """
 
 from __future__ import annotations
@@ -221,6 +226,111 @@ def _artifact_eviction_lease(root: Path):
         release()
 
 
+def _download_cache() -> Path:
+    cache = Path(os.getenv(CACHE_ROOT_ENV, DEFAULT_CACHE_ROOT))
+    if not cache.is_absolute() or cache.is_symlink() or cache.resolve() != cache:
+        raise TaskEvaluationResultDeliveryError("result_artifact_cache_root_invalid")
+    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _reap_abandoned_downloads(cache)
+    return cache
+
+
+def materialize_missing_result_artifact(
+    *,
+    run_root: Path,
+    registry: dict,
+    record: dict,
+    source_path: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """A registered artifact that is not on disk: offloaded, or an archive member.
+
+    An offload reference takes precedence; without one, a streamed run's
+    archive-member references serve the member. A run with neither is exactly
+    today's ``materialize_result_artifact``.
+    """
+    from .task_evaluation_result_archive_members import REFERENCES_RELATIVE_PATH
+
+    relative = source_path.relative_to(run_root).as_posix()
+    remote = _remote_path(run_root, relative)
+    members = run_root / REFERENCES_RELATIVE_PATH
+    if not remote.exists() and not remote.is_symlink() and (members.exists() or members.is_symlink()):
+        return materialize_archive_member_artifact(
+            run_root=run_root, registry=registry, record=record, source_path=source_path)
+    return materialize_result_artifact(
+        run_root=run_root, registry=registry, record=record, source_path=source_path)
+
+
+def materialize_archive_member_artifact(
+    *,
+    run_root: Path,
+    registry: dict,
+    record: dict,
+    source_path: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Serve a registered artifact that stays in its streamed attempt's promoted archive.
+
+    The run's archive-member references, bound to this registry, name the
+    member's record in the durable archive. One B2 range request (after the
+    reader's one-byte ETag probe) inflates it into the result-artifact cache
+    under a ``result_artifact_download`` reservation of its exact size plus
+    1 MiB, checked against the recorded CRC-32 and SHA-256. The cleanup
+    contract is ``materialize_result_artifact``'s.
+    """
+    from .provider_output_member_view import (
+        ProviderOutputMemberViewError,
+        open_durable_archive,
+        stream_indexed_member,
+    )
+    from .task_evaluation_result_archive_members import (
+        ArchiveMemberReferenceError,
+        archive_member_entry,
+        load_archive_member_references,
+    )
+
+    relative = source_path.relative_to(run_root).as_posix()
+    _safe_path(run_root, relative)
+    try:
+        references = load_archive_member_references(run_root, registry)
+        entry = archive_member_entry(references, relative, record)
+    except ArchiveMemberReferenceError as exc:
+        raise TaskEvaluationResultDeliveryError(str(exc)) from None
+    if entry is None:
+        raise TaskEvaluationResultDeliveryError("result_artifact_metadata_missing")
+    cache = _download_cache()
+    reservation = reserve_control_plane_disk(
+        "result_artifact_download",
+        target_root=cache,
+        expected_bytes=record["size_bytes"] + 1024 * 1024,
+    )
+    temporary: Path | None = None
+
+    def cleanup() -> None:
+        try:
+            if temporary is not None:
+                shutil.rmtree(temporary, ignore_errors=True)
+        finally:
+            reservation.release()
+
+    try:
+        temporary = Path(tempfile.mkdtemp(prefix=f"download-{os.getpid()}-", dir=cache))
+        destination = temporary / source_path.name
+        archive = references["archive"]
+        row = {"method": entry["method"], "size": entry["size_bytes"], "crc32": entry["crc32"],
+               "sha256": entry["sha256"], "data_offset": entry["data_offset"],
+               "compressed_size": entry["compressed_size"]}
+        with destination.open("xb") as sink:
+            try:
+                reader = open_durable_archive(archive["durable_reference"], archive["size_bytes"])
+                stream_indexed_member(reader, row, sink.write)
+            except ProviderOutputMemberViewError as exc:
+                raise TaskEvaluationResultDeliveryError(
+                    f"result_artifact_archive_member_unreadable:{exc}") from None
+        return destination, {**record, "_artifact_cleanup": cleanup}
+    except Exception:
+        cleanup()
+        raise
+
+
 def materialize_result_artifact(
     *,
     run_root: Path,
@@ -236,11 +346,7 @@ def materialize_result_artifact(
         relative=relative,
         record=record,
     )
-    cache = Path(os.getenv(CACHE_ROOT_ENV, DEFAULT_CACHE_ROOT))
-    if not cache.is_absolute() or cache.is_symlink() or cache.resolve() != cache:
-        raise TaskEvaluationResultDeliveryError("result_artifact_cache_root_invalid")
-    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _reap_abandoned_downloads(cache)
+    cache = _download_cache()
     reservation = reserve_control_plane_disk(
         "result_artifact_download",
         target_root=cache,
@@ -315,6 +421,30 @@ def _sealed_registry(root: Path) -> tuple[dict, Path, bytes]:
     return registry, registry_path, raw
 
 
+def _archive_member_references(root: Path, registry: dict) -> dict:
+    from .task_evaluation_result_archive_members import (
+        ArchiveMemberReferenceError,
+        load_archive_member_references,
+    )
+
+    try:
+        return load_archive_member_references(root, registry) or {}
+    except ArchiveMemberReferenceError as exc:
+        raise TaskEvaluationResultDeliveryError(str(exc)) from None
+
+
+def _archive_member_entry(references: dict, relative: str, record: dict) -> dict | None:
+    from .task_evaluation_result_archive_members import (
+        ArchiveMemberReferenceError,
+        archive_member_entry,
+    )
+
+    try:
+        return archive_member_entry(references, relative, record)
+    except ArchiveMemberReferenceError as exc:
+        raise TaskEvaluationResultDeliveryError(str(exc)) from None
+
+
 def _offload_candidates(root: Path, registry: dict, minimum_size_bytes: int, report: dict) -> list:
     """The registered bulk files still local, each with its path and record; the remote ones counted.
 
@@ -333,6 +463,7 @@ def _offload_candidates(root: Path, registry: dict, minimum_size_bytes: int, rep
         _safe_path(root, relative)
         groups.setdefault(relative, []).append(record)
     candidates = []
+    members = None
     for relative, records in groups.items():
         record = records[0]
         if any(row.get("role") not in BULK_ROLES for row in records):
@@ -350,8 +481,15 @@ def _offload_candidates(root: Path, registry: dict, minimum_size_bytes: int, rep
             raise TaskEvaluationResultDeliveryError("result_artifact_alias_conflict")
         path = _safe_path(root, relative)
         if not path.exists():
+            remote = _remote_path(root, relative)
+            if not remote.exists() and not remote.is_symlink():
+                # A streamed run's member that never came to the host.
+                members = members if members is not None else _archive_member_references(root, registry)
+                if _archive_member_entry(members, relative, record) is not None:
+                    report["already_remote_count"] += 1
+                    continue
             _validate_remote(
-                _read(_remote_path(root, relative)),
+                _read(remote),
                 registry=registry,
                 relative=relative,
                 record=record,

@@ -246,16 +246,8 @@ class ProviderOutputMemberView:
         return row
 
     def _reader(self):
-        reference = self.index["archive"]["durable_reference"]
-        presign = self._presign or _default_presign(reference)
-        try:
-            reader = CasArchiveSource(reference, presign=presign, opener=self._opener).open(
-                self.index["archive"]["size"])
-        except (ProviderOutputIngestionError, ProviderOutputTransportError) as exc:
-            raise _refuse(str(exc)) from None
-        if reader.identity["size_bytes"] != self.index["archive"]["size"]:
-            raise _refuse("provider_output_remote_size_mismatch")
-        return reader
+        return open_durable_archive(self.index["archive"]["durable_reference"], self.index["archive"]["size"],
+                                    presign=self._presign, opener=self._opener)
 
     def read_member(self, relative: str, *, maximum_bytes: int) -> bytes:
         """One range request for the member's data, inflated in memory and checked."""
@@ -282,7 +274,7 @@ class ProviderOutputMemberView:
         partial = target.parent / f".{target.name}.{uuid.uuid4().hex}.partial"
         try:
             with partial.open("xb") as sink:
-                self._stream(row, reader, sink.write)
+                stream_indexed_member(reader, row, sink.write)
                 sink.flush()
                 os.fsync(sink.fileno())
             partial.chmod(0o440)
@@ -302,29 +294,53 @@ class ProviderOutputMemberView:
         must discard it on any refusal. Returns the member's index row.
         """
         row = self._row(relative)
-        return self._stream(row, self._reader(), sink)
+        return stream_indexed_member(self._reader(), row, sink)
 
-    @staticmethod
-    def _stream(row: dict, reader, sink: Callable[[bytes], Any]) -> dict:
-        digest, crc = hashlib.sha256(), [0]
 
-        def emit(data):
-            sink(data)
-            digest.update(data)
-            crc[0] = zlib.crc32(data, crc[0])
+def open_durable_archive(reference: Mapping[str, Any], size_bytes: int, *,
+                         presign: Callable[[], str] | None = None, opener: Callable | None = None):
+    """A pinned range reader on an archive's durable B2 copy, checked against its size.
 
-        try:
-            inflater = MemberInflater(row["method"], row["size"], emit,
-                                      step_bytes=inflate_step_bytes(reader.block_bytes))
-            if row["compressed_size"]:
-                reader.stream_to(inflater.feed, start=row["data_offset"],
-                                 end=row["data_offset"] + row["compressed_size"])
-            inflater.finish()
-        except (ProviderOutputMemberIndexError, ProviderOutputTransportError) as exc:
-            raise _refuse(str(exc)) from None
-        if (crc[0] & 0xFFFFFFFF, "sha256:" + digest.hexdigest()) != (row["crc32"], row["sha256"]):
-            raise _refuse("provider_output_member_digest_mismatch")
-        return row
+    Without ``presign``, B2 must be explicitly configured (the staging store's
+    credentials are never borrowed) and a short-lived URL is issued in memory.
+    """
+    try:
+        reader = CasArchiveSource(reference, presign=presign or _default_presign(reference),
+                                  opener=opener).open(size_bytes)
+    except (ProviderOutputIngestionError, ProviderOutputTransportError) as exc:
+        raise _refuse(str(exc)) from None
+    if reader.identity["size_bytes"] != size_bytes:
+        raise _refuse("provider_output_remote_size_mismatch")
+    return reader
+
+
+def stream_indexed_member(reader, row: Mapping[str, Any], sink: Callable[[bytes], Any]) -> dict:
+    """Pass one indexed member's inflated bytes to ``sink``; one range request, checked.
+
+    ``row`` needs the index's ``method``, ``size``, ``compressed_size``,
+    ``data_offset``, ``crc32`` and ``sha256``. A CRC-32 or SHA-256 that is not
+    the row's raises ``provider_output_member_digest_mismatch`` after the last
+    chunk.
+    """
+    digest, crc = hashlib.sha256(), [0]
+
+    def emit(data):
+        sink(data)
+        digest.update(data)
+        crc[0] = zlib.crc32(data, crc[0])
+
+    try:
+        inflater = MemberInflater(row["method"], row["size"], emit,
+                                  step_bytes=inflate_step_bytes(reader.block_bytes))
+        if row["compressed_size"]:
+            reader.stream_to(inflater.feed, start=row["data_offset"],
+                             end=row["data_offset"] + row["compressed_size"])
+        inflater.finish()
+    except (ProviderOutputMemberIndexError, ProviderOutputTransportError) as exc:
+        raise _refuse(str(exc)) from None
+    if (crc[0] & 0xFFFFFFFF, "sha256:" + digest.hexdigest()) != (row["crc32"], row["sha256"]):
+        raise _refuse("provider_output_member_digest_mismatch")
+    return row
 
 
 def _open_descriptor(path: Path, root: Path, presign, opener) -> ProviderOutputMemberView:

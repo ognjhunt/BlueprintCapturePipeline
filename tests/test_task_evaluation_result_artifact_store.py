@@ -768,3 +768,91 @@ def test_eviction_waits_for_an_active_authenticated_download_lease(setup):
         worker.join(5)
     assert finished.is_set() and results[0]["offloaded_count"] == 1
     assert not f.path.exists()
+
+
+# -- Streamed runs: artifacts that stay in the promoted archive ---------------
+
+
+@pytest.fixture
+def streamed_run(tmp_path, monkeypatch):
+    from tests.test_task_evaluation_policy_canary_result_delivery import _deliver, _registry, _streamed_case
+
+    result, _, (stream_root, streamed) = _streamed_case(tmp_path, monkeypatch)
+    _deliver(stream_root, streamed.evidence, result)
+    registry = _registry(stream_root)
+    video = next(row for row in registry["artifacts"] if row["relative_path"] == "episode-one.external.mp4")
+    reservations = []
+    ledger = tmp_path / "ledger"
+
+    def reserve(role, **kwargs):
+        reservations.append((role, kwargs["expected_bytes"]))
+        return reserve_control_plane_disk(
+            role, reservation_root=ledger,
+            disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3), **kwargs)
+
+    monkeypatch.setattr(offload, "reserve_control_plane_disk", reserve)
+    cache = tmp_path / "cache"
+    monkeypatch.setenv(offload.CACHE_ROOT_ENV, str(cache))
+    return SimpleNamespace(root=stream_root, streamed=streamed, registry=registry, video=video,
+                           reservations=reservations, ledger=ledger, cache=cache,
+                           source=tmp_path / "download/allocator/attempts/attempt_001/immutable_execution")
+
+
+def test_download_of_an_archive_member_is_one_range_request_under_a_reservation(streamed_run):
+    f = streamed_run
+    row = f.streamed.rows["episode-one.external.mp4"]
+    assert not (f.streamed.evidence / "episode-one.external.mp4").exists()
+
+    path, record = resolve_task_evaluation_result_artifact(
+        run_root=f.root, run_id=f.registry["run_id"], artifact_id=f.video["artifact_id"])
+
+    assert path.read_bytes() == (f.source / "episode-one.external.mp4").read_bytes()
+    assert (record["sha256"], record["size_bytes"]) == (f.video["sha256"], f.video["size_bytes"])
+    # The ETag probe, then the member's record data: one range request.
+    assert f.streamed.store.ranges() == [(0, 0), (row["data_offset"], row["data_offset"] + row["compressed_size"] - 1)]
+    assert f.reservations == [("result_artifact_download", f.video["size_bytes"] + 1024 * 1024)]
+    assert path.parent.parent == f.cache and list(f.ledger.glob("*.json"))
+    record["_artifact_cleanup"]()
+    assert list(f.cache.iterdir()) == [] and not list(f.ledger.glob("*.json"))
+    # Nothing was written under the evidence root.
+    assert not (f.streamed.evidence / "episode-one.external.mp4").exists()
+
+
+def test_archive_member_download_refuses_bytes_that_are_not_the_index_and_cleans_up(streamed_run, monkeypatch):
+    from tests.provider_output_fixtures import RangeStore, serve_member_views
+
+    f = streamed_run
+    row = f.streamed.rows["episode-one.external.mp4"]
+    serve_member_views(monkeypatch, RangeStore(f.streamed.archive.patched(row["data_offset"], b"\x00")))
+    with pytest.raises(offload.TaskEvaluationResultDeliveryError,
+                       match="^result_artifact_archive_member_unreadable:"):
+        resolve_task_evaluation_result_artifact(
+            run_root=f.root, run_id=f.registry["run_id"], artifact_id=f.video["artifact_id"])
+    assert list(f.cache.iterdir()) == [] and not list(f.ledger.glob("*.json"))
+    # A references file that no longer binds the sealed registry serves nothing.
+    references = f.root / "artifacts/result_delivery/archive_member_references.v1.json"
+    value = json.loads(references.read_text())
+    value["registry_digest"] = "sha256:" + "0" * 64
+    references.write_text(json.dumps(value))
+    with pytest.raises(offload.TaskEvaluationResultDeliveryError,
+                       match="^result_archive_member_references_invalid$"):
+        resolve_task_evaluation_result_artifact(
+            run_root=f.root, run_id=f.registry["run_id"], artifact_id=f.video["artifact_id"])
+
+
+def test_offload_counts_archive_members_as_remote(streamed_run):
+    f = streamed_run
+    published = []
+
+    dry = offload.offload_result_artifacts(run_root=f.root, hot_window_seconds=0, minimum_size_bytes=1)
+    applied = offload.offload_result_artifacts(
+        run_root=f.root, apply=True, ack=offload.APPLY_ACK, hot_window_seconds=0, minimum_size_bytes=1,
+        publisher=lambda **kwargs: published.append(kwargs))
+
+    for report in (dry, applied):
+        assert (report["candidate_count"], report["already_remote_count"], report["skipped"]) == (0, 1, [])
+    assert published == [] and applied["offloaded_count"] == 0
+    # Without its references file the member is an unaccounted missing file: the run keeps everything.
+    (f.root / "artifacts/result_delivery/archive_member_references.v1.json").unlink()
+    with pytest.raises(offload.TaskEvaluationResultDeliveryError, match="^result_artifact_metadata_missing$"):
+        offload.offload_result_artifacts(run_root=f.root, hot_window_seconds=0, minimum_size_bytes=1)

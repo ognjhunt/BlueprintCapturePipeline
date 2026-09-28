@@ -164,6 +164,7 @@ def load_archive_member_references(run_root: str | Path, registry: Mapping[str, 
             or value.get("run_id") != registry.get("run_id")
             or value.get("registry_digest") != registry.get("registry_digest")
             or not isinstance(archive, dict) or not _DIGEST.fullmatch(str(archive.get("sha256")))
+            or not _durable(archive)
             or not isinstance(members, dict)
             or not all(isinstance(entry, dict) and tuple(sorted(entry)) == tuple(sorted(_ENTRY_KEYS))
                        for entry in members.values())):
@@ -180,6 +181,18 @@ def archive_member_entry(references: Mapping[str, Any] | None, relative: str,
     if (entry.get("sha256"), entry.get("size_bytes")) != (record.get("sha256"), record.get("size_bytes")):
         raise ArchiveMemberReferenceError("result_archive_member_reference_mismatch")
     return dict(entry)
+
+
+def _durable(archive: Mapping[str, Any]) -> bool:
+    from .provider_output_member_index import ProviderOutputMemberIndexError, durable_reference_facts
+
+    reference = archive.get("durable_reference")
+    try:
+        facts = durable_reference_facts(reference)
+    except ProviderOutputMemberIndexError:
+        return False
+    return (facts == reference and facts["digest"] == archive.get("sha256")
+            and facts["size_bytes"] == archive.get("size_bytes"))
 
 
 def _digest_or_none(value: Mapping[str, Any]) -> str | None:
