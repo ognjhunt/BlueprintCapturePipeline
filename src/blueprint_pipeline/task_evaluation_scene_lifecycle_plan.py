@@ -1,0 +1,172 @@
+"""Bounded exact-scene metadata/size plan; always KEEP, never an apply path."""
+from __future__ import annotations
+
+import math
+import time
+from pathlib import PurePosixPath
+
+from .control_plane_reference_budget import ReferenceCollectionBudget
+from . import task_evaluation_scene_compilation_native_owner_inventory as native
+from . import task_evaluation_scene_lifecycle_acquisition as acquisition
+from . import task_evaluation_scene_lifecycle_pool as pool_module
+from .task_evaluation_scene_lineage_budget import RetainedEmissionBudget, _work_items
+
+MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+FIELDS = {'roots', 'parent_routes', 'retained_metadata_roots', 'acquisition_anchors', 'retained_metadata_files',
+          'pins_root', 'primary_queue_contracts', 'auxiliary_queue_contracts', 'reference_family_contracts', 'progression_config'}
+FALSE_FLAGS = ('scene_inventory_complete', 'references_clear', 'process_fences_held', 'retirement_eligible',
+               'cleanup_authorized', 'restore_verified', 'fresh_remote_readback_verified', 'execution_authorized',
+               'current_provider_zero_verified', 'current_rights_checked', 'settlement_reopen_clear', 'owner_consent_verified')
+FAMILIES = ('capture_pipeline', 'administrative_source_workspace', 'preparation_workspace',
+            'configuration_progression_workspace', 'activation_workspace', 'prepared_objects',
+            'compilation_workspace', 'sam_current_child', 'sam_original_child', 'launch_canary_workspace')
+
+
+def fallback(code):
+    return {'schema_version': 'task_evaluation_scene_lifecycle_plan.v1', 'status': 'incomplete', 'action': 'KEEP',
+            'scope': 'selected_exact_scene_metadata_and_measured_paths', 'blockers': [code], 'mutations': 0,
+            **{flag: False for flag in FALSE_FLAGS}}
+
+
+def _context(value, budget):
+    budget.tick()
+    budget.measure(value)
+    acquisition.require(isinstance(value, dict) and set(value) == FIELDS, 'context_invalid')
+    roots = value['roots']
+    expected = native.prior.downstream.seed_module._ROOTS | native.prior.downstream.EXTRA_ROOTS | native.prior.EXTRA_ROOTS
+    acquisition.require(isinstance(roots, dict) and set(roots) == expected, 'context_roots_invalid')
+    anchors = value['acquisition_anchors']
+    acquisition.require(isinstance(anchors, list) and 1 <= len(anchors) <= 4, 'context_anchors_invalid')
+    anchors = [acquisition.path(path, budget) for path in _work_items(anchors, budget)]
+    acquisition.require(len(set(anchors)) == len(anchors), 'context_anchors_invalid')
+    routes, metadata = value['parent_routes'], value['retained_metadata_roots']
+    acquisition.require(isinstance(routes, list) and 1 <= len(routes) <= 4 and isinstance(metadata, list)
+                        and 1 <= len(metadata) <= 8, 'context_routes_invalid')
+    for path in _work_items([*roots.values(), *metadata, value['pins_root']], budget):
+        acquisition.path(path, budget)
+        acquisition.require(any(PurePosixPath(path).is_relative_to(PurePosixPath(anchor)) for anchor in anchors),
+                            'context_path_outside_anchor')
+    for route in _work_items(routes, budget):
+        acquisition.require(isinstance(route, dict) and set(route) == {'queue_root', 'input_root'}, 'context_routes_invalid')
+        for path in _work_items(route.values(), budget):
+            acquisition.path(path, budget)
+            acquisition.require(any(PurePosixPath(path).is_relative_to(PurePosixPath(anchor)) for anchor in anchors),
+                                'context_path_outside_anchor')
+    acquisition.require({'queue_root': roots['preparation_queue_root'], 'input_root': roots['preparation_input_root']} in routes,
+                        'context_routes_invalid')
+    selectors = value['retained_metadata_files']
+    acquisition.require(isinstance(selectors, list) and len(selectors) <= 1024, 'context_selectors_invalid')
+    selected = set()
+    for row in _work_items(selectors, budget):
+        acquisition.require(isinstance(row, dict) and set(row) == {'role', 'path'} and isinstance(row['role'], str)
+                            and row['role'] in pool_module.SELECTOR_ROLES, 'context_selectors_invalid')
+        path = acquisition.path(row['path'], budget)
+        acquisition.require(path.endswith('.json') and any(PurePosixPath(path).is_relative_to(PurePosixPath(root))
+                            and path != root for root in metadata), 'context_selectors_invalid')
+        acquisition.require(path not in selected, 'context_selectors_invalid')
+        budget.charge('facts')
+        selected.add(path)
+    for field, keys in [('primary_queue_contracts', {'root_path', 'states'}),
+                        ('auxiliary_queue_contracts', {'family', 'root_path'}),
+                        ('reference_family_contracts', {'family', 'queue_root'})]:
+        contracts = value[field]
+        acquisition.require(isinstance(contracts, list) and 1 <= len(contracts) <= 16, 'context_contracts_invalid')
+        for row in _work_items(contracts, budget):
+            acquisition.require(isinstance(row, dict) and set(row) == keys, 'context_contracts_invalid')
+            path = row.get('root_path', row.get('queue_root'))
+            acquisition.path(path, budget)
+            acquisition.require(any(PurePosixPath(path).is_relative_to(PurePosixPath(root)) for root in anchors),
+                                'context_path_outside_anchor')
+            if 'family' in row:
+                acquisition.require(row['family'] in {'preparation', 'activation', 'sam'}, 'context_contracts_invalid')
+            if 'states' in row:
+                acquisition.require(isinstance(row['states'], list) and 1 <= len(row['states']) <= 16
+                                    and all(isinstance(state, str) and state in pool_module.STATES
+                                            for state in row['states']), 'context_contracts_invalid')
+    config = value['progression_config']
+    if config is not None:
+        acquisition.path(config, budget)
+        acquisition.require(config.endswith('.json') and any(PurePosixPath(config).is_relative_to(PurePosixPath(root))
+                            and config != root for root in metadata), 'context_config_invalid')
+    return value
+
+
+def _finished(seed, decoded, context, intent_id, now, budget):
+    history = seed['history']
+    owner = context['roots']['intent_root'] + '/' + intent_id
+    intent_row = next(row for row in decoded if row['path'] == owner + '/intent.json')
+    intent = intent_row['value']
+    status = 'unknown'
+    reason = 'history_not_current'
+    projection = next((row for row in decoded if row['path'] == owner + '/progression.json'), None)
+    if history['chain_validated'] and history['projection_state'] == 'current' and projection is not None:
+        if projection['value']['status'] == 'completed':
+            status, reason = 'completed', 'validated_current_completed_history'
+    # Revocation/expiry metadata is interpreted separately in the next bounded
+    # authority-end predicate; no runtime loader, repair, mtime or admission call.
+    budget.charge('facts')
+    return {'status': status, 'reason': reason, 'observed_at_epoch': now,
+            'finished_for_cleanup_authority': False, 'intent_digest': intent['intent_digest']}
+
+
+def _families(sink):
+    return list({'family': family, 'status': 'not_observed_within_scope', 'action': 'KEEP',
+                      'measured_allocated_bytes': None, 'member_count': 0, 'restore_verified': False}
+                     for family in FAMILIES)
+
+
+def build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, monotonic=time.monotonic, time_budget_seconds=5.0):
+    try:
+        budget = ReferenceCollectionBudget(monotonic=monotonic, time_budget_seconds=time_budget_seconds)
+    except ValueError:
+        return fallback('scene_lifecycle_budget_invalid')
+    return _build_scene_lifecycle_plan(intent_id=intent_id, context=context, observed_at_epoch=observed_at_epoch, budget=budget)
+
+
+def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget, context_anchor=None):
+    reader = None
+    result = None
+    try:
+        budget.tick()
+        acquisition.require(type(budget) is ReferenceCollectionBudget and isinstance(intent_id, str)
+                            and native.c.matches(intent_id, native.c.OWNER_ID)
+                            and type(observed_at_epoch) in (int, float) and math.isfinite(observed_at_epoch)
+                            and observed_at_epoch >= 0, 'parameters_invalid')
+        context = _context(context, budget)
+        acquisition.require(context_anchor is None, 'context_adapter_unavailable')
+        reader = acquisition.Acquisition(budget, context['acquisition_anchors'])
+        pool = pool_module.Pool(reader, context, intent_id)
+        pool.discovery()
+        decoded = pool.decode()
+        seed, downstream, source, bridge, protected = pool_module.select(decoded, context, intent_id, budget)
+        sink = RetainedEmissionBudget(max_bytes=MAX_OUTPUT_BYTES, max_rows=10_000, max_references=10_000, work_budget=budget)
+        historical = native._join(intent_id, seed, downstream, source, bridge, context['roots'], context['parent_routes'],
+                                  context['retained_metadata_roots'], emission_budget=sink, work_budget=budget)
+        seed_result = historical['source_family_inventory']['downstream_inventory']['seed']
+        result = {'schema_version': 'task_evaluation_scene_lifecycle_plan.v1', 'status': 'incomplete', 'action': 'KEEP',
+                  'scope': 'selected_exact_scene_metadata_and_measured_paths', 'observed_at_epoch': observed_at_epoch,
+                  'intent_id': intent_id, 'selected_intent_provenance': seed_result['intent_provenance'],
+                  'finished_observation': _finished(seed_result, decoded, context, intent_id, observed_at_epoch, budget),
+                  'historical_lineage': historical, 'acquisition_scopes': sink.rows(pool.scopes),
+                  'unselected_metadata_protections': sink.rows(protected), 'family_obligations': _families(sink),
+                  'measured_members': sink.rows(), 'sharing': sink.rows(), 'reference_keeps': sink.rows(),
+                  'unique_observed_allocated_bytes': None, 'blockers': ['reference_and_consumer_lifetime_unproven'],
+                  'mutations': 0, **{flag: False for flag in FALSE_FLAGS}}
+        from .task_evaluation_scene_lifecycle_measurement import measure
+        result['measured_members'], result['sharing'], result['unique_observed_allocated_bytes'], _ = measure(
+            reader, historical, sink, result['family_obligations'])
+        result['family_obligations'] = sink.rows(result['family_obligations'])
+        reader.verify()
+        sink.check_document(result)
+        native.c.retained.c.bounded_size(result, MAX_OUTPUT_BYTES, work_budget=budget)
+        budget.tick()
+    except (ValueError, OSError, TypeError, KeyError, AttributeError, OverflowError, RecursionError):
+        result = fallback(budget.failure or 'scene_lifecycle_metadata_or_context_unproven')
+    finally:
+        if reader is not None:
+            try:
+                reader.close()
+            except ValueError:
+                result = fallback('scene_lifecycle_descriptor_cleanup_unproven')
+        budget.close()
+    return result
