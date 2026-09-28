@@ -23,7 +23,9 @@ def access_fixture(tmp_path, monkeypatch):
     coordinator.mkdir(mode=0o755)
     generations = tmp_path / 'generations'
     generations.mkdir(mode=0o700)
-    member = tmp_path / 'scene'
+    container = tmp_path / 'payloads'
+    container.mkdir()
+    member = container / 'scene'
     member.mkdir()
     value = {
         'schema_version': 'scene_retirement_policy.v1', 'enabled': True,
@@ -68,7 +70,8 @@ def test_real_participant_holds_fence_through_actual_body(tmp_path, monkeypatch,
     if role == 'completed-review-reader':
         from blueprint_pipeline import artifixer_completed_training_reuse as existing
         monkeypatch.setattr(existing, '_read', paused)
-        operation = lambda: existing.stage_completed_review(source_root=member, output_root=tmp_path / 'out')
+        def operation():
+            return existing.stage_completed_review(source_root=member, output_root=tmp_path / 'out')
     else:
         from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as existing
         manifest = member / 'manifest.json'
@@ -76,9 +79,10 @@ def test_real_participant_holds_fence_through_actual_body(tmp_path, monkeypatch,
         locks = tmp_path / 'publisher-locks'
         locks.mkdir()
         monkeypatch.setattr(existing, '_publish_locked', paused)
-        operation = lambda: existing.publish_scene_configuration_submission(
-            manifest_path=manifest, receipt_path=member / 'publication.json',
-            expected_source_commit='a' * 40, lock_root=locks)
+        def operation():
+            return existing.publish_scene_configuration_submission(
+                manifest_path=manifest, receipt_path=member / 'publication.json',
+                expected_source_commit='a' * 40, lock_root=locks)
     worker = threading.Thread(target=run_paused, args=(operation, entered, finish, errors))
     worker.start()
     try:
@@ -128,3 +132,125 @@ def test_disabled_policy_preserves_real_reader_behavior(tmp_path, monkeypatch):
     monkeypatch.setattr(existing, '_read', lambda *a: (_ for _ in ()).throw(StopFixture()))
     with pytest.raises(StopFixture):
         existing.stage_completed_review(source_root=tmp_path, output_root=tmp_path / 'out')
+
+
+def test_fifo_record_is_refused_before_open(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    fifo = tmp_path / 'fifo'
+    os.mkfifo(fifo)
+    original = os.open
+    attempted = []
+    def guarded(name, *args, **kwargs):
+        if str(name) == 'fifo':
+            attempted.append(name)
+            raise StopFixture('FIFO open must never be attempted')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(os, 'open', guarded)
+    with pytest.raises(access.SceneRetirementAccessError):
+        access._read(fifo)
+    assert attempted == []
+
+
+def test_foreign_first_successful_fd_is_never_closed(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    target = tmp_path / 'foreign'
+    target.write_bytes(b'not-the-coordinator')
+    foreign = os.open(target, os.O_RDONLY)
+    original = os.open
+    def reused(name, *args, **kwargs):
+        return foreign if str(name) == '/' else original(name, *args, **kwargs)
+    monkeypatch.setattr(os, 'open', reused)
+    try:
+        with pytest.raises(access.SceneRetirementAccessError):
+            with access._opened('/', directory=True):
+                pytest.fail('foreign initial descriptor adopted')
+        assert os.fstat(foreign).st_ino == target.stat().st_ino
+    finally:
+        os.close(foreign)
+
+
+def test_real_reader_denies_retired_nested_member_under_container_root(tmp_path, monkeypatch):
+    access, policy, member = access_fixture(tmp_path, monkeypatch)
+    from blueprint_pipeline import artifixer_completed_training_reuse as existing
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    policy['roots'][0]['root'] = str(member.parent)
+    policy['policy_digest'] = canonical_digest(policy, digest_field='policy_digest')
+    Path(os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE']).write_text(json.dumps(policy))
+    info = member.stat()
+    generation = {
+        'schema_version': 'scene_member_generation.v1', 'canonical_path': str(member),
+        'state': 'retired', 'generation_id': '1' * 32,
+        'dev': info.st_dev, 'ino': info.st_ino, 'mode': info.st_mode,
+    }
+    generation['state_digest'] = canonical_digest(generation, digest_field='state_digest')
+    key = hashlib.sha256(str(member).encode()).hexdigest() + '.json'
+    record = Path(policy['generation_store']) / key
+    record.write_text(json.dumps(generation))
+    record.chmod(0o600)
+    attempted = []
+    def must_not_read(*args):
+        attempted.append(args)
+        raise StopFixture('stale nested member reopened')
+    monkeypatch.setattr(existing, '_read', must_not_read)
+    with access.exclusive_scene_access():
+        pass
+    with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_generation_unavailable'):
+        existing.stage_completed_review(source_root=member, output_root=tmp_path / 'out')
+    assert attempted == []
+
+
+def test_reused_retained_parent_is_refused_before_child_lookup(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    foreign_tree = tmp_path / 'foreign'
+    foreign_tree.mkdir()
+    (foreign_tree / 'private').mkdir()
+    foreign = os.open(foreign_tree, os.O_RDONLY | os.O_DIRECTORY)
+    original = access._open_owned
+    reused = []
+    def switched(name, *args, **kwargs):
+        fd, info = original(name, *args, **kwargs)
+        if name == '/':
+            os.close(fd)
+            os.dup2(foreign, fd)
+            reused.append(fd)
+        return fd, info
+    monkeypatch.setattr(access, '_open_owned', switched)
+    lookups = []
+    original_stat = os.stat
+    def named(name, *args, **kwargs):
+        if str(name) == 'private':
+            lookups.append(name)
+        return original_stat(name, *args, **kwargs)
+    monkeypatch.setattr(os, 'stat', named)
+    try:
+        with pytest.raises(access.SceneRetirementAccessError):
+            with access._opened('/private', directory=True):
+                pytest.fail('foreign parent traversal adopted')
+        assert lookups == []
+        assert os.fstat(reused[0]).st_ino == foreign_tree.stat().st_ino
+    finally:
+        for fd in reused:
+            os.close(fd)
+        os.close(foreign)
+
+
+def test_known_close_failure_refuses_and_still_cleans_other_tokens(monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    original = os.close
+    failed, closed = [], []
+    def fault(fd):
+        if not failed:
+            failed.append(fd)
+            raise OSError('injected owned close fault')
+        closed.append(fd)
+        return original(fd)
+    monkeypatch.setattr(os, 'close', fault)
+    try:
+        with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_descriptor_cleanup_failed'):
+            with access._opened('/private', directory=True):
+                pass
+        assert failed and closed
+    finally:
+        for fd in failed:
+            original(fd)
+
