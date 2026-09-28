@@ -130,3 +130,33 @@ def test_admitted_producer_rechecks_original_request_before_payload(installation
         paths[0].write_bytes(b"{}")
         with pytest.raises(ValueError, match="experiment_producer_request_changed"):
             use.authorize_g1_pair(paths)
+
+
+def test_actual_prelaunch_pair_closure_publishes_authenticated_completion_for_offload(
+        installation, tmp_path, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import native_g1_development_pair as pair
+    from blueprint_pipeline import native_g1_development_worker as worker
+    consumer, target, born, paths = _registered_fixture(installation, tmp_path, monkeypatch)
+    monkeypatch.setattr(pair, 'LANE_SCRATCH_ROOTS', consumer.LANE_ROOTS)
+    from blueprint_pipeline import control_plane_scratch_lifetime as lifetime
+    monkeypatch.setattr(lifetime, 'LANE_ROOTS', consumer.LANE_ROOTS)
+    def preflight(_request):
+        raise ValueError('development_only_prelaunch_refusal')
+    monkeypatch.setattr(worker, '_preflight_inputs', preflight)
+    use = consumer.RegisteredExperimentUse.admit(target, expected_birth=born['birth'],
+        expected_generation=born['generation'], now=lambda: 1200, _producer_request_paths=paths,
+        _producer_config_path=installation[0])
+    result = pair.run_g1_development_pair(request_paths=paths, output_dir=target, _registered_use=use)
+    assert result['status'] == 'blocked' and use._closed and not use.files.owned
+    public = consumer.AUTHORITY_ROOT
+    head = json.loads((public / 'HEAD.json').read_bytes())
+    current = json.loads((public / head['record_name']).read_bytes())
+    entry = current['enrollments'][0]
+    assert entry['completion'] is not None and entry['state'] == 'active'
+    completion = installation[2] / (entry['intent_id'] + '.producer-completion.json')
+    raw = completion.read_bytes()
+    assert entry['completion'] == dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw))
+    value = json.loads(raw)
+    assert value['participant_profile'] == 'g1_local_prelaunch_block.v1'
+    assert value['pair']['sha256'] == 'sha256:' + hashlib.sha256((target / (pair.SCHEMA + '.json')).read_bytes()).hexdigest()
+    assert value['lifetime_closed'] is True and value['child_execution_started'] is False
