@@ -36,6 +36,8 @@ def rehearsal(tmp_path, monkeypatch, request):
     from tests.test_native_task_episode_environment import _RigidNativeReadback
     from tests.test_adp_task_scoring import _rigid_v2_spec
     from tests.test_team_policy_delivery_profile import OWNER, _profile
+    from blueprint_pipeline import native_g1_team_archive_gpu as archive_gpu
+    import hashlib
     import subprocess
     import time
 
@@ -43,7 +45,7 @@ def rehearsal(tmp_path, monkeypatch, request):
     mode = getattr(request, "param", "container")
     if mode == "noncontainer_artifact":
         profile = _profile(setup, {"mode": mode, "artifact_uri": "https://files.example.org/policy.tar.gz",
-                                  "artifact_sha256": "sha256:" + "b" * 64, "entrypoint": "policy/run.py",
+                                  "artifact_sha256": "sha256:" + hashlib.sha256(b"fixture archive bytes").hexdigest(), "entrypoint": "policy/run.py",
                                   "protocol": "jsonl_observation_action_v1"})
     scene.plan["task_spec"] = {**_rigid_v2_spec(), **scene.plan["task_spec"],
                                "start_pose_world": [1.1, 2.1, 0.8, 0.0, 0.0, 0.0, 1.0]}
@@ -60,10 +62,21 @@ def rehearsal(tmp_path, monkeypatch, request):
     packet["packet_digest"] = cross_runtime_canonical_digest(packet, digest_field="packet_digest")
     runtime = tmp_path / "vm/provider_runtime"
     runtime.mkdir(parents=True)
+    if mode == "noncontainer_artifact":
+        archived = runtime / "inputs/team-policy/policy.tar"
+        archived.parent.mkdir(parents=True)
+        archived.write_bytes(b"fixture archive bytes")
     root = runtime.parent / "runtime_output"
     manifest = {"scene_plan_digest": scene.plan["plan_digest"], "scene_packet_receipt_digest": "sha256:" + "f" * 64}
     inputs = {"packet": packet, "manifest": manifest}
     monkeypatch.setattr(host, "verify_g1_team_sealed_inputs", lambda path: inputs)
+    gpu_binding = None
+    if mode == "noncontainer_artifact":
+        with monkeypatch.context() as scoped:
+            scoped.setattr(archive_gpu, "_gpu_identity", lambda: {"gpu_index": 0, "gpu_uuid": "GPU-01234567-89ab-cdef-0123-456789abcdef", "driver_version": "580.65.06"})
+            scoped.setattr(archive_gpu, "_uvm_major", lambda: 239)
+            scoped.setattr(archive_gpu, "_device_record", lambda path, major, minor: {"path": path, "major": major, "minor": minor, "uid": 0, "mode": 0o666, "inode": minor + 100, "filesystem_device": 5})
+            gpu_binding = archive_gpu.observe_archive_gpu_binding(profile_digest=profile["profile_digest"], execution_packet_digest=packet["packet_digest"])
     monkeypatch.setattr(host, "preflight_g1_vm_host", lambda packet: {
         "schema_version": host.PREFLIGHT_SCHEMA, "status": "host_capabilities_observed",
         "execution_packet_digest": packet["packet_digest"], "delivery_mode": mode,
@@ -72,6 +85,7 @@ def rehearsal(tmp_path, monkeypatch, request):
         "python_abi": "cp312", "numpy_version": "2.3.1", "rfc8785_version": "0.1.4",
         "claim_ceiling": "development_only", "provider_teardown_verified": False,
         "guest_gpu_inference_verified": False, "archive_gpu_device_exposure_verified": False,
+        "archive_gpu_device_binding": gpu_binding,
     })
     calls, processes, sessions, config_paths = [], [], [], []
     original_popen = subprocess.Popen
@@ -99,6 +113,15 @@ def rehearsal(tmp_path, monkeypatch, request):
         stderr = (directory / "fake_policy_private_stderr.log").open("wb")
         common = {"process": process, "client": client, "profile_digest": profile["profile_digest"],
                   "output_dir": directory, "stderr_file": stderr}
+        if mode == "noncontainer_artifact":
+            probe = host._write(directory / archive_gpu.PROBE_FILENAME, {
+                "schema_version": archive_gpu.PROBE_SCHEMA, "status": "cuda_device_memory_access_observed",
+                "binding_digest": gpu_binding["receipt_digest"],
+                "probe_source_sha256": "sha256:" + hashlib.sha256(archive_gpu.CUDA_PROBE.encode()).hexdigest(),
+                "guest_gpu_inference_verified": False, "claim_ceiling": "development_only",
+                "observed": {"visible_gpu_count": 1, "gpu_uuid_hex": "0123456789abcdef0123456789abcdef", "cuda_driver_api_version": 13000,
+                             "memory_roundtrip_verified": True, "memory_freed": True, "context_destroyed": True}})
+            common.update(gpu_binding_digest=gpu_binding["receipt_digest"], gpu_probe_digest=probe["receipt_digest"])
         lease = (NativeG1TeamContainerLease(**common, container_name="blueprint-team-policy-" + "f" * 32,
                  image_ref=profile["delivery"]["image_ref"], image_id="sha256:" + "d" * 64) if mode == "container" else
                  NativeG1TeamArtifactLease(**common, artifact_sha256=profile["delivery"]["artifact_sha256"]))
@@ -176,6 +199,29 @@ def test_real_policy_lifecycle_score_and_media_under_host_supervision(rehearsal)
     assert any(command[1:3] == ["rm", "--force"] and "blueprint-g1-simulator" in command[-1] for command in calls)
     assert result["provider_teardown_verified"] is False
     assert result["official_billing_reconciled"] is False
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("rehearsal", ["noncontainer_artifact"], indirect=True)
+@pytest.mark.parametrize("fault", ["probe_uuid", "probe_missing", "child_binding"])
+def test_archive_gpu_proof_is_required_and_cross_bound(rehearsal, fault):
+    from blueprint_pipeline.native_g1_team_archive_gpu import PROBE_FILENAME
+    args, verify_args, _, _, _, _, output = rehearsal
+    assert host.run_g1_team_vm_host(**args)["status"] == "completed_development_only"
+    runtime = args["output_dir"] / "policy-host/runtime"
+    path = runtime / ("native_g1_team_artifact_teardown.v1.json" if fault == "child_binding" else PROBE_FILENAME)
+    if fault == "probe_missing":
+        path.unlink()
+    else:
+        receipt = json.loads(path.read_text())
+        if fault == "probe_uuid":
+            receipt["observed"]["gpu_uuid_hex"] = "f" * 32
+        else:
+            receipt["gpu_binding_digest"] = "sha256:" + "f" * 64
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+        path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError):
+        output.verify_g1_team_vm_host_output(**verify_args)
 
 
 @pytest.mark.slow

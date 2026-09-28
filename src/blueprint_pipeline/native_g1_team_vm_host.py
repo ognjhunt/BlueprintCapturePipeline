@@ -25,6 +25,7 @@ from typing import Any, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_team_container_runtime import _verified_local_image
+from .native_g1_team_archive_gpu import observe_archive_gpu_binding, validate_archive_gpu_binding
 from .native_g1_team_policy_relay import G1PolicyRelayServer, RelayBinding
 from .native_g1_team_provider_bundle import ENTRYPOINT, RESULT_FILENAME
 from .native_g1_team_provider_runtime import (
@@ -139,13 +140,15 @@ def preflight_g1_vm_host(packet: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("g1_vm_host_gpu_driver_unavailable")
     profile = packet["request"]["policy_profile"]
     mode = profile["delivery"]["mode"]
-    policy_id = None
+    policy_id, archive_gpu = None, None
     if mode == "container":
         policy_id = _verified_local_image(profile["delivery"]["image_ref"])
     elif mode == "noncontainer_artifact":
         result = subprocess.run(["bwrap", "--version"], capture_output=True, check=False, timeout=10)
         if result.returncode != 0:
             raise ValueError("g1_vm_host_archive_sandbox_unavailable")
+        archive_gpu = observe_archive_gpu_binding(profile_digest=profile["profile_digest"],
+                                                  execution_packet_digest=packet["packet_digest"])
     else:
         raise ValueError("g1_vm_host_delivery_mode_invalid")
     return {
@@ -154,6 +157,7 @@ def preflight_g1_vm_host(packet: dict[str, Any]) -> dict[str, Any]:
         "simulator_image_ref": NATIVE_TASK_ARENA_IMAGE,
         "simulator_local_image_id": _verified_local_image(NATIVE_TASK_ARENA_IMAGE),
         "policy_local_image_id": policy_id, "python_abi": "cp312",
+        "archive_gpu_device_binding": archive_gpu,
         "numpy_version": "2.3.1", "rfc8785_version": "0.1.4",
         "guest_gpu_inference_verified": False, "archive_gpu_device_exposure_verified": False,
         "provider_teardown_verified": False, "claim_ceiling": "development_only",
@@ -198,9 +202,22 @@ def run_g1_team_vm_host(
         state["preflight_digest"] = preflight["receipt_digest"]
         # Runtime session creates its own directory, separate from simulator inputs.
         state["stage_reached"] = "policy_synthetic_conformance"
+        runtime_options = {}
+        if profile["delivery"]["mode"] == "noncontainer_artifact":
+            gpu_binding = preflight.get("archive_gpu_device_binding")
+            validate_archive_gpu_binding(gpu_binding, profile_digest=profile["profile_digest"],
+                                         execution_packet_digest=packet["packet_digest"])
+            archive = runtime_root / "inputs/team-policy/policy.tar"
+            from .native_g1_team_artifact_runtime import _sha256 as archive_sha256
+            if (archive.resolve() != archive or not archive.is_file()
+                    or archive_sha256(archive) != profile["delivery"]["artifact_sha256"]):
+                raise ValueError("g1_vm_host_staged_archive_invalid")
+            runtime_options = {"staged_artifact_override": archive,
+                               "archive_gpu_binding": gpu_binding}
         session = open_g1_team_runtime_session(
             profile=profile, trusted_setup=packet["trusted_setup"], authenticated_owner=packet["request"]["owner"],
             approved_binding=packet["operator_approval"]["runtime_binding"], output_dir=policy_root / "runtime",
+            **runtime_options,
         )
         with tempfile.TemporaryDirectory(prefix="g1-vm-relay-", dir=str(Path("/tmp").resolve())) as private:
             private_root = Path(private)

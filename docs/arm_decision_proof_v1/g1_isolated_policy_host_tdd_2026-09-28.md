@@ -600,3 +600,61 @@ source mutation and foreign bytecode created during the subprocess. Source
 identity is reopened after the subprocess before returning provisioning proof.
 Changed-file Ruff/diff pass. The next real rehearsal must exercise the production
 sealer and materializer, not substitute an environment-variable-only probe.
+
+## Reviewed next implementation: relocated archive and bounded GPU namespace
+
+ADP-050 Day 28 / ADP-060 and owner-authorized shared G1 configurator extension.
+Observed blocker: the archive's approval binds an operator-local staging path,
+while its bubblewrap command exposes no GPU character devices. A VM policy must
+use the same approved archive bytes at its VM-local path and the selected GPU.
+Canonical OCI/archive allocation remains refused until complete VM integration.
+
+Keep the approved packet/binding/digest unchanged. Add a trusted worker-side
+archive-location override, accepted only for archive mode and still subject to
+the approved SHA/regular-file/archive validation. VM host selects only its fixed
+sealed input path; no URI fetching or arbitrary volume mount. Reject overrides
+on endpoint/container modes before child creation.
+
+Observe exactly one full GPU at index0, UUID and existing driver floor, plus
+root-owned world-readable/writable character nodes: nvidia0(195:0),
+nvidiactl(195:255), nvidia-uvm(the observed /proc/devices major:0). Reject aliases,
+ordinary files, missing/replaced nodes, additional GPUs, mismatched UUID/profile/
+packet/digest and private device permissions. Recheck observations immediately
+before launch. Keep /dev otherwise private; bind ONLY those three nodes, with
+all namespaces unshared, no capabilities, UID/GID65534, read-only archive and
+system runtime mounts, private tmpfs and a cleared environment. No host root,
+scene, credentials, Docker socket, other GPU nodes or network exposure.
+
+Before the untrusted entrypoint, run a fixed trusted stdlib-only CUDA driver
+probe IN THAT SAME bubblewrap namespace. Use ctypes/libcuda driver ABI, verify
+one visible device and UUID, allocate/set/copy back16 bytes, then explicitly free
+memory/destroy its context. No Torch installation or model query on the host.
+The probe proves only device access/basic CUDA memory operations, not a model
+inference, task result, rendering, VM/image rights or scientific qualification.
+Retain the exact probe hash, binding, observed result and private stderr; require
+its digest in archive child teardown and reopen it in VM output verification.
+Host preflight's exposure claim stays false until this actual child probe passes.
+
+Test first: strict device/UUID/driver/binding mutations, unchanged observation
+recheck, exact narrow device mounts/environment, CUDA probe failure/timeout/extra
+GPU/UUID/memory/cleanup mismatch, archive path relocation without approval edits,
+mode override refusal, retained teardown/output cross-binding and altered proof
+rejection. Existing artifact/session/VM/relay/closure/lifecycle tests must pass.
+Run a real no-GPU Linux bubblewrap synthetic JSONL smoke to exercise namespace
+setup, UID, read-only filesystem and cleanup; it cannot qualify CUDA. Actual GPU
+probe and learned-policy episodes remain mandatory on the admitted VM.
+
+Design review: checked approval's immutable binding, current runtime-session
+branches, bubblewrap source --clearenv/--dev-bind semantics and NVIDIA CUDA
+device/context/memory Driver API references (archive12.8.2/current13.4). Use
+stable versioned v2 symbols and refuse unsupported devices/APIs, no CPU fallback
+for a requested GPU. This is the bounded missing execute path, not a new
+provider or Plan13b. Accepted for focused test-first implementation.
+
+Implementation checkpoint: 86 focused archive/device/session/VM/output/cold-import
+cases pass in 17.08s, including namespace command widening, fake CUDA failure
+and cleanup paths, relocated wrong-SHA refusal, and tampered saved GPU proof.
+Changed-file Ruff and diff checks pass. These tests simulate GPU observations;
+they do not qualify actual CUDA access. The next immutable-source rehearsal runs
+the production archive launcher with real Linux bubblewrap and a synthetic JSONL
+policy, with no GPU, site input, task score or provider mutation.

@@ -57,8 +57,25 @@ def test_bwrap_command_exposes_readonly_artifact_without_network(monkeypatch, tm
     assert command[command.index("--uid") + 1] == "65534"
     assert command[command.index("--cap-drop") + 1] == "ALL"
     assert command[-1] == "/work/policy/run.py"
+    assert "--clearenv" in command
     with pytest.raises(ValueError, match="entrypoint_invalid"):
         runtime.isolated_artifact_command(artifact_root=artifact, entrypoint="../etc/passwd")
+
+
+def test_gpu_mounts_are_only_bound_nodes_and_cpu_has_no_gpu_devices(monkeypatch, tmp_path):
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    (artifact / "run").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/bwrap")
+    observed = []
+    monkeypatch.setattr(runtime, "recheck_archive_gpu_binding", lambda binding: observed.append(binding))
+    binding = {"devices": [{"path": path} for path in ("/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm")]}
+    command = runtime.isolated_artifact_command(artifact_root=artifact, entrypoint="run", gpu_binding=binding)
+    devices = [command[i + 1:i + 3] for i, item in enumerate(command) if item == "--dev-bind"]
+    assert devices == [[row["path"], row["path"]] for row in binding["devices"]]
+    assert observed == [binding]
+    assert "--bind" not in command and "--share-net" not in command
+    assert "--dev-bind" not in runtime.isolated_artifact_command(artifact_root=artifact, entrypoint="run")
 
 
 @pytest.mark.parametrize("name,content", [("../escape", b"bad"), ("policy/run.py", None)])

@@ -8,6 +8,9 @@ import re
 from typing import Any, Mapping
 
 from .native_g1_team_paid_output import _receipt as _paid_receipt, verify_g1_team_paid_output
+from .native_g1_team_archive_gpu import (
+    PROBE_FILENAME as ARCHIVE_GPU_PROBE_FILENAME, validate_archive_gpu_binding, validate_archive_gpu_probe,
+)
 from .native_g1_team_policy_relay import RelayBinding, validate_relay_conformance, validate_relay_close
 from .native_g1_team_provider_bundle import RESULT_FILENAME, RESULT_SCHEMA
 from .native_g1_team_runtime_session import CONFORMANCE_FILENAME, SESSION_SCHEMA
@@ -122,9 +125,17 @@ def verify_g1_team_vm_evidence(
                 or not _SHA.fullmatch(child["local_image_id"])
                 or child["local_image_id"] != preflight.get("policy_local_image_id")):
             raise ValueError("g1_vm_policy_container_evidence_invalid")
-    elif (child.get("status") != "process_exited"
-            or child.get("artifact_sha256") != profile["delivery"]["artifact_sha256"]):
-        raise ValueError("g1_vm_policy_archive_evidence_invalid")
+    else:
+        if (child.get("status") != "process_exited"
+                or child.get("artifact_sha256") != profile["delivery"]["artifact_sha256"]):
+            raise ValueError("g1_vm_policy_archive_evidence_invalid")
+        gpu = preflight.get("archive_gpu_device_binding")
+        validate_archive_gpu_binding(gpu, profile_digest=binding.profile_digest, execution_packet_digest=binding.packet_digest)
+        probe = _receipt(policy_root / "runtime" / ARCHIVE_GPU_PROBE_FILENAME, digest_field="receipt_digest")
+        validate_archive_gpu_probe(probe, binding=gpu)
+        if (child.get("gpu_binding_digest") != gpu["receipt_digest"]
+                or child.get("gpu_namespace_probe_digest") != probe["receipt_digest"]):
+            raise ValueError("g1_vm_archive_gpu_evidence_invalid")
     simulator_root = root / "vm-simulator"
     simulator = _receipt(simulator_root / SIMULATOR_FILENAME, digest_field="receipt_digest")
     exited = _receipt(simulator_root / "private_diagnostics" / EXIT_FILENAME, digest_field="receipt_digest")
@@ -146,6 +157,9 @@ def verify_g1_team_vm_evidence(
         "policy_session_close_digest": session["receipt_digest"], "policy_child_teardown_digest": child["receipt_digest"],
         "simulator_teardown_digest": simulator["receipt_digest"], "child_exit_receipt_digest": exited["receipt_digest"],
         "verified_output": verified, "provider_teardown_verified": False,
+        "archive_gpu_namespace_probe_digest": probe["receipt_digest"] if binding.delivery_mode == "noncontainer_artifact" else None,
+        "archive_gpu_device_memory_access_verified": binding.delivery_mode == "noncontainer_artifact",
+        "guest_gpu_inference_verified": False,
         "official_billing_reconciled": False, "public_redistribution_authorized": False,
         "claim_ceiling": "development_only",
     }

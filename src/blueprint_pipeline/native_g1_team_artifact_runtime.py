@@ -23,6 +23,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_g1_team_archive_gpu import (
+    probe_archive_gpu_namespace, recheck_archive_gpu_binding,
+)
 from .native_g1_team_policy_conformance import run_g1_team_policy_synthetic_conformance
 from .native_g1_team_policy_jsonl_client import NativeG1TeamPolicyJsonlClient
 from .team_policy_delivery_profile import validate_team_policy_delivery_profile
@@ -97,7 +100,8 @@ def _extract_regular_archive(archive_path: Path, destination: Path) -> None:
             target.chmod(0o555)
 
 
-def isolated_artifact_command(*, artifact_root: Path, entrypoint: str) -> list[str]:
+def isolated_artifact_command(*, artifact_root: Path, entrypoint: str,
+                              gpu_binding: Mapping[str, Any] | None = None) -> list[str]:
     """Expose only a read-only artifact and standard runtimes to bubblewrap."""
 
     relative = PurePosixPath(entrypoint)
@@ -118,13 +122,19 @@ def isolated_artifact_command(*, artifact_root: Path, entrypoint: str) -> list[s
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
         "--dir", "/etc", "--ro-bind", str(artifact_root), "/work",
         "--uid", "65534", "--gid", "65534", "--cap-drop", "ALL",
+        "--clearenv",
     ]
+    if gpu_binding is not None:
+        recheck_archive_gpu_binding(gpu_binding)
+        for row in gpu_binding["devices"]:
+            command.extend(["--dev-bind", row["path"], row["path"]])
     for system_path in ("/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"):
         if Path(system_path).exists():
             command.extend(["--ro-bind", system_path, system_path])
     command.extend([
         "--chdir", "/work", "--setenv", "HOME", "/tmp",
-        "--setenv", "XDG_CACHE_HOME", "/tmp", "--unsetenv", "PYTHONPATH",
+        "--setenv", "XDG_CACHE_HOME", "/tmp", "--setenv", "PATH", "/usr/bin:/bin",
+        "--setenv", "LANG", "C.UTF-8", "--unsetenv", "PYTHONPATH",
         "--unsetenv", "LD_PRELOAD", "--", "/work/" + str(relative),
     ])
     return command
@@ -136,6 +146,7 @@ class NativeG1TeamArtifactLease:
     def __init__(
         self, *, process: subprocess.Popen[bytes], client: NativeG1TeamPolicyJsonlClient,
         output_dir: Path, profile_digest: str, artifact_sha256: str, stderr_file: Any,
+        gpu_binding_digest: str | None = None, gpu_probe_digest: str | None = None,
     ) -> None:
         self.process = process
         self.client = client
@@ -143,6 +154,7 @@ class NativeG1TeamArtifactLease:
         self.profile_digest = profile_digest
         self.artifact_sha256 = artifact_sha256
         self._stderr_file = stderr_file
+        self.gpu_binding_digest, self.gpu_probe_digest = gpu_binding_digest, gpu_probe_digest
         self._closed: dict[str, Any] | None = None
 
     def close(self) -> dict[str, Any]:
@@ -169,6 +181,8 @@ class NativeG1TeamArtifactLease:
             "process_exit_code": self.process.poll(),
             "process_close_error": error,
             "raw_stderr_quarantined": True,
+            "gpu_binding_digest": self.gpu_binding_digest,
+            "gpu_namespace_probe_digest": self.gpu_probe_digest,
             "provider_teardown_verified": False,
             "claim_ceiling": "planning_only",
         }
@@ -185,6 +199,7 @@ def launch_g1_team_artifact_synthetic_probe(
     authenticated_owner: Mapping[str, str], operator_approved_profile_digest: str,
     operator_approved_artifact_sha256: str, staged_artifact_path: Path,
     output_dir: Path,
+    gpu_binding: Mapping[str, Any] | None = None,
 ) -> tuple[NativeG1TeamArtifactLease, dict[str, Any]]:
     """Verify operator-bound bytes and prove the synthetic G1 JSONL wire."""
 
@@ -212,13 +227,19 @@ def launch_g1_team_artifact_synthetic_probe(
         raise ValueError("g1_team_artifact_admission_invalid")
     if _sha256(staged_artifact_path) != operator_approved_artifact_sha256:
         raise ValueError("g1_team_artifact_digest_mismatch")
+    if gpu_binding is not None:
+        if gpu_binding.get("profile_digest") != bound["profile_digest"]:
+            raise ValueError("g1_team_artifact_gpu_binding_invalid")
+        recheck_archive_gpu_binding(gpu_binding)
     output_dir.mkdir(mode=0o700)
     artifact_root = output_dir / "artifact"
     artifact_root.mkdir(mode=0o755)
     _extract_regular_archive(staged_artifact_path, artifact_root)
     command = isolated_artifact_command(
-        artifact_root=artifact_root, entrypoint=delivery["entrypoint"]
+        artifact_root=artifact_root, entrypoint=delivery["entrypoint"], gpu_binding=gpu_binding,
     )
+    gpu_probe = (probe_archive_gpu_namespace(command=command, binding=gpu_binding, output_dir=output_dir)
+                 if gpu_binding is not None else None)
     descriptor = os.open(
         output_dir / "team_policy_raw_stderr.quarantined.log",
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
@@ -251,6 +272,8 @@ def launch_g1_team_artifact_synthetic_probe(
         process=process, client=client, output_dir=output_dir,
         profile_digest=bound["profile_digest"], artifact_sha256=operator_approved_artifact_sha256,
         stderr_file=stderr_file,
+        gpu_binding_digest=gpu_binding["receipt_digest"] if gpu_binding is not None else None,
+        gpu_probe_digest=gpu_probe["receipt_digest"] if gpu_probe is not None else None,
     )
     try:
         conformance = run_g1_team_policy_synthetic_conformance(
