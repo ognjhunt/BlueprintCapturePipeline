@@ -52,7 +52,7 @@ class Acquisition:
                 'anchors_invalid')
         self.budget, self.handles, self.directories = budget, {}, {}
         self.observations, self.memberships, self.anchors = {}, {}, []
-        self.unproven, self.cleanup_failed = False, False
+        self.unproven, self.cleanup_failed, self.physical_read_bytes = False, False, 0
         checked = [path(p, budget) for p in anchors]
         require(len(set(checked)) == len(checked), 'anchors_invalid')
         require(not any(PurePosixPath(a).is_relative_to(PurePosixPath(b))
@@ -159,6 +159,7 @@ class Acquisition:
                 request = min(65536, MAX_RECORD_BYTES - count + 1, remaining)
                 require(request > 0, 'metadata_bytes_limit')
                 part = os.read(fd, request)
+                self.physical_read_bytes += len(part)
                 self.budget.charge('raw_bytes', len(part))
                 if not part:
                     break

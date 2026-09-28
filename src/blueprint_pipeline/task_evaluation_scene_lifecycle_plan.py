@@ -125,7 +125,7 @@ def build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, monoton
 
 def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget, context_anchor=None):
     reader = None
-    result = None
+    result, reference_result = None, None
     try:
         budget.tick()
         acquisition.require(type(budget) is ReferenceCollectionBudget and isinstance(intent_id, str)
@@ -156,12 +156,22 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
         result['measured_members'], result['sharing'], result['unique_observed_allocated_bytes'], _ = measure(
             reader, historical, sink, result['family_obligations'])
         result['family_obligations'] = sink.rows(result['family_obligations'])
+        from .task_evaluation_scene_lifecycle_references import observe
+        reference_result = observe(context, observed_at_epoch, budget, sink)
+        result['reference_observation'] = reference_result
+        result['planner_acquired_raw_bytes'] = reader.physical_read_bytes
         reader.verify()
         sink.check_document(result)
         native.c.retained.c.bounded_size(result, MAX_OUTPUT_BYTES, work_budget=budget)
         budget.tick()
     except (ValueError, OSError, TypeError, KeyError, AttributeError, OverflowError, RecursionError):
         result = fallback(budget.failure or 'scene_lifecycle_metadata_or_context_unproven')
+        if reference_result is not None:
+            # Fixed finite counters survive a shared-resource refusal; they do
+            # not preserve an unverified planner claim or open a fresh budget.
+            result['raw_accounting'] = reference_result['raw_accounting']
+        if reader is not None:
+            result['planner_acquired_raw_bytes'] = reader.physical_read_bytes
     finally:
         if reader is not None:
             try:
