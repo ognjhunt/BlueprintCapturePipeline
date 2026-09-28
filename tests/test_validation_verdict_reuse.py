@@ -29,13 +29,10 @@ def _record(path: Path) -> dict:
 
 
 @pytest.fixture
-def persisted_root(tmp_path, monkeypatch):
+def persisted_root(tmp_path, monkeypatch, _single_threaded_verdict_persistence):
     root = tmp_path / "verdicts"
     monkeypatch.setenv(store.ROOT_ENV, str(root))
     monkeypatch.setattr(identity, "running_release_commit", lambda *args, **kwargs: COMMIT)
-    # Other test files may leave a service thread briefly alive. These cases
-    # exercise persistence in the single-threaded mode; refusal is tested below.
-    monkeypatch.setattr(store.threading, "active_count", lambda: 1)
     return root
 
 

@@ -3535,17 +3535,14 @@ def test_two_different_files_still_cannot_share_one_source_claim(
 
 
 
+@pytest.mark.usefixtures("_single_threaded_verdict_persistence")
 def test_immutable_input_digest_is_reused_by_stat_identity_and_fails_closed_on_changed_bytes(tmp_path, monkeypatch):
     """2026-09-13: publication and dispatch re-read a 1.2 GB bundle at every step although it never moved."""
     from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
     from blueprint_pipeline import validation_file_digests
-    from blueprint_pipeline import validation_verdict_store as store
     from blueprint_pipeline.launch_profile_immutable_inputs import immutable_input_digest
 
     monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
-    # A thread another test file leaves alive would refuse persistence (tested in
-    # test_validation_verdict_reuse); reuse is proven in the single-threaded mode.
-    monkeypatch.setattr(store.threading, "active_count", lambda: 1)
     bundle = tmp_path / "bundle.zip"
     bundle.write_bytes(b"z" * (1024 * 1024 + 3))  # at or above MINIMUM_BYTES: re-proven by stat identity
     first = immutable_input_digest(bundle)
