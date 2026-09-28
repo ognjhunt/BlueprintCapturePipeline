@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
+import stat
 import re
 import sys
 import time
@@ -11,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .control_plane_lane_scratch import (
-    LaneScratchError, create_lane_scratch, read_lane_scratch_folder,
+    LaneScratchError, read_lane_scratch_folder,
 )
 from .control_plane_leased_scratch import LeasedScratchDirectory
 
@@ -40,6 +42,81 @@ def admit_registered_arena_attempt(tag, *, now=time.time):
     if not isinstance(tag, str) or re.fullmatch(r"r[1-9][0-9]{0,5}", tag) is None:
         raise ArenaScratchError("arena_scratch_tag_invalid")
     return RegisteredExperimentUse.admit(None, _arena_tag=tag, now=now)
+
+
+
+def _registered_arena(tag, use, *, owner=None, run_ref=None, scene_ref=None, ttl_seconds=None):
+    from .control_plane_lane_experiment_consumer import RegisteredExperimentUse
+    from .control_plane_lane_owner_target_versions import _require
+    _require(type(use) is RegisteredExperimentUse and not use._closed,
+             "experiment_consumer_authority_required")
+    use.check()
+    _require(isinstance(tag, str) and re.fullmatch(r"r[1-9][0-9]{0,5}", tag)
+             and use.lane == "arena" and use.entry["root"] == "inputs"
+             and use.birth["participant_profile"] == "arena_owner_review.v1"
+             and use.birth["reference_value"] == "arena-launch-" + tag
+             and (owner is None or owner == use.entry["owner"])
+             and (run_ref is None or run_ref == use.birth["reference_value"])
+             and scene_ref is None and ttl_seconds is None,
+             "experiment_arena_selection_invalid")
+    return use
+
+
+def _mkdir_registered_arena(use, relative):
+    from .control_plane_lane_experiment_publication import _BirthFiles
+    from .control_plane_lane_owner_target_versions import _require
+    from .control_plane_reference_budget import ReferenceCollectionBudget
+
+    _require(isinstance(relative, str) and 0 < len(relative.encode()) <= 1024
+             and not Path(relative).is_absolute() and str(Path(relative)) == relative
+             and 0 < len(Path(relative).parts) <= 32
+             and all(part not in (".", "..") and len(part.encode()) <= 255 for part in Path(relative).parts),
+             "experiment_arena_payload_invalid")
+
+    class _ArenaFiles(_BirthFiles):
+        def slot(self):
+            use.check()
+            _require(len(self.owned) + len(self.probe_owned) + len(use.files.owned)
+                     + len(use.files.probe_owned) < 128, "experiment_consumer_resource_exhausted")
+            super().slot()
+
+        def location(self, fd, *, cleanup=False):
+            if not cleanup:
+                use.check()
+            return super().location(fd, cleanup=cleanup)
+
+    files = _ArenaFiles(ReferenceCollectionBudget(values_limit=10000))
+    try:
+        current, _ = files.parent(use.path / "unused")
+        original = os.fstat(current)
+        _require((original.st_dev, original.st_ino) == (use.entry["target_identity"]["dev"],
+                                                      use.entry["target_identity"]["ino"]),
+                 "experiment_target_changed")
+        for component in Path(relative).parts:
+            files.budget.charge("entries")
+            files.location(current)
+            try:
+                named = os.stat(component, dir_fd=current, follow_symlinks=False)
+            except FileNotFoundError:
+                files.location(current)
+                use.check()
+                os.mkdir(component, 0o700, dir_fd=current)
+                files.location(current)
+                named = os.stat(component, dir_fd=current, follow_symlinks=False)
+            _require(stat.S_ISDIR(named.st_mode) and not named.st_mode & 0o022,
+                     "experiment_arena_payload_invalid")
+            child = files.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, parent=current)
+            _require((os.fstat(child).st_dev, os.fstat(child).st_ino) == (named.st_dev, named.st_ino),
+                     "experiment_arena_payload_invalid")
+            files.location(child)
+            current = child
+        use.check()
+        return use.path / relative
+    finally:
+        try:
+            files.finish()
+        finally:
+            files.budget.close()
 
 
 def _paths(tag: str, *, inputs_root: Path, lane_root: Path) -> tuple[Path, Path, str]:
@@ -120,10 +197,13 @@ def prepare_arena_attempt(
     tag: str, *, owner: str | None = None, run_ref: str | None = None,
     scene_ref: str | None = None, ttl_seconds: int | None = None,
     inputs_root: Path = INPUTS_ROOT, lane_root: Path = LANE_ROOT,
-    now: Callable[[], float] = time.time,
+    now: Callable[[], float] = time.time, _registered_use=None,
 ) -> Path:
     """Reuse a proven attempt or publish a new sealed Arena evidence folder."""
 
+    if _registered_use is not None:
+        return _registered_arena(tag, _registered_use, owner=owner, run_ref=run_ref,
+            scene_ref=scene_ref, ttl_seconds=ttl_seconds).path
     inputs_root, lane_root = Path(inputs_root), Path(lane_root)
     legacy, leased, name = _paths(tag, inputs_root=inputs_root, lane_root=lane_root)
     try:
@@ -143,25 +223,14 @@ def prepare_arena_attempt(
                     or lease[reference_key] != reference_value):
                 raise ArenaScratchError("arena_scratch_owner_mismatch")
         return found
-    if owner is None or ttl_seconds is None or (run_ref is None) == (scene_ref is None):
-        raise ArenaScratchError("arena_scratch_metadata_required")
-    if legacy.exists():
-        raise ArenaScratchError("arena_scratch_ambiguous")
-    try:
-        return create_lane_scratch(
-            "arena", name, root=lane_root, owner=owner, run_ref=run_ref,
-            scene_ref=scene_ref, ttl_seconds=ttl_seconds,
-            reason="arena_construction_launch", class_intent="evidence",
-            cleanup="owner_review", now=now,
-        )
-    except LaneScratchError as exc:
-        raise ArenaScratchError(str(exc)) from exc
+    # Caller-supplied owner and TTL cannot register a new experiment.
+    raise ArenaScratchError("arena_scratch_registered_authority_required")
 
 
 def mkdir_arena_payload(
     tag: str, relative: str, *, owner: str | None = None, run_ref: str | None = None,
     scene_ref: str | None = None, inputs_root: Path = INPUTS_ROOT,
-    lane_root: Path = LANE_ROOT, now: Callable[[], float] = time.time,
+    lane_root: Path = LANE_ROOT, now: Callable[[], float] = time.time, _registered_use=None,
 ) -> Path:
     """Reopen an admitted lease for payload directories, never a legacy write.
 
@@ -170,6 +239,9 @@ def mkdir_arena_payload(
     Returned paths and subsequent cp/file writes are outside the handle guarantee.
     """
 
+    if _registered_use is not None:
+        use = _registered_arena(tag, _registered_use, owner=owner, run_ref=run_ref, scene_ref=scene_ref)
+        return _mkdir_registered_arena(use, relative)
     folder = resolve_arena_attempt(tag, writable=True, inputs_root=inputs_root,
                                    lane_root=lane_root, now=now)
     try:
