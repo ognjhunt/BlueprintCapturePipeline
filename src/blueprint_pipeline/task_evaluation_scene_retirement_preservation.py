@@ -190,6 +190,30 @@ def _archive_chunks(roots, files, directories, allowance):
     yield b'\x00'*1024
 
 
+def read_archive_chunks(transport,uri,allowance):
+    """Installed readers precharge physical reads on this exact action origin.
+
+    Memory/test transports retain the original charge-after-yield contract.
+    This interface conveys byte accounting only; it proves no archive, owner,
+    current reference, cohort or action permission.
+    """
+    allowance.tick()
+    charged=getattr(transport,'read_archive_charged',None)
+    source=iter(charged(uri,allowance) if charged is not None else transport.read_archive(uri))
+    while True:
+        allowance.tick()
+        try:
+            chunk=next(source)
+        except StopIteration:
+            allowance.tick()
+            return
+        allowance.tick()
+        _require(type(chunk) is bytes and 0<len(chunk)<=CHUNK,'scene_retirement_readback_unproven')
+        if charged is None:
+            allowance.charge('remote_bytes',len(chunk))
+        yield chunk
+
+
 def preserve_members(paths, *, transport, allowance, token):
     """Stream and freshly verify exactly inventoried private archive bytes."""
     allowance.tick()
@@ -235,10 +259,9 @@ def preserve_members(paths, *, transport, allowance, token):
              and _SHA.fullmatch(archive['sha256']) and archive['sha256'] == 'sha256:'+digest.hexdigest())
     verified, received = hashlib.sha256(), 0
     allowance.tick()
-    for chunk in transport.read_archive(archive['uri']):
+    for chunk in read_archive_chunks(transport,archive['uri'],allowance):
         allowance.tick()
         _require(type(chunk) is bytes and 0 < len(chunk) <= CHUNK,'scene_retirement_readback_unproven')
-        allowance.charge('remote_bytes',len(chunk))
         received += len(chunk)
         _require(received <= sent[0],'scene_retirement_readback_unproven')
         verified.update(chunk)

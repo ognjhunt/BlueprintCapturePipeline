@@ -12,14 +12,14 @@ from pathlib import Path
 from .task_evaluation_scene_retirement_access import _close_owned, _identity, _opened, _open_owned, _require
 from .task_evaluation_scene_retirement_generations import _named, _new_file
 from .task_evaluation_scene_retirement_mutation import _current_parent
-from .task_evaluation_scene_retirement_preservation import CHUNK, _payload, _scan
+from .task_evaluation_scene_retirement_preservation import CHUNK, _payload, _scan, read_archive_chunks
 
 
 class _ArchiveReader:
     def __init__(self,transport,archive,allowance):
         self.archive,self.allowance=archive,allowance
         allowance.tick()
-        self.source=iter(transport.read_archive(archive['uri']))
+        self.source=iter(read_archive_chunks(transport,archive['uri'],allowance))
         self.buffer=bytearray()
         self.digest=hashlib.sha256()
         self.size=0
@@ -36,7 +36,6 @@ class _ArchiveReader:
                 break
             self.allowance.tick()
             _require(type(chunk) is bytes and 0<len(chunk)<=CHUNK,'scene_retirement_readback_unproven')
-            self.allowance.charge('remote_bytes',len(chunk))
             self.size+=len(chunk)
             _require(self.size<=self.archive['size_bytes'],'scene_retirement_readback_unproven')
             self.digest.update(chunk)
