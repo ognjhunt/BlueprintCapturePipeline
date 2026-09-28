@@ -48,3 +48,23 @@ def test_missing_or_changed_metadata_clone_never_falls_back_to_other_owner_or_re
     with pytest.raises(ValueError):
         read_receipt_bytes(logical)
     assert not logical.exists()
+
+
+def test_real_factory_request_reader_keeps_original_logical_raw_selector(tmp_path,monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_inputs import checked_file, read
+    _,_,logical,_,raw=closure_fixture(tmp_path,monkeypatch)
+    reference=dict(path=str(logical),sha256='sha256:'+hashlib.sha256(raw).hexdigest(),size_bytes=len(raw))
+    selected=checked_file(logical,reference)
+    assert selected==logical
+    assert read(selected)==json.loads(raw)
+    assert not logical.exists()
+
+
+@pytest.mark.parametrize('field,value',[('sha256','sha256:'+'f'*64),('size_bytes',False),('size_bytes',1)])
+def test_real_factory_request_reader_refuses_wrong_raw_selector(tmp_path,monkeypatch,field,value):
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_inputs import checked_file
+    _,_,logical,_,raw=closure_fixture(tmp_path,monkeypatch)
+    reference=dict(path=str(logical),sha256='sha256:'+hashlib.sha256(raw).hexdigest(),size_bytes=len(raw))
+    reference[field]=value
+    with pytest.raises(ValueError):
+        checked_file(logical,reference)
