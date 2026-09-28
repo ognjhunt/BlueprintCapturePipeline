@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import stat
@@ -269,6 +270,30 @@ def test_member_verified_before_an_interrupted_rename_is_adopted_on_resume(tmp_p
     assert "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest() == frame["sha256"]
     assert stat.S_IMODE(target.stat().st_mode) == 0o440
     assert not list((tmp_path / "ingestion").glob("*.partial"))
+
+
+def test_roots_on_different_devices_are_refused_before_any_transfer(tmp_path, indexed, monkeypatch):
+    archive, index = indexed
+    store = RangeStore(archive)
+    selection = build_member_selection(index, ["runtime/identity.json"], selection_version=CONSUMERS)
+    real_device = ingestion._device
+    monkeypatch.setattr(ingestion, "_device", lambda path: real_device(path) + (path.name == "members"))
+    with pytest.raises(ProviderOutputIngestionError, match="^provider_output_roots_cross_device$"):
+        _ingest(tmp_path, store, index, selection)
+    assert store.requests == [] and not (tmp_path / "ingestion/binding.json").exists()
+
+
+def test_a_rename_across_mounts_is_a_typed_refusal(tmp_path, indexed, monkeypatch):
+    archive, index = indexed
+    selection = build_member_selection(index, ["runtime/identity.json"], selection_version=CONSUMERS)
+
+    def cross_device(source, target):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(ingestion.os, "rename", cross_device)
+    result = _ingest(tmp_path, RangeStore(archive), index, selection)
+    assert result["blockers"] == ["provider_output_roots_cross_device"]
+    assert _files(tmp_path / "members") == []
 
 def test_selected_member_must_match_its_index_digest(tmp_path, indexed):
     archive, index = indexed

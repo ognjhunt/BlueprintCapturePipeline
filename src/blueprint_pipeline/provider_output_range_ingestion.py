@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field
+import errno
 import fcntl
 import hashlib
 import json
@@ -520,8 +521,18 @@ def _materialize_member(remote, row, target, partial, *, step_bytes):
         partial.unlink(missing_ok=True)
         raise
     os.chmod(partial, 0o440)
-    _publish(partial, target)
+    try:
+        _publish(partial, target)
+    except OSError as exc:
+        # Distinct mounts of one filesystem share st_dev but still refuse a rename.
+        if exc.errno == errno.EXDEV:
+            raise ProviderOutputIngestionError('provider_output_roots_cross_device') from None
+        raise
     return record
+
+
+def _device(path):
+    return os.stat(path).st_dev
 
 
 def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selection: Mapping,
@@ -575,8 +586,12 @@ def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selecti
             if type(free) is int:
                 samples.append(free)
 
-    meta.parent.mkdir(parents=True, exist_ok=True)
-    members.parent.mkdir(parents=True, exist_ok=True)
+    for directory in (meta, members):
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if _device(members) != _device(meta):
+        # Partials live under the metadata root and are renamed into the
+        # members root; a rename cannot cross filesystems.
+        raise ProviderOutputIngestionError('provider_output_roots_cross_device')
     with _locked_roots(members, meta, binding):
         try:
             with source.open(index['archive']['size']) as remote:
