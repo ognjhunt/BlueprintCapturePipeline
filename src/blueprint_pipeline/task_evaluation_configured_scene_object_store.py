@@ -121,7 +121,8 @@ def _private_file_value(environment_name: str, *, required: bool) -> str:
 
 
 def _client_from_file_environment(
-    names: Mapping[str, str], *, require_endpoint_and_region: bool = False
+    names: Mapping[str, str], *, require_endpoint_and_region: bool = False,
+    checksums_when_required: bool = False,
 ) -> tuple[Any, str]:
     try:
         import boto3  # type: ignore[import-not-found]
@@ -139,11 +140,18 @@ def _client_from_file_environment(
     region = _private_file_value(
         names["region"], required=require_endpoint_and_region
     )
+    # B2 rejects botocore's default flexible checksums on presigned PUTs;
+    # remote-CPU clients send and validate them only when an API requires it.
+    checksums = (
+        {"request_checksum_calculation": "when_required",
+         "response_checksum_validation": "when_required"}
+        if checksums_when_required else {}
+    )
     kwargs: dict[str, Any] = {
         "aws_access_key_id": access_key,
         "aws_secret_access_key": secret_key,
         "region_name": region or "us-east-1",
-        "config": Config(signature_version="s3v4"),
+        "config": Config(signature_version="s3v4", **checksums),
     }
     if endpoint:
         kwargs["endpoint_url"] = endpoint
@@ -179,6 +187,28 @@ def _artifact_object_store_client() -> tuple[Any, str]:
             "configured_scene_artifact_store_bucket_identity_mismatch"
         )
     return client, bucket
+
+
+def remote_cpu_object_store() -> tuple[Any, str, str]:
+    """The dedicated B2 store for remote CPU jobs (plan 14): client, bucket and region.
+
+    Only the dedicated artifact-store binding qualifies, never the legacy
+    fallback, because its region is part of the admitted data location.
+    """
+
+    if not any(str(os.getenv(name) or "").strip() for name in _ARTIFACT_STORE_FILE_ENV.values()):
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "remote_cpu_object_store_not_dedicated"
+        )
+    client, bucket = _client_from_file_environment(
+        _ARTIFACT_STORE_FILE_ENV, require_endpoint_and_region=True, checksums_when_required=True
+    )
+    expected_bucket = str(os.getenv(_EXPECTED_ARTIFACT_BUCKET_ENV) or "").strip()
+    if expected_bucket and bucket != expected_bucket:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_store_bucket_identity_mismatch"
+        )
+    return client, bucket, _private_file_value(_ARTIFACT_STORE_FILE_ENV["region"], required=True)
 
 
 def _safe_object_name(value: str) -> PurePosixPath:
@@ -968,6 +998,7 @@ __all__ = [
     "publish_configured_scene_artifact",
     "publish_runtime_source_external_layers",
     "read_configured_scene_object",
+    "remote_cpu_object_store",
     "validate_configured_scene_object_store_configuration",
 ]
 

@@ -18,6 +18,7 @@
       "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
       "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+      "src/blueprint_pipeline/remote_cpu_job_allocator.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
       "src/blueprint_pipeline/teleport_paid_allocator.py"
@@ -42,6 +43,7 @@
       "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
       "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+      "src/blueprint_pipeline/remote_cpu_job_allocator.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
       "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
