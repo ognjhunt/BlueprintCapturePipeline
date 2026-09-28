@@ -205,13 +205,14 @@ def cpu_prefix_spend(archive_path: Path) -> dict[str, Any]:
     """What the CPU prefix's own records show it reserved against OpenAI or Anthropic.
 
     The prestage keeps its runtime output, a failed stage's cost reservations
-    included, as ``cpu_prestage_output.zip``. Every paid stage-3 path reserves
-    before its first call: OpenAI through ``official_openai_cost/`` receipts,
-    Anthropic and Agents reviews through ``inference_reservations/`` files and
-    their audit manifest. Zero spend is proven only by an archive complete as
-    its writer seals it (exclusions first, retained checkpoints last) holding
-    no such reservation. A missing, unreadable or incomplete archive, or an
-    audit that does not verify, proves nothing and counts as spent.
+    included, as ``cpu_prestage_output.zip``. Every paid path reserves before
+    its first call: OpenAI through receipts in an ``*official_openai_cost/``
+    directory, Anthropic and Agents reviews through ``inference_reservations/``
+    files and their audit manifest. Zero spend is proven only by an archive
+    complete as its writer seals it (its exclusions manifest the first member,
+    its own retained-checkpoint manifest the last) holding no such
+    reservation. A missing, unreadable or partial archive, or an audit that
+    does not verify, proves nothing and counts as spent.
     """
 
     from .task_evaluation_scene_configuration_output_archive import EXCLUDED_PARTS
@@ -238,11 +239,20 @@ def cpu_prefix_spend(archive_path: Path) -> dict[str, Any]:
                     raise ValueError("prefix_spend_record_oversized")
                 return json.loads(archive.read(name))
 
+            # The writer opens with its exclusions and closes with its own
+            # retained-checkpoint manifest; a crash in between leaves neither
+            # at its place, so a partial archive cannot pass for a whole one.
+            closing = read(names[-1]) if names else None
             if (
                 len(names) != len(set(names))
                 or "runtime_output_missing.json" in names
-                or "retained_training_checkpoints.json" not in names
-                or read("provider_output_zip_exclusions.json") != {
+                or names[0] != "provider_output_zip_exclusions.json"
+                or names[-1] != "retained_training_checkpoints.json"
+                or not isinstance(closing, dict)
+                or closing.get("schema_version")
+                != "scene_configuration_retained_training_checkpoints.v1"
+                or not isinstance(closing.get("checkpoints"), list)
+                or read(names[0]) != {
                     "schema_version": (
                         "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1"
                     ),
@@ -252,7 +262,7 @@ def cpu_prefix_spend(archive_path: Path) -> dict[str, Any]:
                 return evidence
             for name in names:
                 parts = PurePosixPath(name).parts
-                if "official_openai_cost" in parts or (
+                if any(part.endswith("official_openai_cost") for part in parts[:-1]) or (
                     "inference_reservations" in parts and parts[-1] != "manifest.json"
                 ):
                     recorded += 1

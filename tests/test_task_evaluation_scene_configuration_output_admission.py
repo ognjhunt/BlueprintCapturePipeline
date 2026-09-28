@@ -273,7 +273,9 @@ def _write_prefix_output(job_dir: Path, work: Path, receipt: dict, *, spend: str
     ``none`` (stages 1-2 only), ``openai`` (the content-agents official cost
     reservation), ``anthropic`` (Astra's inference reservation and audit), or
     ``unverified_manifest`` (an audit that does not verify). ``missing``,
-    ``corrupt`` and ``incomplete`` leave no archive that can prove anything.
+    ``corrupt`` and ``incomplete`` leave no archive that can prove anything;
+    ``crashed`` leaves the writer's partial archive, cut off before the
+    stage-3 receipt it would have held.
     """
 
     archive = job_dir / "cpu_prestage_output.zip"
@@ -297,7 +299,7 @@ def _write_prefix_output(job_dir: Path, work: Path, receipt: dict, *, spend: str
             "stages/stage-1/adapter/appearance.usdc": "#usda 1.0\n",
             "stages/stage-2/adapter/collision.usda": "#usda 1.0\n",
         }
-        if spend == "openai":
+        if spend in {"openai", "crashed"}:
             files["stages/stage-3/producer/released_content_agents_runtime/official_openai_cost/"
                   "openai_official_cost_run_reservation.v1.json"] = json.dumps(
                 {"schema_version": "openai_official_cost_run_reservation.v1",
@@ -313,6 +315,12 @@ def _write_prefix_output(job_dir: Path, work: Path, receipt: dict, *, spend: str
             path = output / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
+    if spend == "crashed":
+        # The writer refuses a symlink it meets before stage 3, mid-archive.
+        (output / "stages/stage-2/adapter/zz-link").symlink_to(output / RESULT_NAME)
+        with pytest.raises(RuntimeError, match="symlink_forbidden"):
+            write_output_archive(output, archive)
+        return
     write_output_archive(output, archive)
 
 
@@ -921,7 +929,9 @@ def test_deferred_hold_refusal_after_prefix_external_spend_is_withheld(
     ) is None
 
 
-@pytest.mark.parametrize("prefix", ["missing", "corrupt", "incomplete", "unverified_manifest"])
+@pytest.mark.parametrize(
+    "prefix", ["missing", "corrupt", "incomplete", "crashed", "unverified_manifest"]
+)
 def test_deferred_hold_refusal_with_unproven_prefix_spend_is_withheld(
     tmp_path, monkeypatch, prefix
 ) -> None:
@@ -937,6 +947,42 @@ def test_deferred_hold_refusal_with_unproven_prefix_spend_is_withheld(
     assert admission.recorded_preallocation_refusal(
         result, maximum_archive_bytes=SMALL_UPLOAD, job_dir=lane.job
     ) is None
+
+
+@pytest.mark.parametrize("directory", ["official_openai_cost", "semantic_teacher_official_openai_cost"])
+def test_every_official_openai_cost_directory_is_recorded_spend(tmp_path, directory) -> None:
+    """The ArtiFixer driver keeps its receipts in ``semantic_teacher_official_openai_cost``."""
+
+    receipt = tmp_path / "runtime_output/stages/stage-3/producer" / directory / "reservation.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({"status": "reserved_before_openai_call"}))
+    write_output_archive(tmp_path / "runtime_output", tmp_path / "cpu_prestage_output.zip")
+
+    spend = admission.cpu_prefix_spend(tmp_path / "cpu_prestage_output.zip")
+    assert spend["status"] == "prefix_external_spend_recorded"
+    assert spend["cap_record_count"] == 1
+
+
+def test_a_partial_archive_cannot_pass_for_a_complete_one(tmp_path) -> None:
+    """A runtime file carrying the writer's closing name, then a crash before
+    stage 3: the name alone at the end proves nothing."""
+
+    output = tmp_path / "runtime_output"
+    receipt = output / "stages/stage-3/producer/released_content_agents_runtime/official_openai_cost/r.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text("{}")
+    (output / "retained_training_checkpoints.json").write_text("{}")
+    link = output / "stages/stage-2/adapter/link"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(receipt)
+    archive = tmp_path / "cpu_prestage_output.zip"
+    with pytest.raises(RuntimeError, match="symlink_forbidden"):
+        write_output_archive(output, archive)
+    names = zipfile.ZipFile(archive).namelist()
+    assert names[-1] == "retained_training_checkpoints.json"
+    assert not any("official_openai_cost" in name for name in names)
+
+    assert admission.cpu_prefix_spend(archive)["status"] == "prefix_spend_unproven"
 
 
 @pytest.mark.parametrize(
