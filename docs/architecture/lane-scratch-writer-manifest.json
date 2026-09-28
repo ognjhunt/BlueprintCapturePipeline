@@ -10,7 +10,7 @@
       "characterization_tests": [
         "tests/test_control_plane_lane_scratch.py"
       ],
-      "review_reference": "Plan12a independently approved design; exact-head implementation spec and quality reviews required before merge",
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
       "historical_exceptions": []
     },
     {
@@ -22,7 +22,7 @@
       "characterization_tests": [
         "tests/test_leased_scratch_directory.py"
       ],
-      "review_reference": "Plan12a independently approved design; exact-head implementation spec and quality reviews required before merge",
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
       "historical_exceptions": []
     },
     {
@@ -34,7 +34,7 @@
       "characterization_tests": [
         "tests/test_control_plane_arena_scratch.py"
       ],
-      "review_reference": "Plan12a independently approved design; exact-head implementation spec and quality reviews required before merge",
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
       "historical_exceptions": [
         "Recorded r1-r32 folders remain read-only under the existing proof rules; never silently register or write them."
       ]
@@ -48,7 +48,7 @@
       "characterization_tests": [
         "tests/test_native_g1_development_pair.py"
       ],
-      "review_reference": "Plan12a independently approved design; exact-head implementation spec and quality reviews required before merge",
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
       "historical_exceptions": [
         "Non-host/provider outputs retain existing admission; every existing output remains refused."
       ]
@@ -63,7 +63,7 @@
         "tests/test_arena_construction_launch_scripts.py",
         "tests/test_control_plane_arena_scratch.py"
       ],
-      "review_reference": "Plan12a independently approved design; exact-head implementation spec and quality reviews required before merge",
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
       "historical_exceptions": [
         "Historical predecessor folders are resolved read-only; cp and subsequent file writes are outside the descriptor guarantee."
       ]
@@ -77,7 +77,7 @@
       "characterization_tests": [
         "tests/test_lane_scratch_install_wiring.py"
       ],
-      "review_reference": "Plan12a independently approved design; exact-head implementation spec and quality reviews required before merge",
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
       "historical_exceptions": [
         "Provisioning lane parents does not register or authorize historical scratch."
       ]

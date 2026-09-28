@@ -100,24 +100,6 @@ def _lease_fields_valid(lease: Mapping[str, Any]) -> bool:
 
 
 @contextmanager
-def _opened_directory_path(path: Path, *, unsafe_code: str) -> Iterator[int]:
-    """Retain a no-follow descriptor chain through every absolute component."""
-
-    if not path.is_absolute() or ".." in path.parts:
-        raise LaneScratchError(unsafe_code)
-    with ExitStack() as descriptors:
-        try:
-            directory_fd = os.open(path.anchor, _DIR_FLAGS)
-            descriptors.callback(os.close, directory_fd)
-            for component in path.parts[1:]:
-                directory_fd = os.open(component, _DIR_FLAGS, dir_fd=directory_fd)
-                descriptors.callback(os.close, directory_fd)
-        except OSError as exc:
-            raise LaneScratchError(unsafe_code) from exc
-        yield directory_fd
-
-
-@contextmanager
 def _locked_root_descriptor(root_fd: int) -> Iterator[int]:
     """Share the root's coordination lock with retained-descriptor consumers."""
 
