@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'member_unlink_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -232,6 +232,28 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         assert stopped and _current_entry(value, intent_id)['state'] == 'restoring'
         transport_calls = list(cloud.calls)
         monkeypatch.setattr(actions, '_event', actual_event)
+    if certificate_case == 'member_unlink_crash':
+        import os
+        original_unlink = restore.os.unlink
+        stopped = False
+        stage = target / ('.restore-' + grant['action_id'])
+        def interrupted_after_source_unlink(name, *args, **kwargs):
+            nonlocal stopped
+            parent = None
+            if stage.exists() and 'dir_fd' in kwargs and not name.startswith('.target-version-'):
+                selected = os.fstat(kwargs['dir_fd']).st_ino
+                parent = next((path for path in [stage, *stage.rglob('*')] if path.is_dir() and path.stat().st_ino == selected), None)
+            result = original_unlink(name, *args, **kwargs)
+            if not stopped and parent is not None and (target / parent.relative_to(stage) / name).is_file():
+                stopped = True
+                raise OSError('killed_after_real_stage_source_unlink')
+            return result
+        monkeypatch.setattr(restore.os, 'unlink', interrupted_after_source_unlink)
+        with pytest.raises(ValueError, match='experiment_'):
+            root.restore_registered_experiment(grant['action_id'], **arguments)
+        assert stopped and _current_entry(value, intent_id)['state'] == 'restoring'
+        transport_calls = list(cloud.calls)
+        monkeypatch.setattr(restore.os, 'unlink', original_unlink)
     if certificate_case == 'activation_crash':
         from blueprint_pipeline import control_plane_lane_experiment_actions as actions
         actual_event = actions._event
@@ -249,7 +271,7 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         replay = root.restore_registered_experiment(grant['action_id'], **arguments)
         assert replay['receipt'] == outcome['receipt'] and cloud.calls == calls
 
-    if certificate_case in ('stage_ready_crash', 'member_link_crash'):
+    if certificate_case in ('stage_ready_crash', 'member_link_crash', 'member_unlink_crash'):
         assert cloud.calls == transport_calls  # Durable stage proof avoids new transfer.
     assert outcome['decision'] == 'restored' and reservation.released
     assert len(allocations) == (2 if certificate_case == 'before_stage_crash' else 1)

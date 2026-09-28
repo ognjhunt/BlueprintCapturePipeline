@@ -133,7 +133,7 @@ def begin(files, config, action, expected, entry, current, refreshed, public, st
                                            preservation=preservation), preservation)
 
 
-def progress(files, operation, action, expected, target, rows, previous, *, preservation=None, _target_transition=None):
+def progress(files, operation, action, expected, target, rows, previous, *, preservation=None, _target_transition=None, _restored_union=None):
     logical, allocated, changed, count = 0, 0, {}, 0
     offset = 1 if action['action'] == 'offload' else 0
     for index, row in enumerate(rows, 1):
@@ -160,7 +160,10 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
         except FileNotFoundError:
             pass
         else:
-            _require(False, 'experiment_removed_name_reappeared')
+            restored = _restored_union.get(row[0]) if type(_restored_union) is dict else None
+            _require(type(restored) is tuple and len(restored) == 9
+                     and owners._metadata(os.stat(member, follow_symlinks=False)) == restored,
+                     'experiment_removed_name_reappeared')
         parent_after = body['parent_after']
         _require(isinstance(parent_after, dict) and set(parent_after) == {'path', 'identity', 'stat_token'}
                  and parent_after['path'] == str(Path(row[0]).parent), 'experiment_operation_invalid')
@@ -179,6 +182,13 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
         except FileNotFoundError:
             _require(any(row[0] == path for row in rows[:count]), 'experiment_operation_invalid')
             continue
+        relative = str(destination.relative_to(target))
+        restored = _restored_union.get(relative) if type(_restored_union) is dict else None
+        if restored is not None:
+            _require(type(restored) is tuple and len(restored) == 9
+                     and owners._metadata(named) == restored, 'experiment_directory_transition_changed')
+            identity = dict(dev=restored[0], ino=restored[1], type='directory')
+            metadata = restored[2:]
         if destination == target and _target_transition is not None:
             _require(type(_target_transition) is list and len(_target_transition) == len(_STAT)
                      and all(type(v) is int and v >= 0 for v in _target_transition),
@@ -201,7 +211,7 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
     return previous, logical, allocated, {p: v[1] for p, v in changed.items()}, count, completed
 
 
-def retired(files, config, action, expected, target, rows, entry, marker, *, _retained_store=None, _target_transition=None):
+def retired(files, config, action, expected, target, rows, entry, marker, *, _retained_store=None, _target_transition=None, _restored_union=None):
     from . import control_plane_lane_experiment_actions as code
     files._operation_path = str(Path(config.experiment_record_store) / 'operations' / action['action_id'])
     store = issuance._store(files, config.experiment_record_store) if _retained_store is None else _retained_store
@@ -228,7 +238,7 @@ def retired(files, config, action, expected, target, rows, entry, marker, *, _re
                  and value['body']['manifest'] == action['manifest'], 'experiment_operation_invalid')
         preservation = (previous, value['body']['archive'])
     _, logical, allocated, _, count, receipt = progress(files, operation, action, expected, target, rows, previous,
-                                                        preservation=preservation, _target_transition=_target_transition)
+                                                        preservation=preservation, _target_transition=_target_transition, _restored_union=_restored_union)
     _require(count == len(rows) and receipt is not None, 'experiment_operation_invalid')
     raw, _ = files.read(Path(files._operation_path) / f'e-{len(rows) + 1 + (action["action"] == "offload"):05d}.json', cap=32768, protected=True, mode=0o600)
     final = retained._document(raw, 32768, _work_budget=files.budget)
