@@ -238,3 +238,38 @@ def test_shared_group_newer_than_a_holders_report_is_kept(tmp_path) -> None:
     assert (block["omitted_kept_count"], block["omitted_candidates_count"]) == (0, 0)
     assert block["removed_bytes"] == sizes[as_old]
     assert all(path.exists() for path in kept_names) and not any(path.exists() for path in gone_names)
+
+
+def test_shared_group_with_a_link_outside_the_lookaheads_is_kept_and_reported(tmp_path) -> None:
+    """An inode with a link outside every lookahead (the store's own name, before a store moved;
+    a derived directory's materialized reference) is kept: unlinking the names inside would free
+    nothing, and the other name is not a replay's. Until 10a.2 nothing said so. Every such group
+    is counted with its bytes, however many, and at most 200 are listed."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    first = _replay(parent_root, "scene-841007-preparation", "parent-a-1")
+    second = _replay(parent_root, "scene-841012-preparation", "parent-b-1")
+    in_store = _store_blob(tmp_path, b"still named by the store" * 20)
+    derived = _store_blob(tmp_path, b"still named by a derived directory" * 20)
+    loose = _store_blob(tmp_path, b"named only in the two lookaheads" * 20)
+    outside = tmp_path / "task-evaluation-inputs" / "prepared-references" / "prep-x" / "scene.usd"
+    outside.parent.mkdir(parents=True)
+    os.link(derived, outside)
+    kept = [*_linked(in_store, first, "prep-a/scene.usd"), *_linked(in_store, second),
+            *_linked(derived, first), *_linked(derived, second)]
+    gone = [*_linked(loose, first), *_linked(loose, second)]
+    many = [_store_blob(tmp_path, b"store blob %d" % index) for index in range(201)]
+    for blob in many:
+        kept += [*_linked(blob, first), *_linked(blob, second)]
+    kept_bytes = sum(blob.stat().st_size for blob in (in_store, derived, *many))
+    _moved(derived, loose)
+
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"linked_outside_lookaheads": {"groups": 203, "bytes": kept_bytes}}
+    assert (len(block["kept"]), block["omitted_kept_count"]) == (200, 3)
+    row = next(row for row in block["kept"] if row["path"] == str(kept[0]))
+    assert row == {"reason": "linked_outside_lookaheads", "path": str(kept[0]), "name_count": 3, "holder_count": 2,
+                   "nlink": 4, "size_bytes": in_store.stat().st_size}
+    assert (block["candidate_groups"], block["removed_groups"]) == (1, 1)
+    assert all(path.exists() for path in (*kept, in_store, outside)) and not any(path.exists() for path in gone)

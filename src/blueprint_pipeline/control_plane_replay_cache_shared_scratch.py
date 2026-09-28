@@ -105,6 +105,9 @@ def _kept_reason(group: dict[str, Any], holders: Sequence[dict[str, Any]]) -> st
     holding = {index for index, _name in group["names"]}
     if any(holders[index]["device"] != group["dev"] for index in holding):
         return "cross_device"
+    if group["nlink"] > len(group["names"]):
+        # Every lookahead's names are counted, so a link beyond them is outside every lookahead.
+        return "linked_outside_lookaheads"
     if group["nlink"] != len(group["names"]) or any(holders[index]["gate"] for index in holding):
         return "not_all_links_in_eligible_lookaheads"
     if any(group["mtime_ns"] > holders[index]["report_mtime_ns"] for index in holding):
