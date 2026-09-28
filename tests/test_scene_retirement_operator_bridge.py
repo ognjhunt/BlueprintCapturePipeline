@@ -416,3 +416,92 @@ def test_installed_environment_cannot_rebind_after_private_mode_proof(tmp_path, 
     with pytest.raises(access.SceneRetirementAccessError):
         module.load_installed_environment()
     assert 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE' not in os.environ
+
+
+
+def test_publication_readback_uses_separate_blueprint_store_and_same_charged_origin(monkeypatch):
+    module = bridge()
+    private, published = Client(), Client()
+    published.data = b'published'
+    selected = []
+    bodies = []
+    budget = allowance()
+    class Body(io.BytesIO):
+        def read(self, size=-1):
+            if size != 1:
+                assert budget.counts['remote_bytes'] >= size
+            return super().read(size)
+    def get(**kwargs):
+        selected.append(kwargs)
+        body = Body(published.data)
+        bodies.append(body)
+        return {'Body': body, 'ContentLength': len(published.data)}
+    published.get_object = get
+    monkeypatch.setattr(module, 'installed_publication_client', lambda: published, raising=False)
+    transport = module.SceneArchiveTransport(client=private, bucket='private-artifacts')
+    transport.bind_allowance(budget)
+    uri = 's3://blueprint/task-evaluation/production-inputs/scene-1/bundle_manifest.v1.json'
+    assert b''.join(transport.read_published_object_charged(
+        uri, budget, expected_size_bytes=len(published.data))) == published.data
+    assert selected == [{'Bucket': 'blueprint', 'Key': uri.split('s3://blueprint/', 1)[1]}]
+    assert private.calls == [] and bodies[0].closed
+    assert budget.counts['remote_bytes'] == len(published.data)
+    transport.close()
+    assert private.calls == ['close'] and published.calls == ['close']
+
+
+@pytest.mark.parametrize('uri', [
+    's3://other/task-evaluation/production-inputs/ns/derived/file',
+    's3://blueprint/task-evaluation/host-only-owner-sources/ns/file',
+    's3://blueprint/task-evaluation/production-inputs/ns/source/raw.mp4',
+    's3://blueprint/task-evaluation/production-inputs/ns/../raw',
+    's3://blueprint/task-evaluation/production-inputs/ns/%2fraw',
+    's3://blueprint/task-evaluation/production-inputs/ns/file?token=secret',
+    's3://blueprint/task-evaluation/production-inputs/ns/file#fragment',
+])
+def test_publication_uri_cannot_expand_bucket_raw_source_or_namespace_authority(monkeypatch, uri):
+    module = bridge()
+    calls = []
+    monkeypatch.setattr(module, 'installed_publication_client', lambda: calls.append(1), raising=False)
+    private = Client()
+    transport = module.SceneArchiveTransport(client=private, bucket='private-artifacts')
+    budget = allowance()
+    transport.bind_allowance(budget)
+    with pytest.raises(ValueError):
+        list(transport.read_published_object_charged(uri, budget, expected_size_bytes=1))
+    assert calls == [] and private.calls == [] and budget.counts['remote_bytes'] == 0
+
+
+def test_publication_declared_size_is_checked_before_allocating_body(monkeypatch):
+    module = bridge()
+    private, published = Client(), Client()
+    body = io.BytesIO(b'oversized')
+    published.get_object = lambda **kw: {'Body': body, 'ContentLength': 9}
+    monkeypatch.setattr(module, 'installed_publication_client', lambda: published, raising=False)
+    transport = module.SceneArchiveTransport(client=private, bucket='private-artifacts')
+    budget = allowance()
+    transport.bind_allowance(budget)
+    with pytest.raises(ValueError):
+        list(transport.read_published_object_charged(
+            's3://blueprint/task-evaluation/production-inputs/ns/derived/file', budget,
+            expected_size_bytes=1))
+    assert body.closed and budget.counts['remote_bytes'] == 0
+    transport.close()
+
+
+def test_publication_origin_and_invalid_sdk_caps_refuse_before_object_read(monkeypatch):
+    module = bridge()
+    private, published = Client(), Client()
+    published.meta.config.read_timeout = 60
+    monkeypatch.setattr(module, 'installed_publication_client', lambda: published, raising=False)
+    transport = module.SceneArchiveTransport(client=private, bucket='private-artifacts')
+    budget = allowance()
+    transport.bind_allowance(budget)
+    uri = 's3://blueprint/task-evaluation/production-inputs/ns/derived/file'
+    with pytest.raises(ValueError):
+        list(transport.read_published_object_charged(uri, allowance(), expected_size_bytes=1))
+    assert published.calls == []
+    with pytest.raises(ValueError):
+        list(transport.read_published_object_charged(uri, budget, expected_size_bytes=1))
+    assert 'get' not in published.calls and published.calls == ['close']
+    transport.close()
