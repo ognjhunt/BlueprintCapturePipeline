@@ -17,7 +17,7 @@ from .task_evaluation_scene_retirement_generations import _guard, _named, _new_f
 
 EVENTS={'detach_planned','detached','member_removed','retiring','retired','restoring',
         'restore_directory_created','restore_file_created','member_restored','restored-active','kept',
-        'leaf_unlink_planned','leaf_unlinked'}
+        'leaf_unlink_planned','leaf_unlinked','directory_unlink_planned','directory_unlinked'}
 MAX_EVENTS=10000
 MAX_JOURNAL_BYTES=32*1024*1024
 
