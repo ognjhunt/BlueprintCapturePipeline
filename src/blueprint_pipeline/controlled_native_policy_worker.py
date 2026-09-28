@@ -6,10 +6,11 @@ import time
 from pathlib import Path
 
 from blueprint_pipeline.controlled_policy_configuration import validate_native_configuration, canonical_request_digest
-RESULT_FILENAME = "controlled_native_policy_result.v1.json"
 from blueprint_pipeline.controlled_native_isaac import build_controlled_native_environment, read_controlled_native_outcome
 from blueprint_pipeline.controlled_policy_dispatch import ControlledPolicyExecutor
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+RESULT_FILENAME = "controlled_native_policy_result.v1.json"
 
 
 def main() -> int:

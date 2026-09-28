@@ -6,7 +6,6 @@ from importlib.metadata import distribution
 from pathlib import Path
 from typing import Any, Mapping
 
-from .decision_evidence_contracts import canonical_digest
 from .controlled_policy_configuration import validate_native_configuration
 from .native_task_arena_bundle import build_native_task_arena_bundle
 from .native_task_arena_construction_bundle import load_verified_native_task_arena_construction_bundle
