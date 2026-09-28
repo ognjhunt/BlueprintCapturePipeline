@@ -426,6 +426,128 @@ def quick10_shaped_archive(*, cells: int = 10, frames_per_camera: int = 4, png_b
                           payloads=ordered)
 
 
+class _CasNotFound(KeyError):
+    """A missing key, shaped as an S3-compatible client reports it."""
+
+    response = {"ResponseMetadata": {"HTTPStatusCode": 404}, "Error": {"Code": "NoSuchKey"}}
+
+
+class _CasPreconditionFailed(RuntimeError):
+    response = {"ResponseMetadata": {"HTTPStatusCode": 412}, "Error": {"Code": "PreconditionFailed"}}
+
+
+class _CasBody:
+    def __init__(self, obj: VirtualObject, start: int, stop: int):
+        self._obj, self._position, self._stop = obj, start, stop
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            size = self._stop - self._position
+        end = min(self._stop, self._position + size)
+        chunk = bytes(self._obj.read(self._position, end)) if end > self._position else b""
+        self._position = end
+        return chunk
+
+    def close(self):
+        pass
+
+
+def virtual_sha256(obj: VirtualObject, step: int = 8 * 1024**2) -> str:
+    digest = hashlib.sha256()
+    for start in range(0, obj.size, step):
+        digest.update(obj.read(start, start + step))
+    return "sha256:" + digest.hexdigest()
+
+
+class VirtualCasClient:
+    """A B2 double: multipart and file uploads, HEAD, and whole or ranged GETs.
+
+    Streamed parts are hashed in order and never kept. On completion the key
+    serves the ``VirtualObject`` registered (``register``) for the streamed
+    digest, so a multi-GB archive costs no memory; completing an unregistered
+    digest is a test-setup error. ``upload_file`` keeps the small file's
+    bytes. ``uploads``, ``aborted``, ``readback_bytes`` and ``calls`` record
+    what happened; reads are thread-safe (ranged readback runs in parallel).
+    """
+
+    def __init__(self, *, bucket: str = "blueprint-artifacts"):
+        import threading
+
+        self.bucket = bucket
+        self.sources: dict[str, VirtualObject] = {}
+        self.objects: dict[str, tuple[VirtualObject, dict, str]] = {}
+        self.pending: dict[str, dict] = {}
+        self.calls: list[tuple] = []
+        self.uploads = self.aborted = self.readback_bytes = 0
+        self._lock = threading.Lock()
+
+    def register(self, obj: VirtualObject) -> str:
+        digest = virtual_sha256(obj)
+        self.sources[digest] = obj
+        return digest
+
+    def _log(self, *call):
+        with self._lock:
+            self.calls.append(call)
+
+    def head_object(self, *, Bucket, Key):
+        self._log("head", Key)
+        if Key not in self.objects:
+            raise _CasNotFound(Key)
+        obj, metadata, etag = self.objects[Key]
+        return {"ContentLength": obj.size, "Metadata": dict(metadata), "ETag": etag}
+
+    def create_multipart_upload(self, *, Bucket, Key, Metadata, ContentType):
+        upload = f"upload-{len(self.pending) + len(self.calls)}"
+        self._log("create_multipart_upload", Key)
+        self.pending[upload] = {"metadata": dict(Metadata), "digest": hashlib.sha256(), "size": 0}
+        return {"UploadId": upload}
+
+    def upload_part(self, *, Bucket, Key, UploadId, PartNumber, Body):
+        row = self.pending[UploadId]
+        row["digest"].update(Body)
+        row["size"] += len(Body)
+        return {"ETag": f'"part-{PartNumber}"'}
+
+    def complete_multipart_upload(self, *, Bucket, Key, UploadId, MultipartUpload):
+        row = self.pending.pop(UploadId)
+        digest = "sha256:" + row["digest"].hexdigest()
+        self._store(Key, self.sources[digest], row["metadata"], digest)
+
+    def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+        self.pending.pop(UploadId, None)
+        self.aborted += 1
+
+    def upload_file(self, source, bucket, key, ExtraArgs=None):
+        with open(source, "rb") as stream:
+            data = stream.read()
+        self._log("upload_file", key)
+        self._store(key, VirtualObject([data]), (ExtraArgs or {}).get("Metadata") or {},
+                    "sha256:" + hashlib.sha256(data).hexdigest())
+
+    def _store(self, key, obj, metadata, digest):
+        self.objects[key] = (obj, dict(metadata), f'"b2-{digest[7:23]}"')
+        self.uploads += 1
+
+    def get_object(self, *, Bucket, Key, Range=None, IfMatch=None):
+        self._log("get_object", Key, Range)
+        obj, _, etag = self.objects[Key]
+        if IfMatch is not None and IfMatch != etag:
+            raise _CasPreconditionFailed(Key)
+        if Range is None:
+            with self._lock:
+                self.readback_bytes += obj.size
+            return {"Body": _CasBody(obj, 0, obj.size), "ETag": etag, "ContentLength": obj.size,
+                    "ResponseMetadata": {"HTTPStatusCode": 200}}
+        first, last = map(int, re.fullmatch(r"bytes=(\d+)-(\d+)", Range).groups())
+        stop = min(last, obj.size - 1) + 1
+        with self._lock:
+            self.readback_bytes += stop - first
+        return {"Body": _CasBody(obj, first, stop), "ETag": etag, "ContentLength": stop - first,
+                "ContentRange": f"bytes {first}-{stop - 1}/{obj.size}",
+                "ResponseMetadata": {"HTTPStatusCode": 206}}
+
+
 def zero_run_sha256(size: int) -> str:
     """The SHA-256 of ``size`` zero bytes, hashed in 16 MiB steps."""
     digest, remaining, view = hashlib.sha256(), size, memoryview(_ZERO_BLOCK)
