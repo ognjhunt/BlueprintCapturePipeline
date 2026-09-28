@@ -114,6 +114,27 @@ def _check_unit(value, command, intent_id, *, started=None):
              "experiment_unit_command_changed")
 
 
+def _check_finished_unit(value, command, intent_id, *, started, stopping, kernel, stop_command):
+    """Raw post-stop disappearance is meaningful only in this exact chain."""
+    _check_unit(started, command, intent_id)
+    _check_unit(stopping, command, intent_id, started=started)
+    unit = 'blueprint-experiment-' + intent_id + '.service'
+    _require(stopping['ActiveState'] == 'active' and stopping['SubState'] == 'exited'
+             and stopping['MainPID'] == '0' and stopping['Result'] == 'success'
+             and stopping['ExecMainStatus'] == '0' and kernel['tasks'] == 0
+             and stop_command == [_SYSTEMCTL, 'stop', unit], 'experiment_unit_closure_unproven')
+    if value['LoadState'] == 'loaded':
+        _check_unit(value, command, intent_id, started=started)
+    else:
+        _require(set(value) == set(_UNIT_PROPERTIES) and value['LoadState'] == 'not-found'
+                 and value['Id'] == unit and value['ActiveState'] == 'inactive' and value['SubState'] == 'dead'
+                 and value['MainPID'] == '0' and value['InvocationID'] == '' and value['ExecStart'] == ''
+                 and value['ControlGroup'] == '' and value['Result'] == 'success'
+                 and value['ExecMainStatus'] == '0', 'experiment_unit_closure_unproven')
+    _require(value['ActiveState'] == 'inactive' and value['Result'] == 'success'
+             and value['ExecMainStatus'] == '0', 'experiment_unit_closure_unproven')
+
+
 def _started_group(selected):
     """Capture the actual owned kernel namespace while its producer is live."""
     _require(re.fullmatch(r'/system.slice/blueprint-experiment-[0-9a-f]{32}\.service', selected),
@@ -205,9 +226,10 @@ def _empty_group(selected, *, started=None):
 
 class _TerminatedUnitProof:
     """Created only by the root observer of its exact native unit invocation."""
-    def __init__(self, *, started, finished, kernel, command, observed_at):
+    def __init__(self, *, started, stopping, finished, kernel, command, stop_command, observed_at):
         self.started, self.finished, self.kernel = started, finished, kernel
         self.command, self.observed_at = command, observed_at
+        self.stopping, self.stop_command = stopping, stop_command
 
 
 def run_registered_experiment(intent_id, *, expected_intent, installed_config_path="/etc/blueprint-operator-door/door.json",
@@ -284,13 +306,15 @@ def run_registered_experiment(intent_id, *, expected_intent, installed_config_pa
                      and current_unit['ExecMainStatus'] == '0'
                      and time.monotonic() - origin <= 4*3600 and now() < expiry,
                      'experiment_unit_closure_unproven')
-            _native_control([_SYSTEMCTL, "stop", "blueprint-experiment-"+intent_id+".service"])
+            stop_command = [_SYSTEMCTL, 'stop', 'blueprint-experiment-' + intent_id + '.service']
+            _native_control(stop_command)
             finished = _show_unit(intent_id)
-            _check_unit(finished, command, intent_id, started=started)
-            _require(finished["ActiveState"] == "inactive" and finished["Result"] == "success"
-                     and finished["ExecMainStatus"] == "0" and finished["InvocationID"] == started["InvocationID"],
-                     "experiment_unit_closure_unproven")
-            proof = _TerminatedUnitProof(started=started, finished=finished, kernel=kernel, command=command, observed_at=now())
+            _check_finished_unit(finished, command, intent_id, started=started, stopping=current_unit,
+                                 kernel=kernel, stop_command=stop_command)
+            _require(time.monotonic() - origin <= 4*3600 and now() < expiry,
+                     'experiment_unit_closure_unproven')
+            proof = _TerminatedUnitProof(started=started, stopping=current_unit, finished=finished,
+                kernel=kernel, command=command, stop_command=stop_command, observed_at=now())
             from .control_plane_lane_experiment_completion import publish_contained_completion
             completion = publish_contained_completion(intent_id, expected_intent=expected_intent,
                 proof=proof, installed_config_path=installed_config_path, now=now)
