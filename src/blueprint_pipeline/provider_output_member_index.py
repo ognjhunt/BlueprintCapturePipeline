@@ -25,14 +25,14 @@ local-header, data and record-end offsets; totals with bytes by class
 (``bulk`` uses the terminal-payload retention extension list);
 ``private_url_recorded: false``; and ``index_digest`` over the canonical JSON
 without that field. Which members a consumer materializes is not an archive
-fact. It belongs in a separate, versioned selection bound to
-``index_digest``, never in the index.
+fact. It lives in a separate, versioned selection bound to ``index_digest``
+(``build_member_selection``), never in the index.
 
 Refusals raise ``ProviderOutputMemberIndexError`` whose message is a stable
 code: ``provider_output_archive_*`` for archive bytes and structure (the
-vocabulary the ingester already uses), ``provider_output_member_index_*`` for
-the document and its arguments, and the transport's own ``provider_output_*``
-codes unchanged.
+vocabulary the ingester already uses), ``provider_output_member_index_*`` and
+``provider_output_member_selection_*`` for documents and arguments, and the
+transport's own ``provider_output_*`` codes unchanged.
 
 Entry rules. ``check_archive_entries`` is the ingester's entry-safety rule set,
 moved here so both paths apply one definition: a relative POSIX name with no
@@ -77,6 +77,7 @@ from .provider_output_native_inventory import ProviderOutputInventoryError, safe
 from .provider_output_range_transport import ProviderOutputTransportError
 
 SCHEMA = 'provider_output_member_index.v1'
+SELECTION_SCHEMA = 'provider_output_member_selection.v1'
 SUMMARY_SCHEMA = 'provider_output_member_index_summary.v1'
 DEFAULT_MAXIMUM_MEMBERS = 10_000
 MAX_ARCHIVE_ENTRIES = 200_000
@@ -100,6 +101,7 @@ _ENCRYPTION_FLAGS = 0x0001 | 0x0040 | 0x2000  # traditional, strong, masked dire
 _DESCRIPTOR_FLAG = 0x0008
 _METHODS = {zipfile.ZIP_STORED: 'stored', zipfile.ZIP_DEFLATED: 'deflate'}
 _SHA256 = re.compile(r'sha256:[0-9a-f]{64}')
+_SELECTION_VERSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}')
 _MEMBER_KEYS = frozenset({
     'path', 'kind', 'size', 'compressed_size', 'method', 'crc32', 'sha256', 'mode',
     'local_header_offset', 'data_offset', 'record_end_offset',
@@ -681,6 +683,41 @@ def validate_member_index(index) -> Mapping:
     if position != directory['offset']:
         raise _refusal('provider_output_member_index_invalid')
     return index
+
+
+def validate_member_selection(selection, index) -> list[dict]:
+    """Return the selected file rows in archive order once the binding holds.
+
+    ``index`` must already have passed ``validate_member_index``.
+    """
+    if (not isinstance(selection, Mapping)
+            or set(selection) != {'schema_version', 'member_index_digest', 'selection_version',
+                                  'members', 'selection_digest'}
+            or selection['schema_version'] != SELECTION_SCHEMA
+            or not isinstance(selection['selection_version'], str)
+            or not _SELECTION_VERSION.fullmatch(selection['selection_version'])
+            or not isinstance(selection['members'], list)
+            or any(not isinstance(path, str) for path in selection['members'])
+            or selection['members'] != sorted(set(selection['members']))
+            or selection['selection_digest'] != _digest_or_none(selection, 'selection_digest')):
+        raise _refusal('provider_output_member_selection_invalid')
+    if selection['member_index_digest'] != index['index_digest']:
+        raise _refusal('provider_output_member_selection_index_mismatch')
+    files = {member['path'] for member in index['members'] if member['kind'] == 'file'}
+    if not set(selection['members']) <= files:
+        raise _refusal('provider_output_member_selection_member_unknown')
+    chosen = set(selection['members'])
+    return [member for member in index['members'] if member['kind'] == 'file' and member['path'] in chosen]
+
+
+def build_member_selection(index, paths, *, selection_version: str) -> dict:
+    """Name the members a consumer needs locally, bound to one index digest."""
+    validate_member_index(index)
+    selection = {'schema_version': SELECTION_SCHEMA, 'member_index_digest': index['index_digest'],
+                 'selection_version': selection_version, 'members': sorted(set(paths))}
+    selection['selection_digest'] = canonical_digest(selection, digest_field='selection_digest')
+    validate_member_selection(selection, index)
+    return selection
 
 
 class LocalArchiveRangeSource:

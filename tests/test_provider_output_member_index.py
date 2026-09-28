@@ -24,8 +24,10 @@ from blueprint_pipeline.provider_output_member_index import (
     MemberInflater,
     ProviderOutputMemberIndexError,
     build_member_index,
+    build_member_selection,
     main,
     validate_member_index,
+    validate_member_selection,
 )
 from blueprint_pipeline.provider_output_range_transport import ProviderOutputTransportError
 from tests.provider_output_fixtures import (
@@ -209,6 +211,41 @@ def test_index_document_validates_and_forgery_is_refused():
         with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_index_invalid$"):
             validate_member_index(unserializable)
 
+
+
+def test_selection_is_a_versioned_document_bound_to_one_index():
+    index, _ = _index(_mixed_archive())
+    wanted = ["runtime/result.json", "logs/worker.log", "runtime/frames/0001.png"]
+    selection = build_member_selection(index, reversed(wanted), selection_version="consumers.v1")
+    assert selection == {
+        "schema_version": "provider_output_member_selection.v1",
+        "member_index_digest": index["index_digest"],
+        "selection_version": "consumers.v1",
+        "members": sorted(wanted),
+        "selection_digest": canonical_digest(selection, digest_field="selection_digest"),
+    }
+    assert [row["path"] for row in validate_member_selection(selection, index)] == [
+        row["path"] for row in index["members"] if row["path"] in wanted]
+    with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_selection_index_mismatch$"):
+        validate_member_selection(selection, {**index, "index_digest": "sha256:" + "1" * 64})
+    for paths in (["runtime/missing.json"], ["runtime"]):  # unknown, and a directory
+        with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_selection_member_unknown$"):
+            build_member_selection(index, paths, selection_version="consumers.v1")
+
+    def redigested(**changes):
+        document = {**selection, **changes}
+        document["selection_digest"] = canonical_digest(document, digest_field="selection_digest")
+        return document
+
+    for document in ({**selection, "members": sorted(wanted)[:1]},
+                     redigested(members=sorted(wanted, reverse=True)),
+                     redigested(selection_version="has space"),
+                     redigested(disposition={"runtime/result.json": "materialized"}),
+                     # Not JSON: refused with a code, never a TypeError.
+                     {**selection, "members": [b"runtime/result.json"]},
+                     {**selection, "members": [object()]}):
+        with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_selection_invalid$"):
+            validate_member_selection(document, index)
 
 def _entries(*names):
     return [Entry(name, name.encode() * 3) for name in names]
