@@ -416,3 +416,70 @@ def test_shared_scratch_recheck_refuses_a_swapped_or_extra_linked_name(tmp_path,
         assert all(path.exists() for path in names[name]), name
     assert all(path.exists() for path in names["vanished"][:-1]) and (tmp_path / "linked-after-the-plan").exists()
     assert not any(path.exists() for path in names["removed"])
+
+
+class _Killed(BaseException):
+    """The unit stopped mid-apply (TimeoutStartSec, a reboot): nothing after it runs."""
+
+
+@pytest.mark.parametrize("interruption", ["unlink_refused", "unit_killed"])
+def test_interrupted_shared_reclaim_resumes_next_tick(tmp_path, monkeypatch, interruption) -> None:
+    """Apply stops after some of a group's names are unlinked: the names already gone were scratch
+    and stay gone, and the group's bytes are not counted, since the inode still lives. The next tick
+    plans what is left, whose names are again all of its links: in two or more replays it is shared
+    scratch again, in one replay it is the per-replay rule's. Either way it goes then, and its bytes
+    are counted once across the ticks. A refused unlink is a typed skip and the tick goes on; a unit
+    killed mid-apply writes no report at all."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    first = _replay(parent_root, "scene-841007-preparation", "parent-a-1")
+    second = _replay(parent_root, "scene-841012-preparation", "parent-b-1")
+    third = _replay(parent_root, "scene-841019-preparation", "parent-c-1")
+    wide = _store_blob(tmp_path, b"held by three replays" * 20)
+    narrow = _store_blob(tmp_path, b"held by the last two replays" * 20)
+    # Groups go in the order of their first names, so the wide group, first named in the first replay, goes first.
+    wide_names = [*_linked(wide, first, "prep-a/wide.usd"), *_linked(wide, second), *_linked(wide, third)]
+    narrow_names = [*_linked(narrow, second), *_linked(narrow, third)]
+    sizes = {"wide": wide.stat().st_size, "narrow": narrow.stat().st_size}
+    _moved(wide, narrow)
+    real_unlink, unlinked = os.unlink, []
+
+    def unlink(path, *args, **kwargs):
+        # Each group stops at the second replay it is unlinked in.
+        name = Path(path).name
+        if name in (wide.name, narrow.name) and name in unlinked:
+            if interruption == "unit_killed":
+                raise _Killed()
+            raise PermissionError(13, "Permission denied")
+        unlinked.append(name)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    if interruption == "unit_killed":
+        with pytest.raises(_Killed):
+            _tick(tmp_path, parent_root, **BOTH)
+        gone = wide_names[:2]
+    else:
+        phase = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
+        block = phase["shared_scratch"]
+        assert (phase["removed_bytes"], block["removed_groups"], block["removed_bytes"]) == (0, 0, 0)
+        assert block["kept_by_reason"] == {"recheck_failed:permission_error": {
+            "groups": 2, "bytes": sizes["wide"] + sizes["narrow"]}}
+        assert not any((first / "prepared-references").iterdir()), "what the first replay emptied is pruned"
+        gone = [*wide_names[:2], narrow_names[0]]
+    monkeypatch.setattr(os, "unlink", real_unlink)
+    assert not any(path.exists() for path in gone)
+    assert all(path.exists() for path in (*wide_names, *narrow_names) if path not in gone)
+
+    phase = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
+
+    block = phase["shared_scratch"]
+    # The narrow group's rest sits in one replay once an unlink was refused: the per-replay rule's.
+    shared_rest = {"unit_killed": (2, sizes["wide"] + sizes["narrow"]), "unlink_refused": (1, sizes["wide"])}
+    assert (block["removed_groups"], block["removed_bytes"]) == shared_rest[interruption]
+    assert phase["removed_bytes"] == sizes["wide"] + sizes["narrow"]
+    assert (block["kept_by_reason"], phase["errors"]) == ({}, [])
+    assert not any(path.exists() for path in (*wide_names, *narrow_names))
+    for child in (second, third):
+        assert not any((child / "prepared-references").iterdir())
+    assert _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["removed_bytes"] == 0
