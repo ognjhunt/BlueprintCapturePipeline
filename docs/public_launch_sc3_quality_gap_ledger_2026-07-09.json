@@ -4995,7 +4995,7 @@
             {
               "artifact_id": "RUN-05-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_worker.py",
-              "sha256": "sha256:4ff2368c1b5aa5fb203507cfa4bfb067b2afdf8f257cbfde404b79b2611283b0",
+              "sha256": "sha256:89b27cc93af031edb2a84b58c46105762687f640fb6838651f73c2c34cf2cf02",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
