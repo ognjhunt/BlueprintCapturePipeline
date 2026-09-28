@@ -777,8 +777,8 @@ def test_uninstalled_root_refuses_before_intent_ledger_or_payload(cache_installa
     if phase == 'fill':
         grant = issue_cache(value)
     before = {p.name: p.read_bytes() for p in value['private'].glob('*.json')}
-    other = original_root.parent / 'uninstalled-cache-root'
-    other.mkdir(mode=0o750)
+    other = original_root.parent / 'uninstalled-cache-root' / 'lanes'
+    other.mkdir(parents=True, mode=0o750)
     (other / '.lane-scratch.lock').write_bytes(b'')
     (other / '.lane-scratch.lock').chmod(0o600)
     (other / 'g1-checkpoint').mkdir(mode=0o750)
