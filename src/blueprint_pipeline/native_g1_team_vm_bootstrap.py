@@ -269,6 +269,7 @@ def extract_host_dependency_wheel(path: Path, destination: Path, row):
 
 _PROBE = '''
 import importlib, importlib.abc, importlib.metadata, json, pathlib, platform, sys
+assert sys.dont_write_bytecode, 'g1_host_probe_requires_explicit_no_bytecode'
 class HostImportBoundary(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.split('.')[0] in {'torch', 'onnxruntime', 'pxr', 'isaaclab',
@@ -337,7 +338,7 @@ def materialize_g1_vm_host_python(*, package_root: Path, destination_root: Path,
     executable = destination_root / "python/bin/python3.12"
     if not executable.is_file() or executable.resolve() != executable:
         raise ValueError("g1_host_python_executable_invalid")
-    observed = subprocess.run([str(executable), "-I", "-c", _PROBE, str(provider_runtime_root)],
+    observed = subprocess.run([str(executable), "-I", "-B", "-c", _PROBE, str(provider_runtime_root)],
         capture_output=True, text=True, check=False, timeout=60,
         env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"})
     expected = {"python_version": ASSETS["python"]["version"], "implementation": "cpython",
@@ -345,6 +346,7 @@ def materialize_g1_vm_host_python(*, package_root: Path, destination_root: Path,
                 "rfc8785_version": ASSETS["rfc8785"]["version"], "sealed_module_origins_verified": True}
     if observed.returncode != 0 or _canonical(json.loads(observed.stdout)) != _canonical(expected):
         raise ValueError("g1_host_python_observed_runtime_invalid")
+    _verify_provider_sources(provider_runtime_root, expected_provider_manifest_digest, expected_implementation_commit)
     return _persist(destination_root / (RUNTIME_SCHEMA + ".json"), {
         "schema_version": RUNTIME_SCHEMA, "status": "host_python_materialized_not_spend_admitted",
         "source_manifest_digest": manifest["manifest_digest"], "implementation_commit": expected_implementation_commit,

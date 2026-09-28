@@ -12,6 +12,13 @@ from blueprint_pipeline import native_g1_team_vm_bootstrap as bootstrap
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_production_probe_requires_no_bytecode_flag_even_with_environment_setting():
+    child = subprocess.run([sys.executable, "-I", "-c", bootstrap._PROBE, str(ROOT / "src")],
+                           capture_output=True, text=True, timeout=60, check=False)
+    assert child.returncode != 0
+    assert "g1_host_probe_requires_explicit_no_bytecode" in child.stderr
+
+
 def test_host_hardware_preflight_does_not_import_allocator_for_driver_constant():
     # Fake hardware responses prove the import boundary, not actual VM/GPU health.
     code = bootstrap._PROBE + '''
@@ -36,7 +43,7 @@ assert result['python_abi'] == 'cp312'
 assert result['guest_gpu_inference_verified'] is False
 assert 'blueprint_pipeline.vast_provider_adapter' not in sys.modules
 '''
-    child = subprocess.run([sys.executable, "-I", "-c", code, str(ROOT / "src")],
+    child = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "src")],
                            capture_output=True, text=True, timeout=60, check=False)
     assert child.returncode == 0, child.stderr
 
@@ -54,7 +61,7 @@ for name in ('torch', 'onnxruntime', 'pxr', 'isaaclab', 'isaacsim', 'PIL',
         raise AssertionError('host dependency denial was not enforced:' + name)
 '''
     child = subprocess.run(
-        [sys.executable, "-I", "-c", bootstrap._PROBE + denied, str(ROOT / "src")],
+        [sys.executable, "-I", "-B", "-c", bootstrap._PROBE + denied, str(ROOT / "src")],
         capture_output=True, text=True, timeout=60, check=False,
     )
     assert child.returncode == 0, child.stderr
@@ -83,6 +90,6 @@ if sys.argv[2] == 'tensor':
     else:
         raise AssertionError('missing tensor runtime was hidden')
 '''
-    child = subprocess.run([sys.executable, "-I", "-c", code, str(ROOT / "src"), operation],
+    child = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "src"), operation],
                            capture_output=True, text=True, timeout=60, check=False)
     assert child.returncode == 0, child.stderr

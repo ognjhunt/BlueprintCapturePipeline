@@ -574,3 +574,29 @@ launcher has 27 passing cases. A separate selected-bundle/host/closure/lifecycle
 run passed all 69 cases before the additional driver-constant repair. Changed
 file Ruff and diff checks pass. These proofs still use fake hardware; a retained
 real Linux cold replay of the committed snapshot is required next.
+
+### Reviewed real-replay finding: isolated Python ignores bytecode environment
+
+The retained-runtime replay refused the changed size of
+`encodings/__pycache__/__init__.cpython-312.pyc` before executing a new probe.
+The first rehearsal used `-I` plus `PYTHONDONTWRITEBYTECODE=1`; isolated Python
+ignores environment options and regenerated relocated archive bytecode. Preserve
+that runtime and both failed scratch roots. Reuse the exact retained asset
+archives, but extract into a fresh destination because that runtime is changed.
+Do not waive integrity checks or treat cache identity as qualified unchanged.
+
+Smallest encoded fix: add explicit `-B` to the actual provisioning probe, assert
+`sys.dont_write_bytecode` in the fresh production probe, and reverify held source
+files after it runs. Fresh-process tests and the real Linux rehearsal must use
+the same explicit flag. Red-first assertion pins the production command; existing
+bootstrap source/asset mutation tests protect the recheck. This repairs observed
+source/runtime mutation without changing model bytes, dependencies, paid gates,
+or authorizing deletion. Accepted after inspecting the retained exact archive
+member and actual size, not guessing a new package gap.
+
+Explicit no-bytecode command assertion failed before the fix; the final 32
+bootstrap/fresh-process cases pass in 1.81s, including absent `-B` refusal,
+source mutation and foreign bytecode created during the subprocess. Source
+identity is reopened after the subprocess before returning provisioning proof.
+Changed-file Ruff/diff pass. The next real rehearsal must exercise the production
+sealer and materializer, not substitute an environment-variable-only probe.

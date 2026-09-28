@@ -135,7 +135,7 @@ def test_wheel_platform_or_path_mismatch_is_rejected(tmp_path, fault):
     assert list(output.iterdir()) == []
 
 
-@pytest.mark.parametrize("fault", [None, "python", "numpy", "origin", "exit"])
+@pytest.mark.parametrize("fault", [None, "python", "numpy", "origin", "exit", "source_mutation", "bytecode"])
 def test_materialization_requires_observed_isolated_runtime(package, tmp_path, monkeypatch, fault):
     root, manifest, _ = package
     destination = tmp_path / "runtime"
@@ -152,6 +152,10 @@ def test_materialization_requires_observed_isolated_runtime(package, tmp_path, m
     calls = []
     def probe(command, **kwargs):
         calls.append((command, kwargs))
+        if fault == "source_mutation":
+            source.write_text("# changed by a probe\n")
+        elif fault == "bytecode":
+            (provider / "blueprint_pipeline/foreign.pyc").write_bytes(b"unlisted bytecode")
         value = {"python_version": "3.10.12" if fault == "python" else "3.12.14",
                  "implementation": "cpython", "platform": "linux", "machine": "x86_64",
                  "numpy_version": "1.26.4" if fault == "numpy" else "2.3.1", "rfc8785_version": "0.1.4",
@@ -172,6 +176,7 @@ def test_materialization_requires_observed_isolated_runtime(package, tmp_path, m
         assert result["gpu_runtime_qualified"] is False
         assert calls[0][0][0] == str(destination / "python/bin/python3.12")
         assert calls[0][0][1] == "-I"
+        assert "-B" in calls[0][0]
         assert set(calls[0][1]["env"]) == {"PATH", "LANG", "PYTHONDONTWRITEBYTECODE"}
 
 
