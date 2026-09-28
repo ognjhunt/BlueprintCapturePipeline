@@ -446,3 +446,79 @@ hand data deletion occurred in this slice. Still required: sealed host bootstrap
 archive staging and GPU exposure, canonical VM allocator and collected-output
 integration, actual episodes for all required delivery modes/four built-ins,
 private result URL, final merge/push/deploy and official teardown/billing proof.
+
+## Reviewed offline host Python provisioning
+
+Observed default Vast VM is Ubuntu 22.04, which does not establish the required
+CPython 3.12 host. Do not install binary cp312 wheels into its default interpreter
+or assume the control host's Ubuntu-built interpreter is portable to the VM.
+Provide a sealed, relocatable Linux x86_64 CPython distribution and the two exact
+approved host dependencies before allocation. The bootstrap must use standard
+library only, so its verification/extraction can run from the VM's system Python
+without importing G1 or NumPy first. No provider pip resolver or model download.
+
+Primary metadata checked 2026-09-28:
+
+- Vast VM docs still identify the default Ubuntu 22.04/CUDA/Docker template.
+- Astral `python-build-standalone` release `20260924` publishes
+  `cpython-3.12.14+20260924-x86_64-unknown-linux-gnu-install_only.tar.gz`,
+  66,890,910 bytes, SHA-256
+  `5eae8cf79dd47fc2496a4fccc892936be831ce7a84d984b2299dfb1cdb592682`.
+  [Archive format](https://gregoryszorc.com/docs/python-build-standalone/main/distributions.html)
+  describes a relocatable installation and internal Python links. Project
+  licensing does not replace the archive's retained bundled license files.
+- Approved NumPy 2.3.1 Linux cp312 wheel:
+  `numpy-2.3.1-cp312-cp312-manylinux_2_28_x86_64.whl`, 16,632,729 bytes,
+  SHA-256 `e7cbf5a5eafd8d230a3ce356d892512185230e4781a361229bd902ff403bc660`.
+- Approved RFC8785 0.1.4 wheel: `rfc8785-0.1.4-py3-none-any.whl`, 9,240 bytes,
+  SHA-256 `520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48`.
+
+The packet sealer only accepts operator-supplied matching bytes, exact catalogue
+and clean implementation identity; it has no download/provider/allocation API.
+It copies and verifies assets, retains their licenses, and seals immutable
+metadata. Runtime extraction refuses existing destinations, aliases, traversal,
+duplicates, special files, outward links and expansion bombs. Only internal
+relative links in the digest-pinned trusted Python distribution are allowed;
+team archives retain their existing stricter no-links rule. Extract Python first,
+then the exact wheels into its private site-packages, verify wheel tags/metadata
+and member collisions, then run that actual interpreter with `-I` to verify
+Linux/x86_64/cp312/exact versions and actual host/output module imports from the
+sealed provider source. No host global site-packages or credentials are exposed.
+
+Red-first tests cover the missing module, exact byte/catalogue binding, unsafe
+paths/members/links, missing or altered assets, consistently resealed changes,
+binary wheel tag mismatch, observed interpreter mismatch and bootstrap isolation.
+Design review checked the existing source/wheel extraction contracts and source
+bundle dependency closure. The resulting Python receipt is a prerequisite,
+not Docker/bubblewrap/GPU/image/rights/spend qualification. Canonical VM paid
+admission remains closed until the full host, artifact and collection integration
+is complete. No new provider or Plan13b decision is introduced.
+
+### Offline provisioning implementation checkpoint
+
+`native_g1_team_vm_bootstrap.py` now seals and reopens the exact catalogue,
+copies supplied assets without touching their originals, and provisions Python
+plus both wheels without a resolver, network or provider API. The bootstrap CLI
+imports using only stdlib with `-I -S`. Small-fixture tests are red before the
+module exists; a second red exposed the manifest retaining the mutable catalogue
+object, repaired by taking an independent canonical copy. Boolean/number types,
+duplicate JSON keys, consistently resealed catalogue changes, altered/missing
+bytes, source aliases/foreign imports, outward/cyclic links and wheel ABI/path
+changes are refused. Provider source manifest identity and every declared byte
+are rechecked before any extraction or import; an unlisted Python/extension
+source is rejected. The actual isolated interpreter must observe cp312/Linux/
+x86_64/exact dependency versions and admitted source origins.
+
+**32 focused tests passed in 31.54s**: 25 bootstrap tests, one extracted selected
+bundle CLI/import case, six provider runtime import-closure cases. Changed-file
+Ruff and diff checks pass. No paid execution predicate was relaxed.
+
+All three real upstream assets were downloaded once and SHA/size verified:
+83,532,879 bytes total. The Python archive has 4,534 members, 222,176,662 expanded
+bytes, 1,049 internal symbolic links and no hardlinks, with bundled license files
+retained. Its real NumPy/RFC wheel tags match the pinned catalogue. Mac extraction
+encountered case-sensitive terminfo names on the case-insensitive filesystem;
+that partial scratch is preserved, not deleted or used as qualified runtime.
+Actual extraction and cold import must be rehearsed on Linux before the VM
+bootstrap is integrated or admitted. Neither download hashes nor fixture probes
+establish VM, Docker, GPU inference, scene scoring or public rights.

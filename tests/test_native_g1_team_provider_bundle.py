@@ -272,7 +272,7 @@ def test_selected_bundle_entrypoints_import_in_isolated_provider_interpreter(tmp
     ''')
     for module in ("native_g1_team_provider_runtime", "native_g1_team_worker_supervisor",
                    "native_g1_team_policy_worker", "native_task_runtime_source_provision",
-                   "native_g1_team_vm_host"):
+                   "native_g1_team_vm_host", "native_g1_team_vm_bootstrap"):
         result = subprocess.run(
             [sys.executable, "-I", "-c", script, str(runtime_root), "blueprint_pipeline." + module],
             cwd=tmp_path, capture_output=True, text=True, timeout=30,
