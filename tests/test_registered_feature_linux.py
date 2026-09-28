@@ -105,6 +105,10 @@ def _linux_cache_roundtrip():
     try:
         assert account.pw_uid != 0 and account.pw_gid == grp.getgrnam('blueprint').gr_gid
         value = install_protected_feature(root)
+        # Disposable fixed installation repin precedes actual issuance and fill.
+        cache._PUBLIC_REGISTRATION = value['public']
+        cache._PUBLIC_INVENTORY = value['inventory_path']
+        cache._REGISTERED_ROOTS = (value['work'],)
         inventory_raw = value['inventory_path'].read_bytes()
         grant = cache.issue_needed_checkpoint_cache_intent(principal='operator', owner='owner',
             name='needed-models', reference_kind='run_ref', reference_value='run1', lease_ttl_seconds=1800,
@@ -123,10 +127,6 @@ def _linux_cache_roundtrip():
             expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
             installed_config_path=value['config'], now=lambda: 1100)
         target = Path(filled['path'])
-        # Test-only fixed installation repin. Production code has no path/env/body grant fallback.
-        cache._PUBLIC_REGISTRATION = value['public']
-        cache._PUBLIC_INVENTORY = value['inventory_path']
-        cache._REGISTERED_ROOTS = (value['work'],)
         parent_sock, child_sock = socket.socketpair()
         parent_sock.settimeout(60)
         child_sock.settimeout(60)

@@ -69,6 +69,8 @@ def cache_installation(installation, monkeypatch):  # noqa: F811
                     needed_checkpoint_cache_inventory_file=str(inventory_path))
     config.write_bytes(encoded(settings))
     monkeypatch.setattr(cache, "_blueprint_identity", lambda: (0, 0))
+    # Disposable installed namespace repin; config itself never grants an arbitrary root.
+    monkeypatch.setattr(cache, "_REGISTERED_ROOTS", (root,))
     return dict(config=config, settings=settings, private=private, public=public,
                 authority=authority, inventory_path=inventory_path, payloads=payloads, policy=policy)
 
@@ -764,3 +766,31 @@ def test_known_owned_wam_upload_is_aborted_even_when_stream_close_raises(cache_i
             wam._upload_registered_checkpoint_file(Client(), bucket='fixture', key='fixture-object',
                 expected=row['sha256'].removeprefix('sha256:'), row=row, use=use)
         assert events == ['create', 'part', 'abort']
+
+
+@pytest.mark.parametrize('phase', ['issue', 'fill'])
+def test_uninstalled_root_refuses_before_intent_ledger_or_payload(cache_installation, monkeypatch, phase):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    original_root = Path(value['settings']['lane_scratch_work_root'])
+    grant = None
+    if phase == 'fill':
+        grant = issue_cache(value)
+    before = {p.name: p.read_bytes() for p in value['private'].glob('*.json')}
+    other = original_root.parent / 'uninstalled-cache-root'
+    other.mkdir(mode=0o750)
+    (other / '.lane-scratch.lock').write_bytes(b'')
+    (other / '.lane-scratch.lock').chmod(0o600)
+    (other / 'g1-checkpoint').mkdir(mode=0o750)
+    value['config'].write_bytes(encoded(value['settings'] | {'lane_scratch_work_root': str(other)}))
+    monkeypatch.setattr(cache, 'reserve_control_plane_disk',
+                        lambda *a, **kw: pytest.fail('ledger mutation before installed namespace refusal'))
+    with pytest.raises(cache.NeededCheckpointCacheError, match='needed_cache_namespace_invalid'):
+        if phase == 'issue':
+            issue_cache(value)
+        else:
+            cache.fill_needed_checkpoint_cache(grant['intent_id'],
+                expected_sha256=grant['intent']['sha256'], expected_size_bytes=grant['intent']['size_bytes'],
+                installed_config_path=value['config'], now=lambda: 1100)
+    assert {p.name: p.read_bytes() for p in value['private'].glob('*.json')} == before
+    assert list((other / 'g1-checkpoint').iterdir()) == []
