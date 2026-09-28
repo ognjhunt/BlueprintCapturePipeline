@@ -44,6 +44,7 @@ _ARGUMENT_FLAGS = {
     "sonic_decoder_sha256": "sonic-decoder-sha256",
     "max_steps": "max-steps",
     "credential_file_path": "credential-file",
+    "policy_relay_config_path": "policy-relay-config",
 }
 
 
@@ -269,7 +270,7 @@ def run_supervised_g1_team_worker(
         not root.is_absolute() or root.exists() or root.is_symlink()
         or not launcher.is_absolute() or not launcher.is_file()
         or set(worker_arguments) - set(_ARGUMENT_FLAGS)
-        or not set(_ARGUMENT_FLAGS) - {"credential_file_path"} <= set(worker_arguments)
+        or not set(_ARGUMENT_FLAGS) - {"credential_file_path", "policy_relay_config_path"} <= set(worker_arguments)
         or re.fullmatch(r"[a-f0-9]{40}", str(worker_arguments.get("expected_implementation_commit"))) is None
         or type(worker_arguments.get("max_steps")) is not int
         or not 1 <= worker_arguments["max_steps"] <= 3000

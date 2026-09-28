@@ -131,6 +131,7 @@ def run_g1_team_policy_worker(
     sonic_decoder_sha256: str,
     output_dir: Path,
     credential_file_path: Path | None = None,
+    policy_relay_config_path: Path | None = None,
     max_steps: int = 3000,
 ) -> dict[str, Any]:
     """Run one scored scene and seal child teardown, even on worker failure."""
@@ -158,6 +159,12 @@ def run_g1_team_policy_worker(
         setup = packet["trusted_setup"]
         approval = packet["operator_approval"]
         profile = request["policy_profile"]
+        if policy_relay_config_path is not None:
+            from .native_g1_team_relay_runtime_session import read_g1_team_relay_config
+            read_g1_team_relay_config(
+                config_path=policy_relay_config_path, execution_packet_digest=packet["packet_digest"],
+                profile=profile, trusted_setup=setup, authenticated_owner=request["owner"],
+            )
         scene_root = Path(scene_packet_root)
         phase = "scene_packet"
         if not scene_root.is_absolute() or scene_root.is_symlink():
@@ -216,6 +223,8 @@ def run_g1_team_policy_worker(
             max_steps=max_steps, output_dir=root / "episode",
             to_tensor=_to_tensor, make_action_tensor=torch.tensor,
             credential=credential,
+            policy_relay_config_path=policy_relay_config_path,
+            execution_packet_digest=packet["packet_digest"],
         )
         if episode.get("status") != "completed_development_only":
             raise ValueError("g1_team_worker_episode_incomplete")
@@ -310,6 +319,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sonic-encoder-sha256", required=True)
     parser.add_argument("--sonic-decoder-sha256", required=True)
     parser.add_argument("--credential-file", type=Path)
+    parser.add_argument("--policy-relay-config", type=Path)
     parser.add_argument("--max-steps", type=int, default=3000)
     return parser
 
@@ -329,6 +339,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sonic_decoder_sha256=args.sonic_decoder_sha256,
         output_dir=args.output_dir,
         credential_file_path=args.credential_file,
+        policy_relay_config_path=args.policy_relay_config,
         max_steps=args.max_steps,
     )
     print(json.dumps({"status": result["status"], "result_digest": result["result_digest"]}))

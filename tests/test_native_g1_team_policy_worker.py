@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_g1_team_policy_execution_packet import (
     prepare_g1_team_policy_execution_packet,
@@ -66,8 +68,14 @@ def _inputs(tmp_path: Path, monkeypatch):
     return args, plan, packet
 
 
-def test_approved_worker_runs_one_episode_and_seals_close(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("relay", [False, True])
+def test_approved_worker_runs_one_episode_and_seals_close(tmp_path: Path, monkeypatch, relay) -> None:
     args, plan, packet = _inputs(tmp_path, monkeypatch)
+    seen = []
+    if relay:
+        from blueprint_pipeline import native_g1_team_relay_runtime_session as remote
+        args["policy_relay_config_path"] = tmp_path / "private-relay.json"
+        monkeypatch.setattr(remote, "read_g1_team_relay_config", lambda **kw: seen.append(kw))
     closed = []
     app = SimpleNamespace(close=lambda: closed.append("simulator"))
     built = SimpleNamespace(env=SimpleNamespace(close=lambda: closed.append("environment")))
@@ -79,6 +87,8 @@ def test_approved_worker_runs_one_episode_and_seals_close(tmp_path: Path, monkey
         assert kwargs["built"] is built
         assert kwargs["profile"] == packet["request"]["policy_profile"]
         assert kwargs["credential"] is None
+        assert kwargs["execution_packet_digest"] == packet["packet_digest"]
+        assert kwargs["policy_relay_config_path"] == args.get("policy_relay_config_path")
         return {
             "status": "completed_development_only",
             "result_digest": "sha256:" + "e" * 64,
@@ -97,6 +107,20 @@ def test_approved_worker_runs_one_episode_and_seals_close(tmp_path: Path, monkey
     assert preclose["status"] == "awaiting_simulator_close"
     assert preclose["teardown"]["simulator"] == "close_requested"
     assert plan["plan_digest"] == worker.canonical_digest(plan, digest_field="plan_digest")
+    if relay:
+        assert seen[0]["execution_packet_digest"] == packet["packet_digest"]
+        assert seen[0]["profile"] == packet["request"]["policy_profile"]
+
+
+def test_private_relay_admission_failure_precedes_simulator_launch(tmp_path, monkeypatch):
+    args, _, _ = _inputs(tmp_path, monkeypatch)
+    args["policy_relay_config_path"] = tmp_path / "absent-private-relay.json"
+    launched = []
+    monkeypatch.setattr(worker, "_launch_scene", lambda **kw: launched.append(kw))
+    result = worker.run_g1_team_policy_worker(**args)
+    assert result["status"] == "blocked"
+    assert launched == []
+    assert result["policy_query_count"] == 0
 
 
 def test_scene_failure_retains_preclose_before_isaac_exit(tmp_path: Path, monkeypatch) -> None:

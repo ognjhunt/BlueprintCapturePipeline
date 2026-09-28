@@ -139,8 +139,9 @@ def test_recovery_requires_retained_exit_bytes_not_just_a_zero_argument(tmp_path
 
 
 @pytest.mark.parametrize("native_close", [False, True])
+@pytest.mark.parametrize("relay_config", [False, True])
 def test_selected_runner_drives_child_verification_and_preserves_task_score(
-    tmp_path: Path, monkeypatch, native_close: bool,
+    tmp_path: Path, monkeypatch, native_close: bool, relay_config: bool,
 ) -> None:
     args, episode = _evidence(tmp_path, monkeypatch)
     source = args["output_dir"]
@@ -157,6 +158,11 @@ def test_selected_runner_drives_child_verification_and_preserves_task_score(
 
     def staged_child(**kwargs):
         assert "blueprint_pipeline.native_g1_team_policy_worker" in kwargs["command"]
+        if relay_config:
+            index = kwargs["command"].index("--policy-relay-config")
+            assert kwargs["command"][index + 1] == str(tmp_path / "private-relay.json")
+        else:
+            assert "--policy-relay-config" not in kwargs["command"]
         command = [sys.executable, "-c",
                    "import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2])",
                    str(source), str(destination)]
@@ -175,6 +181,7 @@ def test_selected_runner_drives_child_verification_and_preserves_task_score(
             "sonic_decoder": tmp_path / "decoder.onnx",
             "sonic_decoder_sha256": "sha256:" + "b" * 64,
             "max_steps": 2,
+            **({"policy_relay_config_path": tmp_path / "private-relay.json"} if relay_config else {}),
         },
         output_dir=destination.parent, worker_launcher=Path(sys.executable),
         timeout_seconds=5,

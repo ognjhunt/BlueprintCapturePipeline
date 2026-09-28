@@ -32,7 +32,11 @@ class Session:
                             "source_setup_digest": BINDING.setup_digest,
                             "schema_version": "native_g1_team_policy_synthetic_conformance.v1",
                             "delivery_mode": self.delivery_mode, "synthetic_policy_query_count": 1,
-                            "site_observation_sent": False}
+                            "site_observation_sent": False, "robot_preset_id": "unitree_g1_dex3_sonic_v1",
+                            "returned_action_count": 1, "site_policy_query_count": 0,
+                            "task_scored": False, "runtime_identity_verified": False, "rights_authorized": False,
+                            "paid_launch_authorized": False, "public_redistribution_authorized": False,
+                            "claim_ceiling": "planning_only"}
         self.conformance["receipt_digest"] = canonical_digest(self.conformance)
         self.closed = 0
 
@@ -42,7 +46,10 @@ class Session:
             self.closed += 1
         value = {"schema_version": "native_g1_team_runtime_session.v1", "status": "closed",
                 "profile_digest": self.profile_digest, "delivery_mode": self.delivery_mode,
-                "provider_teardown_verified": False}
+                "synthetic_conformance_digest": self.conformance["receipt_digest"],
+                "child_teardown_digest": "sha256:" + "d" * 64, "child_teardown_required": True,
+                "linked_scored_episode_result_digest": None, "linked_episode_media_verified_by_session": False,
+                "claim_ceiling": "planning_only", "provider_teardown_verified": False}
         value["receipt_digest"] = canonical_digest(value)
         return value
 
@@ -79,7 +86,7 @@ def test_actual_socket_to_jsonl_policy_round_trip_and_owned_close(running):
     assert len(actions) == 1 and len(actions[0]) == 40
     assert client.candidate_policy_queried is True
     closed = client.close()
-    assert closed["status"] == "policy_session_closed"
+    assert closed["status"] == "closed"
     assert sessions[0].closed == 1
     assert sessions[0].process.poll() is not None
     assert SECRET not in json.dumps(closed)

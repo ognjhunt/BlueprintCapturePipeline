@@ -148,6 +148,56 @@ def _private_path(path: Path) -> None:
         raise ValueError("g1_relay_parent_not_private")
 
 
+def validate_relay_conformance(value: Any, binding: RelayBinding) -> None:
+    """Accept only the actual native synthetic receipt, without extra payloads."""
+    fields = {"schema_version", "status", "profile_digest", "source_setup_digest",
+              "robot_preset_id", "delivery_mode", "synthetic_policy_query_count",
+              "returned_action_count", "site_observation_sent", "site_policy_query_count",
+              "task_scored", "runtime_identity_verified", "rights_authorized",
+              "paid_launch_authorized", "public_redistribution_authorized", "claim_ceiling",
+              "receipt_digest"}
+    if (not isinstance(value, dict) or set(value) != fields
+            or value["schema_version"] != "native_g1_team_policy_synthetic_conformance.v1"
+            or value["status"] != "synthetic_wire_compatible"
+            or value["profile_digest"] != binding.profile_digest
+            or value["source_setup_digest"] != binding.setup_digest
+            or value["delivery_mode"] != binding.delivery_mode
+            or value["robot_preset_id"] != "unitree_g1_dex3_sonic_v1"
+            or type(value["synthetic_policy_query_count"]) is not int
+            or value["synthetic_policy_query_count"] != 1
+            or type(value["returned_action_count"]) is not int
+            or not 1 <= value["returned_action_count"] <= 64
+            or type(value["site_policy_query_count"]) is not int or value["site_policy_query_count"] != 0
+            or any(value[key] is not False for key in {"site_observation_sent", "task_scored",
+                "runtime_identity_verified", "rights_authorized", "paid_launch_authorized",
+                "public_redistribution_authorized"})
+            or value["claim_ceiling"] != "planning_only"
+            or value["receipt_digest"] != _digest(value)):
+        raise ValueError("g1_relay_conformance_invalid")
+
+
+def validate_relay_close(value: Any, binding: RelayBinding, *, conformance_digest: str,
+                         linked_episode_digest: str | None) -> None:
+    fields = {"schema_version", "status", "profile_digest", "delivery_mode",
+              "synthetic_conformance_digest", "child_teardown_digest", "child_teardown_required",
+              "linked_scored_episode_result_digest", "linked_episode_media_verified_by_session",
+              "provider_teardown_verified", "claim_ceiling", "receipt_digest"}
+    if (not isinstance(value, dict) or set(value) != fields
+            or value["schema_version"] != "native_g1_team_runtime_session.v1"
+            or value["status"] != "closed" or value["profile_digest"] != binding.profile_digest
+            or value["delivery_mode"] != binding.delivery_mode
+            or value["synthetic_conformance_digest"] != conformance_digest
+            or value["child_teardown_required"] is not True
+            or not isinstance(value["child_teardown_digest"], str)
+            or not _SHA.fullmatch(value["child_teardown_digest"])
+            or value["linked_scored_episode_result_digest"] != linked_episode_digest
+            or value["linked_episode_media_verified_by_session"] is not False
+            or value["provider_teardown_verified"] is not False
+            or value["claim_ceiling"] != "planning_only"
+            or value["receipt_digest"] != _digest(value)):
+        raise ValueError("g1_relay_policy_close_unverified")
+
+
 def _infer_payload(payload: dict[str, Any]) -> None:
     """Validate the exact permitted wire, without importing Isaac or tensor code."""
     try:
@@ -216,7 +266,9 @@ class G1PolicyRelayServer:
         session, wire, closure = None, None, None
         conformance_digest = None
         close_attempted = False
-        count, status, failure = 0, "failed", None
+        count, index, inference_count = 0, 0, 0
+        linked_digest = None
+        status, failure = "failed", None
         try:
             self._listener.settimeout(timeout)
             peer, _ = self._listener.accept()
@@ -234,33 +286,38 @@ class G1PolicyRelayServer:
             conformance = session.conformance
             if (session.profile_digest != self.binding.profile_digest
                     or session.delivery_mode != self.binding.delivery_mode
-                    or session.client.profile_digest != self.binding.profile_digest
-                    or conformance.get("schema_version") != "native_g1_team_policy_synthetic_conformance.v1"
-                    or conformance.get("status") != "synthetic_wire_compatible"
-                    or conformance.get("profile_digest") != self.binding.profile_digest
-                    or conformance.get("source_setup_digest") != self.binding.setup_digest
-                    or conformance.get("delivery_mode") != self.binding.delivery_mode
-                    or type(conformance.get("synthetic_policy_query_count")) is not int
-                    or conformance["synthetic_policy_query_count"] != 1
-                    or conformance.get("site_observation_sent") is not False
-                    or conformance.get("receipt_digest") != _digest(conformance)):
+                    or session.client.profile_digest != self.binding.profile_digest):
                 raise ValueError("g1_relay_session_binding_invalid")
+            validate_relay_conformance(conformance, self.binding)
             conformance_digest = conformance["receipt_digest"]
-            wire.write({"protocol": PROTOCOL, "status": "ready", "binding": asdict(self.binding)})
+            wire.write({"protocol": PROTOCOL, "status": "ready", "binding": asdict(self.binding),
+                        "conformance": conformance})
             while True:
                 request = wire.read()
                 if (set(request) != {"protocol", "request_id", "kind", "payload"}
                         or request["protocol"] != PROTOCOL or type(request["request_id"]) is not int
-                        or request["request_id"] != count or not isinstance(request["payload"], dict)):
+                        or request["request_id"] != index or not isinstance(request["payload"], dict)):
                     raise ValueError("g1_relay_request_identity_invalid")
                 kind, payload = request["kind"], request["payload"]
                 if kind == "close" and payload == {}:
                     close_attempted = True
-                    closure = self._close_session(session)
-                    wire.write(self._reply(count, {"status": "policy_session_closed",
-                                                  "provider_teardown_verified": False}))
+                    closure = self._close_session(session, linked_digest=linked_digest)
+                    wire.write(self._reply(index, closure))
                     status = "policy_session_closed"
                     break
+                if kind == "link_episode":
+                    if (set(payload) != {"episode"} or not isinstance(payload["episode"], dict)
+                            or linked_digest is not None or inference_count <= 0
+                            or type(payload["episode"].get("policy_query_count")) is not int
+                            or payload["episode"]["policy_query_count"] != inference_count):
+                        raise ValueError("g1_relay_episode_query_binding_invalid")
+                    session.link_scored_episode(payload["episode"])
+                    linked_digest = payload["episode"]["result_digest"]
+                    wire.write(self._reply(index, {"linked_scored_episode_result_digest": linked_digest}))
+                    index += 1
+                    continue
+                if linked_digest is not None:
+                    raise ValueError("g1_relay_episode_already_linked")
                 if kind == "reset":
                     if set(payload) != {"seed"} or type(payload["seed"]) is not int or payload["seed"] < 0:
                         raise ValueError("g1_relay_reset_invalid")
@@ -271,21 +328,27 @@ class G1PolicyRelayServer:
                 response = session.client._exchange(kind, payload)
                 if kind == "reset" and response.get("ok") is not True:
                     raise ValueError("g1_relay_reset_ack_invalid")
+                if kind == "reset":
+                    inference_count = 0
+                else:
+                    inference_count += 1
                 # Backend verified its own sequence/profile before rebinding.
-                wire.write(self._reply(count, response))
+                wire.write(self._reply(index, response))
                 count += 1
+                index += 1
         except Exception as exc:
             failure = type(exc).__name__  # Never retain an untrusted exception message.
         finally:
             if session is not None and not close_attempted:
                 try:
-                    closure = self._close_session(session)
+                    closure = self._close_session(session, linked_digest=linked_digest)
                 except Exception:
                     failure, status = "PolicyCloseUnverified", "failed"
             if wire is not None:
                 wire.close()
         receipt = {"schema_version": "native_g1_private_policy_relay_session.v1",
                 "status": status, "binding": asdict(self.binding), "forwarded_request_count": count,
+                "inference_query_count": inference_count,
                 "failure_type": failure, "policy_session_closed": closure is not None,
                 "synthetic_conformance_digest": conformance_digest,
                 "policy_session_close_digest": closure["receipt_digest"] if closure else None,
@@ -297,14 +360,10 @@ class G1PolicyRelayServer:
         return {"protocol": PROTOCOL, "request_id": request_id,
                 "profile_digest": self.binding.profile_digest, "payload": payload}
 
-    def _close_session(self, session: Any) -> dict[str, Any]:
+    def _close_session(self, session: Any, *, linked_digest: str | None) -> dict[str, Any]:
         value = session.close()
-        if (not isinstance(value, dict) or value.get("schema_version") != "native_g1_team_runtime_session.v1"
-                or value.get("status") != "closed" or value.get("profile_digest") != self.binding.profile_digest
-                or value.get("delivery_mode") != self.binding.delivery_mode
-                or value.get("provider_teardown_verified") is not False
-                or value.get("receipt_digest") != _digest(value)):
-            raise ValueError("g1_relay_policy_close_unverified")
+        validate_relay_close(value, self.binding, conformance_digest=session.conformance["receipt_digest"],
+                             linked_episode_digest=linked_digest)
         return value
 
 
@@ -320,6 +379,7 @@ class G1PolicyRelayClient:
         self._wire = JsonlSocket(sock, timeout_seconds=timeout)
         self.binding, self.profile_digest = binding, binding.profile_digest
         self._index, self._closed, self._failed = 0, None, False
+        self._linked_digest = None
         self.candidate_policy_queried = False
         try:
             sock.settimeout(timeout)
@@ -331,8 +391,12 @@ class G1PolicyRelayClient:
             self._wire.write({"protocol": PROTOCOL, "binding": asdict(binding),
                               "proof": _proof(secret, challenge["challenge"], binding)})
             ready = self._wire.read()
-            if ready != {"protocol": PROTOCOL, "status": "ready", "binding": asdict(binding)}:
+            if (set(ready) != {"protocol", "status", "binding", "conformance"}
+                    or ready["protocol"] != PROTOCOL or ready["status"] != "ready"
+                    or ready["binding"] != asdict(binding)):
                 raise ValueError("g1_relay_ready_invalid")
+            validate_relay_conformance(ready["conformance"], binding)
+            self.conformance = ready["conformance"]
         except BaseException:
             self._wire.close()
             raise
@@ -384,9 +448,19 @@ class G1PolicyRelayClient:
             return self._closed
         try:
             value = self._exchange("close", {})
-            if value != {"status": "policy_session_closed", "provider_teardown_verified": False}:
-                raise ValueError("g1_relay_close_ack_invalid")
+            validate_relay_close(value, self.binding, conformance_digest=self.conformance["receipt_digest"],
+                                 linked_episode_digest=self._linked_digest)
             self._closed = value
             return value
         finally:
             self._wire.close()
+
+    def link_scored_episode(self, episode: dict[str, Any]) -> None:
+        if self._linked_digest is not None:
+            raise ValueError("g1_relay_episode_already_linked")
+        value = self._exchange("link_episode", {"episode": episode})
+        if value != {"linked_scored_episode_result_digest": episode["result_digest"]}:
+            self._failed = True
+            self._wire.close()
+            raise ValueError("g1_relay_episode_link_ack_invalid")
+        self._linked_digest = episode["result_digest"]

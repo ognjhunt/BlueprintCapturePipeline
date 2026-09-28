@@ -42,6 +42,8 @@ def run_g1_team_supervised_episode(
     make_action_tensor: Callable[..., Any],
     credential: str | None = None,
     fetcher: Any = None,
+    policy_relay_config_path: Path | None = None,
+    execution_packet_digest: str | None = None,
 ) -> dict[str, Any]:
     """Connect a bound runtime session to one scored G1 scene episode.
 
@@ -77,6 +79,14 @@ def run_g1_team_supervised_episode(
         or output_dir.is_symlink()
     ):
         raise ValueError("g1_team_supervised_episode_admission_invalid")
+    if policy_relay_config_path is not None:
+        from .native_g1_team_relay_runtime_session import read_g1_team_relay_config
+        if credential is not None or fetcher is not None:
+            raise ValueError("g1_team_relay_unexpected_endpoint_credential")
+        read_g1_team_relay_config(
+            config_path=policy_relay_config_path, execution_packet_digest=execution_packet_digest,
+            profile=bound, trusted_setup=setup, authenticated_owner=authenticated_owner,
+        )
     output_dir.mkdir(mode=0o700)
     session = None
     episode = None
@@ -84,15 +94,23 @@ def run_g1_team_supervised_episode(
     blocker = None
     phase = "synthetic_conformance"
     try:
-        session = open_g1_team_runtime_session(
-            profile=bound,
-            trusted_setup=setup,
-            authenticated_owner=authenticated_owner,
-            approved_binding=approval["runtime_binding"],
-            output_dir=output_dir / "runtime",
-            credential=credential,
-            fetcher=fetcher,
-        )
+        if policy_relay_config_path is not None:
+            from .native_g1_team_relay_runtime_session import open_g1_team_relay_runtime_session
+            session = open_g1_team_relay_runtime_session(
+                config_path=policy_relay_config_path, execution_packet_digest=execution_packet_digest,
+                profile=bound, trusted_setup=setup, authenticated_owner=authenticated_owner,
+                output_dir=output_dir / "runtime",
+            )
+        else:
+            session = open_g1_team_runtime_session(
+                profile=bound,
+                trusted_setup=setup,
+                authenticated_owner=authenticated_owner,
+                approved_binding=approval["runtime_binding"],
+                output_dir=output_dir / "runtime",
+                credential=credential,
+                fetcher=fetcher,
+            )
         phase = "scored_scene_episode"
         episode = run_g1_team_scored_scene_episode(
             built=built,

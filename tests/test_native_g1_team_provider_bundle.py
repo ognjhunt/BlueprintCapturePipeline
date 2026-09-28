@@ -244,6 +244,7 @@ def test_directory_traversal_and_changed_external_runtime_block_before_admission
         )
 
 
+@pytest.mark.slow
 def test_selected_bundle_entrypoints_import_in_isolated_provider_interpreter(tmp_path, monkeypatch):
     args, _ = _inputs(tmp_path, monkeypatch)
     receipt = bundle.build_g1_team_provider_bundle(**args)
@@ -256,6 +257,9 @@ def test_selected_bundle_entrypoints_import_in_isolated_provider_interpreter(tmp
         runtime_root = pathlib.Path(sys.argv[1])
         sys.path.insert(0, sys.argv[1])
         module = sys.argv[2]
+        if module.endswith('native_g1_team_policy_worker'):
+            import importlib
+            importlib.import_module('blueprint_pipeline.native_g1_team_relay_runtime_session')
         sys.argv = [module, '--help']
         try:
             runpy.run_module(module, run_name='__main__')
@@ -265,13 +269,16 @@ def test_selected_bundle_entrypoints_import_in_isolated_provider_interpreter(tmp
             if name.startswith('blueprint_pipeline') or name.startswith('rfc8785'):
                 assert pathlib.Path(loaded.__file__).is_relative_to(runtime_root), name
     ''')
-    for module in ("native_g1_team_provider_runtime", "native_g1_team_worker_supervisor", "native_task_runtime_source_provision"):
+    for module in ("native_g1_team_provider_runtime", "native_g1_team_worker_supervisor",
+                   "native_g1_team_policy_worker", "native_task_runtime_source_provision"):
         result = subprocess.run(
             [sys.executable, "-I", "-c", script, str(runtime_root), "blueprint_pipeline." + module],
             cwd=tmp_path, capture_output=True, text=True, timeout=30,
         )
         assert result.returncode == 0, result.stderr
         assert "usage:" in result.stdout
+        if module == "native_g1_team_policy_worker":
+            assert "--policy-relay-config" in result.stdout
     shell = root / bundle.ENTRYPOINT
     assert subprocess.run(["bash", "-n", str(shell)], capture_output=True).returncode == 0
 

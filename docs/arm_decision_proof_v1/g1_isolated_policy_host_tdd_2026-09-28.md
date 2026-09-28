@@ -237,3 +237,105 @@ green; all four full-suite shards remain live at this checkpoint. Work disk
 still has 11,136,303,104 available bytes; no fresh provider-zero assertion.
 VM helper tests/pinned metadata alone do not meet any scored-episode, media,
 private URL, merge or deployment completion requirement.
+
+## Reviewed next integration: scored episode and remote lifecycle
+
+Observed gap: the relay currently returns action responses and only a close
+acknowledgment. The existing supervised episode must link its actual episode
+digest to a native runtime session and retain the exact conformance and close
+receipts. An acknowledgment alone cannot satisfy those existing boundaries.
+
+Before building the outer VM supervisor, extend administrative relay handling
+to return its verified, strictly bounded conformance receipt, link exactly one
+scored episode via the host session's existing validator, and return its actual
+close receipt. Only reset/infer reach the team process. The episode's profile,
+setup, original delivery mode, positive query count and digest must agree;
+query count must equal the relay's inference calls since its last reset.
+Administrative link is never a model command and never grades the episode.
+Reject unexpected fields before returning receipts to prevent payload/secret
+disclosure. Bind an actual child teardown digest; never synthesize a successful
+runtime close or cloud teardown.
+
+Add a simulator-side proxy for `NativeG1TeamRuntimeSession`, using a protected
+operator-created relay configuration bound to packet/profile/setup/mode. The
+secret/configuration contents never enter sealed bundles, command arguments or
+output receipts. Only the private file path is passed to the trusted worker.
+Copy verified host conformance/close receipts byte-for-byte as JSON
+values, including the actual linked episode and child teardown digest. Reuse
+the existing session link validator and supervised episode/scoring flow.
+Thread the optional private config through the existing worker/supervisor;
+refuse relay configuration for HTTPS. Keep container/archive preallocation
+refusal until host/bootstrap/bundle/output verification is complete.
+
+Red-first tests: real local socket and JSONL child; actual production synthetic
+conformance, session link/close and existing G1 scored episode fixture. Assert
+original OCI/archive mode, actual queries, preserved scored task failure,
+exact host/guest receipt digests, actual child exit, no secret in retained
+output. Faults: foreign config/packet, wrong conformance, zero/mismatched query
+link, altered close/child digest, repeated link, teardown failure and absent
+config; none may become a completed episode. Existing endpoint/scoring/client
+behavior must remain green. Local fixtures do not qualify VM/GPU/isolation or
+real task success; the host supervisor and actual paid episodes remain required.
+
+Design review checked the real worker/supervisor argument propagation,
+`run_g1_team_supervised_episode`, `NativeG1TeamRuntimeSession` link/close, and
+`verify_g1_team_paid_output`. This integration preserves their actual receipt
+bindings and original profile, without endpoint substitution or paid bypass.
+
+### Implemented lifecycle connection and verification
+
+Red-first collection failed for the absent simulator-side session module.
+The relay now returns strictly validated native conformance and close receipts,
+links one actual episode through the host session validator, checks inference
+queries since reset, and keeps administrative requests out of the team child.
+The simulator proxy retains the host receipts unchanged. Its operator-created
+configuration is private, exact-field, packet/profile/setup/mode bound, size
+bounded, and rejects aliases, extra fields, unsafe permissions and missing files.
+The existing supervised episode, worker and child supervisor carry this optional
+private configuration; HTTPS remains on its existing direct client.
+
+The first positive rehearsal refused an expired fixture approval, then refused
+the shared telemetry-only fixture at the real deterministic scorer. The test now
+uses a current fixture approval, complete frozen rigid-task predicates and the
+fixture's native reset pose. No production authority or scoring check was relaxed.
+Both OCI and archive rehearsals retain the actual `never_moved` failure score,
+positive queries, identical host/simulator close receipts and actual child exit.
+
+Verification commands and boundaries:
+
+- Relay/proxy/runtime/session/episode/worker/supervisor focused suite:
+  **80 passed in 27.40s**. Real local socket and JSONL process; negative packet,
+  private-file, episode query/profile/setup/mode/digest, repeated link, close
+  tampering and teardown checks. No actual VM, isolation or GPU qualification.
+- Additional conformance fault cases, isolated sealed selected-bundle worker
+  and proxy imports, provider import closure and canary lifecycle rehearsal:
+  **49 passed in 117.06s** (23 proxy, 1 selected-bundle, 6 closure, 19 lifecycle).
+  The sealed worker exposes `--policy-relay-config`; all package imports in its
+  isolated interpreter resolve within the extracted bundle.
+- Changed-file Ruff and `git diff --check`: passed.
+
+Live host read still identifies deployed release
+`4a59c6bb668ac53ca9cc3440fcc57b21242d3612`, work free bytes
+11,136,303,104 and root free bytes 17,614,856,192. No new provider allocation,
+inventory/provider-zero claim, mount change or deletion. The comparable
+28,162,041,744-byte four-trial collection forecast still exceeds work capacity.
+
+Preceding exact-head CI 36379973315: impacted/sentinels passed; full shards
+1/2/0 have terminal failures and shard 3 remains live at inspection. Shard 1
+reported three static import-isolation leaks plus the retired SAGE compatibility
+test's absent verdict directory; shard 2 reported materializer, listener-budget,
+SDK pricing and task-object session failures; shard 0 reported historical gap
+ledger status drift. These are retained for #2236 diagnosis, not labeled green.
+The actual CI merge base is `7d3b4e9179730b7f3e9ccb2010da2d52fc030eaa`.
+An independent AST traversal on that base and the committed PR head finds the
+same 12 hot modules, including the path `live_pipeline_intake_service` →
+`control_plane_capacity_controller` → `provider_credit_admission` →
+`vast_provider_adapter`. That proves this leak exists on the base, not that all
+suite failures are baseline or caused by order. No SAGE production work was added.
+
+Next required integration remains the outer VM bootstrap/supervisor, host ABI
+and sandbox/GPU preflight, actual host/child receipt verification in collected
+outputs, and canonical VM allocation under the existing budget/watchdog/teardown
+contracts. Container/archive preallocation refusal remains active until those
+pieces are qualified. Actual episodes for every required mode, all four built-ins,
+private URL, merge/push and deployment remain incomplete.
