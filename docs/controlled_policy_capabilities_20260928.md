@@ -18,6 +18,18 @@ as `controlled_policy_executor` to `build_robot_eval_job` or
 request JSON cannot select imports, shell commands, private scene paths or a
 different security profile.
 
+The prepared `run_robot_eval_worker` and inbox
+`run_live_pipeline_control_plane` entry points also accept this trusted callable
+and an explicit `allow_policy_execution` gate. They forward both through the
+existing orchestration path; downloaded manifests cannot enable them. The
+existing `BLUEPRINT_ALLOW_POLICY_EXECUTION` environment gate still applies.
+`execute_robot_eval_request_as_evaluation_run` carries the callable through the
+canonical Evaluation Run handoff. For compiled runs, register a
+`RobotEvalEvaluationRunExecutor(controlled_policy_executor=executor)` in the
+existing `EvaluationRunExecutionRegistry` and pass that registry to
+`execute_evaluation_run`. Default registries and CLI entry points remain
+unconfigured and block controlled execution.
+
 Its `task_contract` hook resolves the frozen, rights-bound company-policy v2
 observation/action contract from Blueprint's task configuration. Its
 `environment_factory` creates the virtual robot adapter for each exact scenario
