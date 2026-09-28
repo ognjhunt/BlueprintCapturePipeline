@@ -204,3 +204,65 @@ def test_parallel_installer_refuses_before_touching_the_owned_copy(tmp_path, mon
     monkeypatch.setattr(module, '_copy', competing)
     assert module.prepare(source, deps)['status'] == 'prepared'
     assert entered
+
+
+def _runtime_selector(path):
+    import hashlib
+    raw = path.read_bytes()
+    return {"sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw)}
+
+
+def test_explicit_refresh_publishes_one_verified_source_sdk_cohort(tmp_path, monkeypatch):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    module.prepare(source, deps)
+    old_source = module._RUNTIME_ROOT / "src/blueprint_pipeline/__init__.py"
+    old_dependency = module._RUNTIME_ROOT / "dependencies/trusted_sdk.py"
+    prior = _runtime_selector(module._BOOT_ROOT / "installation.json")
+    (source / "src/blueprint_pipeline/__init__.py").write_bytes(b"# new trusted package\n")
+    (deps / "trusted_sdk.py").write_bytes(b"value = 2\n")
+    result = module.refresh(source, deps, expected_current=prior)
+    selected = Path(result["runtime_root"])
+    assert result["status"] == "refreshed" and selected != module._RUNTIME_ROOT
+    assert selected.is_relative_to(module._RUNTIME_ROOT / "generations")
+    assert (selected / "src/blueprint_pipeline/__init__.py").read_bytes() == b"# new trusted package\n"
+    assert (selected / "dependencies/trusted_sdk.py").read_bytes() == b"value = 2\n"
+    assert old_source.read_bytes() == b"# trusted package\n"
+    assert old_dependency.read_bytes() == b"value = 1\n"
+    assert result["current"] == _runtime_selector(module._BOOT_ROOT / "CURRENT.json")
+    assert result["authority_issued"] is False and result["cleanup_enabled"] is False
+
+
+def test_interrupted_refresh_keeps_old_current_and_resumes_exact_new_cohort(tmp_path, monkeypatch):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    module.prepare(source, deps)
+    prior = _runtime_selector(module._BOOT_ROOT / "installation.json")
+    (source / "src/blueprint_pipeline/__init__.py").write_bytes(b"# new trusted package\n")
+    original = module._copy
+    changed = False
+    def interrupt(path, destination, expected, deadline):
+        nonlocal changed
+        if not changed:
+            changed = True
+            original(path, destination, expected, deadline)
+            raise OSError("interrupted exact generation copy")
+        return original(path, destination, expected, deadline)
+    monkeypatch.setattr(module, "_copy", interrupt)
+    with pytest.raises(ValueError, match="scene_retirement_runtime_unproven"):
+        module.refresh(source, deps, expected_current=prior)
+    assert not (module._BOOT_ROOT / "CURRENT.json").exists()
+    assert _runtime_selector(module._BOOT_ROOT / "installation.json") == prior
+    assert (module._RUNTIME_ROOT / "src/blueprint_pipeline/__init__.py").read_bytes() == b"# trusted package\n"
+    monkeypatch.setattr(module, "_copy", original)
+    result = module.refresh(source, deps, expected_current=prior)
+    assert result["status"] == "refreshed"
+    assert result["current"] == _runtime_selector(module._BOOT_ROOT / "CURRENT.json")
+
+
+def test_refresh_stale_current_refuses_before_copying_new_generation(tmp_path, monkeypatch):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    module.prepare(source, deps)
+    (source / "src/blueprint_pipeline/__init__.py").write_bytes(b"# new trusted package\n")
+    with pytest.raises(ValueError, match="scene_retirement_runtime_unproven"):
+        module.refresh(source, deps, expected_current={"sha256": "sha256:" + "0" * 64, "size_bytes": 1})
+    assert not (module._RUNTIME_ROOT / "generations").exists()
+    assert not (module._BOOT_ROOT / "CURRENT.json").exists()
