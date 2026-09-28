@@ -26,6 +26,9 @@ class ActionAllowance:
     def __init__(self, *, expires_at, now=time.time, monotonic=time.monotonic,
                  local_bytes=8*1024**3, archive_bytes=12*1024**3,
                  remote_bytes=24*1024**3, elapsed_seconds=1800):
+        _require(not hasattr(self, '_initialized'), 'scene_retirement_allowance_already_initialized')
+        self._initialized = True  # Partial failures cannot reset an action origin.
+        self.failure = None
         _require(type(expires_at) is int)
         for value, maximum in ((local_bytes,32*1024**3),(archive_bytes,48*1024**3),
                                (remote_bytes,96*1024**3),(elapsed_seconds,3600)):
@@ -33,19 +36,26 @@ class ActionAllowance:
         self.now, self.monotonic, self.expires_at = now, monotonic, expires_at
         self.limits = dict(local_bytes=local_bytes,archive_bytes=archive_bytes,remote_bytes=remote_bytes)
         self.counts = {key:0 for key in self.limits}
-        self.start = self.last_tick = monotonic()
-        self.last_wall = now()
+        self.start = self.last_tick = self._sample(monotonic)
+        self.last_wall = self._sample(now)
         self.elapsed_seconds = elapsed_seconds
-        self.failure = None
         self.tick()
+
+    def _sample(self, callback):
+        try:
+            value = callback()
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError()
+            return value
+        except Exception as error:
+            self.failure = 'scene_retirement_clock_unproven'
+            raise SceneRetirementAccessError(self.failure) from error
 
     def tick(self):
         if self.failure:
             raise SceneRetirementAccessError(self.failure)
-        observed, wall = self.monotonic(), self.now()
-        if (type(observed) not in (int,float) or type(wall) not in (int,float)
-                or not math.isfinite(observed) or not math.isfinite(wall)
-                or observed < self.last_tick or wall < self.last_wall):
+        observed, wall = self._sample(self.monotonic), self._sample(self.now)
+        if observed < self.last_tick or wall < self.last_wall:
             self.failure = 'scene_retirement_clock_unproven'
         elif wall >= self.expires_at:
             self.failure = 'scene_retirement_consent_expired'
