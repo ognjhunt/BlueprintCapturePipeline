@@ -164,3 +164,21 @@ def test_interrupted_scan_permanently_consumes_two_passes_without_new_operation(
     with pytest.raises(ValueError, match="experiment_scan_pass_exhausted"):
         _issue_action(setup, grant)
     assert len(calls) == 2
+
+
+def test_gc_cannot_reset_original_issue_controller_after_boot_change(retirement_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_experiment_work as work
+    from tests.test_registered_experiment_retirement_flow import _gc
+
+    setup = retirement_installation
+    grant = issue(setup)
+    born = birth(setup, grant)
+    payload = Path(born['path']) / 'payload'
+    payload.write_bytes(b'retain across unknown operation boot')
+    selected = _issue_action(setup, grant)
+    monkeypatch.setattr(work, '_controller_boot_id', lambda files: 'aaaaaaaa-1234-1234-1234-123456789abc')
+    report = _gc(setup)
+    outcome = next(value for value in report['registered_experiments']['outcomes']
+                   if value['action_id'] == selected['action_id'])
+    assert outcome['decision'] == 'kept', outcome
+    assert payload.read_bytes() == b'retain across unknown operation boot'
