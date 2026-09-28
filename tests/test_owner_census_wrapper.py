@@ -49,6 +49,7 @@ def run_wrapper(tmp_path, **extra):
     return done, results, env
 
 
+@pytest.mark.slow
 def test_fixed_wrapper_only_runs_active_report_module(tmp_path):
     done, results, env = run_wrapper(tmp_path)
     assert done.returncode == 0
@@ -65,6 +66,7 @@ def test_fixed_wrapper_only_runs_active_report_module(tmp_path):
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "extra",
     [
@@ -94,6 +96,7 @@ def test_installer_provisions_only_disabled_metadata_and_retains_existing_paths(
     assert "ReadWritePaths=/var/lib/blueprint-operator-door/requests\n" in unit
 
 
+@pytest.mark.slow
 def test_upgrade_owner_provisioning_preserves_policy_records_and_lock_inode(tmp_path):
     import sys
 
@@ -190,6 +193,7 @@ def test_upgrade_owner_provisioning_preserves_policy_records_and_lock_inode(tmp_
     )
 
 
+@pytest.mark.slow
 def test_leaf_failure_has_fixed_wrapper_outcome_without_echoing_private_stderr(tmp_path):
     done, results, env = run_wrapper(tmp_path, FAKE_RC="1")
     assert done.returncode == 1
