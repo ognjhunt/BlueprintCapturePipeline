@@ -346,3 +346,33 @@ def test_real_query_child_is_reaped_on_output_deadline_or_command_failure(monkey
     command, kwargs = observed[0]
     assert command[0] == '/usr/bin/systemctl' and 'Environment' not in ' '.join(command)
     assert kwargs['env'] == {'LC_ALL': 'C', 'PATH': '/usr/bin:/bin'}
+
+
+def test_reader_closure_never_promotes_idle_unit_diagnostics_to_action_authority(tmp_path, monkeypatch):
+    module, access, _, _ = loaded_unit_fixture(tmp_path, monkeypatch)
+    (tmp_path / 'installation').mkdir()
+    _, policy, _ = access_fixture(tmp_path / 'installation', monkeypatch)
+    # The genuine public installed policy starts with no enrolled consumers.
+    # Neither known-unit idleness nor caller-supplied diagnostic booleans fill
+    # that missing boot/lifetime authority.
+    observed = module.require_inactive_known_workers(SimpleNamespace(tick=lambda: None))
+    assert observed['unknown_readers_cleared'] is False
+    with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
+        module.require_current_reader_closure(policy, SimpleNamespace(tick=lambda: None))
+
+
+def test_reader_closure_expired_original_allowance_refuses_before_kernel_scan(tmp_path, monkeypatch):
+    module = supervisor()
+    access, policy, _ = access_fixture(tmp_path, monkeypatch)
+    def expired():
+        raise access.SceneRetirementAccessError('scene_retirement_deadline')
+    with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_deadline'):
+        module.require_current_reader_closure(policy, SimpleNamespace(tick=expired))
+
+
+def test_reader_closure_requires_actual_linux_kernel_not_caller_claims(tmp_path, monkeypatch):
+    module = supervisor()
+    access, policy, _ = access_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
+        module.require_current_reader_closure(policy, SimpleNamespace(tick=lambda: None))
