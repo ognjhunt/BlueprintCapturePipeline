@@ -20,14 +20,18 @@ group with names in two or more replays is a candidate when those names are all 
 replays and are every link it has, it is on the device of every replay holding it, and it is
 not newer than any of their reports.
 
-Apply first rechecks every replay holding a candidate (the same report, unchanged in path,
-mtime and digest, and no live reader), then unlinks a candidate's names one replay at a time through directory descriptors
-held from that replay down, rechecking each name before it goes: its device, inode, size and
-mtime, and a link count equal to the names still to go. A group's bytes count only when its
-last name goes. A recheck that fails stops the group; the names already unlinked were scratch
-and stay unlinked, and the next tick plans the rest, whose names are again all of its links.
-The directories left empty in each replay touched are then pruned as the per-replay rule
-prunes them. No file's bytes are read.
+Apply first rechecks every replay holding a candidate: still the directory the plan walked, its
+report the one the plan read, unchanged in path, mtime and digest, and no live reader, so a group
+any of whose holders changed since the plan keeps every name. It then goes one replay at a time.
+Just before a replay's removals it rechecks that replay again, in a fresh sweep of the process
+table, as the per-replay rule does before each replay's, then unlinks its names of every
+candidate through directory descriptors held from it down, rechecking each name before it goes:
+its device, inode, size and mtime, and a link count equal to the names still to go. A group's
+bytes count only when its last name goes. A recheck that fails stops the group; the names already
+unlinked were scratch and stay unlinked, the bytes live on in the names left, and the next tick
+plans the rest, whose names are again all of its links. The directories left empty in each
+replay touched are then pruned as the per-replay rule prunes them. No scratch file's bytes are
+read; only the holders' reports are hashed.
 """
 
 from __future__ import annotations
@@ -263,31 +267,35 @@ def _unlink_names(held: Any, group: dict[str, Any], names: Sequence[Path], links
     return None, unlinked
 
 
-def _unlink_group(group: dict[str, Any], holders: Sequence[dict[str, Any]]) -> tuple[str | None, list[int]]:
-    """Unlink every name of a planned group, one holder at a time: why it stopped (None when its last
-    name went), and the holders a name was unlinked in."""
+def _unlink_in(holder: dict[str, Any], pending: Sequence[tuple[int, list[Path]]],
+               candidates: Sequence[dict[str, Any]], links: list[int]) -> tuple[dict[int, str], bool]:
+    """Recheck and unlink the pending candidates' names in one replay, through descriptors held from
+    it down: why each group stopped here, and whether any name here went. ``links`` counts each
+    candidate's links still to go."""
 
-    links, touched = group["nlink"], []
-    for index, names in _by_holder(group):
-        child = holders[index]["path"]
-        try:
-            held = retention._HeldChild(child.parent, child.name)
-        except OSError as exc:
-            return _failure(exc), touched
-        try:
-            if not held.named_by(child):
-                return "path_changed", touched
+    child = holder["path"]
+    try:
+        held = retention._HeldChild(child.parent, child.name)
+    except OSError as exc:
+        return {position: _failure(exc) for position, _names in pending}, False
+    stopped: dict[int, str] = {}
+    went = False
+    try:
+        if not held.named_by(child):
+            return {position: "path_changed" for position, _names in pending}, False
+        for position, names in pending:
+            group = candidates[position]
             if held.device != group["dev"]:
-                return "cross_device", touched
-            why, unlinked = held.item(_unlink_names, group, names, links)
-        finally:
-            held.close()
-        links -= unlinked
-        if unlinked:
-            touched.append(index)
-        if why:
-            return why, touched
-    return None, touched
+                stopped[position] = "cross_device"
+                continue
+            why, unlinked = held.item(_unlink_names, group, names, links[position])
+            links[position] -= unlinked
+            went = went or unlinked > 0
+            if why:
+                stopped[position] = why
+    finally:
+        held.close()
+    return stopped, went
 
 
 def _prune(child: Path) -> list[dict[str, str]]:
@@ -329,36 +337,50 @@ def _holder_why(holder: dict[str, Any], plan: dict[str, Any], referenced: Any) -
 
 
 def apply_shared_scratch(plan: dict[str, Any], *, process_root: Path = Path("/proc")) -> dict[str, Any]:
-    """Remove the plan's candidates: ``removed`` groups, ``kept`` ``(group, reason)`` for each apply
-    stopped, and the prune's typed skips."""
+    """Remove the plan's candidates one replay at a time: ``removed`` groups, ``kept`` ``(group,
+    reason)`` for each apply stopped, and the prune's typed skips.
 
-    holders = plan["holders"]
-    removed: list[dict[str, Any]] = []
-    kept: list[tuple[dict[str, Any], str]] = []
-    touched: set[int] = set()
-    if not plan["candidates"]:
-        return {"removed": removed, "kept": kept, "prune_skipped": []}
-    referenced = retention.process_reference_index(process_root=process_root)
-    whys: dict[int, str | None] = {}
+    Every replay holding a candidate is rechecked first, in one sweep of the process table, so a
+    group any of whose holders changed since the plan keeps every name. Each replay is rechecked
+    again, in a fresh sweep, just before its own removals, as the per-replay rule rechecks each
+    replay before its own: a group stopped there keeps its names in that replay and the later ones,
+    so its bytes live on there, and the next tick plans the rest.
+    """
 
-    def holder_why(index: int) -> str | None:
-        if index not in whys:
-            whys[index] = _holder_why(holders[index], plan, referenced)
-        return whys[index]
-
-    for group in plan["candidates"]:
-        why = next((why for why in (holder_why(index) for index, _names in _by_holder(group)) if why), None)
-        if why:
-            kept.append((group, f"recheck_failed:{why}"))
+    holders, candidates = plan["holders"], plan["candidates"]
+    names_in: dict[int, list[tuple[int, list[Path]]]] = {}
+    for position, group in enumerate(candidates):
+        for index, names in _by_holder(group):
+            names_in.setdefault(index, []).append((position, names))
+    order = sorted(names_in)
+    stopped: dict[int, str] = {}
+    if order:
+        referenced = retention.process_reference_index(process_root=process_root)
+        for index in order:
+            why = _holder_why(holders[index], plan, referenced)
+            for position, _names in names_in[index] if why else ():
+                stopped.setdefault(position, why)
+    links = [group["nlink"] for group in candidates]
+    touched: list[int] = []
+    for index in order:
+        pending = [(position, names) for position, names in names_in[index] if position not in stopped]
+        if not pending:
             continue
-        why, unlinked_in = _unlink_group(group, holders)
-        touched.update(unlinked_in)
+        why = _holder_why(holders[index], plan, retention.process_reference_index(process_root=process_root))
         if why:
-            kept.append((group, f"recheck_failed:{why}"))
-        else:
-            removed.append(group)
-    pruned = [row for index in sorted(touched) for row in _prune(holders[index]["path"])]
-    return {"removed": removed, "kept": kept, "prune_skipped": pruned}
+            stopped.update((position, why) for position, _names in pending)
+            continue
+        here, went = _unlink_in(holders[index], pending, candidates, links)
+        stopped.update(here)
+        if went:
+            touched.append(index)
+    pruned = [row for index in touched for row in _prune(holders[index]["path"])]
+    return {
+        # A group no replay stopped lost every name, its last with its last link.
+        "removed": [group for position, group in enumerate(candidates) if position not in stopped],
+        "kept": [(candidates[position], f"recheck_failed:{why}") for position, why in sorted(stopped.items())],
+        "prune_skipped": pruned,
+    }
 
 
 def reclaim_shared_scratch(

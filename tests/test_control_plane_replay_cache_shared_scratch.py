@@ -744,3 +744,37 @@ def test_a_holder_swapped_for_a_link_after_the_plan_keeps_the_group_whole(tmp_pa
     assert block["kept_by_reason"] == {"recheck_failed:path_changed": {"groups": 1, "bytes": size}}
     assert block["removed_groups"] == 0 and all(path.exists() for path in names)
     assert (moved / "stage_replay_report.v1.json").is_file()
+
+
+def test_a_reader_that_appears_between_two_replays_removals_keeps_the_later_replays_names(
+        tmp_path, monkeypatch, process_table) -> None:
+    """Apply sweeps the process table again just before each replay's own removals, as the per-replay
+    rule does before each replay's, and never trusts a sweep taken before another replay's removals.
+    A reader that opens a replay while an earlier one loses its names keeps that replay's names: the
+    group is kept as holder_ineligible and its bytes live on there, uncounted. The next tick plans
+    the rest, here one replay's own, and its bytes are counted then, once."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    second = names[-1].parents[3]
+    real_unlink, readers = os.unlink, []
+
+    def unlink(path, *args, **kwargs):
+        if not readers:
+            readers.append(_reader(process_table, "4242", second / "prepared-references"))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    phase = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
+    monkeypatch.setattr(os, "unlink", real_unlink)
+
+    block = phase["shared_scratch"]
+    assert block["kept_by_reason"] == {"recheck_failed:holder_ineligible": {"groups": 1, "bytes": size}}
+    assert (block["removed_groups"], phase["removed_bytes"]) == (0, 0)
+    assert not any(path.exists() for path in names[:-1]) and names[-1].exists()
+
+    for entry in sorted(readers[0].rglob("*"), reverse=True):
+        entry.unlink() if entry.is_symlink() or entry.is_file() else entry.rmdir()
+    readers[0].rmdir()
+    phase = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
+    assert (phase["removed_bytes"], phase["shared_scratch"]["removed_bytes"]) == (size, 0)
+    assert not names[-1].exists()
