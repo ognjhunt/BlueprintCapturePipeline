@@ -1187,7 +1187,7 @@
         "hard_cap_usd": {
           "type": "number",
           "exclusiveMinimum": 0,
-          "maximum": 26.76
+          "maximum": 36.76
         },
         "hard_ttl_seconds": {
           "type": "integer",
@@ -1218,7 +1218,7 @@
                 "maximum_cost_usd": {
                   "type": "number",
                   "minimum": 0,
-                  "maximum": 20.76
+                  "maximum": 30.76
                 },
                 "maximum_requests": {
                   "type": "integer",
@@ -1247,7 +1247,7 @@
                     "content_agents": {
                       "type": "number",
                       "minimum": 0,
-                      "maximum": 15
+                      "maximum": 25
                     }
                   }
                 }

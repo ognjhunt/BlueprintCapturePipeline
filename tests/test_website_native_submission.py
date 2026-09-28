@@ -20,7 +20,8 @@ from tests.test_website_native_appearance import inputs
 from tests.test_task_evaluation_scene_configuration_submission import production_fixture, SHA
 
 
-def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False):
+def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
+          max_total_spend_usd=None):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
@@ -32,6 +33,8 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     args["spend"] = copy.deepcopy(args["spend"])
     args["spend"]["expires_at_epoch"] = now + 3600
     args["spend"]["consent"]["accepted_at_epoch"] = now - 1
+    if max_total_spend_usd is not None:
+        args["spend"]["max_total_spend_usd"] = max_total_spend_usd
     if anthropic:
         terms = "sha256:" + "a" * 64
         args["spend"]["authoring_provider"] = "anthropic"
@@ -144,9 +147,10 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     assert request["scene_intent_digest"] == accepted["intent_digest"]
     task = request["task"]
     assert task["kind"] == "articulated_manipulation" and task["strategy"] == "articulated_open_close"
+    # The whole CAD/Blender stage is quoted as one shared $25 pool for every part.
     assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"] == {
-        "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0, "content_agents": 7.0}
-    assert request["spend"]["hard_cap_usd"] == 13.0
+        "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0, "content_agents": 25.0}
+    assert request["spend"]["hard_cap_usd"] == 31.0
     assert "surface_target" not in task and "destination" not in task
     template = json.loads((root / "configuration/task.json").read_text())
     assert template["schema_version"] == "task_evaluation_articulated_open_close_template.v1"
@@ -203,10 +207,30 @@ def test_new_signed_website_drawer_selects_sol_managed_runtime_without_spend(tmp
     assert authoring["agents_api_policy"]["project_guard_receipt_digest"] == "sha256:" + "f" * 64
     assert request["runtime"]["network"]["allowlist"] == ["api.openai.com"]
     assert request["spend"]["external_service_caps"]["openai"] == {
-        "maximum_cost_usd": 7.0, "maximum_requests": 32,
+        "maximum_cost_usd": 25.0, "maximum_requests": 32,
         "stage_max_cost_usd": {"artifixer_semantic_teacher": 0.0,
-                               "artifixer_visual_review": 0.0, "content_agents": 7.0}}
-    assert request["spend"]["hard_cap_usd"] == 13.0
+                               "artifixer_visual_review": 0.0, "content_agents": 25.0}}
+    assert request["spend"]["hard_cap_usd"] == 31.0
+
+
+@pytest.mark.parametrize("ceiling,admitted", [(20, False), (30.99, False), (31, True)])
+def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_covers_it(
+        tmp_path, monkeypatch, ceiling, admitted):
+    """Provider compute ($6) plus the shared $25 authoring pool; nothing lower admits it."""
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+        MAX_ASTRA_AUTHORING_SPEND_USD, MAX_PROVIDER_COMPUTE_SPEND_USD,
+    )
+    assert MAX_ASTRA_AUTHORING_SPEND_USD == 25.0
+    assert MAX_PROVIDER_COMPUTE_SPEND_USD + MAX_ASTRA_AUTHORING_SPEND_USD == 31.0
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=ceiling)
+    if not admitted:
+        with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
+            materialize_website_submission(**kwargs)
+        assert not (kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").exists()
+        return
+    materialize_website_submission(**kwargs)
+    request = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["spend"]["hard_cap_usd"] == 31.0
 
 
 def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp_path, monkeypatch):

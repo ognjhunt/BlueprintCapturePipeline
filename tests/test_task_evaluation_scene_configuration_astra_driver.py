@@ -646,6 +646,230 @@ def test_a_refused_part_does_not_stop_the_parts_after_it(component, retained):
     [failures] = list(retained.root.rglob("part_failures.json"))
     record = json.loads(failures.read_text())
     assert record["assembly_packaged"] is False and set(record["failed_parts"]) == {"carcass", "drawer"}
+    assert set(record["part_spend"]) == {"carcass", "drawer"}
+    assert {row["status"] for row in record["part_spend"].values()} == {"failed"}
+
+
+def test_a_budget_refused_part_is_recorded_and_the_stage_still_attempts_the_next(component, retained):
+    """2026-09-28: the second part's budget refusal aborted the stage and six parts were never tried."""
+    from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
+    configuration = _articulated_configuration()
+    retained.input["configuration"] = configuration
+    retained.config.clear()
+    retained.config.update(configuration)
+    Path(component.environment[driver._INPUT_ENV]).write_text(json.dumps(retained.input))
+    attempted = []
+
+    def author(**kw):
+        object_id = kw["request_value"]["object_id"]
+        attempted.append(object_id)
+        raise AgentsSDKInvocationBlocked("agents_sdk_inference_budget_ceiling_exceeded")
+
+    component.kwargs["authoring_executor"] = author
+    component.kwargs["package_candidate"] = None
+    with pytest.raises(Exception, match="articulated_parts_failed:carcass=agents_sdk_inference_budget_ceiling_"
+                                        "exceeded;drawer=agents_sdk_inference_budget_ceiling_exceeded"):
+        driver.execute_astra_component(**component.kwargs)
+    assert attempted == ["source_cabinet__carcass", "source_cabinet__drawer"]
+    [failures] = list(retained.root.rglob("part_failures.json"))
+    record = json.loads(failures.read_text())
+    assert record["part_spend"]["drawer"]["exception_type"] == "AgentsSDKInvocationBlocked"
+    assert record["part_spend"]["drawer"]["reason"] == "agents_sdk_inference_budget_ceiling_exceeded"
+    # The parent cost gate still closes after the recorded refusals.
+    assert component.events[-1] == "complete"
+
+
+class _PoolInvoker:
+    """Reserve the worst case before a call and reconcile to actual after, like the SDK invoker.
+
+    ``input_value`` carries ``(worst_case_usd, actual_usd)`` for the fake call.
+    """
+
+    def __init__(self, maximum_cost_usd):
+        from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
+        self.blocked = AgentsSDKInvocationBlocked
+        self.config = SimpleNamespace(max_inference_cost_usd=maximum_cost_usd)
+        self._reserved_cost_usd = 0.0
+
+    def invoke(self, spec, input_value):
+        worst, actual = input_value
+        if self._reserved_cost_usd + worst > self.config.max_inference_cost_usd:
+            raise self.blocked("agents_sdk_inference_budget_ceiling_exceeded")
+        self._reserved_cost_usd += actual
+
+
+def _pool_parts(tmp_path, names, *, maximum_cost_usd, maximum_calls=32, deadline_epoch=None):
+    """N generic parts authored against one shared stage pool; no family or object semantics."""
+    requests = {name: SimpleNamespace(request_digest="sha256:" + str(i) * 64,
+                                      model_dump=lambda mode="json", name=name: {"object_id": "task_object__" + name})
+                for i, name in enumerate(names, 1)}
+    invoker = driver._StageInvoker(_PoolInvoker(maximum_cost_usd), "pool-run", maximum_calls,
+                                   deadline_epoch=deadline_epoch)
+    spec = SimpleNamespace(run_id="pool-run", model="gpt-6-astra", max_turns=1, tool_bindings=(),
+                           max_output_tokens=12000, max_input_tokens=80000, reasoning_effort="medium")
+    authored_root = tmp_path / "authoring"
+    authored_root.mkdir()
+
+    def run(calls_by_part, *, before_part=None):
+        attempted = []
+
+        def author(**kw):
+            name = kw["request_value"]["object_id"].rsplit("__", 1)[1]
+            attempted.append(name)
+            if before_part:
+                before_part(name)
+            for call in calls_by_part[name]:
+                kw["invoker"].invoke(spec, call)
+            return {"model": "gpt-6-astra", "result_digest": "sha256:" + "a" * 64}
+
+        kwargs = dict(plan={"required_parts": []}, part_requests=requests, authored_root=authored_root,
+                      runtime=tmp_path / "runtime", prior_roots=[], invoker=invoker, sandbox=None,
+                      blender={"executable": "blender"}, cad_root=tmp_path, verified_sources={},
+                      authoring_instructions="", configuration={}, authoring_executor=author, mac_executor=None)
+        return driver._author_articulated_parts(**kwargs), attempted
+
+    return run, authored_root, invoker
+
+
+def test_parts_draw_unequally_on_one_shared_stage_pool_and_record_their_spend(tmp_path):
+    names = ["part_a", "part_b", "part_c", "part_d", "part_e"]
+    run, root, invoker = _pool_parts(tmp_path, names, maximum_cost_usd=25.0)
+    # One expensive part, several cheap ones: no part is limited to an equal share.
+    calls = {"part_a": [(1.4, 0.3)] * 10, "part_b": [(1.4, 1.0)], "part_c": [(1.4, 0.25)] * 2,
+             "part_d": [(1.4, 5.0)] * 2, "part_e": [(1.4, 0.5)]}
+    authored, attempted = run(calls)
+    assert attempted == names
+    spend = authored["part_spend"]
+    assert {name: spend[name]["spend_usd"] for name in names} == {
+        "part_a": 3.0, "part_b": 1.0, "part_c": 0.5, "part_d": 10.0, "part_e": 0.5}
+    assert {name: spend[name]["model_calls"] for name in names} == {
+        "part_a": 10, "part_b": 1, "part_c": 2, "part_d": 2, "part_e": 1}
+    assert {row["status"] for row in spend.values()} == {"authored"}
+    assert spend["part_e"]["pool_remaining_after_usd"] == 10.0
+    sealed = json.loads((root / "part_spend.json").read_text())
+    assert sealed["pool_sharing"] == "one_shared_stage_pool" and sealed["parts"] == spend
+    assert sealed["stage_pool_at_end"]["maximum_cost_usd"] == 25.0
+    assert sealed["stage_pool_at_end"]["reserved_cost_usd"] == 15.0
+    assert sealed["stage_pool_at_end"]["requests_used"] == invoker.calls == 16
+    assert json.loads((root / "result.json").read_text())["part_spend"] == spend
+    assert not (root / "part_failures.json").exists()
+
+
+def test_a_part_refused_by_the_pool_is_recorded_and_later_parts_use_what_is_left(tmp_path):
+    names = ["part_a", "part_b", "part_c"]
+    run, root, _ = _pool_parts(tmp_path, names, maximum_cost_usd=5.0)
+    # part_a leaves $0.50; part_b's $1.40 worst case is refused; part_c's $0.30 one fits.
+    calls = {"part_a": [(1.4, 1.5)] * 3, "part_b": [(1.4, 0.2)], "part_c": [(0.3, 0.3)]}
+    with pytest.raises(driver.AssetAuthoringError,
+                       match="^articulated_parts_failed:part_b=agents_sdk_inference_budget_ceiling_exceeded$"):
+        run(calls)
+    record = json.loads((root / "part_failures.json").read_text())
+    assert record["failed_parts"] == {"part_b": "agents_sdk_inference_budget_ceiling_exceeded"}
+    assert record["authored_parts"] == ["part_a", "part_c"] and record["assembly_packaged"] is False
+    spend = record["part_spend"]
+    assert spend["part_a"]["spend_usd"] == 4.5 and spend["part_a"]["status"] == "authored"
+    assert spend["part_b"] | {"elapsed_seconds": 0} == {
+        "status": "failed", "reason": "agents_sdk_inference_budget_ceiling_exceeded",
+        "exception_type": "AgentsSDKInvocationBlocked", "pool_remaining_before_usd": 0.5,
+        # The refused request still counts against the stage request limit; it spent nothing.
+        "spend_usd": 0.0, "model_calls": 1, "pool_remaining_after_usd": 0.5, "elapsed_seconds": 0}
+    assert spend["part_c"]["status"] == "authored" and spend["part_c"]["spend_usd"] == 0.3
+    assert record["stage_pool_at_end"]["remaining_cost_usd"] == 0.2
+    assert json.loads((root / "part_spend.json").read_text())["parts"] == spend
+
+
+def test_a_fully_used_pool_records_every_remaining_part_as_not_attempted(tmp_path):
+    names = ["part_a", "part_b", "part_c"]
+    run, root, _ = _pool_parts(tmp_path, names, maximum_cost_usd=3.0)
+    with pytest.raises(driver.AssetAuthoringError, match="part_b=not_attempted:stage_budget_exhausted;"
+                                                         "part_c=not_attempted:stage_budget_exhausted"):
+        _, attempted = run({"part_a": [(1.5, 1.5)] * 2, "part_b": [], "part_c": []})
+    record = json.loads((root / "part_failures.json").read_text())
+    assert record["authored_parts"] == ["part_a"]
+    for name in ("part_b", "part_c"):
+        assert record["part_spend"][name] == {"status": "not_attempted", "reason": "stage_budget_exhausted",
+            "spend_usd": 0.0, "model_calls": 0, "pool_remaining_before_usd": 0.0}
+
+
+def test_a_spent_request_limit_records_the_remaining_parts_as_not_attempted(tmp_path):
+    run, root, _ = _pool_parts(tmp_path, ["part_a", "part_b"], maximum_cost_usd=25.0, maximum_calls=3)
+    with pytest.raises(driver.AssetAuthoringError, match="^articulated_parts_failed:"
+                                                         "part_b=not_attempted:stage_request_limit_exhausted$"):
+        run({"part_a": [(0.1, 0.1)] * 3, "part_b": [(0.1, 0.1)]})
+    record = json.loads((root / "part_failures.json").read_text())
+    assert record["part_spend"]["part_a"]["model_calls"] == 3
+    assert record["stage_pool_at_end"]["requests_used"] == 3
+
+
+def test_stage_time_stops_the_running_part_and_later_parts_are_recorded(tmp_path, monkeypatch):
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(driver, "_now", lambda: clock["now"])
+    names = ["part_a", "part_b", "part_c"]
+    run, root, _ = _pool_parts(tmp_path, names, maximum_cost_usd=25.0, deadline_epoch=2_000.0)
+
+    def advance(name):
+        # part_b starts before the closeout point, then runs past it between calls.
+        clock["now"] += 900.0
+
+    with pytest.raises(driver.AssetAuthoringError,
+                       match="^articulated_parts_failed:part_b=astra_stage_time_exhausted;"
+                             "part_c=not_attempted:stage_time_exhausted$"):
+        run({"part_a": [(0.2, 0.2)], "part_b": [(0.2, 0.2)], "part_c": [(0.2, 0.2)]}, before_part=advance)
+    record = json.loads((root / "part_failures.json").read_text())
+    spend = record["part_spend"]
+    assert spend["part_a"]["status"] == "authored" and spend["part_a"]["spend_usd"] == 0.2
+    assert spend["part_b"]["status"] == "failed" and spend["part_b"]["exception_type"] == "AstraStageError"
+    assert spend["part_b"]["model_calls"] == 0 and spend["part_b"]["spend_usd"] == 0.0
+    assert spend["part_c"]["reason"] == "stage_time_exhausted"
+    assert record["stage_pool_at_end"]["deadline_epoch"] == 2_000.0
+
+
+def test_stage_deadline_is_the_producer_deadline_less_closeout_and_fails_closed():
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+        ASTRA_AUTHORING_CLOSEOUT_RESERVE_SECONDS, STAGE_DEADLINE_EPOCH_ENV,
+    )
+    assert driver._authoring_deadline_epoch({}) is None
+    assert driver._authoring_deadline_epoch({STAGE_DEADLINE_EPOCH_ENV: "10000"}) == (
+        10000 - ASTRA_AUTHORING_CLOSEOUT_RESERVE_SECONDS)
+    for raw in ("soon", "nan", "inf"):
+        with pytest.raises(driver.AstraStageError, match="astra_stage_deadline_invalid"):
+            driver._authoring_deadline_epoch({STAGE_DEADLINE_EPOCH_ENV: raw})
+
+
+@pytest.mark.parametrize("articulated", [True, False])
+def test_only_articulated_authoring_binds_the_stage_clock(component, retained, articulated):
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import STAGE_DEADLINE_EPOCH_ENV
+    component.environment[STAGE_DEADLINE_EPOCH_ENV] = str(driver._now() + 7_800)
+    if articulated:
+        configuration = _articulated_configuration()
+        retained.input["configuration"] = configuration
+        retained.config.clear()
+        retained.config.update(configuration)
+        Path(component.environment[driver._INPUT_ENV]).write_text(json.dumps(retained.input))
+    seen = []
+
+    def author(**kw):
+        seen.append(kw["invoker"].deadline_epoch)
+        raise driver.AssetAuthoringError("fixture_stop")
+
+    component.kwargs["authoring_executor"] = author
+    component.kwargs["package_candidate"] = None
+    with pytest.raises(driver.AssetAuthoringError):
+        driver.execute_astra_component(**component.kwargs)
+    expected = float(component.environment[STAGE_DEADLINE_EPOCH_ENV]) - 600
+    assert seen and all((value == expected) if articulated else value is None for value in seen)
+
+
+def test_stage_cap_is_the_shared_astra_constant_not_a_literal(component):
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import MAX_ASTRA_AUTHORING_SPEND_USD
+    assert MAX_ASTRA_AUTHORING_SPEND_USD == 25.0
+    source = inspect.getsource(driver)
+    assert "min(15.0" not in source and source.count("min(MAX_ASTRA_AUTHORING_SPEND_USD") == 2
+    component.environment["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"] = "30"
+    component.environment["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"] = "40"
+    driver.execute_astra_component(**component.kwargs)
+    assert component.seen["budget"]["maximum_cost_usd"] == 25.0
+    assert component.seen["gate"]["max_cost_usd"] == 25.0
 
 
 # Computed on origin/main 8f22c8801 with this exact fixture (paths normalized,

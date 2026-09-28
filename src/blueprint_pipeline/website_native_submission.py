@@ -15,6 +15,7 @@ from .task_evaluation_completed_scene_transaction import completed_submission_tr
 from .task_evaluation_launch_preparation_contract import (
     launch_preparation_request_digest, validate_launch_preparation_request,
 )
+from .task_evaluation_scene_configuration_runtime_budget import MAX_ASTRA_AUTHORING_SPEND_USD
 from .task_evaluation_scene_configuration_submission_inputs import (
     Staging, checked_file, read, release_inputs, require, sha, slug,
 )
@@ -269,13 +270,17 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                        {"container_path": "/outputs", "mode": "output"}], "output_limit_bytes": 20_000_000_000},
         "execution_adapter": {"kind": "scene_configuration_pipeline", "version": "v1", "runtime_source_bundle": release_ref},
         "publication": {"input_namespace": namespace, "service_account_readback_required": True},
-        # A drawer fixture authors a cabinet and a separate drawer. The rigid
-        # one-part $5 default stopped after both CAD candidates had been made:
-        # fourteen calls cost $3.74, but the next $1.40 reservation exceeded it.
-        # Keep the scene's $20 ceiling and quote this two-part stage at $7.
+        # An articulated task authors every part (and, in future, every task
+        # object) in one CAD/Blender stage that draws on one shared pool. A
+        # website task's first part cost ~$3 over ten calls and the second was
+        # refused at the former $7 quote, so six more parts were never tried.
+        # Owner decision 2026-09-28: quote the stage at the full Astra authoring
+        # maximum. The separately signed Claude lane keeps its own $7 ceiling.
         "spend": records.spend_block(
             construction["configurations"][2]["authoring_backend"],
-            authoring_max_cost_usd=7.0 if articulated else None,
+            authoring_max_cost_usd=(None if not articulated else 7.0
+                if construction["configurations"][2].get("authoring_model_provider") == "anthropic"
+                else MAX_ASTRA_AUTHORING_SPEND_USD),
             requires_artifixer=False,
             authoring_provider=construction["configurations"][2].get("authoring_model_provider", "openai"))}
     request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
