@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
+from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
 
 
 def prepare(installation):
@@ -32,7 +33,7 @@ def prepare(installation):
 def birth(installation, result, **options):
     from blueprint_pipeline.control_plane_lane_experiment_birth import create_registered_experiment
     return create_registered_experiment(result["intent_id"], expected_intent=result["intent"],
-        installed_config_path=installation[0], now=lambda: 1100, **options)
+        installed_config_path=installation[0], now=options.pop("now", lambda: 1100), **options)
 
 
 def test_root_birth_uses_actual_native_constructor_and_current_authority(installation, monkeypatch):  # noqa: F811
@@ -94,7 +95,7 @@ def test_birth_current_authority_checks_precede_claim_or_folder(installation, mo
         policy = json.loads(path.read_bytes())
         policy["enabled"] = False
         path.write_text(json.dumps(policy))
-    options = {"observed_at_epoch": 2900} if drift == "expired" else {}
+    options = {"now": lambda: 2900} if drift == "expired" else {}
     with pytest.raises(ValueError):
         birth(installation, grant, **options)
     assert not list(installation[2].glob("*.claim.json"))
