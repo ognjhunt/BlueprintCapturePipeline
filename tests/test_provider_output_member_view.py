@@ -317,3 +317,21 @@ def test_plan_prints_bytes_by_disposition_for_a_retained_archive(tmp_path, capsy
                        "policy_canary_output_member_contract.v1"]) == 1
     with pytest.raises(SystemExit):
         views.main(["plan", "--archive", str(archive), "--contract", "unknown.v1"])
+
+
+def test_view_reads_bytes_only_through_an_explicitly_configured_artifact_store(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_configured_scene_object_store as scene_store
+
+    streamed = _streamed(tmp_path)
+    for name in scene_store._ARTIFACT_STORE_FILE_ENV.values():
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(scene_store, "_artifact_object_store_client",
+                        lambda: pytest.fail("the staging store's credentials may not be borrowed"))
+    before = len(streamed.store.requests)
+    view = views.open_member_view(streamed.evidence / FRAME, opener=streamed.store.opener)
+
+    assert view.digest(FRAME) == streamed.rows[FRAME]["sha256"]  # digests need no store
+    with pytest.raises(views.ProviderOutputMemberViewError,
+                       match="^provider_output_member_view_artifact_store_not_configured$"):
+        view.read_member(FRAME, maximum_bytes=10**6)
+    assert len(streamed.store.requests) == before

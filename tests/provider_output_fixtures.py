@@ -366,10 +366,6 @@ class Quick10Archive:
     bulk_members: tuple[str, ...]
     payloads: dict
 
-    @property
-    def names(self) -> list[str]:
-        return list(self.payloads)
-
 
 def _json_bytes(value) -> bytes:
     return json.dumps(value, sort_keys=True).encode()
@@ -546,16 +542,6 @@ class VirtualCasClient:
         return {"Body": _CasBody(obj, first, stop), "ETag": etag, "ContentLength": stop - first,
                 "ContentRange": f"bytes {first}-{stop - 1}/{obj.size}",
                 "ResponseMetadata": {"HTTPStatusCode": 206}}
-
-
-def zero_run_sha256(size: int) -> str:
-    """The SHA-256 of ``size`` zero bytes, hashed in 16 MiB steps."""
-    digest, remaining, view = hashlib.sha256(), size, memoryview(_ZERO_BLOCK)
-    while remaining:
-        step = min(remaining, len(_ZERO_BLOCK))
-        digest.update(view[:step])
-        remaining -= step
-    return "sha256:" + digest.hexdigest()
 
 
 class _Unseekable(io.RawIOBase):
