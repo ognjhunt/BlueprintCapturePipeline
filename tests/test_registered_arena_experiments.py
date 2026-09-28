@@ -85,3 +85,82 @@ def test_arena_new_authority_rejects_noncanonical_tag_before_grant(
             participant_profile="arena_owner_review.v1",
         )
     assert not list(retirement_installation[2].glob("*.arena-claim.json"))
+
+
+def test_private_arena_claim_recovers_only_original_grant(retirement_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+
+    setup = retirement_installation
+    first = _arena(setup)
+    intent_path = setup[2] / (first["intent_id"] + ".json")
+    original = intent_path.read_bytes()
+    intent_path.unlink()  # The durable tag claim preceded an interrupted intent publication.
+    monkeypatch.setattr(
+        root.secrets, "token_hex", lambda *_: pytest.fail("recovery generated a new identity")
+    )
+    recovered = root.recover_arena_issue(
+        "r33", principal="operator", owner="owner", installed_config_path=setup[0], now=lambda: 1001
+    )
+    assert recovered == first and intent_path.read_bytes() == original
+
+
+def test_private_arena_claim_expiry_never_reissues(retirement_installation):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+
+    setup = retirement_installation
+    _arena(setup)
+    with pytest.raises(ValueError, match="experiment_arena_claim_invalid"):
+        root.recover_arena_issue(
+            "r33",
+            principal="operator",
+            owner="owner",
+            installed_config_path=setup[0],
+            now=lambda: 2800,
+        )
+
+
+def test_actual_arena_selector_admits_same_live_target_sh(retirement_installation, monkeypatch):
+    import fcntl
+    import os
+    from blueprint_pipeline import control_plane_arena_scratch as arena
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+
+    setup = retirement_installation
+    grant = _arena(setup)
+    born = birth(setup, grant)
+    monkeypatch.setattr(consumer, "AUTHORITY_ROOT", setup[2].parents[1] / "experiment-authority")
+    monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
+    use = arena.admit_registered_arena_attempt("r33", now=lambda: 1002)
+    try:
+        assert use.path == Path(born["path"]) and use.entry["intent_id"] == grant["intent_id"]
+        foreign = os.open(use.path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(foreign, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(foreign)
+    finally:
+        use.close()
+
+
+def test_reserved_arena_lease_never_enters_legacy_mutation(retirement_installation):
+    from blueprint_pipeline import control_plane_lane_scratch as scratch
+
+    setup = retirement_installation
+    grant = _arena(setup)
+    born = birth(setup, grant)
+    target = Path(born["path"])
+    original = (target / scratch.LEASE_FILE).read_bytes()
+    with pytest.raises(
+        scratch.LaneScratchError, match="lane_scratch_registered_authority_required"
+    ):
+        scratch.renew_lane_scratch(
+            "arena",
+            target.name,
+            owner="owner",
+            expected_digest=json.loads(original)["lease_digest"],
+            ttl_seconds=1800,
+            root=Path(setup[1]["lane_scratch_inputs_root"]),
+            now=lambda: 1002,
+        )
+    assert (target / scratch.LEASE_FILE).read_bytes() == original
