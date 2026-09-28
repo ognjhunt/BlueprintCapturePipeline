@@ -140,7 +140,8 @@ def _publish(factory, output, config, publisher):
     return record(path)
 
 
-def _submission(*, request_path, output, config, observed, submitter, status_reader, now, intent_reference=None):
+def _submission(*, request_path, output, config, observed, submitter, status_reader, now, intent_reference=None,
+                attempt_reference=None, factory_reference=None):
     preparation = read(request_path)
     digest = cross_runtime_canonical_digest(preparation)
     receipt_path = output / "submission.json"
@@ -185,7 +186,8 @@ def _submission(*, request_path, output, config, observed, submitter, status_rea
     local = config.get("submission_transport") == "local_owned_queue"
     if local:
         from .task_evaluation_scene_progression_transport import submit_owned_preparation
-        result = submit_owned_preparation(request_path=request_path, config=config, intent_reference=intent_reference)
+        result = submit_owned_preparation(request_path=request_path, config=config, intent_reference=intent_reference,
+            attempt_reference=attempt_reference, factory_reference=factory_reference)
     else:
         result = (submitter or submit_preparation)(request_path=request_path, config=config)
     require(result.get("schema_version") == ("task_evaluation_owned_preparation_submission.v1" if local
@@ -734,7 +736,8 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         emit("preparing", "submission")
     submitted = _submission(request_path=request_path, output=output, config=config, observed=observed,
                             submitter=submitter, status_reader=status_reader, now=now,
-                            intent_reference=record(directory / "intent.json"))
+                            intent_reference=record(directory / "intent.json"),
+                            attempt_reference=state['attempt'],factory_reference=state['factory'])
     if submitted is None:
         return emit("preparing", "submission_reconciliation", ["preparation_forwarding_pending"])
     state["submission"] = submitted

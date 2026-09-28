@@ -164,12 +164,19 @@ def birth_member(path, *, owner_intent_id, owner_raw_ref, birth_request_raw_ref,
         authenticated = reopen_scene_intent(owner_raw_ref, now=now)
         _require(owner == authenticated and owner['intent_id'] == owner_intent_id)
         request = _raw_reference(birth_request_raw_ref)
-        _require(request.get('schema_version') == ATTEMPT_SCHEMA
+        preparation_only = request.get('schema_version') == 'task_evaluation_scene_preparation_attempt.v1'
+        if preparation_only:
+            _require(request.get('status') == 'preparation_only'
+                     and type(request.get('maximum_spend_usd')) is int and request['maximum_spend_usd'] == 0
+                     and request.get('provider') == 'control_plane'
+                     and request.get('provider_allocation_permitted') is False
+                     and request.get('paid_authority_granted') is False)
+        _require((preparation_only or request.get('schema_version') == ATTEMPT_SCHEMA)
                  and request.get('intent_id') == owner_intent_id
                  and request.get('intent_digest') == owner['intent_digest']
                  and request.get('attempt_digest') == canonical_digest(request, digest_field='attempt_digest'))
         request_path = _canonical(birth_request_raw_ref['path'])
-        _require(request_path.parent == Path(owner_raw_ref['path']).parent / 'attempts'
+        _require(request_path.parent == Path(owner_raw_ref['path']).parent / ('preparation-attempts' if preparation_only else 'attempts')
                  and request_path.name == request.get('attempt_id', '') + '.json')
         store = Path(policy['generation_store'])
         key = hashlib.sha256(str(path).encode()).hexdigest()

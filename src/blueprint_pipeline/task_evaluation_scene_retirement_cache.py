@@ -145,17 +145,27 @@ def publication_authority(root):
     policy=access._policy()
     if policy is None:
         return None
-    key=hashlib.sha256(str(root).encode()).hexdigest()
-    try:
-        generation,_=load_document(Path(policy['generation_store'])/(key+'.json'),maximum=65536)
-    except FileNotFoundError:
+    path=_canonical(str(root))
+    roots=[Path(row['root']) for row in policy['roots'] if path.is_relative_to(Path(row['root']))]
+    if not roots:
         return None
-    with access.scene_access(root):
-        ref=generation.get('source_storage_authority_raw_ref')
-        if ref is None:
-            return None
-        selected_document(ref,maximum=65536)
-        return ref
+    for candidate in (path,*path.parents):
+        if not any(candidate.is_relative_to(anchor) for anchor in roots):
+            break
+        key=hashlib.sha256(str(candidate).encode()).hexdigest()
+        try:
+            generation,_=load_document(Path(policy['generation_store'])/(key+'.json'),maximum=65536)
+        except FileNotFoundError:
+            continue
+        _require(generation.get('canonical_path')==str(candidate)
+                 and generation.get('schema_version')=='scene_member_generation.v1',_ERROR)
+        with access.scene_access(path):
+            ref=generation.get('source_storage_authority_raw_ref')
+            if ref is None:
+                return None
+            selected_document(ref,maximum=65536)
+            return ref
+    return None
 
 
 def publish_content_generation(path,temporary,*,digest,size_bytes,authority):

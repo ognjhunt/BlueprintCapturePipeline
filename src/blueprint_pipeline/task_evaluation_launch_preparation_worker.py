@@ -1189,6 +1189,8 @@ def process_launch_preparation_queue(
         disk_reservations: list[DiskReservation] = []
         try:
             envelope = _load_envelope(claimed)
+            from .task_evaluation_scene_retirement_cache import enroll_preparation_storage
+            enroll_preparation_storage(queue_path=claimed,input_root=input_root)
             if disk_reservation_root is not None:
                 # Reserve what this message will actually fetch: references the
                 # content store does not already hold, plus a margin for the
