@@ -15,7 +15,7 @@ import math
 from pathlib import Path
 import struct
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .contracts import AgentExecutionError, AgentTool, ToolContext, canonical_json, digest
 
@@ -41,7 +41,12 @@ class ImageEvidenceCatalog:
         maximum_image_bytes: int = 16_000_000,
         maximum_image_pixels: int = 32_000_000,
         defer_path_validation: bool = False,
+        reader: Callable[[ImageEvidence, int], bytes] | None = None,
     ) -> None:
+        # ``reader(image, maximum_bytes)`` supplies an admitted image that is not
+        # on disk (a streamed attempt's archive member); its bytes are still
+        # digest-checked before disclosure, exactly like a file's.
+        self._reader = reader
         self.root = Path(root).expanduser().resolve()
         self.images = MappingProxyType({image.image_id: image for image in images})
         self._admitted_digests = frozenset(admitted_digests)
@@ -68,7 +73,7 @@ class ImageEvidenceCatalog:
         path = image.path.expanduser()
         if not path.is_absolute():
             path = self.root / path
-        if not path.resolve().is_relative_to(self.root) or not path.is_file():
+        if not path.resolve().is_relative_to(self.root) or not (path.is_file() or self._reader is not None):
             raise AgentExecutionError("agent_image_path_outside_evidence")
         if any(parent.is_symlink() for parent in (path, *path.parents) if parent != self.root
                and parent.is_relative_to(self.root)):
@@ -103,8 +108,11 @@ class ImageEvidenceCatalog:
         if image.sha256 not in self._admitted_digests:
             raise AgentExecutionError("agent_image_disclosure_not_admitted")
         path = self._safe_path(image)
-        with path.open("rb") as stream:
-            source = stream.read(self.maximum_image_bytes + 1)
+        if path.is_file() or self._reader is None:
+            with path.open("rb") as stream:
+                source = stream.read(self.maximum_image_bytes + 1)
+        else:
+            source = self._reader(image, self.maximum_image_bytes)
         if len(source) > self.maximum_image_bytes:
             raise AgentExecutionError("agent_image_byte_limit_exceeded")
         source_digest = "sha256:" + hashlib.sha256(source).hexdigest()

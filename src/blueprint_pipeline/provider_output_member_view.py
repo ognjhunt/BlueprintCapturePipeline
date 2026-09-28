@@ -79,6 +79,14 @@ DESCRIPTOR_SUFFIX = ".member_view.v1.json"
 MAXIMUM_ANCESTORS = 8
 PRESIGN_EXPIRATION_SECONDS = 3600
 POLICY_CANARY_CONTRACT = "policy_canary_output_member_contract.v1"
+# Refusals meaning the durable copy's bytes are not the indexed member's -- a
+# digest refusal to readers, never a transient transport failure.
+CONTENT_MISMATCH_CODES = frozenset({
+    "provider_output_member_digest_mismatch",
+    "provider_output_archive_deflate_invalid",
+    "provider_output_archive_deflate_end_invalid",
+    "provider_output_archive_member_size_mismatch",
+})
 
 
 def _policy_canary_member_needed(path: str) -> bool:

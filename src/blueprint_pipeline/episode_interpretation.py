@@ -15,6 +15,17 @@ the lossless ordered frames rather than trusting the compressed review video.
 The review-video bytes are still independently rehashed and bound into the
 input receipt.  Providers with native video support can implement the same
 protocol and transmit those exact bytes after passing the same rights gate.
+
+A streamed attempt keeps its PNG frames and review videos in the promoted
+provider archive. When a member view covers the evidence root, a frame or
+video that is not on disk is bound by its index digest and size, which must be
+the manifest's expectation, so the input receipt is byte-identical to download
+mode's; the request's ``frame_reader`` fetches only the frames an interpreter
+selects, by range and checked against the index. The index is Blueprint's own
+pass over the pinned archive, bound to a B2 copy whose full readback passed,
+so ``all_source_bytes_rehashed`` stays true; the request's
+``source_digest_basis`` records that basis outside the input receipt, and the
+interpretation receipt carries it.
 """
 
 from __future__ import annotations
@@ -25,7 +36,7 @@ import hashlib
 import json
 import mimetypes
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -146,6 +157,11 @@ class EpisodeInterpretationRequest:
     review_video_paths: tuple[Path, ...]
     ordered_frame_paths: tuple[Path, ...]
     input_receipt: Mapping[str, Any]
+    # Final fields, so positional construction keeps working. A streamed
+    # request reads a frame that is not on disk through ``frame_reader`` and
+    # records why its index-bound digests count as rehashed.
+    frame_reader: Callable[[int], bytes] | None = None
+    source_digest_basis: Mapping[str, Any] | None = None
 
 
 class EpisodeInterpreter(Protocol):
@@ -184,6 +200,29 @@ def _inside(root: Path, candidate: Path, *, error: str) -> Path:
     return resolved
 
 
+def _indexed(view, root: Path, candidate: Path) -> tuple[Path, dict[str, Any]] | None:
+    """A non-empty archive member missing on disk under ``root``: its path and index row."""
+    if view is None:
+        return None
+    resolved = candidate.expanduser().resolve()
+    if (resolved.exists() or candidate.is_symlink()
+            or (root != resolved and root not in resolved.parents)):
+        return None
+    row = view.member_at(resolved)
+    if row is None or row["size"] <= 0:
+        return None
+    return resolved, row
+
+
+def _member_view(root: Path):
+    from .provider_output_member_view import ProviderOutputMemberViewError, open_member_view
+
+    try:
+        return open_member_view(root)
+    except ProviderOutputMemberViewError as exc:
+        raise EpisodeInterpretationError("episode_interpretation_member_view_invalid") from exc
+
+
 def _validate_intrinsic_digest(value: Mapping[str, Any], *, digest_field: str, error: str) -> str:
     supplied = str(value.get(digest_field) or "")
     if not _SHA256.fullmatch(supplied) or supplied != canonical_digest(
@@ -218,7 +257,7 @@ def _frame_records(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def _verified_frames(
-    *, root: Path, manifest: Mapping[str, Any]
+    *, root: Path, manifest: Mapping[str, Any], view=None, indexed: set[int] | None = None,
 ) -> tuple[list[Path], list[dict[str, Any]]]:
     paths: list[Path] = []
     bindings: list[dict[str, Any]] = []
@@ -230,17 +269,26 @@ def _verified_frames(
                 f"episode_interpretation_frame_binding_invalid:{index}"
             )
         unresolved = Path(relative)
-        path = _inside(
-            root,
-            unresolved if unresolved.is_absolute() else root / unresolved,
-            error=f"episode_interpretation_frame_file_invalid:{index}",
-        )
-        if _file_sha256(path) != expected:
+        candidate = unresolved if unresolved.is_absolute() else root / unresolved
+        member = _indexed(view, root, candidate)
+        if member is None:
+            path = _inside(
+                root,
+                candidate,
+                error=f"episode_interpretation_frame_file_invalid:{index}",
+            )
+            observed_digest, observed_size = _file_sha256(path), path.stat().st_size
+        else:
+            # Streamed: the index vouches for the bytes; the manifest must agree.
+            path, observed_digest, observed_size = member[0], member[1]["sha256"], member[1]["size"]
+            if indexed is not None:
+                indexed.add(index)
+        if observed_digest != expected:
             raise EpisodeInterpretationError(
                 f"episode_interpretation_frame_digest_mismatch:{index}"
             )
         size = row.get("size_bytes")
-        if size is not None and size != path.stat().st_size:
+        if size is not None and size != observed_size:
             raise EpisodeInterpretationError(f"episode_interpretation_frame_size_mismatch:{index}")
         paths.append(path)
         bindings.append(
@@ -253,7 +301,7 @@ def _verified_frames(
                 "timestamp_ns": row.get("timestamp_ns"),
                 "relative_path": path.relative_to(root).as_posix(),
                 "sha256": expected,
-                "size_bytes": path.stat().st_size,
+                "size_bytes": observed_size,
             }
         )
     if not paths:
@@ -365,22 +413,35 @@ def build_episode_interpretation_request(
         digest_field="frame_manifest_digest",
         error="episode_interpretation_frame_manifest_digest_invalid",
     )
-    frames, frame_bindings = _verified_frames(root=root, manifest=manifest)
+    view = _member_view(root)
+    indexed_frames: set[int] = set()
+    frames, frame_bindings = _verified_frames(
+        root=root, manifest=manifest, view=view, indexed=indexed_frames
+    )
     videos: list[Path] = []
     video_bindings: list[dict[str, Any]] = []
+    indexed_videos: list[int] = []
     for index, raw in enumerate(review_video_paths):
-        path = source(raw, f"episode_interpretation_review_video_invalid:{index}")
+        unresolved = Path(raw).expanduser()
+        member = _indexed(view, root, unresolved if unresolved.is_absolute() else root / unresolved)
+        path = (
+            source(raw, f"episode_interpretation_review_video_invalid:{index}")
+            if member is None
+            else member[0]
+        )
         if path.suffix.lower() not in {".mp4", ".mov", ".webm", ".mkv"}:
             raise EpisodeInterpretationError(
                 f"episode_interpretation_review_video_type_invalid:{index}"
             )
         videos.append(path)
+        if member is not None:
+            indexed_videos.append(index)
         video_bindings.append(
             {
                 "video_index": index,
                 "relative_path": path.relative_to(root).as_posix(),
-                "sha256": _file_sha256(path),
-                "size_bytes": path.stat().st_size,
+                "sha256": _file_sha256(path) if member is None else member[1]["sha256"],
+                "size_bytes": path.stat().st_size if member is None else member[1]["size"],
             }
         )
     artifacts = {
@@ -411,6 +472,42 @@ def build_episode_interpretation_request(
         "input_bundle_digest": "",
     }
     receipt["input_bundle_digest"] = canonical_digest(receipt, digest_field="input_bundle_digest")
+    frame_reader = None
+    basis = None
+    if indexed_frames or indexed_videos:
+        archive = view.index["archive"]
+        basis = {
+            "schema_version": "episode_interpretation_source_digest_basis.v1",
+            "basis": "provider_output_member_index",
+            "member_index_digest": view.index["index_digest"],
+            "archive_sha256": archive["sha256"],
+            "durable_reference_uri": archive["durable_reference"]["uri"],
+            "full_byte_readback_passed": (
+                archive["durable_reference"]["full_byte_service_account_readback_passed"] is True
+            ),
+            "indexed_lossless_frames": sorted(indexed_frames),
+            "indexed_review_videos": indexed_videos,
+        }
+
+        def frame_reader(index: int) -> bytes:
+            """One selected frame: from disk, or by one checked range request."""
+            path = frames[index]
+            if index not in indexed_frames:
+                return path.read_bytes()
+            from .provider_output_member_view import ProviderOutputMemberViewError
+
+            from .provider_output_member_view import CONTENT_MISMATCH_CODES
+
+            try:
+                return view.read_member(
+                    view.relative(path), maximum_bytes=frame_bindings[index]["size_bytes"]
+                )
+            except ProviderOutputMemberViewError as exc:
+                changed = str(exc) in CONTENT_MISMATCH_CODES
+                raise EpisodeInterpretationError(
+                    f"episode_interpretation_frame_{'changed' if changed else 'read_failed'}:{index}"
+                ) from exc
+
     return EpisodeInterpretationRequest(
         episode_id=episode_id,
         candidate_policy_id=candidate_policy_id,
@@ -423,6 +520,8 @@ def build_episode_interpretation_request(
         review_video_paths=tuple(videos),
         ordered_frame_paths=tuple(frames),
         input_receipt=receipt,
+        frame_reader=frame_reader,
+        source_digest_basis=basis,
     )
 
 
@@ -673,6 +772,8 @@ def materialize_episode_interpretation_abstention(
         },
         "receipt_digest": "",
     }
+    if request.source_digest_basis is not None:
+        receipt["source_digest_basis"] = dict(request.source_digest_basis)
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
@@ -765,6 +866,8 @@ def interpret_episode(
         },
         "receipt_digest": "",
     }
+    if request.source_digest_basis is not None:
+        receipt["source_digest_basis"] = dict(request.source_digest_basis)
     metadata_provider = getattr(interpreter, "execution_metadata", None)
     if metadata_provider is not None and provider_called:
         metadata = dict(metadata_provider())
@@ -1151,6 +1254,11 @@ class OpenAIMultimodalEpisodeInterpreter:
         for index in selected:
             path = request.ordered_frame_paths[index]
             mime = mimetypes.guess_type(path.name)[0] or "image/png"
+            frame = (
+                request.frame_reader(index)
+                if request.frame_reader is not None
+                else path.read_bytes()
+            )
             content.extend(
                 [
                     {
@@ -1161,7 +1269,7 @@ class OpenAIMultimodalEpisodeInterpreter:
                         "type": "input_image",
                         "image_url": (
                             f"data:{mime};base64,"
-                            + base64.b64encode(path.read_bytes()).decode("ascii")
+                            + base64.b64encode(frame).decode("ascii")
                         ),
                         "detail": "low",
                     },
