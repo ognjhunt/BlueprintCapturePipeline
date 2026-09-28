@@ -113,3 +113,37 @@ def test_recursive_directory_cap_is_checked_before_each_open(tmp_path, monkeypat
     with pytest.raises(m.AcquisitionError, match='directories_limit'):
         m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)])
     assert calls == ['/']
+
+
+def test_final_root_named_identity_is_rechecked(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    m = module()
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        original = m.os.stat
+        def changed(name, *args, **kwargs):
+            info = original(name, *args, **kwargs)
+            if name == '/':
+                return SimpleNamespace(**{key: getattr(info, key) + (1 if key == 'st_ino' else 0)
+                                         for key in ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_nlink')})
+            return info
+        monkeypatch.setattr(m.os, 'stat', changed)
+        with pytest.raises(m.AcquisitionError, match='metadata_changed'):
+            reader.verify()
+
+
+def test_final_retained_directory_descriptor_identity_is_rechecked(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    m = module()
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        original = m.os.fstat
+        victim = reader.directories[str(tmp_path)][0]
+        def changed(fd):
+            info = original(fd)
+            if fd == victim:
+                return SimpleNamespace(**{key: getattr(info, key) + (1 if key == 'st_ino' else 0)
+                                         for key in ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_nlink')})
+            return info
+        with monkeypatch.context() as scoped:
+            scoped.setattr(m.os, 'fstat', changed)
+            with pytest.raises(m.AcquisitionError, match='metadata_changed'):
+                reader.verify()

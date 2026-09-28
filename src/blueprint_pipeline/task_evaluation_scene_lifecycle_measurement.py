@@ -43,24 +43,31 @@ def measure(reader, historical, sink, families):
     ordered = _work_order(budget, sorted, declared)
     roots, parent_of = [], {}
     for path in _work_items(ordered, budget):
-        ancestor = next((root for root in roots if PurePosixPath(path).is_relative_to(PurePosixPath(root))), None)
+        ancestor = next((root for root in _work_items(roots, budget) if PurePosixPath(path).is_relative_to(PurePosixPath(root))), None)
+        budget.charge('facts')
         if ancestor is None:
             roots.append(path)
         else:
             parent_of[path] = ancestor
-    inode_index, rows, sharing, regular_keys = {}, [], sink.rows(), {}
+    inode_index, rows, sharing, regular_keys = {}, sink.rows(), sink.rows(), {}
     complete_all = bool(roots)
     for root in _work_items(roots, budget):
         budget.available('rows', 1)
+        sink.available_occurrence()
         budget.charge('facts')
         proofs = sink.reserve_provenance(proof for row in declared[root] for proof in row['source_provenance'])
         row = {'path': root, 'kinds': _work_order(budget, sorted, {r['kind'] for r in declared[root]}),
                'status': 'observed_scoped_metadata', 'measured_allocated_bytes': None,
-               'observed_allocated_bytes': 0, 'observed_regular_names': 0, 'observed_unique_regular_inodes': 0,
+               'observed_allocated_bytes': 0, 'measured_logical_bytes': None, 'observed_logical_bytes': 0,
+               'measured_apparent_bytes': None, 'observed_apparent_bytes': 0,
+               'logical_method': 'unique_regular_inode_stat_size_first_member_attribution',
+               'apparent_method': 'regular_name_stat_size_including_hardlink_names',
+               'allocated_method': 'unique_inode_stat_blocks_512_else_stat_size_first_member_attribution',
+               'observed_regular_names': 0, 'observed_unique_regular_inodes': 0,
                'exclusive_ownership_proven': False, 'payload_bytes_verified': False, 'action': 'KEEP',
                'keeps': [], 'source_provenance': proofs}
         stack, owned, regular, total, complete = [root], set(), {}, 0, True
-        root_device = None
+        root_device, logical, apparent = None, 0, 0
         while stack:
             budget.charge('values')
             path = stack.pop()
@@ -77,6 +84,7 @@ def measure(reader, historical, sink, families):
                 row['keeps'].append('cross_device_link_or_special_member')
                 continue
             inode = info.st_dev, info.st_ino
+            require(type(info.st_size) is int and info.st_size >= 0, 'allocated_metadata_invalid')
             amount = allocated(info)
             if inode not in inode_index:
                 require(len(inode_index) < 20_000, 'inode_index_limit')
@@ -84,6 +92,8 @@ def measure(reader, historical, sink, families):
                 inode_index[inode] = {'first_path': path, 'first_root': root, 'allocated_bytes': amount,
                                       'regular': stat.S_ISREG(info.st_mode), 'names': set(), 'nlink': info.st_nlink}
                 total += amount
+                if stat.S_ISREG(info.st_mode):
+                    logical += info.st_size
             else:
                 previous = inode_index[inode]
                 require(previous['allocated_bytes'] == amount and previous['nlink'] == info.st_nlink,
@@ -93,6 +103,7 @@ def measure(reader, historical, sink, families):
                                 'status': 'kept_shared_inode', 'action': 'KEEP', 'exclusive_ownership_proven': False})
             if stat.S_ISREG(info.st_mode):
                 row['observed_regular_names'] += 1
+                apparent += info.st_size
                 budget.charge('facts')
                 inode_index[inode]['names'].add(path)
                 regular[inode] = info.st_nlink
@@ -106,26 +117,38 @@ def measure(reader, historical, sink, families):
                     complete = False
                     row['keeps'].append('member_directory_unavailable')
         row['observed_unique_regular_inodes'] = len(regular)
+        row['observed_logical_bytes'], row['observed_apparent_bytes'] = logical, apparent
+        row['measured_logical_bytes'] = logical if complete else None
+        row['measured_apparent_bytes'] = apparent if complete else None
         row['observed_allocated_bytes'] = total
         row['measured_allocated_bytes'] = total if complete else None
         if not complete:
             row['status'] = 'incomplete_scoped_metadata'
-        regular_keys[root] = tuple(regular)
+        regular_keys[root] = _work_order(budget, tuple, regular)
+        if any(inode_index[inode]['nlink'] > len(inode_index[inode]['names'])
+               for inode in _work_items(regular, budget)):
+            row['keeps'].append('external_hardlink_or_unobserved_alias')
+        row['keeps'] = _work_order(budget, sorted, set(row['keeps']))
         rows.append(row)
         complete_all = complete_all and complete
-    # Compare link counts only for regular files, against ALL observed distinct
-    # names. Directory link counts describe dots/subdirectories, never ownership.
+    # A later member may reveal another name for an already charged inode.
+    # Only remove the conservative keep after all names are observed; emitted
+    # rows never grow after their reservation and no allowance is refunded.
     for row in _work_items(rows, budget):
-        for inode in _work_items(regular_keys[row['path']], budget):
-            observed = inode_index[inode]
-            if observed['nlink'] > len(observed['names']):
-                row['keeps'].append('external_hardlink_or_unobserved_alias')
-        row['keeps'] = _work_order(budget, sorted, set(row['keeps']))
+        if all(inode_index[inode]['nlink'] <= len(inode_index[inode]['names'])
+               for inode in _work_items(regular_keys[row['path']], budget)):
+            row['keeps'] = [reason for reason in _work_items(row['keeps'], budget)
+                            if reason != 'external_hardlink_or_unobserved_alias']
     for path, ancestor in _work_items(parent_of.items(), budget):
+        budget.available('rows', 1)
+        sink.available_occurrence()
         rows.append({'path': path, 'status': 'coalesced_descendant_member', 'attributed_root': ancestor,
                      'measured_allocated_bytes': None, 'action': 'KEEP', 'exclusive_ownership_proven': False,
                      'source_provenance': sink.reserve_provenance(p for r in declared[path] for p in r['source_provenance'])})
-    by_path = {row['path']: row for row in rows}
+    by_path = {}
+    for row in _work_items(rows, budget):
+        budget.charge('facts')
+        by_path[row['path']] = row
     for family in _work_items(families, budget):
         selected = [path for path in _work_items(declared, budget)
                     if any(KINDS.get(row['kind']) == family['family'] for row in declared[path])]
@@ -136,4 +159,4 @@ def measure(reader, historical, sink, families):
             family['measured_allocated_bytes'] = sum(own) if all(value is not None for value in own) else None
     total = sum(row['allocated_bytes'] for row in inode_index.values()) if inode_index else None
     require(total is None or type(total) is int and total >= 0, 'allocated_metadata_invalid')
-    return sink.rows(rows), sharing, total, complete_all
+    return rows, sharing, total, complete_all

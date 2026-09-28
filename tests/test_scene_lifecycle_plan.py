@@ -126,3 +126,50 @@ def test_hardlink_accounted_once_and_external_link_keeps_member(tmp_path):
     assert row['observed_unique_regular_inodes'] == 1
     assert 'external_hardlink_or_unobserved_alias' in row['keeps']
     assert row['measured_allocated_bytes'] == member.stat().st_blocks * 512 + (member / 'payload.bin').stat().st_blocks * 512
+
+
+def test_measurement_reserves_each_member_before_building_the_next(tmp_path, monkeypatch):
+    import pytest
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_measurement as m
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_acquisition import Acquisition
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    sink = RetainedEmissionBudget(max_bytes=100000, max_rows=100, max_references=100, work_budget=budget)
+    first, second = tmp_path.resolve() / 'first', tmp_path.resolve() / 'second'
+    first.write_bytes(b'1')
+    second.write_bytes(b'2')
+    monkeypatch.setattr(m, 'members', lambda *a: {str(path): [{'kind': 'preparation_projected_file', 'source_provenance': []}]
+                                                for path in (first, second)})
+    budget.charge('rows', budget.limits['rows'] - 1)
+    with Acquisition(budget, [str(tmp_path.resolve())]) as reader:
+        original = reader.stat
+        def checked(path):
+            assert path != str(second), 'next member built before shared row refusal'
+            return original(path)
+        monkeypatch.setattr(reader, 'stat', checked)
+        with pytest.raises(ValueError, match='reference_rows_limit'):
+            m.measure(reader, {}, sink, [])
+
+
+def test_measurement_reserves_output_before_next_member(tmp_path, monkeypatch):
+    import pytest
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_measurement as m
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_acquisition import Acquisition
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    sink = RetainedEmissionBudget(max_bytes=1, max_rows=100, max_references=100, work_budget=budget)
+    first, second = tmp_path.resolve() / 'first', tmp_path.resolve() / 'second'
+    first.write_bytes(b'1')
+    second.write_bytes(b'2')
+    monkeypatch.setattr(m, 'members', lambda *a: {str(path): [{'kind': 'preparation_projected_file', 'source_provenance': []}]
+                                                for path in (first, second)})
+    with Acquisition(budget, [str(tmp_path.resolve())]) as reader:
+        original = reader.stat
+        def checked(path):
+            assert path != str(second), 'next member built before shared output refusal'
+            return original(path)
+        monkeypatch.setattr(reader, 'stat', checked)
+        with pytest.raises(ValueError, match='retained_lineage_emission_limit'):
+            m.measure(reader, {}, sink, [])

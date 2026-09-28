@@ -182,6 +182,14 @@ class Acquisition:
                 self._close(fd)
 
     def verify(self):
+        # Named root and every retained directory handle belong to the first
+        # observation. Relative children alone cannot establish those identities.
+        root_info = self.directories['/'][1]
+        self.budget.tick()
+        require(identity(os.stat('/', follow_symlinks=False)) == identity(root_info), 'metadata_changed')
+        for fd, expected in self.directories.values():
+            self.budget.tick()
+            require(identity(os.fstat(fd)) == identity(expected), 'metadata_changed')
         for parent, name, expected in self.observations.values():
             self.budget.tick()
             info = os.stat(name, dir_fd=parent, follow_symlinks=False)
