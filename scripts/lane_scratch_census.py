@@ -29,8 +29,18 @@ from blueprint_pipeline.control_plane_lane_scratch_decisions import (  # noqa: E
 )
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+class _CensusParser(argparse.ArgumentParser):
+    validation_mode = False
+
+    def error(self, message: str) -> None:
+        if self.validation_mode:
+            raise CensusDecisionError("census_annotations_invalid")
+        super().error(message)
+
+
+def _parser(*, validation_mode: bool = False) -> argparse.ArgumentParser:
+    parser = _CensusParser(description=__doc__)
+    parser.validation_mode = validation_mode
     parser.add_argument("--work-root", default=str(DEFAULT_WORK_ROOT))
     parser.add_argument("--inputs-root", default=str(DEFAULT_INPUTS_ROOT))
     parser.add_argument("--process-root", type=Path, default=Path("/proc"))
@@ -86,6 +96,13 @@ def _write_json(path: Path, report: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _validation_refusal(code: str) -> int:
+    report = {"schema_version": VALIDATION_SCHEMA, "status": "refused", "blockers": [code],
+              "mutations": 0, "execution_authorized": False,
+              "requires_fresh_reference_check": True}
+    print(encode_validation_report(report).decode("utf-8"), end="")
+    return 1
+
 
 def _validation_mode(args, argv: list[str]) -> int:
     scan_options = {"--process-root", "--pins-root", "--release-link", "--queue-root",
@@ -106,19 +123,21 @@ def _validation_mode(args, argv: list[str]) -> int:
                 input_paths=(args.validate_census, args.annotations),
                 input_identities=(census_identity, annotation_identity))
     except CensusDecisionError as exc:
-        report = {"schema_version": VALIDATION_SCHEMA, "status": "refused", "blockers": [exc.code],
-                  "mutations": 0, "execution_authorized": False,
-                  "requires_fresh_reference_check": True}
-        print(encode_validation_report(report).decode("utf-8"), end="")
-        return 1
+        return _validation_refusal(exc.code)
     print(payload.decode("utf-8"), end="")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = _parser()
     arguments = list(sys.argv[1:] if argv is None else argv)
-    args = parser.parse_args(arguments)
+    validation_intent = any(option.startswith(token.split("=", 1)[0])
+                            for token in arguments if token.startswith("--") and len(token) > 2
+                            for option in ("--validate-census", "--annotations"))
+    parser = _parser(validation_mode=validation_intent)
+    try:
+        args = parser.parse_args(arguments)
+    except CensusDecisionError as exc:
+        return _validation_refusal(exc.code)
     if args.validate_census is not None or args.annotations is not None:
         return _validation_mode(args, arguments)
     if not 0 < args.max_seconds <= 240:

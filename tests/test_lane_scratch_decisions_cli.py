@@ -150,3 +150,33 @@ def test_cli_output_parent_replacement_cannot_redirect_over_source(tmp_path, mon
     assert replaced
     assert (census.read_bytes(), annotations.read_bytes()) == before
     assert (old_parent / census.name).read_bytes() == capsys.readouterr().out.encode()
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--validate-census'], ['--validate-c'], ['--annot'],
+    ['--validate-census', 'census.json', '--max-seconds', 'PRIVATE_TEST_MARKER'],
+    ['--validate-c', 'census.json', '--max-s', 'PRIVATE_TEST_MARKER'],
+    ['--annotations', 'annotations.json', '--unexpected='+('PRIVATE_TEST_MARKER'*400)],
+    ['--annot', 'annotations.json', '--unexpected=PRIVATE_TEST_MARKER'],
+    ['--validate-census', 'census.json', '--queue-root', 'PRIVATE_TEST_MARKER', '--queue-inventory-empty'],
+])
+def test_cli_validation_parser_failures_are_typed_bounded_and_do_not_echo(arguments, monkeypatch, capsys):
+    def forbidden(*args, **kwargs):
+        raise AssertionError('parse failure must not scan or read inputs')
+    monkeypatch.setattr(cli, 'build_census', forbidden)
+    monkeypatch.setattr(cli, 'read_census_input_record', forbidden)
+    assert cli.main(arguments) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ''
+    assert len(captured.out.encode()) <= 4096
+    assert 'PRIVATE_TEST_MARKER' not in captured.out
+    assert 'census.json' not in captured.out and 'annotations.json' not in captured.out
+    assert json.loads(captured.out)['blockers'] == ['census_annotations_invalid']
+
+
+def test_cli_ordinary_scan_parser_behavior_remains_unchanged(capsys):
+    with pytest.raises(SystemExit) as raised:
+        cli.main(['--max-seconds', 'not-a-number'])
+    assert raised.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == '' and 'invalid float value' in captured.err
