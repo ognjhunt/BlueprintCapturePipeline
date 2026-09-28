@@ -628,7 +628,8 @@ to go. A group's bytes count once, when its last name goes. A failed recheck
 stops the group: the names already unlinked were scratch and stay unlinked, the
 bytes live on in the names left, and the next tick plans the rest, as shared
 scratch while two replays hold it and by the rule above once one does. The
-directories left empty are pruned as above. No scratch file's bytes are read;
+directories a replay's removals leave empty are pruned as above right after them,
+before the next replay. No scratch file's bytes are read;
 only the holders' small reports are hashed, and only on a tick that applies.
 
 This removal needs its own `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1`

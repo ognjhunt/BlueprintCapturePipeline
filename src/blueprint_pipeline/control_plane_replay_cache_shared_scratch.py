@@ -28,9 +28,9 @@ candidate through directory descriptors held from it down, rechecking each name 
 its device, inode, size and mtime, and a link count equal to the names still to go. A group's
 bytes count only when its last name goes. A recheck that fails stops the group; the names already
 unlinked were scratch and stay unlinked, the bytes live on in the names left, and the next tick
-plans the rest, whose names are again all of its links. The directories left empty in each
-replay touched are then pruned as the per-replay rule prunes them. No scratch file's bytes are
-read; only the holders' reports are hashed.
+plans the rest, whose names are again all of its links. The directories a replay's removals
+leave empty are pruned right after them, before the next replay, as the per-replay rule prunes
+them. No scratch file's bytes are read; only the holders' reports are hashed.
 """
 
 from __future__ import annotations
@@ -267,16 +267,16 @@ def _unlink_names(held: Any, group: dict[str, Any], names: Sequence[Path], links
 
 
 def _unlink_in(holder: dict[str, Any], pending: Sequence[tuple[int, list[Path]]],
-               candidates: Sequence[dict[str, Any]], links: list[int]) -> tuple[dict[int, str], bool]:
+               candidates: Sequence[dict[str, Any]], links: list[int]) -> tuple[dict[int, str], list[dict[str, str]]]:
     """Recheck and unlink the pending candidates' names in one replay, through descriptors held from
-    it down: why each group stopped here, and whether any name here went. ``links`` counts each
-    candidate's links still to go."""
+    it down, then prune what that left empty there as the per-replay rule prunes: why each group
+    stopped here, and the prune's typed skips. ``links`` counts each candidate's links still to go."""
 
     child = holder["path"]
     try:
         held = retention._HeldChild(child.parent, child.name)
     except OSError as exc:
-        return {position: _failure(exc) for position, _names in pending}, False
+        return {position: _failure(exc) for position, _names in pending}, []
     stopped: dict[int, str] = {}
     went = False
     try:
@@ -285,9 +285,9 @@ def _unlink_in(holder: dict[str, Any], pending: Sequence[tuple[int, list[Path]]]
             opened = os.fstat(held.directory(()))
             same = held.named_by(child) and (opened.st_dev, opened.st_ino) == (holder["device"], holder["inode"])
         except OSError as exc:
-            return {position: _failure(exc) for position, _names in pending}, False
+            return {position: _failure(exc) for position, _names in pending}, []
         if not same:
-            return {position: "path_changed" for position, _names in pending}, False
+            return {position: "path_changed" for position, _names in pending}, []
         for position, names in pending:
             group = candidates[position]
             if held.device != group["dev"]:
@@ -298,23 +298,8 @@ def _unlink_in(holder: dict[str, Any], pending: Sequence[tuple[int, list[Path]]]
             went = went or unlinked > 0
             if why:
                 stopped[position] = why
-    finally:
-        held.close()
-    return stopped, went
-
-
-def _prune(child: Path) -> list[dict[str, str]]:
-    """Remove the directories left empty in the child's ``prepared-references``, as the per-replay
-    rule does; typed skips."""
-
-    try:
-        held = retention._HeldChild(child.parent, child.name)
-    except OSError as exc:
-        return [{"path": str(child), "reason": f"prune_failed:{type(exc).__name__}"}]
-    try:
-        if not held.named_by(child):
-            return [{"path": str(child), "reason": "prune_failed:changed"}]
-        return held.item(retention._remove_empty_directories, child)
+        # Before the next replay is looked at, so an apply cut short strands no emptied directory here.
+        return stopped, held.item(retention._remove_empty_directories, child) if went else []
     finally:
         held.close()
 
@@ -366,7 +351,7 @@ def apply_shared_scratch(plan: dict[str, Any], *, process_root: Path = Path("/pr
             for position, _names in names_in[index] if why else ():
                 stopped.setdefault(position, why)
     links = [group["nlink"] for group in candidates]
-    touched: list[int] = []
+    pruned: list[dict[str, str]] = []
     for index in order:
         pending = [(position, names) for position, names in names_in[index] if position not in stopped]
         if not pending:
@@ -375,11 +360,9 @@ def apply_shared_scratch(plan: dict[str, Any], *, process_root: Path = Path("/pr
         if why:
             stopped.update((position, why) for position, _names in pending)
             continue
-        here, went = _unlink_in(holders[index], pending, candidates, links)
+        here, skipped = _unlink_in(holders[index], pending, candidates, links)
         stopped.update(here)
-        if went:
-            touched.append(index)
-    pruned = [row for index in touched for row in _prune(holders[index]["path"])]
+        pruned += skipped
     return {
         # A group no replay stopped lost every name, its last with its last link.
         "removed": [group for position, group in enumerate(candidates) if position not in stopped],

@@ -485,8 +485,10 @@ def test_interrupted_shared_reclaim_resumes_next_tick(tmp_path, monkeypatch, int
     assert phase["removed_bytes"] == sizes["wide"] + sizes["narrow"]
     assert (block["kept_by_reason"], phase["errors"]) == ({}, [])
     assert not any(path.exists() for path in (*wide_names, *narrow_names))
-    for child in (second, third):
-        assert not any((child / "prepared-references").iterdir())
+    # Each replay is pruned right after its own removals, so a unit killed after the first replay's
+    # leaves no emptied directories there for any later tick to miss.
+    for child in (first, second, third):
+        assert not any((child / "prepared-references").iterdir()), child.name
     assert _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["removed_bytes"] == 0
 
 
