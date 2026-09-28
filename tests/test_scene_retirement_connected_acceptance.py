@@ -57,7 +57,7 @@ def _record_pairs(args):
             yield from values
 
 
-def _rebase_complete_graph(args, anchor, changes, *, requests=None, immutable_paths=()):
+def _rebase_complete_graph(args, anchor, changes, *, requests=None, immutable_paths=(), complete_identities=False):
     """Resolve fixture aliases through the complete acyclic raw-record DAG.
 
     The existing stat-only fixture rebaser intentionally replaces a selector
@@ -101,6 +101,11 @@ def _rebase_complete_graph(args, anchor, changes, *, requests=None, immutable_pa
         if replacement is not None:
             return copy.deepcopy(replacement)
         changed = {key: visit(item) for key, item in value.items()}
+        if complete_identities:
+            for key in ('identity','scene_identity','task_identity','output_identity','subject_identity'):
+                identity=changed.get(key)
+                if isinstance(identity,dict) and 'id' in identity and 'version' not in identity:
+                    identity['version']='v1'
         for field in ('sha256', 'digest'):
             selected = value.get(field)
             if isinstance(selected, str) and 'size_bytes' in value:
@@ -223,11 +228,139 @@ def _add_current_sam(args, owned_current_task):
             ref(previous_pair)['sha256']: ref(parent_pair)['sha256']}
 
 
+def _complete_current_requests(args):
+    """Tiny actual producer fields; no readback, reader or ownership waiver."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    args=_rebase_complete_graph(args,'/retained',{},complete_identities=True)
+    maps={}
+    leaf={'uri':'s3://fixture/contracts.bin','digest':'sha256:'+hashlib.sha256(b'x').hexdigest(),'size_bytes':1}
+    native_revision=args['bridge_records']['configured_revisions'][0]
+    revision_ref={'uri':'s3://fixture/revision.json','digest':_raw_pair(native_revision)['sha256'],
+        'size_bytes':len(native_revision[1])}
+    requests={}
+    def request_value(value):
+        body=copy.deepcopy(value)
+        if body['schema_version']=='task_evaluation_launch_activation_request.v1':
+            initial=body['lane']=='task_evaluation_scene_configuration'
+            body['lineage']={'kind':'initial_project' if initial else 'predecessor',**{
+                k:dict(leaf) for k in (('project_spend_reconciliation','initial_provider_zero') if initial else
+                    ('prior_authority','prior_result','prior_launch_receipt','prior_webapp_sync','prior_provider_zero',
+                     'prior_spend_reconciliation','construction_result'))}}
+            body.setdefault('authorization',{}).update(reference='fixture-owner-reviewed')
+            body['requested_mutations']={'profile_publication':True,'catalog_synchronization':True,
+                'standing_authorization':True,'policy_campaign_queue':False}
+            return body
+        scene=body['scene']
+        if body['preparation_id']=='native-prep':
+            scene.update(mode='reuse_configured_revision',configured_revision=dict(revision_ref))
+        else:
+            scene.update(mode='configure_source_scene',source_manifest=dict(leaf),
+                appearance={'kind':'observed','representation':dict(leaf),'renderer_qualification':dict(leaf)},
+                geometry={'kind':'observed','collision':dict(leaf),'validation':dict(leaf)},
+                registration={k:dict(leaf) for k in ('metric_registration','support_plane','robot_mount_interface',
+                    'workspace_clearance','camera_calibration')},
+                rights={'admission':dict(leaf),'evidence':[{'role':role,'artifact':dict(leaf)}
+                    for role in ('publisher_terms','human_authority_record')],'source_bytes_redistributable':False})
+        body.setdefault('construction',{'mode':'reuse_configured_scene'})
+        task=body['task']
+        artifact=task.pop('artifact',None)
+        if body['preparation_id']=='native-prep':
+            task.update(binding_mode='reuse_configured_template',subject={'mode':'configured_scene_object'})
+        else:
+            task.update(binding_mode='define_configuration_template',subject={'mode':'configured_scene_object'},
+                definition=artifact or dict(leaf),success_criteria=dict(leaf),execution=dict(leaf))
+        body['sensors']={'configuration':dict(leaf)}
+        body.setdefault('runtime',{}).update(health_protocol=dict(leaf))
+        body['runtime'].setdefault('mounts',[])
+        for mount in body['runtime']['mounts']:
+            mount.update(mode='read_only',container_path='/inputs/sam31-plan.json')
+        bundle=body.setdefault('execution_adapter',{}).get('runtime_source_bundle',{})
+        body['execution_adapter']['runtime_source_bundle']={**leaf,**bundle}
+        if body['run_mode']!='scene_configuration':
+            body['robot']={k:dict(leaf) for k in ('configuration','kinematics','joint_bounds','base_registration','controller_configuration')}
+            body['controller']={'kind':'zero_action','configuration':dict(leaf)}
+        return body
+    for group in ('seed_records','source_records','bridge_records'):
+        for role,rows in args[group].items():
+            for name,raw in rows if role not in ('intent','projection') else []:
+                value=json.loads(raw) if raw.startswith(b'{') else {}
+                if value.get('schema_version') in ('task_evaluation_launch_preparation_envelope.v1','task_evaluation_launch_activation_envelope.v1'):
+                    requests[value['request_digest']]=request_value(value['request'])
+    args=_rebase_complete_graph(args,'/retained',{},requests=requests)
+    # The actual worker preserves every materialized request leaf, with content
+    # reuse by raw digest. Keep original transitive result rows as well.
+    parent={}
+    for group in ('seed_records','source_records','bridge_records'):
+        for role,rows in args[group].items():
+            for name,raw in rows if role not in ('intent','projection') else []:
+                value=json.loads(raw) if raw.startswith(b'{') else {}
+                if value.get('schema_version')=='task_evaluation_launch_preparation_envelope.v1':
+                    parent[value['request']['preparation_id']]=value['request']
+    def leaves(value,path=''):
+        if isinstance(value,dict):
+            if set(value)=={'uri','digest','size_bytes'}:
+                yield path,value
+            else:
+                for key,item in value.items():
+                    yield from leaves(item,path+'.'+key if path else key)
+        elif isinstance(value,list):
+            for i,item in enumerate(value):
+                yield from leaves(item,path+'.'+str(i))
+    changed_results={}
+    for group in ('seed_records','bridge_records'):
+        for role,rows in args[group].items():
+            for i,(name,raw) in enumerate(rows if role not in ('intent','projection') else []):
+                value=json.loads(raw) if raw.startswith(b'{') else {}
+                if value.get('schema_version')!='task_evaluation_launch_preparation_result.v1':
+                    continue
+                old=value['result_digest']
+                request=parent[value['preparation_id']]
+                refs={r['contract_path']:r for r in value.get('references',[])}
+                if 'task.artifact' in refs:
+                    row=refs.pop('task.artifact')
+                    row['contract_path']='task.definition'
+                    refs['task.definition']=row
+                for contract,remote in leaves(request):
+                    refs.setdefault(contract,dict(contract_path=contract,**remote,
+                        materialized_path=args['roots']['preparation_input_root']+'/'+value['preparation_id']+'/'+remote['digest'][7:],
+                        content_addressed_reuse=False,full_byte_service_account_readback_passed=True))
+                value.update(references=list(refs.values()),reference_count=len(refs),
+                    unique_object_count=len({(r['digest'],r['size_bytes']) for r in refs.values()}),content_addressed_reuse_count=0)
+                value['result_digest']=canonical_digest(value,digest_field='result_digest')
+                maps[old]=value['result_digest']
+                changed_results[value['preparation_id']]=value
+                rows[i]=(name,json.dumps(value,sort_keys=True).encode())
+    from blueprint_pipeline.task_evaluation_scene_compilation_owner_preparations import HANDOFF,PRE
+    rows=args['downstream_records']['compilation_envelopes']
+    for i,(name,raw) in enumerate(rows):
+        value=json.loads(raw)
+        final=changed_results[value['preparation_id']]
+        inverse={k:v for k,v in final.items() if k not in HANDOFF|{'result_digest'}}
+        inverse['status']=PRE
+        old=value['envelope_digest']
+        value.update(materialized_references=final['references'],request=parent[value['preparation_id']],
+            preparation_result_digest=canonical_digest(inverse,digest_field='result_digest'))
+        value['envelope_digest']=canonical_digest(value,digest_field='envelope_digest')
+        maps[old]=value['envelope_digest']
+        rows[i]=(name,json.dumps(value,sort_keys=True).encode())
+    args=_rebase_complete_graph(args,'/retained',maps)
+    for i,(name,raw) in enumerate(args['seed_records']['activation_envelopes']):
+        args['seed_records']['activation_envelopes'][i]=(name.replace('/pending/','/prepared/'),raw)
+    local=args['roots']['preparation_input_root']+'/native-prep/'+revision_ref['digest'][7:]
+    args['bridge_records']['configured_revisions']=[(local,native_revision[1])]
+    args['retained_metadata_roots'].append(args['roots']['preparation_input_root'])
+    return args
+
+
+def _raw_pair(pair):
+    return {'sha256':'sha256:'+hashlib.sha256(pair[1]).hexdigest(),'size_bytes':len(pair[1])}
+
+
 def _native_fixture_records(args):
     """Complete genuine intake fields and tiny promised materialized bytes."""
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     maps = {}
-    args = copy.deepcopy(args)
+    args = _complete_current_requests(copy.deepcopy(args))
     for group in ('seed_records', 'downstream_records', 'source_records', 'bridge_records'):
         for role, pairs in args.get(group, {}).items():
             if role in ('intent', 'projection'):
@@ -254,10 +387,15 @@ def _native_fixture_records(args):
                 maps['sha256:' + hashlib.sha256(raw).hexdigest()] = 'sha256:' + hashlib.sha256(rewritten).hexdigest()
                 pairs[index] = (path, rewritten)
     payloads = {}
+    existing = {path: raw for path, raw in _record_pairs(args)}
+    retained_bytes = {('sha256:' + hashlib.sha256(raw).hexdigest(), len(raw)): raw
+                      for raw in existing.values()}
     def collect(value):
         if isinstance(value, dict):
             if {'materialized_path', 'digest', 'size_bytes'} <= value.keys():
-                payloads[value['materialized_path']] = (value['digest'], b'x' if value['size_bytes']==1 else b'tiny-bundle')
+                selected = retained_bytes.get((value['digest'], value['size_bytes']))
+                payloads[value['materialized_path']] = (value['digest'], selected if selected is not None
+                    else b'x' if value['size_bytes']==1 else b'tiny-bundle')
             for item in value.values():
                 collect(item)
         elif isinstance(value, list):
@@ -279,7 +417,10 @@ def _native_fixture_records(args):
                     row['digest'], json.dumps({'fixture':True}, sort_keys=True).encode())
     for path, (digest, raw) in payloads.items():
         maps[digest] = 'sha256:' + hashlib.sha256(raw).hexdigest()
-        args['source_records']['opaque_evidence'].append((path, raw))
+        if path in existing:
+            assert existing[path] == raw, 'materialized fixture conflicts with retained raw bytes'
+        else:
+            args['source_records']['opaque_evidence'].append((path, raw))
     return _rebase_complete_graph(args, '/retained', maps)
 
 
