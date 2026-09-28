@@ -18,7 +18,10 @@ def setup(tmp_path):
     from blueprint_pipeline.control_plane_preparation_activation_references import (
         RawReferenceProvenance, ReferenceRecordDisposition,
     )
-    args=rebase_graph(fixture(),tmp_path.resolve())
+    args=fixture()
+    args['seed_records']=args.pop('records')
+    args=rebase_graph(args,tmp_path.resolve())
+    args['records']=args.pop('seed_records')
     for role, rows in args['records'].items():
         rows=([rows] if rows else []) if role in {'intent','projection'} else rows
         for path,raw in rows:
