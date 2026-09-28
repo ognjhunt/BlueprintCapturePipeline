@@ -126,6 +126,20 @@ def build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, monoton
 
 
 def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget, context_anchor=None):
+    # Admission precedes every candidate callback and cleanup. A constructor
+    # marker alone does not prove initialization survived its allocations.
+    if type(budget) is not ReferenceCollectionBudget:
+        return fallback('scene_lifecycle_budget_invalid')
+    state = vars(budget)
+    fields = ('_monotonic', '_duration', '_deadline', '_last', '_closed',
+              '_failure', '_limits', '_counts', 'blockers')
+    if (state.get('_initialization_started') is not True or not all(name in state for name in fields)
+            or not callable(state['_monotonic']) or type(state['_duration']) is not float
+            or not math.isfinite(state['_duration']) or not 0 < state['_duration'] <= 30
+            or type(state['_closed']) is not bool or type(state['_limits']) is not dict
+            or type(state['_counts']) is not dict or type(state['blockers']) is not set
+            or len(state['_limits']) != 8 or state['_limits'].keys() != state['_counts'].keys()):
+        return fallback('scene_lifecycle_budget_invalid')
     reader = None
     result, reference_result, sink = None, None, None
     try:
