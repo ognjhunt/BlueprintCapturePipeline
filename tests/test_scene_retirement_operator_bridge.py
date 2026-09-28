@@ -8,6 +8,7 @@
 #   deploy/operator-door/door-scene-lifecycle.sh
 #   deploy/operator-door/install.sh
 
+from contextlib import contextmanager
 import hashlib
 import io
 import sys
@@ -386,3 +387,32 @@ def test_native_response_close_fault_cannot_claim_success_and_is_typed():
     uri='s3://private-artifacts/blueprint/arm-decision-proof-v1/scene-retirement/'+'1'*32+'.tar'
     with pytest.raises(ValueError,match='^scene_retirement_remote_cleanup_unproven$'):
         list(transport.read_archive(uri))
+
+
+def test_installed_environment_cannot_rebind_after_private_mode_proof(tmp_path, monkeypatch):
+    module = bridge()
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    import os
+    monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
+    path = tmp_path / 'environment'
+    path.write_text('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE=/original\n')
+    path.chmod(0o640)
+    monkeypatch.setattr(module, 'ENVIRONMENT_FILE', path)
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', raising=False)
+    original = access._opened
+    acquisitions = []
+    @contextmanager
+    def replaced(selected, **kwargs):
+        with original(selected, **kwargs) as result:
+            yield result
+        if Path(selected) == path:
+            acquisitions.append(1)
+            if len(acquisitions) == 1:
+                replacement = path.with_name('replacement')
+                replacement.write_text('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE=/unapproved\n')
+                replacement.chmod(0o644)
+                replacement.replace(path)
+    monkeypatch.setattr(access, '_opened', replaced)
+    with pytest.raises(access.SceneRetirementAccessError):
+        module.load_installed_environment()
+    assert 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE' not in os.environ
