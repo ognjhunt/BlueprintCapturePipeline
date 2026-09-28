@@ -58,6 +58,8 @@ class DoorConfig:
     lane_scratch_work_root: str = "/mnt/blueprint-work/lanes"
     lane_scratch_inputs_root: str = "/var/lib/blueprint/task-evaluation-inputs/lanes"
     owner_census_decisions_enabled: int = 0
+    experiment_creation_enabled: bool = False
+    experiment_retirement_enabled: bool = False
     lane_owner_policy_file: str = "/etc/blueprint-operator-door/lane-owner-policy.json"
     active_release_link: str = "/opt/blueprint/task-evaluation-control-plane"
     unit_prefix: str = "blueprint-"
@@ -106,6 +108,14 @@ class DoorConfig:
         return str(Path(self.spool_root) / "owner-consents")
 
     @property
+    def experiment_record_store(self) -> str:
+        return str(Path(self.spool_root) / "experiment-records")
+
+    @property
+    def experiment_authority_root(self) -> str:
+        return str(Path(self.state_root) / "experiment-authority")
+
+    @property
     def audit_path(self) -> str:
         return str(Path(self.state_root) / "audit" / "audit.jsonl")
 
@@ -124,6 +134,10 @@ def _coerce(name: str, value: Any, default: Any, *, _work_budget=None) -> Any:
     if _work_budget is not None:
         _work_budget.tick()
         _work_budget.measure(value, cap=64 * 1024)
+    if type(default) is bool:
+        if type(value) is not bool:
+            raise DoorConfigError(f"door_config_type:{name}")
+        return value
     if isinstance(default, tuple):
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise DoorConfigError(f"door_config_type:{name}")

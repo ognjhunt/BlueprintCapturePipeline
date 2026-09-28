@@ -6,7 +6,6 @@
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -19,7 +18,7 @@ def encoded(value):
 
 
 @pytest.fixture
-def installation(tmp_path, monkeypatch, root_metadata):
+def installation(tmp_path, monkeypatch, root_metadata):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
     package = tmp_path / "installed" / "operator_door"
     package.mkdir(parents=True, mode=0o700)
@@ -56,8 +55,8 @@ def issue(installation, **changes):
         participant_profile="local_root_disposable.v1", request_records=(), now=lambda: 1000, **changes)
 
 
-def test_default_flags_and_private_public_paths_are_derived():
-    sys.path.insert(0, str(Path(__file__).parents[1] / "deploy/operator-door"))
+def test_default_flags_and_private_public_paths_are_derived(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "deploy/operator-door"))
     from operator_door.config import config_from_mapping
     config = config_from_mapping({"state_root": "/state"})
     assert config.experiment_creation_enabled is False and config.experiment_retirement_enabled is False
@@ -67,8 +66,8 @@ def test_default_flags_and_private_public_paths_are_derived():
 
 @pytest.mark.parametrize("field", ["experiment_creation_enabled", "experiment_retirement_enabled"])
 @pytest.mark.parametrize("bad", [0, 1, "true", None])
-def test_new_enablement_requires_actual_bool(field, bad):
-    sys.path.insert(0, str(Path(__file__).parents[1] / "deploy/operator-door"))
+def test_new_enablement_requires_actual_bool(field, bad, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "deploy/operator-door"))
     from operator_door.config import DoorConfigError, config_from_mapping
     with pytest.raises(DoorConfigError):
         config_from_mapping({field: bad})
@@ -108,12 +107,14 @@ def test_refusals_precede_publication(installation, monkeypatch, condition, code
     if condition == "uid":
         monkeypatch.setattr(os, "geteuid", lambda: 501)
     if condition == "owner":
-        value = json.loads(policy.read_bytes()); value["principals"][0]["owners"] = ["other"]
+        value = json.loads(policy.read_bytes())
+        value["principals"][0]["owners"] = ["other"]
         policy.write_bytes(encoded(value))
     if condition == "ttl":
         options["expires_at_epoch"] = 1000
     if condition == "policy":
-        value = json.loads(policy.read_bytes()); value["principals"][0]["allowed_actions"] = ["keep"]
+        value = json.loads(policy.read_bytes())
+        value["principals"][0]["allowed_actions"] = ["keep"]
         policy.write_bytes(encoded(value))
     if condition == "store_mode":
         store.chmod(0o777)
