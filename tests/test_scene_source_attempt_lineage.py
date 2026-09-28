@@ -276,3 +276,211 @@ def test_orphan_foreign_records_are_never_dropped():
         path, raw = args[group][0]
         args[group].append((path.replace("/" + ATTEMPT + "/", "/unrelated/"), raw))
         refuses(args, "record_unmatched")
+
+
+@pytest.mark.parametrize("message", ["scene_lineage_secretvaluetoken", "secretvaluetoken"])
+def test_shared_error_translation_keeps_only_known_fixed_codes(monkeypatch, message):
+    from blueprint_pipeline import task_evaluation_scene_preparation_lineage as shared
+
+    def malformed_error(*_args):
+        raise shared.SceneLineageError(message)
+
+    monkeypatch.setattr(shared, "_record", malformed_error)
+    refuses(fixture(), "input_invalid")
+
+
+@pytest.mark.parametrize("target", ["root", "record"])
+def test_path_character_cap_precedes_shared_utf8_encoding(monkeypatch, target):
+    from blueprint_pipeline import task_evaluation_scene_preparation_lineage as shared
+
+    args = fixture()
+    oversized = "/" + "a" * shared.MAX_PATH_BYTES
+    if target == "root":
+        args["roots"]["intent_root"] = oversized
+    else:
+        args["submission_records"][0] = (oversized, args["submission_records"][0][1])
+    original = shared._path
+
+    def encoding_guard(value):
+        assert not (isinstance(value, str) and len(value) > shared.MAX_PATH_BYTES), "oversize path reached encoder"
+        return original(value)
+
+    monkeypatch.setattr(shared, "_path", encoding_guard)
+    refuses(args, "path_invalid")
+
+
+@pytest.mark.parametrize("raw", [b'{}', b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":1e999}',
+                                b'{"x":' + b'9' * 400 + b'}', b'{"x":"\\ud800"}', b'\xff', b'[]', b'{'])
+def test_malformed_supplied_raw_evidence_refuses_without_text(raw):
+    args = fixture()
+    args["submission_records"][0] = (args["submission_records"][0][0], raw)
+    refuses(args)
+
+
+@pytest.mark.parametrize("raw", ["{}", bytearray(b"{}"), None, b""])
+def test_nonbytes_and_empty_records_refuse_before_parse(raw):
+    args = fixture()
+    args["submission_records"][0] = (args["submission_records"][0][0], raw)
+    refuses(args, "record_invalid")
+
+
+@pytest.mark.parametrize("field", ["MAX_RECORD_BYTES", "MAX_TOTAL_BYTES", "MAX_RECORDS", "MAX_OUTPUT_BYTES",
+                                  "MAX_PATH_BYTES", "MAX_PATH_COMPONENTS"])
+def test_shared_defining_module_caps_refuse_without_truncation(monkeypatch, field):
+    from blueprint_pipeline import task_evaluation_scene_preparation_lineage as shared
+
+    monkeypatch.setattr(shared, field, 1)
+    refuses(fixture())
+
+
+def test_exact_shared_resource_boundaries_are_inclusive(monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_preparation_lineage as shared
+
+    args = fixture("public")
+    result = module().join_scene_source_attempt_lineage(**args)
+    pairs = [args["intent_record"], *(record for group in ("attempt_records", "snapshot_records",
+        "factory_records", "submission_records") for record in args[group])]
+    paths = [path for path, _ in pairs] + list(args["roots"].values())
+    for field, value in {
+        "MAX_RECORD_BYTES": max(len(raw) for _, raw in pairs), "MAX_TOTAL_BYTES": sum(len(raw) for _, raw in pairs),
+        "MAX_RECORDS": len(pairs), "MAX_OUTPUT_BYTES": len(shared._encoded(result)),
+        "MAX_PATH_BYTES": max(len(path.encode()) for path in paths),
+        "MAX_PATH_COMPONENTS": max(len(path[1:].split("/")) for path in paths),
+    }.items():
+        monkeypatch.setattr(shared, field, value)
+    assert module().join_scene_source_attempt_lineage(**args) == result
+
+
+def test_groups_counts_and_aggregate_preflight_precede_parse_hash(monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_preparation_lineage as shared
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("preflight bypassed")
+
+    args = fixture()
+    monkeypatch.setattr(shared, "_record", forbidden)
+    args["attempt_records"] = iter(args["attempt_records"])
+    refuses(args, "records_limit")
+    args = fixture()
+    monkeypatch.setattr(shared, "MAX_RECORDS", 1)
+    refuses(args, "records_limit")
+    monkeypatch.setattr(shared, "MAX_RECORDS", 10_000)
+    monkeypatch.setattr(shared, "MAX_TOTAL_BYTES", 1)
+    refuses(args, "bytes_limit")
+
+
+@pytest.mark.parametrize("group", ["intent_record", "attempt_records", "snapshot_records", "factory_records", "submission_records"])
+@pytest.mark.parametrize("path", ["/retained/../foreign", "/retained//foreign", "/retained/<redacted>",
+                                 "/retained/foreign\\path", "/retained/\x00secret", "/retained/\ud800"])
+def test_all_role_paths_obey_canonical_lexical_policy(group, path):
+    args = fixture()
+    if group == "intent_record":
+        args[group] = (path, args[group][1])
+    else:
+        args[group][0] = (path, args[group][0][1])
+    refuses(args, "path_invalid")
+
+
+@pytest.mark.parametrize("role", ["intent_root", "factory_output_root"])
+def test_installed_root_keys_and_paths_are_explicit(role):
+    args = fixture()
+    args["roots"][role] = "/retained/../foreign"
+    refuses(args, "path_invalid")
+    args = fixture()
+    del args["roots"][role]
+    refuses(args, "parameters_invalid")
+
+
+def test_duplicate_paths_and_empty_supplied_scope_are_explicit():
+    args = fixture()
+    args["snapshot_records"].append(args["snapshot_records"][0])
+    refuses(args, "record_duplicate")
+    args = fixture()
+    for group in ("attempt_records", "snapshot_records", "factory_records", "submission_records"):
+        args[group] = []
+    result = module().join_scene_source_attempt_lineage(**args)
+    assert result["attempt_count"] == result["bound_workspace_count"] == 0
+    assert result["historical_attempt_inventory_complete"] is False
+
+
+def test_exact_output_and_reordered_inputs_have_no_presence_or_retirement_claims():
+    from blueprint_pipeline import task_evaluation_scene_preparation_lineage as shared
+
+    args = fixture("public")
+    other = fixture("public", attempt_id="source-next", commit="c" * 40)
+    for group in ("attempt_records", "snapshot_records", "factory_records", "submission_records"):
+        args[group] += other[group]
+    result = module().join_scene_source_attempt_lineage(**args)
+    assert set(result) == {"schema_version", "status", "scope", "intent_id", "intent_digest", "intent_provenance",
+        "attempt_count", "bound_workspace_count", "attempts", "mutations", "execution_authorized",
+        "complete_scene_inventory", "historical_attempt_inventory_complete", "payload_presence_checked",
+        "payload_members_verified", "publication_readback_checked", "remote_availability_checked", "finished_state_checked",
+        "references_checked", "consumer_fence_checked", "requires_fresh_reference_check"}
+    for flag in ("execution_authorized", "complete_scene_inventory", "historical_attempt_inventory_complete",
+                 "payload_presence_checked", "payload_members_verified", "publication_readback_checked",
+                 "remote_availability_checked", "finished_state_checked", "references_checked", "consumer_fence_checked"):
+        assert result[flag] is False
+    assert result["requires_fresh_reference_check"] is True and result["mutations"] == 0
+    for row in result["attempts"]:
+        assert set(row) == {"attempt_id", "attempt_digest", "attempt_schema", "attempt_alias", "source_commit",
+            "runtime_digest", "input_digest", "source_family", "status", "reasons", "workspace_path",
+            "workspace_membership_bound", "snapshot_binding_strength", "preparation_identity", "source_provenance"}
+        assert set(row["preparation_identity"]) == {"preparation_id", "request_digest", "team_namespace", "scene_id",
+                                                    "task_id", "expected_production_commit"}
+        for proof in [result["intent_provenance"], *row["source_provenance"]]:
+            assert set(proof) == {"role", "path", "sha256", "size_bytes", "seal_field", "seal_digest"}
+            if proof["role"] == "submission_request":
+                assert proof["seal_field"] is proof["seal_digest"] is None
+    for group in ("attempt_records", "snapshot_records", "factory_records", "submission_records"):
+        args[group].reverse()
+    assert shared._encoded(module().join_scene_source_attempt_lineage(**args)) == shared._encoded(result)
+
+
+@pytest.mark.parametrize("family", ["completed", "public"])
+def test_first_source_join_in_fresh_process_avoids_runtime_imports_and_filesystem(family):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    script = '''
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fixtures", sys.argv[1])
+fixtures = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixtures)
+args = fixtures.fixture(sys.argv[2])
+def forbidden(*args, **kwargs):
+    raise AssertionError("pure retained source join invoked filesystem API")
+for name in ("resolve", "stat", "lstat", "read_bytes", "read_text", "write_bytes", "write_text"):
+    setattr(Path, name, forbidden)
+result = fixtures.module().join_scene_source_attempt_lineage(**args)
+assert result["bound_workspace_count"] == 1
+for name in ("task_evaluation_scene_intake", "task_evaluation_scene_progression", "task_evaluation_controls_autoprovision",
+             "task_evaluation_public_scene_attempt_factory", "task_evaluation_launch_preparation_contract"):
+    assert "blueprint_pipeline." + name not in sys.modules, name
+'''
+    result = subprocess.run([sys.executable, "-c", script, str(Path(__file__).absolute()), family],
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
+def test_join_never_reads_publishes_repairs_or_starts_processes(monkeypatch):
+    import builtins
+    import os
+    from pathlib import Path
+    import subprocess
+
+    args, api = fixture("public"), module()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("pure retained source join invoked an effect")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(builtins, "open", forbidden)
+        for name in ("open", "stat", "lstat", "mkdir", "unlink", "remove", "rename", "replace", "listdir", "scandir"):
+            guard.setattr(os, name, forbidden)
+        for name in ("resolve", "stat", "lstat", "read_bytes", "read_text", "write_bytes", "write_text"):
+            guard.setattr(Path, name, forbidden)
+        guard.setattr(subprocess, "run", forbidden)
+        assert api.join_scene_source_attempt_lineage(**args)["bound_workspace_count"] == 1

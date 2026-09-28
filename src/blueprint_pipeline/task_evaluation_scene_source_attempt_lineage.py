@@ -34,6 +34,8 @@ _SNAPSHOTS = (("source_binding", "source_binding.json", "binding_digest"),
               ("release", "release_binding.json", "release_digest"))
 _SUBMISSIONS = (("submission_request", "scene_configuration_preparation_request.v1.json"),
                 ("submission_manifest", "bundle_manifest.v1.json"))
+_SHARED_BLOCKERS = {"path_invalid", "record_invalid", "record_duplicate", "json_invalid", "seal_invalid",
+                    "intent_invalid", "intent_request_invalid", "intent_content_invalid", "bytes_limit"}
 
 
 class SceneSourceLineageError(ValueError):
@@ -272,7 +274,7 @@ def join_scene_source_attempt_lineage(*, intent_id: str, intent_record: Any, att
                      submission_records, roots)
     except retained.SceneLineageError as exc:
         suffix = str(exc).removeprefix("scene_lineage_")
-        _require(re.fullmatch(r"[a-z_]{1,64}", suffix) is not None, "input_invalid")
+        _require(str(exc).startswith("scene_lineage_") and suffix in _SHARED_BLOCKERS, "input_invalid")
         raise SceneSourceLineageError("scene_source_lineage_" + suffix) from None
     except SceneSourceLineageError:
         raise
@@ -286,8 +288,14 @@ def _join(intent_id, intent_record, attempts, snapshots, factories, submissions,
     groups = (attempts, snapshots, factories, submissions)
     _require(all(isinstance(group, (list, tuple)) for group in groups)
              and 1 + sum(len(group) for group in groups) <= retained.MAX_RECORDS, "records_limit")
+    for value in roots.values():
+        _require(isinstance(value, str) and len(value) <= retained.MAX_PATH_BYTES, "path_invalid")
     roots = {key: retained._path(value) for key, value in roots.items()}
     retained._preflight(([intent_record], *groups))
+    for group in ([intent_record], *groups):
+        for pair in group:
+            _require(isinstance(pair[0], str) and len(pair[0]) <= retained.MAX_PATH_BYTES, "path_invalid")
+            retained._path(pair[0])
     seen = set()
     intent, intent_provenance = retained._record(intent_record, "intent", seen)
     retained._intent(intent, intent_provenance, intent_id, roots["intent_root"])
