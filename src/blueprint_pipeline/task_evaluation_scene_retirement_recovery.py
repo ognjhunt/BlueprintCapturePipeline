@@ -42,7 +42,7 @@ def bind_original_allowance(journal, initial, allowance, *, restoring=False):
     allowance.bind_resume(selected)
 
 
-def reserve_phase(journal, preserved, *, readback=False, restoring=False):
+def reserve_phase(journal, preserved, *, readback=False, restoring=False, published_objects=None):
     """Persist an upper bound before physical work, including a crash prefix.
 
     Actual reads still charge natively. This conservative reservation is never
@@ -53,7 +53,15 @@ def reserve_phase(journal, preserved, *, readback=False, restoring=False):
         allowance.charge('remote_bytes', 2 * preserved['archive']['size_bytes'])
         allowance.charge('local_bytes', 2 * sum(row['size_bytes'] for row in preserved['files']))
     elif readback:
-        allowance.charge('remote_bytes', preserved['archive']['size_bytes'])
+        rows=[] if published_objects is None else published_objects
+        _require(type(rows) is list and len(rows)<=10000,'scene_retirement_resume_unproven')
+        remote=preserved['archive']['size_bytes']
+        for row in rows:
+            allowance.tick()
+            _require(type(row) is dict and type(row.get('size_bytes')) is int and row['size_bytes']>0,
+                     'scene_retirement_resume_unproven')
+            remote+=row['size_bytes']
+        allowance.charge('remote_bytes', remote)
     else:
         allowance.charge('local_bytes', 2 * sum(row['size_bytes'] for row in preserved['files']))
     evidence = dict(phase='restore' if restoring else ('resume-readback' if readback else 'remove'),

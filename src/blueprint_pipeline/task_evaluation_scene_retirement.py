@@ -29,6 +29,7 @@ from .task_evaluation_scene_retirement_metadata import retain_metadata_closure
 from .task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt, publish_progress_receipt
 from .task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
 from . import task_evaluation_scene_retirement_recovery as recovery
+from .task_evaluation_scene_retirement_declared_bytes import verify_declared_bytes as _verify_declared_bytes, verify_publication_rows
 
 
 _LIFETIME='scene_retirement_lifetime.v1'
@@ -310,8 +311,10 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 recovery.bind_original_allowance(journal,initial,allowance)
                 _resume_current_references(policy,consent,retained,allowance,now,monotonic)
                 generations=recovery.resumed_generations(sys.modules[__name__],policy,consent,journal,initial)
-                recovery.reserve_phase(journal,initial['preserved'],readback=True)
+                published_objects=initial.get('declared_byte_verification',{}).get('published_objects',[])
+                recovery.reserve_phase(journal,initial['preserved'],readback=True,published_objects=published_objects)
                 _consume(initial['preserved'],transport,allowance)
+                verify_publication_rows(published_objects,transport,allowance)
                 recovery.reserve_phase(journal,initial['preserved'])
                 for index,generation in enumerate(generations):
                     if generation['state'] in {'active','restored-active'}:
@@ -321,7 +324,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                         generations[index]=_transition(policy,generation,state='retiring',token=journal.token,
                             journal_ref=event,inventory_sha256=consent['members'][index]['inventory_sha256'])
                 return _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance,resumed=True)
-            _current_plan(policy,consent,retained,allowance,now,monotonic)
+            fresh=_current_plan(policy,consent,retained,allowance,now,monotonic)
             generations=[]
             for member in consent['members']:
                 allowance.tick()
@@ -334,6 +337,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             token=secrets.token_hex(32)[:32]
             preserved=preserve_members([member['canonical_path'] for member in consent['members']],
                 transport=transport,allowance=allowance,token=token)
+            verified_bytes=_verify_declared_bytes(fresh,preserved,transport,allowance)
             for index,member in enumerate(consent['members']):
                 _require(inventory_digest(preserved,index)==member['inventory_sha256'],
                          'scene_retirement_inventory_changed')
@@ -345,7 +349,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 consent_raw_ref=authority['consent_raw_ref'],policy_sha256=consent['policy_sha256'],
                 cohort_sha256=consent['cohort_sha256'],status='pending',members=consent['members'],
                 generations=generations,preserved=preserved,metadata_closure_raw_ref=closure,
-                action_allowance=allowance.checkpoint())
+                action_allowance=allowance.checkpoint(),declared_byte_verification=verified_bytes)
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
             pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
             def complete_records():
