@@ -32,7 +32,8 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .decision_evidence_contracts import canonical_digest
-from .remote_cpu_job_contract import OUTPUT_FORMAT, RemoteCpuContractError, fsync_directory, record_bytes
+from .remote_cpu_job_contract import OUTPUT_FORMAT, RemoteCpuContractError, record_bytes
+from .remote_cpu_job_records import fsync_directory
 
 INDEX_SCHEMA_VERSION = "remote_cpu_output_index.v1"
 BLOCK = 512

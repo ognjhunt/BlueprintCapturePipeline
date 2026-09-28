@@ -1,6 +1,7 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/remote_cpu_job_lease.py
 #   src/blueprint_pipeline/remote_cpu_job_contract.py
+#   src/blueprint_pipeline/remote_cpu_job_records.py
 """ADP-009D/day-28, plan 14 PR 1: remote attempts are leased by worker identity, never by a PID."""
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import pytest
 
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import remote_cpu_job_lease as lease
+from blueprint_pipeline import remote_cpu_job_records as records
 from tests.test_remote_cpu_job_contract import EXECUTION, QUEUE_NAME, _config, _descriptor
 
 T0 = 2_000_000_000.0
@@ -57,7 +59,7 @@ def _compute(**changes) -> dict:
 
 
 def _teardown(descriptor: dict, *, now: float, outcome: str = "completed", name: str | None = EXECUTION) -> dict:
-    return contract.teardown_record(
+    return records.teardown_record(
         descriptor=descriptor, worker_identity=None if name is None else _identity(descriptor, name),
         outcome=outcome, compute=_compute() if name else _compute(execution_completed=False, executions_for_attempt=0),
         provider={"staging_versions_deleted": 3, "staging_versions_remaining": 0, "staging_listing_complete": True,

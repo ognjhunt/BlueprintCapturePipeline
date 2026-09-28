@@ -29,15 +29,13 @@ from .decision_evidence_contracts import canonical_digest
 from .remote_cpu_job_contract import (
     MAX_ATTEMPTS_CAP,
     RemoteCpuContractError,
-    compute_zero_proven,
     execution_name_of,
-    fsync_directory,
     record_bytes,
     validate_descriptor,
     validate_heartbeat,
-    validate_teardown,
     worker_identity_for,
 )
+from .remote_cpu_job_records import compute_zero_proven, fsync_directory, validate_teardown
 
 LEASE_SCHEMA_VERSION = "remote_cpu_job_lease.v1"
 HARD_DEADLINE_GRACE_SECONDS = 120

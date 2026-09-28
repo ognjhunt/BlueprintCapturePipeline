@@ -1,5 +1,6 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/remote_cpu_job_contract.py
+#   src/blueprint_pipeline/remote_cpu_job_records.py
 #   src/blueprint_pipeline/remote_cpu_job_lease.py
 """ADP-009D/day-28, plan 14 PR 1: remote CPU job records carry no URL or credential."""
 
@@ -14,6 +15,7 @@ import pytest
 
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import remote_cpu_job_lease as lease
+from blueprint_pipeline import remote_cpu_job_records as records
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 GIB = 1024**3
@@ -416,12 +418,12 @@ def test_records_refuse_url_and_credential_shaped_keys_and_values(tmp_path: Path
         teardown["outcome"] = value
     else:
         teardown["provider"] = {**_provider(), key: value}
-    expect_refused(lambda: contract.teardown_record(**teardown))
+    expect_refused(lambda: records.teardown_record(**teardown))
     fields = _pointer_fields(descriptor)
     fields["code"] = {**fields["code"], key: value}
-    expect_refused(lambda: contract.pointer_record(fields))
+    expect_refused(lambda: records.pointer_record(fields))
     target = tmp_path / "record.json"
-    expect_refused(lambda: contract.write_remote_cpu_record(target, {"schema_version": "x.v1", key: value}))
+    expect_refused(lambda: records.write_remote_cpu_record(target, {"schema_version": "x.v1", key: value}))
     assert not target.exists() and list(tmp_path.iterdir()) == []
 
 
@@ -436,20 +438,20 @@ def test_transport_schema_is_refused_by_every_record_writer(tmp_path: Path) -> N
     target = root / "descriptors" / f"{descriptor['attempt_id']}.json"
 
     assert "remote_cpu_transport_never_persisted:$" in _reasons(
-        lambda: contract.write_remote_cpu_record(target, transport)
+        lambda: records.write_remote_cpu_record(target, transport)
     )
     assert "remote_cpu_transport_never_persisted:shadow.transport" in _reasons(
-        lambda: contract.write_remote_cpu_record(target, {"schema_version": "x.v1", "shadow": {"transport": transport}})
+        lambda: records.write_remote_cpu_record(target, {"schema_version": "x.v1", "shadow": {"transport": transport}})
     )
     assert not root.exists() or not any(path.is_file() for path in root.rglob("*"))
 
-    assert contract.write_remote_cpu_record(target, descriptor) is True
+    assert records.write_remote_cpu_record(target, descriptor) is True
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
     assert json.loads(target.read_text(encoding="utf-8")) == descriptor
-    assert contract.write_remote_cpu_record(target, descriptor) is False
+    assert records.write_remote_cpu_record(target, descriptor) is False
     changed = dict(descriptor, mode="authoritative")
     assert f"remote_cpu_record_conflict:{target.name}" in _reasons(
-        lambda: contract.write_remote_cpu_record(target, changed)
+        lambda: records.write_remote_cpu_record(target, changed)
     )
     assert sorted(path.name for path in target.parent.iterdir()) == [target.name]
 
@@ -625,40 +627,40 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
     identity = contract.worker_identity_for(descriptor["execution"], EXECUTION)
     assert identity == f"gcp-cloud-run:blueprint-8c1ca/us-central1/blueprint-remote-cpu-episode-compilation/executions/{EXECUTION}"
 
-    landed = contract.pointer_record(_pointer_fields(descriptor))
+    landed = records.pointer_record(_pointer_fields(descriptor))
     assert landed["schema_version"] == "remote_cpu_output_pointer.v1"
     assert landed["teardown_receipt_digest"] is None and landed["provider_zero_proven"] is False
     assert landed["pointer_digest"] == canonical_digest(landed, digest_field="pointer_digest")
 
-    unproven = contract.teardown_record(
+    unproven = records.teardown_record(
         descriptor=descriptor, worker_identity=identity, outcome="completed",
         compute=_compute(), provider=_provider(), observed_at_epoch=1_999_998_000.0,
     )
     assert unproven["compute_zero_proven"] is True and unproven["provider_zero_proven"] is False
     assert "remote_cpu_pointer_teardown_not_provider_zero" in _reasons(
-        lambda: contract.pointer_record({}, previous=landed, teardown=unproven)
+        lambda: records.pointer_record({}, previous=landed, teardown=unproven)
     )
-    still_running = contract.teardown_record(
+    still_running = records.teardown_record(
         descriptor=descriptor, worker_identity=identity, outcome="completed",
         compute=_compute(unfinished_executions_for_attempt=1), provider=_provider(), observed_at_epoch=2_000_000_000.0,
     )
     assert still_running["compute_zero_proven"] is False and still_running["provider_zero_proven"] is False
-    hidden_only = contract.teardown_record(
+    hidden_only = records.teardown_record(
         descriptor=descriptor, worker_identity=identity, outcome="completed",
         compute=_compute(), provider=_provider(staging_versions_remaining=2), observed_at_epoch=2_000_000_000.0,
     )
     assert hidden_only["provider_zero_proven"] is False
-    teardown = contract.teardown_record(
+    teardown = records.teardown_record(
         descriptor=descriptor, worker_identity=identity, outcome="completed",
         compute=_compute(), provider=_provider(), observed_at_epoch=2_000_000_000.0,
     )
     assert teardown["provider_zero_proven"] is True
 
-    proven = contract.pointer_record({}, previous=landed, teardown=teardown)
+    proven = records.pointer_record({}, previous=landed, teardown=teardown)
     assert proven["teardown_receipt_digest"] == teardown["teardown_digest"]
     assert proven["provider_zero_proven"] is True and proven["state"] == "landed"
     assert proven["pointer_digest"] != landed["pointer_digest"]
-    restored = contract.pointer_record({"state": "restored_full"}, previous=proven)
+    restored = records.pointer_record({"state": "restored_full"}, previous=proven)
     assert restored["state"] == "restored_full"
     assert restored["pointer_digest"] == canonical_digest(restored, digest_field="pointer_digest")
     for field, value in proven.items():
@@ -666,33 +668,33 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
             assert restored[field] == value, field
 
     assert "remote_cpu_pointer_state_regression" in _reasons(
-        lambda: contract.pointer_record({"state": "landed"}, previous=restored)
+        lambda: records.pointer_record({"state": "landed"}, previous=restored)
     )
     assert "remote_cpu_pointer_field_immutable:paths_total" in _reasons(
-        lambda: contract.pointer_record({"paths_total": 13}, previous=landed)
+        lambda: records.pointer_record({"paths_total": 13}, previous=landed)
     )
     assert "remote_cpu_pointer_field_immutable:teardown_receipt_digest" in _reasons(
-        lambda: contract.pointer_record({"teardown_receipt_digest": None}, previous=proven)
+        lambda: records.pointer_record({"teardown_receipt_digest": None}, previous=proven)
     )
     dropped = dict(landed)
     del dropped["host_known"]
     _seal(dropped, "pointer_digest")
     assert "remote_cpu_field_missing:host_known" in _reasons(
-        lambda: contract.pointer_record({"state": "restored_full"}, previous=dropped)
+        lambda: records.pointer_record({"state": "restored_full"}, previous=dropped)
     )
     forged = dict(landed, provider_zero_proven=True)
     _seal(forged, "pointer_digest")
     assert "remote_cpu_pointer_provider_zero_unbound" in _reasons(
-        lambda: contract.pointer_record({"state": "restored_full"}, previous=forged)
+        lambda: records.pointer_record({"state": "restored_full"}, previous=forged)
     )
     assert "remote_cpu_pointer_initial_state_invalid" in _reasons(
-        lambda: contract.pointer_record({**_pointer_fields(descriptor), "state": "restored_full"})
+        lambda: records.pointer_record({**_pointer_fields(descriptor), "state": "restored_full"})
     )
     other = _descriptor(attempt=2, nonce="f" * 32)
-    foreign = contract.teardown_record(
+    foreign = records.teardown_record(
         descriptor=other, worker_identity=identity, outcome="completed",
         compute=_compute(), provider=_provider(), observed_at_epoch=2_000_000_000.0,
     )
     assert "remote_cpu_pointer_teardown_attempt_mismatch" in _reasons(
-        lambda: contract.pointer_record({}, previous=landed, teardown=foreign)
+        lambda: records.pointer_record({}, previous=landed, teardown=foreign)
     )
