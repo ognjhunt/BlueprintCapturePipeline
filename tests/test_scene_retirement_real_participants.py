@@ -254,3 +254,90 @@ def test_known_close_failure_refuses_and_still_cleans_other_tokens(monkeypatch):
         for fd in failed:
             original(fd)
 
+
+
+def test_real_materializer_lifetime_blocks_retirement(tmp_path, monkeypatch):
+    access, _, member = access_fixture(tmp_path, monkeypatch)
+    from blueprint_pipeline import website_scene_dispatch as existing
+    from blueprint_pipeline import task_evaluation_scene_owner_authority as authority
+    entered, finish, release = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+    def paused(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        raise StopFixture()
+    monkeypatch.setattr(authority, 'reopen_scene_intent', paused)
+    (tmp_path / 'intent.json').write_bytes(b'{}')
+    def operation():
+        return existing.materialize_website_attempt(intent_path=tmp_path / 'intent.json',
+            source_binding_path=tmp_path / 'binding.json', machinery_path=tmp_path / 'machinery.json',
+            release_binding_path=tmp_path / 'release.json', output_root=member, attempt_id='attempt-1')
+    worker = threading.Thread(target=run_paused, args=(operation, entered, finish, errors))
+    worker.start()
+    try:
+        assert entered.wait(3), errors
+        with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_reader_active'):
+            with access.exclusive_scene_access():
+                pytest.fail('materializer lifetime not fenced')
+    finally:
+        release.set()
+        worker.join(4)
+    assert not worker.is_alive() and errors == []
+
+
+def test_birth_cannot_recreate_same_retired_request_generation(tmp_path, monkeypatch):
+    access, policy, member = access_fixture(tmp_path, monkeypatch)
+    intent_id, owner, birth = authenticated_birth_refs(tmp_path, monkeypatch)
+    member.rmdir()
+    with access.scene_access():
+        generation = access.birth_scene_member(member, owner_intent_id=intent_id,
+                                               owner_raw_ref=owner, birth_request_raw_ref=birth, now=101)
+    assert member.is_dir() and generation['state'] == 'active'
+    assert generation['canonical_path'] == str(member)
+    member.rmdir()
+    # This is the exact authoritative state transition the action engine will
+    # publish under EX, not a caller all-safe flag or a deletion implementation.
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    key = hashlib.sha256(str(member).encode()).hexdigest() + '.json'
+    record = Path(policy['generation_store']) / key
+    state = json.loads(record.read_text())
+    state.update(state='retired', retirement_token='2' * 32, journal_sha256='sha256:' + 'c' * 64)
+    state['state_digest'] = canonical_digest(state, digest_field='state_digest')
+    record.write_text(json.dumps(state))
+    with access.scene_access():
+        with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_generation_unavailable'):
+            access.birth_scene_member(member, owner_intent_id=intent_id,
+                                     owner_raw_ref=owner, birth_request_raw_ref=birth, now=101)
+    assert not member.exists()
+
+
+def test_actual_birth_holds_same_outer_fence_through_directory_creation(tmp_path, monkeypatch):
+    access, _, member = access_fixture(tmp_path, monkeypatch)
+    member.rmdir()
+    original = os.mkdir
+    entered = []
+    def mkdir(name, *args, **kwargs):
+        if str(name) == member.name:
+            with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_reader_active'):
+                with access.exclusive_scene_access():
+                    pytest.fail('retirement overlapped actual birth mutation')
+            entered.append(name)
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(os, 'mkdir', mkdir)
+    intent_id, owner, birth = authenticated_birth_refs(tmp_path, monkeypatch)
+    with access.scene_access():
+        state = access.birth_scene_member(member, owner_intent_id=intent_id,
+                                        owner_raw_ref=owner, birth_request_raw_ref=birth, now=101)
+    assert entered == [member.name] and state['state'] == 'active'
+
+
+def authenticated_birth_refs(tmp_path, monkeypatch):
+    from tests.test_task_evaluation_scene_intake import stage, attempt
+    from blueprint_pipeline.task_evaluation_public_scene_attempt_factory import record
+    root = tmp_path / 'intents'
+    intent = stage(root)
+    attempt(root, intent)
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT', str(root))
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'webapp')
+    return (intent['intent_id'], record(root / intent['intent_id'] / 'intent.json'),
+            record(root / intent['intent_id'] / 'attempts' / 'a1.json'))
