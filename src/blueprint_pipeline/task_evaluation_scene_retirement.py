@@ -344,11 +344,77 @@ def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance,res
     return result
 
 
+def _cache_generations(policy,initial,journal,allowance):
+    targets=initial.get('cache_objects',[])
+    original=initial.get('cache_generations',[])
+    _require(type(targets) is list and type(original) is list and len(targets)==len(original)<=256,
+             'scene_retirement_cache_journal_unproven')
+    current=[]
+    for index,(target,prior) in enumerate(zip(targets,original)):
+        allowance.tick()
+        key=hashlib.sha256(target['canonical_path'].encode()).hexdigest()+'.json'
+        value,reference=load_document(Path(policy['generation_store'])/key,maximum=65536)
+        _require(value.get('schema_version')=='scene_content_generation.v1'
+                 and value.get('state_digest')==canonical_digest(value,digest_field='state_digest')
+                 and all(value.get(field)==target[field] for field in
+                     ('canonical_path','generation_id','digest','size_bytes'))
+                 and value.get('source_publication_raw_ref')==target['source_raw_ref'],
+                 'scene_retirement_generation_changed')
+        if value.get('state') in {'active','restored-active'}:
+            _require(value==prior and reference==target['generation_raw_ref'],
+                     'scene_retirement_generation_changed')
+        else:
+            _require(value.get('state') in {'retiring','retired'} and value.get('retirement_token')==journal.token,
+                     'scene_retirement_generation_changed')
+            events=[event for event in journal.events if event['member_key']=='cache-'+str(index)
+                and event['raw_ref']['sha256']==value.get('journal_sha256')]
+            _require(len(events)==1 and events[0]['event']==(
+                'retiring' if value['state']=='retiring' else 'cache_unlinked'),
+                'scene_retirement_generation_changed')
+            proof=events[0]['evidence']
+            if value['state']=='retiring':
+                _require(proof.get('generation_id')==value['generation_id'],'scene_retirement_generation_changed')
+            else:
+                _require(all(proof.get(field)==value[field] for field in
+                    ('canonical_path','digest','size_bytes')),'scene_retirement_generation_changed')
+        current.append(value)
+    return current
+
+
+def _cache_remove_records(initial):
+    preserved=initial['preserved']
+    targets=initial.get('cache_objects',[])
+    aliases=preserved.get('cache_aliases',[])
+    _require(len(targets)==len(aliases)<=256,'scene_retirement_cache_journal_unproven')
+    for index,(target,alias) in enumerate(zip(targets,aliases)):
+        _require(target['canonical_path']==alias['path'] and target['digest']==alias['digest']
+                 and target['size_bytes']==alias['size_bytes'],'scene_retirement_cache_journal_unproven')
+        key='cache-'+str(index)
+        yield 'retiring',key,{'generation_id':target['generation_id']}
+        outcome=dict(outcome='removed',canonical_path=alias['path'],digest=alias['digest'],
+            size_bytes=alias['size_bytes'],removed_allocated_bytes=2**63-1,
+            allocation_method='observed_file_st_blocks_512_last_union_link_unlinked')
+        snapshot=list(alias['snapshot'])
+        snapshot[-2],snapshot[-1]=2**63-1,1
+        yield 'cache_unlink_planned',key,dict(canonical_path=alias['path'],
+            original_identity=alias['physical_identity'],parent_identity=alias['parent_identity'],
+            snapshot=snapshot,outcome=outcome)
+        yield 'cache_unlinked',key,outcome
+
+
 def _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance,*,resumed=False):
     preserved=initial['preserved']
     closure=initial['metadata_closure_raw_ref']
     token=journal.token
     removed=recovery.removed_inode_counts(journal) if resumed else {}
+    cache_generations=_cache_generations(policy,initial,journal,allowance)
+    # Preflight the complete auxiliary suffix before any folder is detached.
+    journal.preflight(_cache_remove_records(initial))
+    for index,generation in enumerate(cache_generations):
+        if generation['state'] in {'active','restored-active'}:
+            event=journal.append('retiring',member_key='cache-'+str(index),
+                evidence={'generation_id':generation['generation_id']})
+            cache_generations[index]=_transition(policy,generation,state='retiring',token=token,journal_ref=event)
     for index,generation in enumerate(generations):
         allowance.tick()
         outcome=detach_and_remove(preserved,member_index=index,generation_id=generation['generation_id'],
@@ -359,14 +425,22 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
                     journal_ref=outcome['event_raw_ref'])
         pending=publish_progress_receipt(policy,consent,pending,dict(status='retiring',token=token,
             intent_id=consent['intent_id'],members=list(outcomes),last_event_raw_ref=journal.prior_ref),allowance)
+    from .task_evaluation_scene_retirement_cache import remove_preserved_cache_aliases
+    cache_outcomes=remove_preserved_cache_aliases(preserved,journal=journal,removed_inodes=removed)
+    _require(len(cache_outcomes)==len(cache_generations),'scene_retirement_cache_journal_unproven')
+    for index,(generation,outcome) in enumerate(zip(cache_generations,cache_outcomes)):
+        if generation['state']!='retired':
+            cache_generations[index]=_transition(policy,generation,state='retired',token=token,
+                journal_ref=outcome['event_raw_ref'])
+    extra=dict(cache_outcomes=cache_outcomes,cache_generations=cache_generations) if cache_generations else {}
     snapshot=journal.retired_snapshot(dict(initial,status='retired',members=consent['members'],
-                   outcomes=outcomes,generations=generations))
+                   outcomes=outcomes,generations=generations,**extra))
     receipt=dict(schema_version='scene_retirement_receipt.v1',status='retired',intent_id=consent['intent_id'],
         token=token,members=outcomes,retired_journal_raw_ref=snapshot,fresh_remote_readback_verified=True,
-        removed_allocated_bytes=sum(row['removed_allocated_bytes'] for row in outcomes),
+        removed_allocated_bytes=sum(row['removed_allocated_bytes'] for row in outcomes+cache_outcomes),
         logical_bytes=sum(row['logical_bytes'] for row in outcomes),
         planned_unique_allocated_bytes=preserved['unique_allocated_bytes'],
-        metadata_closure_raw_ref=closure)
+        metadata_closure_raw_ref=closure,**extra)
     receipt['intent_receipt_raw_ref']=publish_terminal_receipt(policy,consent,pending,receipt,allowance)
     receipt['intent_receipt_path']=receipt['intent_receipt_raw_ref']['path']
     return receipt
@@ -412,6 +486,12 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                             journal_ref=event,inventory_sha256=consent['members'][index]['inventory_sha256'])
                 return _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance,resumed=True)
             fresh=_current_plan(policy,consent,retained,allowance,now,monotonic)
+            cache_generations=[]
+            cache_targets=consent.get('cache_objects',[])
+            for target in cache_targets:
+                allowance.tick()
+                allowance.charge('local_bytes',target['generation_raw_ref']['size_bytes'])
+                cache_generations.append(selected_document(target['generation_raw_ref'],maximum=65536))
             generations=[]
             for member in consent['members']:
                 allowance.tick()
@@ -441,7 +521,9 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                     _verify_declared_bytes(fresh,inventory,transport,allowance,verify_remote=False)
                 preserved=preserve_members([member['canonical_path'] for member in consent['members']],
                     transport=transport,allowance=allowance,token=token,before_payload=escrow,
-                    before_upload=before_upload,archive_name=name)
+                    before_upload=before_upload,archive_name=name,cache_aliases=(
+                        [{key:row[key] for key in ('canonical_path','digest','size_bytes')} for row in cache_targets]
+                        if cache_targets else None))
                 recovery.complete_preparation(policy,preparation,preserved,allowance)
             else:
                 preserved=preparation['ready']
@@ -472,6 +554,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 generations=generations,preserved=preserved,metadata_closure_raw_ref=closure,
                 action_allowance=allowance.checkpoint(),declared_byte_verification=verified_bytes,
                 reference_transfer=verified_references)
+            if cache_targets:
+                initial.update(cache_objects=cache_targets,cache_generations=cache_generations)
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
             pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
             def complete_records():

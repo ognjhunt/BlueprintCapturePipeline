@@ -229,7 +229,8 @@ def reserve_phase(journal, preserved, *, readback=False, restoring=False, publis
     allowance = journal.allowance
     if restoring:
         allowance.charge('remote_bytes', 2 * (preserved['archive']['size_bytes']+1))
-        allowance.charge('local_bytes', 2 * sum(row['size_bytes'] for row in preserved['files']))
+        allowance.charge('local_bytes', 2 * (sum(row['size_bytes'] for row in preserved['files'])
+                                           +sum(row['size_bytes'] for row in preserved.get('cache_aliases',[]))))
     elif readback:
         rows=[] if published_objects is None else published_objects
         _require(type(rows) is list and len(rows)<=10000,'scene_retirement_resume_unproven')
@@ -241,7 +242,8 @@ def reserve_phase(journal, preserved, *, readback=False, restoring=False, publis
             remote+=row['size_bytes']+1
         allowance.charge('remote_bytes', remote)
     else:
-        allowance.charge('local_bytes', 2 * sum(row['size_bytes'] for row in preserved['files']))
+        allowance.charge('local_bytes', 2 * (sum(row['size_bytes'] for row in preserved['files'])
+                                           +sum(row['size_bytes'] for row in preserved.get('cache_aliases',[]))))
     evidence = dict(phase='restore' if restoring else ('resume-readback' if readback else 'remove'),
                     action_allowance=allowance.checkpoint())
     journal.preflight([('allowance_reserved', 'action', evidence)])
