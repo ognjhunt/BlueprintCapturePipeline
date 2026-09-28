@@ -286,7 +286,8 @@ def _response_scope(use, response):
         try:
             response.close()
             _require(response.closed is True, 'needed_cache_native_cleanup_incomplete')
-        except (OSError, ValueError):
+        except BaseException:
+            # Even interrupted native finalization cannot prove this owned response closed.
             failure = 'needed_cache_native_cleanup_incomplete'
         finally:
             with use._lock:
