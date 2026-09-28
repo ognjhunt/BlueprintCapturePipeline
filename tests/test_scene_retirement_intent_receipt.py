@@ -19,6 +19,7 @@ def raw_ref(path):
 def operation(tmp_path, monkeypatch):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import inventory_digest
     from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance, preserve_members
     from tests.test_scene_retirement_preservation import MemoryTransport
     from tests.test_scene_retirement_real_participants import access_fixture
@@ -43,7 +44,7 @@ def operation(tmp_path, monkeypatch):
     plan.chmod(0o600)
     members = [{'canonical_path': str(member), 'class': 'host',
                 'owner_intent_id': issued['intent_id'], 'owner_raw_ref': raw_ref(intent_path),
-                'generation_id': '2' * 32, 'inventory_sha256': 'sha256:' + '3' * 64}]
+                'generation_id': '2' * 32, 'inventory_sha256': inventory_digest(preserved, 0)}]
     consent = {'intent_id': issued['intent_id'], 'intent_raw_ref': raw_ref(intent_path),
                'plan_raw_ref': raw_ref(plan), 'members': members}
     store = Path(policy['journal_store'])
@@ -74,7 +75,7 @@ def test_pending_is_durable_in_actual_intent_before_any_source_mutation(tmp_path
     assert value['planned_unique_allocated_bytes'] == preserved['unique_allocated_bytes']
     assert value['members'][0]['canonical_path'] == str(payload.parent)
     assert value['members'][0]['generation_id'] == '2' * 32
-    assert value['members'][0]['inventory_sha256'] == 'sha256:' + '3' * 64
+    assert value['members'][0]['inventory_sha256'] == consent['members'][0]['inventory_sha256']
     assert value['members'][0]['action'] == 'pending'
     assert value['receipt_digest'] == canonical_digest(value, digest_field='receipt_digest')
     assert stat.S_IMODE(path.stat().st_mode) == 0o644
@@ -85,13 +86,16 @@ def test_pending_is_durable_in_actual_intent_before_any_source_mutation(tmp_path
 
 def test_terminal_updates_only_exact_pending_and_preserves_immutable_history(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
     policy, consent, journal, preserved, allowance, _ = operation(tmp_path, monkeypatch)
     pending = publish_pending_receipt(policy, consent, journal, preserved, allowance)
     original = Path(pending['path']).read_bytes()
+    outcome = detach_and_remove(preserved, member_index=0, generation_id=consent['members'][0]['generation_id'],
+                                journal=journal)
     snapshot = journal.retired_snapshot({'schema_version': 'scene_retirement_journal.v1',
-        'intent_id': consent['intent_id'], 'members': consent['members']})
+        'intent_id': consent['intent_id'], 'members': consent['members'], 'outcomes': [outcome]})
     final = {'status': 'retired', 'intent_id': consent['intent_id'], 'token': journal.token,
-             'members': [{'canonical_path': consent['members'][0]['canonical_path'], 'outcome': 'removed'}],
+             'members': [outcome],
              'retired_journal_raw_ref': snapshot}
     terminal = publish_terminal_receipt(policy, consent, pending, final, allowance)
     value = json.loads(Path(terminal['path']).read_bytes())
@@ -101,9 +105,41 @@ def test_terminal_updates_only_exact_pending_and_preserves_immutable_history(tmp
     assert previous['sha256'] == pending['sha256'] and previous['size_bytes'] == pending['size_bytes']
     assert raw_ref(Path(previous['path'])) == previous  # Immutable chain remains resolvable.
     assert value['retired_journal_raw_ref'] == snapshot and terminal == raw_ref(Path(terminal['path']))
+    for key in ('logical_bytes', 'apparent_bytes', 'unique_allocated_bytes', 'removed_allocated_bytes',
+                'removed_file_count', 'allocation_method', 'event_raw_ref'):
+        assert value['members'][0][key] == outcome[key]
     assert any(p.read_bytes() == original for p in Path(pending['path']).parent.glob('scene-retired.*.pending.json'))
     assert any(p.read_bytes() == Path(terminal['path']).read_bytes()
                for p in Path(pending['path']).parent.glob('scene-retired.*.terminal.json'))
+
+
+@pytest.mark.parametrize('drift', ['count', 'generation', 'event', 'snapshot'])
+def test_terminal_measured_outcomes_must_match_durable_snapshot_and_event(tmp_path, monkeypatch, drift):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    policy, consent, journal, preserved, allowance, _ = operation(tmp_path, monkeypatch)
+    pending = publish_pending_receipt(policy, consent, journal, preserved, allowance)
+    original = Path(pending['path']).read_bytes()
+    outcome = detach_and_remove(preserved, member_index=0, generation_id=consent['members'][0]['generation_id'],
+                                journal=journal)
+    recorded = dict(outcome)
+    if drift == 'snapshot':
+        recorded['removed_file_count'] += 1
+    snapshot = journal.retired_snapshot({'schema_version': 'scene_retirement_journal.v1',
+        'intent_id': consent['intent_id'], 'members': consent['members'], 'outcomes': [recorded]})
+    claimed = dict(outcome)
+    if drift == 'count':
+        claimed['removed_allocated_bytes'] += 1
+    elif drift == 'generation':
+        claimed['generation_id'] = '4' * 32
+    elif drift == 'event':
+        claimed['event_raw_ref'] = journal.initial_ref
+    final = {'status': 'retired', 'intent_id': consent['intent_id'], 'token': journal.token,
+             'members': [claimed], 'retired_journal_raw_ref': snapshot}
+    with pytest.raises(ValueError):
+        publish_terminal_receipt(policy, consent, pending, final, allowance)
+    assert Path(pending['path']).read_bytes() == original
+    assert not list(Path(pending['path']).parent.glob('scene-retired.*.terminal.json'))
 
 
 @pytest.mark.parametrize('drift', ['intent', 'installed-context', 'symlink-destination'])
