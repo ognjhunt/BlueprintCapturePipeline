@@ -29,6 +29,8 @@ LEASE_FILE = ".lane-scratch.v1.json"
 DEFAULT_ROOT = Path("/mnt/blueprint-work/lanes")
 MAX_TTL_SECONDS = 14 * 86400
 MAX_LEASE_BYTES = 8192
+CONSUMER_LIFETIME_PROTOCOL = "leased_scratch_use.v1"
+_NO_PROTOCOL = object()
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _REASON = re.compile(r"[a-z][a-z0-9_:+.-]{0,79}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -69,6 +71,9 @@ def _seal(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _lease_fields_valid(lease: Mapping[str, Any]) -> bool:
     try:
+        if ("consumer_lifetime_contract" in lease
+                and lease["consumer_lifetime_contract"] != CONSUMER_LIFETIME_PROTOCOL):
+            return False
         for field in ("lane", "name", "owner"):
             _id(lease.get(field), field)
         if not isinstance(lease.get("reason"), str) or _REASON.fullmatch(lease["reason"]) is None:
@@ -250,6 +255,7 @@ def _creation_lease(
     cleanup: str, ttl_seconds: int, run_ref: str | None = None,
     scene_ref: str | None = None, size_budget_bytes: int | None = None,
     now: Callable[[], float] = time.time,
+    consumer_lifetime_contract: Any = _NO_PROTOCOL,
 ) -> dict[str, Any]:
     """Validate creation metadata before a constructor can mutate a directory."""
 
@@ -269,6 +275,8 @@ def _creation_lease(
         raise LaneScratchError("lane_scratch_budget_invalid")
     ttl = _ttl(ttl_seconds)
     observed = _now(now)
+    if consumer_lifetime_contract is not _NO_PROTOCOL and consumer_lifetime_contract != CONSUMER_LIFETIME_PROTOCOL:
+        raise LaneScratchError("lane_scratch_protocol_invalid")
     return _seal({
         "schema_version": SCHEMA_VERSION, "lane": lane, "name": name,
         "owner": owner, "reason": reason, "class_intent": class_intent,
@@ -276,6 +284,8 @@ def _creation_lease(
         "expires_at_epoch": observed + ttl, "released_at_epoch": None,
         "size_budget_bytes": size_budget_bytes,
         "run_ref" if run_ref is not None else "scene_ref": reference,
+        **({"consumer_lifetime_contract": consumer_lifetime_contract}
+           if consumer_lifetime_contract is not _NO_PROTOCOL else {}),
     })
 
 
@@ -329,12 +339,14 @@ def create_lane_scratch(
     cleanup: str, ttl_seconds: int, run_ref: str | None = None,
     scene_ref: str | None = None, size_budget_bytes: int | None = None,
     root: str | Path = DEFAULT_ROOT, now: Callable[[], float] = time.time,
+    consumer_lifetime_contract: Any = _NO_PROTOCOL,
 ) -> Path:
     """Create a new scratch folder with a sealed lease in one publication."""
 
     lease = _creation_lease(lane, name, owner=owner, reason=reason, class_intent=class_intent,
                             cleanup=cleanup, ttl_seconds=ttl_seconds, run_ref=run_ref,
-                            scene_ref=scene_ref, size_budget_bytes=size_budget_bytes, now=now)
+                            scene_ref=scene_ref, size_budget_bytes=size_budget_bytes, now=now,
+                            consumer_lifetime_contract=consumer_lifetime_contract)
     with _locked_root(root) as root_fd:
         _publish_scratch_folder(root_fd, lease)
     return Path(root) / lane / name

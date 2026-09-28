@@ -99,6 +99,7 @@ def open_g1_team_runtime_session(
     *, profile: Mapping[str, Any], trusted_setup: Mapping[str, Any],
     authenticated_owner: Mapping[str, str], approved_binding: Mapping[str, Any],
     output_dir: Path, credential: str | None = None, fetcher: Any = None,
+    staged_artifact_override: Path | None = None, archive_gpu_binding: Mapping[str, Any] | None = None,
 ) -> NativeG1TeamRuntimeSession:
     """Probe exactly one operator-bound endpoint, image, or staged artifact."""
 
@@ -112,6 +113,7 @@ def open_g1_team_runtime_session(
         or not isinstance(approved_binding, Mapping)
         or approved_binding.get("mode") != mode
         or approved_binding.get("profile_digest") != bound["profile_digest"]
+        or (mode != "noncontainer_artifact" and (staged_artifact_override is not None or archive_gpu_binding is not None))
     ):
         raise ValueError("g1_team_runtime_session_binding_invalid")
 
@@ -179,8 +181,10 @@ def open_g1_team_runtime_session(
             authenticated_owner=authenticated_owner,
             operator_approved_profile_digest=bound["profile_digest"],
             operator_approved_artifact_sha256=approved_binding["artifact_sha256"],
-            staged_artifact_path=Path(approved_binding["staged_artifact_path"]),
+            staged_artifact_path=(staged_artifact_override if staged_artifact_override is not None
+                                  else Path(approved_binding["staged_artifact_path"])),
             output_dir=output_dir,
+            gpu_binding=archive_gpu_binding,
         )
         client = lease.client
     else:

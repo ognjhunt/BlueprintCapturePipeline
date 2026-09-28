@@ -67,6 +67,8 @@ EVIDENCE_HOT_ON_VOLUME=(
   task-evaluation-inputs/sam31-profile-registry
   task-evaluation-inputs/task-evaluation-terminal-results
   task-evaluation-inputs/g1-team-campaign-registry.json
+  task-evaluation-inputs/g1-sonic-assets                 # retained G1 asset identity; never evicted
+  task-evaluation-inputs/g1-team-policy-approvals        # operator approvals read by paid dispatch
   'pubsub-handoffs/*/scenes/*.retired.v1.json'
 )
 
