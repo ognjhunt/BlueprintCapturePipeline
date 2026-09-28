@@ -259,6 +259,7 @@ class SceneArchiveTransport:
                 received+=len(chunk)
                 yield chunk
             self._tick()
+            allowance.charge('remote_bytes',1)
             _require(self._read_body(body,1)==b'','scene_retirement_transport_readback_unproven')
             self._tick()
         finally:
@@ -311,6 +312,9 @@ class SceneArchiveTransport:
                 received += len(chunk)
                 yield chunk
             self._tick()
+            # The EOF probe is physical I/O and is not yielded for a legacy
+            # caller to charge. Reserve it here before touching the socket.
+            self.allowance.charge('remote_bytes',1)
             _require(self._read_body(body,1)==b'', 'scene_retirement_transport_readback_unproven')
             self._tick()
         finally:
