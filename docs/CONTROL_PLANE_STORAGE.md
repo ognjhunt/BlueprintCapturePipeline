@@ -649,7 +649,12 @@ mutation edge. The extended proofs read queues strictly: they also count a row
 parked in a state that will still run (`LIVE_QUEUE_STATES`, such as a
 preparation awaiting its source preparation), and a row they cannot read keeps
 their candidates as `queue_unreadable`, while a row that merely moved between
-states mid-read is found where it went. Planning and the releases each read the
+states mid-read is found where it went. The strict reader
+(`control_plane_storage_references.queue_reference_text` with `strict=True`,
+which the result residue offload reads its queues with too) opens each row
+without following a link or waiting for a writer and requires the regular file
+its lstat saw, so a row swapped for a link, a FIFO or another file mid-read
+fails the read instead of hanging the tick. Planning and the releases each read the
 launch queue and the preparation queue's ended envelopes once (twice over,
 unioned), and the process table is swept once for planning and once per
 release.
@@ -721,7 +726,7 @@ so each manifest (and its receipt) also records `walked_file_count` and
   route keep reopening its files), `dispatch_receipt_invalid`,
   `dispatch_row_pending` (a pending or processing queue row names the run, and
   the dispatcher would re-enter it), `dispatch_queue_unreadable` (a queue row
-  that cannot be read keeps every run), `run_root_invalid`, `offload_locked`,
+  the strict reader refuses keeps every run), `run_root_invalid`, `offload_locked`,
   `plan_failed` (what stays cannot be searched for what a reader reaches from
   it: a directory that cannot be listed or is on another filesystem, a kept
   link that leaves the run, a kept file on another filesystem, or a file that

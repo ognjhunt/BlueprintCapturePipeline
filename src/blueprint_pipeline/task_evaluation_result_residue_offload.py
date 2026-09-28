@@ -78,8 +78,8 @@ be read) the whole run stays (``plan_failed``).
   authority and records and rebuilds the bundle when its receipt is missing
   (``allocator_result.json``, kept by name, stops any new spend). So a run that
   a pending or processing row of a configured queue names stays whole
-  (``dispatch_row_pending``), and a row that cannot be read keeps every run
-  (``dispatch_queue_unreadable``).
+  (``dispatch_row_pending``), and a row the storage GC's strict queue reader
+  refuses keeps every run (``dispatch_queue_unreadable``).
 * Official-billing re-validation reopens ``allocator_result.json`` (or
   ``allocator-result.json``) and every ``terminal_execution_evidence`` path of
   ``official_billing_reconciliation.json``; same-goal spend ledgers
@@ -155,9 +155,9 @@ from typing import Any
 
 from . import completed_replay_cache_retention as held_files
 from . import control_plane_evidence_offload as evidence
+from . import control_plane_storage_references as references
 from .control_plane_replay_cache_gc import _truthy_setting
 from .control_plane_retained_receipt import RETAINED_RECEIPTS
-from .control_plane_storage_references import MAX_QUEUE_MESSAGE_BYTES, QUEUE_STATES
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_result_residue_scan import (
     ResultResidueOffloadError,
@@ -524,45 +524,21 @@ class QueueRows:
 
 
 def queue_snapshot(queue_roots: Sequence[str | Path]) -> QueueRows:
-    """Read every pending or processing row of the configured queues, strictly.
+    """Every pending or processing row of the configured queues, read by the storage GC's strict reader.
 
-    A row or state directory that is a link, not a regular file or directory, too
-    large, unreadable or not UTF-8 makes the snapshot ``unreadable``. A row
-    consumed since it was listed names nothing.
+    ``control_plane_storage_references.queue_reference_text`` reads each row
+    through a descriptor that follows no link and waits for no writer, and
+    refuses a linked, non-regular, oversized, unreadable or non-UTF-8 row or a
+    linked state directory: the snapshot is then ``unreadable``. A row moved to
+    another state between listing and reading is skipped where it was, so, as
+    its other strict callers do, the queues are read twice and the reads joined.
     """
 
-    # TODO(10c-merge): read through control_plane_storage_references.queue_reference_text(strict=True).
-    chunks: list[str] = []
-    for raw_root in queue_roots:
-        root = Path(raw_root).expanduser()
-        for state in QUEUE_STATES:
-            directory = root / state
-            if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
-                return QueueRows(unreadable=True)
-            if not directory.is_dir():
-                continue
-            try:
-                names = sorted(entry.name for entry in os.scandir(directory) if entry.name.endswith(".json"))
-            except OSError:
-                return QueueRows(unreadable=True)
-            for name in names:
-                try:
-                    descriptor = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-                except FileNotFoundError:
-                    continue  # consumed since it was listed
-                except OSError:
-                    return QueueRows(unreadable=True)
-                with os.fdopen(descriptor, "rb") as stream:
-                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                        return QueueRows(unreadable=True)
-                    raw = stream.read(MAX_QUEUE_MESSAGE_BYTES + 1)
-                if len(raw) > MAX_QUEUE_MESSAGE_BYTES:
-                    return QueueRows(unreadable=True)
-                try:
-                    chunks.append(raw.decode("utf-8"))
-                except UnicodeDecodeError:
-                    return QueueRows(unreadable=True)
-    return QueueRows(text="\n".join(chunks))
+    try:
+        return QueueRows(text="\n".join(
+            references.queue_reference_text(queue_roots, strict=True) for _read_pass in range(2)))
+    except references.QueueReferenceUnreadable:
+        return QueueRows(unreadable=True)
 
 
 def _bulk_reason(bulk_result: Mapping[str, Any]) -> tuple[str | None, Mapping[str, Any] | None]:

@@ -5,6 +5,8 @@
 #   src/blueprint_pipeline/control_plane_storage_gc.py
 #   src/blueprint_pipeline/control_plane_storage_gc_reasons.py
 #   src/blueprint_pipeline/control_plane_evidence_offload.py
+#   src/blueprint_pipeline/control_plane_storage_references.py
+#   src/blueprint_pipeline/completed_replay_cache_retention.py
 """A sealed result run's residue moves to the artifact store behind a verified pointer, and comes back.
 
 On 2026-09-27 evidence offload kept 27 result-registry runs (12.94 GB): whole-run
@@ -964,9 +966,12 @@ def test_a_run_a_live_dispatch_row_names_stays_whole(tmp_path, state) -> None:
     assert _offload(f, queue_roots=[queue])["status"] == "applied"
 
 
-@pytest.mark.parametrize("damage", ["linked_row", "oversized_row", "linked_state"])
+@pytest.mark.parametrize("damage", ["linked_row", "oversized_row", "linked_state", "fifo_row", "non_utf8_row"])
 def test_a_dispatch_row_that_cannot_be_read_keeps_every_run(tmp_path, monkeypatch, damage) -> None:
-    """A row that cannot be read might name any run, so none moves."""
+    """A row that cannot be read might name any run, so none moves. The residue reads its queues
+    through the storage GC's one strict reader."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
 
     f = _sealed_run(tmp_path / "canaries")
     queue = _dispatch_queue(tmp_path / "dispatches")
@@ -975,17 +980,27 @@ def test_a_dispatch_row_that_cannot_be_read_keeps_every_run(tmp_path, monkeypatc
     if damage == "linked_row":
         (queue / "pending" / "linked.json").symlink_to(tmp_path / "elsewhere" / "row.json")
     elif damage == "oversized_row":
-        monkeypatch.setattr(residue, "MAX_QUEUE_MESSAGE_BYTES", 16)
+        monkeypatch.setattr(references, "MAX_QUEUE_MESSAGE_BYTES", 16)
         (queue / "processing" / "large.json").write_text(json.dumps({"activation_id": "another-run"}), encoding="utf-8")
-    else:
+    elif damage == "linked_state":
         (queue / "processing").rmdir()
         (queue / "processing").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    elif damage == "fifo_row":
+        os.mkfifo(queue / "pending" / "row.json")
+    else:
+        (queue / "pending" / "row.json").write_bytes(b"\xff\xfe")
+    reads: list[bool] = []
+    real_read = references.queue_reference_text
+    monkeypatch.setattr(references, "queue_reference_text",
+                        lambda roots, *args, **kwargs: (reads.append(kwargs.get("strict")), real_read(
+                            roots, *args, **kwargs))[1])
     before = _local_files(f.run)
 
     result = _offload(f, queue_roots=[queue])
 
     assert (result["status"], result["retained_reason"]) == ("retained", "dispatch_queue_unreadable")
     assert _local_files(f.run) == before and not f.pointer.exists()
+    assert reads and set(reads) == {True}
 
 
 def test_a_dispatch_row_written_during_publication_keeps_the_run(tmp_path) -> None:

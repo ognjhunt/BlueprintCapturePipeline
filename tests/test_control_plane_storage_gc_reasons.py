@@ -10,6 +10,7 @@ import errno
 import functools
 import json
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +22,7 @@ from blueprint_pipeline import task_evaluation_configured_scene_object_store as 
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
 from blueprint_pipeline.control_plane_storage_pins import live_pinned_paths, release_storage_pin, write_storage_pin
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from tests.test_completed_replay_cache_retention import _refuse_reading
+from tests.test_completed_replay_cache_retention import _fails_instead_of_blocking, _refuse_reading
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
 
 NOW = 30_000_000.0
@@ -552,6 +553,56 @@ def test_the_reasons_read_references_without_reaching_into_the_gc() -> None:
     assert gc_module.settlement_reopens_beyond_retained_receipts is references.settlement_reopens_beyond_retained_receipts
     assert (gc_module._MAX_QUEUE_MESSAGE_BYTES, gc_module.QUEUE_STATES, gc_module.SETTLEMENT_RECORD_GLOBS) == (
         references.MAX_QUEUE_MESSAGE_BYTES, references.QUEUE_STATES, references.SETTLEMENT_RECORD_GLOBS)
+
+
+@pytest.mark.parametrize("swap,code", [
+    ("fifo", "queue_row_changed"), ("link", "queue_row_linked"), ("file", "queue_row_changed")])
+def test_a_queue_row_swapped_after_its_lstat_fails_the_strict_read(tmp_path, monkeypatch, swap, code) -> None:
+    """The strict reader opens each row without following a link or waiting for a writer, and what
+    it opened must be the regular file the row's lstat saw. A row swapped for a FIFO, a link or
+    another file in between refuses the read, instead of hanging the tick or reading a file whose
+    kind and size were never checked."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    row = queue / "pending" / "row.json"
+    row.write_text('{"name": "named"}', encoding="utf-8")
+    (tmp_path / "elsewhere.json").write_text('{"name": "elsewhere"}', encoding="utf-8")
+    os.link(row, tmp_path / "held.json")  # the listed inode stays allocated, so a new file cannot reuse it
+    real_lstat = Path.lstat
+
+    def lstat_then_swap(self):
+        observed = real_lstat(self)
+        if self == row and stat.S_ISREG(observed.st_mode):
+            row.unlink()
+            if swap == "fifo":
+                os.mkfifo(row)
+            elif swap == "link":
+                row.symlink_to(tmp_path / "elsewhere.json")
+            else:
+                row.write_text('{"name": "replaced"}', encoding="utf-8")
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", lstat_then_swap)
+    with _fails_instead_of_blocking(5), pytest.raises(references.QueueReferenceUnreadable, match=code):
+        references.queue_reference_text([queue], strict=True)
+
+
+def test_a_fifo_queue_row_fails_the_strict_read_as_not_regular(tmp_path) -> None:
+    """A row that is not a regular file refuses the strict read under its own code, and the read
+    never waits for a FIFO's writer."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    (queue / "processing").mkdir(parents=True)
+    os.mkfifo(queue / "processing" / "row.json")
+
+    with _fails_instead_of_blocking(5), pytest.raises(references.QueueReferenceUnreadable,
+                                                      match="queue_row_not_regular"):
+        references.queue_reference_text([queue], strict=True)
 
 
 def test_the_summary_copies_only_the_offloads_own_stages() -> None:

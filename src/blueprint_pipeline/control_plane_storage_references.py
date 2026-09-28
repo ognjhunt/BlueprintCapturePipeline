@@ -7,6 +7,7 @@ names under their old ones for its existing callers.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import stat
@@ -47,7 +48,8 @@ def queue_reference_text(
     holds. By default only pending and processing rows are read, and a linked,
     oversized or unreadable row, or a linked state directory, is skipped: every
     original caller reads that way. ``strict`` raises ``QueueReferenceUnreadable``
-    for each of those instead, and for a linked queue root, since a row that
+    for each of those instead, and for a linked queue root, a row that is not a
+    regular file or not UTF-8, or one swapped after its lstat, since a row that
     cannot be read proves nothing about what it names. A missing root or state
     directory holds no rows either way, and a row that moved to another state
     between the listing and the read is skipped where it was: a strict caller
@@ -99,7 +101,13 @@ def _queue_states(root: Path, states, *, strict: bool) -> list[str]:
 
 
 def _strict_rows(directory: Path) -> list[str]:
-    """Every ``*.json`` row of one state directory, or ``QueueReferenceUnreadable``."""
+    """Every ``*.json`` row of one state directory, or ``QueueReferenceUnreadable``.
+
+    Each row is read through a descriptor opened without following a link or
+    waiting for a writer (``_read_row``), so a row swapped for a link, a FIFO or
+    another file after its lstat refuses the read instead of hanging it or being
+    read unchecked.
+    """
 
     try:
         if directory.is_symlink():
@@ -117,11 +125,13 @@ def _strict_rows(directory: Path) -> list[str]:
         path = directory / name
         try:
             observed = path.lstat()
-            if not stat.S_ISREG(observed.st_mode):
+            if stat.S_ISLNK(observed.st_mode):
                 raise QueueReferenceUnreadable("queue_row_linked")
+            if not stat.S_ISREG(observed.st_mode):
+                raise QueueReferenceUnreadable("queue_row_not_regular")
             if observed.st_size > MAX_QUEUE_MESSAGE_BYTES:
                 raise QueueReferenceUnreadable("queue_row_oversized")
-            rows.append(path.read_text(encoding="utf-8"))
+            rows.append(_read_row(path, observed))
         except FileNotFoundError:
             # Moved to another state since the listing: callers read twice and union, so it is
             # seen where it went. A row that is linked, not regular, oversized or unreadable is not.
@@ -129,6 +139,31 @@ def _strict_rows(directory: Path) -> list[str]:
         except (OSError, UnicodeDecodeError) as exc:
             raise QueueReferenceUnreadable("queue_row_unreadable") from exc
     return rows
+
+
+def _read_row(path: Path, observed: os.stat_result) -> str:
+    """The row its lstat ``observed``, read through a descriptor that must still be that file.
+
+    ``O_NOFOLLOW`` refuses a name swapped for a link (``queue_row_linked``) and
+    ``O_NONBLOCK`` keeps a FIFO from blocking the open; what was opened must be
+    a regular file with the observed device and inode (``queue_row_changed``),
+    and no larger than the limit however it grew since.
+    """
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise QueueReferenceUnreadable("queue_row_linked") from exc
+        raise
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
+            raise QueueReferenceUnreadable("queue_row_changed")
+        raw = stream.read(MAX_QUEUE_MESSAGE_BYTES + 1)
+    if len(raw) > MAX_QUEUE_MESSAGE_BYTES:
+        raise QueueReferenceUnreadable("queue_row_oversized")
+    return raw.decode("utf-8")
 
 
 def settlement_reopens_beyond_retained_receipts(name: str, settlement_text: str) -> bool:
