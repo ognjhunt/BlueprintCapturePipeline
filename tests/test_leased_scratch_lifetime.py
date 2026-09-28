@@ -190,10 +190,10 @@ def test_borrow_registers_duplicate_before_its_first_fstat_fault(tmp_path, monke
             return original_stat(fd)
         monkeypatch.setattr(os, "dup", dup)
         monkeypatch.setattr(os, "fstat", info)
-        with pytest.raises(leases.LaneScratchError, match="descriptor_invalid"):
+        with pytest.raises(leases.LaneScratchError, match="ownership_unproven"):
             use.borrow(path / "candidate")
-        with pytest.raises(OSError):
-            original_stat(duplicate[0])
+        assert original_stat(duplicate[0])
+        os.close(duplicate[0])
 
 
 @pytest.mark.slow
@@ -247,3 +247,91 @@ def test_fake_child_retains_shared_description_after_parent_lifetime_ends(tmp_pa
             use.close()
         for fd in (ready_read, ready_write, gate_read, gate_write):
             os.close(fd)
+
+
+def test_unproven_initial_descriptor_identity_never_closes_reused_number(monkeypatch):
+    use = lifetime.LeasedScratchUse()
+    closed = []
+    monkeypatch.setattr(os, "open", lambda *args, **kwargs: 899)
+    monkeypatch.setattr(lifetime, "_identity", lambda fd: (_ for _ in ()).throw(OSError("identity unavailable")))
+    monkeypatch.setattr(os, "close", closed.append)
+    with pytest.raises(OSError):
+        use._open("/owned", os.O_RDONLY)
+    with pytest.raises(leases.LaneScratchError, match="ownership_unproven"):
+        use.close()
+    assert closed == []
+    assert use.unresolved_ownership
+
+
+def test_known_close_failure_retries_and_finalizes_other_descriptors(monkeypatch):
+    use = lifetime.LeasedScratchUse()
+    use._owned = {890: (1, 1), 891: (1, 2)}
+    failed, closed = [], []
+    monkeypatch.setattr(lifetime, "_identity", lambda fd: use._owned[fd])
+    def close(fd):
+        if fd == 891 and not failed:
+            failed.append(fd)
+            raise OSError("definite failure")
+        closed.append(fd)
+    monkeypatch.setattr(os, "close", close)
+    use.close()
+    assert sorted(closed) == [890, 891]
+    assert not use._owned
+
+
+def test_foreign_known_identity_is_relinquished_without_close(monkeypatch):
+    use = lifetime.LeasedScratchUse()
+    use._owned = {892: (1, 1)}
+    closed = []
+    monkeypatch.setattr(lifetime, "_identity", lambda fd: (1, 2))
+    monkeypatch.setattr(os, "close", closed.append)
+    use.close()
+    assert not closed and not use._owned
+
+
+def test_refresh_adopts_only_same_live_owner_reference_under_root_lock(tmp_path):
+    root, path = folder(tmp_path)
+    with open_use(root) as use:
+        before = use.identity["lease_digest"]
+        renewed = leases.renew_lane_scratch(lane="g1", name="pair", root=root, owner="owner", expected_digest=before,
+                                             ttl_seconds=200, now=lambda: 120)
+        with pytest.raises(leases.LaneScratchError, match="lease_changed"):
+            use.check()
+        use.refresh()
+        assert use.identity["lease_digest"] == renewed["lease_digest"]
+        with pytest.raises(leases.LaneScratchError, match="consumer_busy"):
+            lifetime.LeasedScratchUse.probe(path, now=lambda: 120)
+        leases.release_lane_scratch(lane="g1", name="pair", root=root, owner="owner",
+                                    expected_digest=renewed["lease_digest"], now=lambda: 130)
+        with pytest.raises(leases.LaneScratchError, match="inactive"):
+            use.refresh()
+
+
+def test_persistent_known_close_failure_never_claims_all_closed_and_cleans_others(monkeypatch):
+    use = lifetime.LeasedScratchUse()
+    use._owned = {890: (1, 1), 891: (1, 2)}
+    closed = []
+    monkeypatch.setattr(lifetime, "_identity", lambda fd: use._owned[fd])
+    def close(fd):
+        if fd == 891:
+            raise OSError("definite failure")
+        closed.append(fd)
+    monkeypatch.setattr(os, "close", close)
+    with pytest.raises(leases.LaneScratchError, match="cleanup_failed"):
+        use.close()
+    assert closed == [890] and list(use._owned) == [891]
+
+
+def test_unknown_initial_identity_preserves_original_handle_as_explicit_refusal(tmp_path, monkeypatch):
+    original_stat, original_close = os.fstat, os.close
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    use = lifetime.LeasedScratchUse()
+    try:
+        monkeypatch.setattr(lifetime, "_identity", lambda value: (_ for _ in ()).throw(OSError("unavailable")))
+        with pytest.raises(OSError):
+            use._take(fd)
+        with pytest.raises(leases.LaneScratchError, match="ownership_unproven"):
+            use.close()
+        assert original_stat(fd) and use.unresolved_ownership
+    finally:
+        original_close(fd)

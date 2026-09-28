@@ -7,6 +7,7 @@ child's shared authority too. Unadopted readers remain outside this protocol.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import stat
@@ -47,12 +48,48 @@ class LeasedScratchUse:
     def __init__(self) -> None:
         self._owned: dict[int, tuple[int, int] | None] = {}
         self._closed = False
+        self.unresolved_ownership = False
 
     def _open(self, name: str | Path, flags: int, parent: int | None = None) -> int:
         fd = os.open(name, flags, dir_fd=parent)
-        self._owned[fd] = None
-        self._owned[fd] = _identity(fd)
+        self._take(fd)
         return fd
+
+    def _take(self, fd: int) -> None:
+        if type(fd) is not int or fd < 0 or self._closed or len(self._owned) >= 768:
+            raise LaneScratchError("lane_scratch_lifetime_descriptor_invalid")
+        self._owned[fd] = None
+        try:
+            self._owned[fd] = _identity(fd)
+        except OSError as error:
+            if error.errno == errno.EBADF:
+                self._owned.pop(fd, None)
+            raise
+
+    def _take_all(self, descriptors) -> None:
+        # Register every transferred token before observing any one of them.
+        values = tuple(dict.fromkeys(fd for fd in descriptors if type(fd) is int and fd >= 0))
+        if len(values) > 768:
+            raise LaneScratchError("lane_scratch_lifetime_descriptor_invalid")
+        for fd in values:
+            self._owned[fd] = None
+        failed = False
+        for fd in values:
+            try:
+                self._owned[fd] = _identity(fd)
+            except OSError as error:
+                if error.errno == errno.EBADF:
+                    self._owned.pop(fd, None)
+                failed = True
+        if failed:
+            raise LaneScratchError("lane_scratch_handshake_invalid")
+
+    def _detach(self, fd: int) -> tuple[int, int]:
+        identity = self._owned.pop(fd, None)
+        if identity is None:
+            self.unresolved_ownership = True
+            raise LaneScratchError("lane_scratch_descriptor_ownership_unproven")
+        return identity
 
     def _absolute(self, path: Path) -> int:
         fd = self._open("/", _DIR_FLAGS)
@@ -66,20 +103,25 @@ class LeasedScratchUse:
         try:
             flags = os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_RDWR | os.O_CREAT if create else os.O_RDONLY)
             lock = os.open(".lane-scratch.lock", flags, 0o600, dir_fd=self._root_fd)
-            self._owned[lock] = None
-            self._owned[lock] = _identity(lock)
+            self._take(lock)
             if not stat.S_ISREG(os.fstat(lock).st_mode):
                 raise LaneScratchError("lane_scratch_root_lock_unsafe")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except (OSError, LaneScratchError):
             if lock is not None:
                 self._close_one(lock)
+                self._cleanup_status()
+                if lock in self._owned:
+                    raise LaneScratchError("lane_scratch_descriptor_cleanup_failed")
             raise LaneScratchError("lane_scratch_root_lock_unavailable") from None
         try:
             yield
         finally:
             # This separate description is never inherited as target authority.
             self._close_one(lock)
+            self._cleanup_status()
+            if lock in self._owned:
+                raise LaneScratchError("lane_scratch_descriptor_cleanup_failed")
 
     @classmethod
     def create(cls, *, root: str | Path, lane: str, name: str, owner: str,
@@ -209,6 +251,25 @@ class LeasedScratchUse:
         except OSError:
             raise LaneScratchError("lane_scratch_lifetime_path_unsafe") from None
 
+    def refresh(self) -> None:
+        """Explicitly bind a renewed live lease without releasing target SH."""
+        if self._closed or self.exclusive:
+            raise LaneScratchError("lane_scratch_lifetime_closed")
+        with self._root_lock():
+            try:
+                self._visible()
+                lease = _read_lease(self.fd)
+                reference = "run_ref" if "run_ref" in self.identity else "scene_ref"
+                other = "scene_ref" if reference == "run_ref" else "run_ref"
+                if (other in lease or any(lease.get(key) != self.identity[key] for key in
+                                         ("lane", "name", "owner", reference, "consumer_lifetime_contract"))):
+                    raise LaneScratchError("lane_scratch_lifetime_identity_changed")
+                if lease.get("released_at_epoch") is not None or lease["expires_at_epoch"] <= _now(self.now):
+                    raise LaneScratchError("lane_scratch_lifetime_inactive")
+                self._bind(lease)
+            except OSError:
+                raise LaneScratchError("lane_scratch_lifetime_path_unsafe") from None
+
     def mkdir(self, relative: str) -> Path:
         from .control_plane_leased_scratch import _components
         parts = _components(relative)
@@ -239,8 +300,7 @@ class LeasedScratchUse:
             result._root_fd = result._absolute(self.root)
             result._lane_fd = result._open(self.lane, _DIR_FLAGS, result._root_fd)
             result.fd = os.dup(self.fd)
-            result._owned[result.fd] = None
-            result._owned[result.fd] = _identity(result.fd)
+            result._take(result.fd)
             result.check()
             if [_identity(fd) for fd in (result._root_fd, result._lane_fd, result.fd)] != self.identity["inodes"]:
                 raise LaneScratchError("lane_scratch_lifetime_identity_changed")
@@ -253,13 +313,17 @@ class LeasedScratchUse:
             raise
 
     @classmethod
-    def inherited(cls, descriptor: int, identity: dict[str, Any], *, now: Callable[[], float] = time.time) -> LeasedScratchUse:
+    def inherited(cls, descriptor: int, identity: dict[str, Any], *, now: Callable[[], float] = time.time,
+                  _owned_identity: tuple[int, int] | None = None) -> LeasedScratchUse:
         """Consume a controlled child's inherited close-only directory descriptor."""
         result = cls()
         result.fd = descriptor
-        result._owned[descriptor] = None
+        result._owned[descriptor] = _owned_identity
         try:
-            result._owned[descriptor] = _identity(descriptor)
+            if _owned_identity is None:
+                result._take(descriptor)
+            elif _identity(descriptor) != _owned_identity:
+                raise LaneScratchError("lane_scratch_lifetime_identity_changed")
             if not stat.S_ISDIR(os.fstat(descriptor).st_mode) or not isinstance(identity, dict):
                 raise LaneScratchError("lane_scratch_lifetime_descriptor_invalid")
             reference = {"run_ref", "scene_ref"} & identity.keys()
@@ -307,21 +371,36 @@ class LeasedScratchUse:
         if fd not in self._owned:
             return
         identity = self._owned[fd]
+        if identity is None:
+            # No original identity exists: never adopt/close a reused number.
+            self._owned.pop(fd, None)
+            self.unresolved_ownership = True
+            return
         for _ in range(2):
             try:
-                if identity is not None and _identity(fd) != identity:
+                if _identity(fd) != identity:
                     self._owned.pop(fd, None)
                     return
                 os.close(fd)
-            except OSError:
+            except OSError as error:
+                if error.errno == errno.EBADF:
+                    self._owned.pop(fd, None)
+                    return
                 continue
             self._owned.pop(fd, None)
             return
+
+    def _cleanup_status(self) -> None:
+        if self.unresolved_ownership:
+            raise LaneScratchError("lane_scratch_descriptor_ownership_unproven")
 
     def close(self) -> None:
         self._closed = True
         for fd in reversed(tuple(self._owned)):
             self._close_one(fd)
+        self._cleanup_status()
+        if self._owned:
+            raise LaneScratchError("lane_scratch_descriptor_cleanup_failed")
 
     def __enter__(self) -> LeasedScratchUse:
         self.check()

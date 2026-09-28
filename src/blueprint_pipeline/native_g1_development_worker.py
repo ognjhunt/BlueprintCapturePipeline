@@ -474,26 +474,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lifetime-input-fd", type=int)
     parser.add_argument("--lifetime-output-fd", type=int)
     args = parser.parse_args(argv)
-    request = json.loads(args.request.read_text(encoding="utf-8"))
     descriptors = (args.lifetime_fd, args.lifetime_input_fd, args.lifetime_output_fd)
     if any(value is not None for value in descriptors):
-        if not all(type(value) is int and value >= 0 for value in descriptors) or len(set(descriptors)) != 3:
-            raise ValueError("g1_worker_lifetime_handshake_invalid")
         from .control_plane_g1_lifetime_adapter import adopt_worker_proof, read_message, write_message
+        from .control_plane_scratch_lifetime import LeasedScratchUse
+        from .control_plane_lane_scratch import LaneScratchError
         from contextlib import ExitStack
-        import os
         with ExitStack() as cleanup:
-            cleanup.callback(os.close, args.lifetime_input_fd)
-            cleanup.callback(os.close, args.lifetime_output_fd)
+            owner = LeasedScratchUse()
+            cleanup.callback(owner.close)
+            owner._take_all(descriptors)
+            if not all(type(value) is int and value >= 0 for value in descriptors) or len(set(descriptors)) != 3:
+                raise LaneScratchError("lane_scratch_handshake_invalid")
+            try:
+                request = json.loads(args.request.read_text(encoding="utf-8"))
+                sealed = _request(request)
+            except (OSError, ValueError, TypeError, RecursionError):
+                raise LaneScratchError("lane_scratch_handshake_invalid") from None
             proof = read_message(args.lifetime_input_fd)
-            sealed = _request(request)
             use = cleanup.enter_context(adopt_worker_proof(args.lifetime_fd, proof, output=args.output_dir,
-                                                           request_digest=sealed["request_digest"]))
+                                                           request_digest=sealed["request_digest"], _owner=owner))
             write_message(args.lifetime_output_fd, {"status": "ready", "request_digest": sealed["request_digest"]})
             if read_message(args.lifetime_input_fd) != {"status": "proceed"}:
-                raise ValueError("g1_worker_lifetime_handshake_invalid")
+                raise LaneScratchError("lane_scratch_handshake_invalid")
             result = run_g1_development_worker(request=request, output_dir=args.output_dir, scratch_lifetime=use)
     else:
+        request = json.loads(args.request.read_text(encoding="utf-8"))
         result = run_g1_development_worker(request=request, output_dir=args.output_dir)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "completed_development_only" else 1

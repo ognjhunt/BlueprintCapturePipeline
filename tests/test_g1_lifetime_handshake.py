@@ -85,3 +85,120 @@ def test_unlocked_inherited_descriptor_establishes_separate_shared_authority(tmp
                                    request_digest="sha256:" + "a" * 64, now=lambda: 110):
         with pytest.raises(LaneScratchError, match="consumer_busy"):
             LeasedScratchUse.probe(path, now=lambda: 110)
+
+
+def test_second_pipe_failure_finalizes_first_owned_pair(tmp_path, monkeypatch):
+    from pathlib import Path
+    original_pipe, original_stat = os.pipe, os.fstat
+    opened = []
+    def pipe():
+        if opened:
+            raise OSError("private pipe creation fault")
+        pair = original_pipe()
+        opened.extend(pair)
+        return pair
+    monkeypatch.setattr(adapter, "worker_proof", lambda *args, **kwargs: {})
+    monkeypatch.setattr(os, "pipe", pipe)
+    with pytest.raises(LaneScratchError, match="handshake"):
+        adapter.controlled_worker_run(executable=Path("/fake/python"), request=Path("/request"),
+                                      output=Path("/output"), request_digest="digest", use=object(), stdout=None, timeout=10)
+    for fd in opened:
+        with pytest.raises(OSError):
+            original_stat(fd)
+
+
+def test_popen_failure_and_one_shot_close_still_finalizes_every_pipe(monkeypatch):
+    from pathlib import Path
+    original_pipe, original_close, original_stat = os.pipe, os.close, os.fstat
+    opened, failed = [], []
+    def pipe():
+        pair = original_pipe()
+        opened.extend(pair)
+        return pair
+    def close(fd):
+        if fd in opened and not failed:
+            failed.append(fd)
+            raise OSError("private definite close failure")
+        return original_close(fd)
+    monkeypatch.setattr(adapter, "worker_proof", lambda *args, **kwargs: {})
+    monkeypatch.setattr(os, "pipe", pipe)
+    monkeypatch.setattr(os, "close", close)
+    monkeypatch.setattr(adapter.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("private launch fault")))
+    with pytest.raises(LaneScratchError, match="handshake"):
+        adapter.controlled_worker_run(executable=Path("/fake/python"), request=Path("/request"),
+                                      output=Path("/output"), request_digest="digest", use=type("Use", (), {"fd": 999})(), stdout=None, timeout=10)
+    for fd in opened:
+        with pytest.raises(OSError):
+            original_stat(fd)
+
+
+def test_invalid_proof_closed_descriptor_has_fixed_refusal(tmp_path):
+    read, write = os.pipe()
+    os.close(read)
+    os.close(write)
+    with pytest.raises(LaneScratchError, match="handshake|ownership"):
+        adapter.adopt_worker_proof(read, {}, output=tmp_path / "candidate", request_digest="digest")
+
+
+def test_channel_duplicate_keys_are_refused():
+    read, write = os.pipe()
+    try:
+        os.write(write, b'{"status":"wrong","status":"ready"}\n')
+        with pytest.raises(LaneScratchError, match="handshake"):
+            adapter.read_message(read, timeout=0.01)
+    finally:
+        os.close(read)
+        os.close(write)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("fault", ["none", "wrong_ack", "timeout"])
+def test_controlled_adapter_preserves_exit_timeout_and_fixed_ack_semantics(tmp_path, monkeypatch, fault):
+    import subprocess
+    import sys
+    from pathlib import Path
+    root, path = folder(tmp_path)
+    process = []
+    class FakeProcess:
+        def __init__(self, args, **options):
+            self.args, self.killed = args, False
+            assert args[:3] == [sys.executable, "-m", "blueprint_pipeline.native_g1_development_worker"]
+            self.child_input = os.dup(options["pass_fds"][-2])
+            ready_fd = options["pass_fds"][-1]
+            adapter.write_message(ready_fd, {"status": "ready", "request_digest": "wrong" if fault == "wrong_ack" else "digest"})
+            process.append(self)
+        def poll(self):
+            return 0 if self.killed else None
+        def kill(self):
+            self.killed = True
+        def wait(self, timeout):
+            if fault == "timeout" and not self.killed:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            os.close(self.child_input)
+            return 7
+    monkeypatch.setattr(adapter.subprocess, "Popen", FakeProcess)
+    with open_use(root) as use:
+        options = dict(executable=Path(sys.executable), request=tmp_path / "request", output=path / "candidate",
+                       request_digest="digest", use=use, stdout=None, timeout=0.01)
+        if fault == "none":
+            assert adapter.controlled_worker_run(**options).returncode == 7
+        elif fault == "wrong_ack":
+            with pytest.raises(LaneScratchError, match="handshake_invalid"):
+                adapter.controlled_worker_run(**options)
+            assert process[0].killed
+        else:
+            with pytest.raises(subprocess.TimeoutExpired):
+                adapter.controlled_worker_run(**options)
+            assert process[0].killed
+        use.check()
+
+
+def test_channel_invalid_utf8_message_has_fixed_refusal():
+    read, write = os.pipe()
+    try:
+        os.write(write, b'{"status":"\xff"}\n')
+        with pytest.raises(LaneScratchError, match="handshake"):
+            adapter.read_message(read, timeout=0.01)
+    finally:
+        os.close(read)
+        os.close(write)

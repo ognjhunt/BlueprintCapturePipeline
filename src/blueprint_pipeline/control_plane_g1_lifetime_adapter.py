@@ -64,7 +64,14 @@ def read_message(fd: int, *, timeout: float = HANDSHAKE_SECONDS) -> dict[str, An
             raw.extend(chunk)
         if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
             raise LaneScratchError("lane_scratch_handshake_invalid")
-        value = json.loads(raw)
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError
+                value[key] = item
+            return value
+        value = json.loads(raw, object_pairs_hook=unique)
         if not isinstance(value, dict) or not value or _wire_size(value) + 1 > MAX_MESSAGE_BYTES:
             raise LaneScratchError("lane_scratch_handshake_invalid")
         return value
@@ -83,52 +90,66 @@ def worker_proof(use: LeasedScratchUse, *, output: Path, request_digest: str) ->
 
 
 def adopt_worker_proof(fd: int, proof: dict[str, Any], *, output: Path, request_digest: str,
-                       now: Any = time.time) -> LeasedScratchUse:
+                       now: Any = time.time, _owner: LeasedScratchUse | None = None) -> LeasedScratchUse:
+    owner = _owner if _owner is not None else LeasedScratchUse()
     try:
+        if fd not in owner._owned:
+            owner._take(fd)
         if (not isinstance(proof, dict) or set(proof) != {"identity", "output", "request_digest"}
                 or proof["output"] != str(_path(output)) or proof["request_digest"] != request_digest):
             raise LaneScratchError("lane_scratch_handshake_invalid")
-    except BaseException:
-        os.close(fd)
-        raise
-    use = LeasedScratchUse.inherited(fd, proof["identity"], now=now)
-    try:
-        with use.borrow(output):
-            pass
-        return use
-    except BaseException:
-        use.close()
-        raise
+        original = owner._detach(fd)
+        use = LeasedScratchUse.inherited(fd, proof["identity"], now=now, _owned_identity=original)
+        try:
+            with use.borrow(output):
+                pass
+            return use
+        except BaseException:
+            use.close()
+            raise
+    except OSError:
+        raise LaneScratchError("lane_scratch_handshake_invalid") from None
+    finally:
+        if _owner is None:
+            owner.close()
 
 
 def controlled_worker_run(*, executable: Path, request: Path, output: Path, request_digest: str,
                           use: LeasedScratchUse, stdout: Any, timeout: float) -> subprocess.CompletedProcess:
     """Keep parent SH while the acknowledged direct child owns its inherited SH."""
     proof = worker_proof(use, output=output, request_digest=request_digest)
-    to_child, parent_write = os.pipe()
-    parent_read, from_child = os.pipe()
+    owner = LeasedScratchUse()
     process = None
     try:
+        to_child, parent_write = os.pipe()
+        owner._take_all((to_child, parent_write))
+        parent_read, from_child = os.pipe()
+        owner._take_all((parent_read, from_child))
         process = subprocess.Popen([str(executable), "-m", "blueprint_pipeline.native_g1_development_worker",
                                     "--request", str(request), "--output-dir", str(output),
                                     "--lifetime-fd", str(use.fd), "--lifetime-input-fd", str(to_child),
                                     "--lifetime-output-fd", str(from_child)], stdout=stdout, stderr=subprocess.STDOUT,
                                    pass_fds=(use.fd, to_child, from_child))
-        os.close(to_child)
-        to_child = None
-        os.close(from_child)
-        from_child = None
+        owner._close_one(to_child)
+        owner._close_one(from_child)
+        if to_child in owner._owned or from_child in owner._owned:
+            raise LaneScratchError("lane_scratch_descriptor_cleanup_failed")
+        owner._cleanup_status()
         write_message(parent_write, proof)
         if read_message(parent_read) != {"status": "ready", "request_digest": request_digest}:
             raise LaneScratchError("lane_scratch_handshake_invalid")
         write_message(parent_write, {"status": "proceed"})
         return subprocess.CompletedProcess(process.args, process.wait(timeout=timeout))
-    except BaseException:
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=HANDSHAKE_SECONDS)
+    except BaseException as error:
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=HANDSHAKE_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                raise LaneScratchError("lane_scratch_handshake_child_finalization_failed") from None
+        if isinstance(error, OSError):
+            raise LaneScratchError("lane_scratch_handshake_invalid") from None
         raise
     finally:
-        for fd in (to_child, from_child, parent_write, parent_read):
-            if fd is not None:
-                os.close(fd)
+        owner.close()

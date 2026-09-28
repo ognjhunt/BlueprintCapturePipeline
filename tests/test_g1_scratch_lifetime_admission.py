@@ -108,3 +108,28 @@ def test_enrolled_pair_rejects_unknown_local_adapter_before_output_creation(tmp_
                                      scratch_owner="owner", scratch_run_ref="run", scratch_ttl_seconds=100,
                                      local_runner=lambda **kwargs: pytest.fail("called"), cooperating_lifetime=True)
     assert not (root / "g1").exists()
+
+
+@pytest.mark.slow
+def test_cli_malformed_request_accounts_for_all_passed_descriptors(tmp_path):
+    import os
+    request = tmp_path / "request.json"
+    request.write_text("malformed private request")
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    input_read, input_write = os.pipe()
+    output_read, output_write = os.pipe()
+    try:
+        with pytest.raises(Exception, match="handshake"):
+            worker.main(["--request", str(request), "--output-dir", str(tmp_path / "output"),
+                         "--lifetime-fd", str(descriptor), "--lifetime-input-fd", str(input_read),
+                         "--lifetime-output-fd", str(output_write)])
+        for fd in (descriptor, input_read, output_write):
+            with pytest.raises(OSError):
+                os.fstat(fd)
+        assert not (tmp_path / "output").exists()
+    finally:
+        for fd in (descriptor, input_read, input_write, output_read, output_write):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
