@@ -79,7 +79,7 @@ def issue_restore(intent_id, *, principal, owner, lease_ttl_seconds, expires_at_
         prior_selector = issuance._selector(prior_raw, files.budget)
         manifest_raw, manifest = _document(files, store_path / (old_operation + '.manifest.json'), 1048576,
                                             selector=prior['manifest'])
-        rows = sorted(manifest['rows'], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+        rows = sorted(manifest['members'], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         retired, _, _ = recovery.retired(files, config, prior, prior_selector, target, rows, entry, original['marker'], _retained_store=store)
         ready_path = store_path / 'operations' / old_operation / 'e-00001.json'
         ready_raw, ready = _document(files, ready_path, 32768)
@@ -383,7 +383,7 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
     manifest_selector = ready[0]['body']['restored_manifest']
     raw, _ = _document(files, Path(config.experiment_record_store) / (action['action_id'] + '.manifest.json'),
                        1048576, selector=manifest_selector)
-    measured = actions._manifest(files, target, files.parents[target])
+    measured = actions._manifest(files, target, files.parents[target], binding=entry)
     _require(raw == actions._encoded(measured, 'manifest_digest', 1048576), 'experiment_restore_payload_changed')
     prepared, _ = _document(files, Path(config.experiment_record_store) / (action['action_id'] + '.restored-head.json'),
                             4096, selector=restored[0]['body']['prepared_authority'])
@@ -438,7 +438,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                  'experiment_restore_selection_invalid')
         manifest_raw, manifest = _document(files, store_path / (selection['original_operation_id'] + '.manifest.json'), 1048576,
                                             selector=selection['manifest'])
-        rows = sorted(manifest['rows'], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+        rows = sorted(manifest['members'], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         public = birth._authority_lock(files, config.experiment_authority_root, gid)
         refreshed = _current(files, public, gid)
         _require(refreshed[0] == current[0], 'experiment_restore_current_changed')
@@ -538,7 +538,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         birth._locked_lane(files, root)
         new_selector = _lease_cas(files, target, target_fd, lease_record, payload)
         # Root measured publication bytes bind restored identities, not a new execution.
-        restored_manifest = actions._manifest(files, target, target_fd)
+        restored_manifest = actions._manifest(files, target, target_fd, binding=entry | {'lease': new_selector})
         restored_raw = actions._encoded(restored_manifest, 'manifest_digest', 1048576)
         manifest_selector = _publish(files, store, action_id + '.manifest.json', restored_raw, kind='manifest')
         ready = actions._event(files, operation, action, 'restored_payload_ready', dict(restore_started=started,

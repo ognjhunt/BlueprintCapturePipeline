@@ -128,7 +128,7 @@ def _install_head(files, public, payload, gid, previous):
         files.close(record.fd)
     return selected
 
-def _manifest(files, target, target_fd, *, hash_payload=True):
+def _manifest(files, target, target_fd, *, binding, hash_payload=True):
     """Five-column compact rows, sequential owned FDs, bounded native metadata."""
     rows, seen, logical, allocated = [], set(), 0, 0
     started = time.monotonic()
@@ -179,8 +179,8 @@ def _manifest(files, target, target_fd, *, hash_payload=True):
                 if identity not in seen:
                     allocated += info.st_blocks * 512
                     seen.add(identity)
-                rows.append([relative, kind, f"{info.st_dev}:{info.st_ino}:{kind}",
-                    ":".join(str(getattr(info, key)) for key in ("st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")), digest])
+                rows.append([relative, kind, f"{info.st_dev}:{info.st_ino}:" + ("r" if kind == "file" else "d"),
+                    ":".join(map(str, (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns))), digest])
                 if kind == "directory":
                     walk(fd, relative + "/", depth + 1)
                 _require(owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)) == owners._metadata(info)
@@ -189,7 +189,8 @@ def _manifest(files, target, target_fd, *, hash_payload=True):
                 files.close(fd)
     walk(target_fd, "", 0)
     rows.sort(key=lambda row: row[0])
-    return dict(schema_version=MANIFEST_SCHEMA, rows=rows, logical_bytes=logical, allocated_bytes=allocated)
+    return dict(schema_version=MANIFEST_SCHEMA, members=rows, logical_bytes=logical, allocated_bytes=allocated,
+                **{key: binding[key] for key in ("generation", "birth", "target_identity", "lease", "completion")})
 
 
 def _context(files, config_path, issued):
@@ -236,7 +237,7 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         manifest_files = _BirthFiles(ReferenceCollectionBudget(values_limit=100000))
         _, manifest_target = _target(manifest_files, config, entry, lock=False)
         _require(len(files.owned) + len(manifest_files.owned) < 104, "experiment_descriptor_limit")
-        manifest = _manifest(manifest_files, target, manifest_target, hash_payload=action != "owner_review")
+        manifest = _manifest(manifest_files, target, manifest_target, binding=entry)
         manifest_files.budget.measure(manifest, cap=1048576 - 100)
         manifest_raw = _encoded(manifest, "manifest_digest", 1048576)
         manifest_files.finish()
@@ -398,9 +399,10 @@ def _member(files, target, row, current_directory_metadata=None):
     files.location(parent)
     named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
     before = tuple(int(value) for value in token.split(":"))
-    metadata = tuple(getattr(named, key) for key in ("st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"))
-    expected = current_directory_metadata if kind == "directory" and current_directory_metadata is not None else before
-    _require(len(before) == 7 and identity == f"{named.st_dev}:{named.st_ino}:{kind}"
+    metadata = (stat.S_IMODE(named.st_mode), named.st_uid, named.st_gid, named.st_nlink, named.st_size, named.st_mtime_ns, named.st_ctime_ns)
+    expected = ((stat.S_IMODE(current_directory_metadata[0]), *current_directory_metadata[1:])
+                if kind == "directory" and current_directory_metadata is not None else before)
+    _require(len(before) == 7 and identity == f"{named.st_dev}:{named.st_ino}:" + ("d" if kind == "directory" else "r")
              and (stat.S_ISDIR(named.st_mode) if kind == "directory" else stat.S_ISREG(named.st_mode))
              and metadata == expected, "experiment_member_changed")
     fd = files.open(path.name, os.O_RDONLY | os.O_NONBLOCK | (os.O_DIRECTORY if kind == "directory" else 0), parent=parent)
@@ -453,7 +455,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
             target, target_fd = _target(files, config, entry)
             _lease(files, target, entry)
             original = _birth(files, public, entry, gid)
-            rows = sorted(saved_manifest["rows"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+            rows = sorted(saved_manifest["members"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
             receipt, logical, allocated = recovery.retired(files, config, action, expected_action_intent,
                                                           target, rows, entry, original["marker"])
             return _outcome(action, "retired", "already_retired", receipt=receipt, logical=logical, allocated=allocated)
@@ -481,9 +483,9 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         manifest = retained._document(manifest_raw, 1048576, _work_budget=files.budget)
         _require(manifest["schema_version"] == MANIFEST_SCHEMA and manifest["manifest_digest"]
                  == canonical_digest(manifest, digest_field="manifest_digest"), "experiment_manifest_invalid")
-        _require(len(manifest["rows"]) <= 4096, "experiment_manifest_limit")
+        _require(len(manifest["members"]) <= 4096, "experiment_manifest_limit")
         from . import control_plane_lane_experiment_recovery as recovery
-        rows = sorted(manifest["rows"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+        rows = sorted(manifest["members"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         files._store_path = config.experiment_record_store
         reservation_size = len(rows) * 2 * 4096 + 8 * 32768
         reserve_raw = _encoded(dict(schema_version="control_plane_lane_experiment_reservation.v1",
