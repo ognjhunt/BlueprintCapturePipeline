@@ -48,6 +48,7 @@ def operation(tmp_path, monkeypatch):
                'plan_raw_ref': raw_ref(plan), 'members': members}
     store = Path(policy['journal_store'])
     store.mkdir(mode=0o700)
+    (store / 'retired').mkdir(mode=0o700)
     journal = SceneJournal.create(store, token='1' * 32, allowance=allowance,
         initial={'schema_version': 'scene_retirement_journal.v1', 'status': 'pending',
                  'intent_id': consent['intent_id'], 'intent_raw_ref': consent['intent_raw_ref'],
@@ -94,7 +95,11 @@ def test_terminal_updates_only_exact_pending_and_preserves_immutable_history(tmp
              'retired_journal_raw_ref': snapshot}
     terminal = publish_terminal_receipt(policy, consent, pending, final, allowance)
     value = json.loads(Path(terminal['path']).read_bytes())
-    assert value['status'] == 'retired' and value['pending_receipt_raw_ref'] == pending
+    assert value['status'] == 'retired'
+    previous = value['pending_receipt_raw_ref']
+    assert previous['path'] != pending['path']  # The current projection advances.
+    assert previous['sha256'] == pending['sha256'] and previous['size_bytes'] == pending['size_bytes']
+    assert raw_ref(Path(previous['path'])) == previous  # Immutable chain remains resolvable.
     assert value['retired_journal_raw_ref'] == snapshot and terminal == raw_ref(Path(terminal['path']))
     assert any(p.read_bytes() == original for p in Path(pending['path']).parent.glob('scene-retired.*.pending.json'))
     assert any(p.read_bytes() == Path(terminal['path']).read_bytes()
@@ -107,7 +112,11 @@ def test_changed_authority_or_unsafe_destination_never_publishes(tmp_path, monke
     policy, consent, journal, preserved, allowance, payload = operation(tmp_path, monkeypatch)
     projection = Path(consent['intent_raw_ref']['path']).parent / 'scene-retired.v1.json'
     if drift == 'intent':
-        Path(consent['intent_raw_ref']['path']).write_bytes(b'foreign-intent')
+        # Actual intake makes the original immutable. Substitute the named
+        # entry as a foreign writer, rather than pretending it was writable.
+        intent = Path(consent['intent_raw_ref']['path'])
+        intent.unlink()
+        intent.write_bytes(b'foreign-intent')
     elif drift == 'installed-context':
         policy['reference_context']['roots']['intent_root'] = str(tmp_path.resolve() / 'foreign')
     else:
