@@ -286,6 +286,7 @@ def _load_verified_preparation(
     episode_compilation_queue_root: Path | None = None,
     episode_compilation_output_root: Path | None = None,
     scene_construction_queue_root: Path | None = None,
+    storage_birth_target: Path | None = None,
 ) -> tuple[
     dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Path]
 ]:
@@ -571,6 +572,10 @@ def _load_verified_preparation(
                 "launch_activation_preparation_reference_invalid"
             )
     if construction_envelope is not None and construction_envelope_path is not None:
+        if storage_birth_target is not None:
+            from .task_evaluation_scene_retirement_producer_births import enroll_preparation_child
+            enroll_preparation_child(storage_birth_target, preparation_root=preparation_root,
+                                     request=request, verified_paths=list(materialized_references.values()))
         return (
             request,
             result,
@@ -662,6 +667,13 @@ def _load_verified_preparation(
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_adapter_binding_mismatch"
         )
+    if storage_birth_target is not None:
+        from .task_evaluation_scene_retirement_producer_births import enroll_preparation_child
+        # Compiled adapter references were independently checked above and are
+        # not preparation projections; ownership comes from the exact original
+        # preparation request and its enrolled parent, never the adapter path.
+        enroll_preparation_child(storage_birth_target, preparation_root=preparation_root,
+                                 request=request)
     return request, result, adapter, materialized_references
 
 
@@ -1703,6 +1715,7 @@ def process_launch_activation_queue(
                         if scene_construction_queue_root is not None
                         else None
                     ),
+                    storage_birth_target=activation_base / request["activation_id"],
                 )
             )
             owned_root = activation_base / request["activation_id"]

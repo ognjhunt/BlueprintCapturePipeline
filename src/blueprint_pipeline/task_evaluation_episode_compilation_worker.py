@@ -383,7 +383,13 @@ def process_episode_compilation_queue(
                             raise TaskEvaluationEpisodeCompilationWorkerError(str(exc)) from exc
                         time.sleep(COMPILATION_DISK_RECHECK_SECONDS)
             owned_output = outputs / envelope["compilation_id"]
-            owned_output.mkdir(mode=0o750, exist_ok=False)
+            from .task_evaluation_scene_retirement_producer_births import enroll_preparation_child
+            generation = enroll_preparation_child(owned_output,
+                preparation_root=inputs / envelope['request']['preparation_id'],
+                request=envelope['request'],
+                verified_paths=[row['materialized_path'] for row in references.values()])
+            if generation is None:
+                owned_output.mkdir(mode=0o750, exist_ok=False)
             compiler_output = _validated_compiler_output(
                 episode_compiler(
                     envelope=envelope,
