@@ -37,6 +37,12 @@ def _owner(context, row):
     intent = context.decoded['intent'][0][0]
     c.require(binding['intent_id'] == context.intent_id and binding['intent_digest'] == intent['intent_digest']
         and value['task_id'] == intent['request']['task']['task_id'], 'owner_intent_invalid')
+    attempt_path = c.child(context.roots['intent_root'], context.intent_id, 'attempts', binding['attempt_id']+'.json')
+    for attempt in context.by_path['attempts'].get(attempt_path, []):
+        if attempt[0].get('schema_version') == 'task_evaluation_scene_attempt.v1':
+            c.seal(attempt, 'attempt_digest', cross=True)
+            c.require(all(attempt[0].get(k) == binding[k] for k in ('intent_id', 'intent_digest', 'attempt_id',
+                'source_commit', 'runtime_digest', 'input_digest')), 'owner_attempt_invalid')
     return binding
 
 
@@ -63,6 +69,7 @@ def _available_owner(context, row, request, native_rows, originals, standalone):
     sources += context.provenance(r[1] for r in standalone.get(exact_path, []))
     for native in native_rows:
         preparation = native[0]['request']
+        c.require(binding['input_digest'] != native[0]['request_digest'], 'owner_original_input_invalid')
         c.require(owner['scene_id'] == preparation['scene']['identity']['id'] and owner['task_id'] == preparation['task']['identity']['id']
             and owner['runtime_source_bundle_digest'] == preparation['execution_adapter']['runtime_source_bundle']['digest'], 'owner_preparation_invalid')
         if 'scene_intent_digest' in preparation:
@@ -127,6 +134,15 @@ def _results(context, envelopes):
             value, proof = row
             c.require(c.matches(value.get('activation_id'), c.ID) and isinstance(value.get('status'), str)
                 and str(PurePosixPath(proof['path']).parent) == c.child(context.roots['activation_queue_root'], 'results'), 'activation_result_invalid')
+            name = PurePosixPath(proof['path']).name
+            request_hex = name[-69:-5]
+            c.require(len(request_hex) == 64 and all(ch in '0123456789abcdef' for ch in request_hex)
+                and name == filename(value['activation_id'], 'sha256:'+request_hex), 'activation_result_path_invalid')
+            if name not in envelopes:
+                context.canonical('native_activation_request', 'sha256:'+request_hex, proof)
+            if value['status'] == 'blocked':
+                c.require(value.get('provider_mutation_performed') is False and value.get('paid_execution_requested') is False
+                    and isinstance(value.get('blockers'), list), 'activation_scope_invalid')
             if value['status'] != 'profile_authority_materialized_no_execution':
                 context.missing('native_activation_result', 'unsupported_or_blocked_retained_status', [proof])
                 continue
@@ -168,7 +184,7 @@ def inventory(context):
         profiles.setdefault((row[0]['profile_id'], row[0]['profile_digest']), []).append(row)
     observations = context.rows()
     for name, versions in envelopes.items():
-        for envelope in versions:
+        for envelope in versions[:1]:
             request, proof = envelope[0]['request'], envelope[1]
             if request.get('lane') not in PHASES:
                 context.missing('native_owner', 'unsupported_retained_lane', [proof])
@@ -185,7 +201,7 @@ def inventory(context):
                     'activation_preparation_binding_invalid')
                 expected_name = prep['preparation_id']+'-'+prep['request_digest'][7:]+'.json'
                 c.require(PurePosixPath(final[1]['path']).name == expected_name, 'activation_preparation_binding_invalid')
-            sources = context.provenance((proof,))
+            sources = context.provenance(r[1] for r in versions)
             sources += context.provenance(r[1] for r in native_rows)
             sources += context.provenance(r[1] for r in final_rows)
             owner = request.get('authorization', {}).get('scene_owner_attempt')
@@ -197,17 +213,19 @@ def inventory(context):
             owner_row = context.nested(owner, proof, '/request/authorization/scene_owner_attempt', 'owner_attempt_digest')
             bound, owner_sources = _available_owner(context, owner_row, request, native_rows, originals, standalone)
             sources += owner_sources
-            matched_profiles = []
+            sources += context.provenance(dict(v[1], json_pointer='/request/authorization/scene_owner_attempt',
+                seal_field='owner_attempt_digest', seal_digest=owner['owner_attempt_digest']) for v in versions[1:])
+            matched_profiles = False
             for result in results.get(name, []):
                 profile_rows = profiles.get((result[0]['profile_id'], result[0]['profile_digest']), [])
                 for profile in profile_rows:
                     c.require(profile[0]['source_commit'] == request['expected_production_commit']
                         and all(profile[0].get(k) == owner[k] for k in OWNER_FIELDS), 'owner_profile_invalid')
-                matched_profiles.extend(profile_rows)
+                matched_profiles = matched_profiles or bool(profile_rows)
+                sources += context.provenance(r[1] for r in profile_rows)
                 sources += context.provenance((result[1],))
                 if not profile_rows:
                     context.canonical('launch_profile', result[0]['profile_digest'], result[1])
-            sources += context.provenance(r[1] for r in matched_profiles)
             bound = bound and bool(final_rows)
             if bound:
                 context.member(c.child(context.roots['activation_output_root'], request['activation_id']), 'native_activation_workspace',

@@ -121,17 +121,23 @@ def _receipts(context, compilations):
 
 def _result(context, row):
     value, proof = row
-    c.require(all(c.matches(value.get(k), c.ID) for k in ('preparation_id', 'run_id', 'team_namespace'))
-        and c.matches(value.get('source_commit'), c.COMMIT), 'preparation_result_invalid')
+    c.require(c.matches(value.get('preparation_id'), c.ID), 'preparation_result_invalid')
     route = _route(context, proof['path'])
     p = PurePosixPath(proof['path'])
     suffix = p.name[len(value['preparation_id'])+1:-5]
     c.require(str(p.parent) == c.child(route['queue_root'], 'results') and p.name.startswith(value['preparation_id']+'-')
         and p.name.endswith('.json') and len(suffix) == 64 and all(char in '0123456789abcdef' for char in suffix),
         'preparation_result_path_invalid')
+    if value.get('status') == 'blocked':
+        c.require(all(value.get(k) is False for k in ('provider_mutation_performed', 'catalog_mutation_performed', 'paid_execution_requested'))
+            and isinstance(value.get('blockers'), list) and ('source_commit' not in value or c.matches(value['source_commit'], c.COMMIT)), 'preparation_scope_invalid')
+        context.missing('native_preparation_result', 'blocked_retained_preparation', [proof])
+        return False
     if value.get('status') not in {PRE, FINAL}:
         context.missing('native_preparation_result', 'unsupported_retained_status', [proof])
         return False
+    c.require(all(c.matches(value.get(k), c.ID) for k in ('run_id', 'team_namespace'))
+        and c.matches(value.get('source_commit'), c.COMMIT), 'preparation_result_invalid')
     unique, reuse = _references(context, value.get('references'))
     c.require(type(value.get('reference_count')) is int and value['reference_count'] == len(value['references'])
         and type(value.get('unique_object_count')) is int and value['unique_object_count'] == unique
@@ -163,7 +169,7 @@ def _revision(context, revisions, request, compilation, final, proof):
 
 def _available_parent(context, row, by_filename):
     value, proof = row
-    for parent in by_filename.get(PurePosixPath(proof['path']).name, []):
+    for parent in by_filename.get(PurePosixPath(proof['path']).name, [])[:1]:
         request = parent[0]['request']
         c.require(all(value[a] == request[b] for a, b in (('preparation_id', 'preparation_id'), ('run_id', 'run_id'),
             ('team_namespace', 'team_namespace'), ('source_commit', 'expected_production_commit'))), 'preparation_parent_invalid')
@@ -206,7 +212,11 @@ def inventory(context):
                 if row[0]['status'] == FINAL:
                     finals.append(row)
     context.native_preparations, context.native_results, context.native_compilations = envelopes, results, compilations
+    final_versions = {}
     for row in finals:
+        final_versions.setdefault((row[0]['preparation_id'], row[0]['result_digest']), []).append(row)
+    for versions in final_versions.values():
+        row = versions[0]
         final, proof = row
         for field in ('configured_scene_revision_digest', 'configured_scene_bundle_digest', 'episode_compilation_queue_envelope_digest',
                       'episode_compilation_queue_receipt_digest'):
@@ -217,7 +227,7 @@ def inventory(context):
             and final.get('automatic_progression_required') is True, 'handoff_invalid')
         candidates = compilations.get((final['preparation_id'], final['episode_compilation_queue_envelope_digest']), [])
         verified, strength = False, None
-        sources = context.provenance((proof,))
+        sources = context.provenance(r[1] for r in versions)
         if candidates:
             # Same seal identifies identical canonical metadata; raw formatting
             # and queue-state copies remain separately discoverable provenance.
@@ -231,13 +241,13 @@ def inventory(context):
             route = _route(context, proof['path'])
             c.require(proof['path'] == c.child(route['queue_root'], 'results', stem), 'preparation_result_path_invalid')
             parent_rows = envelopes.get((final['preparation_id'], request_digest), [])
-            for parent in parent_rows:
+            for parent in parent_rows[:1]:
                 c.require(parent[0]['request'] == request, 'preparation_request_binding_invalid')
             sources += context.provenance(p[1] for p in parent_rows)
             sources += context.provenance(p[1] for p in candidates)
             _revision(context, revisions, request, compilation, final, proof)
             intake_rows = receipts.get((final['preparation_id'], final['episode_compilation_queue_receipt_digest']), [])
-            for intake in intake_rows:
+            for intake in intake_rows[:1]:
                 c.require(intake[0]['envelope_digest'] == compilation['envelope_digest'], 'handoff_intake_invalid')
             if not intake_rows:
                 context.canonical('compilation_intake', final['episode_compilation_queue_receipt_digest'], proof)
@@ -248,7 +258,7 @@ def inventory(context):
                 derived = c.canonical_digest(inverse, digest_field='result_digest')
                 c.require(derived == compilation['preparation_result_digest'], 'pre_handoff_inverse_invalid')
                 retained = results.get((final['preparation_id'], derived), [])
-                for actual in retained:
+                for actual in retained[:1]:
                     c.require(actual[0]['status'] == PRE and {k: v for k, v in actual[0].items() if k != 'result_digest'} == inverse,
                               'pre_handoff_raw_binding_invalid')
                 sources += context.provenance(p[1] for p in retained)

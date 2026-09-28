@@ -125,3 +125,63 @@ def test_existing_downstream_activation_result_reused_once_and_long_activation_u
     result = api().join_retained_scene_compilation_native_owner_inventory(**args)
     assert next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')['owner_metadata_binding_verified']
     assert result['source_family_inventory']['downstream_inventory']['activation_observations'][0]['status'] == 'kept_unresolved'
+
+
+def test_exact_historical_format_copies_join_once_with_all_provenance():
+    args = fixture()
+    row = args['bridge_records']['native_activation_envelopes'][0]
+    args['bridge_records']['native_activation_envelopes'].append((row[0], json.dumps(json.loads(row[1]), indent=1).encode()))
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    observations = [r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner']
+    assert len(observations) == 1
+    assert len([p for p in observations[0]['source_provenance'] if p['role'] == 'native_activation_envelopes' and 'json_pointer' not in p]) == 2
+
+
+@pytest.mark.parametrize('paid', [False, True])
+def test_blocked_native_activation_self_scope_is_checked_without_other_proofs(paid):
+    args = fixture()
+    path = args['bridge_records']['native_activation_results'][0][0]
+    value = seal({'schema_version': 'task_evaluation_launch_activation_result.v1', 'status': 'blocked',
+        'activation_id': 'native-activation', 'blockers': ['retained_failure'],
+        'provider_mutation_performed': False, 'paid_execution_requested': paid}, 'result_digest')
+    args['bridge_records']['native_activation_results'] = [pair(path, value)]
+    if paid:
+        refuses(args)
+    else:
+        result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+        assert not next(r for r in result['compilation_native_owner_observations'] if r.get('kind') == 'native_owner')['profile_metadata_binding_verified']
+
+
+def test_known_activation_result_own_filename_refuses_without_envelope():
+    args = fixture()
+    args['bridge_records']['native_activation_envelopes'] = []
+    path, raw = args['bridge_records']['native_activation_results'][0]
+    args['bridge_records']['native_activation_results'] = [(path.rsplit('/', 1)[0]+'/foreign-'+path.rsplit('-', 1)[1], raw)]
+    refuses(args)
+
+
+@pytest.mark.parametrize('missing', ['compiler_outputs', 'native_owner_records'])
+def test_available_profile_owner_mismatch_cannot_hide_behind_unrelated_missing_bytes(missing):
+    args = fixture()
+    args['bridge_records'][missing] = []
+    change(args, 'launch_profiles', lambda v: v['scene_attempt_binding'].update(intent_id='foreign'), 'profile_digest', family='downstream_records')
+    profile = json.loads(args['downstream_records']['launch_profiles'][0][1])
+    change(args, 'native_activation_results', {'profile_digest': profile['profile_digest']}, 'result_digest')
+    refuses(args)
+
+
+def test_native_input_selector_cannot_replace_original_configuration_input_even_with_matching_attempt():
+    args = fixture(standalone=False, profile=False)
+    digest = json.loads(args['bridge_records']['native_preparation_envelopes'][0][1])['request_digest']
+    path, raw = args['seed_records']['attempts'][0]
+    attempt = json.loads(raw)
+    args['seed_records']['attempts'][0] = pair(path, seal(dict(attempt, input_digest=digest), 'attempt_digest', cross=True))
+    owner_change(args, lambda v: v['scene_attempt_binding'].update(input_digest=digest))
+    refuses(args)
+
+
+def test_standalone_available_attempt_contradiction_refuses_without_activation_envelope():
+    args = fixture(profile=False)
+    args['bridge_records']['native_activation_envelopes'] = []
+    owner_change(args, lambda v: v['scene_attempt_binding'].update(runtime_digest='sha256:'+'1'*64), standalone=True)
+    refuses(args)

@@ -21,7 +21,7 @@ def api():
     return importlib.import_module('blueprint_pipeline.task_evaluation_scene_compilation_native_owner_inventory')
 
 
-def fixture(*, retained_pre=False, policy=False, prep_id='native-prep'):
+def fixture(*, retained_pre=False, policy=False, prep_id='native-prep', mode='episode_evaluation'):
     args = base_fixture()
     args['bridge_records'] = {role: [] for role in ROLES}
     roots, rows = args['roots'], args['bridge_records']
@@ -30,7 +30,7 @@ def fixture(*, retained_pre=False, policy=False, prep_id='native-prep'):
         'configured_scene_bundle': {'uri': 's3://test/bundle.zip', 'digest': 'sha256:'+'c'*64, 'size_bytes': 2}}, 'revision_digest')
     revision_pair = pair('/retained/metadata/revision.json', revision)
     rows['configured_revisions'] = [revision_pair]
-    request = {'schema_version': 'task_evaluation_launch_preparation_request.v1', 'run_mode': 'episode_evaluation',
+    request = {'schema_version': 'task_evaluation_launch_preparation_request.v1', 'run_mode': mode,
         'preparation_id': prep_id, 'run_id': 'native-run', 'team_namespace': 'team-1', 'expected_production_commit': 'a'*40,
         'scene': {'identity': revision['scene_identity'], 'configured_revision': ref(revision_pair)},
         'task': {'identity': revision['task_template']['identity'], 'binding_mode': 'reuse_configured_template',
@@ -175,3 +175,20 @@ def test_available_parent_metadata_refuses_independently_of_missing_compilation(
         edit = {'run_id': 'foreign'}
     change(args, 'native_preparation_results', edit, 'result_digest', position=position)
     refuses(args)
+
+
+@pytest.mark.parametrize('paid', [False, True])
+def test_source_shaped_blocked_native_result_keeps_partial_history_but_refuses_paid_flag(paid):
+    args = fixture()
+    path = args['bridge_records']['native_preparation_results'][0][0]
+    value = seal({'schema_version': 'task_evaluation_launch_preparation_result.v1', 'status': 'blocked',
+        'preparation_id': 'native-prep', 'source_commit': 'a'*40, 'blockers': ['retained_failure'],
+        'provider_mutation_performed': False, 'catalog_mutation_performed': False, 'paid_execution_requested': paid,
+        'observed_at_iso': '2026-09-28T07:00:00+00:00'}, 'result_digest')
+    args['bridge_records']['native_preparation_results'] = [pair(path, value)]
+    if paid:
+        refuses(args)
+    else:
+        result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+        assert any(r['reason'] == 'blocked_retained_preparation' for r in result['structural_join_obligations'])
+        assert not result['preparation_handoff_observations']

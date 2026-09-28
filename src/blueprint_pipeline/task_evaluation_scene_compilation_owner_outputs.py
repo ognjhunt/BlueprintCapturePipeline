@@ -7,6 +7,14 @@ from . import task_evaluation_scene_compilation_owner_contracts as c
 
 ADAPTER_NAME = 'task_evaluation_native_arena_adapter_result.v1.json'
 RESULT_SCHEMA = 'task_evaluation_episode_compilation_result.v1'
+ADAPTER_FIELDS = {'schema_version', 'status', 'preparation_id', 'source_commit', 'adapter_kind', 'adapter_version',
+    'construction_manifest_digest', 'configured_scene_revision_digest', 'runtime_source_manifest_digest',
+    'packet_receipt_digest', 'runtime_source_receipt_digest', 'packet_root', 'runtime_source_receipt',
+    'provider_mutation_performed', 'catalog_mutation_performed', 'paid_execution_requested', 'result_digest'}
+OUTPUT_FIELDS = {'schema_version', 'status', 'run_id', 'configured_scene_revision_digest', 'configured_task_template_adapter',
+    'compiled_episode_packet', 'adapter_result', 'native_scene_appearance', 'compiled_by_production',
+    'customer_supplied_prebuilt_episode_packet', 'provider_mutation_performed', 'paid_execution_requested',
+    'raw_secret_values_recorded', 'compiler_output_digest'}
 
 
 def _raw(context, artifact, proof, root):
@@ -30,6 +38,7 @@ def _adapter_selector(context, value):
 
 def _adapters(context):
     index = {}
+    context.unproven_adapter_seals = set()
     for row in context.known('compilation_adapter_results'):
         value, proof = row
         comp_id = PurePosixPath(proof['path']).parent.parent.name
@@ -43,8 +52,11 @@ def _adapters(context):
             'packet_receipt_digest', 'runtime_source_receipt_digest'):
             c.require(c.matches(value.get(field)), 'adapter_invalid')
             context.canonical(field, value[field], proof)
-        c.text(value.get('adapter_kind'))
-        c.text(value.get('adapter_version'))
+        c.require(value.get('adapter_kind') == 'native_task_arena' and value.get('adapter_version') == 'v1', 'adapter_kind_invalid')
+        c.require(ADAPTER_FIELDS <= set(value), 'adapter_invalid')
+        if set(value) != ADAPTER_FIELDS:
+            context.unproven_adapter_seals.add(value['result_digest'])
+            context.missing('adapter', 'unsupported_retained_field_set', [proof])
         c.require(all(value.get(k) is False for k in ('provider_mutation_performed', 'catalog_mutation_performed', 'paid_execution_requested')),
             'adapter_scope_invalid')
         for field in ('packet_root', 'runtime_source_receipt'):
@@ -58,6 +70,7 @@ def _adapters(context):
 
 def _outputs(context, adapters):
     index = {}
+    context.unproven_output_seals = set()
     for row in context.known('compiler_outputs'):
         value, proof = row
         context.metadata(row)
@@ -68,6 +81,21 @@ def _outputs(context, adapters):
             and value.get('compiled_by_production') is True
             and all(value.get(k) is False for k in ('customer_supplied_prebuilt_episode_packet', 'provider_mutation_performed',
                 'paid_execution_requested', 'raw_secret_values_recorded')), 'compiler_output_invalid')
+        c.require(OUTPUT_FIELDS <= set(value) and isinstance(value.get('configured_task_template_adapter'), dict)
+            and isinstance(value.get('native_scene_appearance'), dict), 'compiler_output_invalid')
+        fields = {'compiled_episode_packet': {'format', 'path', 'digest', 'size_bytes'},
+            'adapter_result': {'path', 'digest', 'packet_receipt_digest', 'runtime_source_receipt_digest'},
+            'configured_task_template_adapter': {'schema_version', 'adapter_digest', 'source_documents_digest', 'manipulation_strategy'}}
+        if 'destination_native_probe_request' in value:
+            fields['destination_native_probe_request'] = {'path', 'digest', 'size_bytes', 'request_digest'}
+        c.require(all(isinstance(value.get(k), dict) and required <= set(value[k]) for k, required in fields.items()), 'compiler_artifact_invalid')
+        template = value['configured_task_template_adapter']
+        c.require(c.matches(template.get('adapter_digest')) and c.matches(template.get('source_documents_digest')), 'compiler_template_invalid')
+        c.text(template.get('schema_version'))
+        c.text(template.get('manipulation_strategy'))
+        if set(value) not in (OUTPUT_FIELDS, OUTPUT_FIELDS | {'destination_native_probe_request'}) or any(set(value[k]) != required for k, required in fields.items()):
+            context.unproven_output_seals.add(value['compiler_output_digest'])
+            context.missing('compiler_output', 'unsupported_retained_field_set', [proof])
         packet = value.get('compiled_episode_packet')
         c.require(isinstance(packet, dict) and packet.get('format') == 'native_task_arena_bundle_zip', 'compiler_packet_invalid')
         _raw(context, packet, proof, context.roots['compilation_output_root'])
@@ -75,7 +103,7 @@ def _outputs(context, adapters):
         c.require(PurePosixPath(packet['path']).parent == PurePosixPath(selector[0]).parent.parent, 'compiler_packet_path_invalid')
         for field in ('packet_receipt_digest', 'runtime_source_receipt_digest'):
             c.require(c.matches(value['adapter_result'].get(field)), 'compiler_adapter_invalid')
-        for adapter in adapters.get(selector, []):
+        for adapter in adapters.get(selector, [])[:1]:
             c.require(all(adapter[0][k] == value['adapter_result'][k] for k in ('packet_receipt_digest', 'runtime_source_receipt_digest'))
                 and adapter[0]['configured_scene_revision_digest'] == value['configured_scene_revision_digest'], 'compiler_adapter_binding_invalid')
         if 'destination_native_probe_request' in value:
@@ -120,25 +148,27 @@ def inventory(context):
         selector = _adapter_selector(context, {'path': value.get('adapter_result_path'), 'digest': value.get('adapter_result_digest')})
         c.require(c.under(selector[0], root) and c.matches(value.get('compiler_output_digest')), 'compilation_result_invalid')
         sources = context.provenance((proof,))
-        for envelope in envelope_rows:
+        for envelope in envelope_rows[:1]:
             c.require(all(value[a] == envelope[0][b] for a, b in (('run_id', 'run_id'), ('team_namespace', 'team_namespace'),
                 ('source_commit', 'expected_production_commit'), ('configured_scene_revision_digest', 'configured_scene_revision_digest'))),
                 'compilation_envelope_binding_invalid')
         sources += context.provenance(r[1] for r in envelope_rows)
         adapter_rows = adapters.get(selector, [])
-        for adapter in adapter_rows:
+        for adapter in adapter_rows[:1]:
             c.require(all(adapter[0][a] == value[b] for a, b in (('preparation_id', 'compilation_id'), ('source_commit', 'source_commit'),
                 ('configured_scene_revision_digest', 'configured_scene_revision_digest'))), 'adapter_result_binding_invalid')
         sources += context.provenance(r[1] for r in adapter_rows)
         if not adapter_rows:
             context.canonical('adapter_result', selector[1], proof, selector[0])
         output_rows = outputs.get(value['compiler_output_digest'], [])
-        for output in output_rows:
+        for output in output_rows[:1]:
             metadata = output[0]
             c.require(all(metadata[k] == value[k] for k in ('run_id', 'configured_scene_revision_digest'))
                 and {k: metadata['compiled_episode_packet'][k] for k in ('path', 'digest', 'size_bytes')} == packet
                 and _adapter_selector(context, metadata['adapter_result']) == selector, 'compiler_result_binding_invalid')
             probe = metadata.get('destination_native_probe_request')
+            for envelope in envelope_rows[:1]:
+                c.require((envelope[0]['request']['run_mode'] == 'destination_qualification') == (probe is not None), 'probe_mode_invalid')
             if probe is not None:
                 c.require(all(value.get(a) == probe[b] for a, b in (('destination_native_probe_request_path', 'path'),
                     ('destination_native_probe_request_digest', 'digest'), ('destination_native_probe_request_document_digest', 'request_digest'))), 'probe_binding_invalid')
@@ -155,8 +185,8 @@ def inventory(context):
                 context.missing('destination_probe', 'raw_size_unavailable', [proof], probe_path,
                     {'sha256': value['destination_native_probe_request_digest'], 'canonical_digest': value['destination_native_probe_request_document_digest']})
         context.member(packet['path'], 'compiled_episode_packet', packet, sources)
-        observations.append(c.observation(row, kind='compilation_output', adapter_metadata_binding_verified=bool(adapter_rows),
-            compiler_output_metadata_binding_verified=bool(output_rows), source_provenance=sources))
+        observations.append(c.observation(row, kind='compilation_output', adapter_metadata_binding_verified=bool(adapter_rows) and selector[1] not in context.unproven_adapter_seals,
+            compiler_output_metadata_binding_verified=bool(output_rows) and value['compiler_output_digest'] not in context.unproven_output_seals, source_provenance=sources))
         results.setdefault((value['compilation_id'], value['result_digest']), []).append(row)
     context.compilation_results, context.adapter_results = results, adapters
     return observations
