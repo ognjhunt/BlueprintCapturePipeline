@@ -55,7 +55,8 @@ def configured_profile(request: Mapping[str, Any]) -> dict[str, Any] | None:
     matches = [row for row in registry.get("profiles", []) if row.get("capture_root") == request.get("capture_root")
         and row.get("task_id") == tasks[0].get("task_id")
         and row.get("scenario_id") == tasks[0]["scenario_ids"][0]
-        and request.get("customer", {}).get("id") in row.get("allowed_team_ids", [])]
+        and request.get("customer", {}).get("id") in row.get("allowed_team_ids", [])
+        and request.get("robot_profile", {}).get("robot_profile_id") in row.get("allowed_checkpoint_ids", [])]
     if len(matches) > 1:
         raise ValueError("controlled_native_profile_ambiguous")
     return matches[0] if matches else None
@@ -96,6 +97,15 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
         from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
         from .native_task_arena_paid_authority import materialize_native_task_arena_paid_attempt_authority
         config = _read(Path(profile["configuration_path"]))
+        if modalities[0] == "policy_api_endpoint":
+            from urllib.parse import urlsplit
+            from .controlled_policy_session import customer_hosted_client
+            endpoint = request["policy_package"]["policy_api_endpoint"]["endpoint_url"]
+            customer_hosted_client(endpoint=endpoint, allowed_origins=tuple(config["allowed_origins"]),
+                contract=config["contract"])
+            parsed = urlsplit(endpoint)
+            if not parsed.path:
+                raise ValueError("controlled_native_policy_action_route_required")
         authorization = request.get("execution_authorization") or {}
         if authorization.get("episodes") != 1 or float(authorization.get("max_cost_usd", 0)) < profile["hard_cap_usd"]:
             raise ValueError("controlled_native_execution_budget_or_episode_scope_invalid")
