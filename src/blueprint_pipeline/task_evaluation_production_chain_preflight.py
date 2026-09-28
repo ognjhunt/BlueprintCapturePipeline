@@ -1648,6 +1648,22 @@ def append_history(path: Path, report: Mapping[str, Any], *, blockers: Sequence[
     return row
 
 
+def interpreter_environment() -> dict[str, Any]:
+    """Plan 14 host census: this interpreter's compile environment, read-only and never a finding.
+
+    The look-ahead runs under ``BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON``, the interpreter the
+    episode-compilation unit runs, so this is the host side of remote-worker parity (decision 1).
+    """
+
+    try:
+        from .remote_cpu_environment import environment_record
+
+        return environment_record()
+    except Exception as exc:  # noqa: BLE001 - a census failure must never fail the chain look-ahead
+        return {"schema_version": "remote_cpu_environment.v1", "status": "unavailable",
+                "error": f"{type(exc).__name__}: {exc}"[:400]}
+
+
 def run_chain(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
         print("run must execute as root on the control-plane host", file=sys.stderr)
@@ -1656,6 +1672,7 @@ def run_chain(args: argparse.Namespace) -> int:
     release, active_sha, findings = active_release()
     report["active_release"] = str(release) if release else None
     report["active_sha"] = active_sha
+    report["interpreter_environment"] = interpreter_environment()
     report["host_findings"].extend(findings)
     ids = _service_ids(SERVICE_ACCOUNT)
     if ids is None:
