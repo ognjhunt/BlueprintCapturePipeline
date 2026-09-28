@@ -820,6 +820,12 @@ def _drop_service_credentials(native):
              _READER_ERROR)
 
 
+def _runtime_import_paths():
+    """Resolve installed package, dependencies and sibling first-party scripts."""
+    return [str(_TRUSTED_SOURCE_ROOT), str(_TRUSTED_DEPENDENCIES),
+            str(_TRUSTED_SOURCE_ROOT.parent)]
+
+
 def _continuous_main(module, arguments):
     """Fixed root startup binds source/kernel evidence, then executes as blueprint.
 
@@ -858,6 +864,8 @@ def _continuous_main(module, arguments):
         interpreter, version = _native_bytes(row['exe'], native, cap=64 * 1024 * 1024, protected=True)
         with _opened(_TRUSTED_DEPENDENCIES, directory=True, protected=True):
             pass
+        with _opened(_TRUSTED_SOURCE_ROOT.parent / 'scripts', directory=True, protected=True):
+            pass
         with scene_access(), _opened(policy['coordinator_path'], directory=True, protected=True) as (_, coordinator):
             bundle = _source_bundle(policy, native)
             _require_preloaded_core(bundle)
@@ -891,7 +899,7 @@ def _continuous_main(module, arguments):
                 if Path(path).exists():
                     with _opened(path, directory=Path(path).is_dir(), protected=True):
                         pass
-            sys.path[:] = [str(_TRUSTED_SOURCE_ROOT), str(_TRUSTED_DEPENDENCIES), *stdlib]
+            sys.path[:] = [*_runtime_import_paths(), *stdlib]
             finder = _BoundSourceFinder(bundle, native)
             sys.meta_path.insert(0, finder)
             try:
