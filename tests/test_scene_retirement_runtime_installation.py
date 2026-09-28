@@ -327,3 +327,47 @@ def test_locked_sdk_missing_or_foreign_artifacts_refuse_before_publication(tmp_p
         module.build_sdk(source, wheelhouse=wheel.parent)
     assert not (module._BOOT_ROOT / 'CURRENT.json').exists()
     assert not (module._BOOT_ROOT / 'continuous_bootstrap.py').exists()
+
+
+def _pinned_contracts_checkout(tmp_path):
+    import subprocess
+    root = tmp_path / 'contracts'
+    (root / 'src/blueprint_contracts').mkdir(parents=True)
+    (root / 'src/blueprint_contracts/__init__.py').write_bytes(b'raise RuntimeError("SDK preparation must not execute packages")\n')
+    def git(*args):
+        return subprocess.check_output(['/usr/bin/git', '-C', str(root), *args], stderr=subprocess.DEVNULL).decode().strip()
+    git('init', '-q')
+    git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'add', 'src')
+    git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'tiny pinned contract fixture')
+    return root, git('rev-parse', 'HEAD')
+
+
+def test_locked_sdk_includes_exact_pinned_git_contract_tree_without_build_hooks(tmp_path, monkeypatch):
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    contracts, commit = _pinned_contracts_checkout(tmp_path)
+    text = (source / 'uv.lock').read_text().replace(
+        'dependencies = [{ name = "fixture-sdk" }]',
+        'dependencies = [{ name = "fixture-sdk" }, { name = "blueprint-contracts" }]')
+    text += '\n[[package]]\nname = "blueprint-contracts"\nversion = "0.1.0"\nsource = { git = "https://github.com/ognjhunt/BlueprintContracts.git?rev=' + commit + '#' + commit + '" }\n'
+    (source / 'uv.lock').write_text(text)
+    result = module.build_sdk(source, wheelhouse=wheel.parent, contracts_checkout=contracts)
+    installed = Path(result['dependencies_root']) / 'blueprint_contracts/__init__.py'
+    assert installed.read_bytes().startswith(b'raise RuntimeError(')
+    assert result['packages'] == [{'name': 'blueprint-contracts', 'version': '0.1.0'}, {'name': 'fixture-sdk', 'version': '1.0'}]
+
+
+def test_runtime_refresh_selects_only_exact_generation_after_many_prior_deploys(tmp_path, monkeypatch):
+    import hashlib
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    module.prepare(source, deps)
+    raw = (module._BOOT_ROOT / 'installation.json').read_bytes()
+    parent = module._RUNTIME_ROOT / 'generations'
+    parent.mkdir()
+    for index in range(33):
+        (parent / f'{index:064x}').mkdir()
+    (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# next current source\n')
+    result = module.refresh(source, deps, expected_current={'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(), 'size_bytes': len(raw)})
+    assert result['status'] == 'refreshed'
+    assert len(list(parent.iterdir())) == 34
+    assert all((parent / f'{index:064x}').is_dir() for index in range(33))
