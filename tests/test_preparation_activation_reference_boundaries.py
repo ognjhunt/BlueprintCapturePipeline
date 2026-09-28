@@ -181,6 +181,7 @@ def test_roots_are_lexical_and_bounded_before_component_allocation(root):
 
 @pytest.mark.slow
 def test_first_call_in_fresh_process_has_no_runtime_schema_env_or_filesystem_access():
+    row = record()
     code = '''
 import importlib.abc,sys
 sys.path.insert(0,SOURCE_PATH)
@@ -201,9 +202,11 @@ builtins.open=forbidden
 pathlib.Path.read_text=forbidden
 pathlib.Path.resolve=forbidden
 from blueprint_pipeline.control_plane_preparation_activation_references import RetainedReferenceRecord
-r=interpret_preparation_activation_references([ReferenceFamilyContract("preparation","/queues/preparation")], [RetainedReferenceRecord("preparation","/queues/preparation","result","/queues/preparation/results/prep-"+"1"*64+".json",b"{}")])
+r=interpret_preparation_activation_references([ReferenceFamilyContract("preparation","/queues/preparation")], [RetainedReferenceRecord("preparation","/queues/preparation","envelope",ROW_PATH,RAW_BYTES)])
 assert r.mutations == 0 and not r.references_clear and not r.general_reference_inventory_complete
+assert r.records[0].disposition == "supported" and r.remote_raw_references
 '''
     code = code.replace("SOURCE_PATH", repr(str(Path(__file__).resolve().parents[1] / "src")))
+    code = code.replace("ROW_PATH", repr(row.row_path)).replace("RAW_BYTES", repr(row.raw_bytes))
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
