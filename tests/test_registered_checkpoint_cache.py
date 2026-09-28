@@ -591,7 +591,8 @@ def test_existing_target_acquisition_cannot_reset_first_metadata_deadline(cache_
             pytest.fail('existing-target acquisition reset expired M0 deadline')
 
 
-def test_uncertain_native_response_cleanup_cannot_publish_closed_terminal_or_resume(cache_installation, monkeypatch):
+@pytest.mark.parametrize('close_error', [OSError, RuntimeError])
+def test_uncertain_native_response_cleanup_cannot_publish_closed_terminal_or_resume(cache_installation, monkeypatch, close_error):
     import io
     from urllib.parse import unquote
     from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
@@ -605,7 +606,7 @@ def test_uncertain_native_response_cleanup_cannot_publish_closed_terminal_or_res
         def geturl(self):
             return self.url
         def close(self):
-            raise OSError('fixture cannot prove native close')
+            raise close_error('fixture cannot prove native close')
         def __exit__(self, *args):
             self.close()
     actual = fetcher._open_https
@@ -617,7 +618,7 @@ def test_uncertain_native_response_cleanup_cannot_publish_closed_terminal_or_res
         return actual(url, **kwargs)
     monkeypatch.setattr(fetcher, '_open_https', response)
     try:
-        with pytest.raises(ValueError, match='needed_cache'):
+        with pytest.raises((ValueError, RuntimeError), match='needed_cache|fixture cannot prove native close'):
             cache.fill_needed_checkpoint_cache(grant['intent_id'], expected_sha256=grant['intent']['sha256'],
                 expected_size_bytes=grant['intent']['size_bytes'], installed_config_path=value['config'], now=lambda: 1100)
         assert len(opened) == 1 and not opened[0].closed and reservations[0].released is True
