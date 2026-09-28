@@ -565,25 +565,31 @@ def queue_snapshot(queue_roots: Sequence[str | Path]) -> QueueRows:
     return QueueRows(text="\n".join(chunks))
 
 
-def _bulk_reason(bulk_result: Mapping[str, Any]) -> str | None:
-    """Why a per-artifact offload result keeps the residue, or None when its bulk artifacts are remote.
+def _bulk_reason(bulk_result: Mapping[str, Any]) -> tuple[str | None, Mapping[str, Any] | None]:
+    """Why a per-artifact offload result keeps the residue (and its failure), or None when its bulk
+    artifacts are remote.
 
-    A run kept hot or protected keeps its residue for the same reason; one whose
-    bulk offload failed or still has candidates is ``bulk_offload_failed`` or
-    ``bulk_not_remote``. An artifact already evicted counts as remote.
+    A run kept hot or protected keeps its residue for the same reason. One whose
+    registry the per-artifact offload refused (a G1 review has no delivery) is
+    ``registry_unsealed``, as the residue's own seal check would say, with that
+    failure's type, errno and stage. One whose bulk offload failed later or still
+    has candidates is ``bulk_offload_failed`` or ``bulk_not_remote``. An artifact
+    already evicted counts as remote.
     """
 
     status = bulk_result.get("status")
     if status == "retained_hot_or_active":
         reason = bulk_result.get("retained_reason")
-        return reason if isinstance(reason, str) else "protected"
+        return (reason if isinstance(reason, str) else "protected"), None
+    if status == "retained" and bulk_result.get("stage") == "registry":
+        return "registry_unsealed", {key: bulk_result.get(key) for key in ("error_type", "errno", "stage")}
     if status not in ("dry_run", "applied"):
-        return "bulk_offload_failed"
+        return "bulk_offload_failed", None
     skipped = [skip for skip in bulk_result.get("skipped") or () if not (
         isinstance(skip, Mapping) and skip.get("reason") == "already_evicted")]
     if skipped or (status == "dry_run" and bulk_result.get("candidate_count") != 0):
-        return "bulk_not_remote"
-    return None
+        return "bulk_not_remote", None
+    return None, None
 
 
 def _bulk_pending(root: Path, now: Callable[[], float]) -> tuple[str | None, Mapping[str, Any] | None]:
@@ -831,7 +837,7 @@ def offload_result_residue(
             return _retained(row, "hot")
         if bulk_result is not None and not apply:
             # A plan trusts the per-artifact offload this tick already ran for the run.
-            pending, failure = _bulk_reason(bulk_result), None
+            pending, failure = _bulk_reason(bulk_result)
         else:
             pending, failure = _bulk_pending(root, now)
         if pending:
@@ -1045,9 +1051,9 @@ def residue_row(
     """
 
     name = Path(run_root).name
-    reason = _bulk_reason(bulk_result)
+    reason, failure = _bulk_reason(bulk_result)
     if reason:
-        return _retained(_new_row(name, apply=apply, now=now), reason)
+        return _retained(_new_row(name, apply=apply, now=now), reason, failure=failure)
     try:
         return offload_result_residue(
             run_root=run_root, apply=apply, ack=APPLY_ACK if apply else "", hot_window_seconds=hot_window_seconds,

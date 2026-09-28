@@ -612,7 +612,9 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `max_runs_per_tick`, `attempted_count`, its totals and a row per registry
   run): a retained run says why in `retained_reason` (`hot` or a protection
   reason, as its bulk offload kept it; `bulk_not_remote`,
-  `bulk_offload_failed`, `already_offloaded`, `registry_unsealed`,
+  `bulk_offload_failed`, `already_offloaded`, `registry_unsealed` (with the
+  failure's type, errno and stage, whether the residue or its bulk offload
+  refused the registry: a G1 review has no delivery),
   `dispatch_receipt_missing` (an operator run, whose continuation and download
   route keep reopening its files), `dispatch_receipt_invalid`,
   `dispatch_row_pending` (a pending or processing queue row names the run, and

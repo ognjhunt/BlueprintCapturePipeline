@@ -1458,3 +1458,26 @@ def test_the_names_a_cut_short_group_lost_are_the_ones_it_unlinked(tmp_path, mon
     assert not (f.run / "logs" / "worker.log").exists() and not (f.run / "zzz.log").exists()
     assert json.loads(f.pointer.read_text(encoding="utf-8"))["kept"] == [
         {"relative_path": kept, "reason": "unlink_failed:PermissionError"}]
+
+
+def test_a_run_whose_registry_does_not_seal_is_registry_unsealed(tmp_path) -> None:
+    """A G1 review has a registry but no delivery, so its per-artifact offload refuses it while
+    reading the registry. Its residue row says so (``registry_unsealed``, with that failure's type
+    and stage) instead of ``bulk_offload_failed``, which stays for a bulk offload that failed later."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    (f.run / "artifacts" / "result_delivery" / "delivery.json").unlink()
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+
+    report = _tick(f, pins, queue, apply=False)
+
+    [row] = report["result_residue_offload"]["runs"]
+    assert (row["status"], row["retained_reason"]) == ("retained", "registry_unsealed")
+    assert row["failure"] == {"error_type": "TaskEvaluationResultDeliveryError", "errno": None, "stage": "registry"}
+    assert build_storage_gc_summary(report)["phases"]["result_residue_offload"]["retained_by_reason"] == {
+        "registry_unsealed": {"count": 1, "bytes": None}}
+    failed = {"status": "retained", "reason": "OSError", "error_type": "OSError", "errno": 5, "stage": "publish"}
+    later = residue.residue_row(f.run, failed, apply=False, hot_window_seconds=2 * DAY, protection_checker=None,
+                                publisher=None, now=lambda: NOW)
+    assert (later["retained_reason"], later.get("failure")) == ("bulk_offload_failed", None)
