@@ -11,6 +11,7 @@ import json
 import os
 import re
 import stat
+import sys
 import time
 from pathlib import Path
 
@@ -53,6 +54,7 @@ def _kept(code):
 def run_selected_action(action, *, intent_id, consent_id, expected_sha256, expected_size_bytes,
                         apply=False, now=time.time, transport_factory=None):
     """Select only original root-protected bytes, then call the actual engine."""
+    entered=False
     try:
         _options(action,intent_id,consent_id,expected_sha256,expected_size_bytes,apply)
         path = CONSENT_ROOT/(consent_id+'.json')
@@ -73,17 +75,32 @@ def run_selected_action(action, *, intent_id, consent_id, expected_sha256, expec
             return dict(status='planned', intent_id=intent_id, cleanup_authorized=False,
                         plan_sha256=selected['sha256'], mutations=0)
         transport = (transport_factory or installed_transport)()
+        result=None
         try:
             function = engine.retire_scene if action=='retire' else engine.restore_scene
-            return function(selected['path'],path,transport=transport,now=now)
+            entered=True
+            result=function(selected['path'],path,transport=transport,now=now)
         finally:
-            transport.close()
+            incoming=sys.exc_info()[1]
+            try:
+                transport.close()
+            except Exception:
+                if result is not None:
+                    # Preserve actual outcomes and proven counters. A cleanup
+                    # fault cannot rewrite real removal as zero mutations.
+                    result=dict(result,status='incomplete',reason='scene_retirement_remote_cleanup_unproven')
+                elif incoming is None:
+                    raise access.SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
+                else:
+                    incoming.add_note('scene_retirement_remote_cleanup_unproven')
+        return result
     except access.SceneRetirementAccessError as error:
         code=str(error)
-        return _kept(code if re.fullmatch('scene_retirement_[a-z_]{1,100}',code)
-                     else 'scene_retirement_operator_refused')
-    except (OSError,ValueError,KeyError,TypeError,AttributeError,RuntimeError):
-        return _kept('scene_retirement_operator_refused')
+        reason=code if re.fullmatch('scene_retirement_[a-z_]{1,100}',code) else 'scene_retirement_operator_refused'
+        return dict(status='incomplete',reason=reason,mutations=None) if entered else _kept(reason)
+    except Exception:
+        return (dict(status='incomplete',reason='scene_retirement_operator_refused',mutations=None)
+                if entered else _kept('scene_retirement_operator_refused'))
 
 
 class SceneArchiveTransport:
@@ -129,7 +146,7 @@ class SceneArchiveTransport:
             self._tick()
         except BaseException:
             if name=='get_object' and callable(getattr(response.get('Body'),'close',None)):
-                response['Body'].close()
+                self._close_response(response['Body'])
             raise
         return response
 
@@ -183,6 +200,22 @@ class SceneArchiveTransport:
         _require(allowance is self.allowance,'scene_retirement_transport_origin_unproven')
         return self._read_archive(uri,charge=True)
 
+    def _read_body(self, body, count):
+        try:
+            return body.read(count)
+        except Exception:
+            raise access.SceneRetirementAccessError('scene_retirement_transport_failure') from None
+
+    def _close_response(self, body):
+        incoming=sys.exc_info()[1]
+        try:
+            body.close()
+        except Exception:
+            if incoming is not None:
+                incoming.add_note('scene_retirement_remote_cleanup_unproven')
+            else:
+                raise access.SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
+
     def _read_archive(self, uri, *, charge):
         self._tick()
         prefix = 's3://'+self.bucket+'/'+_PREFIX
@@ -206,26 +239,26 @@ class SceneArchiveTransport:
                     # Charge the requested physical read BEFORE the socket can
                     # allocate. Short/faulted reads never refund this origin.
                     self.allowance.charge('remote_bytes',count)
-                try:
-                    chunk = body.read(count)
-                except Exception:
-                    raise access.SceneRetirementAccessError('scene_retirement_transport_failure') from None
+                chunk = self._read_body(body,count)
                 self._tick()
                 _require(type(chunk) is bytes and 0 < len(chunk) <= count,
                          'scene_retirement_transport_readback_unproven')
                 received += len(chunk)
                 yield chunk
             self._tick()
-            _require(body.read(1)==b'', 'scene_retirement_transport_readback_unproven')
+            _require(self._read_body(body,1)==b'', 'scene_retirement_transport_readback_unproven')
             self._tick()
         finally:
             if callable(getattr(body,'close',None)):
-                body.close()
+                self._close_response(body)
 
     def close(self):
         if not self.closed:
             self.closed = True
-            self.client.close()
+            try:
+                self.client.close()
+            except Exception:
+                raise access.SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
 
 
 def _scalar(path):
