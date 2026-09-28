@@ -587,3 +587,112 @@ def test_existing_target_acquisition_cannot_reset_first_metadata_deadline(cache_
                 installed_config_path=value['config'], now=lambda: 1200,
                 monotonic=lambda: clock[0]):
             pytest.fail('existing-target acquisition reset expired M0 deadline')
+
+
+def test_uncertain_native_response_cleanup_cannot_publish_closed_terminal_or_resume(cache_installation, monkeypatch):
+    import io
+    from urllib.parse import unquote
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, fetcher, calls, reservations = prepare_fill(value, monkeypatch)
+    opened = []
+    class UnclosedResponse(io.BytesIO):
+        def __init__(self, url):
+            super().__init__(value['payloads'][unquote(url.removeprefix(fetcher.MODEL_BASE))])
+            self.url = url
+        def geturl(self):
+            return self.url
+        def close(self):
+            raise OSError('fixture cannot prove native close')
+        def __exit__(self, *args):
+            self.close()
+    actual = fetcher._open_https
+    def response(url, **kwargs):
+        if len(calls) == 2:
+            item = UnclosedResponse(url)
+            opened.append(item)
+            return item
+        return actual(url, **kwargs)
+    monkeypatch.setattr(fetcher, '_open_https', response)
+    try:
+        with pytest.raises(ValueError, match='needed_cache'):
+            cache.fill_needed_checkpoint_cache(grant['intent_id'], expected_sha256=grant['intent']['sha256'],
+                expected_size_bytes=grant['intent']['size_bytes'], installed_config_path=value['config'], now=lambda: 1100)
+        assert len(opened) == 1 and not opened[0].closed and reservations[0].released is True
+        records = [json.loads(p.read_bytes()) for p in value['private'].glob('*.json')]
+        terminal = [r for r in records if r.get('schema_version') ==
+                    'control_plane_needed_cache_operation_terminal.v1' and r.get('outcome') == 'failed']
+        assert not terminal or all(r['owned_fd_closed'] is False or r['unresolved_fd_count'] > 0 for r in terminal)
+        monkeypatch.setattr(cache, 'reserve_control_plane_disk', lambda *a, **kw: pytest.fail('spend after uncertain response close'))
+        with pytest.raises(ValueError, match='needed_cache'):
+            cache.resume_needed_checkpoint_cache(grant['intent_id'], expected_sha256=grant['intent']['sha256'],
+                expected_size_bytes=grant['intent']['size_bytes'], installed_config_path=value['config'], now=lambda: 1200)
+    finally:
+        for item in opened:
+            io.BytesIO.close(item)
+
+
+def test_pinned_hash_failure_stays_sticky_across_other_pinned_members(cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    _, result, _, _, _ = fill_cache(value, monkeypatch)
+    target = Path(result['path'])
+    first, second = list(value['payloads'])[:2]
+    changed = bytearray((target/first).read_bytes())
+    changed[0] ^= 1
+    (target/first).write_bytes(changed)
+    with cache.NeededCheckpointCacheUse.open_registered(target, installed_config_path=value['config'], now=lambda: 1200) as use:
+        with pytest.raises(ValueError, match='needed_cache_payload_hash_changed'):
+            use.hash_file(target/first, role='wam_hash')
+        assert use.failure == 'needed_cache_payload_hash_changed'
+        with pytest.raises(ValueError, match='needed_cache_payload_hash_changed'):
+            use.hash_file(target/second, role='wam_hash')
+
+
+def test_resume_unknown_temporary_is_kept_before_reservation_or_network(cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, fetcher, _, _ = fail_partial_fill(value, monkeypatch)
+    target = Path(value['settings']['lane_scratch_work_root']) / 'g1-checkpoint/needed-models'
+    unknown = target / '.needed-payload-unproven'
+    unknown.write_bytes(b'unknown')
+    unknown.chmod(0o640)
+    monkeypatch.setattr(cache, 'reserve_control_plane_disk', lambda *a, **kw: pytest.fail('reservation before unknown-temp refusal'))
+    monkeypatch.setattr(fetcher, '_open_https', lambda *a, **kw: pytest.fail('network before unknown-temp refusal'))
+    with pytest.raises(ValueError, match='needed_cache'):
+        cache.resume_needed_checkpoint_cache(grant['intent_id'], expected_sha256=grant['intent']['sha256'],
+            expected_size_bytes=grant['intent']['size_bytes'], installed_config_path=value['config'], now=lambda: 1200)
+    assert unknown.read_bytes() == b'unknown'
+
+
+@pytest.mark.parametrize('change', ['extra', 'cleanup', 'owner'])
+def test_malformed_root_selected_birth_refuses_before_payload(cache_installation, monkeypatch, change):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    value = cache_installation
+    grant, result, _, _, _ = fill_cache(value, monkeypatch)
+    path = value['public'] / (grant['intent_id']+'.birth.json')
+    birth = json.loads(path.read_bytes())
+    if change == 'extra':
+        birth['unreviewed_permission'] = True
+    elif change == 'cleanup':
+        birth['cleanup'] = 'delete'
+    else:
+        birth['owner'] = 'someone-else'
+    birth['birth_digest'] = canonical_digest(birth, digest_field='birth_digest')
+    path.write_bytes(encoded(birth))
+    head_path = value['authority'] / 'HEAD.json'
+    head = json.loads(head_path.read_bytes())
+    version_path = value['authority'] / head['record_name']
+    version = json.loads(version_path.read_bytes())
+    selected = next(r for r in version['enrollments'] if r['intent_id'] == grant['intent_id'])
+    selected.update(birth_raw_sha256=raw_ref(path)['sha256'], birth_raw_size_bytes=raw_ref(path)['size_bytes'])
+    version['authority_digest'] = canonical_digest(version, digest_field='authority_digest')
+    version_path.write_bytes(encoded(version))
+    head.update(record_sha256=raw_ref(version_path)['sha256'], record_size_bytes=raw_ref(version_path)['size_bytes'])
+    head['head_digest'] = canonical_digest(head, digest_field='head_digest')
+    head_path.write_bytes(encoded(head))
+    with pytest.raises(ValueError, match='needed_cache'):
+        with cache.NeededCheckpointCacheUse.open_registered(Path(result['path']),
+                installed_config_path=value['config'], now=lambda: 1200):
+            pytest.fail('malformed birth accepted as current read authority')
