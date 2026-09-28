@@ -16,9 +16,14 @@ SHA-256 and CRC-32, and requires the records to tile ``[0, directory)``
 exactly. It writes nothing to disk. Archive bytes are held one transport
 block at a time plus one inflate step, after an end-record read of at most
 64 KiB; with the default 8 MiB block that stays under two blocks however large
-the archive. The parsed directory and the index are held as metadata. A 412
-or a changed ETag between the directory read and the stream is a refusal,
-never a retry against the new object.
+the archive. Directory metadata is bounded before it is buffered: a central
+record whose name exceeds 4,096 bytes, extra field 8 KiB or comment 4 KiB is
+refused from its fixed header, and records are parsed one at a time. What
+remains grows with the member cap and name length: at most about 16 KiB per
+member when every name is at the 4,096-byte limit (roughly 160 MiB at the
+default 10,000-member cap), and a few KiB per member for ordinary paths. A
+412 or a changed ETag between the directory read and the stream is a
+refusal, never a retry against the new object.
 
 ``provider_output_member_index.v1`` holds archive facts only: the archive's
 sha256, size, pinned etag/generation and ``durable_reference`` (null until a
@@ -86,6 +91,11 @@ DEFAULT_MAXIMUM_MEMBERS = 10_000
 MAX_ARCHIVE_ENTRIES = 200_000
 MAX_EXPANDED_BYTES = 1024**4
 INFLATE_STEP_BYTES = 256 * 1024
+# Refused as soon as a central record's fixed header is read, before its
+# variable part is buffered. The name bound is the entry rules' own limit.
+MAX_NAME_BYTES = 4096
+MAX_EXTRA_BYTES = 8192
+MAX_COMMENT_BYTES = 4096
 # The same list as the terminal scene-payload retention's binary payloads
 # (``_BINARY_PAYLOAD_SUFFIXES``); a test keeps the two identical.
 BULK_EXTENSIONS = frozenset({
@@ -325,6 +335,10 @@ class _DirectoryReader:
                 fixed = _CENTRAL.unpack(self._record)
                 if fixed[0] != b'PK\x01\x02' or len(self.entries) >= self._count:
                     raise _refusal('provider_output_archive_directory_invalid')
+                if fixed[12] > MAX_NAME_BYTES:
+                    raise _refusal('provider_output_archive_path_invalid')
+                if fixed[13] > MAX_EXTRA_BYTES or fixed[14] > MAX_COMMENT_BYTES:
+                    raise _refusal('provider_output_archive_directory_record_oversize')
                 self._need += fixed[12] + fixed[13] + fixed[14]
             if len(self._record) == self._need:
                 self.entries.append(_central_entry(self._record))
@@ -387,6 +401,14 @@ def _end_records(source, size, maximum_members):
     if entries > maximum_members:
         raise _refusal('provider_output_archive_member_cap_exceeded')
     return _Layout(directory_offset, directory_size, entries, zip64)
+
+
+def _read_directory(source, layout, size, limits):
+    """Stream and check the central directory; returns the ``_ArchiveStream`` inputs."""
+    directory = _DirectoryReader(layout.directory_size, layout.entries)
+    source.stream_to(directory.feed, start=layout.directory_offset, end=size)
+    entries, directory_digest = directory.finish()
+    return _check_directory(entries, layout.directory_offset, limits), layout.directory_offset, directory_digest
 
 
 def _check_directory(entries, directory_offset, limits):
@@ -595,24 +617,22 @@ def build_member_index(source, *, maximum_expanded_bytes: int,
     identity = _source_identity(source)
     try:
         layout = _end_records(source, identity['size_bytes'], limits['maximum_members'])
-        directory = _DirectoryReader(layout.directory_size, layout.entries)
-        source.stream_to(directory.feed, start=layout.directory_offset, end=identity['size_bytes'])
-        entries, directory_digest = directory.finish()
-        entries = _check_directory(entries, layout.directory_offset, limits)
-        stream = _ArchiveStream(entries, layout.directory_offset, directory_digest,
+        stream = _ArchiveStream(*_read_directory(source, layout, identity['size_bytes'], limits),
                                 inflate_step_bytes(getattr(source, 'block_bytes', 8 * 1024**2)))
         source.stream_to(stream.feed)
         stream.finish()
     except (ProviderOutputTransportError, ProviderOutputInventoryError) as exc:
         raise _refusal(str(exc)) from None
-    members = stream.members
+    # Release the parsed directory before the index is assembled and digested.
+    members, archive_digest = stream.members, 'sha256:' + stream.digest.hexdigest()
+    del stream
     files = [member for member in members if member['kind'] == 'file']
     total = sum(member['size'] for member in files)
     bulk = sum(member['size'] for member in files
                if PurePosixPath(member['path']).suffix.lower() in BULK_EXTENSIONS)
     index = {
         'schema_version': SCHEMA,
-        'archive': {'sha256': 'sha256:' + stream.digest.hexdigest(), 'size': identity['size_bytes'],
+        'archive': {'sha256': archive_digest, 'size': identity['size_bytes'],
                     'etag': identity['etag'], 'generation': identity['generation'],
                     'durable_reference': None},
         'limits': limits,

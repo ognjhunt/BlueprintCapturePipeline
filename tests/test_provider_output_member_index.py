@@ -343,6 +343,62 @@ def test_index_refuses_crc_mismatch_gaps_duplicates_unsafe_paths_and_caps(case):
     assert _refusal(build(), **options) == code
 
 
+
+def _oversize_records(field, count=40):
+    """Central records whose name, extra field or comment is about 64 KiB."""
+    huge, entries = 0xFFFF - 16, []
+    for position in range(count):
+        if field == "name":  # cp437 0xB0 decodes to U+2591, so a decoded name doubles in memory
+            entries.append(Entry(str(position).encode() + b"\xb0" * (huge - len(str(position))), b"x"))
+        elif field == "extra":
+            filler = struct.pack("<HH", 0x9999, huge - 4) + bytes(huge - 4)
+            entries.append(Entry(f"m{position}.bin", b"x", central_extra=filler))
+        else:
+            entries.append(Entry(f"m{position}.bin", b"x", central_comment=b"c" * huge))
+    return build_zip(entries)
+
+
+@pytest.mark.parametrize("field, code", [
+    ("name", "provider_output_archive_path_invalid"),
+    ("extra", "provider_output_archive_directory_record_oversize"),
+    ("comment", "provider_output_archive_directory_record_oversize"),
+])
+def test_oversize_directory_records_are_refused_before_they_are_buffered(field, code):
+    archive, block = _oversize_records(field), 128 * 1024
+    reader = RangeStore(archive).reader(block_bytes=block, maximum_archive_bytes=archive.size)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ProviderOutputMemberIndexError, match=f"^{code}$"):
+            build_member_index(reader, maximum_expanded_bytes=EXPANDED)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak <= 2 * block, peak
+
+
+def _maximal_name(position, astral):
+    """A name at the entry rules' 4096-byte limit, in 255-byte (or shorter) components."""
+    unit = "\U0001F600" * 63 if astral else "a" * 255
+    name = "/".join([f"{position:05d}"] + [unit] * 16)
+    while len(name.encode()) > 4096:
+        name = name[:-1]
+    return name
+
+
+@pytest.mark.parametrize("astral", [False, True])
+def test_directory_metadata_stays_within_the_documented_bound(astral):
+    count, block = 256, 128 * 1024
+    archive = build_zip([Entry(_maximal_name(position, astral), b"x") for position in range(count)])
+    reader = RangeStore(archive).reader(block_bytes=block, maximum_archive_bytes=archive.size)
+    tracemalloc.start()
+    try:
+        index = build_member_index(reader, maximum_expanded_bytes=EXPANDED)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert index["totals"]["members"] == count
+    assert peak <= 2 * block + count * 16 * 1024, peak
+
 def test_truncated_stream_is_refused():
     store = RangeStore(_mixed_archive())
     reader = store.reader(block_bytes=4096)

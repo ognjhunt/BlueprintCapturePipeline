@@ -76,12 +76,15 @@ class VirtualObject:
         out = bytearray(max(0, end - start))
         index = max(0, bisect.bisect_right(self._starts, start) - 1)
         position = start
-        while position < end and index < len(self._segments):
-            begin, segment = self._starts[index], self._segments[index]
-            stop = min(end, begin + _length(segment))
-            if not isinstance(segment, Zeros):
-                out[position - start:stop - start] = memoryview(segment)[position - begin:stop - begin]
-            position, index = stop, index + 1
+        # Assign through a memoryview: bytearray slice assignment would first
+        # copy the source, doubling this simulated network read in memory.
+        with memoryview(out) as target:
+            while position < end and index < len(self._segments):
+                begin, segment = self._starts[index], self._segments[index]
+                stop = min(end, begin + _length(segment))
+                if not isinstance(segment, Zeros):
+                    target[position - start:stop - start] = memoryview(segment)[position - begin:stop - begin]
+                position, index = stop, index + 1
         return out
 
     def to_bytes(self) -> bytes:
@@ -238,6 +241,7 @@ class Entry:
     gap_after: bytes = b""
     descriptor_crc: int | None = None
     central_extra: bytes = b""
+    central_comment: bytes = b""
 
 
 def deflate(data: bytes) -> bytes:
@@ -287,12 +291,12 @@ def build_zip(entries, *, zip64_end=False, prepend=b"", shift_offsets=True, comm
         mode = entry.mode if entry.mode is not None else (
             0o040755 if raw_name.endswith(b"/") else 0o100644)
         central.append((raw_name, flags, entry.method, crc, csize, size, physical - base, mode,
-                        entry.zip64, entry.central_extra))
+                        entry.zip64, entry.central_extra, entry.central_comment))
         segments += record
         physical += sum(map(_length, record))
     directory_offset, parts = physical - base, []
     for position, (raw_name, flags, method, crc, csize, size, offset, mode, forced,
-                   extra_tail) in enumerate(central):
+                   extra_tail, file_comment) in enumerate(central):
         offset = (central_offsets or {}).get(position, offset)
         values, extended = {}, []
         for key, value in (("size", size), ("csize", csize), ("offset", offset)):
@@ -305,8 +309,9 @@ def build_zip(entries, *, zip64_end=False, prepend=b"", shift_offsets=True, comm
         external = (mode << 16) | (0x10 if raw_name.endswith(b"/") else 0)
         parts.append(struct.pack("<4sBBBBHHHHIIIHHHHHII", b"PK\x01\x02", 45, 3, 45 if extended else 20, 0,
                                  flags, method, 0, 0x21, crc, values["csize"], values["size"],
-                                 len(raw_name), len(extra), 0, 0, 0, external, values["offset"])
-                     + raw_name + extra)
+                                 len(raw_name), len(extra), len(file_comment), 0, 0, external,
+                                 values["offset"])
+                     + raw_name + extra + file_comment)
     directory = b"".join(parts)
     segments.append(directory)
     physical += len(directory)
