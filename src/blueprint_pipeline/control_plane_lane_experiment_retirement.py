@@ -29,7 +29,7 @@ _LOCK = ".experiment-authority.lock"
 _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
-_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|retiring-head|retired-head))?\.json\Z")
+_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|scan-reservation|retiring-head|retired-head))?\.json\Z")
 _ISSUE_SELECTION_NAME = re.compile(r'[0-9a-f]{32}\.issue-selection-[0-9a-f]{64}\.json\Z')
 _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
@@ -121,22 +121,30 @@ def _capacity(files, parent, *, adding_registration=True):
                             files.proof(operations)
                             owners._protected(os.stat(operation.name, dir_fd=operations, follow_symlinks=False),
                                               directory=True, mode=0o700)
-                            reservation_fd = files.open(operation.name + ".reservation.json", os.O_RDONLY, parent=parent)
-                            try:
-                                reservation_info = os.fstat(reservation_fd)
-                                owners._protected(reservation_info, mode=0o600)
-                                reserved = retained._document(files.read_bytes(reservation_fd, 4096), 4096,
-                                                              _work_budget=files.budget)
-                                _require(set(reserved) == {"schema_version", "operation_id", "reserved_bytes", "reservation_digest"}
-                                         and reserved["schema_version"] == "control_plane_lane_experiment_reservation.v1"
-                                         and reserved["operation_id"] == operation.name
-                                         and type(reserved["reserved_bytes"]) is int and 0 < reserved["reserved_bytes"] <= MAX_EXPERIMENT_STORE_BYTES
-                                         and reserved["reservation_digest"] == canonical_digest(reserved, digest_field="reservation_digest"),
-                                         "experiment_store_unsafe")
-                                total += reserved["reserved_bytes"]
-                                _require(total <= MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
-                            finally:
-                                files.close(reservation_fd)
+                            found_reservations = 0
+                            for reservation_suffix in ("reservation", "scan-reservation"):
+                                try:
+                                    os.stat(operation.name + "." + reservation_suffix + ".json", dir_fd=parent, follow_symlinks=False)
+                                except FileNotFoundError:
+                                    continue
+                                found_reservations += 1
+                                reservation_fd = files.open(operation.name + "." + reservation_suffix + ".json", os.O_RDONLY, parent=parent)
+                                try:
+                                    reservation_info = os.fstat(reservation_fd)
+                                    owners._protected(reservation_info, mode=0o600)
+                                    reserved = retained._document(files.read_bytes(reservation_fd, 4096), 4096,
+                                                                  _work_budget=files.budget)
+                                    _require(set(reserved) == {"schema_version", "operation_id", "reserved_bytes", "reservation_digest"}
+                                             and reserved["schema_version"] == "control_plane_lane_experiment_reservation.v1"
+                                             and reserved["operation_id"] == operation.name
+                                             and type(reserved["reserved_bytes"]) is int and 0 < reserved["reserved_bytes"] <= MAX_EXPERIMENT_STORE_BYTES
+                                             and reserved["reservation_digest"] == canonical_digest(reserved, digest_field="reservation_digest"),
+                                             "experiment_store_unsafe")
+                                    total += reserved["reserved_bytes"]
+                                    _require(total <= MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
+                                finally:
+                                    files.close(reservation_fd)
+                            _require(found_reservations > 0, "experiment_store_unsafe")
                 finally:
                     files.close(operations)
                 continue

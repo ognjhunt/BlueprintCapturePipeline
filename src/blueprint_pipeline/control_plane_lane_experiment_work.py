@@ -19,6 +19,10 @@ from .control_plane_reference_budget import ReferenceCollectionBudget
 
 _PHASES = {'restore_checkpoint_manifest': (1, 100000), 'restore_checkpoint_compare': (1, 100000), 'restore_checkpoint_record': (1, 10000), 'manifest': (1, 100000), 'ready': (1, 10000), 'removal_batch': (256, 10000), 'recovery_batch': (256, 10000), 'restore_recovery_batch': (257, 10000), 'restore_activation_manifest': (1, 100000),
            'restore_admission': (1, 10000), 'restore_prepare': (1, 100000), 'restore_stage': (1, 100000), 'restore_stage_verify': (1, 100000), 'restore_union_finalize': (1, 100000), 'restore_directories': (256, 10000), 'restore_cleanup': (256, 10000), 'restore_batch': (256, 10000), 'finalize': (1, 100000)}
+for _scan_role in ('issue', 'restore_stage', 'restore_final', 'restore_activation', 'restore_checkpoint_compare'):
+    _PHASES['scan_admission_' + _scan_role] = (2, 10000)
+    _PHASES['scan_batch_' + _scan_role] = (512, 10000)
+    _PHASES['scan_proof_' + _scan_role] = (2, 100000)
 _ROLES = frozenset({'issue_hash', 'archive_prehash', 'archive_stream', 'archive_digest_hash', 'archive_upload_hash', 'archive_digest_stream', 'archive_upload_stream', 'remove_hash', 'restore_read', 'restore_write', 'restore_validate', 'restore_stage_validate', 'restore_activation_validate', 'restore_checkpoint_validate'})
 _QUANTUM, _AGGREGATE = 1024 * 1024, 20 * 1024 * 1024
 _BOOT_PATH = Path('/proc/sys/kernel/random/boot_id')

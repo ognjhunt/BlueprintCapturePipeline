@@ -196,12 +196,15 @@ def _manifest(files, target, target_fd, *, binding, hash_payload=True):
             names = []
             for item in stream:
                 files.budget.charge("entries")
-                _require(len(names) + len(rows) < 4096 and item.name not in (".", "..") and len(item.name.encode()) <= 255,
-                         "experiment_manifest_limit")
                 if not prefix and item.name in _METADATA:
                     continue
+                _require(len(names) + len(rows) < 4096 and item.name not in (".", "..") and len(item.name.encode()) <= 255,
+                         "experiment_manifest_limit")
                 names.append(item.name)
         for name in sorted(names):
+            if type(files) is _ActionFiles and hasattr(files, '_scan_scope'):
+                from .control_plane_lane_experiment_acquisition import member
+                member(files)
             _require(time.monotonic() - started <= 4 * 3600, "experiment_action_deadline")
             relative = prefix + name
             _require(len(relative.encode()) <= 1024 and len(rows) < 4096, "experiment_manifest_limit")
@@ -245,6 +248,9 @@ def _manifest(files, target, target_fd, *, binding, hash_payload=True):
                 files.close(fd)
     walk(target_fd, "", 0)
     rows.sort(key=lambda row: row[0])
+    if type(files) is _ActionFiles and hasattr(files, '_scan_scope'):
+        from .control_plane_lane_experiment_acquisition import finish_metadata
+        finish_metadata(files)
     return dict(schema_version=MANIFEST_SCHEMA, members=rows, logical_bytes=logical, allocated_bytes=allocated,
                 **{key: binding[key] for key in ("generation", "birth", "target_identity", "lease", "completion")})
 
@@ -375,7 +381,8 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         files._issue_policy = policy_selector
         action_id = _issue_selection(files, config, entry, current[0]['record'], store,
             principal=principal, owner=owner, action=action, expiry=expires_at_epoch)
-        files.phase('manifest')
+        from . import control_plane_lane_experiment_acquisition as acquisition
+        acquisition.begin(files, config, store, action_id, entry, role='issue')
         manifest = _manifest(files, target, target_fd, binding=entry, hash_payload=False)
         files.budget.measure(manifest, cap=1048576 - 100)
         _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
@@ -387,6 +394,7 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         _require(occupied + len(manifest_raw) + 8 * 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES,
                  "experiment_store_full")
         manifest_selector = _publish(files, store, action_id + ".manifest.json", manifest_raw, kind="manifest")
+        acquisition.completed(files, manifest_selector, len(manifest["members"]))
         value = dict(schema_version=ACTION_SCHEMA, intent_id=intent_id, action_id=action_id, issuer_uid=0,
             principal=principal, owner=owner, generation=entry["generation"], birth=entry["birth"],
             target_identity=entry["target_identity"], lease=entry["lease"], completion=entry["completion"],
