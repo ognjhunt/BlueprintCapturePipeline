@@ -1,5 +1,6 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/remote_cpu_job_contract.py
+#   src/blueprint_pipeline/remote_cpu_job_lease.py
 """ADP-009D/day-28, plan 14 PR 1: remote CPU job records carry no URL or credential."""
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import remote_cpu_job_contract as contract
+from blueprint_pipeline import remote_cpu_job_lease as lease
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 GIB = 1024**3
@@ -450,6 +452,25 @@ def test_transport_schema_is_refused_by_every_record_writer(tmp_path: Path) -> N
         lambda: contract.write_remote_cpu_record(target, changed)
     )
     assert sorted(path.name for path in target.parent.iterdir()) == [target.name]
+
+    config, now = _config(), 2_000_000_000.0
+    job, attempt = descriptor["job_id"], descriptor["attempt_id"]
+    assert "remote_cpu_transport_never_persisted:$" in _reasons(
+        lambda: lease.claim_handoff(root, descriptor=transport, config=config, now=now)
+    )
+    lease.claim_handoff(root, descriptor=descriptor, config=config, now=now)
+    assert "remote_cpu_transport_never_persisted:$" in _reasons(lambda: lease.transition(
+        root, job, attempt_id=attempt, to_state=None, now=now, updates={"teardown": transport}
+    ))
+    assert "remote_cpu_record_url_or_credential_value:outcome" in _reasons(lambda: lease.transition(
+        root, job, attempt_id=attempt, to_state=None, now=now, updates={"outcome": "https://b2.example.test/object"}
+    ))
+    assert "remote_cpu_transport_never_persisted:$" in _reasons(
+        lambda: lease.observe_heartbeat(root, job, transport, execution_running=True, now=now)
+    )
+    for path in (item for item in tmp_path.rglob("*") if item.is_file()):
+        assert b"remote_cpu_job_transport.v1" not in path.read_bytes(), path
+        assert b"https://" not in path.read_bytes(), path
 
 
 def test_receipt_must_echo_descriptor_attempt_and_execution_identity() -> None:
