@@ -230,7 +230,10 @@ def _read_target_lease(files, target_fd):
               "created_at_epoch", "expires_at_epoch", "released_at_epoch", "size_budget_bytes",
               "consumer_lifetime_contract", "lease_digest", expected["lease"]["reference_kind"]}
     _require(set(lease) in (fields, fields | {"renewed_at_epoch"})
-             and lease["schema_version"] == scratch.SCHEMA_VERSION and scratch._lease_fields_valid(lease),
+             and lease["schema_version"] == scratch.SCHEMA_VERSION and scratch._lease_fields_valid(lease)
+             and all(type(lease[key]) in (int, float) for key in
+                     ("created_at_epoch", "expires_at_epoch", "renewed_at_epoch", "released_at_epoch")
+                     if key in lease and lease[key] is not None),
              "owner_target_lease_invalid")
     budget.available("output_bytes", budget.measure(lease, cap=scratch.MAX_LEASE_BYTES))
     budget.tick()
