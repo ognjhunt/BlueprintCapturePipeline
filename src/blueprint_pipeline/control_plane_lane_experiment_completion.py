@@ -235,10 +235,8 @@ def publish_contained_completion(intent_id, *, expected_intent, proof, installed
         command = contained._unit_arguments(intent_id,target,Path(config.experiment_authority_root)/(intent_id+'.producer-bootstrap.json'))
         _require(proof.command == command, 'experiment_unit_command_changed')
         contained._check_unit(proof.started,command,intent_id)
-        _require(proof.finished['InvocationID'] == proof.started['InvocationID']
-                 and proof.finished['ActiveState'] == 'inactive' and proof.finished['Result'] == 'success'
-                 and proof.finished['ExecMainStatus'] == '0' and proof.kernel['tasks'] == 0,
-                 'experiment_unit_closure_unproven')
+        contained._check_finished_unit(proof.finished, command, intent_id, started=proof.started,
+            stopping=proof.stopping, kernel=proof.kernel, stop_command=proof.stop_command)
         pair_raw, _ = files.read(target/(pair.SCHEMA+'.json'),cap=65536)
         result = retained._document(pair_raw,65536,_work_budget=files.budget)
         _require(result['schema_version'] == pair.SCHEMA and result['result_digest'] == canonical_digest(result,digest_field='result_digest')
@@ -295,7 +293,8 @@ def publish_contained_completion(intent_id, *, expected_intent, proof, installed
             generation=entry['generation'],birth=entry['birth'],target_identity=entry['target_identity'],lease=entry['lease'],
             participant_profile='g1_local_contained_completed.v1',pair=issuance._selector(pair_raw,files.budget),
             workers=workers,supervised=supervised,installed_sources=sources,
-            kernel_unit=dict(started=proof.started,finished=proof.finished,kernel=proof.kernel,observed_at=proof.observed_at),
+            kernel_unit=dict(started=proof.started,stopping=proof.stopping,finished=proof.finished,
+                kernel=proof.kernel,stop_command=proof.stop_command,observed_at=proof.observed_at),
             lifetime_closed=True,child_execution_started=True,completed_at_epoch=issued)
         payload=actions._encoded(value,'completion_digest',32768)
         _require(issuance._capacity(files,store,adding_registration=False)+len(payload)+65536

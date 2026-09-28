@@ -84,11 +84,22 @@ def _show_unit(intent_id):
     return value
 
 
-def _check_unit(value, command, intent_id):
+def _check_unit(value, command, intent_id, *, started=None):
     unit = "blueprint-experiment-" + intent_id + ".service"
+    group = "/system.slice/" + unit
+    terminal = False
+    if started is not None:
+        _require(type(started) is dict, "experiment_unit_identity_changed")
+        _check_unit(started, command, intent_id)
+        _require(started["MainPID"].isdigit() and int(started["MainPID"]) > 1
+                 and value["InvocationID"] == started["InvocationID"], "experiment_unit_identity_changed")
+        terminal = (value["ActiveState"], value["SubState"]) in {("active", "exited"), ("inactive", "dead")}
+        terminal = (terminal and value["MainPID"] == "0" and value["Result"] == "success"
+                    and value["ExecMainStatus"] == "0")
     _require(value["Id"] == unit and value["LoadState"] == "loaded"
              and re.fullmatch(r"[0-9a-f]{32}", value["InvocationID"])
-             and value["ControlGroup"] == "/system.slice/" + unit, "experiment_unit_identity_changed")
+             and (value["ControlGroup"] == group or (value["ControlGroup"] == "" and terminal)),
+             "experiment_unit_identity_changed")
     expected = {"User":"blueprint", "Group":"blueprint", "UMask":"0077", "NoNewPrivileges":"yes",
         "CapabilityBoundingSet":"", "AmbientCapabilities":"", "ProtectControlGroups":"yes",
         "KillMode":"control-group", "Delegate":"no", "TasksMax":"64", "TimeoutStopUSec":"30s",
@@ -103,12 +114,71 @@ def _check_unit(value, command, intent_id):
              "experiment_unit_command_changed")
 
 
-def _empty_group(selected):
+def _check_finished_unit(value, command, intent_id, *, started, stopping, kernel, stop_command):
+    """Raw post-stop disappearance is meaningful only in this exact chain."""
+    _check_unit(started, command, intent_id)
+    _check_unit(stopping, command, intent_id, started=started)
+    unit = 'blueprint-experiment-' + intent_id + '.service'
+    _require(stopping['ActiveState'] == 'active' and stopping['SubState'] == 'exited'
+             and stopping['MainPID'] == '0' and stopping['Result'] == 'success'
+             and stopping['ExecMainStatus'] == '0' and kernel['tasks'] == 0
+             and stop_command == [_SYSTEMCTL, 'stop', unit], 'experiment_unit_closure_unproven')
+    if value['LoadState'] == 'loaded':
+        _check_unit(value, command, intent_id, started=started)
+    else:
+        _require(set(value) == set(_UNIT_PROPERTIES) and value['LoadState'] == 'not-found'
+                 and value['Id'] == unit and value['ActiveState'] == 'inactive' and value['SubState'] == 'dead'
+                 and value['MainPID'] == '0' and value['InvocationID'] == '' and value['ExecStart'] == ''
+                 and value['ControlGroup'] == '' and value['Result'] == 'success'
+                 and value['ExecMainStatus'] == '0', 'experiment_unit_closure_unproven')
+    _require(value['ActiveState'] == 'inactive' and value['Result'] == 'success'
+             and value['ExecMainStatus'] == '0', 'experiment_unit_closure_unproven')
+
+
+def _started_group(selected):
+    """Capture the actual owned kernel namespace while its producer is live."""
+    _require(re.fullmatch(r'/system.slice/blueprint-experiment-[0-9a-f]{32}\.service', selected),
+             'experiment_cgroup_unproven')
+    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    try:
+        parent, name = files.parent(_CGROUP_ROOT / selected.lstrip('/'), protected=True)
+        root = files.open(name, os.O_RDONLY | os.O_DIRECTORY, parent=parent)
+        files.verify()
+        return {'path': selected, 'parent_identity': _typed(os.fstat(parent)),
+                'root_identity': _typed(os.fstat(root))}
+    finally:
+        try:
+            files.finish()
+        finally:
+            files.budget.close()
+
+
+def _empty_group(selected, *, started=None):
     """Observe only the owned root and its bounded cgroup-v2 descendants."""
     _require(type(selected) is str and selected.startswith("/system.slice/blueprint-experiment-")
              and selected.endswith(".service") and ".." not in selected, "experiment_cgroup_unproven")
     files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
     try:
+        if started is not None:
+            _require(type(started) is dict and set(started) == {'path', 'parent_identity', 'root_identity'}
+                     and started['path'] == selected, 'experiment_cgroup_unproven')
+            parent, name = files.parent(_CGROUP_ROOT / selected.lstrip('/'), protected=True)
+            _require(_typed(os.fstat(parent)) == tuple(started['parent_identity']), 'experiment_cgroup_identity_changed')
+            files.location(parent)
+            try:
+                named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                # A cgroup-v2 directory disappears only after its processes and
+                # descendant groups are gone. The child cannot escape the
+                # authenticated read-only cgroup sandbox. This is absence of
+                # our first observed exact group, never arbitrary absence.
+                files.location(parent)
+                files.verify()
+                original = started['root_identity']
+                return dict(root_identity={'dev': original[0], 'ino': original[1], 'type': 'directory'},
+                            parent_identity=started['parent_identity'], groups=0, tasks=0,
+                            observed_bytes=0, group_identities=[], absent_after_started=True)
+            _require(_typed(named) == tuple(started['root_identity']), 'experiment_cgroup_identity_changed')
         root, _ = files.parent(_CGROUP_ROOT / selected.lstrip("/") / "cgroup.events", protected=True)
         root_info = os.fstat(root)
         pending, groups, tasks, raw_bytes = [root], 0, 0, 0
@@ -156,9 +226,10 @@ def _empty_group(selected):
 
 class _TerminatedUnitProof:
     """Created only by the root observer of its exact native unit invocation."""
-    def __init__(self, *, started, finished, kernel, command, observed_at):
+    def __init__(self, *, started, stopping, finished, kernel, command, stop_command, observed_at):
         self.started, self.finished, self.kernel = started, finished, kernel
         self.command, self.observed_at = command, observed_at
+        self.stopping, self.stop_command = stopping, stop_command
 
 
 def run_registered_experiment(intent_id, *, expected_intent, installed_config_path="/etc/blueprint-operator-door/door.json",
@@ -212,27 +283,38 @@ def run_registered_experiment(intent_id, *, expected_intent, installed_config_pa
     _require(sys.platform == "linux", "experiment_containment_required")
     _require(_show_unit(intent_id)["LoadState"] == "not-found", "experiment_unit_name_consumed")
     _native_control(command)
-    started, origin = None, time.monotonic()
+    started, started_group, origin = None, None, time.monotonic()
     while time.monotonic() - origin <= 4*3600 and now() < expiry:
         value = _show_unit(intent_id)
-        _check_unit(value, command, intent_id)
+        _check_unit(value, command, intent_id, started=started)
         if started is None and value["MainPID"] == "0":
             _require(value["ActiveState"] == "activating", "experiment_unit_start_unproven")
             time.sleep(0.1)
             continue
         if started is None:
             _require(value["MainPID"].isdigit() and int(value["MainPID"]) > 1, "experiment_unit_start_unproven")
+            started_group = _started_group(value["ControlGroup"])
             started = value
         _require(value["InvocationID"] == started["InvocationID"], "experiment_unit_identity_changed")
         if value["ActiveState"] == "active" and value["SubState"] == "exited":
             _require(value["Result"] == "success" and value["ExecMainStatus"] == "0", "experiment_producer_failed")
-            kernel = _empty_group(value["ControlGroup"])
-            _native_control([_SYSTEMCTL, "stop", "blueprint-experiment-"+intent_id+".service"])
+            kernel = _empty_group(started['ControlGroup'], started=started_group)
+            current_unit = _show_unit(intent_id)
+            _check_unit(current_unit, command, intent_id, started=started)
+            _require(current_unit['ActiveState'] == 'active' and current_unit['SubState'] == 'exited'
+                     and current_unit['MainPID'] == '0' and current_unit['Result'] == 'success'
+                     and current_unit['ExecMainStatus'] == '0'
+                     and time.monotonic() - origin <= 4*3600 and now() < expiry,
+                     'experiment_unit_closure_unproven')
+            stop_command = [_SYSTEMCTL, 'stop', 'blueprint-experiment-' + intent_id + '.service']
+            _native_control(stop_command)
             finished = _show_unit(intent_id)
-            _require(finished["ActiveState"] == "inactive" and finished["Result"] == "success"
-                     and finished["ExecMainStatus"] == "0" and finished["InvocationID"] == started["InvocationID"],
-                     "experiment_unit_closure_unproven")
-            proof = _TerminatedUnitProof(started=started, finished=finished, kernel=kernel, command=command, observed_at=now())
+            _check_finished_unit(finished, command, intent_id, started=started, stopping=current_unit,
+                                 kernel=kernel, stop_command=stop_command)
+            _require(time.monotonic() - origin <= 4*3600 and now() < expiry,
+                     'experiment_unit_closure_unproven')
+            proof = _TerminatedUnitProof(started=started, stopping=current_unit, finished=finished,
+                kernel=kernel, command=command, stop_command=stop_command, observed_at=now())
             from .control_plane_lane_experiment_completion import publish_contained_completion
             completion = publish_contained_completion(intent_id, expected_intent=expected_intent,
                 proof=proof, installed_config_path=installed_config_path, now=now)

@@ -18,6 +18,48 @@ from tests.test_registered_experiment_birth import birth, prepare
 from tests.test_native_g1_development_pair import _paired_requests
 
 
+def test_contained_producer_forwards_admitted_paths_to_actual_native_validator(
+    installation, tmp_path, monkeypatch  # noqa: F811
+):
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    from blueprint_pipeline import native_g1_development_pair as pair
+
+    consumer, target, _, paths, bootstrap = _contained_bootstrap(
+        installation, tmp_path, monkeypatch
+    )
+    original_admit = consumer.RegisteredExperimentUse.admit
+    held = []
+
+    def admit(path, *, _producer_bootstrap_path):
+        use = original_admit(path, _producer_bootstrap_path=_producer_bootstrap_path,
+                             now=lambda: 1200)
+        held.append(use)
+        return use
+
+    monkeypatch.setattr(consumer.RegisteredExperimentUse, 'admit', staticmethod(admit))
+    # This portable case isolates the real input API. Actual kernel membership
+    # and successful child completion remain mandatory in the Linux test.
+    monkeypatch.setattr(contained, '_unit_membership', lambda *args: None)
+
+    class NativeInputVerified(Exception):
+        pass
+
+    def native_pair(*, request_paths, output_dir, mode, _registered_use):
+        assert [str(path) for path in request_paths] == [str(path) for path in paths]
+        assert output_dir == target and mode == 'local' and _registered_use is held[0]
+        _registered_use.check()
+        for path in request_paths:
+            # Exercise actual filesystem Path operations and raw native seals,
+            # without running hardware, providers or fabricating completion.
+            assert pair._sealed_json(path)['request_digest']
+        raise NativeInputVerified
+
+    monkeypatch.setattr(pair, 'run_g1_development_pair', native_pair)
+    with pytest.raises(NativeInputVerified):
+        contained._producer_main(bootstrap, target)
+    assert len(held) == 1 and held[0]._closed and not held[0].files.owned
+
+
 @pytest.mark.parametrize("caller", ["pair", "worker"])
 def test_registered_missing_use_refuses_before_request_or_payload_read(
     tmp_path, monkeypatch, caller
@@ -753,3 +795,83 @@ def test_missing_native_exec_never_repairs_loaded_or_ambiguous_unit(monkeypatch,
     monkeypatch.setattr(contained, '_native_control', lambda arguments: '\n'.join(lines)+'\n')
     with pytest.raises(ValueError, match='experiment_unit_observation_failed'):
         contained._show_unit('a'*32)
+
+
+def _successful_unit_transition():
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent = 'a' * 32
+    target = Path('/mnt/blueprint-work/lanes/g1/registered-' + intent)
+    bootstrap = Path('/var/lib/blueprint/authority/' + intent + '.producer-bootstrap.json')
+    command = contained._unit_arguments(intent, target, bootstrap)
+    argv = command[command.index('--') + 1:]
+    started = dict(Id='blueprint-experiment-' + intent + '.service', LoadState='loaded',
+        ActiveState='active', SubState='running', InvocationID='b' * 32, MainPID='42',
+        Result='success', ExecMainStatus='0', ControlGroup='/system.slice/blueprint-experiment-' + intent + '.service',
+        ExecStart='{ path=' + argv[0] + ' ; argv[]=' + ' '.join(argv) + ' ; ignore_errors=no ; start_time=[now] ; stop_time=[n/a] ; pid=42 ; code=(null) ; status=0/0 }',
+        User='blueprint',Group='blueprint',UMask='0077',NoNewPrivileges='yes',CapabilityBoundingSet='',
+        AmbientCapabilities='',ProtectControlGroups='yes',KillMode='control-group',Delegate='no',TasksMax='64',
+        TimeoutStopUSec='30s',RemainAfterExit='yes',ProtectSystem='strict',ProtectHome='yes',PrivateTmp='yes',
+        PrivateNetwork='yes',RestrictNamespaces='yes',RestrictSUIDSGID='yes',ReadWritePaths=str(target),ReadOnlyPaths='/')
+    return intent, command, started
+
+
+def test_successful_same_invocation_terminal_empty_controlgroup_requires_original_start():
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent, command, started = _successful_unit_transition()
+    contained._check_unit(started, command, intent)
+    terminal = started | {'ActiveState': 'active', 'SubState': 'exited', 'MainPID': '0', 'ControlGroup': ''}
+    contained._check_unit(terminal, command, intent, started=started)
+    with pytest.raises(ValueError, match='experiment_unit_identity_changed'):
+        contained._check_unit(terminal, command, intent)
+
+
+@pytest.mark.parametrize('change', ['running-empty', 'different-invocation', 'different-group', 'failed', 'live-pid'])
+def test_terminal_cgroup_transition_never_accepts_changed_or_live_unit(change):
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent, command, started = _successful_unit_transition()
+    terminal = started | {'ActiveState': 'active', 'SubState': 'exited', 'MainPID': '0', 'ControlGroup': ''}
+    if change == 'running-empty':
+        terminal['SubState'] = 'running'
+    elif change == 'different-invocation':
+        terminal['InvocationID'] = 'c' * 32
+    elif change == 'different-group':
+        terminal['ControlGroup'] = '/system.slice/foreign.service'
+    elif change == 'failed':
+        terminal['Result'] = 'exit-code'
+    else:
+        terminal['MainPID'] = '43'
+    with pytest.raises(ValueError, match='experiment_unit_'):
+        contained._check_unit(terminal, command, intent, started=started)
+
+
+def test_collected_after_exact_successful_stop_preserves_raw_absent_snapshot():
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent, command, started = _successful_unit_transition()
+    stopping = started | {'ActiveState': 'active', 'SubState': 'exited', 'MainPID': '0', 'ControlGroup': ''}
+    finished = dict(line.split('=', 1) for line in _ABSENT_UNIT_SHOW.splitlines()) | {'ExecStart': ''}
+    kernel = {'tasks': 0, 'groups': 0, 'absent_after_started': True}
+    stop_command = [contained._SYSTEMCTL, 'stop', started['Id']]
+    contained._check_finished_unit(finished, command, intent, started=started, stopping=stopping,
+                                   kernel=kernel, stop_command=stop_command)
+    assert finished['InvocationID'] == '' and finished['LoadState'] == 'not-found'
+
+
+@pytest.mark.parametrize('change', ['no-kernel-closure', 'foreign-stop', 'foreign-invocation', 'active-after-stop'])
+def test_poststop_absence_never_clears_unproved_or_foreign_lifetime(change):
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent, command, started = _successful_unit_transition()
+    stopping = started | {'ActiveState': 'active', 'SubState': 'exited', 'MainPID': '0', 'ControlGroup': ''}
+    finished = dict(line.split('=', 1) for line in _ABSENT_UNIT_SHOW.splitlines()) | {'ExecStart': ''}
+    kernel = {'tasks': 0, 'groups': 0, 'absent_after_started': True}
+    stop_command = [contained._SYSTEMCTL, 'stop', started['Id']]
+    if change == 'no-kernel-closure':
+        kernel['tasks'] = 1
+    elif change == 'foreign-stop':
+        stop_command[-1] = 'foreign.service'
+    elif change == 'foreign-invocation':
+        stopping['InvocationID'] = 'c' * 32
+    else:
+        finished['ActiveState'] = 'active'
+    with pytest.raises(ValueError, match='experiment_unit_'):
+        contained._check_finished_unit(finished, command, intent, started=started, stopping=stopping,
+                                       kernel=kernel, stop_command=stop_command)
