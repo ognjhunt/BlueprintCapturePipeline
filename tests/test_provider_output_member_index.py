@@ -29,6 +29,7 @@ from blueprint_pipeline.provider_output_member_index import (
     validate_member_index,
     validate_member_selection,
 )
+from blueprint_pipeline import provider_output_range_transport as transport
 from blueprint_pipeline.provider_output_range_transport import ProviderOutputTransportError
 from tests.provider_output_fixtures import (
     DEFLATED,
@@ -347,7 +348,23 @@ _REFUSALS = {
         {}, "provider_output_archive_end_record_ambiguous"),
     "bytes_after_end_record": (lambda: build_zip(_entries("a.bin")).to_bytes() + b"junk", {},
                                "provider_output_archive_end_record_invalid"),
+    "corrupt_deflate": (  # 0xFF opens a block of the reserved type 3
+        lambda: build_zip([Entry("a.bin", _TEXT, method=DEFLATED, payload=b"\xff" * 24)]), {},
+        "provider_output_archive_deflate_invalid"),
+    "local_crc_differs": (lambda: _local_field(14, 7), {}, "provider_output_archive_local_header_mismatch"),
+    "local_compressed_size_differs": (lambda: _local_field(18, 7), {},
+                                      "provider_output_archive_local_header_mismatch"),
+    "local_size_differs": (lambda: _local_field(22, 7), {}, "provider_output_archive_local_header_mismatch"),
+    "local_field_beside_descriptor_differs": (lambda: _local_field(14, 7, descriptor="signed"), {},
+                                              "provider_output_archive_local_header_mismatch"),
 }
+
+
+def _local_field(offset, value, **entry):
+    """One stored record whose local-header field at ``offset`` disagrees with the directory."""
+    data = bytearray(build_zip([Entry("a.bin", b"payload!", **entry)]).to_bytes())
+    struct.pack_into("<I", data, offset, value)
+    return bytes(data)
 
 
 @pytest.mark.parametrize("case", sorted(_REFUSALS))
@@ -588,6 +605,31 @@ def test_stream_to_is_one_pinned_get_and_archive_sha256_stays_a_thin_caller():
         with pytest.raises(ProviderOutputTransportError, match="range_invalid"):
             reader.stream_to(received.extend, start=start, end=end)
 
+
+
+@pytest.mark.parametrize("fault, code", [
+    ("content_length", "provider_output_content_length_invalid"),
+    ("content_range", "provider_output_content_range_invalid"),
+    ("overlong", "provider_output_range_overlong"),
+])
+def test_stream_to_refuses_a_malformed_range_response(fault, code):
+    store = RangeStore(_mixed_archive())
+    reader = store.reader(block_bytes=MIN_BLOCK)
+    store.range_fault = fault
+    with pytest.raises(ProviderOutputTransportError, match=f"^{code}$"):
+        reader.stream_to(bytearray().extend, start=10, end=5000)
+
+
+def test_stream_to_stops_when_its_deadline_passes_mid_transfer(monkeypatch):
+    store = RangeStore(_mixed_archive())
+    store.max_read = 1000
+    reader = store.reader(block_bytes=MIN_BLOCK)
+    received, real_clock = bytearray(), transport.time.monotonic
+    # A day passes as soon as the first bytes arrive.
+    monkeypatch.setattr(transport.time, "monotonic", lambda: real_clock() + (86400 if received else 0))
+    with pytest.raises(ProviderOutputTransportError, match="^provider_output_transfer_deadline_exceeded$"):
+        reader.stream_to(received.extend, start=0, end=20000)
+    assert 0 < len(received) < 20000
 
 def test_cli_prints_the_summary_with_bytes_by_class(tmp_path, capsys):
     path = tmp_path / "vast_provider_runtime_output.zip"

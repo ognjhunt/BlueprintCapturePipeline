@@ -174,7 +174,9 @@ class RangeStore:
     those whose logged request it accepts; ``ignore_if_match``
     serves whatever version is current; ``next_version`` swaps in a new
     ``(object, etag)`` just before the next whole-object GET. ``max_read``
-    makes every response return at most that many bytes per read.
+    makes every response return at most that many bytes per read, and
+    ``range_fault`` ("content_length", "content_range" or "overlong") breaks
+    every ranged response in that way.
     """
 
     def __init__(self, data, *, etag='"version1"', generation=None, url=URL):
@@ -185,6 +187,7 @@ class RangeStore:
         self.truncate_whole_object = False
         self.truncate_when = None
         self.max_read = None
+        self.range_fault = None
         self.ignore_if_match = False
         self.next_version = None
 
@@ -213,8 +216,15 @@ class RangeStore:
             response_headers["x-goog-generation"] = self.generation
         short = (self.truncate or (self.truncate_whole_object and requested is None)
                  or (self.truncate_when is not None and self.truncate_when(entry)))
+        body_stop = stop - 1 if short else stop
+        if requested is not None and self.range_fault == "content_length":
+            response_headers["Content-Length"] = str(stop - start + 1)
+        elif requested is not None and self.range_fault == "content_range":
+            response_headers["Content-Range"] = f"bytes {start + 1}-{stop - 1}/{size}"
+        elif requested is not None and self.range_fault == "overlong":
+            body_stop += 1
         return _Response(request.full_url, status, response_headers, self.object, start,
-                         stop - 1 if short else stop, self.max_read)
+                         body_stop, self.max_read)
 
     def reader(self, **options) -> ProviderOutputRangeReader:
         options.setdefault("maximum_archive_bytes", max(1, self.object.size))

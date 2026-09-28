@@ -38,6 +38,7 @@ ETAG = '"version1"'
 LARGE = 256 * 1024**2
 CONSUMERS = "policy-canary-consumers.v1"
 EPISODES = ["runtime/episodes/0001.json", "runtime/result.json", "logs/worker.log"]
+IDENTITY = "runtime/identity.json"
 
 
 @pytest.fixture(scope="module")
@@ -73,8 +74,8 @@ def _reference(index):
     }
 
 
-def _ingest(tmp_path, store, index, selection, *, reserve=None, reference=None, **options):
-    source = CasArchiveSource(reference=reference or _reference(index), presign=lambda: URL,
+def _ingest(tmp_path, store, index, selection, *, reserve=None, reference=None, presign=None, **options):
+    source = CasArchiveSource(reference=reference or _reference(index), presign=presign or (lambda: URL),
                               opener=store.opener, block_bytes=64 * 1024)
     return ingest_selected_members(
         source=source, index=index, selection=selection, members_root=tmp_path / "members",
@@ -295,6 +296,106 @@ def test_a_rename_across_mounts_is_a_typed_refusal(tmp_path, indexed, monkeypatc
     assert result["blockers"] == ["provider_output_roots_cross_device"]
     assert _files(tmp_path / "members") == []
 
+
+def _write_journal_row(tmp_path, row, **changes):
+    value = {"relative_path": row["path"], "size_bytes": row["size"], "sha256": row["sha256"],
+             "crc32": row["crc32"], **changes}
+    value["record_digest"] = canonical_digest(value, digest_field="record_digest")
+    (tmp_path / "ingestion/members-forged.jsonl").write_text(json.dumps(value) + "\n")
+
+
+def _drop_journals(tmp_path):
+    for path in (tmp_path / "ingestion").glob("members-*.jsonl"):
+        path.unlink()
+
+
+@pytest.mark.parametrize("change, code", [
+    ("smaller_remote", "provider_output_remote_size_mismatch"),
+    ("new_remote_version", "provider_output_resume_remote_identity_mismatch"),
+    ("journaled_unselected_member", "provider_output_resume_inventory_changed"),
+    ("stray_file", "provider_output_resume_inventory_changed"),
+    ("symlink", "provider_output_resume_inventory_changed"),
+    ("tampered_unjournaled_target", "provider_output_resume_file_changed"),
+    ("journal_disagrees_with_target", "provider_output_resume_file_changed"),
+])
+def test_resume_refuses_a_changed_remote_or_member_tree(tmp_path, indexed, change, code):
+    archive, index = indexed
+    rows, target = _rows(index), tmp_path / "members" / IDENTITY
+    selection = build_member_selection(index, [IDENTITY], selection_version=CONSUMERS)
+    assert _ingest(tmp_path, RangeStore(archive), index, selection)["status"] == "materialized"
+    store = RangeStore(archive)
+    if change == "smaller_remote":
+        store = RangeStore(b"not the indexed archive" * 8)
+    elif change == "new_remote_version":
+        store = RangeStore(archive, etag='"version2"')
+    elif change == "journaled_unselected_member":
+        _write_journal_row(tmp_path, rows["runtime/result.json"])
+    elif change == "stray_file":
+        (tmp_path / "members/runtime/stray.txt").write_text("not selected")
+    elif change == "symlink":
+        (tmp_path / "members/runtime/link").symlink_to(target)
+    elif change == "tampered_unjournaled_target":
+        _drop_journals(tmp_path)
+        target.chmod(0o640)
+        target.write_bytes(b"X" + target.read_bytes()[1:])
+    else:
+        _drop_journals(tmp_path)
+        _write_journal_row(tmp_path, rows[IDENTITY], sha256="sha256:" + "0" * 64)
+    result = _ingest(tmp_path, store, index, selection)
+    assert result["status"] == "blocked" and result["blockers"] == [code]
+
+
+def test_member_renamed_before_its_journal_row_is_adopted_without_refetch(tmp_path, indexed, monkeypatch):
+    archive, index = indexed
+    selection = build_member_selection(index, [IDENTITY], selection_version=CONSUMERS)
+
+    def crash(*args):
+        raise OSError("interrupted before the journal append")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ingestion, "_append_journal", crash)
+        first = _ingest(tmp_path, RangeStore(archive), index, selection)
+    assert first["blockers"] == ["provider_output_archive_or_io_failed"]
+    assert _files(tmp_path / "members") == [IDENTITY] and _journal(tmp_path) == []
+
+    store = RangeStore(archive)
+    resumed = _ingest(tmp_path, store, index, selection)
+    assert resumed["status"] == "materialized" and resumed["resumed_member_count"] == 1
+    assert store.ranges() == [(0, 0)]  # the reader's own probe: the member is not fetched again
+    assert [row["relative_path"] for row in _journal(tmp_path)] == [IDENTITY]
+
+
+def _raise(error):
+    def raising(*args):
+        raise error
+    return raising
+
+
+@pytest.mark.parametrize("presign", [
+    _raise(RuntimeError("signing failed for " + URL)),
+    lambda: "",
+    lambda: URL.replace("https://", "http://"),  # refused by the transport policy
+])
+def test_a_failed_presign_is_a_typed_refusal_that_records_no_url(tmp_path, indexed, presign):
+    archive, index = indexed
+    selection = build_member_selection(index, [IDENTITY], selection_version=CONSUMERS)
+    result = _ingest(tmp_path, RangeStore(archive), index, selection, presign=presign)
+    assert result["blockers"] == ["provider_output_cas_presign_invalid"]
+    for path in (tmp_path / "ingestion").iterdir():
+        assert b"storage.example.invalid" not in path.read_bytes() and SECRET.encode() not in path.read_bytes()
+
+
+@pytest.mark.parametrize("error, code", [
+    (ProviderOutputIngestionError("provider_output_lane_quota_refused"), "provider_output_lane_quota_refused"),
+    (OSError("lane_quota_exceeded"), "lane_quota_exceeded"),
+    (ValueError("Disk full: 10 GiB needed"), "provider_output_disk_reservation_refused"),
+])
+def test_reserve_refusals_become_typed_codes(tmp_path, indexed, error, code):
+    archive, index = indexed
+    selection = build_member_selection(index, [IDENTITY], selection_version=CONSUMERS)
+    result = _ingest(tmp_path, RangeStore(archive), index, selection, reserve=_raise(error))
+    assert result["blockers"] == [code] and _files(tmp_path / "members") == []
+
 def test_selected_member_must_match_its_index_digest(tmp_path, indexed):
     archive, index = indexed
     rows = _rows(index)
@@ -316,6 +417,15 @@ def test_selected_member_must_match_its_index_digest(tmp_path, indexed):
     assert result["blockers"] == ["provider_output_member_digest_mismatch"]
     assert _files(tmp_path / "tampered/members") == []
     assert not list((tmp_path / "tampered/ingestion").glob("*.partial"))
+
+    # A deflated member whose stream no longer decodes.
+    result_row = rows["runtime/result.json"]
+    corrupt = archive.patched(result_row["data_offset"], b"\xff")
+    selection = build_member_selection(index, ["runtime/result.json"], selection_version=CONSUMERS)
+    result = _ingest(tmp_path / "corrupt", RangeStore(corrupt), index, selection)
+    assert result["blockers"] == ["provider_output_archive_deflate_invalid"]
+    assert _files(tmp_path / "corrupt/members") == []
+    assert not list((tmp_path / "corrupt/ingestion").glob("*.partial"))
 
 
 def test_cas_source_must_name_the_indexed_archive(tmp_path, indexed):
