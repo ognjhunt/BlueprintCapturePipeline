@@ -28,7 +28,8 @@ separate. Controller plugins implement the same interface in an isolated image;
 no customer Python is imported into the simulator process.
 
 `ControlledSimulatorAdapter` wraps the existing Isaac episode environment:
-configure exact camera/state bindings and the measured native action translator
+configure exact camera/state bindings, state units, measured control frequency,
+and the measured native action translator
 (including joint order, units, control rate and gripper convention), plus the
 trusted task-terminal and controller-stop functions. It encodes fresh RGB PNG
 frames, rejects incompatible shapes/types, and calls the native simulator step

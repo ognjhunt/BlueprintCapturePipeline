@@ -19,12 +19,17 @@ class ControlledSimulatorAdapter:
     """Wrap the existing Isaac EpisodeEnvironment without exporting its assets."""
     def __init__(self, *, native_environment: Any, contract: Mapping[str, Any],
                  camera_bindings: Mapping[str, str], state_bindings: Mapping[str, str],
+                 state_units: Mapping[str, str], control_frequency_hz: float,
                  prompt: str,
                  translate_action: Callable[[Sequence[float], Any, Mapping[str, Any]], Sequence[float]],
                  terminal: Callable[[], bool], stop_controller: Callable[[], None]):
         self.native = native_environment
         self.contract = validate_company_policy_container_contract_v2(contract)
         observation = self.contract["observation_schema"]
+        if (dict(state_units) != {row["name"]: row["unit"] for row in observation["state_fields"]}
+                or isinstance(control_frequency_hz, bool)
+                or control_frequency_hz != observation["control_frequency_hz"]):
+            raise ValueError("controlled_simulator_units_or_control_rate_mismatch")
         if (set(camera_bindings) != {row["name"] for row in observation["cameras"]}
                 or set(state_bindings) != {row["name"] for row in observation["state_fields"]}
                 or any(not isinstance(value, str) or not value for value in [*camera_bindings.values(), *state_bindings.values()])):

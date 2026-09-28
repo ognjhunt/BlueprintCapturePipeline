@@ -919,7 +919,7 @@ def execute_company_policy_sandbox_preobservation(
         OSError,
         subprocess.SubprocessError,
     ) as exc:
-        terminal_blockers.append(str(exc))
+        terminal_blockers.append("company_policy_controlled_session_failed" if real_observation_sent else str(exc))
         result = {
             "status": "blocked_after_observation" if real_observation_sent else "blocked_before_first_observation",
             "blockers": sorted(set(terminal_blockers)),
