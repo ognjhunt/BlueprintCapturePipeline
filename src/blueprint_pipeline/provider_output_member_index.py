@@ -159,11 +159,15 @@ def check_archive_entries(infos: Sequence, maximum_extracted_bytes: int):
             if total > maximum_extracted_bytes:
                 raise ProviderOutputMemberIndexError('provider_output_archive_expansion_cap_exceeded')
             files[name] = info
-    for name in normalized:
-        if any(parent.as_posix() in normalized and not normalized[parent.as_posix()]
-               for parent in PurePosixPath(name).parents if parent.as_posix() != '.'):
-            raise ProviderOutputMemberIndexError('provider_output_archive_file_directory_collision')
+    if _file_is_a_parent(normalized):
+        raise ProviderOutputMemberIndexError('provider_output_archive_file_directory_collision')
     return files, total
+
+
+def _file_is_a_parent(kinds):
+    """True when a member's parent is a regular file; ``kinds`` maps folded names to is-directory."""
+    return any(parent.as_posix() in kinds and not kinds[parent.as_posix()]
+               for name in kinds for parent in PurePosixPath(name).parents if parent.as_posix() != '.')
 
 
 class MemberInflater:
@@ -674,7 +678,15 @@ def _digest_or_none(document, field):
 
 
 def validate_member_index(index) -> Mapping:
-    """Check an index's digest and invariants before any consumer trusts its offsets."""
+    """Check an index's digest and invariants before any consumer trusts its offsets.
+
+    ``index_digest`` proves integrity, not provenance: a document that passes
+    was not altered after it was digested, but anyone can digest a forged
+    index. The structural checks here (records tiling the archive, the entry
+    rules, no file that is also a parent) keep a forged index from steering
+    writes outside those rules; binding the index to the archive it describes
+    is the caller's job.
+    """
     if (not isinstance(index, Mapping) or index.get('schema_version') != SCHEMA
             or index.get('private_url_recorded') is not False):
         raise _refusal('provider_output_member_index_invalid')
@@ -693,7 +705,7 @@ def validate_member_index(index) -> Mapping:
             or directory['offset'] + directory['size'] >= archive['size']
             or not isinstance(members, list) or not members):
         raise _refusal('provider_output_member_index_invalid')
-    position, seen = 0, set()
+    position, kinds = 0, {}
     for member in members:
         if (not isinstance(member, Mapping) or set(member) != _MEMBER_KEYS
                 or member['kind'] not in ('file', 'directory') or member['method'] not in ('stored', 'deflate')
@@ -712,11 +724,11 @@ def validate_member_index(index) -> Mapping:
         except ProviderOutputInventoryError:
             raise _refusal('provider_output_member_index_invalid') from None
         folded = unicodedata.normalize('NFC', member['path']).casefold()
-        if folded in seen:
+        if folded in kinds:
             raise _refusal('provider_output_member_index_invalid')
-        seen.add(folded)
+        kinds[folded] = member['kind'] == 'directory'
         position = member['record_end_offset']
-    if position != directory['offset']:
+    if position != directory['offset'] or _file_is_a_parent(kinds):
         raise _refusal('provider_output_member_index_invalid')
     return index
 

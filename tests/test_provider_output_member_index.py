@@ -206,6 +206,8 @@ def test_index_document_validates_and_forgery_is_refused():
         lambda d: d["directory"].update(offset=d["directory"]["offset"] + 1),
         lambda d: d["archive"].update(etag=7),
         lambda d: d["archive"].update(durable_reference="s3://bucket/key"),
+        # A regular file that is also another member's parent directory.
+        lambda d: d["members"][2].update(path=d["members"][1]["path"] + "/nested.json"),
     ):
         with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_index_invalid$"):
             validate_member_index(forged(change))
