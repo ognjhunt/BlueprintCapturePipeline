@@ -726,6 +726,15 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
         compute=other_transport, provider=_provider(), observed_at_epoch=2_000_000_000.0,
     ))
 
+    impostor = records.teardown_record(
+        descriptor=descriptor, worker_identity=contract.worker_identity_for(
+            descriptor["execution"], "blueprint-remote-cpu-episode-compilation-zzzzz"),
+        outcome="completed", compute=_compute(descriptor), provider=_provider(), observed_at_epoch=2_000_000_000.0,
+    )
+    assert impostor["provider_zero_proven"] is True
+    assert "remote_cpu_pointer_teardown_worker_identity_mismatch" in _reasons(
+        lambda: records.pointer_record({}, previous=landed, teardown=impostor)
+    )
     proven = records.pointer_record({}, previous=landed, teardown=teardown)
     assert proven["teardown_receipt_digest"] == teardown["teardown_digest"]
     assert proven["provider_zero_proven"] is True and proven["state"] == "landed"
@@ -768,3 +777,39 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
     assert "remote_cpu_pointer_teardown_attempt_mismatch" in _reasons(
         lambda: records.pointer_record({}, previous=landed, teardown=foreign)
     )
+
+
+def test_pointer_reseal_replaces_only_the_record_it_read(tmp_path: Path) -> None:
+    descriptor = _descriptor()
+    identity = contract.worker_identity_for(descriptor["execution"], EXECUTION)
+    landed = records.pointer_record(_pointer_fields(descriptor))
+    proven = records.pointer_record({}, previous=landed, teardown=records.teardown_record(
+        descriptor=descriptor, worker_identity=identity, outcome="completed", compute=_compute(descriptor),
+        provider=_provider(), observed_at_epoch=2_000_000_000.0,
+    ))
+    restored = records.pointer_record({"state": "restored_full"}, previous=proven)
+    path = tmp_path / "compiled-episodes" / "prep-1.remote-output.v1.json"
+
+    def replace(record: dict, previous: str | None) -> bool:
+        return records.replace_remote_cpu_record(path, record, previous_digest=previous, digest_field="pointer_digest")
+
+    assert replace(landed, None) is True
+    assert stat.S_IMODE(path.stat().st_mode) == 0o440 and json.loads(path.read_text()) == landed
+    assert replace(landed, None) is False
+    assert f"remote_cpu_record_conflict:{path.name}" in _reasons(lambda: replace(proven, None))
+    assert replace(proven, landed["pointer_digest"]) is True
+    assert json.loads(path.read_text()) == proven and stat.S_IMODE(path.stat().st_mode) == 0o440
+    assert f"remote_cpu_record_cas_conflict:{path.name}" in _reasons(lambda: replace(restored, landed["pointer_digest"]))
+    assert replace(restored, proven["pointer_digest"]) is True
+    assert replace(restored, proven["pointer_digest"]) is False
+    assert json.loads(path.read_text()) == restored
+
+    assert "remote_cpu_record_unsealed" in _reasons(lambda: replace(dict(restored, paths_total=13), restored["pointer_digest"]))
+    transport = {"schema_version": "remote_cpu_job_transport.v1", "pointer_digest": "sha256:" + "0" * 64}
+    assert "remote_cpu_transport_never_persisted:$" in _reasons(lambda: replace(transport, restored["pointer_digest"]))
+    planted = tmp_path / "compiled-episodes" / "planted.remote-output.v1.json"
+    planted.symlink_to(path)
+    assert f"remote_cpu_record_conflict:{planted.name}" in _reasons(lambda: records.replace_remote_cpu_record(
+        planted, restored, previous_digest=restored["pointer_digest"], digest_field="pointer_digest"))
+    assert json.loads(path.read_text()) == restored
+    assert sorted(item.name for item in path.parent.iterdir()) == sorted([path.name, planted.name])

@@ -9,9 +9,11 @@ credential-shaped content.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
+import stat
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
@@ -55,6 +57,7 @@ from .remote_cpu_job_contract import (
 TEARDOWN_SCHEMA_VERSION = "remote_cpu_job_teardown.v1"
 POINTER_SCHEMA_VERSION = "remote_cpu_output_pointer.v1"
 POINTER_STATES = ("landed", "restored_full")
+_MAX_RECORD_BYTES = 1024 * 1024
 _TRANSPORT_OBJECT = re.compile(r"gs://[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]/transport/[a-z0-9-]+/[a-z0-9-]+\.json")
 
 
@@ -91,6 +94,66 @@ def write_remote_cpu_record(path: str | Path, value: Mapping[str, Any]) -> bool:
         if not destination.is_symlink() and destination.read_bytes() == payload:
             return False
     raise RemoteCpuContractError(f"remote_cpu_record_conflict:{destination.name}")
+
+
+def _existing_record_bytes(path: Path) -> bytes | None:
+    """The bytes of a regular record file, or ``None`` when absent; a link or special file conflicts."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}") from exc
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}")
+        return stream.read(_MAX_RECORD_BYTES + 1)
+
+
+def replace_remote_cpu_record(path: str | Path, value: Mapping[str, Any], *, previous_digest: str | None,
+                              digest_field: str, mode: int = 0o440) -> bool:
+    """Write a sealed record, replacing only the record the caller read: a digest compare-and-swap.
+
+    ``previous_digest`` is the ``digest_field`` of the record the caller read, or ``None`` to create
+    the file exclusively.  An identical file means the write already happened (``False``); any other
+    file is a conflict.  The caller serializes writers (the collector holds the attempt's lease).
+    The default mode is 0440, as plan 14 §16 requires of the output pointer.
+    """
+    payload = record_bytes(value)
+    if value.get(digest_field) != canonical_digest(value, digest_field=digest_field):
+        raise RemoteCpuContractError("remote_cpu_record_unsealed")
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    current = _existing_record_bytes(destination)
+    if current == payload:
+        return False
+    if previous_digest is None and current is not None:
+        raise RemoteCpuContractError(f"remote_cpu_record_conflict:{destination.name}")
+    if previous_digest is not None:
+        try:
+            existing = json.loads(current) if current is not None else None
+        except (ValueError, RecursionError):
+            existing = None
+        if (not isinstance(existing, dict) or existing.get(digest_field) != previous_digest
+                or previous_digest != canonical_digest(existing, digest_field=digest_field)):
+            raise RemoteCpuContractError(f"remote_cpu_record_cas_conflict:{destination.name}")
+    temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        with open(temporary, "xb") as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if previous_digest is None:
+            os.link(temporary, destination)
+        else:
+            os.replace(temporary, destination)
+    except FileExistsError as exc:
+        raise RemoteCpuContractError(f"remote_cpu_record_conflict:{destination.name}") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+    fsync_directory(destination.parent)
+    return True
 
 
 _COMPUTE_SPEC = {
@@ -253,13 +316,16 @@ def pointer_record(fields: Mapping[str, Any], *, previous: Mapping[str, Any] | N
                 pointer["state"] = item
     if teardown is not None:
         record = validate_teardown(teardown)
-        reasons.extend(name for name, failed in {
-            "remote_cpu_pointer_teardown_attempt_mismatch": (record["attempt_id"], record["descriptor_digest"])
-            != (pointer.get("attempt_id"), pointer.get("descriptor_digest")),
-            "remote_cpu_pointer_teardown_not_provider_zero": not record["provider_zero_proven"],
-            "remote_cpu_pointer_field_immutable:teardown_receipt_digest":
-                pointer.get("teardown_receipt_digest") not in {None, record["teardown_digest"]},
-        }.items() if failed)
+        execution = pointer.get("execution") if isinstance(pointer.get("execution"), Mapping) else {}
+        if (record["attempt_id"], record["descriptor_digest"]) != (pointer.get("attempt_id"),
+                                                                   pointer.get("descriptor_digest")):
+            reasons.append("remote_cpu_pointer_teardown_attempt_mismatch")
+        if record["worker_identity"] != execution.get("worker_identity"):
+            reasons.append("remote_cpu_pointer_teardown_worker_identity_mismatch")
+        if not record["provider_zero_proven"]:
+            reasons.append("remote_cpu_pointer_teardown_not_provider_zero")
+        if pointer.get("teardown_receipt_digest") not in {None, record["teardown_digest"]}:
+            reasons.append("remote_cpu_pointer_field_immutable:teardown_receipt_digest")
         pointer["teardown_receipt_digest"], pointer["provider_zero_proven"] = record["teardown_digest"], True
     _raise_if(reasons)
     pointer["pointer_digest"] = canonical_digest(pointer, digest_field="pointer_digest")
