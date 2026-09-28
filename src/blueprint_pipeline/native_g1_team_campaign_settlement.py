@@ -52,7 +52,9 @@ def _strict_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _instance_and_label(adapter: dict[str, Any]) -> tuple[int, str]:
+def _instance_and_label(
+    adapter: dict[str, Any], *, expected_prefix: str = INSTANCE_LABEL_PREFIX,
+) -> tuple[int, str]:
     ids = adapter.get("vast_instance_ids")
     watchdog = adapter.get("independent_watchdog")
     if ids is None and isinstance(watchdog, dict):
@@ -79,7 +81,7 @@ def _instance_and_label(adapter: dict[str, Any]) -> tuple[int, str]:
         or instance.get("id") != ids[0]
         or instance.get("label") != label
         or not isinstance(label, str)
-        or not label.startswith(INSTANCE_LABEL_PREFIX)
+        or not label.startswith(expected_prefix)
     ):
         raise ValueError("g1_team_settlement_launch_identity_invalid")
     return ids[0], label
@@ -339,6 +341,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--billing-audit-root", type=Path, required=True)
     parser.add_argument("--result-root", type=Path, required=True)
+    parser.add_argument("--selected-queue-root", type=Path)
+    parser.add_argument("--selected-work-root", type=Path)
     parser.add_argument("--webapp-url", default=os.getenv("PIPELINE_SYNC_WEBAPP_URL", ""))
     args = parser.parse_args(argv)
     common = {
@@ -348,10 +352,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         "webapp_url": args.webapp_url,
         "sync_token": os.getenv("PIPELINE_SYNC_TOKEN", ""),
     }
-    if args.queue_root:
+    if bool(args.selected_queue_root) != bool(args.selected_work_root):
+        parser.error("selected queue and work roots must be supplied together")
+    if args.selected_queue_root and args.selected_queue_root.is_dir():
+        from .native_g1_team_policy_settlement import settle_pending_g1_team_policies
+
+        selected = settle_pending_g1_team_policies(
+            queue_root=args.selected_queue_root,
+            **{**common, "work_root": args.selected_work_root},
+        )
+    else:
+        selected = None
+    if args.queue_root and args.queue_root.is_dir():
         result = settle_pending_g1_team_campaigns(queue_root=args.queue_root, **common)
+    elif args.queue_root:
+        result = {"schema_version": SCHEMA, "status": "no_pending_settlement", "provider_mutation_performed": False}
     else:
         result = settle_g1_team_campaign(intent_path=args.intent_path, **common)
+    if (selected is not None and selected["status"] != "no_pending_settlement"
+            and (selected["status"] == "delivered_owner_only" or result["status"] != "delivered_owner_only")):
+        result = selected
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in {
         "delivered_owner_only", "no_pending_settlement", "awaiting_settlement_evidence",

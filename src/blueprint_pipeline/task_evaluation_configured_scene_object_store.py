@@ -584,6 +584,103 @@ def presign_configured_scene_artifact(
         ) from exc
 
 
+def _reference_location(
+    reference: dict[str, Any],
+    *,
+    client: Any | None,
+    bucket: str | None,
+    maximum_size_bytes: int | None = None,
+) -> tuple[Any, str, str, str, int]:
+    """The client, bucket, key, digest and size of a verified CAS reference.
+
+    Anything else, or one larger than ``maximum_size_bytes``, is
+    ``configured_scene_artifact_reference_invalid``, raised before any client
+    is built.
+    """
+
+    uri = str(reference.get("uri") or "")
+    parsed = urlsplit(uri)
+    expected_digest = str(reference.get("digest") or "")
+    expected_size = reference.get("size_bytes")
+    kind = str(reference.get("artifact_kind") or "")
+    key = parsed.path.lstrip("/")
+    prefix = LARGE_ARTIFACT_KEY_PREFIX.strip("/") + "/"
+    if (
+        parsed.scheme != "s3"
+        or not parsed.netloc
+        or not key.startswith(prefix)
+        or _SAFE_KEY_COMPONENT.fullmatch(kind) is None
+        or f"/{kind}/sha256/" not in "/" + key
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest) is None
+        or f"/sha256/{expected_digest.removeprefix('sha256:')}/" not in key
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 1
+        or (maximum_size_bytes is not None and expected_size > maximum_size_bytes)
+        or reference.get("remote_identity_verified") is not True
+        or reference.get("full_byte_service_account_readback_passed") is not True
+    ):
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_reference_invalid"
+        )
+    resolved_client, resolved_bucket = (
+        _artifact_object_store_client()
+        if client is None or bucket is None
+        else (client, bucket)
+    )
+    if parsed.netloc != resolved_bucket:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_reference_invalid"
+        )
+    return resolved_client, resolved_bucket, key, expected_digest, expected_size
+
+
+def verify_configured_scene_artifact(
+    *,
+    reference: dict[str, Any],
+    client: Any | None = None,
+    bucket: str | None = None,
+) -> dict[str, Any]:
+    """Check with one HEAD request, reading no bytes, that a CAS reference's object is still there.
+
+    Its size and ``sha256`` metadata must be the reference's
+    (``configured_scene_artifact_existing_identity_mismatch``); an object that is
+    gone is ``configured_scene_artifact_missing``, and any other failure
+    ``configured_scene_artifact_head_failed``.
+    """
+
+    resolved_client, resolved_bucket, key, expected_digest, expected_size = _reference_location(
+        reference, client=client, bucket=bucket
+    )
+    try:
+        head = resolved_client.head_object(Bucket=resolved_bucket, Key=key)
+        metadata = head.get("Metadata", {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        matches = (
+            int(head.get("ContentLength") or -1) == expected_size
+            and metadata.get("sha256") == expected_digest.removeprefix("sha256:")
+        )
+    except Exception as exc:  # noqa: BLE001 - provider exception shapes vary
+        if _object_missing(exc):
+            raise TaskEvaluationConfiguredSceneObjectStoreError(
+                "configured_scene_artifact_missing"
+            ) from exc
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_head_failed"
+        ) from exc
+    if not matches:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_existing_identity_mismatch"
+        )
+    return {
+        "schema_version": "task_evaluation_scene_artifact_verification.v1",
+        "status": "remote_present",
+        "digest": expected_digest,
+        "size_bytes": expected_size,
+        "bytes_read": 0,
+    }
+
+
 def materialize_configured_scene_artifact(
     *,
     reference: dict[str, Any],
@@ -603,40 +700,9 @@ def materialize_configured_scene_artifact(
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_artifact_materialization_limit_invalid"
         )
-    uri = str(reference.get("uri") or "")
-    parsed = urlsplit(uri)
-    expected_digest = str(reference.get("digest") or "")
-    expected_size = reference.get("size_bytes")
-    kind = str(reference.get("artifact_kind") or "")
-    key = parsed.path.lstrip("/")
-    prefix = LARGE_ARTIFACT_KEY_PREFIX.strip("/") + "/"
-    if (
-        parsed.scheme != "s3"
-        or not parsed.netloc
-        or not key.startswith(prefix)
-        or _SAFE_KEY_COMPONENT.fullmatch(kind) is None
-        or f"/{kind}/sha256/" not in "/" + key
-        or re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest) is None
-        or f"/sha256/{expected_digest.removeprefix('sha256:')}/" not in key
-        or not isinstance(expected_size, int)
-        or isinstance(expected_size, bool)
-        or expected_size < 1
-        or expected_size > maximum_size_bytes
-        or reference.get("remote_identity_verified") is not True
-        or reference.get("full_byte_service_account_readback_passed") is not True
-    ):
-        raise TaskEvaluationConfiguredSceneObjectStoreError(
-            "configured_scene_artifact_reference_invalid"
-        )
-    resolved_client, resolved_bucket = (
-        _artifact_object_store_client()
-        if client is None or bucket is None
-        else (client, bucket)
+    resolved_client, resolved_bucket, key, expected_digest, expected_size = _reference_location(
+        reference, client=client, bucket=bucket, maximum_size_bytes=maximum_size_bytes
     )
-    if parsed.netloc != resolved_bucket:
-        raise TaskEvaluationConfiguredSceneObjectStoreError(
-            "configured_scene_artifact_reference_invalid"
-        )
     target = Path(destination).expanduser().absolute()
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     if target.exists() or target.is_symlink():

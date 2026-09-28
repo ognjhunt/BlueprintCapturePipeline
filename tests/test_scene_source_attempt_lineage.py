@@ -437,6 +437,7 @@ def test_exact_output_and_reordered_inputs_have_no_presence_or_retirement_claims
 
 
 @pytest.mark.parametrize("family", ["completed", "public"])
+@pytest.mark.slow
 def test_first_source_join_in_fresh_process_avoids_runtime_imports_and_filesystem(family):
     import os
     from pathlib import Path

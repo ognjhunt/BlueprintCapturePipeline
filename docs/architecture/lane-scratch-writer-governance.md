@@ -63,8 +63,14 @@ owner/reference and directory identity before adopting it. Expiry, release,
 changed identity, malformed leases, traversal, and symlinks refuse writes.
 Handles are context managers and must be closed.
 
-G1 uses the handle for its diagnostics directory below a lane root. It still
-refuses an existing output; there is no retry-in-place. Arena's payload command
+G1's default path uses the handle for its diagnostics directory below a lane
+root. Explicit cooperative enrollment publishes its protocol and retains an
+inode shared lock before the first output write through the coordinator and
+controlled direct worker's teardown and terminal receipt. Inherited descriptions
+are closed without unlocking. Unknown wrappers, containers, the external policy
+server, input readers, and native grandchildren remain unproved consumers; the
+protocol does not authorize retirement. G1 still refuses an existing output;
+there is no retry-in-place. Arena's payload command
 reopens its admitted lease and preserves existing payload receipts. A retry
 without supplied metadata uses the exact identity in the validated saved lease;
 supplied metadata must match. Historical Arena paths remain readable only under

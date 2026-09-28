@@ -25,6 +25,15 @@ VAST_PROVIDER_ADAPTER = "src/blueprint_pipeline/vast_provider_adapter.py"
 VAST_PROVIDER_ADAPTER_CLI = "src/blueprint_pipeline/vast_provider_adapter_cli.py"
 
 
+def test_selected_g1_controller_is_a_registered_canonical_admission_surface():
+    path = "src/blueprint_pipeline/native_g1_team_paid_policy.py"
+    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text())
+    assert path in verifier.APPROVED_ADMISSION_ISSUERS
+    assert path in verifier.APPROVED_LANE_ADMISSION_BUILDERS
+    assert path in manifest["issuer_allowlist"]["require_paid_resource_admission"]
+    assert path in manifest["issuer_allowlist"]["build_paid_lane_admission"]
+
+
 def test_request_dict_runpod_create_is_discovered_and_unclassified() -> None:
     source = """
 RUNPOD_REST_API_BASE = "https://rest.runpod.io/v1"

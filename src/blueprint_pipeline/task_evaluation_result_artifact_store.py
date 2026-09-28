@@ -54,9 +54,10 @@ BULK_ROLES = frozenset(
         "retained_interrupted_cell_evidence",
     }
 )
-#: Where an offload failed: reading and verifying the run's registry, checking
-#: its protection, publishing to the artifact store, or evicting local copies.
-OFFLOAD_STAGES = ("registry", "protection", "publish", "evict")
+#: Where an offload failed: reading and verifying the run's registry, planning
+#: what to move from the registered files and remote references, checking its
+#: protection, publishing to the artifact store, or evicting local copies.
+OFFLOAD_STAGES = ("registry", "plan", "protection", "publish", "evict")
 _STAGE_ATTRIBUTE = "result_artifact_offload_stage"
 
 
@@ -314,6 +315,55 @@ def _sealed_registry(root: Path) -> tuple[dict, Path, bytes]:
     return registry, registry_path, raw
 
 
+def _offload_candidates(root: Path, registry: dict, minimum_size_bytes: int, report: dict) -> list:
+    """The registered bulk files still local, each with its path and record; the remote ones counted.
+
+    A record outside the run, an alias conflict, a remote reference that does
+    not verify or a file whose bytes changed raises: the run keeps everything.
+    """
+    groups: dict[str, list[dict]] = {}
+    for record in registry["artifacts"]:
+        evidence = Path(str(record.get("evidence_root") or ""))
+        # Verify every path component, including directories, before resolving.
+        try:
+            evidence_relative = evidence.relative_to(root)
+        except ValueError as exc:
+            raise TaskEvaluationResultDeliveryError("result_artifact_evidence_outside_run") from exc
+        relative = (evidence_relative / str(record.get("relative_path") or "")).as_posix()
+        _safe_path(root, relative)
+        groups.setdefault(relative, []).append(record)
+    candidates = []
+    for relative, records in groups.items():
+        record = records[0]
+        if any(row.get("role") not in BULK_ROLES for row in records):
+            continue
+        if (
+            relative.startswith("artifacts/result_delivery/")
+            or record.get("size_bytes", 0) < minimum_size_bytes
+        ):
+            continue
+        if any(
+            (row.get("sha256"), row.get("size_bytes"))
+            != (record.get("sha256"), record.get("size_bytes"))
+            for row in records
+        ):
+            raise TaskEvaluationResultDeliveryError("result_artifact_alias_conflict")
+        path = _safe_path(root, relative)
+        if not path.exists():
+            _validate_remote(
+                _read(_remote_path(root, relative)),
+                registry=registry,
+                relative=relative,
+                record=record,
+            )
+            report["already_remote_count"] += 1
+            continue
+        if path.stat().st_size != record["size_bytes"] or _sha256(path) != record["sha256"]:
+            raise TaskEvaluationResultDeliveryError("result_artifact_source_changed")
+        candidates.append((relative, path, record))
+    return candidates
+
+
 def offload_result_artifacts(
     *,
     run_root: str | Path,
@@ -369,46 +419,8 @@ def offload_result_artifacts(
         report["status"] = "retained_hot_or_active"
         report["retained_reason"] = "hot" if hot else (protected if isinstance(protected, str) else "protected")
         return completed_report()
-    groups: dict[str, list[dict]] = {}
-    for record in registry["artifacts"]:
-        evidence = Path(str(record.get("evidence_root") or ""))
-        # Verify every path component, including directories, before resolving.
-        try:
-            evidence_relative = evidence.relative_to(root)
-        except ValueError as exc:
-            raise TaskEvaluationResultDeliveryError("result_artifact_evidence_outside_run") from exc
-        relative = (evidence_relative / str(record.get("relative_path") or "")).as_posix()
-        _safe_path(root, relative)
-        groups.setdefault(relative, []).append(record)
-    candidates = []
-    for relative, records in groups.items():
-        record = records[0]
-        if any(row.get("role") not in BULK_ROLES for row in records):
-            continue
-        if (
-            relative.startswith("artifacts/result_delivery/")
-            or record.get("size_bytes", 0) < minimum_size_bytes
-        ):
-            continue
-        if any(
-            (row.get("sha256"), row.get("size_bytes"))
-            != (record.get("sha256"), record.get("size_bytes"))
-            for row in records
-        ):
-            raise TaskEvaluationResultDeliveryError("result_artifact_alias_conflict")
-        path = _safe_path(root, relative)
-        if not path.exists():
-            _validate_remote(
-                _read(_remote_path(root, relative)),
-                registry=registry,
-                relative=relative,
-                record=record,
-            )
-            report["already_remote_count"] += 1
-            continue
-        if path.stat().st_size != record["size_bytes"] or _sha256(path) != record["sha256"]:
-            raise TaskEvaluationResultDeliveryError("result_artifact_source_changed")
-        candidates.append((relative, path, record))
+    with _offload_stage("plan"):
+        candidates = _offload_candidates(root, registry, minimum_size_bytes, report)
     report["candidate_count"] = len(candidates)
     report["candidate_bytes"] = sum(row[2]["size_bytes"] for row in candidates)
     if not apply or not candidates:

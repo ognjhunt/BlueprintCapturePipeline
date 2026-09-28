@@ -135,6 +135,110 @@ def _pre_native_case(root: Path) -> tuple[Path, dict]:
     return path, result
 
 
+def _selected_case(root: Path, *, status="completed", pre_native=False) -> tuple[Path, dict]:
+    path, result = (_pre_native_case if pre_native else _case)(root)
+    result.update(schema_version="native_g1_team_paid_policy_result.v1", status=status)
+    adapter_path = Path(result["adapter_result_path"])
+    adapter = json.loads(adapter_path.read_text())
+    adapter["provider_bundle_kind"] = "native_g1_team_policy"
+    _write(adapter_path, adapter)
+    result["provider_closeout"]["adapter_result"] = _record(adapter_path)
+    if not pre_native:
+        Path(result["native_control_result_path"]).unlink()
+        native = {
+            "schema_version": "native_g1_team_provider_result.v1",
+            "status": "completed_development_only" if status == "completed" else "blocked",
+            "claim_ceiling": "development_only", "public_redistribution_authorized": False,
+            "candidate_policy_queried": True if status == "completed" else None,
+        }
+        native["result_digest"] = canonical_digest(native, digest_field="result_digest")
+        native_path = _write(root / "attempts/attempt_001/immutable_execution/native_g1_team_provider_result.v1.json", native)
+        result.update(native_control_result_path=str(native_path), native_control_result_digest=native["result_digest"])
+    _write(path, result)
+    _write(Path(result["attempt_root"]) / "adp_arena_vast_result.json", result)
+    return path, result
+
+
+@pytest.mark.parametrize("status,pre_native", [("completed", False), ("blocked", False), ("blocked", True)])
+def test_selected_g1_financial_closeout_preserves_scientific_claim_ceiling(tmp_path, status, pre_native):
+    path, _ = _selected_case(tmp_path / "run", status=status, pre_native=pre_native)
+    evidence = billing._terminal_evidence(instance_id=52686067, terminal_result_path=path)
+    assert evidence["financial_closeout_kind"] == "native_g1_team_paid_policy.v1"
+    assert evidence["terminal_status"] == status
+    assert evidence["policy_evaluation_qualified"] is False
+    assert evidence["scientific_success_inferred"] is False
+    assert ("native_result" in evidence) is not pre_native
+
+
+def _selected_billing_source(root: Path, *, instance_id=52686067, label="blueprint-native-task-arena-g1-team-one") -> Path:
+    from tests.test_vast_official_billing_extractor import _fixture, _charge, _refresh_response_binding
+    fixture = _fixture(root)
+    response = fixture["responses"][0]
+    value = json.loads(response.read_text())
+    value["results"] = [_charge(instance_id=instance_id, label=label, total=0.5, gpu=0.4, disk=0.1)]
+    _write(response, value)
+    _refresh_response_binding(fixture, 0)
+    return fixture["receipt"]
+
+
+def test_selected_g1_reconciliation_extracts_exact_posted_charge_and_reopens_proof(tmp_path):
+    path, _ = _selected_case(tmp_path / "run")
+    source = _selected_billing_source(tmp_path / "audit")
+    output = tmp_path / "reconciliation.json"
+    result = billing.materialize_vast_official_same_goal_reconciliation(
+        provider_billing_source_receipt_path=source,
+        expected_instances=[(52686067, "blueprint-native-task-arena-g1-team-one", path)],
+        output_path=output,
+    )
+    assert result["official_total_usd"] == 0.5
+    evidence = result["entries"][0]["terminal_execution_evidence"]
+    assert evidence["financial_closeout_kind"] == "native_g1_team_paid_policy.v1"
+    assert evidence["policy_evaluation_qualified"] is False
+    assert billing.validate_vast_official_same_goal_reconciliation(output) == result
+    Path(json.loads(path.read_text())["object_store_cleanup_path"]).write_text("{}")
+    with pytest.raises(billing.VastOfficialBillingExtractionError):
+        billing.validate_vast_official_same_goal_reconciliation(output)
+
+
+@pytest.mark.parametrize("fault", ["wrong_native_schema", "public_claim", "native_status", "bundle_kind", "continuing_spend", "attempt_copy", "watchdog", "cleanup"])
+def test_selected_financial_closeout_refuses_mismatched_or_live_evidence(tmp_path, fault):
+    path, result = _selected_case(tmp_path / "run")
+    target = Path(result["native_control_result_path"])
+    value = json.loads(target.read_text())
+    if fault in {"wrong_native_schema", "public_claim", "native_status"}:
+        value[{"wrong_native_schema": "schema_version", "public_claim": "public_redistribution_authorized", "native_status": "status"}[fault]] = {
+            "wrong_native_schema": "native_g1_provider_campaign_result.v1", "public_claim": True, "native_status": "blocked",
+        }[fault]
+        value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+        _write(target, value)
+        result["native_control_result_digest"] = value["result_digest"]
+        _write(path, result)
+        _write(Path(result["attempt_root"]) / "adp_arena_vast_result.json", result)
+    elif fault == "bundle_kind":
+        target = Path(result["adapter_result_path"])
+        value = json.loads(target.read_text())
+        value["provider_bundle_kind"] = "native_g1_development_campaign"
+        _write(target, value)
+        result["provider_closeout"]["adapter_result"] = _record(target)
+        _write(path, result)
+        _write(Path(result["attempt_root"]) / "adp_arena_vast_result.json", result)
+    elif fault == "continuing_spend":
+        result["continuing_spend_from_this_run"] = True
+        _write(path, result)
+    elif fault == "attempt_copy":
+        _write(Path(result["attempt_root"]) / "adp_arena_vast_result.json", {})
+    else:
+        target = Path(result["watchdog_receipt_path"] if fault == "watchdog" else result["object_store_cleanup_path"])
+        value = json.loads(target.read_text())
+        if fault == "watchdog":
+            value["final_global_inventory"]["live_resource_count"] = 1
+        else:
+            value["all_objects_absent"] = False
+        _write(target, value)
+    with pytest.raises(billing.VastOfficialBillingExtractionError):
+        billing._terminal_evidence(instance_id=52686067, terminal_result_path=path)
+
+
 def test_blocked_g1_campaign_seals_financial_closeout_only(tmp_path: Path) -> None:
     result_path, _ = _case(tmp_path / "run")
     evidence = billing._terminal_evidence(

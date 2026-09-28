@@ -115,6 +115,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint/production-gpu-worker-pool.sqlite", "evidence_hot", "blueprint", "gpu worker pool ledger"),
     StorageRoot(f"{_INPUTS}/task-evaluation-terminal-results", "evidence_hot", "blueprint", "sealed terminal result indexes and lineage"),
     StorageRoot(f"{_INPUTS}/g1-team-campaign-registry.json", "evidence_hot", "blueprint", "owner-scoped G1 team campaign registry"),
+    StorageRoot(f"{_INPUTS}/g1-team-policy-approvals", "evidence_hot", "blueprint", "reviewed exact G1 policy execution authority"),
+    StorageRoot(f"{_INPUTS}/g1-sonic-assets", "evidence_hot", "blueprint", "reviewed immutable G1 controller assets"),
     # --- sealed run evidence; offloadable after the hot window
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-runs", "evidence_cold", "blueprint", "launch run directories"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-policy-canaries", "evidence_cold", "blueprint", "policy canary run directories"),
@@ -128,6 +130,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     # --- queues and scratch
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
+    StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-runs", "work", "blueprint", "owner-scoped team policy run intent queue"),
+    StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-work", "work", "blueprint", "selected G1 preparation, run and settlement work"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaign-work", "work", "blueprint", "G1 campaign preparation and settlement work"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-preparations", "work", "blueprint", "preparation queue"),
     StorageRoot(f"{_CONTROL_PLANE}/sam31-preparation-executions", "work", "blueprint", "SAM preparation child queue"),

@@ -7,6 +7,7 @@ names under their old ones for its existing callers.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import stat
@@ -33,6 +34,10 @@ class QueueReferenceUnreadable(ValueError):
     """A queue root, state directory or row that cannot be read proves nothing about what it names."""
 
 
+class _RowReplaced(QueueReferenceUnreadable):
+    """The name held another file when it was opened than when its lstat was taken."""
+
+
 def queue_reference_text(
     queue_roots: Sequence[str | Path],
     states: Sequence[str] | Mapping[str, Sequence[str]] | None = QUEUE_STATES,
@@ -44,14 +49,17 @@ def queue_reference_text(
     ``states`` are the state directories read under each root: one sequence for
     every root, a mapping from a root's directory name to its states (a root it
     does not name reads ``QUEUE_STATES``), or None for every directory the root
-    holds. By default only pending and processing rows are read, and a linked,
-    oversized or unreadable row, or a linked state directory, is skipped: every
-    original caller reads that way. ``strict`` raises ``QueueReferenceUnreadable``
-    for each of those instead, and for a linked queue root, since a row that
-    cannot be read proves nothing about what it names. A missing root or state
-    directory holds no rows either way, and a row that moved to another state
-    between the listing and the read is skipped where it was: a strict caller
-    reads twice and unions, so it is seen where it went.
+    holds. Every row is read through a descriptor that follows no link and waits
+    for no writer (``_row_text``), so no row can block a read. By default only
+    pending and processing rows are read, and a linked, oversized, unreadable or
+    non-UTF-8 row, one that is not a regular file (a FIFO), one swapped after its
+    lstat, or a linked state directory is skipped: every original caller reads
+    that way. ``strict`` raises ``QueueReferenceUnreadable`` for each of those
+    instead, and for a linked queue root, since a row that cannot be read proves
+    nothing about what it names. A missing root or state directory holds no rows
+    either way, and a row that moved to another state between the listing and
+    the read is skipped where it was: a strict caller reads twice and unions, so
+    it is seen where it went.
     """
 
     chunks: list[str] = []
@@ -66,10 +74,8 @@ def queue_reference_text(
                 continue
             for path in sorted(directory.glob("*.json")):
                 try:
-                    if path.is_symlink() or path.stat().st_size > MAX_QUEUE_MESSAGE_BYTES:
-                        continue
-                    chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
+                    chunks.append(_row_text(path))
+                except (FileNotFoundError, QueueReferenceUnreadable):
                     continue
     return "\n".join(chunks)
 
@@ -99,7 +105,13 @@ def _queue_states(root: Path, states, *, strict: bool) -> list[str]:
 
 
 def _strict_rows(directory: Path) -> list[str]:
-    """Every ``*.json`` row of one state directory, or ``QueueReferenceUnreadable``."""
+    """Every ``*.json`` row of one state directory, or ``QueueReferenceUnreadable``.
+
+    Each row is read through a descriptor opened without following a link or
+    waiting for a writer (``_read_row``), so a row swapped for a link, a FIFO or
+    another file after its lstat refuses the read instead of hanging it or being
+    read unchecked.
+    """
 
     try:
         if directory.is_symlink():
@@ -114,21 +126,72 @@ def _strict_rows(directory: Path) -> list[str]:
         raise QueueReferenceUnreadable("queue_state_unreadable") from exc
     rows: list[str] = []
     for name in names:
-        path = directory / name
         try:
-            observed = path.lstat()
-            if not stat.S_ISREG(observed.st_mode):
-                raise QueueReferenceUnreadable("queue_row_linked")
-            if observed.st_size > MAX_QUEUE_MESSAGE_BYTES:
-                raise QueueReferenceUnreadable("queue_row_oversized")
-            rows.append(path.read_text(encoding="utf-8"))
+            rows.append(_row_text(directory / name))
         except FileNotFoundError:
             # Moved to another state since the listing: callers read twice and union, so it is
             # seen where it went. A row that is linked, not regular, oversized or unreadable is not.
             continue
-        except (OSError, UnicodeDecodeError) as exc:
-            raise QueueReferenceUnreadable("queue_row_unreadable") from exc
     return rows
+
+
+def _row_text(path: Path) -> str:
+    """One row's text: ``FileNotFoundError`` when it is gone, ``QueueReferenceUnreadable`` when it
+    cannot be read.
+
+    The row must be a regular file within the size limit when its lstat is
+    taken, and is then read by ``_read_row``. The strict reader raises what this
+    refuses; the original reader skips it. A name that held another file when it
+    was opened is read once more: the dispatcher claims a row by creating an
+    empty placeholder in ``processing/`` and replacing the row onto it, so a read
+    between the two sees the name change once. A second change still refuses it.
+    """
+
+    try:
+        return _checked_row_text(path)
+    except _RowReplaced:
+        return _checked_row_text(path)
+
+
+def _checked_row_text(path: Path) -> str:
+    try:
+        observed = path.lstat()
+        if stat.S_ISLNK(observed.st_mode):
+            raise QueueReferenceUnreadable("queue_row_linked")
+        if not stat.S_ISREG(observed.st_mode):
+            raise QueueReferenceUnreadable("queue_row_not_regular")
+        if observed.st_size > MAX_QUEUE_MESSAGE_BYTES:
+            raise QueueReferenceUnreadable("queue_row_oversized")
+        return _read_row(path, observed)
+    except FileNotFoundError:
+        raise
+    except (OSError, UnicodeDecodeError) as exc:
+        raise QueueReferenceUnreadable("queue_row_unreadable") from exc
+
+
+def _read_row(path: Path, observed: os.stat_result) -> str:
+    """The row its lstat ``observed``, read through a descriptor that must still be that file.
+
+    ``O_NOFOLLOW`` refuses a name swapped for a link (``queue_row_linked``) and
+    ``O_NONBLOCK`` keeps a FIFO from blocking the open; what was opened must be
+    a regular file with the observed device and inode (``queue_row_changed``),
+    and no larger than the limit however it grew since.
+    """
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise QueueReferenceUnreadable("queue_row_linked") from exc
+        raise
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
+            raise _RowReplaced("queue_row_changed")
+        raw = stream.read(MAX_QUEUE_MESSAGE_BYTES + 1)
+    if len(raw) > MAX_QUEUE_MESSAGE_BYTES:
+        raise QueueReferenceUnreadable("queue_row_oversized")
+    return raw.decode("utf-8")
 
 
 def settlement_reopens_beyond_retained_receipts(name: str, settlement_text: str) -> bool:
@@ -154,6 +217,8 @@ def settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[s
     The second element counts records that exist but could not be read.  A
     configured root that cannot be enumerated must never be silently treated as
     "nothing is referenced", so the caller protects all evidence for that tick.
+    Each record is read as a queue row is (``_row_text``), so a FIFO record
+    never blocks the read: it is counted, like a linked or oversized one.
     """
 
     chunks: list[str] = []
@@ -171,14 +236,11 @@ def settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[s
                 continue
             for path in paths:
                 try:
-                    if path.is_symlink() or path.stat().st_size > MAX_QUEUE_MESSAGE_BYTES:
-                        # A record we decline to read is a record whose references
-                        # we do not know.  Count it rather than skipping it, or a
-                        # symlinked or oversized record silently unprotects its run.
-                        unreadable += 1
-                        continue
-                    chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
+                    chunks.append(_row_text(path))
+                except (OSError, QueueReferenceUnreadable):
+                    # A record we decline to read is a record whose references we do not
+                    # know.  Count it rather than skipping it, or a symlinked, oversized
+                    # or FIFO record silently unprotects its run.
                     unreadable += 1
     return "\n".join(chunks), unreadable
 

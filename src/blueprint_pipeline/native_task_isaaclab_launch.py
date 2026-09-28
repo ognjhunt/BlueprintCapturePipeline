@@ -33,6 +33,7 @@ from .native_task_runtime_source_packet import (
 # it here means the three workers cannot drift apart, and the launcher, the
 # preconstruction probe and the post-build readback all name the same string.
 NATIVE_TASK_ARENA_DEVICE = "cuda:0"
+NATIVE_TASK_ARENA_MINIMUM_DRIVER_VERSION = "580.65.06"
 NATIVE_TASK_ARENA_IMAGE = (
     "nvcr.io/nvidia/isaac-sim:6.0.1@"
     "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"

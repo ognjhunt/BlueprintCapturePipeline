@@ -119,6 +119,22 @@ def _scratch_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[st
             f"ReadWritePaths={_scratch_root(config, request)} {results}")
 
 
+
+def _owner_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_CONFIG_PATH": "/etc/blueprint-operator-door/door.json",
+            "DOOR_CONSENT_ID": request["consent_id"], "DOOR_CONSENT_SHA256": request["expected_sha256"],
+            "DOOR_CONSENT_SIZE_BYTES": str(request["expected_size_bytes"])}
+
+
+def _owner_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "PrivateNetwork=yes",
+            "CapabilityBoundingSet=", "AmbientCapabilities=",
+            f"ReadOnlyPaths={config.owner_consent_store} {config.lane_owner_policy_file}",
+            f"ReadWritePaths={Path(config.spool_root) / 'results'}")
+
+
 def _retire_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
     """Limit retirement to its spool, coordination locks, and result."""
 
@@ -146,6 +162,8 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
+    "owner-census-decision": _LaunchSpec("blueprint-operator-door-owner-census", "door-owner-census.sh", "10s",
+                                         lambda request: request["consent_id"][:12], _owner_environment, _owner_properties),
     "deploy": _LaunchSpec("blueprint-operator-door-deploy", "door-deploy.sh", "3h",
                           lambda request: request["commit"][:12], _deploy_environment),
     "door-upgrade": _LaunchSpec("blueprint-operator-door-upgrade", "door-upgrade.sh", "30min",
@@ -363,6 +381,8 @@ def _act_release_hold(
 
 def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],
          requested_by: str = "") -> dict[str, Any]:
+    if request["kind"] == "owner-census-decision" and config.owner_census_decisions_enabled != 1:
+        return {"status": "refused", "code": "owner_consent_disabled"}
     if request["kind"] == "unit":
         result = runner.run(
             ["systemctl", "--no-block", request["action"], "--", request["unit"]], timeout=30
