@@ -43,6 +43,7 @@ _BOUND_VOLUME_ROOTS = (
     "pipeline-control-plane/profile-install-staging",
     "pipeline-control-plane/policy-canary-presubmission",
     "pipeline-control-plane/native-g1-team-campaign-work",
+    "pipeline-control-plane/native-g1-team-policy-work",
     "pipeline-control-plane/engineering", "pipeline-control-plane/render-probes",
     "pipeline-control-plane/diagnostic-checkouts", "pipeline-control-plane/release-builds",
 )

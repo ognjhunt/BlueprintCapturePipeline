@@ -30,6 +30,21 @@ still waits at the whole-chain admission gate. `capacity_wait` records the
 shortfall and an ETA only when a current growth or reclaim plan supports one;
 `operator_action_required` and `unknown` carry no promised time.
 
+The reclaim outlook counts verified applying replay-cache candidates; plan-only
+`estimated_candidate_bytes` do not support an ETA. Registry-run residue counts
+only when evidence offload and residue offload are both enabled, the phase is
+enabled and applied, and its byte totals are complete. Already removed or
+offloaded bytes are subtracted from each phase's pre-apply candidates before
+promising future space. A residue phase with retained rows or missing reason
+accounting remains unknown, since its total does not separate blocked bytes from
+actionable bytes. Older summaries that omit the residue switch cannot prove an
+enabled phase is actionable. Releasing cache pins frees no bytes itself: any
+eligible files are counted by derived-directory cleanup, without adding pin
+counts to the forecast. These counters describe logical local eviction, not
+measured filesystem free space or a promise that retained runs will fit the next
+tick's publication cap. Any deferred or skipped residue leaves its forecast
+unknown.
+
 ## Grow or reclaim
 
 For a configured DigitalOcean volume, check `volume_resize.status` and
