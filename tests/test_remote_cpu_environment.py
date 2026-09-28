@@ -46,6 +46,15 @@ def _sha(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def _installed_version(name: str) -> str | None:
+    # Hosted CI installs only the dev and policy_model_cpu extras, so some compile
+    # distributions (webcolors arrives with build123d) may be absent there.
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 def test_environment_records_cpython_zlib_golden_deflate_simd_and_distributions(tmp_path: Path, monkeypatch) -> None:
     cpuinfo = _cpuinfo(tmp_path / "cpuinfo", "sse2 avx2 fma sse2")
     record = environment.environment_record(cpuinfo_path=cpuinfo)
@@ -92,7 +101,7 @@ def test_environment_records_cpython_zlib_golden_deflate_simd_and_distributions(
     assert set(environment.COMPILE_DISTRIBUTIONS) == FACTS_DISTRIBUTIONS
     assert [row["name"] for row in record["distributions"]] == sorted(FACTS_DISTRIBUTIONS)
     for row in record["distributions"]:
-        assert row["version"] == importlib.metadata.version(row["name"]), row
+        assert row["version"] == _installed_version(row["name"]), row
     parity = {name: record[name] for name in ("interpreter", "zlib", "distributions")}
     assert record["environment_digest"] == canonical_digest(parity)
     assert record["executable"] == sys.executable
