@@ -12,6 +12,7 @@ import hashlib
 import os
 import runpy
 import select
+import shlex
 import stat
 import sys
 import subprocess
@@ -138,6 +139,37 @@ def _idle_rows(rows):
                  and row['DropInPaths'] == '' and expected in row['ExecStart'], _COHORT_ERROR)
 
 
+def _require_loaded_exec(row, source):
+    """Bind loaded command argv to the actual fixed fragment, not a token in it.
+
+    Unknown native show representations keep the unit. The deployed Linux
+    representation must also be exercised by the final disposable native test.
+    """
+    try:
+        commands = [line.partition('=')[2] for line in source.decode('utf-8').splitlines()
+                    if line.startswith('ExecStart=')]
+        _require(len(commands) == 1, _COHORT_ERROR)
+        arguments = shlex.split(commands[0])
+    except (ValueError, UnicodeError):
+        _require(False, _COHORT_ERROR)
+    _require(len(arguments) == 3 and arguments[:2] == ['/bin/bash', '-lc'], _COHORT_ERROR)
+    script = arguments[2].replace('$$', '$')
+    prefix = '{ path=/bin/bash ; argv[]=/bin/bash -lc ' + script + ' ; ignore_errors=no ; '
+    value = row['ExecStart']
+    _require(value.startswith(prefix) and value.endswith(' }'), _COHORT_ERROR)
+    # Only status fields may follow the exact argv. Another command object or
+    # duplicate argv/path token cannot be hidden in the remainder.
+    suffix = value[len(prefix):-2]
+    fields = {}
+    for field in suffix.split(' ; '):
+        key, separator, item = field.partition('=')
+        _require(separator and key in {'start_time', 'stop_time', 'pid', 'code', 'status'}
+                 and key not in fields, _COHORT_ERROR)
+        fields[key] = item
+    _require(set(fields) == {'start_time', 'stop_time', 'pid', 'code', 'status'}
+             and fields['pid'] == '0', _COHORT_ERROR)
+
+
 def require_inactive_known_workers(allowance):
     """Observe only known idle installed units. Caller must hold the actual EX fence.
 
@@ -154,6 +186,7 @@ def require_inactive_known_workers(allowance):
         source, source_version = _unit_bytes(source_root / unit, allowance, protected=False)
         installed, installed_version = _unit_bytes(_SYSTEMD_DIR / unit, allowance, protected=True)
         _require(source == installed, _COHORT_ERROR)
+        _require_loaded_exec(before_rows[unit], source)
         proof[unit] = (source, source_version, installed_version)
     after_rows = _loaded_rows(_query_systemd(allowance))
     _idle_rows(after_rows)
