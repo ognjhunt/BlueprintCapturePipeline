@@ -355,7 +355,11 @@ def test_actual_root_blueprint_uid_cache_lifetime_and_revoke(tmp_path):
 
 def _fixture_task_spec():
     from tests.test_adp_task_scoring import _rigid_v2_spec
-    return _rigid_v2_spec() | {"task_kind": "rigid_pick_place", "prompt": "pick the box"}
+    from tests.test_native_rigid_episode_telemetry import _spec
+    return _rigid_v2_spec() | _spec() | {
+        "task_kind": "rigid_pick_place", "prompt": "pick the box",
+        "start_pose_world": [1.1, 2.1, .8, 0., 0., 0., 1.],
+    }
 
 
 def test_toy_native_episode_has_complete_real_scoring_result(tmp_path, monkeypatch):
@@ -489,7 +493,6 @@ def _linux_contained_phase(root):
     from blueprint_pipeline import native_g1_development_pair as pair
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from tests.test_native_g1_development_pair import _paired_requests, _seal_request
-    from tests.test_adp_task_scoring import _rigid_v2_spec
 
     # Disposable-runner diagnostic only: this fixed property allowlist contains
     # no Environment, credentials or request/private record bodies. Preserve the
@@ -561,7 +564,7 @@ def _linux_contained_phase(root):
     inputs.mkdir(mode=0o755)
     paths, plan = _paired_requests(inputs)
     plan.update(
-        task_spec=_rigid_v2_spec() | {"task_kind": "rigid_pick_place", "prompt": "pick the box"},
+        task_spec=_fixture_task_spec(),
         scenario={"seed": 19},
     )
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
