@@ -26,8 +26,9 @@ default 10,000-member cap), and a few KiB per member for ordinary paths. A
 refusal, never a retry against the new object.
 
 ``provider_output_member_index.v1`` holds archive facts only: the archive's
-sha256, size, pinned etag/generation and ``durable_reference`` (null until a
-later change promotes the archive to B2); the limits applied; per member its
+sha256, size, pinned etag/generation and ``durable_reference`` (null until the
+archive is promoted to B2; ``seal_durable_reference`` then binds the verified
+copy's secret-free facts and re-digests the index); the limits applied; per member its
 path, kind, size, compressed_size, method, crc32, sha256, mode and
 local-header, data and record-end offsets; totals with bytes by class
 (``bulk`` uses the terminal-payload retention extension list);
@@ -121,6 +122,16 @@ _DESCRIPTOR_FLAG = 0x0008
 _METHODS = {zipfile.ZIP_STORED: 'stored', zipfile.ZIP_DEFLATED: 'deflate'}
 _SHA256 = re.compile(r'sha256:[0-9a-f]{64}')
 _SELECTION_VERSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}')
+_CAS_URI = re.compile(r's3://[A-Za-z0-9][A-Za-z0-9.-]{0,254}/[A-Za-z0-9._/-]{1,1024}')
+_ARTIFACT_KIND = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,191}')
+CAS_REFERENCE_SCHEMA = 'task_evaluation_scene_artifact_reference.v1'
+# The facts that name one verified CAS object. Per-call details (cache hit,
+# upload performed, readback digest, verification time) are left out, so
+# resealing with the same object from a later promotion changes nothing.
+DURABLE_REFERENCE_KEYS = (
+    'schema_version', 'status', 'artifact_kind', 'uri', 'digest', 'size_bytes',
+    'content_addressed_key', 'remote_identity_verified', 'full_byte_service_account_readback_passed',
+)
 _MEMBER_KEYS = frozenset({
     'path', 'kind', 'size', 'compressed_size', 'method', 'crc32', 'sha256', 'mode',
     'local_header_offset', 'data_offset', 'record_end_offset',
@@ -708,6 +719,8 @@ def validate_member_index(index) -> Mapping:
             or directory['offset'] + directory['size'] >= archive['size']
             or not isinstance(members, list) or not members):
         raise _refusal('provider_output_member_index_invalid')
+    if archive['durable_reference'] is not None and not _binds_archive(archive['durable_reference'], archive):
+        raise _refusal('provider_output_member_index_invalid')
     position, kinds = 0, {}
     for member in members:
         if (not isinstance(member, Mapping) or set(member) != _MEMBER_KEYS
@@ -734,6 +747,63 @@ def validate_member_index(index) -> Mapping:
     if position != directory['offset'] or _file_is_a_parent(kinds):
         raise _refusal('provider_output_member_index_invalid')
     return index
+
+
+def durable_reference_facts(reference) -> dict:
+    """The secret-free facts naming one verified CAS object, or a typed refusal.
+
+    ``reference`` is what ``publish_configured_scene_stream`` and
+    ``publish_configured_scene_artifact`` return: a remote-verified,
+    content-addressed ``task_evaluation_scene_artifact_reference.v1`` whose full
+    bytes were read back. The result is itself such a reference, so it can be
+    presigned and handed to ``CasArchiveSource``.
+    """
+    uri = str(reference.get('uri') or '') if isinstance(reference, Mapping) else ''
+    digest = str(reference.get('digest') or '') if isinstance(reference, Mapping) else ''
+    kind = reference.get('artifact_kind') if isinstance(reference, Mapping) else None
+    if (not isinstance(reference, Mapping) or reference.get('schema_version') != CAS_REFERENCE_SCHEMA
+            or reference.get('status') != 'remote_verified'
+            or reference.get('content_addressed_key') is not True
+            or reference.get('remote_identity_verified') is not True
+            or reference.get('full_byte_service_account_readback_passed') is not True
+            or not isinstance(kind, str) or not _ARTIFACT_KIND.fullmatch(kind)
+            or not _SHA256.fullmatch(digest) or not _CAS_URI.fullmatch(uri)
+            or f"/{kind}/sha256/{digest.removeprefix('sha256:')}/" not in uri
+            or not _count(reference.get('size_bytes'), 1)):
+        raise _refusal('provider_output_member_index_durable_reference_invalid')
+    return {key: reference[key] for key in DURABLE_REFERENCE_KEYS}
+
+
+def _binds_archive(recorded, archive) -> bool:
+    try:
+        facts = durable_reference_facts(recorded)
+    except ProviderOutputMemberIndexError:
+        return False
+    return (facts == dict(recorded) and facts['digest'] == archive['sha256']
+            and facts['size_bytes'] == archive['size'])
+
+
+def seal_durable_reference(index, reference) -> dict:
+    """Bind the verified B2 copy of the indexed archive into a re-digested index.
+
+    The reference must name this archive (same sha256 and size). An index that
+    already records a reference only reseals to the same facts
+    (``provider_output_member_index_durable_reference_conflict`` otherwise), so
+    a copy of the archive elsewhere never replaces the one the index names.
+    The input is not modified; the sealed index is returned validated.
+    """
+    validate_member_index(index)
+    facts = durable_reference_facts(reference)
+    archive = index['archive']
+    if facts['digest'] != archive['sha256'] or facts['size_bytes'] != archive['size']:
+        raise _refusal('provider_output_member_index_durable_reference_mismatch')
+    if archive['durable_reference'] is not None and dict(archive['durable_reference']) != facts:
+        raise _refusal('provider_output_member_index_durable_reference_conflict')
+    sealed = json.loads(json.dumps(index))
+    sealed['archive']['durable_reference'] = facts
+    sealed['index_digest'] = canonical_digest(sealed, digest_field='index_digest')
+    validate_member_index(sealed)
+    return sealed
 
 
 def validate_member_selection(selection, index) -> list[dict]:
