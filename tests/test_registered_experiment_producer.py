@@ -703,3 +703,20 @@ def test_actual_child_log_refusal_still_finalizes_every_other_known_original(
                     os.close(fd)
                 except OSError:
                     pass
+
+
+def test_native_unit_observer_requests_complete_empty_systemd_properties(monkeypatch):
+    """Actual systemctl omits empty properties unless show receives --all."""
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    calls = []
+    empty = {'AmbientCapabilities', 'CapabilityBoundingSet'}
+    def show(arguments):
+        calls.append(arguments)
+        return ''.join(key + '=' + ('' if key in empty else 'observed') + '\n'
+                       for key in contained._UNIT_PROPERTIES if '--all' in arguments or key not in empty)
+    monkeypatch.setattr(contained, '_native_control', show)
+    observed = contained._show_unit('a' * 32)
+    assert set(observed) == set(contained._UNIT_PROPERTIES)
+    assert observed['AmbientCapabilities'] == observed['CapabilityBoundingSet'] == ''
+    assert calls == [[contained._SYSTEMCTL, 'show', 'blueprint-experiment-' + 'a' * 32 + '.service',
+                      '--no-pager', '--all', '--property=' + ','.join(contained._UNIT_PROPERTIES)]]
