@@ -264,6 +264,7 @@ class _Promotion:
         self.output_index: dict | None = None
         self.staged_reader = None
         self.output_reused = False
+        self.prior_copy_missing = False
         self.local_verified: Path | None = None
         self.local_removed_before = False
         self.durable: dict[str, bool] = {}
@@ -473,7 +474,7 @@ class _Promotion:
                     self.local_verified = local
                 return primary, versions
             # The durable copy the receipt names is gone: promote again from what is there.
-            copy_missing = True
+            copy_missing = self.prior_copy_missing = True
         observation = self.observation_argument
         if observation is not None and local_present:
             raise ProviderOutputPromotionError("provider_output_promotion_sources_ambiguous")
@@ -568,6 +569,15 @@ class _Promotion:
                 kept.append(row)
         return kept
 
+    def _restore(self, prior: Mapping) -> dict:
+        """Rewrite the prior durable record exactly, with this run's blocker: nothing was proven gone."""
+        self.primary = {key: prior.get(key) for key in PRIMARY_FIELDS}
+        self.versions = list(prior["staged_objects"]["output"]["versions"])
+        self.witness_section = prior["staged_objects"].get("paired_witness")
+        self.local_verified = None  # a run that verified nothing never removes the local copy
+        self.local_removed_before = prior.get("local_copy_removed_after_verified_promotion") is True
+        return self._receipt(final=True)
+
     def _witness(self, prior: Mapping | None) -> dict:
         versions = self._prior_witness_versions(prior)
         section = {"key_sha256": key_sha256(self.witness_key), "state": _witness_state(versions) or "deferred",
@@ -608,6 +618,9 @@ class _Promotion:
                 self.status = "promoted" if self.primary else "absent_confirmed"
             except ProviderOutputPromotionError as exc:
                 self.blockers.append(str(exc))
+                if prior and prior.get("status") == "promoted" and not self.prior_copy_missing:
+                    # Only provider_output_durable_copy_missing proves the durable copy gone.
+                    return self._restore(prior)
             self._checkpoint()
             if self.status == "promoted":
                 try:
