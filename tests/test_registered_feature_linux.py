@@ -413,6 +413,14 @@ def _linux_contained_phase(root):
     account = pwd.getpwnam("blueprint")
     value = install_protected_feature(root)
     owners.INSTALLED_PACKAGE_ROOT = root / "installed"
+    policy = json.loads(value["policy"].read_bytes())
+    policy["principals"][0]["allowed_actions"] = ["register", "offload", "keep"]
+    value["policy"].write_bytes(encoded(policy))
+    pins = root / "pins"
+    pins.mkdir(mode=0o700)
+    gc_env = root / "gc.env"
+    gc_env.write_text("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=" + str(pins) + "\n")
+    gc_env.chmod(0o600)
     private = root / "state/requests/experiment-records"
     private.mkdir(mode=0o700)
     (private / ".experiment-authority.lock").write_bytes(b"")
@@ -436,6 +444,7 @@ def _linux_contained_phase(root):
     settings = value["settings"] | {
         "experiment_creation_enabled": True,
         "experiment_retirement_enabled": True,
+        "experiment_gc_environment_file": str(gc_env),
     }
     value["config"].write_bytes(encoded(settings))
     inputs = root / "approved-inputs"
@@ -466,6 +475,7 @@ class Handler(BaseHTTPRequestHandler):
   value={'ok':True} if self.path=='/reset' else {'action_chunk':[action]*2}
   payload=json.dumps(value).encode();self.send_response(200);self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
  def log_message(self,*args):pass
+HTTPServer.allow_reuse_address=True
 HTTPServer((a.host,a.port),Handler).serve_forever()
 """)
     script.chmod(0o644)
@@ -559,16 +569,173 @@ HTTPServer((a.host,a.port),Handler).serve_forever()
     assert completion["participant_profile"] == "g1_local_contained_completed.v1"
     assert completion["kernel_unit"]["kernel"]["tasks"] == 0
     assert completion["kernel_unit"]["finished"]["ActiveState"] == "inactive"
+    roundtrip = _linux_completed_gc_restore(value, grant, born, receipt, paths, now, account, pins)
     return dict(
         status="passed",
         actual_uid=account.pw_uid,
         candidates=2,
+        **roundtrip,
         actual_systemd=True,
         actual_native_child=True,
         actual_descendant_join=True,
         root_kernel_completion=True,
         postpair_reader_sh=True,
         exec_start=completion["kernel_unit"]["started"]["ExecStart"],
+    )
+
+
+def _linux_completed_gc_restore(
+    value, grant, born, pair_receipt, request_paths, origin, account, pins
+):
+    """Successful actual producer proof is consumed by the real GC/restore."""
+    import functools
+    import select
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    from blueprint_pipeline import control_plane_lane_experiment_archive as archive
+    from blueprint_pipeline import control_plane_lane_experiment_restore as restoration
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+    from blueprint_pipeline import control_plane_lane_scratch as scratch
+    from blueprint_pipeline.control_plane_storage_gc import run_storage_gc, RUN_ACK
+    from tests.test_registered_experiment_offload import Cloud
+
+    target = Path(born["path"])
+    metadata = {scratch.LEASE_FILE, ".registered-experiment.v1.json"}
+    before = {
+        str(p.relative_to(target)): p.read_bytes()
+        for p in target.rglob("*")
+        if p.is_file() and p.name not in metadata
+    }
+    assert before and pair_receipt["status"] == "completed_development_only"
+    original_inode = target.stat().st_ino
+    clock = origin + 1802
+    action = issuer.issue_experiment_action_intent(
+        grant["intent_id"],
+        principal="operator",
+        owner="owner",
+        action="offload",
+        expires_at_epoch=clock + 600,
+        installed_config_path=value["config"],
+        now=lambda: clock,
+    )
+    cloud = Cloud()
+    # Native multipart upload and complete full-byte service-account readback
+    # remain real; only the no-network object client is an in-memory transport.
+    archive._client = lambda *args: (cloud, "development-only")
+    report = run_storage_gc(
+        content_store_roots=(),
+        derived_roots=(),
+        queue_roots=(),
+        pins_root=pins,
+        apply=True,
+        ack=RUN_ACK,
+        lane_scratch_roots=(
+            value["settings"]["lane_scratch_work_root"],
+            value["settings"]["lane_scratch_inputs_root"],
+        ),
+        lane_scratch_enabled=True,
+        _experiment_config_path=value["config"],
+        now=lambda: clock + 1,
+    )
+    rows = report["registered_experiments"]["outcomes"]
+    row = next(row for row in rows if row["action_id"] == action["action_id"])
+    assert row["decision"] == "retired", row
+    assert row["receipt"] and row["removed_logical_bytes"] > 0
+    assert target.stat().st_ino == original_inode and {p.name for p in target.iterdir()} == metadata
+    events = [
+        json.loads(p.read_bytes())
+        for p in (
+            value["config"].parent
+            / "state/requests/experiment-records/operations"
+            / action["action_id"]
+        ).glob("e-*.json")
+    ]
+    ready = next(e for e in events if e["event_kind"] == "preservation_ready")
+    assert ready["body"]["archive"]["full_byte_service_account_readback_passed"] is True
+    assert ready["sequence"] < min(
+        e["sequence"] for e in events if e["event_kind"] == "member_removed"
+    )
+    assert cloud.objects and all(body.closed for body in cloud.bodies)
+    restore = issuer.issue_experiment_restore_intent(
+        grant["intent_id"],
+        principal="operator",
+        owner="owner",
+        lease_ttl_seconds=600,
+        expires_at_epoch=clock + 600,
+        installed_config_path=value["config"],
+        now=lambda: clock + 2,
+    )
+    ledger = value["config"].parent / "actual-restore-reservation-ledger"
+    ledger.mkdir(mode=0o700)
+    # Redirect only the protected installation's ledger path; admission,
+    # filesystem measurement, atomic reservation and release are actual code.
+    restoration.reserve_control_plane_disk = functools.partial(
+        disk.reserve_control_plane_disk, reservation_root=ledger
+    )
+    outcome = issuer.restore_registered_experiment(
+        restore["action_id"],
+        expected_restore_intent=restore["restore_intent"],
+        installed_config_path=value["config"],
+        now=lambda: clock + 3,
+    )
+    assert outcome["decision"] == "restored", outcome
+    assert target.stat().st_ino == original_inode
+    after = {
+        str(p.relative_to(target)): p.read_bytes()
+        for p in target.rglob("*")
+        if p.is_file() and p.name not in metadata
+    }
+    assert after == before
+    read, write = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(read)
+        try:
+            os.initgroups("blueprint", account.pw_gid)
+            os.setgid(account.pw_gid)
+            os.setuid(account.pw_uid)
+            for private in (
+                value["config"],
+                value["policy"],
+                value["config"].parent / "state/requests/experiment-records",
+            ):
+                try:
+                    fd = os.open(private, os.O_RDONLY)
+                except PermissionError:
+                    pass
+                else:
+                    os.close(fd)
+                    raise AssertionError("ordinary reader accessed private authority")
+            with consumer.RegisteredExperimentUse.admit(target, now=lambda: clock + 4) as use:
+                use.check()
+                from blueprint_pipeline import native_g1_development_pair as pair
+
+                request = json.loads(request_paths[0].read_bytes())
+                assert pair._read_result(
+                    Path(pair_receipt["attempts"][0]["worker_result_path"]),
+                    candidate_id=request["candidate_id"],
+                    scene_plan_digest=request["rights_review"]["scene_plan_digest"],
+                    request_digest=request["request_digest"],
+                )
+            os.write(write, encoded({"status": "passed", "uid": os.geteuid()}))
+        except BaseException as error:
+            os.write(write, encoded({"status": "failed", "error": repr(error)}))
+        finally:
+            os.close(write)
+            os._exit(0)
+    os.close(write)
+    try:
+        assert select.select([read], [], [], 60)[0], "ordinary restored reader timed out"
+        result = json.loads(os.read(read, 4097))
+        assert result == {"status": "passed", "uid": account.pw_uid}, result
+    finally:
+        os.close(read)
+        os.waitpid(child, 0)
+    return dict(
+        actual_expired_gc_offload=True,
+        native_archive_full_readback=True,
+        actual_root_restore=True,
+        ordinary_uid_restored_reader=True,
     )
 
 
@@ -629,6 +796,8 @@ def _linux_contained_roundtrip():
         for name in (
             "control_plane_scratch_lifetime",
             "control_plane_lane_experiment_consumer",
+            "control_plane_lane_scratch",
+            "control_plane_lane_scratch_retention",
             "native_g1_registered_containment",
         ):
             path = installed / "blueprint_pipeline" / (name + ".py")
@@ -734,6 +903,8 @@ def test_actual_contained_blueprint_native_pair_child_and_kernel_completion():
         and receipt["root_kernel_completion"]
     )
     assert receipt["postpair_reader_sh"]
+    assert receipt["actual_expired_gc_offload"] and receipt["native_archive_full_readback"]
+    assert receipt["actual_root_restore"] and receipt["ordinary_uid_restored_reader"]
 
 
 if __name__ == "__main__":
