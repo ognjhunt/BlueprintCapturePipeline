@@ -403,7 +403,6 @@ def test_actual_birth_cleans_owned_birth_gate_on_store_fsync_failure(tmp_path, m
 @pytest.mark.parametrize('role', ['completed-review-reader', 'submission-publisher'])
 def test_actual_participant_uses_installed_fence_without_environment(tmp_path, monkeypatch, role):
     access, _, member = access_fixture(tmp_path, monkeypatch)
-    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
     entered = []
     if role == 'completed-review-reader':
         from blueprint_pipeline import artifixer_completed_training_reuse as existing
@@ -416,6 +415,7 @@ def test_actual_participant_uses_installed_fence_without_environment(tmp_path, m
             manifest_path=member / 'manifest.json', receipt_path=member / 'publication.json',
             expected_source_commit='a' * 40, lock_root=tmp_path / 'publisher-locks')
     with access.exclusive_scene_access():
+        monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
         with pytest.raises(access.SceneRetirementAccessError, match='generation_unavailable'):
             operation()
     assert entered == []
