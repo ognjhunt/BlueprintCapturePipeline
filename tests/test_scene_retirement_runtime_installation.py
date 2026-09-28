@@ -614,3 +614,48 @@ def test_sdk_preserves_protected_disk_floor_before_native_download_or_payload_wr
         with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
             module._sdk_extract(destination, rows, time.monotonic()+5)
         assert not destination.exists()
+
+
+@pytest.mark.parametrize('tampered', [False, True])
+def test_system_python_without_tomllib_bootstraps_only_exact_locked_protected_tomli(tmp_path, monkeypatch, tampered):
+    import builtins
+    import hashlib
+    import importlib.util
+    import re
+    import zipfile
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    parser_source = Path(importlib.util.find_spec('tomli').origin).parent
+    init = (parser_source / '__init__.py').read_bytes()
+    version = re.search(rb'__version__\s*=\s*"([^"]+)"', init)[1].decode()
+    parser_wheel = wheel.parent / ('tomli-' + version + '-py3-none-any.whl')
+    with zipfile.ZipFile(parser_wheel, 'w') as archive:
+        for path in sorted(parser_source.glob('*.py')):
+            archive.writestr('tomli/' + path.name, path.read_bytes())
+        archive.writestr('tomli-' + version + '.dist-info/METADATA',
+            'Metadata-Version: 2.1\nName: tomli\nVersion: ' + version + '\n')
+        archive.writestr('tomli-' + version + '.dist-info/WHEEL',
+            'Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+    digest = hashlib.sha256(parser_wheel.read_bytes()).hexdigest()
+    text = (source / 'uv.lock').read_text().replace('dependencies = [{ name = "fixture-sdk" }]',
+        'dependencies = [{ name = "fixture-sdk" }, { name = "tomli" }]')
+    text += '\n[[package]]\nname = "tomli"\nversion = "' + version + '"\nsource = { registry = "https://pypi.org/simple" }\n'
+    text += 'wheels = [{ url = "https://files.pythonhosted.org/' + parser_wheel.name + '", hash = "sha256:' + digest + '", size = ' + str(parser_wheel.stat().st_size) + ' }]\n'
+    (source / 'uv.lock').write_text(text)
+    if tampered:
+        parser_wheel.write_bytes(parser_wheel.read_bytes() + b'foreign parser code')
+    original_import = builtins.__import__
+    def no_stdlib_tomllib(name, *arguments, **kwargs):
+        if name == 'tomllib':
+            raise ImportError('actual pre-3.11 system parser availability')
+        return original_import(name, *arguments, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', no_stdlib_tomllib)
+    if tampered:
+        with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+            module.build_sdk(source, wheelhouse=wheel.parent)
+        assert not (module._BOOT_ROOT / 'CURRENT.json').exists()
+    else:
+        selected = module.build_sdk(source, wheelhouse=wheel.parent)
+        assert {'name': 'tomli', 'version': version} in selected['packages']
+        assert (Path(selected['dependencies_root']) / 'tomli/__init__.py').read_bytes() == init
+        assert selected['authority_issued'] is False
