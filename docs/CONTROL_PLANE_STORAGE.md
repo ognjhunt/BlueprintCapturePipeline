@@ -661,7 +661,7 @@ Restore an offloaded run with
 every member digest is verified before the directory is exposed.
 
 Restore a run's offloaded residue with
-`python -c 'from blueprint_pipeline.task_evaluation_result_residue_offload import restore_result_residue as r; print(r(run_root=...))'`.
+`python -c 'from blueprint_pipeline.task_evaluation_result_residue_restore import restore_result_residue as r; print(r(run_root=...))'`.
 It verifies the archive and every member's digest and size, never overwrites a
 different file (a `conflict`), leaves the members the pointer lists as `kept`
 alone, and writes `<name>.residue-restore.v1.json` beside the pointer. The

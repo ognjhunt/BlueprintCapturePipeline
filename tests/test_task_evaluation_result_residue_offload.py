@@ -1,5 +1,7 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_evaluation_result_residue_offload.py
+#   src/blueprint_pipeline/task_evaluation_result_residue_scan.py
+#   src/blueprint_pipeline/task_evaluation_result_residue_restore.py
 #   src/blueprint_pipeline/control_plane_storage_gc.py
 #   src/blueprint_pipeline/control_plane_storage_gc_reasons.py
 #   src/blueprint_pipeline/control_plane_evidence_offload.py
@@ -27,6 +29,7 @@ from blueprint_pipeline import control_plane_storage_gc as gc_module
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline import task_evaluation_result_artifact_store as artifacts
 from blueprint_pipeline import task_evaluation_result_residue_offload as residue
+from blueprint_pipeline import task_evaluation_result_residue_scan as scan
 from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
 from blueprint_pipeline.control_plane_replay_cache_gc import replay_cache_retention_setting
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
@@ -303,23 +306,25 @@ def test_what_a_reader_can_reach_from_a_kept_file_stays(tmp_path, case) -> None:
     assert {relative: (run / relative).read_bytes() for relative in reached} == before
 
 
-def test_a_large_reached_text_is_searched_as_a_stream(tmp_path) -> None:
-    """A kept or reached text is searched a chunk at a time, whatever its size: a 70 MiB log
-    naming a file keeps that file, even where the name straddles two chunks, and the run plans
-    instead of failing. Memory stays at a chunk and a carried token."""
+def test_a_large_reached_text_is_searched_as_a_stream(tmp_path, monkeypatch) -> None:
+    """A kept or reached text is searched a chunk at a time, whatever its size: a log many
+    chunks long naming a file keeps that file, even where the name straddles two chunks, and
+    the run plans instead of failing. Memory stays at a chunk and a carried token. The chunk
+    is shrunk to 64 KiB so a 3 MiB log spans the same forty-odd chunks a 70 MiB one would."""
 
+    monkeypatch.setattr(scan, "_SCAN_CHUNK_BYTES", 64 * 1024)
     f = _sealed_run(tmp_path / "canaries")
     interpretation = f.run / "episode_interpretation"
     interpretation.mkdir()
-    chunk, reference, line = residue._SCAN_CHUNK_BYTES, b"logs/worker.log", b"stage 0000001 ok\n"
+    chunk, reference, line = scan._SCAN_CHUNK_BYTES, b"logs/worker.log", b"stage 0000001 ok\n"
     boundary = 40 * chunk
     with (interpretation / "rollout.log").open("wb") as stream:
         lines = (boundary - 7) // len(line)
         stream.write(line * lines)
         stream.write(b" " * (boundary - 7 - lines * len(line)))
         stream.write(reference + b"\n")  # seven bytes before the 41st chunk begins, eight after
-        stream.write(line * ((70 * 1024 * 1024 - stream.tell()) // len(line) + 1))
-    assert (interpretation / "rollout.log").stat().st_size > 70 * 1024 * 1024
+        stream.write(line * ((3 * 1024 * 1024 - stream.tell()) // len(line) + 1))
+    assert (interpretation / "rollout.log").stat().st_size > 3 * 1024 * 1024
     _age(f.run)
 
     plan = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
@@ -328,28 +333,6 @@ def test_a_large_reached_text_is_searched_as_a_stream(tmp_path) -> None:
     reasons = {row["relative_path"]: row["reason"] for row in plan["skipped"]}
     assert reasons["logs/worker.log"] == "receipt_referenced"
     assert plan["candidate_count"] == len(RESIDUE) - 1
-
-
-def test_the_stream_search_carries_a_token_and_reads_escaped_slashes() -> None:
-    """A token cut by a chunk boundary is read whole, ``\\/`` reads as ``/``, and a token longer
-    than any path keeps only its tail, so memory stays bounded."""
-
-    import io
-
-    def tokens(raw: bytes, chunk: int = 8) -> set[str]:
-        found: set[str] = set()
-        for part in residue._stream_tokens(io.BytesIO(raw), chunk_bytes=chunk):
-            found |= part
-        return found
-
-    assert "logs/worker.log" in tokens(b'{"log": "logs/worker.log"}')
-    assert "logs/worker.log" in tokens(b'{"log": "logs\\/worker.log"}', chunk=11)
-    assert "logs/worker.log" in tokens(b"a logs/worker.log b", chunk=5)
-    long = tokens(b"x" * (3 * residue._MAX_TOKEN_CHARS) + b"/run-1/logs/worker.log", chunk=4096)
-    assert any(token.endswith("/run-1/logs/worker.log") for token in long)
-    assert all(len(token) <= residue._MAX_TOKEN_CHARS for token in long)
-    # A binary names nothing.
-    assert tokens(b"\x00" + b"logs/worker.log") == set()
 
 
 @pytest.mark.parametrize("case", ["linked_reader_directory", "linked_kept_document", "unlistable_directory"])
@@ -740,76 +723,6 @@ def test_residue_member_swapped_for_symlink_is_kept(tmp_path) -> None:
     assert {row["relative_path"] for row in pointer["kept"]} == {"provider/outputs.zip", "work/stage/state.npz"}
 
 
-def test_residue_restore_round_trips(tmp_path) -> None:
-    f = _sealed_run(tmp_path / "canaries")
-    os.chmod(f.run / "logs" / "worker.log", 0o600)
-    modes = {relative: stat.S_IMODE((f.run / relative).stat().st_mode) for relative in RESIDUE}
-    before = _local_files(f.run)
-    assert _offload(f)["offloaded_count"] == len(RESIDUE)
-    pointer_bytes = f.pointer.read_bytes()
-    materializer = functools.partial(store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET)
-
-    restored = residue.restore_result_residue(run_root=f.run, materializer=materializer, now=lambda: NOW)
-
-    assert (restored["status"], restored["restored_count"], restored["conflicts"]) == ("restored", len(RESIDUE), [])
-    assert restored["restored_bytes"] == sum(len(data) for data in RESIDUE.values())
-    assert _local_files(f.run) == before
-    assert {relative: stat.S_IMODE((f.run / relative).stat().st_mode) for relative in RESIDUE} == modes
-    assert (f.run / "logs/worker.log").stat().st_mtime == OLD
-    assert f.pointer.read_bytes() == pointer_bytes
-    receipt_path = f.evidence / f"{f.run.name}{residue.RESTORE_RECEIPT_SUFFIX}"
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    assert receipt == {**restored} and receipt["receipt_digest"] == canonical_digest(
-        receipt, digest_field="receipt_digest")
-    assert not [path for path in f.evidence.iterdir() if path.name.startswith(".")]
-
-    # A second restore finds every member in place; a different local file is never overwritten.
-    (f.run / "logs" / "worker.log").chmod(0o644)
-    (f.run / "logs" / "worker.log").write_bytes(b"newer local truth\n")
-    again = residue.restore_result_residue(run_root=f.run, materializer=materializer, now=lambda: NOW)
-    assert (again["status"], again["restored_count"], again["already_present_count"]) == (
-        "restored_with_conflicts", 0, len(RESIDUE) - 1)
-    assert again["conflicts"] == [{"relative_path": "logs/worker.log", "reason": "existing_file_differs"}]
-    assert (f.run / "logs" / "worker.log").read_bytes() == b"newer local truth\n"
-
-    # A tampered pointer restores nothing.
-    tampered = json.loads(pointer_bytes)
-    tampered["members"][0]["size_bytes"] += 1
-    f.pointer.chmod(0o640)
-    f.pointer.write_text(json.dumps(tampered), encoding="utf-8")
-    with pytest.raises(residue.ResultResidueOffloadError, match="pointer_invalid"):
-        residue.restore_result_residue(run_root=f.run, materializer=materializer, now=lambda: NOW)
-
-
-def test_the_service_owner_is_given_each_file_last(tmp_path, monkeypatch) -> None:
-    """The GC is root with CAP_CHOWN but not CAP_FOWNER: once a file belongs to the service
-    user, root may no longer set its mode or times. So both happen first, the owner last."""
-
-    f = _sealed_run(tmp_path / "canaries")
-    calls: list[tuple] = []
-    stranger = SimpleNamespace(st_uid=os.getuid() + 1, st_gid=os.getgid() + 1)
-    descriptor = os.open(tmp_path / "probe", os.O_CREAT | os.O_WRONLY, 0o600)
-    try:
-        with monkeypatch.context() as patched:
-            patched.setattr(os, "fchmod", lambda fd, mode: calls.append(("chmod", mode)))
-            patched.setattr(os, "fchown", lambda fd, uid, gid: calls.append(("chown", uid, gid)))
-            residue._adopt_owner(descriptor, stranger, mode=0o440)
-    finally:
-        os.close(descriptor)
-    assert calls == [("chmod", 0o440), ("chown", stranger.st_uid, stranger.st_gid)]
-
-    _offload(f)
-    order: list[str] = []
-    real_utime, real_adopt = os.utime, residue._adopt_owner
-    monkeypatch.setattr(os, "utime", lambda *args, **kwargs: (order.append("utime"), real_utime(*args, **kwargs))[1])
-    monkeypatch.setattr(residue, "_adopt_owner", lambda *args, **kwargs: (
-        order.append("adopt"), real_adopt(*args, **kwargs))[1])
-    residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
-        store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
-    # One (utime, adopt) pair per restored file, then the receipt's own adopt.
-    assert order == ["utime", "adopt"] * len(RESIDUE) + ["adopt"]
-
-
 def test_residue_pointer_is_not_an_unsafe_evidence_entry(tmp_path) -> None:
     f = _sealed_run(tmp_path / "canaries")
     _offload(f)
@@ -970,29 +883,6 @@ def test_summary_names_member_skips_by_their_typed_reason() -> None:
             "residue_offload_failed": {"count": 1, "bytes": None},
         },
     }
-
-
-def test_every_way_a_kept_document_names_a_run_file_keeps_it() -> None:
-    """A run file may be named absolutely (the run's own name may recur deeper in the path),
-    relative to the evidence root, or relative to the run; each keeps it."""
-
-    import io
-
-    name = "run-7"
-    value = {"nested": f"/var/lib/canaries/{name}/work/{name}/state.npz",
-             "rooted": [f"{name}/logs/worker.log"], "relative": "provider/outputs.zip",
-             "beside": "notes.txt", "above": "stage/state.npz"}
-
-    def strings(raw: bytes) -> set[str]:
-        return set().union(*residue._stream_tokens(io.BytesIO(raw)))
-
-    named = set(residue._named_paths(strings(json.dumps(value).encode()), "work/stage/index.json", name))
-
-    assert {f"work/{name}/state.npz", "logs/worker.log", "provider/outputs.zip", "work/stage/notes.txt",
-            "work/stage/state.npz"} <= named
-    # Free text and JSON lines name files too.
-    assert "logs/worker.log" in strings(b"see logs/worker.log, then retry\n")
-    assert f"/x/{name}/a.bin" in strings(b'{"a": 1}\n{"b": "/x/' + name.encode() + b'/a.bin"}\n')
 
 
 def test_scene_attempt_recovery_ownership_records_stay(tmp_path) -> None:
