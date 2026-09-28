@@ -60,6 +60,8 @@ class DoorConfig:
     owner_census_decisions_enabled: int = 0
     experiment_creation_enabled: bool = False
     experiment_retirement_enabled: bool = False
+    needed_checkpoint_cache_creation_enabled: bool = False
+    needed_checkpoint_cache_inventory_file: str = "/opt/blueprint/control-plane-config-tools/operator-door-source/configs/g1_humanoidarena_checkpoint_inventory.v1.json"
     lane_owner_policy_file: str = "/etc/blueprint-operator-door/lane-owner-policy.json"
     active_release_link: str = "/opt/blueprint/task-evaluation-control-plane"
     unit_prefix: str = "blueprint-"
@@ -108,6 +110,18 @@ class DoorConfig:
         return str(Path(self.spool_root) / "owner-consents")
 
     @property
+    def needed_checkpoint_cache_record_store(self) -> str:
+        return str(Path(self.state_root) / "requests" / "needed-checkpoint-cache-records")
+
+    @property
+    def needed_checkpoint_cache_registration_root(self) -> str:
+        return str(Path(self.state_root) / "needed-checkpoint-cache-registration")
+
+    @property
+    def needed_checkpoint_cache_authority_root(self) -> str:
+        return str(Path(self.state_root) / "needed-checkpoint-cache-registration" / "authority")
+
+    @property
     def experiment_record_store(self) -> str:
         return str(Path(self.spool_root) / "experiment-records")
 
@@ -126,6 +140,7 @@ _PATH_SCALARS = (
     "source_clone", "reference_repo", "github_deploy_key", "github_known_hosts", "venv_python",
     "capacity_summary",
     "lane_scratch_work_root", "lane_scratch_inputs_root", "lane_owner_policy_file",
+    "needed_checkpoint_cache_inventory_file",
 )
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 

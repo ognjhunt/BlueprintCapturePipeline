@@ -161,7 +161,14 @@ def _job_key_component(path: Path) -> str:
     return _safe_key_component("__".join(parts))
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(path: Path, *, _cache_use=None) -> str:
+    from .control_plane_registered_checkpoint_cache import (
+        is_registered_checkpoint_path, require_cache_use, NeededCheckpointCacheError,
+    )
+    if _cache_use is not None:
+        return require_cache_use(_cache_use).hash_file(path)[0]
+    if is_registered_checkpoint_path(path):
+        raise NeededCheckpointCacheError("needed_cache_use_required")
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -178,9 +185,20 @@ def stage_cached_runtime_dependency_object_store(
     expiration_seconds: int,
     generated_at: str | None = None,
     artifact_kind: str = "runtime_dependency",
+    _cache_use=None,
 ) -> dict[str, Any]:
     """Publish one immutable dependency once and issue a run-local GET URL."""
 
+    from .control_plane_registered_checkpoint_cache import (
+        is_registered_checkpoint_path, require_cache_use, NeededCheckpointCacheError,
+    )
+    if _cache_use is not None:
+        require_cache_use(_cache_use)
+        return _stage_registered_runtime_dependency(job_dir=job_dir, dependency_path=dependency_path,
+            expected_sha256=expected_sha256, key_prefix=key_prefix, expiration_seconds=expiration_seconds,
+            generated_at=generated_at, artifact_kind=artifact_kind, use=_cache_use)
+    if is_registered_checkpoint_path(dependency_path):
+        raise NeededCheckpointCacheError("needed_cache_use_required")
     generated = generated_at or utc_now_iso()
     job = Path(job_dir).expanduser().resolve()
     dependency = Path(dependency_path).expanduser().resolve()

@@ -49,7 +49,7 @@ def cache_installation(installation, monkeypatch):  # noqa: F811
     state = Path(settings["state_root"])
     private = state / "requests/needed-checkpoint-cache-records"
     public = state / "needed-checkpoint-cache-registration"
-    authority = state / "needed-checkpoint-cache-authority"
+    authority = public / "authority"
     for path, mode in ((private, 0o700), (public, 0o755), (authority, 0o750)):
         path.mkdir(mode=mode)
     for path, name, mode in ((private, ".cache-store.lock", 0o600),

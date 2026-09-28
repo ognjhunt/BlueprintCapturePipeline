@@ -270,7 +270,18 @@ def materialize_candidate(
     *, inventory_path: Path, candidate_id: str, output_dir: Path, verify_only: bool = False,
     cache_manifest_path: Path | None = None,
     cancel_event: Event | None = None,
+    _cache_use=None,
 ) -> dict[str, Any]:
+    from blueprint_pipeline.control_plane_registered_checkpoint_cache import (
+        is_registered_checkpoint_path, require_cache_use, NeededCheckpointCacheError,
+    )
+    if _cache_use is not None:
+        use = require_cache_use(_cache_use)
+        return use.materialize_candidate(inventory_path=inventory_path, candidate_id=candidate_id,
+                                         output_dir=output_dir, verify_only=verify_only,
+                                         cancel_event=cancel_event)
+    if is_registered_checkpoint_path(output_dir):
+        raise NeededCheckpointCacheError("needed_cache_use_required")
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     candidate = _candidate(inventory, candidate_id)
     private_cache = _private_cache_urls(cache_manifest_path)

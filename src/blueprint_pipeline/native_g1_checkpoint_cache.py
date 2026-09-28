@@ -40,9 +40,18 @@ def _inventory_path() -> Path:
     )
 
 
-def verify_local_g1_checkpoint_cache(root: Path) -> list[dict[str, Any]]:
+def verify_local_g1_checkpoint_cache(root: Path, *, _cache_use=None) -> list[dict[str, Any]]:
     """Rehash all pinned files before a provider URL can be created."""
 
+    from .control_plane_registered_checkpoint_cache import (
+        is_registered_checkpoint_path, require_cache_use, NeededCheckpointCacheUse,
+    )
+    if _cache_use is not None:
+        use = require_cache_use(_cache_use)
+        return use.verify_cache(root)
+    if is_registered_checkpoint_path(root):
+        with NeededCheckpointCacheUse.open_registered(root, mode="read") as use:
+            return use.verify_cache(root)
     cache = Path(root)
     if not cache.is_absolute() or cache.is_symlink() or not cache.is_dir():
         raise ValueError("g1_checkpoint_cache_root_invalid")
