@@ -15,7 +15,7 @@ first writer wins; a pin is never rewritten except to record its release.
 
 from __future__ import annotations
 
-from .task_evaluation_scene_retirement_access import scene_participant
+from .task_evaluation_scene_retirement_access import scene_participant, scene_access
 import json
 import os
 import re
@@ -143,7 +143,7 @@ def write_storage_pin(
         "released_at_epoch": None,
     }
     path = pin_path(pins_root, kind, owner_id)
-    with storage_pin_guard(pins_root, exclusive=False):
+    with scene_access(*pinned), storage_pin_guard(pins_root, exclusive=False):
         if _write_atomic(path, payload, exclusive=True):
             if on_created is not None:
                 on_created(payload)

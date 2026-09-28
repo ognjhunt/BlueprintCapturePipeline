@@ -27,7 +27,8 @@ class MemoryTransport:
 
 def fixture_members(tmp_path):
     first, second = tmp_path/'source', tmp_path/'sam'
-    first.mkdir(); second.mkdir()
+    first.mkdir()
+    second.mkdir()
     (first/'input.bin').write_bytes(b'original-capture')
     (second/'evidence.bin').write_bytes(b'original-sam-evidence')
     return [first, second]
@@ -69,3 +70,15 @@ def test_deadline_and_external_hardlink_refuse_before_transport(tmp_path):
         preserve_members(members, transport=transport,
             allowance=ActionAllowance(expires_at=99,now=lambda:100,monotonic=lambda:0),token='1'*32)
     assert transport.objects == {}
+
+
+def test_transport_cannot_claim_success_after_abandoning_partial_member_union(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members, ActionAllowance
+    members = fixture_members(tmp_path)
+    class PartialTransport(MemoryTransport):
+        def put_archive(self,key,chunks):
+            return super().put_archive(key,[next(iter(chunks))])
+    with pytest.raises(ValueError,match='scene_retirement_archive_incomplete'):
+        preserve_members(members,transport=PartialTransport(members),
+            allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0),token='1'*32)
+    assert all(path.exists() for path in members)
