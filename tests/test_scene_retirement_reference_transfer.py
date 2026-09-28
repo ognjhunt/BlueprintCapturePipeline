@@ -126,7 +126,7 @@ def original_sam_transfer(tmp_path):
                if p['role']=='sam_results')
     protection={'kind':'unsupported_queue_observation','path':proof['path'],'raw_sha256':proof['sha256'],
         'raw_size_bytes':proof['size_bytes'],'scope':'preparation_sam_auxiliary_layouts_only','action':'KEEP'}
-    fresh={'planner_context':{'sam_queue_root':args['roots']['sam_queue_root']},
+    fresh={'planner_context':{'roots':{'sam_queue_root':args['roots']['sam_queue_root']}},
         'historical_lineage':{'source_family_inventory':source},
         'measured_members':[{'source_provenance':row['source_provenance']} for rows in declared.values() for row in rows],
         'reference_observation':{'blockers':[],'child_scopes':[{'child':name,'complete':True}
@@ -200,5 +200,13 @@ def test_available_sam_result_cannot_borrow_unbound_or_unselected_job(tmp_path,m
     for row in fresh['historical_lineage']['source_family_inventory']['sam_observations']:
         if row['role']=='sam_job' and missing!='owned_job':
             row[missing+'_verified']=False
+    with pytest.raises(ValueError,match='scene_retirement_reference_'):
+        check(fresh,allowance)
+
+
+def test_sam_transfer_requires_actual_nested_installed_root_not_an_extra_flat_alias(tmp_path):
+    fresh,_,allowance=original_sam_transfer(tmp_path)
+    root=fresh['planner_context'].pop('roots')['sam_queue_root']
+    fresh['planner_context']['sam_queue_root']=root
     with pytest.raises(ValueError,match='scene_retirement_reference_'):
         check(fresh,allowance)
