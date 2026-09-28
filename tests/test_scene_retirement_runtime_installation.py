@@ -659,3 +659,26 @@ def test_system_python_without_tomllib_bootstraps_only_exact_locked_protected_to
         assert {'name': 'tomli', 'version': version} in selected['packages']
         assert (Path(selected['dependencies_root']) / 'tomli/__init__.py').read_bytes() == init
         assert selected['authority_issued'] is False
+
+
+def test_locked_sdk_preserves_actual_uv_multiple_extra_dependencies(tmp_path, monkeypatch):
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    packages = [
+        {'name': 'blueprint-capture-pipeline', 'version': '1', 'source': {'editable': '.'},
+         'dependencies': [{'name': 'dependency', 'extra': ['grpc', 'requests']}]},
+        {'name': 'dependency', 'version': '1', 'dependencies': [{'name': 'base'}],
+         'optional-dependencies': {'grpc': [{'name': 'grpc-child'}], 'requests': [{'name': 'requests-child'}]}},
+        *({'name': name, 'version': '1'} for name in ('base', 'grpc-child', 'requests-child')),
+    ]
+    selected = module._sdk_closure(packages, None)
+    assert {row['name'] for row in selected} == {'dependency', 'base', 'grpc-child', 'requests-child'}
+
+
+def test_actual_locked_production_sdk_dependency_closure_includes_pubsub_grpc(tmp_path, monkeypatch):
+    import tomllib
+    from packaging import markers
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    lock = tomllib.loads((Path(__file__).parents[1] / 'uv.lock').read_text())
+    selected = module._sdk_closure(lock['package'], (markers, None, None))
+    names = {row['name'] for row in selected}
+    assert {'google-cloud-pubsub', 'google-api-core', 'grpcio', 'grpcio-status', 'blueprint-contracts'} <= names
