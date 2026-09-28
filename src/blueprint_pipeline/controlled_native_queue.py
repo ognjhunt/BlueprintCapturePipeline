@@ -149,6 +149,7 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
 
 def execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: Path) -> None:
     """A failed attempt releases its hold only after provider-zero is observed."""
+    job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         _execute_staged_controlled_request(request=request, job_dir=job_dir)
     except Exception as exc:
