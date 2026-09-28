@@ -699,3 +699,28 @@ under /root to match that contract. Copy only this small source/fixture package;
 do not move/chmod existing evidence or change a paid gate. Tests pin owner/group/
 world traversal and absent execute/read permissions. Repeat against a fresh
 immutable successor, retaining both prior failed roots.
+
+Real Linux checkpoint: immutable75b463aa4be966178ddf92edd7b7aee6e40b427a
+passes the production archive launcher under the mapped-root staging contract.
+The fixture asserts UID/GID65534, CapEff0, read-only/work+/usr mounts, writable
+private/tmp, absent host secret/evidence/Docker/GPU paths and no extra inherited
+descriptor. Real JSONL reset+one synthetic observation return one valid G1
+semantic-v3 action. Teardown exits-15 after the intended SIGTERM, with no close
+error. All1956 held source files reverify and no bytecode is created. The final
+101 focused cases pass in16.29s; changed-file Ruff/diff pass.
+
+Retained proof:
+`/root/blueprint-g1-rehearsals/archive-sandbox-mapped-root-20260928c/cpu_rehearsal.receipt.json`,
+SHA25684cfb37e09c6eeca5abc4acd29207cebf1b820bd83e133ad4210daecc94a0e44;
+source archive SHA25677b913395c5819e20d6df510e3c42fbd2c745d65365946cca63acf58216ab845;
+synthetic archive SHA256cb10b82b59789cee04018af9ba607be016c500ca6a77b1a1e44ff0adcc1de2f9;
+conformance digest05d74b2f62ed132c6a6e00ed2f6df06619dcf28a8f6d11ae7e35e1c22fa5a2ad;
+teardown digestabbc58659743fb117fc462a82d7c07fe6150245c93af655e1fef032a191291a6.
+This root is own G1 scratch, approximately52MiB source/archive, with no existing
+evidence moved or deleted. Both refused roots remain retained. CPU only;
+zero site queries, no task score, no GPU/device-memory proof, no VM qualification,
+no provider mutation, no rights/spend grant. Production VM bootstrap must check
+the installed bubblewrap's actual --ro-bind-fd/--clearenv support, canonical
+root-owned ancestor accessibility, and required UVM nodes before untrusted
+execution. The canonical bundle/VM allocator refusal stays in place until full
+integration, actual CUDA, and all launch/output gates are complete.
