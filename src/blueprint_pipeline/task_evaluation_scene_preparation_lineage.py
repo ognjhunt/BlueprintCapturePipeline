@@ -196,7 +196,7 @@ def _envelope(value: dict[str, Any], provenance: dict[str, Any], root: str,
 
 
 def _attempt(link: dict[str, Any], request: dict[str, Any], intent: dict[str, Any],
-             directory: str, remaining: dict[str, Any], sources: list[dict[str, Any]]) -> Any:
+             directory: str, remaining: dict[str, Any], sources: list[dict[str, Any]], *, emission_budget=None) -> Any:
     if "scene_configuration_attempt" not in link:
         return None
     reference = link["scene_configuration_attempt"]
@@ -235,7 +235,9 @@ def join_scene_preparation_lineage(*, intent_id: str, intent_record: Any,
 
 
 def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
-          attempts: Any, roots: Any) -> dict[str, Any]:
+          attempts: Any, roots: Any, *, emission_budget=None) -> dict[str, Any]:
+    if emission_budget is not None:
+        emission_budget = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_RECORDS, max_references=MAX_RECORDS)
     _require(_matches(intent_id, _ID) and isinstance(roots, dict) and set(roots) == _ROOTS,
              "parameters_invalid")
     roots = {key: _path(value) for key, value in roots.items()}
@@ -255,7 +257,7 @@ def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
         previous = grouped.get(link["preparation_id"])
         _require(previous is None or all(previous[0][k] == link[k] for k in _IDENTITY), "link_ambiguous")
         if previous is None:
-            grouped[link["preparation_id"]] = (link, [provenance])
+            grouped[link["preparation_id"]] = (link, emission_budget.reserve_provenance((provenance,)) if emission_budget is not None else [provenance])
         else:
             _require(all(p["variant"] != provenance["variant"] for p in previous[1]), "link_ambiguous")
             previous[1].append(provenance)
@@ -264,14 +266,14 @@ def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
     remaining: dict[str, list[Any]] = {}
     for value, provenance in decoded[1]:
         remaining.setdefault(PurePosixPath(provenance["path"]).name, []).append((value, provenance))
-    rows = []
+    rows = emission_budget.rows() if emission_budget is not None else []
     for preparation_id, (link, sources) in grouped.items():
         matches = remaining.pop(link["result_filename"], [])
         _require(len(matches) == 1, "envelope_ambiguous")
         envelope, provenance = matches[0]
         request = _envelope(envelope, provenance, roots["preparation_queue_root"], link, intent)
         sources.append(provenance)
-        attempt = _attempt(link, request, intent, directory, remaining_attempts, sources)
+        attempt = _attempt(link, request, intent, directory, remaining_attempts, sources, emission_budget=emission_budget)
         rows.append({**{k: link[k] for k in ("preparation_id", "request_digest", "expected_production_commit",
                                            "team_namespace", "scene_id", "task_id", "result_filename")},
                      "workspace_path": _child(roots["preparation_input_root"], preparation_id),
@@ -288,5 +290,8 @@ def _join(intent_id: str, intent_record: Any, links: Any, envelopes: Any,
               "mutations": 0, "execution_authorized": False, "complete_scene_inventory": False,
               "references_checked": False, "finished_state_checked": False,
               "payload_presence_checked": False, "requires_fresh_reference_check": True}
-    _require(len(_encoded(result)) <= MAX_OUTPUT_BYTES, "output_limit")
+    if emission_budget is not None:
+        emission_budget.check_document(result)
+    else:
+        _require(len(_encoded(result)) <= MAX_OUTPUT_BYTES, "output_limit")
     return result

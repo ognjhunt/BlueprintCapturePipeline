@@ -1275,6 +1275,7 @@ def run_storage_gc(
     lane_scratch_roots: Sequence[str | Path] = (),
     lane_scratch_enabled: bool = False,
     lane_scratch_alert: str | None = None,
+    lane_reference_target: str | Path | None = None,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
@@ -1535,6 +1536,29 @@ def run_storage_gc(
             phase = observe_lane_scratch_retention((), pins_root="/", observed_at_epoch=observed_at,
                 enabled_requested=lane_scratch_enabled if type(lane_scratch_enabled) is bool else False)
             phase.update(status="report_only", blockers=["lane_configuration_invalid"])
+        if lane_reference_target is not None:
+            from .control_plane_lane_reference_collection import collect_gc_lane_references, LaneReferenceCollectionError
+            from dataclasses import asdict
+            try:
+                try:
+                    target = os.fspath(lane_reference_target)
+                except TypeError:
+                    raise LaneReferenceCollectionError("lane_reference_parameters_invalid") from None
+                collected = collect_gc_lane_references(target, pins_root=os.fspath(pins_root),
+                    queue_roots=tuple(os.fspath(path) for path in queue_roots), observed_at_epoch=observed_at,
+                    scene_intent_root=os.fspath(scene_intent_root) if scene_intent_root is not None else None,
+                    scene_binding_root=os.fspath(scene_binding_root) if scene_binding_root is not None else None)
+                # Collector proved representation bounds before this conversion.
+                phase["reference_collection"] = asdict(collected)
+                incomplete = not collected.complete_selected_observations
+            except LaneReferenceCollectionError:
+                phase["reference_collection"] = {"status": "kept", "blockers": ["lane_reference_parameters_invalid"],
+                    "mutations": 0, "candidate_bytes": None, "apply_supported": False, "execution_authorized": False,
+                    "references_clear": False, "consumer_fence_checked": False,
+                    "general_reference_inventory_complete": False, "general_process_inventory_complete": False}
+                incomplete = True
+            if incomplete:
+                report.setdefault("alerts", []).append("lane_reference_collection_incomplete")
         if not phase["complete"] and phase["status"] != "not_configured":
             report.setdefault("alerts", []).append("lane_scratch_observation_incomplete")
         return phase
@@ -1667,8 +1691,19 @@ def _withdraw_summary(directory: Path) -> None:
         os.close(directory_fd)
 
 
+def _reference_report_requested(argv: list[str]) -> bool:
+    return any(value.startswith('--lane-r') and '--lane-reference-target'.startswith(value.split('=', 1)[0])
+               for value in argv)
+
+
+class _ReferenceReportParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ControlPlaneStorageGCError('lane_reference_parameters_invalid')
+
+
 def _run_main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="control_plane_storage_gc run")
+    parser_type = _ReferenceReportParser if _reference_report_requested(argv) else argparse.ArgumentParser
+    parser = parser_type(prog="control_plane_storage_gc run")
     parser.add_argument("--content-store-root", action="append", default=None)
     parser.add_argument("--derived-root", action="append", default=None)
     parser.add_argument("--plan-only-derived-root", action="append", default=None)
@@ -1685,6 +1720,8 @@ def _run_main(argv: list[str]) -> int:
     parser.add_argument("--scene-intent-root", default=os.getenv(SCENE_INTENT_ROOT_ENV) or None)
     parser.add_argument("--scratch-root", action="append", default=None)
     parser.set_defaults(lane_roots_invalid=False)
+    parser.add_argument("--lane-reference-target", default=None,
+                        help="one exact leased target; bounded reference evidence only, never lane apply")
     parser.add_argument("--lane-scratch-root", action=_LaneRoots, default=None,
                         help="explicit lane parent to observe; always report-only, including with --apply")
     parser.add_argument("--replay-parent-root", action="append", default=None)
@@ -1772,6 +1809,7 @@ def _run_main(argv: list[str]) -> int:
         lane_scratch_roots=lane_roots,
         lane_scratch_enabled=lane_enabled,
         lane_scratch_alert=lane_alert,
+        lane_reference_target=args.lane_reference_target,
         # Where launch admission records consumed standing authorizations; unset, no activation is unlaunched.
         standing_authorization_dir=str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip() or None,
         # Per-file digests, so an hourly plan re-reads only what changed.
@@ -1790,7 +1828,14 @@ def _run_main(argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] == "run":
-        return _run_main(arguments[1:])
+        try:
+            return _run_main(arguments[1:])
+        except ControlPlaneStorageGCError:
+            if not _reference_report_requested(arguments[1:]):
+                raise
+            print(json.dumps({'status': 'kept', 'reason': 'lane_reference_parameters_invalid',
+                              'references_clear': False, 'execution_authorized': False, 'mutations': 0}))
+            return 2
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--content-store-root", action="append", required=True)
     parser.add_argument(
