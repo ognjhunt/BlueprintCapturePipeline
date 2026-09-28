@@ -180,3 +180,25 @@ def test_sam_raw_versions_active_or_failed_records_cannot_borrow_prefix_membersh
             record.update(raw_sha256=digest,raw_size_bytes=len(raw))
     with pytest.raises(ValueError,match='scene_retirement_reference_'):
         check(fresh,allowance)
+
+
+def test_completed_sam_result_uses_exact_owned_job_edge_without_inventing_a_second_member(tmp_path):
+    fresh,proof,allowance=original_sam_transfer(tmp_path)
+    for member in fresh['measured_members']:
+        member['source_provenance']=[p for p in member['source_provenance'] if p['role']!='sam_results']
+    result=check(fresh,allowance)
+    assert result['transferred_auxiliary_records'][0]['source']['row_path']==proof['path']
+    assert all(p['role']!='sam_results' for m in fresh['measured_members'] for p in m['source_provenance'])
+
+
+@pytest.mark.parametrize('missing',['owned_job','result_binding','parent_binding'])
+def test_available_sam_result_cannot_borrow_unbound_or_unselected_job(tmp_path,missing):
+    fresh,_,allowance=original_sam_transfer(tmp_path)
+    for member in fresh['measured_members']:
+        member['source_provenance']=[p for p in member['source_provenance']
+            if p['role']!='sam_results' and (missing!='owned_job' or p['role']!='sam_jobs')]
+    for row in fresh['historical_lineage']['source_family_inventory']['sam_observations']:
+        if row['role']=='sam_job' and missing!='owned_job':
+            row[missing+'_verified']=False
+    with pytest.raises(ValueError,match='scene_retirement_reference_'):
+        check(fresh,allowance)
