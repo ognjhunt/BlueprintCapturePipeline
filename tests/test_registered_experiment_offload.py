@@ -106,7 +106,7 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
-@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'member_link_before_event', 'member_unlink_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', 'second_expiry', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed', 'replayed', 'activation_crash', 'before_stage_crash', 'stage_ready_crash', 'member_link_crash', 'member_link_before_event', 'member_unlink_crash', 'stage_ready_changed', 'stage_ready_replaced', 'stage_ready_unproven', 'lease_lane_lock', 'lease_truncate_crash', 'lease_write_crash', 'second_expiry', pytest.param('slow_readback', marks=pytest.mark.slow), pytest.param('slow_restored_hash', marks=pytest.mark.slow)])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
@@ -271,6 +271,35 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         assert stopped and _current_entry(value, intent_id)['state'] == 'restoring'
         transport_calls = list(cloud.calls)
         monkeypatch.setattr(restore.os, 'unlink', original_unlink)
+    if certificate_case in ('lease_truncate_crash', 'lease_write_crash'):
+        import os
+        actual_truncate, actual_write = restore.os.ftruncate, restore.os.write
+        lease_inode = (target / '.lane-scratch.v1.json').stat().st_ino
+        stopped = False
+        def killed_truncate(fd, size):
+            nonlocal stopped
+            result = actual_truncate(fd, size)
+            if os.fstat(fd).st_ino == lease_inode and not stopped:
+                stopped = True
+                raise OSError('killed_after_original_lease_truncate')
+            return result
+        def killed_write(fd, payload):
+            nonlocal stopped
+            if os.fstat(fd).st_ino == lease_inode and not stopped:
+                stopped = True
+                actual_write(fd, payload[:len(payload)//2])
+                raise OSError('killed_during_original_lease_write')
+            return actual_write(fd, payload)
+        monkeypatch.setattr(restore.os, 'ftruncate' if certificate_case == 'lease_truncate_crash' else 'write',
+                            killed_truncate if certificate_case == 'lease_truncate_crash' else killed_write)
+        with pytest.raises(ValueError, match='experiment_'):
+            root.restore_registered_experiment(grant['action_id'], **arguments)
+        assert stopped and _current_entry(value, intent_id)['state'] == 'restoring'
+        with pytest.raises(ValueError, match='experiment_'):
+            consumer.RegisteredExperimentUse.admit(target, now=lambda: 3000)
+        transport_calls = list(cloud.calls)
+        monkeypatch.setattr(restore.os, 'ftruncate', actual_truncate)
+        monkeypatch.setattr(restore.os, 'write', actual_write)
     if certificate_case == 'activation_crash':
         from blueprint_pipeline import control_plane_lane_experiment_actions as actions
         actual_event = actions._event
@@ -288,7 +317,7 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
         replay = root.restore_registered_experiment(grant['action_id'], **arguments)
         assert replay['receipt'] == outcome['receipt'] and cloud.calls == calls
 
-    if certificate_case in ('stage_ready_crash', 'member_link_crash', 'member_link_before_event', 'member_unlink_crash'):
+    if certificate_case in ('stage_ready_crash', 'member_link_crash', 'member_link_before_event', 'member_unlink_crash', 'lease_truncate_crash', 'lease_write_crash'):
         assert cloud.calls == transport_calls  # Durable stage proof avoids new transfer.
     assert outcome['decision'] == 'restored' and reservation.released
     assert len(allocations) == (2 if certificate_case == 'before_stage_crash' else 1)
