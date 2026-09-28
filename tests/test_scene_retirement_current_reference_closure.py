@@ -40,3 +40,22 @@ def test_native_intent_provenance_preserves_exact_raw_owner_tuple(monkeypatch,ch
             engine._current_plan({'reference_context':context},consent,retained,allowance,lambda:200,lambda:0)
     else:
         assert engine._current_plan({'reference_context':context},consent,retained,allowance,lambda:200,lambda:0)==fresh
+
+
+def test_genuine_hashed_participant_subset_is_not_a_complete_consumer_cohort(monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement as engine
+    from tests.test_scene_retirement_connected_acceptance import _installed_cohort
+    rows=_installed_cohort()
+    assert len(rows)>1
+    entered=[]
+    monkeypatch.setattr(engine.importlib,'import_module',lambda name:entered.append(name))
+    allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
+    with pytest.raises(ValueError,match='scene_retirement_cohort_unproven'):
+        engine._installed_cohort({'consumer_cohort':[rows[0]]},allowance)
+    assert entered==[], 'missing fixed consumer coverage must refuse before a target import'
+
+
+def test_fixed_cohort_catalogue_covers_every_actual_participating_entrypoint():
+    from blueprint_pipeline import task_evaluation_scene_retirement as engine
+    from tests.test_scene_retirement_connected_acceptance import _installed_cohort
+    assert engine._REQUIRED_COHORT==frozenset(row['entrypoint'] for row in _installed_cohort())
