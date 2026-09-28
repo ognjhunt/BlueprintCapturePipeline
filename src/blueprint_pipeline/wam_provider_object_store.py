@@ -628,7 +628,11 @@ def _s3_absence_confirmed(client: Any, *, bucket: str, key: str) -> dict[str, An
 def _promotion_gate(
     client: Any, *, bucket: str, key: str, role: str, receipt: Mapping[str, Any] | None
 ) -> dict[str, Any]:
-    """HEAD one staged output or witness key and apply the promotion gate to it."""
+    """HEAD one staged output or witness key and apply the promotion gate to it.
+
+    A versioned store's non-null ``VersionId`` is kept on a delete decision, so
+    the delete removes exactly the version whose identity the gate matched.
+    """
 
     try:
         head: dict[str, Any] | None = _mapping(client.head_object(Bucket=bucket, Key=key))
@@ -641,7 +645,11 @@ def _promotion_gate(
         size if isinstance(size, int) and not isinstance(size, bool) else -1,
         _string(head.get("ETag")),
     )
-    return promotion_gate_decision(receipt, role=role, key=key, present=present)
+    gate = promotion_gate_decision(receipt, role=role, key=key, present=present)
+    version = _string((head or {}).get("VersionId"))
+    if gate["decision"] == "deleted_after_promotion_receipt" and version not in {"", "null"}:
+        gate["version_id"] = version
+    return gate
 
 
 def _staging_store_values(
@@ -888,11 +896,14 @@ def cleanup_staged_wam_provider_objects(
                         if absence.get("absence_confirmed") is not True:
                             attempt_blockers.append(gate["reason"])
                         continue
-                    client.delete_object(Bucket=bucket_value, Key=key)
+                    version = gate.pop("version_id", None) if gate is not None else None
+                    client.delete_object(
+                        Bucket=bucket_value, Key=key, **({"VersionId": version} if version else {})
+                    )
                     absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
                     row = {"key_sha256": key_sha256, "absence": absence}
                     if gate is not None:
-                        row["promotion_gate"] = gate
+                        row["promotion_gate"] = {**gate, **({"version_pinned": True} if version else {})}
                     cleanup_rows.append(row)
                     if absence.get("absence_confirmed") is not True:
                         attempt_blockers.append("staged_object_absence_unverified")

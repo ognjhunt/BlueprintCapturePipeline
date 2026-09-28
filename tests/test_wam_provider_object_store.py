@@ -1418,6 +1418,8 @@ class _GatedSpaces:
     def __init__(self, objects: dict[str, tuple[int, str]]) -> None:
         self.objects = dict(objects)
         self.calls: list[tuple[str, str]] = []
+        self.version_ids: dict[str, str] = {}  # a versioned bucket reports these on HEAD
+        self.delete_arguments: list[tuple[str, dict]] = []
 
     def head_object(self, *, Bucket: str, Key: str):
         self.calls.append(("head", Key))
@@ -1427,10 +1429,14 @@ class _GatedSpaces:
                 "ResponseMetadata": {"HTTPStatusCode": 404}, "Error": {"Code": "NoSuchKey"}}
             raise error
         size, etag = self.objects[Key]
-        return {"ContentLength": size, "ETag": etag, "ResponseMetadata": {"HTTPStatusCode": 200}}
+        head = {"ContentLength": size, "ETag": etag, "ResponseMetadata": {"HTTPStatusCode": 200}}
+        if Key in self.version_ids:
+            head["VersionId"] = self.version_ids[Key]
+        return head
 
-    def delete_object(self, *, Bucket: str, Key: str):
+    def delete_object(self, *, Bucket: str, Key: str, **extra):
         self.calls.append(("delete", Key))
+        self.delete_arguments.append((Key, extra))
         self.objects.pop(Key, None)
         return {"ResponseMetadata": {"HTTPStatusCode": 204}}
 
@@ -1576,3 +1582,25 @@ def test_gated_cleanup_defers_a_present_object_whose_identity_differs_from_the_r
     client.objects[keys["output"]] = (100, "e1")
     assert _gated_cleanup(tmp_path, job)["all_objects_absent"] is True
     assert keys["output"] not in client.objects
+
+
+def test_gated_cleanup_deletes_the_exact_version_it_headed(tmp_path: Path, monkeypatch) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (100, '"e1"')},
+                                   witness=True)
+    client.objects[keys["paired_witness"]] = (50, '"w1"')
+    client.version_ids = {keys["output"]: "3HL4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY"}
+    _receipt(job, keys, output=("promoted", [(100, '"e1"')]),
+             paired_witness=("redundant_with_promoted_output", [(50, '"w1"')]))
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert result["all_objects_absent"] is True
+    # The versioned object is deleted by the version the gate matched, so a
+    # re-upload landing between the HEAD and the delete is never removed.
+    assert dict(client.delete_arguments) == {
+        keys["bundle"]: {}, keys["output"]: {"VersionId": "3HL4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY"},
+        keys["paired_witness"]: {}}
+    output_row = next(row for row in result["objects"]
+                      if row["key_sha256"] == hashlib.sha256(keys["output"].encode()).hexdigest())
+    assert output_row["promotion_gate"] == {"decision": "deleted_after_promotion_receipt",
+                                            "version_pinned": True}
