@@ -15,7 +15,7 @@ first writer wins; a pin is never rewritten except to record its release.
 
 from __future__ import annotations
 
-from .task_evaluation_scene_retirement_access import scene_participant, scene_access
+import functools
 import json
 import os
 import re
@@ -37,6 +37,18 @@ _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}\Z")
 
 class ControlPlaneStoragePinError(RuntimeError):
     """A pin could not be written or read safely."""
+
+
+def scene_participant():
+    """Keep pin observers leaf-only; admit mutations through the real lifetime fence."""
+    def decorate(function):
+        @functools.wraps(function)
+        def admitted(*args, **kwargs):
+            from .task_evaluation_scene_retirement_access import scene_participant as participant
+            return participant()(function)(*args, **kwargs)
+        admitted.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'
+        return admitted
+    return decorate
 
 
 def pins_root_from_environment(environ: Mapping[str, str] = os.environ) -> Path | None:
@@ -115,6 +127,8 @@ def write_storage_pin(
     on_created: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Pin ``paths`` for ``owner_id``; an existing pin is returned unchanged."""
+
+    from .task_evaluation_scene_retirement_access import scene_access
 
     kind, owner_id = _validated_owner(kind, owner_id)
     if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or ttl_seconds <= 0:
