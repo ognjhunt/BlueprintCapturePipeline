@@ -108,7 +108,9 @@ def _kept_reason(group: dict[str, Any], holders: Sequence[dict[str, Any]]) -> st
     if group["nlink"] > len(group["names"]):
         # Every lookahead's names are counted, so a link beyond them is outside every lookahead.
         return "linked_outside_lookaheads"
-    if group["nlink"] != len(group["names"]) or any(holders[index]["gate"] for index in holding):
+    if any(holders[index]["gate"] for index in holding):
+        return "holder_ineligible"
+    if group["nlink"] != len(group["names"]):
         return "not_all_links_in_eligible_lookaheads"
     if any(group["mtime_ns"] > holders[index]["report_mtime_ns"] for index in holding):
         return "newer_than_report"
@@ -167,7 +169,7 @@ def plan_shared_scratch(
         else:
             candidates.append(group)
     return {"clock": now, "minimum_closed_seconds": minimum_closed_seconds, "holders": holders,
-            "candidates": candidates, "kept": kept}
+            "involved": involved, "candidates": candidates, "kept": kept}
 
 
 def _first_path(group: dict[str, Any], holders: Sequence[dict[str, Any]]) -> str:
@@ -357,6 +359,12 @@ def reclaim_shared_scratch(
         counted["groups"] += 1
         counted["bytes"] += group["size_bytes"]
     block["kept_by_reason"] = dict(sorted(by_reason.items()))
+    # Every replay holding a name of a group two or more hold, by the gate it failed.
+    gates: dict[str, int] = {}
+    for index in plan["involved"]:
+        gate = plan["holders"][index]["gate"] or "eligible"
+        gates[gate] = gates.get(gate, 0) + 1
+    block["holders_by_gate"] = dict(sorted(gates.items()))
     _capped(block, "candidates", [_row(group, plan["holders"]) for group in plan["candidates"]])
     _capped(block, "kept", [_row(group, plan["holders"], reason) for group, reason in kept])
     return block

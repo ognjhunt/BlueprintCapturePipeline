@@ -273,3 +273,62 @@ def test_shared_group_with_a_link_outside_the_lookaheads_is_kept_and_reported(tm
                    "nlink": 4, "size_bytes": in_store.stat().st_size}
     assert (block["candidate_groups"], block["removed_groups"]) == (1, 1)
     assert all(path.exists() for path in (*kept, in_store, outside)) and not any(path.exists() for path in gone)
+
+
+def test_shared_group_is_kept_when_any_holder_is_active_or_unfinished(tmp_path, monkeypatch, process_table) -> None:
+    """A replay holding a name is eligible exactly when the per-replay rule would take its scratch
+    inputs: a finished parent report that says it ran there, with no paid execution and no provider
+    mutation, closed for the phase's hour, and no live reader. One holder failing a gate keeps the
+    whole group, and the report counts the holders by the gate each failed. An unreadable process
+    inventory proves nothing is unreferenced, so it keeps everything."""
+
+    from tests.test_completed_replay_cache_retention import _refuse_reading
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    anchor = _replay(parent_root, "scene-841007-preparation", "parent-a-1")
+    finished = _replay(parent_root, "scene-841007-preparation", "parent-a-2")
+    holders = {
+        "active": _replay(parent_root, "scene-841012-preparation", "parent-b-1"),
+        "running": _replay(parent_root, "scene-841012-preparation", "parent-b-2"),
+        "paid": _replay(parent_root, "scene-841019-preparation", "parent-c-1", paid_execution_requested=True),
+        "recent": _replay(parent_root, "scene-841019-preparation", "parent-c-2", closed_seconds_ago=1800),
+        # Before 2026-09-05 a parent report recorded no scratch queue, so it cannot say it ran there.
+        "unbound": _replay(parent_root, "scene-841023-preparation", "parent-d-1", scratch_queue_root=None),
+    }
+    (holders["running"] / "stage_replay_report.v1.json").unlink()
+    kept, sizes = [], 0
+    for name, holder in holders.items():
+        blob = _store_blob(tmp_path, f"shared with the {name} replay".encode() * 20)
+        kept += [*_linked(blob, anchor, f"prep-a/{name}.usd"), *_linked(blob, holder)]
+        sizes += blob.stat().st_size
+        _moved(blob)
+    between = _store_blob(tmp_path, b"held by two ineligible replays" * 20)
+    kept += [*_linked(between, holders["running"]), *_linked(between, holders["recent"])]
+    sizes += between.stat().st_size
+    free = _store_blob(tmp_path, b"held by two finished replays" * 20)
+    gone = [*_linked(free, anchor), *_linked(free, finished)]
+    free_size = free.stat().st_size
+    _moved(between, free)
+    reader = process_table / "4242"
+    (reader / "fd").mkdir(parents=True)
+    (reader / "cmdline").write_bytes(b"python")
+    (reader / "environ").write_bytes(b"")
+    (reader / "fd" / "3").symlink_to(holders["active"] / "prepared-references")
+
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"holder_ineligible": {"groups": 6, "bytes": sizes}}
+    assert block["holders_by_gate"] == {"eligible": 2, "active_reference": 1, "no_finished_report": 2,
+                                        "closed_too_recently": 1, "report_not_parent_replay": 1}
+    assert (block["removed_groups"], block["removed_bytes"]) == (1, free_size)
+    assert all(path.exists() for path in kept) and not any(path.exists() for path in gone)
+
+    last = _store_blob(tmp_path, b"held by two finished replays, checked blind" * 20)
+    blind = [*_linked(last, anchor), *_linked(last, finished)]
+    _moved(last)
+    _refuse_reading(monkeypatch, reader / "environ", PermissionError(13, "Permission denied"))
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"]["holder_ineligible"]["groups"] == 7 and block["removed_groups"] == 0
+    assert "eligible" not in block["holders_by_gate"]
+    assert all(path.exists() for path in blind)
