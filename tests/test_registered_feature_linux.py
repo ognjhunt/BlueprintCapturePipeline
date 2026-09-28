@@ -520,7 +520,7 @@ HTTPServer((a.host,a.port),Handler).serve_forever()
         grant["intent_id"],
         expected_intent=grant["intent"],
         installed_config_path=value["config"],
-        now=lambda: now + 1,
+        now=time.time,
     )
     issuance.issue_experiment_producer_bootstrap(
         grant["intent_id"],
@@ -528,7 +528,7 @@ HTTPServer((a.host,a.port),Handler).serve_forever()
         expected_intent_size_bytes=grant["intent"]["size_bytes"],
         request_paths=paths,
         installed_config_path=value["config"],
-        now=lambda: now + 2,
+        now=time.time,
     )
     result = contained.run_registered_experiment(
         grant["intent_id"], expected_intent=grant["intent"], installed_config_path=value["config"]
