@@ -18,15 +18,110 @@ def _require(condition):
         raise RetainedEmissionBudgetError('retained_lineage_emission_limit')
 
 
-def _measure(value, limit, *, reserve_proofs=False):
+def _work(budget):
+    if budget is not None:
+        from .control_plane_reference_budget import ReferenceCollectionBudget
+        _require(type(budget) is ReferenceCollectionBudget)
+        budget.tick()
+
+
+def _work_kwargs(budget):
+    return {} if budget is None else {'work_budget': budget}
+
+
+def _work_items(values, budget):
+    """Guard the next bounded work item before a comprehension expands it."""
+    iterator = iter(values)
+    while True:
+        if isinstance(values, str):
+            budget.tick()
+        else:
+            budget.available('values', 1)
+        try:
+            value = next(iterator)
+        except StopIteration:
+            return
+        if not isinstance(values, str):
+            budget.charge('values')
+        yield value
+
+
+def _work_rows(values, budget, native=None):
+    iterator = iter(values)
+    while True:
+        budget.available('rows', 1)
+        budget.available('facts', 1)
+        if native is not None:
+            native()
+        try:
+            row = next(iterator)
+        except StopIteration:
+            return
+        yield row
+
+
+def _work_order(budget, function, values, *args, **kwargs):
+    budget.tick()
+    retained = []
+    for value in _work_items(values, budget):
+        retained.append(value)
+    result = function(retained, *args, **kwargs)
+    budget.tick()
+    return result
+
+
+def _work_sort(budget, values, *args, **kwargs):
+    budget.tick()
+    budget.available('values', len(values))
+    for _ in _work_items(values, budget):
+        pass
+    values.sort(*args, **kwargs)
+    budget.tick()
+
+
+def _work_call(budget, function, *args, **kwargs):
+    """Bound a pure imported encoder/validator at its caller, without changing it."""
+    _work(budget)
+    if args:
+        budget.measure(args[0], cap=budget.limits['output_bytes'] - budget.counts['output_bytes'])
+    result = function(*args, **kwargs)
+    budget.tick()
+    return result
+
+
+def _work_parse(budget, function, text, **kwargs):
+    from functools import partial
+    for name in ('object_pairs_hook', 'parse_int', 'parse_float'):
+        hook = kwargs.get(name)
+        if hook is not None and getattr(hook, '__name__', '') in {'_pairs', '_numeric'}:
+            kwargs[name] = partial(hook, work_budget=budget)
+    budget.preflight(text)
+    result = function(text, **kwargs)
+    budget.tick()
+    budget.measure(result)
+    return result
+
+
+def _work_hash(budget, function, raw):
+    budget.tick()
+    result = function(raw)
+    budget.tick()
+    return result
+
+
+def _measure(value, limit, *, reserve_proofs=False, work_budget=None):
     """Measure compact UTF8 without encoding whole strings/documents or fans."""
     size, pending = 0, [iter((value,))]
     while pending:
+        if work_budget is not None:
+            work_budget.available('values', 1)
         try:
             item = next(pending[-1])
         except StopIteration:
             pending.pop()
             continue
+        if work_budget is not None:
+            work_budget.charge('values')
         if isinstance(item, dict):
             size += 2 + max(0, len(item) - 1) + len(item)
             if reserve_proofs and {'role', 'path', 'sha256', 'size_bytes', 'seal_field', 'seal_digest'} <= item.keys():
@@ -49,6 +144,8 @@ def _measure(value, limit, *, reserve_proofs=False):
             _require(len(item) <= limit - size)
             size += 2
             for char in item:
+                if work_budget is not None:
+                    work_budget.tick()
                 code = ord(char)
                 _require(not 0xD800 <= code <= 0xDFFF)
                 size += (2 if char in '"\\\b\f\n\r\t' else 6 if code < 32 else
@@ -68,7 +165,9 @@ def _measure(value, limit, *, reserve_proofs=False):
 
 
 class RetainedEmissionBudget:
-    def __init__(self, *, max_bytes, max_rows, max_references, _ancestors=()):
+    def __init__(self, *, max_bytes, max_rows, max_references, _ancestors=(), work_budget=None):
+        _work(work_budget)
+        self.work_budget = work_budget
         _require(all(type(value) is int and value >= 0 for value in (max_bytes, max_rows, max_references)))
         self.caps = {'bytes': max_bytes, 'rows': max_rows, 'references': max_references}
         self.used = dict.fromkeys(self.caps, 0)
@@ -76,31 +175,50 @@ class RetainedEmissionBudget:
 
     @property
     def remaining_bytes(self):
-        return min(s.caps['bytes'] - s.used['bytes'] for s in (*self.ancestors, self))
+        remaining = min(s.caps['bytes'] - s.used['bytes'] for s in (*self.ancestors, self))
+        if self.work_budget is not None:
+            self.work_budget.tick()
+            remaining = min(remaining, self.work_budget.limits['output_bytes'] - self.work_budget.counts['output_bytes'])
+        return remaining
 
     def scope(self, *, max_bytes, max_rows, max_references):
         return RetainedEmissionBudget(max_bytes=max_bytes, max_rows=max_rows, max_references=max_references,
-                                      _ancestors=(*self.ancestors, self))
+                                      _ancestors=(*self.ancestors, self), work_budget=self.work_budget)
 
     def reserve_row(self, row, *, reference=False):
+        if self.work_budget is not None:
+            self.work_budget.available('rows', 1)
+            self.work_budget.available('facts', 1)
         scopes = (*self.ancestors, self)
         for scope in scopes:
             _require(scope.used['rows'] < scope.caps['rows'])
             _require(not reference or scope.used['references'] < scope.caps['references'])
-        size = _measure(row, self.remaining_bytes, reserve_proofs=True)
+        size = _measure(row, self.remaining_bytes, reserve_proofs=True, work_budget=self.work_budget)
+        if self.work_budget is not None:
+            self.work_budget.charge('rows')
+            self.work_budget.charge('facts')
+            self.work_budget.charge('output_bytes', size)
         for scope in scopes:
             scope.used['bytes'] += size
             scope.used['rows'] += 1
             scope.used['references'] += int(reference)
 
+    def available_occurrence(self, *, reference=False):
+        for scope in (*self.ancestors, self):
+            _require(scope.used['rows'] < scope.caps['rows'])
+            _require(not reference or scope.used['references'] < scope.caps['references'])
+
     def preflight_row(self, row, native_remaining, *, reference=False):
+        if self.work_budget is not None:
+            self.work_budget.available('rows', 1)
+            self.work_budget.available('facts', 1)
         # No counter change. Fail shared occurrence caps and stream the row
         # under min(native,parent) before the legacy stack-based measurement.
         for scope in (*self.ancestors, self):
             _require(scope.used['rows'] < scope.caps['rows'])
             _require(not reference or scope.used['references'] < scope.caps['references'])
         effective = min(native_remaining, self.remaining_bytes)
-        _measure(row, effective, reserve_proofs=True)
+        _measure(row, effective, reserve_proofs=True, work_budget=self.work_budget)
         return effective
 
     def reserve_reference(self, row):
@@ -114,7 +232,7 @@ class RetainedEmissionBudget:
 
     def check_document(self, value):
         # Framing check only. Each emission must already have been charged.
-        _measure(value, min(scope.caps['bytes'] for scope in (*self.ancestors, self)))
+        _measure(value, min(scope.caps['bytes'] for scope in (*self.ancestors, self)), work_budget=self.work_budget)
 
 
 class _Rows(list):
@@ -128,6 +246,9 @@ class _Rows(list):
         super().append(row)
 
     def extend(self, values):
+        if self.budget.work_budget is not None:
+            values = _work_rows(values, self.budget.work_budget,
+                                lambda: self.budget.available_occurrence(reference=self.reference))
         for row in values:
             self.append(row)
 

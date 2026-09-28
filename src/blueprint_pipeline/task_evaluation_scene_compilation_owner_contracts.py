@@ -1,6 +1,8 @@
 """Pure retained compilation metadata primitives; ADP-009D/day28."""
 from __future__ import annotations
 
+from .task_evaluation_scene_lineage_budget import _work, _work_items, _work_kwargs
+
 from . import task_evaluation_scene_source_family_contracts as retained
 from .task_evaluation_scene_lineage_budget import RetainedEmissionBudgetError
 
@@ -86,22 +88,30 @@ class SceneCompilationOwnerInventoryError(ValueError):
     """Fixed refusal without private supplied text."""
 
 
-def require(condition, code):
+def require(condition, code, *, work_budget=None):
+    if work_budget is not None:
+        _work(work_budget)
     if not condition:
         raise SceneCompilationOwnerInventoryError('scene_compilation_owner_' + code)
 
 
-def text(value, maximum=192):
-    require(isinstance(value, str) and 0 < len(value) <= maximum and len(value.encode('utf-8')) <= maximum, 'text_invalid')
+def text(value, maximum=192, *, work_budget=None):
+    if work_budget is not None:
+        _work(work_budget)
+    require(isinstance(value, str) and 0 < len(value) <= maximum and len(value.encode('utf-8')) <= maximum, 'text_invalid', **_work_kwargs(work_budget))
     return value
 
 
 class Context(retained.Context):
-    def known(self, role, schema=None, seal_field=None):
+    def known(self, role, schema=None, seal_field=None, *, work_budget=None):
+        if work_budget is None:
+            work_budget = getattr(self, "work_budget", None)
+        if work_budget is not None:
+            _work(work_budget)
         if schema is None:
             schema, seal_field = SCHEMAS[role]
         rows = super().known(role, schema, seal_field)
-        for row in rows:
+        for row in (_work_items(rows, work_budget) if work_budget is not None else rows):
             if role == 'native_preparation_results' and row[0].get('status') in {
                     'inputs_materialized_awaiting_construction_adapter', 'queued_for_production_episode_compilation'}:
                 allowed = PREPARATION_BASE_FIELDS | {'policy_run_plan'}
@@ -113,36 +123,58 @@ class Context(retained.Context):
                 self.fields(row, FIELD_SETS[role])
         return rows
 
-    def fields(self, row, allowed):
+    def fields(self, row, allowed, *, work_budget=None):
+        if work_budget is None:
+            work_budget = getattr(self, "work_budget", None)
+        if work_budget is not None:
+            _work(work_budget)
         if not hasattr(self, 'unsupported_records'):
             self.unsupported_records = set()
         if set(row[0]) - allowed:
-            key = tuple(row[1][k] for k in ('role', 'path', 'sha256', 'size_bytes'))
+            key = tuple(row[1][k] for k in (_work_items(('role', 'path', 'sha256', 'size_bytes'), work_budget) if work_budget is not None else ('role', 'path', 'sha256', 'size_bytes')))
             if key not in self.unsupported_records:
                 self.unsupported_records.add(key)
                 self.missing(row[1]['role'], 'unsupported_retained_field_set', [row[1]])
         return self.supported(row)
 
-    def supported(self, row):
-        key = tuple(row[1][k] for k in ('role', 'path', 'sha256', 'size_bytes'))
+    def supported(self, row, *, work_budget=None):
+        if work_budget is None:
+            work_budget = getattr(self, "work_budget", None)
+        if work_budget is not None:
+            _work(work_budget)
+        key = tuple(row[1][k] for k in (_work_items(('role', 'path', 'sha256', 'size_bytes'), work_budget) if work_budget is not None else ('role', 'path', 'sha256', 'size_bytes')))
         known = SCHEMAS.get(row[1]['role'])
         return (known is None or 'json_pointer' in row[1] or row[0].get('schema_version') == known[0]) and key not in getattr(self, 'unsupported_records', ())
 
-    def selected(self, reference, source, roles=None, *, positive=True):
+    def selected(self, reference, source, roles=None, *, positive=True, work_budget=None):
+        if work_budget is None:
+            work_budget = getattr(self, "work_budget", None)
+        if work_budget is not None:
+            _work(work_budget)
         row = super().selected(reference, source, roles, positive=positive)
         if row and row[1]['role'] in SCHEMAS and row[0].get('schema_version') != SCHEMAS[row[1]['role']][0]:
             self.missing(row[1]['role'], 'unsupported_retained_schema', [row[1]])
             return None
         return row
 
-    def metadata(self, row):
-        require(any(under(row[1]['path'], root) for root in self.metadata_roots), 'metadata_path_invalid')
+    def metadata(self, row, *, work_budget=None):
+        if work_budget is None:
+            work_budget = getattr(self, "work_budget", None)
+        if work_budget is not None:
+            _work(work_budget)
+        require(any(under(row[1]['path'], root, **_work_kwargs(work_budget)) for root in (_work_items(self.metadata_roots, work_budget) if work_budget is not None else self.metadata_roots)), 'metadata_path_invalid', **_work_kwargs(work_budget))
 
-    def canonical(self, role, digest, source, expected=None):
+    def canonical(self, role, digest, source, expected=None, *, work_budget=None):
+        if work_budget is None:
+            work_budget = getattr(self, "work_budget", None)
+        if work_budget is not None:
+            _work(work_budget)
         self.missing(role, 'canonical_selector_bytes_unavailable', [source], expected, {'canonical_digest': digest})
 
 
-def translate(exc):
+def translate(exc, *, work_budget=None):
+    if work_budget is not None:
+        _work(work_budget)
     if isinstance(exc, RetainedEmissionBudgetError):
         return SceneCompilationOwnerInventoryError('scene_compilation_owner_output_limit')
     if isinstance(exc, (retained.SceneSourceFamilyInventoryError, retained.c.SceneDownstreamInventoryError)):
