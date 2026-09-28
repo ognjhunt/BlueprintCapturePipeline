@@ -302,7 +302,7 @@ def preserve(files, config, target, rows, manifest_raw, guard):
             client.close()
 
 
-def verify_preservation(files, config, preservation, guard):
+def verify_preservation(files, config, preservation, guard, *, _payload_target=None):
     """An old ready pointer must still prove complete remote bytes on recovery."""
     _require(isinstance(preservation, dict) and set(preservation) == {'uri', 'sha256', 'size_bytes',
         'remote_identity_verified', 'full_byte_service_account_readback_passed', 'readback_sha256', 'readback_size_bytes'}
@@ -312,6 +312,8 @@ def verify_preservation(files, config, preservation, guard):
         and preservation['size_bytes'] == preservation['readback_size_bytes'], 'experiment_archive_receipt_invalid')
     controller = _Controller(guard, preservation['size_bytes'], _origin=getattr(files, 'controller_origin', None))
     client, bucket = _client(files, config)
+    if type(files) is actions._ActionFiles and _payload_target is not None:
+        files.payload(*_payload_target, expected_payload_bytes=preservation['size_bytes'])
     key = remote.LARGE_ARTIFACT_KEY_PREFIX + '/lane-experiment/sha256/' + preservation['sha256'][7:] + '/archive.bin'
     guarded = _LaneArchiveClient(client, bucket, key, controller)
     try:

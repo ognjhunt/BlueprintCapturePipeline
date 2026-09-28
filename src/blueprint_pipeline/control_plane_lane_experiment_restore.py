@@ -19,7 +19,9 @@ from . import control_plane_lane_scratch as scratch
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_disk_budget import reserve_control_plane_disk
 from .control_plane_lane_experiment_authority import _current
-from .control_plane_lane_experiment_publication import _BirthFiles, _publish
+from .control_plane_lane_experiment_publication import _BirthFiles
+from .control_plane_lane_experiment_actions import _publish
+from .control_plane_lane_experiment_work import _ActionFiles
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .decision_evidence_contracts import canonical_digest
@@ -228,8 +230,10 @@ def _stage_archive(files, config, target, target_fd, action, selection, manifest
     ready_path = Path(config.experiment_record_store) / 'operations' / selection['original_operation_id'] / 'e-00001.json'
     _, ready = _document(files, ready_path, 32768, selector=action['preservation'])
     preserved = ready['body']['archive']
-    archive.verify_preservation(files, config, preserved, guard)
-    controller = archive._Controller(guard, preserved['size_bytes'])
+    archive.verify_preservation(files, config, preserved, guard, _payload_target=(target, target_fd))
+    if type(files) is _ActionFiles:
+        files.phase("restore_admission")
+    controller = archive._Controller(guard, preserved['size_bytes'], _origin=getattr(files, "controller_origin", None))
     client, bucket = archive._client(files, config)
     uri = urlsplit(preserved['uri'])
     _require(uri.scheme == 's3' and uri.netloc == bucket, 'experiment_archive_target_changed')
@@ -238,6 +242,9 @@ def _stage_archive(files, config, target, target_fd, action, selection, manifest
     stage_name = '.restore-' + action['action_id']
     stage = _new_directory(files, target_fd, stage_name)
     stage_path = target / stage_name
+    if type(files) is _ActionFiles:
+        files.parents[stage_path] = stage
+        files.payload(target, target_fd, expected_payload_bytes=preserved["size_bytes"])
     directory_modes, staged = {}, []
     digest = hashlib.sha256()
     buffer, read_count = bytearray(), 0
@@ -407,13 +414,14 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
 
 
 def restore(action_id, *, expected_restore_intent, installed_config_path, now, pins_root):
-    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    files = _ActionFiles(now=now)
     reservation = None
     try:
         issued = now()
         config, gid = actions._context(files, installed_config_path, issued)
         _require(config.experiment_retirement_enabled is True, 'experiment_retirement_disabled')
         action = _restore_intent(files, config, action_id, expected_restore_intent, issued)
+        files.bind_deadline(action["expires_at_epoch"])
         public, current, entry = actions._selected(files, config, action['intent_id'], issued, gid)
         if entry['state'] == 'active' and entry['restoration'] is not None:
             return _activated(files, config, gid, action, expected_restore_intent, public, current, entry, issued, pins_root)
@@ -479,13 +487,17 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         stage, stage_name, staged, directory_modes = _stage_archive(files, config, target, target_fd,
             action, selection, manifest_raw, rows, guard)
         previous, index = started, 1
-        for relative, before in sorted(directory_modes.items(), key=lambda item: (len(Path(item[0]).parts), item[0])):
+        for directory_index, (relative, before) in enumerate(sorted(directory_modes.items(), key=lambda item: (len(Path(item[0]).parts), item[0]))):
+            if directory_index % 16 == 0:
+                files.phase('restore_directories')
             guard()
             parent, name = files.parent(target / relative)
             fd = _new_directory(files, parent, name)
             _owner_mode(files, fd, before[1], before[2], stat.S_IMODE(before[0]))
             files.close(fd)
-        for relative, before, sha in sorted(staged, key=lambda item: item[0]):
+        for member_index, (relative, before, sha) in enumerate(sorted(staged, key=lambda item: item[0])):
+            if member_index % 16 == 0:
+                files.phase('restore_batch')
             guard()
             source_parent, source_name = files.parent(target / stage_name / relative)
             destination_parent, name = files.parent(target / relative)
@@ -518,21 +530,26 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                 os.fsync(source_parent)
             finally:
                 files.close(fd)
-        for relative in sorted(directory_modes, key=lambda value: (len(Path(value).parts), value), reverse=True):
+        for cleanup_index, relative in enumerate(sorted(directory_modes, key=lambda value: (len(Path(value).parts), value), reverse=True)):
+            if cleanup_index % 16 == 0:
+                files.phase('restore_cleanup')
             parent, name = files.parent(target / stage_name / relative)
             child = files.open(name, os.O_RDONLY | os.O_DIRECTORY, parent=parent)
             files.location(child)
             files.location(parent)
             os.rmdir(name, dir_fd=parent)
+            files.removed_directory(target / stage_name / relative, child)
             files.close(child)
             files.location(parent)
             os.fsync(parent)
         files.location(stage)
         files.location(target_fd)
         os.rmdir(stage_name, dir_fd=target_fd)
+        files.removed_directory(target / stage_name, stage)
         files.close(stage)
         files.location(target_fd)
         os.fsync(target_fd)
+        files.phase("finalize")
         new_lease = lease | {'renewed_at_epoch': issued, 'expires_at_epoch': action['new_lease_expires_at_epoch']}
         payload = actions._encoded(new_lease, 'lease_digest', scratch.MAX_LEASE_BYTES)
         _require(scratch._lease_fields_valid(json.loads(payload)), 'experiment_restore_lease_invalid')
