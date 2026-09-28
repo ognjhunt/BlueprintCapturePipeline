@@ -7,6 +7,7 @@ import math
 import os
 import re
 import stat
+import sys
 import tarfile
 import time
 from pathlib import Path
@@ -200,18 +201,29 @@ def read_archive_chunks(transport,uri,allowance):
     allowance.tick()
     charged=getattr(transport,'read_archive_charged',None)
     source=iter(charged(uri,allowance) if charged is not None else transport.read_archive(uri))
-    while True:
-        allowance.tick()
-        try:
-            chunk=next(source)
-        except StopIteration:
+    try:
+        while True:
             allowance.tick()
-            return
-        allowance.tick()
-        _require(type(chunk) is bytes and 0<len(chunk)<=CHUNK,'scene_retirement_readback_unproven')
-        if charged is None:
-            allowance.charge('remote_bytes',len(chunk))
-        yield chunk
+            try:
+                chunk=next(source)
+            except StopIteration:
+                allowance.tick()
+                return
+            allowance.tick()
+            _require(type(chunk) is bytes and 0<len(chunk)<=CHUNK,'scene_retirement_readback_unproven')
+            if charged is None:
+                allowance.charge('remote_bytes',len(chunk))
+            yield chunk
+    finally:
+        close=getattr(source,'close',None)
+        if close is not None:
+            incoming=sys.exc_info()[1]
+            try:
+                close()  # Known remote cleanup remains independent of expiry.
+            except Exception:
+                if incoming is None or isinstance(incoming,GeneratorExit):
+                    raise SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
+                incoming.add_note('scene_retirement_remote_cleanup_unproven')
 
 
 def preserve_members(paths, *, transport, allowance, token):
@@ -259,12 +271,16 @@ def preserve_members(paths, *, transport, allowance, token):
              and _SHA.fullmatch(archive['sha256']) and archive['sha256'] == 'sha256:'+digest.hexdigest())
     verified, received = hashlib.sha256(), 0
     allowance.tick()
-    for chunk in read_archive_chunks(transport,archive['uri'],allowance):
-        allowance.tick()
-        _require(type(chunk) is bytes and 0 < len(chunk) <= CHUNK,'scene_retirement_readback_unproven')
-        received += len(chunk)
-        _require(received <= sent[0],'scene_retirement_readback_unproven')
-        verified.update(chunk)
+    stream=read_archive_chunks(transport,archive['uri'],allowance)
+    try:
+        for chunk in stream:
+            allowance.tick()
+            _require(type(chunk) is bytes and 0 < len(chunk) <= CHUNK,'scene_retirement_readback_unproven')
+            received += len(chunk)
+            _require(received <= sent[0],'scene_retirement_readback_unproven')
+            verified.update(chunk)
+    finally:
+        stream.close()
     allowance.tick()
     _require(received == sent[0] and verified.digest() == digest.digest(),'scene_retirement_readback_unproven')
     archive = dict(archive,fresh_readback_sha256='sha256:'+verified.hexdigest(),fresh_readback_size_bytes=received)

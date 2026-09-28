@@ -26,6 +26,16 @@ class _ArchiveReader:
         self.done=False
 
     def read(self,size):
+        try:
+            return self._read(size)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        self.source.close()
+
+    def _read(self,size):
         _require(type(size) is int and 0<=size<=CHUNK,'scene_retirement_readback_unproven')
         while len(self.buffer)<size and not self.done:
             self.allowance.tick()
@@ -94,6 +104,8 @@ def _consume(preserved,transport,allowance,file_sink=None):
         _require(seen==expected.keys(),'scene_retirement_readback_unproven')
     except (tarfile.TarError,EOFError,UnicodeError) as error:
         raise ValueError('scene_retirement_readback_unproven') from error
+    finally:
+        reader.close()
 
 
 def _verify_restored(preserved,roots,directory_identities,file_identities,allowance):
