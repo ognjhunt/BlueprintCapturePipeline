@@ -228,11 +228,11 @@ PHASES = (
     "scratch_directories",
     "workspace_bundles",
     "replay_caches",
-    "scene_workspaces",
+    "scene_workspaces", "lane_scratch",
 )
 OPT_INS = (
     "evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "extended_pin_proofs",
-    "result_residue_offload",
+    "lane_scratch", "result_residue_offload",
 )
 _REMOVED_KEYS = ("removed_bytes", "offloaded_bytes", "retired_bytes")
 _MAX_REASONS = 50
@@ -309,6 +309,27 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
         summary["enabled"] = entry["enabled"]
     if entry.get("status") == "error":
         summary["error_type"] = _typed(entry.get("error"), "Exception", _TYPE_NAME)
+    return summary
+
+
+def _lane_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Count-only observation; private metadata never enters byte rankings."""
+    def nonnegative(value: Any) -> int | None:
+        return value if type(value) is int and value >= 0 else None
+    retained = entry.get("retained_by_reason")
+    summary = {
+        "status": _typed(entry.get("status"), "unrecognized_status"), "mode": "report_only",
+        "complete": entry.get("complete") if type(entry.get("complete")) is bool else None,
+        "apply_supported": False if entry.get("apply_supported") is False else None,
+        "execution_authorized": False if entry.get("execution_authorized") is False else None,
+        "mutations": nonnegative(entry.get("mutations")), "candidate_bytes": None,
+        "removed_or_offloaded_bytes": 0 if type(entry.get("removed_bytes")) is int and entry["removed_bytes"] == 0 else None,
+        "retained_by_reason": {reason: {"count": row["count"], "bytes": None}
+            for reason, row in _reason_rows(retained).items()} if isinstance(retained, Mapping) else None,
+    }
+    for key in ("registered_count", "unregistered_count", "observed_registered_count",
+                "observed_unregistered_count", "logical_bytes", "allocated_bytes"):
+        summary[key] = nonnegative(entry.get(key))
     return summary
 
 
@@ -407,6 +428,9 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     reason_totals: dict[str, int] = {}
     for key in PHASES:
         entry = report.get(key)
+        if key == "lane_scratch" and isinstance(entry, Mapping):
+            phases[key] = _lane_summary(entry)
+            continue
         if key == "result_artifact_offload" and isinstance(entry, list):
             phases[key] = _result_artifact_summary(entry)
         elif isinstance(entry, Mapping):

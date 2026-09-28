@@ -1,5 +1,8 @@
 """scripts/operator_door.py against a real door on a loopback port."""
 
+# Covers (for impacted-test selection):
+#   scripts/operator_door.py
+
 from __future__ import annotations
 
 import importlib.util

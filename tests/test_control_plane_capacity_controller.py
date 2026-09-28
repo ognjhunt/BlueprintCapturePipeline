@@ -372,6 +372,23 @@ def test_reclaim_ineffective_requires_zero_candidates_and_zero_reclaimed(
     assert ineffective is expected_ineffective
 
 
+@pytest.mark.parametrize("lane_complete", [True, False])
+def test_report_only_lane_phase_never_changes_existing_reclaim_outlook(lane_complete):
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+    raw = {"status": "applied", "observed_at_epoch": 50, "skipped_roots": [], "phase_errors": [],
+           "content_store": {"status": "applied", "candidate_bytes": 20, "removed_bytes": 10,
+                             "retained_by_reason": {"protected_pin": {"count": 1, "bytes": 5}}}}
+    baseline = cap._reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked")
+    assert baseline[0]["reclaimable_bytes"] == 20
+    raw["lane_scratch"] = {"status": "report_only", "complete": lane_complete, "candidate_bytes": None,
+                           "removed_bytes": 0, "retained_by_reason": {"references_unknown": {"count": 1, "bytes": None}}}
+    raw["opt_in"] = {"lane_scratch": True}
+    assert cap._reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked") == baseline
+    del raw["content_store"]
+    outlook, reasons, ineffective = cap._reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked")
+    assert outlook["reclaimable_bytes"] is None and not reasons and ineffective is False
+
+
 def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",

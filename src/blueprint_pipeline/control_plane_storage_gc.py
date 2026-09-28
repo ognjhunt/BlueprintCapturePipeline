@@ -85,6 +85,7 @@ from .control_plane_storage_gc_reasons import (
     evidence_protection_reason, live_pin_kinds, pin_protection, walked_bytes,
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
+from .control_plane_lane_scratch_retention import LaneScratchRetentionError, observe_lane_scratch_retention
 # Kept under their old names for every existing caller.
 from .control_plane_storage_references import (  # noqa: F401 - re-exported
     MAX_QUEUE_MESSAGE_BYTES as _MAX_QUEUE_MESSAGE_BYTES,
@@ -126,6 +127,8 @@ EVIDENCE_OFFLOAD_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD"
 EVIDENCE_HOT_WINDOW_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS"
 EVIDENCE_ABANDONED_AFTER_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_ABANDONED_AFTER_SECONDS"
 SCRATCH_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_ROOTS"
+LANE_SCRATCH_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH_ROOTS"
+LANE_SCRATCH_ENV = "BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH"
 DERIVED_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS"
 SCRATCH_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS"
 RUNNING_COMMIT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RUNNING_COMMIT"
@@ -1269,6 +1272,9 @@ def run_storage_gc(
     extended_pin_proofs_enabled: bool = False,
     extended_pin_proofs_alert: str | None = None,
     standing_authorization_dir: str | Path | None = None,
+    lane_scratch_roots: Sequence[str | Path] = (),
+    lane_scratch_enabled: bool = False,
+    lane_scratch_alert: str | None = None,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
@@ -1300,6 +1306,7 @@ def run_storage_gc(
             "scene_workspace_retirement": bool(scene_workspace_retirement_enabled),
             "replay_cache_retention": bool(replay_cache_retention_enabled),
             "extended_pin_proofs": bool(extended_pin_proofs_enabled),
+            "lane_scratch": lane_scratch_enabled if type(lane_scratch_enabled) is bool else False,
         },
         "skipped_roots": [],
     }
@@ -1521,12 +1528,59 @@ def run_storage_gc(
         _isolated(report, "scene_workspaces", scene_phase)
         if scene_workspace_retirement_alert and isinstance(report.get("scene_workspaces"), dict):
             report["scene_workspaces"]["alerts"] = [scene_workspace_retirement_alert]
+    def lane_phase() -> Any:
+        try:
+            if (lane_scratch_alert or not isinstance(lane_scratch_roots, Sequence)
+                    or isinstance(lane_scratch_roots, (str, bytes)) or len(lane_scratch_roots) > 2):
+                raise LaneScratchRetentionError("lane_parameters_invalid")
+            try:
+                roots = tuple(os.fspath(root) for root in lane_scratch_roots)
+            except TypeError:
+                raise LaneScratchRetentionError("lane_parameters_invalid") from None
+            phase = observe_lane_scratch_retention(roots, pins_root=os.fspath(pins_root),
+                observed_at_epoch=observed_at, enabled_requested=lane_scratch_enabled)
+        except LaneScratchRetentionError:
+            # Empty configuration builds a bounded refusal without scanning '/'.
+            phase = observe_lane_scratch_retention((), pins_root="/", observed_at_epoch=observed_at,
+                enabled_requested=lane_scratch_enabled if type(lane_scratch_enabled) is bool else False)
+            phase.update(status="report_only", blockers=["lane_configuration_invalid"])
+        if not phase["complete"] and phase["status"] != "not_configured":
+            report.setdefault("alerts", []).append("lane_scratch_observation_incomplete")
+        return phase
+
+    _isolated(report, "lane_scratch", lane_phase)
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 
 
 def _split_env(name: str) -> list[str]:
     return [item for item in str(os.getenv(name) or "").split(":") if item]
+
+
+class _LaneRoots(argparse.Action):
+    """Keep at most two CLI values; overflow is a local configuration refusal."""
+    def __call__(self, parser: Any, namespace: Any, value: str, option_string: str | None = None) -> None:
+        roots = getattr(namespace, self.dest) or []
+        if len(roots) >= 2:
+            namespace.lane_roots_invalid = True
+        else:
+            roots.append(value)
+        setattr(namespace, self.dest, roots)
+
+
+def _lane_settings(args: Any) -> tuple[tuple[str, ...], bool, str | None]:
+    raw = str(os.getenv(LANE_SCRATCH_ENV) or "").strip().lower()
+    invalid = raw not in {"", "0", "false", "1", "true"} or bool(args.lane_roots_invalid)
+    enabled = raw in {"1", "true"}
+    roots = tuple(args.lane_scratch_root or ())
+    if args.lane_scratch_root is None:
+        configured = str(os.getenv(LANE_SCRATCH_ROOTS_ENV) or "")
+        # Bound before splitting/collecting; paths receive the leaf's stricter policy.
+        if len(configured) > 8193 or configured.count(":") > 1:
+            invalid = True
+        else:
+            roots = tuple(configured.split(":")) if configured else ()
+    return (() if invalid else roots), enabled, "lane_configuration_invalid" if invalid else None
 
 
 def _env_int(name: str, default: int | None) -> int | None:
@@ -1642,6 +1696,9 @@ def _run_main(argv: list[str]) -> int:
     parser.add_argument("--scene-workspace-root", action="append", default=None)
     parser.add_argument("--scene-intent-root", default=os.getenv(SCENE_INTENT_ROOT_ENV) or None)
     parser.add_argument("--scratch-root", action="append", default=None)
+    parser.set_defaults(lane_roots_invalid=False)
+    parser.add_argument("--lane-scratch-root", action=_LaneRoots, default=None,
+                        help="explicit lane parent to observe; always report-only, including with --apply")
     parser.add_argument("--replay-parent-root", action="append", default=None)
     parser.add_argument("--workspace-bundle-root", action="append", default=None)
     parser.add_argument(
@@ -1686,7 +1743,8 @@ def _run_main(argv: list[str]) -> int:
     retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
     replay_enabled, replay_alert = replay_cache_retention_setting()
     extended_enabled, extended_alert = extended_pin_proofs_setting()
-    for alert in (retirement_alert, replay_alert, extended_alert):
+    lane_roots, lane_enabled, lane_alert = _lane_settings(args)
+    for alert in (retirement_alert, replay_alert, extended_alert, lane_alert):
         if alert:
             print(f"storage_gc_alert:{alert}", file=sys.stderr)
     report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
@@ -1731,6 +1789,9 @@ def _run_main(argv: list[str]) -> int:
         replay_cache_retention_alert=replay_alert,
         extended_pin_proofs_enabled=extended_enabled,
         extended_pin_proofs_alert=extended_alert,
+        lane_scratch_roots=lane_roots,
+        lane_scratch_enabled=lane_enabled,
+        lane_scratch_alert=lane_alert,
         # Where launch admission records consumed standing authorizations; unset, no activation is unlaunched.
         standing_authorization_dir=str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip() or None,
         # Per-file digests, so an hourly plan re-reads only what changed.

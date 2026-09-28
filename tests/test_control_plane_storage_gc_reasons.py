@@ -48,6 +48,38 @@ def _noclass(*_args, **_kwargs) -> None:
     return None
 
 
+def test_lane_summary_is_typed_private_and_never_a_byte_forecast():
+    private = "PRIVATE_MARKER"
+    report = {"status": "applied", "observed_at_epoch": NOW, "opt_in": {"lane_scratch": True},
+        "lane_scratch": {"status": "report_only", "complete": True, "enabled_requested": True,
+            "apply_supported": False, "execution_authorized": False, "mutations": 0,
+            "registered_count": 2, "unregistered_count": 1, "observed_registered_count": 2,
+            "observed_unregistered_count": 1, "logical_bytes": 10, "allocated_bytes": 512,
+            "candidate_bytes": 999, "removed_bytes": 0, "rows": [{"owner": private, "root": "/" + private}],
+            "retained_by_reason": {"live_lease": {"count": 2, "bytes": 999}}, "error": private}}
+    summary = reasons.build_storage_gc_summary(report)
+    phase = summary["phases"]["lane_scratch"]
+    assert phase["mode"] == "report_only" and phase["complete"] is True
+    assert phase["apply_supported"] is phase["execution_authorized"] is False
+    assert phase["candidate_bytes"] is None and phase["removed_or_offloaded_bytes"] == 0
+    assert phase["registered_count"] == 2 and phase["logical_bytes"] == 10
+    assert phase["retained_by_reason"] == {"live_lease": {"count": 2, "bytes": None}}
+    assert summary["top_retained"] == summary["top_retained_reasons"] == []
+    assert private not in json.dumps(summary) and summary["opt_in"]["lane_scratch"] is True
+
+
+@pytest.mark.parametrize("value", [True, -1, "1", 1.5, None])
+def test_lane_summary_rejects_noninteger_negative_and_bool_footprints(value):
+    raw = {"status": "report_only", "complete": "yes", "mutations": value, "logical_bytes": value,
+           "allocated_bytes": value, "registered_count": value, "observed_registered_count": value,
+           "candidate_bytes": value, "removed_bytes": value}
+    phase = reasons.build_storage_gc_summary({"lane_scratch": raw})["phases"]["lane_scratch"]
+    assert phase["complete"] is None
+    for key in ("mutations", "logical_bytes", "allocated_bytes", "registered_count", "observed_registered_count"):
+        assert phase[key] is None
+    assert phase["candidate_bytes"] is phase["removed_or_offloaded_bytes"] is None
+
+
 def _cold_run(evidence: Path, name: str, *, size: int = 4096) -> Path:
     run = evidence / name
     run.mkdir(parents=True)
@@ -280,7 +312,10 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert summary["source_report_digest"] == report["report_digest"]
     assert summary["opt_in"] == {
         "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False,
-        "extended_pin_proofs": False, "result_residue_offload": False}
+        "extended_pin_proofs": False, "lane_scratch": False, "result_residue_offload": False}
+    # Both the report-only lane scratch phase and the residue offload phase reach the summary.
+    assert summary["phases"]["lane_scratch"]["mode"] == "report_only"
+    assert summary["phases"]["result_residue_offload"]["enabled"] is False
     assert (summary["phase_errors"], summary["skipped_roots"]) == ([], [str(absent_scratch)])
     sizes = {run.name: sum(p.stat().st_size for p in run.rglob("*") if p.is_file())
              for run in (queued, hot, registry_run)}
@@ -397,7 +432,7 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     # A report written before the tick recorded its opt-ins does not claim they were off.
     assert summary["opt_in"] == {
         "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None,
-        "extended_pin_proofs": None, "result_residue_offload": None}
+        "extended_pin_proofs": None, "lane_scratch": None, "result_residue_offload": None}
 
 
 def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:
