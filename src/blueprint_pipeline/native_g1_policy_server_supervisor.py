@@ -224,8 +224,14 @@ def start_g1_policy_server(
 ) -> NativeG1PolicyServerLease:
     """Launch exact staged bytes, wait for its own listener, and reset once."""
 
-    from .control_plane_lane_experiment_consumer import LANE_ROOTS, require_registered_use
-    require_registered_use(log_path, _registered_use, LANE_ROOTS)
+    if _registered_use is None:
+        from .native_g1_registered_path_boundary import refuse_unowned_registered_path
+        refuse_unowned_registered_path(log_path)
+    else:
+        # Only the host's authenticated public bootstrap can supply this use.
+        # Provider callers retain None and never import private host adapters.
+        from .control_plane_lane_experiment_consumer import LANE_ROOTS, require_registered_use
+        require_registered_use(log_path, _registered_use, LANE_ROOTS)
     if _registered_use is not None:
         from .native_g1_registered_containment import launch_policy_child
         if popen_factory is not subprocess.Popen:

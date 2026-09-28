@@ -32,6 +32,13 @@ PACKAGE_NAME = "blueprint_pipeline"
 # worker never executes, documented by the function that contains the import.
 CONTROL_PLANE_ONLY_LAZY_IMPORTS: frozenset[tuple[str, str]] = frozenset(
     {
+        # Optional authenticated local experiment uses only. Both actual
+        # provider entrypoints first use the SHIPPED refusal leaf on their
+        # default None path. Only the host bootstrap supplies registered use;
+        # the provider bundle cannot construct that private/public authority.
+        ("native_g1_runtime_assembly.py", "control_plane_lane_experiment_consumer"),
+        ("native_g1_policy_server_supervisor.py", "control_plane_lane_experiment_consumer"),
+        ("native_g1_policy_server_supervisor.py", "native_g1_registered_containment"),
         # ``_validation_errors`` on the measurement routing contract classes;
         # provider workers only compute digests from this module.
         ("decision_evidence_contracts.py", "task_site_measurement_routing"),

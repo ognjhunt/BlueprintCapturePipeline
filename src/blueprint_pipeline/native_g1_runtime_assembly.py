@@ -193,8 +193,14 @@ def run_g1_supervised_built_scene_episode(
 ) -> dict[str, Any]:
     """Run one bounded development episode and always retain child teardown."""
 
-    from .control_plane_lane_experiment_consumer import LANE_ROOTS, require_registered_use
-    require_registered_use(output_dir, _registered_use, LANE_ROOTS)
+    if _registered_use is None:
+        from .native_g1_registered_path_boundary import refuse_unowned_registered_path
+        refuse_unowned_registered_path(output_dir)
+    else:
+        # Only the host's authenticated public bootstrap can supply this use.
+        # Provider callers retain None and never import private host adapters.
+        from .control_plane_lane_experiment_consumer import LANE_ROOTS, require_registered_use
+        require_registered_use(output_dir, _registered_use, LANE_ROOTS)
 
     plan = getattr(built, "plan", None)
     if (

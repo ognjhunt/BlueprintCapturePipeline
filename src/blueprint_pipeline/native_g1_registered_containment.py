@@ -26,7 +26,7 @@ SOURCE_MODULES = frozenset({
     "control_plane_lane_experiment_consumer", "control_plane_lane_experiment_completion",
     "native_g1_development_pair", "native_g1_development_worker", "native_g1_registered_containment",
     "native_g1_runtime_assembly", "native_g1_policy_server_supervisor", "native_g1_shared_scene_episode",
-    "control_plane_scratch_lifetime", "control_plane_g1_lifetime_adapter",
+    "control_plane_scratch_lifetime", "control_plane_g1_lifetime_adapter", "native_g1_registered_path_boundary",
 })
 _NATIVE_PYTHON = Path("/opt/blueprint/task-evaluation-control-plane/.venv/bin/python")
 _SYSTEMCTL = "/usr/bin/systemctl"
