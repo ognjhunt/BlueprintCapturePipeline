@@ -177,3 +177,20 @@ def test_interrupted_install_never_adopts_foreign_or_changed_bytes(tmp_path, mon
         module.prepare(source, deps)
     assert {str(p): p.read_bytes() for p in module._RUNTIME_ROOT.rglob('*') if p.is_file()} == before
     assert not (module._BOOT_ROOT / 'continuous_bootstrap.py').exists()
+
+
+def test_parallel_installer_refuses_before_touching_the_owned_copy(tmp_path, monkeypatch):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    original = module._copy
+    entered = False
+    def competing(path, destination, expected, deadline):
+        nonlocal entered
+        if not entered:
+            entered = True
+            with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+                module.prepare(source, deps)
+            assert not destination.exists()
+        return original(path, destination, expected, deadline)
+    monkeypatch.setattr(module, '_copy', competing)
+    assert module.prepare(source, deps)['status'] == 'prepared'
+    assert entered
