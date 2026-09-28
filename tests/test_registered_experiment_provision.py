@@ -99,3 +99,48 @@ def test_fixed_cli_prepare_has_no_root_or_enablement_arguments(installation, mon
     assert json.loads(capsys.readouterr().out)["result"]["decision"] == "prepared"
     assert code.main(["prepare", "--root", "/tmp/other"]) == 2
     assert json.loads(capsys.readouterr().out)["reason"] == "experiment_cli_arguments_invalid"
+
+
+def test_prepared_state_connects_actual_issuer_and_native_birth_without_manual_metadata(
+    installation, monkeypatch
+):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as code
+    from blueprint_pipeline.control_plane_lane_experiment_birth import create_registered_experiment
+
+    config, state = setup(installation, monkeypatch)
+    code.prepare_registered_experiment_state(installed_config_path=config)
+    settings = json.loads(config.read_bytes())
+    # An explicit protected owner setting is still required. Preparation did not
+    # enable anything or create a grant. Native pre-existing lane roots are the
+    # actual installation prerequisite; the provisioner never touches payload.
+    settings["experiment_creation_enabled"] = True
+    config.write_text(json.dumps(settings))
+    for selected in ("lane_scratch_work_root", "lane_scratch_inputs_root"):
+        root = Path(settings[selected])
+        root.mkdir(parents=True, mode=0o750)
+        (root / ".lane-scratch.lock").write_bytes(b"")
+        (root / ".lane-scratch.lock").chmod(0o600)
+        (root / "g1").mkdir(mode=0o750)
+    grant = code.issue_experiment_creation_intent(
+        principal="operator",
+        owner="owner",
+        root="work",
+        reference_value="prepared-run",
+        lease_ttl_seconds=1800,
+        participant_profile="local_root_disposable.v1",
+        request_records=(),
+        installed_config_path=config,
+        now=lambda: 1000,
+    )
+    born = create_registered_experiment(
+        grant["intent_id"],
+        expected_intent=grant["intent"],
+        installed_config_path=config,
+        now=lambda: 1100,
+    )
+    assert Path(born["path"]).is_dir()
+    assert (state / "experiment-authority/HEAD.json").is_file()
+    assert (state / "experiment-authority" / (grant["intent_id"] + ".birth.json")).is_file()
+    assert (
+        json.loads((Path(born["path"]) / ".lane-scratch.v1.json").read_bytes())["owner"] == "owner"
+    )
