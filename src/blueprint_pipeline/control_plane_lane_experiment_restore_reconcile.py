@@ -83,7 +83,13 @@ def load(files, store_path, target, target_fd, operation, action, entry, origina
             linked[path] = selected
         previous, next_index = selected, index + 1
     else:
-        _require(False, 'experiment_restore_event_limit')
+        # A complete 4096-row journal fills the finite loop. It is resumable
+        # only when every original row is selected once and the exact next
+        # event is absent; extra/unknown events never become ours.
+        _require(next_index == 4098 and len(expected) == 4096
+                 and set(created) | set(linked) == set(expected)
+                 and recovery._read_event(files, operation, action, 4098, previous) is None,
+                 'experiment_restore_event_limit')
     files.payload(target, target_fd, expected_payload_bytes=saved['logical_bytes'])
     staged, modes, mapped, pending = [], {}, {}, []
     namespace = {target: {stage_name, *actions._METADATA}, stage_path: set()}
