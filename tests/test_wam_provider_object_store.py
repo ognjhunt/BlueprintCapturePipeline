@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
+import pytest
+
 from blueprint_pipeline import wam_provider_object_store as object_store
 
 
@@ -1408,3 +1410,169 @@ def test_presign_staged_object_get_never_rewrites_the_manifest(tmp_path: Path, m
             assert str(exc) == "staged_object_presign_expiration_invalid"
         else:
             raise AssertionError("expiration must be bounded")
+
+
+class _GatedSpaces:
+    """HEAD and DELETE for a staging bucket's exact keys; key -> (size, etag)."""
+
+    def __init__(self, objects: dict[str, tuple[int, str]]) -> None:
+        self.objects = dict(objects)
+        self.calls: list[tuple[str, str]] = []
+
+    def head_object(self, *, Bucket: str, Key: str):
+        self.calls.append(("head", Key))
+        if Key not in self.objects:
+            error = RuntimeError("not found")
+            error.response = {  # type: ignore[attr-defined]
+                "ResponseMetadata": {"HTTPStatusCode": 404}, "Error": {"Code": "NoSuchKey"}}
+            raise error
+        size, etag = self.objects[Key]
+        return {"ContentLength": size, "ETag": etag, "ResponseMetadata": {"HTTPStatusCode": 200}}
+
+    def delete_object(self, *, Bucket: str, Key: str):
+        self.calls.append(("delete", Key))
+        self.objects.pop(Key, None)
+        return {"ResponseMetadata": {"HTTPStatusCode": 204}}
+
+
+def _gated_job(tmp_path: Path, monkeypatch, objects, *, witness: bool = False):
+    from blueprint_pipeline.native_task_arena_paired_witness_staging import SUFFIX
+
+    job = tmp_path / "job"
+    job.mkdir()
+    keys = {"bundle": "blueprint/task/job/bundle.zip", "output": "blueprint/task/job/output.zip"}
+    manifest = {"schema_version": object_store.SCHEMA_VERSION, "status": "completed",
+                "object_store": {"key_prefix": "blueprint/task"}, "bundle_key": keys["bundle"],
+                "output_key": keys["output"], "output_promotion_required": True}
+    if witness:
+        keys["paired_witness"] = keys["output"] + SUFFIX
+        manifest["paired_witness"] = {"status": "ready", "witness_key": keys["paired_witness"]}
+    (job / object_store.STAGING_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+    for name in object_store.SIGNED_URL_FILENAMES:
+        (job / name).write_text("https://signed.example/?secret\n", encoding="utf-8")
+    client = _GatedSpaces({keys[role]: identity for role, identity in objects.items()})
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda _service, **_kwargs: client))
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=lambda **_kwargs: object()))
+    for name in ("access", "secret"):
+        (tmp_path / name).write_text(name + "\n", encoding="utf-8")
+    return job, keys, client
+
+
+def _receipt(job: Path, keys: dict, *, manifest_sha256: str | None = None, **sections):
+    """A sealed promotion receipt: role -> (state, [(size, etag), ...])."""
+    from blueprint_pipeline import provider_output_promotion_records as records
+
+    return records.write_promotion_receipt(job, {
+        "schema_version": records.RECEIPT_SCHEMA, "status": "promoted",
+        "staging_manifest_sha256": manifest_sha256 or records.staging_manifest_sha256(job),
+        "staged_objects": {role: {"key_sha256": records.key_sha256(keys[role]), "state": state,
+                                  "versions": [{"size_bytes": size, "etag": etag} for size, etag in versions]}
+                           for role, (state, versions) in sections.items()},
+        "blockers": [], "private_url_recorded": False})
+
+
+def _gated_cleanup(tmp_path: Path, job: Path):
+    return object_store.cleanup_staged_wam_provider_objects(
+        job, access_key_id_file=tmp_path / "access", secret_access_key_file=tmp_path / "secret",
+        bucket="bucket")
+
+
+def test_gated_cleanup_never_deletes_a_present_output_without_a_receipt(tmp_path: Path, monkeypatch) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (100, '"e1"')})
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert ("delete", keys["output"]) not in client.calls and keys["output"] in client.objects
+    assert ("delete", keys["bundle"]) in client.calls  # the bundle is cleaned as today
+    assert result["status"] == "blocked" and result["all_objects_absent"] is False
+    assert result["blockers"] == ["staged_output_promotion_receipt_missing"]
+    deferred = [row for row in result["objects"] if row.get("promotion_gate", {}).get("decision") == "deferred"]
+    assert deferred == [{"key_sha256": hashlib.sha256(keys["output"].encode()).hexdigest(),
+                         "absence": {"status": "deferred", "absence_confirmed": False,
+                                     "object_still_present": True, "raw_secret_values_recorded": False},
+                         "promotion_gate": {"decision": "deferred",
+                                            "reason": "staged_output_promotion_receipt_missing"}}]
+    assert result["output_promotion_gate"] == {"required": True, "receipt_digest": None, "receipt_status": None}
+    assert result["signed_url_files_removed"] is True
+
+    # A receipt that is not durable for the output, or is bound to another
+    # manifest, allows nothing either: a late upload after absence was confirmed.
+    for sections in ({"output": ("absent_confirmed", [])},
+                     {"output": ("promoted", [(100, '"e1"')]), "manifest_sha256": "0" * 64}):
+        _receipt(job, keys, **sections)
+        result = _gated_cleanup(tmp_path, job)
+        assert keys["output"] in client.objects
+        assert result["blockers"] == ["staged_output_promotion_receipt_missing"]
+
+
+def test_gated_cleanup_deletes_after_a_bound_receipt_and_reports_all_absent(tmp_path: Path, monkeypatch) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (100, '"e1"')})
+    receipt = _receipt(job, keys, output=("promoted", [(100, '"e1"')]))
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert result["status"] == "completed" and result["blockers"] == []
+    assert result["all_objects_absent"] is True and client.objects == {}
+    assert client.calls == [("delete", keys["bundle"]), ("head", keys["bundle"]),
+                            ("head", keys["output"]), ("delete", keys["output"]), ("head", keys["output"])]
+    output_row = next(row for row in result["objects"] if "promotion_gate" in row)
+    assert output_row["promotion_gate"] == {"decision": "deleted_after_promotion_receipt"}
+    assert output_row["absence"]["absence_confirmed"] is True
+    assert result["output_promotion_gate"] == {"required": True, "receipt_digest": receipt["receipt_digest"],
+                                               "receipt_status": "promoted"}
+
+
+def test_gated_cleanup_needs_no_receipt_for_an_absent_output(tmp_path: Path, monkeypatch) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"')})
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert result["status"] == "completed" and result["all_objects_absent"] is True
+    assert ("delete", keys["output"]) not in client.calls
+    output_row = next(row for row in result["objects"] if "promotion_gate" in row)
+    assert output_row == {"key_sha256": hashlib.sha256(keys["output"].encode()).hexdigest(),
+                          "absence": {"status": "passed", "absence_confirmed": True, "http_status_code": 404,
+                                      "raw_secret_values_recorded": False},
+                          "promotion_gate": {"decision": "absent_no_receipt_required"}}
+
+
+@pytest.mark.parametrize("state, recorded, deleted, reason", [
+    ("redundant_with_promoted_output", (50, '"w1"'), True, None),
+    ("promoted", (50, '"w1"'), True, None),
+    ("deferred", None, False, "staged_output_promotion_receipt_missing"),
+    ("absent_confirmed", None, False, "staged_output_promotion_receipt_missing"),
+    ("redundant_with_promoted_output", (50, '"w0"'), False, "staged_output_promotion_identity_mismatch"),
+])
+def test_witness_deletion_follows_the_receipt_disposition(
+    tmp_path: Path, monkeypatch, state, recorded, deleted, reason
+) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {
+        "bundle": (6, '"b"'), "output": (100, '"e1"'), "paired_witness": (50, '"w1"')}, witness=True)
+    _receipt(job, keys, output=("promoted", [(100, '"e1"')]),
+             paired_witness=(state, [recorded] if recorded else []))
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert (keys["paired_witness"] not in client.objects) is deleted
+    assert keys["output"] not in client.objects
+    assert result["all_objects_absent"] is deleted
+    assert result["blockers"] == ([] if deleted else [reason])
+
+
+def test_gated_cleanup_defers_a_present_object_whose_identity_differs_from_the_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (101, '"e2"')})
+    _receipt(job, keys, output=("promoted", [(100, '"e1"')]))
+
+    for current in ((101, '"e2"'), (100, '"e2"'), (101, '"e1"')):
+        client.objects[keys["output"]] = current
+        result = _gated_cleanup(tmp_path, job)
+        assert keys["output"] in client.objects, current
+        assert result["blockers"] == ["staged_output_promotion_identity_mismatch"]
+
+    # The receipt's identity, however the store quotes its ETag, is deletable.
+    client.objects[keys["output"]] = (100, "e1")
+    assert _gated_cleanup(tmp_path, job)["all_objects_absent"] is True
+    assert keys["output"] not in client.objects

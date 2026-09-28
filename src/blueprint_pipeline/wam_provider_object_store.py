@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .provider_output_promotion_records import load_promotion_receipt, promotion_gate_decision
 from .provider_signed_object_binding import signed_output_object_binding_sha256
 from .secret_artifact_policy import (
     redacted_secret_file_status,
@@ -590,18 +591,20 @@ def _safe_transfer_exception(exc: Exception) -> dict[str, Any]:
     return {"error_type": type(exc).__name__}
 
 
+def _s3_object_missing(exc: Exception) -> bool:
+    response = _mapping(getattr(exc, "response", None))
+    status = _mapping(response.get("ResponseMetadata")).get("HTTPStatusCode")
+    code = _string(_mapping(response.get("Error")).get("Code"))
+    return status == 404 or code.lower() in {"404", "nosuchkey", "notfound"}
+
+
 def _s3_absence_confirmed(client: Any, *, bucket: str, key: str) -> dict[str, Any]:
     """Prove an S3 object is absent without recording its key."""
 
     try:
         client.head_object(Bucket=bucket, Key=key)
     except Exception as exc:
-        response = _mapping(getattr(exc, "response", None))
-        metadata = _mapping(response.get("ResponseMetadata"))
-        error = _mapping(response.get("Error"))
-        status = metadata.get("HTTPStatusCode")
-        code = _string(error.get("Code"))
-        if status == 404 or code.lower() in {"404", "nosuchkey", "notfound"}:
+        if _s3_object_missing(exc):
             return {
                 "status": "passed",
                 "absence_confirmed": True,
@@ -620,6 +623,25 @@ def _s3_absence_confirmed(client: Any, *, bucket: str, key: str) -> dict[str, An
         "object_still_present": True,
         "raw_secret_values_recorded": False,
     }
+
+
+def _promotion_gate(
+    client: Any, *, bucket: str, key: str, role: str, receipt: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """HEAD one staged output or witness key and apply the promotion gate to it."""
+
+    try:
+        head: dict[str, Any] | None = _mapping(client.head_object(Bucket=bucket, Key=key))
+    except Exception as exc:
+        if not _s3_object_missing(exc):
+            raise
+        head = None
+    size = (head or {}).get("ContentLength")
+    present = None if head is None else (
+        size if isinstance(size, int) and not isinstance(size, bool) else -1,
+        _string(head.get("ETag")),
+    )
+    return promotion_gate_decision(receipt, role=role, key=key, present=present)
 
 
 def _staging_store_values(
@@ -705,7 +727,17 @@ def cleanup_staged_wam_provider_objects(
     region_file: str | Path | None = None,
     expiration_seconds: int = 12 * 60 * 60,
 ) -> dict[str, Any]:
-    """Delete and absence-prove only the exact objects in a staging manifest."""
+    """Delete and absence-prove only the exact objects in a staging manifest.
+
+    When the manifest carries ``output_promotion_required``, the output and
+    paired-witness keys pass the promotion gate first: each is HEADed, an
+    absent one needs nothing, and a present one is deleted only when the
+    promotion receipt bound to this manifest records its exact (size, ETag) as
+    durable. Otherwise it stays, its row is ``deferred`` with
+    ``absence_confirmed: false`` (so ``all_objects_absent`` is false), and the
+    reason is a blocker. The bundle key is cleaned as before. Without the flag
+    nothing here changes.
+    """
 
     del expiration_seconds
     resolved_job_dir = Path(job_dir).expanduser().resolve()
@@ -736,6 +768,10 @@ def cleanup_staged_wam_provider_objects(
             cleanup_keys = [*cleanup_keys, witness["witness_key"]]
     if not all(keys) or len(set(keys)) != 2:
         blockers.append("exact_staged_object_keys_required")
+    gated = manifest.get("output_promotion_required") is True
+    gated_roles = {output_key: "output"} if gated else {}
+    if gated and witness.get("status") == "ready":
+        gated_roles[_string(witness.get("witness_key"))] = "paired_witness"
     object_store = _mapping(manifest.get("object_store"))
     expected_prefix = _string(object_store.get("key_prefix")).strip("/")
     if not expected_prefix or any(
@@ -806,6 +842,14 @@ def cleanup_staged_wam_provider_objects(
 
     cleanup_rows: list[dict[str, Any]] = []
     cleanup_attempts = 0
+    receipt = (
+        load_promotion_receipt(
+            resolved_job_dir,
+            staging_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        )
+        if gated and manifest_path.is_file()
+        else None
+    )
     if not blockers:
         # Deleting an object and proving its absence are both idempotent, so a
         # transient transport failure is retried rather than left as staged
@@ -824,14 +868,32 @@ def cleanup_staged_wam_provider_objects(
                     region=region_value,
                 )
                 for key in cleanup_keys:
+                    key_sha256 = hashlib.sha256(key.encode("utf-8")).hexdigest()
+                    gate = (
+                        _promotion_gate(
+                            client,
+                            bucket=bucket_value,
+                            key=key,
+                            role=gated_roles[key],
+                            receipt=receipt,
+                        )
+                        if key in gated_roles
+                        else None
+                    )
+                    if gate is not None and gate["decision"] != "deleted_after_promotion_receipt":
+                        absence = gate.pop("absence")
+                        cleanup_rows.append(
+                            {"key_sha256": key_sha256, "absence": absence, "promotion_gate": gate}
+                        )
+                        if absence.get("absence_confirmed") is not True:
+                            attempt_blockers.append(gate["reason"])
+                        continue
                     client.delete_object(Bucket=bucket_value, Key=key)
                     absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
-                    cleanup_rows.append(
-                        {
-                            "key_sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
-                            "absence": absence,
-                        }
-                    )
+                    row = {"key_sha256": key_sha256, "absence": absence}
+                    if gate is not None:
+                        row["promotion_gate"] = gate
+                    cleanup_rows.append(row)
                     if absence.get("absence_confirmed") is not True:
                         attempt_blockers.append("staged_object_absence_unverified")
             except Exception as exc:  # noqa: BLE001 - fail-closed cleanup evidence
@@ -879,6 +941,8 @@ def cleanup_staged_wam_provider_objects(
             else None
         ),
         "signed_url_files_removed": not any(path.exists() for path in signed_url_files),
+        **({"output_promotion_gate": {"required": True, "receipt_digest": (receipt or {}).get(
+            "receipt_digest"), "receipt_status": (receipt or {}).get("status")}} if gated else {}),
         "blockers": sorted(set(blockers)),
         "raw_secret_values_recorded": False,
     }
