@@ -161,31 +161,57 @@ class _Observation:
 
     def open(self, name: str, flags: int, parent: int | None = None) -> int:
         self.tick()
+        if parent is not None:
+            expected_parent = self.fds.get(parent)
+            _require(expected_parent is not None, "lane_descriptor_ownership_unproven")
+            value = self.call(os.fstat, parent)
+            _require(expected_parent == (value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode)),
+                     "lane_descriptor_changed")
+        named = self.call(os.stat, name, dir_fd=parent, follow_symlinks=False)
+        _require(stat.S_ISDIR(named.st_mode) if flags & os.O_DIRECTORY else stat.S_ISREG(named.st_mode),
+                 "lane_descriptor_type_unproven")
+        expected = (named.st_dev, named.st_ino, stat.S_IFMT(named.st_mode))
         fd = os.open(name, flags, dir_fd=parent)
+        _require(fd not in self.fds, "lane_descriptor_ownership_unproven")
         self.fds[fd] = None
         value = os.fstat(fd)
-        self.fds[fd] = (value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode))
+        _require(expected == (value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode)),
+                 "lane_descriptor_ownership_unproven")
+        self.fds[fd] = expected
         self.tick()
         return fd
 
     def close(self, fd: int) -> None:
-        if fd in self.failed_closes:
-            try:
-                value = os.fstat(fd)
-                if self.fds[fd] != (value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode)):
-                    self.block("lane_descriptor_changed")
-                    del self.fds[fd]
-                    return
-            except OSError as error:
-                if error.errno == errno.EBADF:
-                    del self.fds[fd]
-                return
+        if fd not in self.fds:
+            return
+        expected = self.fds[fd]
+        if expected is None:
+            # Original identity was never observed; a later numeric token is
+            # not authority to adopt or close a potentially unrelated handle.
+            self.block("lane_descriptor_ownership_unproven")
+            del self.fds[fd]
+            self.failed_closes.discard(fd)
+            return
+        try:
+            value = os.fstat(fd)
+        except OSError as error:
+            self.block("lane_descriptor_identity_unavailable")
+            if error.errno == errno.EBADF:
+                del self.fds[fd]
+                self.failed_closes.discard(fd)
+            return
+        if expected != (value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode)):
+            self.block("lane_descriptor_changed")
+            del self.fds[fd]
+            self.failed_closes.discard(fd)
+            return
         try:
             os.close(fd)
         except OSError as error:
             self.block("lane_descriptor_close_failed")
             if error.errno == errno.EBADF:
                 del self.fds[fd]
+                self.failed_closes.discard(fd)
             else:
                 self.failed_closes.add(fd)
         else:
