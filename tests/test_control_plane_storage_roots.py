@@ -50,7 +50,7 @@ def test_storage_table_is_well_formed() -> None:
     for root in STORAGE_ROOTS:
         assert root.storage_class in STORAGE_CLASSES, root
         assert root.owner in {"blueprint", "root"}, root
-        assert root.path.startswith(("/var/lib/blueprint", "/opt/blueprint")), root
+        assert root.path.startswith(("/var/lib/blueprint", "/opt/blueprint", "/mnt/blueprint-work")), root
         assert root.path not in seen, root
         seen.add(root.path)
     # The spend guard is hot evidence and never a reclaim target of any class.
@@ -154,3 +154,14 @@ def test_the_scene_digest_cache_follows_the_handoff_spool_to_the_volume():
     root = classify_path("/var/lib/blueprint/pubsub-handoffs/.scene-workspace-inventory/b/s.json")
     assert (root.storage_class, root.owner) == ("cache", "root")
     assert classify_path("/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json").storage_class == "evidence_hot"
+
+
+@pytest.mark.parametrize("path, expected_root", [
+    ("/mnt/blueprint-work/lanes/agent-a/job-1/output.bin", "/mnt/blueprint-work/lanes/*"),
+    ("/var/lib/blueprint/task-evaluation-inputs/lanes/agent-b/job-2/output.bin",
+     "/var/lib/blueprint/task-evaluation-inputs/lanes/*"),
+])
+def test_lane_scratch_roots_are_classified_per_lane(path, expected_root):
+    root = classify_path(path)
+    assert root is not None
+    assert (root.storage_class, root.path) == ("lane_scratch", expected_root)
