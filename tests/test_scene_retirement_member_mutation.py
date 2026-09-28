@@ -149,3 +149,21 @@ def test_resume_proved_leaf_unlink_after_native_success_before_completion_event(
     assert outcome['outcome']=='removed' and not member.exists()
     assert outcome['removed_file_count']==1
     assert outcome['removed_allocated_bytes']==preserved['unique_allocated_bytes']
+
+
+@pytest.mark.parametrize('limit',['events','bytes'])
+def test_entire_native_removal_journal_capacity_is_proved_before_detach(tmp_path,monkeypatch,limit):
+    from blueprint_pipeline import task_evaluation_scene_retirement_journal as journal_module
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    access,member,preserved,journal=setup_operation(tmp_path,monkeypatch)
+    if limit=='events':
+        # The operation needs five durable records even before directory-level
+        # recovery is added. A later append refusal must not come after unlink.
+        monkeypatch.setattr(journal_module,'MAX_EVENTS',4,raising=False)
+    else:
+        monkeypatch.setattr(journal_module,'MAX_JOURNAL_BYTES',journal.bytes+1,raising=False)
+    with access.exclusive_scene_access(),pytest.raises(ValueError,match='scene_retirement_journal_limit'):
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+    assert (member/'nested'/'evidence.bin').read_bytes()==b'preserved-evidence'
+    assert journal.sequence==0
+    assert not (member.parent/('.scene-retirement-'+journal.token+'-0')).exists()
