@@ -147,11 +147,13 @@ def reclaim_replay_caches(
     shared_applies = applying and bool(shared_scratch_enabled)
     try:
         shared = shared_scratch.reclaim_shared_scratch(
-            lookaheads, now=now(), minimum_closed_seconds=minimum_closed_seconds, apply=shared_applies,
-            check_readers=applying, process_root=process_root)
+            lookaheads, now=now(), minimum_closed_seconds=minimum_closed_seconds,
+            enabled=bool(enabled and shared_scratch_enabled), apply=shared_applies, check_readers=applying,
+            process_root=process_root)
     except Exception as exc:  # noqa: BLE001 - the lookaheads' own passes stand
         rows["errors"].append({"scope": "shared_scratch", "error": type(exc).__name__})
-        shared = {"status": "error", "error": type(exc).__name__}
+        shared = {"enabled": bool(enabled and shared_scratch_enabled), "status": "error",
+                  "error": type(exc).__name__}
     else:
         if shared_applies:
             report["candidate_bytes"] += shared["candidate_bytes"]

@@ -305,14 +305,23 @@ def apply_shared_scratch(plan: dict[str, Any], *, process_root: Path = Path("/pr
 
 
 def reclaim_shared_scratch(
-    lookaheads: Sequence[str | Path], *, now: float, minimum_closed_seconds: int, apply: bool,
+    lookaheads: Sequence[str | Path], *, now: float, minimum_closed_seconds: int, enabled: bool, apply: bool,
     check_readers: bool, process_root: Path = Path("/proc"),
 ) -> dict[str, Any]:
-    """Plan the tick's shared scratch across ``lookaheads``, remove it with ``apply``, and report both."""
+    """Plan the tick's shared scratch across ``lookaheads``, remove it with ``apply``, and report both.
 
+    ``enabled`` is whether the owner has enabled the removal (both switches); ``status`` is
+    ``applied`` only for a tick that removed. ``live_readers_checked`` says whether the plan swept
+    the process table, which a tick that does not apply never does: its candidates are an upper bound.
+    """
+
+    check_readers = check_readers or apply
     plan = plan_shared_scratch(lookaheads, now=now, minimum_closed_seconds=minimum_closed_seconds,
-                               check_readers=check_readers or apply, process_root=process_root)
+                               check_readers=check_readers, process_root=process_root)
     block: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "status": "applied" if apply else "dry_run",
+        "live_readers_checked": bool(check_readers),
         "candidate_groups": len(plan["candidates"]),
         "candidate_bytes": sum(group["size_bytes"] for group in plan["candidates"]),
         "removed_groups": 0,

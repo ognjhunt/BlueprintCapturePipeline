@@ -148,3 +148,60 @@ def test_shared_lookahead_scratch_is_reclaimed_when_every_link_is_in_finished_lo
 
     again = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
     assert (again["removed_bytes"], again["shared_scratch"]["candidate_groups"]) == (0, 0)
+
+
+def _two_lookaheads(tmp_path: Path) -> tuple[Path, list[Path], int]:
+    """Two activations whose finished lookaheads linked one store blob before the move."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    blob = _store_blob(tmp_path, b"one blob two activations linked" * 50)
+    names = [*_linked(blob, _replay(parent_root, "scene-841007-preparation", "parent-a-1"), "prep-a/scene.usd"),
+             *_linked(blob, _replay(parent_root, "scene-841012-preparation", "parent-b-1"))]
+    size = blob.stat().st_size
+    _moved(blob)
+    return parent_root, names, size
+
+
+def test_shared_scratch_is_plan_only_until_its_own_opt_in(tmp_path, monkeypatch) -> None:
+    """The owner's replay cache switch must not start deleting anything new on its own, and the new
+    switch does nothing without it or on a tick that does not apply. Until both are on and the tick
+    applies, the phase plans and reports the shared groups with ``enabled`` saying whether the owner
+    has enabled them, and they stay out of the phase's totals, which say what the tick reclaims. A
+    tick that does not apply sweeps no process table for them either, as the phase never does."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    real_index, real_reference = retention.process_reference_index, retention.active_reference
+
+    def refuse(*args, **_kwargs):
+        raise AssertionError(f"swept the process table for {args[:1]} on a tick that only plans")
+
+    for switches, tick_applies, enabled in (
+        ({"replay_cache_retention_enabled": True}, True, False),
+        ({"replay_cache_shared_scratch_enabled": True}, True, False),
+        ({"replay_cache_retention_enabled": True, "replay_cache_shared_scratch_enabled": True}, False, True),
+        ({}, False, False),
+    ):
+        applying = tick_applies and switches.get("replay_cache_retention_enabled", False)
+        sweeps: list[object] = []
+        monkeypatch.setattr(retention, "active_reference", refuse if not applying else real_reference)
+        monkeypatch.setattr(retention, "process_reference_index", refuse if not applying else (
+            lambda **kwargs: sweeps.append(kwargs) or real_index(**kwargs)))
+        tick = _tick(tmp_path, parent_root, apply=tick_applies, ack=RUN_ACK if tick_applies else "", **switches)
+
+        phase = tick["replay_caches"]
+        block = phase["shared_scratch"]
+        assert (block["enabled"], block["status"], block["live_readers_checked"]) == (enabled, "dry_run", applying)
+        assert (block["candidate_groups"], block["candidate_bytes"]) == (1, size)
+        assert (block["removed_groups"], block["removed_bytes"]) == (0, 0)
+        assert phase["candidate_bytes" if applying else "estimated_candidate_bytes"] == 0
+        assert (phase["removed_bytes"], phase["errors"], "phase_errors" in tick) == (0, [], False)
+        assert len(sweeps) == int(applying), "a tick that applies checks the lookaheads' readers once"
+        assert all(path.exists() for path in names)
+
+    monkeypatch.setattr(retention, "active_reference", real_reference)
+    monkeypatch.setattr(retention, "process_reference_index", real_index)
+    phase = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
+    block = phase["shared_scratch"]
+    assert (block["enabled"], block["status"], block["live_readers_checked"]) == (True, "applied", True)
+    assert block["removed_bytes"] == phase["removed_bytes"] == phase["candidate_bytes"] == size
+    assert not any(path.exists() for path in names)
