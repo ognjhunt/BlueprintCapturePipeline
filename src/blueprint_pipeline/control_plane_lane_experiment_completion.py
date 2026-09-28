@@ -24,12 +24,13 @@ def complete_native_pair(use, result):
     from . import native_g1_development_pair as pair
     from . import native_g1_development_worker as worker
     from .control_plane_lane_experiment_consumer import RegisteredExperimentUse
-    _require(type(use) is RegisteredExperimentUse and os.geteuid() == 0 and use._closed
+    _require(type(use) is RegisteredExperimentUse and use._closed
              and not use.files.owned and not use.files.unresolved and len(use._producer_requests) == 2,
              'experiment_producer_closure_unproven')
     if use.birth['participant_profile'] != 'g1_local_prelaunch_block.v1':
         # No fabricated success/containment downgrade or guessed child closure.
         return None
+    _require(os.geteuid() == 0, 'experiment_producer_closure_unproven')
     files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
     try:
         now = use.now()

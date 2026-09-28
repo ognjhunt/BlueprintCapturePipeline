@@ -189,8 +189,12 @@ def run_g1_supervised_built_scene_episode(
     output_dir: Path,
     to_tensor: Callable[[Any], Any],
     make_action_tensor: Callable[..., Any],
+    _registered_use: Any = None,
 ) -> dict[str, Any]:
     """Run one bounded development episode and always retain child teardown."""
+
+    from .control_plane_lane_experiment_consumer import LANE_ROOTS, require_registered_use
+    require_registered_use(output_dir, _registered_use, LANE_ROOTS)
 
     plan = getattr(built, "plan", None)
     if (
@@ -213,6 +217,7 @@ def run_g1_supervised_built_scene_episode(
             port=port,
             device=device,
             log_path=output_dir / "g1_policy_server.log",
+            **({"_registered_use": _registered_use} if _registered_use is not None else {}),
         )
         if (
             lease.receipt.get("candidate_id") != candidate_id
@@ -239,6 +244,8 @@ def run_g1_supervised_built_scene_episode(
             to_tensor=to_tensor,
             make_action_tensor=make_action_tensor,
         )
+        if _registered_use is not None:
+            _registered_use.check()
     except BaseException as exc:  # noqa: BLE001 - preserve failed GPU attempts
         failure = exc
     finally:

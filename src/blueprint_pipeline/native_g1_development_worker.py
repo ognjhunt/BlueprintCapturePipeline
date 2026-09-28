@@ -212,7 +212,8 @@ def _build_scene(
     return built, binding
 
 
-def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
+                               _registered_use: Any = None) -> dict[str, Any]:
     """Run one attempt and retain its own terminal receipt on every failure."""
 
     sealed = _request(request)
@@ -341,6 +342,7 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) 
             output_dir=output_dir / "episode",
             to_tensor=_to_tensor,
             make_action_tensor=torch.tensor,
+            **({"_registered_use": _registered_use} if _registered_use is not None else {}),
         )
         if episode.get("status") != "completed_development_only":
             raise ValueError("g1_worker_supervised_episode_incomplete")
@@ -469,7 +471,8 @@ def run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
     if _registered_use is not None:
         _registered_use.authorize_worker(request, output_dir)
     with worker_output_lifetime(output_dir, scratch_lifetime):
-        return _run_g1_development_worker(request=request, output_dir=output_dir)
+        return _run_g1_development_worker(request=request, output_dir=output_dir,
+            **({"_registered_use": _registered_use} if _registered_use is not None else {}))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
