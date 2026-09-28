@@ -106,20 +106,35 @@ def begin(files, config, action, expected, entry, current, refreshed, public, st
             code._encoded(refreshed[0] | {}, 'head_digest', 4096), files.budget),
             'experiment_action_current_changed')
         retiring = refreshed
-    return (operation, retiring, *progress(files, operation, action, expected, target, rows, previous))
+    preservation = None
+    if action['action'] == 'offload':
+        selected_ready = _read_event(files, operation, action, 1, previous)
+        if selected_ready is not None:
+            ready, proof = selected_ready
+            body = ready['body']
+            _require(ready['event_kind'] == 'preservation_ready' and set(body) == {'started', 'action', 'birth',
+                     'manifest', 'archive', 'target_identity', 'lease'} and body['started'] == previous
+                     and body['action'] == expected and body['birth'] == entry['birth'] and body['manifest'] == action['manifest']
+                     and body['target_identity'] == entry['target_identity'] and body['lease'] == entry['lease'],
+                     'experiment_operation_invalid')
+            preservation = (proof, body['archive'])
+            previous = proof
+    return (operation, retiring, *progress(files, operation, action, expected, target, rows, previous,
+                                           preservation=preservation), preservation)
 
 
-def progress(files, operation, action, expected, target, rows, previous):
+def progress(files, operation, action, expected, target, rows, previous, *, preservation=None):
     logical, allocated, changed, count = 0, 0, {}, 0
+    offset = 1 if action['action'] == 'offload' else 0
     for index, row in enumerate(rows, 1):
-        selected = _read_event(files, operation, action, index, previous)
+        selected = _read_event(files, operation, action, index + offset, previous) if not offset or preservation else None
         if selected is None:
             break
         event, selected = selected
         body = event['body']
         _require(event['event_kind'] == 'member_removed' and set(body) == {'preservation', 'action', 'manifest',
                  'index', 'path', 'original_identity', 'logical_bytes', 'eligible_allocated_bytes', 'parent_after'}
-                 and body['preservation'] is None and body['action'] == expected and body['manifest'] == action['manifest']
+                 and body['preservation'] == (preservation[0] if preservation else None) and body['action'] == expected and body['manifest'] == action['manifest']
                  and body['index'] == index - 1 and body['path'] == row[0], 'experiment_operation_invalid')
         identity = row[2].split(':')
         tokens = row[3].split(':')
@@ -155,13 +170,13 @@ def progress(files, operation, action, expected, target, rows, previous):
         _require(identity == dict(dev=named.st_dev, ino=named.st_ino, type='directory')
                  and stat.S_ISDIR(named.st_mode) and tuple(getattr(named, key) for key in _STAT) == metadata,
                  'experiment_directory_transition_changed')
-    completed = _read_event(files, operation, action, len(rows) + 1, previous) if count == len(rows) else None
+    completed = _read_event(files, operation, action, len(rows) + 1 + offset, previous) if count == len(rows) else None
     if completed is not None:
         event, selected = completed
         body = event['body']
         _require(event['event_kind'] == 'retired' and set(body) == {'preservation', 'manifest', 'removed_event_count',
                  'removed_logical_bytes', 'eligible_allocated_bytes', 'remaining_metadata', 'partial'}
-                 and body['preservation'] is None and body['manifest'] == action['manifest']
+                 and body['preservation'] == (preservation[0] if preservation else None) and body['manifest'] == action['manifest']
                  and type(body['partial']) is bool and body['partial'] is False
                  and body['removed_event_count'] == count and body['removed_logical_bytes'] == logical
                  and body['eligible_allocated_bytes'] == allocated, 'experiment_operation_invalid')
@@ -185,9 +200,18 @@ def retired(files, config, action, expected, target, rows, entry, marker):
              'process_identity', 'controller_origin_epoch', 'deadline_epoch', 'reference_authority'}
              and body['action'] == expected and body['birth'] == entry['birth'] and body['manifest'] == action['manifest'],
              'experiment_operation_invalid')
-    _, logical, allocated, _, count, receipt = progress(files, operation, action, expected, target, rows, previous)
+    preservation = None
+    if action['action'] == 'offload':
+        ready = _read_event(files, operation, action, 1, previous)
+        _require(ready is not None and ready[0]['event_kind'] == 'preservation_ready', 'experiment_operation_invalid')
+        value, previous = ready
+        _require(value['body']['started'] == started[1] and value['body']['action'] == expected
+                 and value['body']['manifest'] == action['manifest'], 'experiment_operation_invalid')
+        preservation = (previous, value['body']['archive'])
+    _, logical, allocated, _, count, receipt = progress(files, operation, action, expected, target, rows, previous,
+                                                        preservation=preservation)
     _require(count == len(rows) and receipt is not None, 'experiment_operation_invalid')
-    raw, _ = files.read(Path(files._operation_path) / f'e-{len(rows) + 1:05d}.json', cap=32768, protected=True, mode=0o600)
+    raw, _ = files.read(Path(files._operation_path) / f'e-{len(rows) + 1 + (action["action"] == "offload"):05d}.json', cap=32768, protected=True, mode=0o600)
     final = retained._document(raw, 32768, _work_budget=files.budget)
     _require(final['body']['remaining_metadata'] == [entry['lease'], marker], 'experiment_operation_invalid')
     return receipt, logical, allocated

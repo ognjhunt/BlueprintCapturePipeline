@@ -461,8 +461,13 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         lease, lease_record = _lease(files, target, entry)
         _require(issued >= lease["expires_at_epoch"] and lease["released_at_epoch"] is None, "experiment_not_expired")
         original = _birth(files, public, entry, gid)
-        _require(action["action"] == "delete" and original["participant_profile"] == "local_root_disposable.v1"
-                 and lease["class_intent"] == "scratch" and lease["cleanup"] == "delete", "experiment_action_profile_unsupported")
+        if action["action"] == "delete":
+            _require(original["participant_profile"] == "local_root_disposable.v1" and lease["class_intent"] == "scratch"
+                     and lease["cleanup"] == "delete", "experiment_action_profile_unsupported")
+        else:
+            _require(action["action"] == "offload" and lease["class_intent"] == "evidence", "experiment_action_profile_unsupported")
+            from .control_plane_lane_experiment_completion import selected_completion
+            selected_completion(files, config, entry)
         if _pins_root is None:
             return _outcome(action, "kept", "experiment_reference_authority_missing")
         reference, reference_fd = _pin_fence(files, config, _pins_root, target, issued)
@@ -487,9 +492,26 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
             occupied = issuance._capacity(files, store, adding_registration=False)
             _require(occupied + reservation_size + 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
         recovery._once(files, store, action_id + ".reservation.json", reserve_raw, kind="private")
-        operation, retiring, previous, logical, allocated, changed_directories, removed_count, receipt = recovery.begin(
+        operation, retiring, previous, logical, allocated, changed_directories, removed_count, receipt, preservation = recovery.begin(
             files, config, action, expected_action_intent, entry, current, refreshed, public, store,
             target, rows, reference, issued, gid)
+        offset = int(action["action"] == "offload")
+        if offset:
+            from . import control_plane_lane_experiment_archive as archive
+            def archive_guard():
+                _require(now() < action["expires_at_epoch"], "experiment_action_expired")
+                files.verify()
+                files.location(target_fd)
+                files.location(reference_fd)
+                files.verify_record(retiring[2])
+            if preservation is None:
+                archived = archive.preserve(files, config, target, rows, manifest_raw, archive_guard)
+                ready = _event(files, operation, action, "preservation_ready", dict(started=previous,
+                    action=expected_action_intent, birth=entry["birth"], manifest=action["manifest"], archive=archived,
+                    target_identity=entry["target_identity"], lease=entry["lease"]), 1, previous, issued)
+                preservation, previous = (ready, archived), ready
+            else:
+                archive.verify_preservation(files, config, preservation[1], archive_guard)
         for index, row in enumerate(rows, 1):
             if index <= removed_count:
                 continue
@@ -517,25 +539,25 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                 updated = os.fstat(parent)
                 changed_directories[str(Path(row[0]).parent)] = tuple(getattr(updated, key) for key in
                     ("st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"))
-                previous = _event(files, operation, action, "member_removed", dict(preservation=None,
+                previous = _event(files, operation, action, "member_removed", dict(preservation=preservation[0] if preservation else None,
                     action=expected_action_intent, manifest=action["manifest"], index=index - 1,
                     path=row[0], original_identity=dict(dev=info.st_dev, ino=info.st_ino, type=row[1]),
                     logical_bytes=info.st_size if row[1] == "file" else 0, eligible_allocated_bytes=info.st_blocks * 512,
                     parent_after=dict(path=str(Path(row[0]).parent), identity=dict(dev=updated.st_dev, ino=updated.st_ino, type="directory"),
                         stat_token=":".join(str(value) for value in changed_directories[str(Path(row[0]).parent)]))),
-                    index, previous, issued)
+                    index + offset, previous, issued)
             finally:
                 files.close(fd)
         files.location(target_fd)
         os.fsync(target_fd)
         if receipt is None:
-            receipt = _event(files, operation, action, "retired", dict(preservation=None, manifest=action["manifest"],
+            receipt = _event(files, operation, action, "retired", dict(preservation=preservation[0] if preservation else None, manifest=action["manifest"],
             removed_event_count=len(rows), removed_logical_bytes=logical, eligible_allocated_bytes=allocated,
-            remaining_metadata=[entry["lease"], original["marker"]], partial=False), len(rows) + 1, previous, issued)
+            remaining_metadata=[entry["lease"], original["marker"]], partial=False), len(rows) + 1 + offset, previous, issued)
         prepared, old_head = _version(files, public, retiring, entry | {"state": "retired"}, gid, action["policy"], issued)
         recovery._once(files, store, action_id + ".retired-head.json", prepared, kind="private")
         _install_head(files, public, prepared, gid, old_head)
-        return _outcome(action, "retired", "disposable_expired", receipt=receipt, logical=logical, allocated=allocated)
+        return _outcome(action, "retired", "evidence_preserved" if offset else "disposable_expired", receipt=receipt, logical=logical, allocated=allocated)
     except OSError:
         raise OwnerTargetVersionError("experiment_action_io_failed") from None
     finally:
