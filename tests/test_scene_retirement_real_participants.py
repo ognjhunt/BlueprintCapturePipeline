@@ -341,3 +341,22 @@ def authenticated_birth_refs(tmp_path, monkeypatch):
     monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'webapp')
     return (intent['intent_id'], record(root / intent['intent_id'] / 'intent.json'),
             record(root / intent['intent_id'] / 'attempts' / 'a1.json'))
+
+
+def test_actual_birth_interprets_only_the_verified_raw_request_bytes(tmp_path, monkeypatch):
+    access, _, member = access_fixture(tmp_path, monkeypatch)
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+    intent_id, owner, birth = authenticated_birth_refs(tmp_path, monkeypatch)
+    member.rmdir()
+    original = generations._read
+    repeated = []
+    def forbid_unverified_second_parse(path, *args, **kwargs):
+        if str(path) in {owner['path'], birth['path']}:
+            repeated.append(str(path))
+            raise StopFixture('interpreted a separately reacquired unverified raw version')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(generations, '_read', forbid_unverified_second_parse)
+    with access.scene_access():
+        state = access.birth_scene_member(member, owner_intent_id=intent_id,
+                                         owner_raw_ref=owner, birth_request_raw_ref=birth, now=101)
+    assert state['state'] == 'active' and repeated == []
