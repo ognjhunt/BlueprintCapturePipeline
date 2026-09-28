@@ -248,3 +248,11 @@ def restore_registered_experiment(action_id, *, expected_restore_intent,
     from .control_plane_lane_experiment_restore import restore
     return restore(action_id, expected_restore_intent=expected_restore_intent,
         installed_config_path=installed_config_path, now=now, pins_root=_pins_root)
+
+
+def issue_experiment_producer_bootstrap(intent_id, *, expected_intent_sha256, expected_intent_size_bytes,
+        request_paths, installed_config_path="/etc/blueprint-operator-door/door.json", now=time.time):
+    from .control_plane_lane_experiment_bootstrap import issue_bootstrap
+    return issue_bootstrap(intent_id, expected_intent_sha256=expected_intent_sha256,
+        expected_intent_size_bytes=expected_intent_size_bytes, request_paths=request_paths,
+        installed_config_path=installed_config_path, now=now)

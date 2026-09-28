@@ -2,7 +2,6 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 
 import pytest
 
@@ -30,10 +29,10 @@ def bootstrap_installation(installation, tmp_path, monkeypatch):  # noqa: F811
 
 def publish(value):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
-    installation, grant, _, paths = value
+    value_installation, grant, _, paths = value
     return root.issue_experiment_producer_bootstrap(grant['intent_id'],
         expected_intent_sha256=grant['intent']['sha256'], expected_intent_size_bytes=grant['intent']['size_bytes'],
-        request_paths=paths, installed_config_path=installation[0], now=lambda: 1100)
+        request_paths=paths, installed_config_path=value_installation[0], now=lambda: 1100)
 
 
 def test_actual_root_bootstrap_is_readable_current_bound_and_immutable(bootstrap_installation):

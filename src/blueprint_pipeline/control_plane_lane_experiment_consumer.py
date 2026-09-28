@@ -95,7 +95,7 @@ class RegisteredExperimentUse(LeasedScratchUse):
     """Borrowed scopes retain the same target SH; they never close the parent."""
     @classmethod
     def admit(cls, target, *, expected_birth=None, expected_generation=None, now=time.time,
-              _producer_request_paths=None, _producer_config_path=None):
+              _producer_request_paths=None, _producer_config_path=None, _producer_bootstrap_path=None):
         _require(isinstance(target, Path) and registered_target(target, LANE_ROOTS) == target,
                  "experiment_consumer_authority_required")
         files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
@@ -173,9 +173,15 @@ class RegisteredExperimentUse(LeasedScratchUse):
             result.identity = dict(root=str(root), lane="g1", name=target.name, owner=lease["owner"],
                 run_ref=lease["run_ref"], lease_digest=lease["lease_digest"], consumer_lifetime_contract=scratch.CONSUMER_LIFETIME_PROTOCOL)
             result._producer_requests = []
+            result._producer_bootstrap_record = None
+            result._producer_sources = ()
             result._public_root = AUTHORITY_ROOT
             result._producer_config_path = PRODUCER_CONFIG_PATH if _producer_config_path is None else _producer_config_path
-            if _producer_request_paths is not None:
+            if _producer_bootstrap_path is not None:
+                _require(_producer_request_paths is None and _producer_config_path is None,
+                         "experiment_producer_authority_required")
+                _admit_public_producer(result, files, target, public, _producer_bootstrap_path, gid, issued)
+            elif _producer_request_paths is not None:
                 _require(os.geteuid() == 0 and isinstance(_producer_request_paths, (list, tuple))
                          and len(_producer_request_paths) == 2 and birth["class_intent"] == "evidence"
                          and birth["cleanup"] == "owner_review"
@@ -266,6 +272,8 @@ class RegisteredExperimentUse(LeasedScratchUse):
             fcntl.flock(self._authority_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
             try:
                 records = (self._head_record, self._lease_record, self._birth_record)
+                if self._producer_bootstrap_record is not None:
+                    records += (self._producer_bootstrap_record,) + self._producer_sources
                 if self._restoration_record is not None:
                     records += (self._restoration_record,)
                 for record in records:
@@ -310,6 +318,68 @@ class RegisteredExperimentUse(LeasedScratchUse):
 
     def _dup(self, original):
         raise OwnerTargetVersionError("experiment_consumer_operation_unsupported")
+
+
+def _admit_public_producer(result, files, target, public, selected, gid, issued):
+    """Retain root-selected readable inputs without opening private authority."""
+    from .native_g1_registered_containment import SOURCE_MODULES
+    entry, birth = result.entry, result.birth
+    _require(isinstance(selected, Path) and selected == AUTHORITY_ROOT / (entry["intent_id"] + ".producer-bootstrap.json")
+             and birth["participant_profile"] == "g1_local_contained_completed.v1"
+             and birth["class_intent"] == "evidence" and birth["cleanup"] == "owner_review"
+             and birth["writer_scope"] == "native_g1_development_pair.v1", "experiment_producer_authority_required")
+    raw, original = _read(files, public, selected.name, 32768, gid)
+    bootstrap = retained._document(raw, 32768, _work_budget=files.budget)
+    fields = {"schema_version", "intent_id", "generation", "birth", "target_identity", "lease", "participant_profile",
+              "intent", "requests", "installed_sources", "issued_at_epoch", "expires_at_epoch", "bootstrap_digest"}
+    _require(type(bootstrap) is dict and set(bootstrap) == fields
+             and bootstrap["schema_version"] == "control_plane_lane_experiment_producer_bootstrap.v1"
+             and bootstrap["bootstrap_digest"] == canonical_digest(bootstrap, digest_field="bootstrap_digest")
+             and all(bootstrap[key] == entry[key] for key in ("intent_id", "generation", "birth", "target_identity", "lease"))
+             and bootstrap["participant_profile"] == birth["participant_profile"]
+             and _epoch(bootstrap["issued_at_epoch"]) and _epoch(bootstrap["expires_at_epoch"])
+             and bootstrap["issued_at_epoch"] <= issued < bootstrap["expires_at_epoch"] <= entry["expires_at_epoch"]
+             and type(bootstrap["requests"]) is list and len(bootstrap["requests"]) == 2
+             and type(bootstrap["installed_sources"]) is dict and set(bootstrap["installed_sources"]) == SOURCE_MODULES,
+             "experiment_producer_authority_required")
+    marker_raw, marker_record = files.read(target / ".registered-experiment.v1.json", cap=4096)
+    owners._identity(marker_raw, birth["marker"]["sha256"], birth["marker"]["size_bytes"], files.budget)
+    marker = retained._document(marker_raw, 4096, _work_budget=files.budget)
+    _require(marker["marker_digest"] == canonical_digest(marker, digest_field="marker_digest")
+             and marker["generation"] == entry["generation"] and marker["intent"] == bootstrap["intent"],
+             "experiment_birth_changed")
+    sources = [marker_record]
+    for name in sorted(SOURCE_MODULES):
+        source_raw, source_record = files.read(Path(__file__).parent / (name + ".py"), cap=1024 * 1024, protected=True)
+        _require(_valid_digest(bootstrap["installed_sources"][name])
+                 and retained._digest(source_raw, _work_budget=files.budget) == bootstrap["installed_sources"][name],
+                 "experiment_producer_source_changed")
+        sources.append(source_record)
+    seen_paths, seen_candidates = set(), set()
+    for row in bootstrap["requests"]:
+        _require(type(row) is dict and set(row) == {"path", "raw", "candidate_id", "request_digest"}
+                 and type(row["path"]) is str and owners._matches(row["candidate_id"], owners._OWNER)
+                 and _valid_digest(row["request_digest"]), "experiment_producer_request_changed")
+        path = retained._path(row["path"], _work_budget=files.budget)
+        _require(path.is_absolute() and not path.is_relative_to(target) and path not in seen_paths
+                 and row["candidate_id"] not in seen_candidates, "experiment_producer_request_changed")
+        selector = row["raw"]
+        _require(type(selector) is dict and set(selector) == {"sha256", "size_bytes"}, "experiment_producer_request_changed")
+        request_raw, request_record = files.read(path, cap=65536, protected=True)
+        _require(request_record.info.st_uid == 0 and request_record.info.st_gid == gid
+                 and request_record.info.st_nlink == 1 and stat.S_IMODE(request_record.info.st_mode) == 0o640,
+                 "experiment_producer_request_changed")
+        owners._identity(request_raw, selector["sha256"], selector["size_bytes"], files.budget)
+        request = retained._document(request_raw, 65536, _work_budget=files.budget)
+        _require(request["candidate_id"] == row["candidate_id"]
+                 and request["request_digest"] == row["request_digest"]
+                 == canonical_digest(request, digest_field="request_digest"), "experiment_producer_request_changed")
+        result._producer_requests.append((path, request_record, row["candidate_id"], row["request_digest"]))
+        seen_paths.add(path)
+        seen_candidates.add(row["candidate_id"])
+    result._producer_sources = tuple(sources)
+    result._producer_bootstrap_record = original
+    result._projection_expiry = min(result._projection_expiry, bootstrap["expires_at_epoch"])
 
 
 @contextmanager
