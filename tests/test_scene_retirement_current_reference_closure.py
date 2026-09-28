@@ -67,7 +67,7 @@ def test_native_measured_rows_are_accepted_without_accepting_foreign_list_callba
     root=str(tmp_path.resolve()/'member')
     row={'path':root,'status':'observed_scoped_metadata','keeps':[]}
     consent={'members':[{'canonical_path':root,'class':'host'}],'private_archive_classes':[]}
-    native=RetainedEmissionBudget().rows([row])
+    native=RetainedEmissionBudget(max_bytes=4096,max_rows=10,max_references=10).rows([row])
     engine._plan_members({'measured_members':native},consent)
     entered=[]
     class Foreign(list):
