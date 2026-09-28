@@ -2,6 +2,7 @@
 """Invocation-wide bounds apply to nested receipt locations too."""
 import json
 import os
+import inspect
 
 import pytest
 
@@ -192,3 +193,40 @@ def test_output_exact_boundary_includes_auxiliary_metadata(tmp_path, monkeypatch
     monkeypatch.setattr(primary, "MAX_OUTPUT_BYTES", size - 1)
     refused = observe(("sam", root))
     assert not refused.complete and refused.roots == refused.rows == ()
+
+
+@pytest.mark.parametrize("failure", ["expired", "invalid"])
+def test_clock_failure_before_root_finalization_never_constructs_typed_evidence(tmp_path, monkeypatch, failure):
+    root = root_for(tmp_path, "sam")
+    for group in ("foreign-a", "foreign-b"):
+        (root / "progress" / group).mkdir()
+    expired = False
+    constructed_after_failure = []
+    live = set()
+    opened, closed = os.open, os.close
+    constructor = auxiliary.ObservedAuxiliaryRoot
+    def clock():
+        nonlocal expired
+        caller = inspect.currentframe().f_back.f_back
+        if caller.f_code.co_name == "observe_aux_root" and caller.f_locals.get("group") == "foreign-b":
+            expired = True
+        return (6 if failure == "expired" else float("nan")) if expired else 0
+    def construct(*args, **kwargs):
+        if expired:
+            constructed_after_failure.append(args)
+        return constructor(*args, **kwargs)
+    def track_open(*args, **kwargs):
+        fd = opened(*args, **kwargs)
+        live.add(fd)
+        return fd
+    def track_close(fd):
+        closed(fd)
+        live.discard(fd)
+    monkeypatch.setattr(auxiliary, "ObservedAuxiliaryRoot", construct)
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "close", track_close)
+    result = observe(("sam", root), monotonic=clock)
+    assert expired and not result.complete and result.roots == result.rows == ()
+    assert not constructed_after_failure
+    assert not live
+    assert ("queue_deadline_exceeded" if failure == "expired" else "queue_clock_invalid") in result.blockers

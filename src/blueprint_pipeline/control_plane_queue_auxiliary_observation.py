@@ -245,11 +245,32 @@ class _AuxScan(primary._Scan):
                             raise
                         self.block(error.code)
         finally:
+            # An exhausted/invalid clock forbids even partial typed conversion.
+            # The public finalization fallback returns empty incomplete evidence.
+            self.tick()
             top_names = {row[0].split("/", 1)[0] for row in _ROLES[contract.family]}
+            evidence_keys = sorted(evidence)
+            self.tick()
+            observed_directories = []
+            for key in evidence_keys:
+                self.tick()
+                observed_directories.append(evidence[key])
+            sorted_groups = sorted(groups)
+            self.tick()
+            observed_groups = []
+            for group in sorted_groups:
+                self.tick()
+                observed_groups.append(group)
+            unobserved_names = []
+            for name in root_names:
+                self.tick()
+                if name not in top_names:
+                    unobserved_names.append(name)
+            self.tick()
             self.aux_roots[contract.root_path] = ObservedAuxiliaryRoot(
                 contract.family, contract.root_path, identity, _attempted(contract.family),
-                tuple(evidence[key] for key in sorted(evidence)), tuple(sorted(groups)),
-                tuple(name for name in root_names if name not in top_names))
+                tuple(observed_directories), tuple(observed_groups), tuple(unobserved_names))
+            self.tick()
 
     def verify_aux_root(self, snapshot):
         contract, chain, directories = snapshot
