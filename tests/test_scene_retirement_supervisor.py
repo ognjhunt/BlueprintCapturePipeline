@@ -2,6 +2,7 @@
 #   src/blueprint_pipeline/task_evaluation_scene_retirement_supervisor.py
 """New worker startup is fenced before import; this is not old-process clearance."""
 import importlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,8 @@ UNITS = {
     'blueprint-task-evaluation-policy-canary-dispatcher': 'task_evaluation_policy_canary_dispatcher',
     'blueprint-task-evaluation-terminal-resource-release': 'task_evaluation_terminal_resource_release',
     'blueprint-existing-policy-canary-watchdog': 'operator_policy_canary_continuation',
+    'blueprint-existing-policy-canary-continuation': 'operator_policy_canary_continuation',
+    'blueprint-task-evaluation-configured-controls-progression': 'task_evaluation_configured_controls_progression_worker',
 }
 
 
@@ -35,6 +38,7 @@ def supervisor():
 def test_exclusive_retirement_refuses_before_worker_import(tmp_path, monkeypatch):
     access, _, _ = access_fixture(tmp_path, monkeypatch)
     module = supervisor()
+    monkeypatch.setattr(module, '_INSTALLED_POLICY', tmp_path / 'policy.json', raising=False)
     calls = []
     monkeypatch.setattr(module.runpy, 'run_module', lambda *a, **k: calls.append((a, k)))
     with access.exclusive_scene_access():
@@ -46,6 +50,7 @@ def test_exclusive_retirement_refuses_before_worker_import(tmp_path, monkeypatch
 def test_worker_holds_shared_fence_through_body_and_preserves_argv(tmp_path, monkeypatch):
     access, _, _ = access_fixture(tmp_path, monkeypatch)
     module = supervisor()
+    monkeypatch.setattr(module, '_INSTALLED_POLICY', tmp_path / 'policy.json', raising=False)
     original = sys.argv
     seen = []
 
@@ -95,6 +100,7 @@ def test_arbitrary_or_action_worker_refused_before_import(monkeypatch, worker):
 def test_worker_failure_releases_only_owned_shared_lifetime(tmp_path, monkeypatch):
     access, _, _ = access_fixture(tmp_path, monkeypatch)
     module = supervisor()
+    monkeypatch.setattr(module, '_INSTALLED_POLICY', tmp_path / 'policy.json', raising=False)
     original = sys.argv
 
     def worker(*args, **kwargs):
@@ -117,6 +123,7 @@ import os
 from blueprint_pipeline import task_evaluation_scene_retirement_access as access
 from blueprint_pipeline import task_evaluation_scene_retirement_supervisor as supervisor
 access._POLICY_UID = os.getuid()
+supervisor._INSTALLED_POLICY = os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE']
 supervisor.runpy.run_module = lambda *a, **k: print("WORKER_ENTERED")
 try:
     supervisor.main(["--worker", "blueprint_pipeline.task_evaluation_scene_progression", "--"])
@@ -128,6 +135,39 @@ except access.SceneRetirementAccessError:
                                 text=True, timeout=20, check=True)
     assert result.stdout.strip() == 'STARTUP_REFUSED'
     assert 'WORKER_ENTERED' not in result.stdout
+
+
+def test_installed_policy_admission_cannot_be_redirected_by_environment(tmp_path, monkeypatch):
+    access, _, _ = access_fixture(tmp_path, monkeypatch)
+    module = supervisor()
+    fixed = tmp_path / 'policy.json'
+    monkeypatch.setattr(module, '_INSTALLED_POLICY', fixed, raising=False)
+    foreign = tmp_path / 'foreign-policy.json'
+    foreign.write_bytes(fixed.read_bytes())
+    foreign.chmod(0o644)
+    monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(foreign))
+    calls = []
+    monkeypatch.setattr(module.runpy, 'run_module', lambda *a, **k: calls.append(a))
+    with pytest.raises(access.SceneRetirementAccessError, match='policy_binding_unproven'):
+        module.main(['--worker', WORKER, '--'])
+    assert calls == []
+
+
+def test_worker_uses_fixed_installed_policy_when_environment_omits_it(tmp_path, monkeypatch):
+    access, _, _ = access_fixture(tmp_path, monkeypatch)
+    module = supervisor()
+    fixed = tmp_path / 'policy.json'
+    monkeypatch.setattr(module, '_INSTALLED_POLICY', fixed, raising=False)
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
+    calls = []
+    monkeypatch.setattr(module.runpy, 'run_module', lambda *a, **k: calls.append(a))
+    monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(fixed))
+    with access.exclusive_scene_access():
+        monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
+        with pytest.raises(access.SceneRetirementAccessError, match='generation_unavailable'):
+            module.main(['--worker', WORKER, '--'])
+        assert 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE' not in os.environ
+    assert calls == []
 
 
 @pytest.mark.parametrize('unit,worker', UNITS.items())
