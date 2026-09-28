@@ -25,6 +25,21 @@ def test_launch_and_fire_scripts_are_committed_and_parse() -> None:
         subprocess.run(["bash", "-n", str(script)], check=True)
 
 
+def test_arena_scripts_lease_new_attempts_and_resolve_historical_ones() -> None:
+    launch = _text(LAUNCH)
+    fire = _text(FIRE)
+    assert "control_plane_arena_scratch prepare" in launch
+    assert launch.find("control_plane_arena_scratch prepare") < launch.find("== 0. predecessor provider zero")
+    assert "ARENA_SCRATCH_OWNER" in launch
+    assert "ARENA_SCRATCH_RUN_REF" in launch
+    assert "ARENA_SCRATCH_SCENE_REF" in launch
+    assert "ARENA_SCRATCH_TTL_SECONDS" in launch
+    assert "sudo -u blueprint mkdir -p $A\n" not in launch
+    assert launch.count("control_plane_arena_scratch resolve") >= 3  # predecessor, spend walk, writable check
+    assert "control_plane_arena_scratch resolve" in fire
+    assert fire.find("control_plane_arena_scratch resolve") < fire.find("PROFILE_JSON=$A/")
+
+
 def test_profile_build_passes_a_revision() -> None:
     """Without --revision a retry at the same commit cannot publish.
 
@@ -186,10 +201,14 @@ def test_chain_carries_the_predecessor_machine_avoidlist_forward() -> None:
 
     text = _text(LAUNCH)
     predecessor = "AVOIDLIST=$JOBPREV/adp_arena_vast_machine_avoidlist.json"
-    fallback = "AVOIDLIST=$E/arena-launch-r5/machine_avoidlist.json"
+    fallback_resolve = 'resolve --tag r5)'
+    fallback = 'AVOIDLIST=$_FALLBACK_INPUT/machine_avoidlist.json'
     profile_flag = "--machine-avoidlist $AVOIDLIST"
     assert predecessor in text
+    assert fallback_resolve in text
     assert fallback in text
+    assert 'if [ ! -f "$AVOIDLIST" ]; then\n  _FALLBACK_INPUT=' in text
+    assert text.find(fallback_resolve) < text.find(fallback)
     assert profile_flag in text
     assert text.find(predecessor) < text.find(profile_flag)
 
