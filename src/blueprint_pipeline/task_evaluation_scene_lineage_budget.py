@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import json
 import math
+import sys
+
+_BUDGET_MODULE_NAME = __package__ + '.control_plane_reference_budget'
 
 
 class RetainedEmissionBudgetError(ValueError):
@@ -20,7 +23,12 @@ def _require(condition):
 
 def _work(budget):
     if budget is not None:
-        from .control_plane_reference_budget import ReferenceCollectionBudget
+        # Read the live canonical module, never cache a class across reloads.
+        module = sys.modules.get(_BUDGET_MODULE_NAME)
+        if module is None:
+            from .control_plane_reference_budget import ReferenceCollectionBudget
+        else:
+            ReferenceCollectionBudget = module.ReferenceCollectionBudget
         _require(type(budget) is ReferenceCollectionBudget)
         budget.tick()
 

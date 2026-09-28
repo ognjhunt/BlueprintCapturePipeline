@@ -121,6 +121,28 @@ class ReferenceCollectionBudget:
             raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
 
     def tick(self) -> None:
+        if type(self) is ReferenceCollectionBudget:
+            # Exact native objects own these fields. Subclasses retain the
+            # original property path below, including callback/read ordering.
+            if self._closed:
+                self.fail("reference_budget_closed")
+            if self._failure:
+                raise ReferenceCollectionBudgetError(self._failure)
+            try:
+                current = self._monotonic()
+                if type(current) not in (int, float) or not math.isfinite(current):
+                    raise ValueError
+                current = float(current)
+                if self._last is not None and current < self._last:
+                    raise ValueError
+            except Exception:
+                self.fail("reference_clock_invalid")
+            self._last = current
+            if self._deadline is None:
+                self._deadline = current + self._duration
+            if current >= self._deadline:
+                self.fail("reference_deadline_exceeded")
+            return
         if self.closed:
             self.fail("reference_budget_closed")
         if self.failure:
@@ -141,6 +163,13 @@ class ReferenceCollectionBudget:
             self.fail("reference_deadline_exceeded")
 
     def available(self, kind: str, amount: int) -> None:
+        if type(self) is ReferenceCollectionBudget:
+            self.tick()
+            if kind not in self._limits or type(amount) is not int or amount < 0:
+                raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
+            if amount > self._limits[kind] - self._counts[kind]:
+                self.fail("reference_" + kind + "_limit")
+            return
         self.tick()
         if kind not in self.limits or type(amount) is not int or amount < 0:
             raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
