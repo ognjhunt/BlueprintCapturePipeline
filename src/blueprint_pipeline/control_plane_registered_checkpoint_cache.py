@@ -507,6 +507,37 @@ def _public_reader_layout(files, target):
                 private=None, config=None)
 
 
+def _validate_public_birth(birth, entry):
+    fields = {"schema_version", "intent_id", "generation", "target", "claim_raw_sha256", "claim_raw_size_bytes",
+              "publication_raw_sha256", "publication_raw_size_bytes", "target_identity", "lease_raw_sha256",
+              "lease_raw_size_bytes", "marker_raw_sha256", "marker_raw_size_bytes", "owner", "reference_kind",
+              "reference_value", "class_intent", "cleanup", "size_budget_bytes", "expires_at_epoch",
+              "inventory_raw_sha256", "inventory_raw_size_bytes", "writer_scope", "birth_digest"}
+    _require(type(birth) is dict and set(birth) == fields
+             and birth["schema_version"] == "control_plane_needed_cache_birth.v1"
+             and birth["birth_digest"] == canonical_digest(birth, digest_field="birth_digest")
+             and birth["target"] == entry["target"] and birth["generation"] == entry["generation"]
+             and birth["intent_id"] == entry["intent_id"] and birth["owner"] == entry["owner"]
+             and birth["class_intent"] == "cache" and birth["cleanup"] == "owner_review"
+             and birth["size_budget_bytes"] == entry["size_budget_bytes"]
+             and birth["inventory_raw_sha256"] == entry["inventory_raw_sha256"]
+             and birth["inventory_raw_size_bytes"] == entry["inventory_raw_size_bytes"]
+             and birth["writer_scope"] == "g1_checkpoint_fetcher.v1"
+             and birth["reference_kind"] in ("run_ref", "scene_ref")
+             and owners._matches(birth["reference_value"], owners._OWNER)
+             and owners._number(birth["expires_at_epoch"]) and birth["expires_at_epoch"] > 0,
+             "needed_cache_birth_invalid")
+    identity = birth["target_identity"]
+    _require(type(identity) is dict and set(identity) == {"dev", "ino", "type"}
+             and identity["type"] == "directory"
+             and all(type(identity[k]) is int and identity[k] >= 0 for k in ("dev", "ino")),
+             "needed_cache_birth_invalid")
+    for prefix, cap in (("claim", 32768), ("publication", 32768), ("lease", 8192), ("marker", 4096)):
+        _require(owners._matches(birth[prefix+"_raw_sha256"], owners._DIGEST)
+                 and type(birth[prefix+"_raw_size_bytes"]) is int
+                 and 0 < birth[prefix+"_raw_size_bytes"] <= cap, "needed_cache_birth_invalid")
+
+
 def _retain_source_records(files, payload, records):
     selected = set()
     for record in records:
@@ -563,10 +594,7 @@ def _open_registered(cls, root, *, mode="read", installed_config_path=_DEFAULT_C
         birth, birth_raw = _public_read(files, layout["public"] / (entry["intent_id"] + ".birth.json"),
                                         32768, 0o644, 0)
         owners._identity(birth_raw, entry["birth_raw_sha256"], entry["birth_raw_size_bytes"], files.budget)
-        _require(birth.get("schema_version") == "control_plane_needed_cache_birth.v1"
-                 and birth.get("birth_digest") == canonical_digest(birth, digest_field="birth_digest")
-                 and birth.get("target") == entry["target"] and birth.get("generation") == entry["generation"]
-                 and birth.get("intent_id") == entry["intent_id"], "needed_cache_birth_invalid")
+        _validate_public_birth(birth, entry)
         birth_record = files.records[-1]
         inventory_raw, inventory_record = files.read(layout["inventory"], cap=65536)
         owners._identity(inventory_raw, entry["inventory_raw_sha256"], entry["inventory_raw_size_bytes"], files.budget)
@@ -603,6 +631,7 @@ def _open_registered(cls, root, *, mode="read", installed_config_path=_DEFAULT_C
         result._deadline, result._failure = result._origin + 4*3600, None
         result._lock, result._counts, result._windows = threading.RLock(), {}, {}
         result._checks, result._health, result._reservation = 0, None, None
+        result._native_pending, result._native_unknown = 0, 0
         result._resources = derive_checkpoint_flow_resources(inventory, "stage_miss" if mode == "read" else "fill")
         result._initial_budget = files.budget
         result.check()
@@ -786,6 +815,14 @@ def _use_chunks_checked(self, path, *, role):
 
 
 def _use_hash(self, path, *, role="wam_hash"):
+    try:
+        return _use_hash_checked(self, path, role=role)
+    except (OSError, ValueError) as exc:
+        self._failure = str(exc) if isinstance(exc, NeededCheckpointCacheError) else "needed_cache_hash_failed"
+        raise NeededCheckpointCacheError(self._failure) from None
+
+
+def _use_hash_checked(self, path, *, role="wam_hash"):
     digest, size = hashlib.sha256(), 0
     for chunk in self.chunks(path, role=role):
         digest.update(chunk)
@@ -840,6 +877,7 @@ def _use_close(self):
     require_cache_use(self)
     self._closed = True
     self._files.finish()
+    _require(self._native_pending == self._native_unknown == 0, "needed_cache_native_cleanup_incomplete")
 
 
 
@@ -1253,6 +1291,7 @@ def _create_cache(files, layout, intent, intent_ref, inventory, rows, reservatio
     use._deadline, use._failure = deadline, None
     use._lock, use._counts, use._windows = threading.RLock(), {}, {}
     use._checks, use._health, use._reservation = 0, None, reservation
+    use._native_pending, use._native_unknown = 0, 0
     use._resources = derive_checkpoint_flow_resources(inventory, "fill")
     use._authority_epoch, use._authority_version = head["authority_epoch_id"], head["version"]
     return use, operation, create
@@ -1521,7 +1560,7 @@ def renew_needed_checkpoint_cache(intent_id, *, principal, owner, lease_ttl_seco
                     class_intent='cache', cleanup='owner_review', size_budget_bytes=size_budget_bytes)
 
 
-def _renew_allocation(files, root, rows):
+def _renew_allocation(files, root, rows, *, require_complete=True):
     """Finite original-parent inventory; unlisted bytes refuse renewed budget admission."""
     expected = {r['relative_path']: r for r in rows}
     metadata = {scratch.LEASE_FILE, MARKER, '.needed-cache-lifetime.lock', '.needed-cache-writer.lock'}
@@ -1553,13 +1592,14 @@ def _renew_allocation(files, root, rows):
                              'needed_cache_unknown_payload')
                     observed.add(path)
                     total += info.st_blocks*512
-    _require(observed == set(expected), 'needed_cache_payload_missing')
+    _require(not require_complete or observed == set(expected), 'needed_cache_payload_missing')
     return total
 
 def _failed_fill_terminal(use, intent, intent_ref, operation, fill_ref, reservation, moment, monotonic):
     """Post-cleanup observation only; cannot promote payload/current authority."""
     _require(use._closed and not use._files.owned and not use._files.unresolved
-             and reservation.released, 'needed_cache_cleanup_incomplete')
+             and reservation.released and use._native_pending == use._native_unknown == 0,
+             'needed_cache_cleanup_incomplete')
     with _metadata(monotonic) as files:
         target, _ = files.parent(use._root / scratch.LEASE_FILE)
         info = os.fstat(target)
@@ -1646,6 +1686,8 @@ def resume_needed_checkpoint_cache(intent_id, *, expected_sha256, expected_size_
         with _metadata(monotonic) as files:
             _authority_parent(files, layout['config'], fcntl.LOCK_SH)
             prior = _prior_closed_fill(files, layout, intent, use._entry)
+            target_parent, _ = files.parent(target / scratch.LEASE_FILE)
+            _renew_allocation(files, target_parent, rows, require_complete=False)
         present = []
         for row in rows:
             use.check()

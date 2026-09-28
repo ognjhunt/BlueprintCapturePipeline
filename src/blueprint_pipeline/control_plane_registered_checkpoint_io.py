@@ -7,6 +7,7 @@ import secrets
 import threading
 from pathlib import PurePosixPath
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 
 from . import control_plane_lane_owner_consents as owners
 from .control_plane_registered_checkpoint_cache import (
@@ -58,9 +59,9 @@ def download_file(self, row):
         else:
             self.check()
             response = fetcher._open_https(url)
-            self.check()
             digest, size = hashlib.sha256(), 0
-            with response:
+            with _response_scope(self, response):
+                self.check()
                 _require(response.geturl().startswith("https://"), "needed_cache_insecure_redirect")
                 while size < row["size_bytes"]:
                     self.check()
@@ -214,7 +215,7 @@ def download_pinned_ranges(use, url, descriptor, expected_size, *, chunk_size, w
                 stalls += 1
                 continue
             try:
-                with response:
+                with _response_scope(use, response):
                     guard()
                     _require(response.status == 206 and response.headers.get('Content-Range') ==
                              f'bytes {request_start}-{end}/{expected_size}'
@@ -271,3 +272,27 @@ def download_pinned_ranges(use, url, descriptor, expected_size, *, chunk_size, w
         # The joined executor has finished before this sticky refusal escapes.
         use._failure = str(exc) if isinstance(exc, NeededCheckpointCacheError) else 'needed_cache_range_failed'
         raise NeededCheckpointCacheError(use._failure) from None
+
+
+@contextmanager
+def _response_scope(use, response):
+    """Original native object ownership; failed close never becomes a closure grant."""
+    with use._lock:
+        use._native_pending += 1
+    try:
+        yield response
+    finally:
+        failure = None
+        try:
+            response.close()
+            _require(response.closed is True, 'needed_cache_native_cleanup_incomplete')
+        except (OSError, ValueError):
+            failure = 'needed_cache_native_cleanup_incomplete'
+        finally:
+            with use._lock:
+                use._native_pending -= 1
+                if failure:
+                    use._native_unknown += 1
+                    use._failure = failure
+        if failure:
+            raise NeededCheckpointCacheError(failure)
