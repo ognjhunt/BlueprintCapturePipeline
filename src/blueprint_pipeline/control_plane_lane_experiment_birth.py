@@ -67,8 +67,8 @@ def _authority_lock(files, path, gid):
     return parent
 
 
-def _locked_lane(files, root):
-    root_fd, _ = files.parent(Path(root) / "g1")
+def _locked_lane(files, root, lane="g1"):
+    root_fd, _ = files.parent(Path(root) / lane)
     lock = files.open(".lane-scratch.lock", os.O_RDWR | os.O_NONBLOCK, parent=root_fd)
     info = files.acquired[lock]
     _require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size == 0
@@ -79,7 +79,7 @@ def _locked_lane(files, root):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         raise OwnerTargetVersionError("experiment_lane_busy") from None
-    return files.open("g1", os.O_RDONLY | os.O_DIRECTORY, parent=root_fd)
+    return files.open(lane, os.O_RDONLY | os.O_DIRECTORY, parent=root_fd)
 
 
 class _RegisteredBirth:
@@ -92,7 +92,7 @@ class _RegisteredBirth:
         self.lease = None
 
     def publish_creation(self, lease):
-        _require(self.fd is None and lease["lane"] == "g1" and lease["name"] == self.stage_name
+        _require(self.fd is None and lease["lane"] == self.intent["lane"] and lease["name"] == self.stage_name
                  and lease["owner"] == self.intent["owner"], "experiment_creation_invalid")
         files = self.files
         self.fd = files.new_directory(self.lane_fd, self.stage_name)
@@ -106,7 +106,7 @@ class _RegisteredBirth:
             fcntl.flock(self.fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError:
             raise OwnerTargetVersionError("experiment_stage_busy") from None
-        return Path(self.root) / "g1" / self.stage_name
+        return Path(self.root) / self.intent["lane"] / self.stage_name
 
 
 def _read_intent(files, config, intent_id, expected, issued):
@@ -118,11 +118,21 @@ def _read_intent(files, config, intent_id, expected, issued):
     intent = retained._document(raw, 32768, _work_budget=files.budget)
     _require(set(intent) == _INTENT_FIELDS and intent["schema_version"] == issuance.CREATION_SCHEMA
              and intent["intent_id"] == intent_id and intent["name"] == "registered-" + intent_id
-             and intent["lane"] == "g1" and intent["root"] in ("work", "inputs")
+             and intent["lane"] in ("g1", "arena") and intent["root"] in ("work", "inputs")
              and intent["issuer_uid"] == 0 and type(intent["issuer_uid"]) is int
              and intent["intent_digest"] == canonical_digest(intent, digest_field="intent_digest")
              and _epoch(issued) and _epoch(intent["expires_at_epoch"])
              and intent["issued_at_epoch"] <= issued < intent["expires_at_epoch"], "experiment_creation_invalid")
+    profile = intent["participant_profile"]
+    _require(profile in issuance._PROFILES, "experiment_creation_invalid")
+    arena = profile == "arena_owner_review.v1"
+    reason, class_intent, cleanup, writer, count = issuance._PROFILES[profile]
+    _require(intent["lane"] == ("arena" if arena else "g1")
+             and (not arena or intent["root"] == "inputs" and issuance._ARENA_TAG.fullmatch(intent["reference_value"]))
+             and (intent["reason"], intent["class_intent"], intent["cleanup"], intent["writer_scope"])
+                 == (reason, class_intent, cleanup, writer)
+             and isinstance(intent["request_records"], list) and len(intent["request_records"]) == count,
+             "experiment_creation_invalid")
     policy_raw, policy_record = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
                                           protected=True, mode=0o600)
     _require(issuance._selector(policy_raw, files.budget) == intent["policy"], "experiment_policy_changed")
@@ -160,10 +170,10 @@ def _create(files, intent_id, expected, config_path, issued):
     _require(occupied + 8 * 32768 <= issuance.MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
     operation_id = secrets.token_hex(16)
     _, claim_bytes = _event(files, intent, operation_id, "creation_claim",
-        dict(intent=expected, root=intent["root"], lane="g1", name=intent["name"]), 0, None, issued)
+        dict(intent=expected, root=intent["root"], lane=intent["lane"], name=intent["name"]), 0, None, issued)
     claim = _publish(files, store, intent_id + ".claim.json", claim_bytes, kind="private")
     root = config.lane_scratch_work_root if intent["root"] == "work" else config.lane_scratch_inputs_root
-    lane = _locked_lane(files, root)
+    lane = _locked_lane(files, root, intent["lane"])
     try:
         os.stat(intent["name"], dir_fd=lane, follow_symlinks=False)
     except FileNotFoundError:
@@ -172,7 +182,7 @@ def _create(files, intent_id, expected, config_path, issued):
         raise OwnerTargetVersionError("experiment_creation_target_exists")
     stage_name = "create-" + operation_id
     composer = _RegisteredBirth(files, lane, root, stage_name, intent, operation_id, claim, uid, gid)
-    scratch.create_lane_scratch("g1", stage_name, owner=intent["owner"], reason=intent["reason"],
+    scratch.create_lane_scratch(intent["lane"], stage_name, owner=intent["owner"], reason=intent["reason"],
         class_intent=intent["class_intent"], cleanup=intent["cleanup"], ttl_seconds=intent["lease_ttl_seconds"],
         run_ref=intent["reference_value"], root=root, now=lambda: intent["issued_at_epoch"],
         consumer_lifetime_contract=scratch.CONSUMER_LIFETIME_PROTOCOL, _registered_birth=composer)
@@ -183,7 +193,7 @@ def _create(files, intent_id, expected, config_path, issued):
     creation = _publish(files, store, intent_id + ".creation.json", creation_bytes, kind="private")
     _, marker_bytes = _encode(files, dict(schema_version="control_plane_lane_experiment_marker.v1",
         intent=expected, claim=claim, create_operation=creation, generation=intent["generation"],
-        root=intent["root"], lane="g1", name=intent["name"], writer_scope=intent["writer_scope"]),
+        root=intent["root"], lane=intent["lane"], name=intent["name"], writer_scope=intent["writer_scope"]),
         "marker_digest", 4096)
     marker = _publish(files, stage, _MARKER, marker_bytes, kind="marker")
     for name in (scratch.LEASE_FILE, _MARKER):
@@ -206,7 +216,7 @@ def _create(files, intent_id, expected, config_path, issued):
         2, creation, issued)
     publication = _publish(files, store, intent_id + ".publication.json", publication_bytes, kind="private")
     _, birth_bytes = _encode(files, dict(schema_version="control_plane_lane_experiment_birth.v1",
-        intent_id=intent_id, generation=intent["generation"], root=intent["root"], lane="g1", name=intent["name"],
+        intent_id=intent_id, generation=intent["generation"], root=intent["root"], lane=intent["lane"], name=intent["name"],
         publication=publication, marker=marker, target_identity=stage_identity, lease=composer.lease_selector,
         owner=intent["owner"], reference_kind=intent["reference_kind"], reference_value=intent["reference_value"],
         class_intent=intent["class_intent"], cleanup=intent["cleanup"], expires_at_epoch=intent["expires_at_epoch"],
@@ -220,7 +230,7 @@ def _create(files, intent_id, expected, config_path, issued):
     epoch = previous[0]["authority_epoch_id"] if previous is not None else secrets.token_hex(16)
     version = previous[0]["version"] + 1 if previous is not None else 0
     entry = dict(intent_id=intent_id, generation=intent["generation"], birth=birth, target_identity=stage_identity,
-        lease=composer.lease_selector, owner=intent["owner"], root=intent["root"], lane="g1", name=intent["name"],
+        lease=composer.lease_selector, owner=intent["owner"], root=intent["root"], lane=intent["lane"], name=intent["name"],
         state="active", completion=None, restoration=None, operation_id=None, expires_at_epoch=intent["expires_at_epoch"])
     _, authority_bytes = _encode(files, dict(schema_version="control_plane_lane_experiment_authority.v1",
         authority_epoch_id=epoch, version=version, previous_record=previous[0]["record"] if previous is not None else None,
@@ -234,7 +244,7 @@ def _create(files, intent_id, expected, config_path, issued):
     files.location(stage)
     for name, selector, cap in ((scratch.LEASE_FILE, composer.lease_selector, scratch.MAX_LEASE_BYTES),
                                 (_MARKER, marker, 4096)):
-        raw, record = files.read(Path(root) / "g1" / intent["name"] / name, cap=cap)
+        raw, record = files.read(Path(root) / intent["lane"] / intent["name"] / name, cap=cap)
         _require(issuance._selector(raw, files.budget) == selector, "experiment_stage_changed")
         files.verify_record(record)
     files.verify()
@@ -255,7 +265,16 @@ def _create(files, intent_id, expected, config_path, issued):
     _, completed_bytes = _event(files, intent, operation_id, "birth_completed",
         dict(birth=birth, authority=authority, head=head), 5, pending, issued)
     _publish(files, store, intent_id + ".completed.json", completed_bytes, kind="private")
-    return dict(path=str(Path(root) / "g1" / intent["name"]), generation=intent["generation"], birth=birth)
+    if intent["participant_profile"] == "arena_owner_review.v1":
+        tag = issuance._ARENA_TAG.fullmatch(intent["reference_value"]).group(1)
+        _, selected = _encode(files, dict(schema_version="control_plane_lane_arena_selection.v1",
+            tag=tag, intent_id=intent_id, generation=intent["generation"], birth=birth,
+            lease=composer.lease_selector, target_identity=stage_identity,
+            reference_kind=intent["reference_kind"], reference_value=intent["reference_value"]),
+            "selection_digest", 4096)
+        _publish(files, public, "arena-selection-" + tag + ".json", selected,
+                 kind="arena_selection", blueprint_gid=gid)
+    return dict(path=str(Path(root) / intent["lane"] / intent["name"]), generation=intent["generation"], birth=birth)
 
 
 def create_registered_experiment(intent_id, *, expected_intent,

@@ -78,7 +78,8 @@ def _current(files, parent, gid):
         _require(isinstance(entry, dict) and set(entry) == ENTRY_FIELDS
                  and owners._matches(entry["intent_id"], owners._CONSENT_ID) and entry["intent_id"] not in seen
                  and owners._matches(entry["generation"], owners._CONSENT_ID)
-                 and entry["name"] == "registered-" + entry["intent_id"] and entry["lane"] == "g1"
+                 and entry["name"] == "registered-" + entry["intent_id"] and entry["lane"] in ("g1", "arena")
+                 and (entry["lane"] != "arena" or entry["root"] == "inputs")
                  and entry["root"] in ("work", "inputs") and owners._matches(entry["owner"], owners._OWNER)
                  and entry["state"] in ("creating", "active", "retiring", "retired", "restoring", "revoked")
                  and _epoch(entry["expires_at_epoch"]) and _raw_selector(entry["birth"])

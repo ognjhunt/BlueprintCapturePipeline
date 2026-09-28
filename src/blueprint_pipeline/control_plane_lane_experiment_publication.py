@@ -18,6 +18,8 @@ from .control_plane_lane_owner_target_io import _TargetFiles, _typed
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _require
 
 _NAMES = {
+    "arena_claim": r"arena-launch-r[1-9][0-9]{0,5}\.arena-claim\.json",
+    "arena_selection": r"arena-selection-r[1-9][0-9]{0,5}\.json",
     "scan_work": r"scan-(?:issue|restore_stage|restore_final|restore_activation|restore_checkpoint_compare)-[01]-(?:reserved|completed)\.json",
     "issue_selection": r"[0-9a-f]{32}\.issue-selection-[0-9a-f]{64}\.json",
     "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|reservation|scan-reservation|retiring-head|retired-head|lease-transition))?\.json",
@@ -31,9 +33,9 @@ _NAMES = {
     "lease": r"\.lane-scratch\.v1\.json",
     "marker": r"\.registered-experiment\.v1\.json",
 }
-_MODES = dict(scan_work=0o600, issue_selection=0o600, manifest=0o600, event=0o600, private=0o600, birth=0o640, authority=0o640, head=0o640,
+_MODES = dict(arena_claim=0o600, arena_selection=0o640, scan_work=0o600, issue_selection=0o600, manifest=0o600, event=0o600, private=0o600, birth=0o640, authority=0o640, head=0o640,
               lease=0o600, marker=0o600, certificate=0o640, bootstrap=0o640)
-_CAPS = dict(scan_work=4096, issue_selection=4096, manifest=1048576, event=32768, private=32768, birth=32768, authority=32768, head=4096,
+_CAPS = dict(arena_claim=4096, arena_selection=4096, scan_work=4096, issue_selection=4096, manifest=1048576, event=32768, private=32768, birth=32768, authority=32768, head=4096,
              lease=8192, marker=4096, certificate=8192, bootstrap=32768)
 
 
@@ -188,8 +190,8 @@ def _publish(files, parent, name, payload, *, kind, blueprint_gid=0, _expected_h
     files.budget.charge("output_bytes", len(payload))
     files.location(parent)
     info = os.fstat(parent)
-    _require(info.st_uid == 0 and info.st_gid == (blueprint_gid if kind in ("birth", "authority", "head", "certificate", "bootstrap") else 0)
-             and stat.S_IMODE(info.st_mode) == (0o750 if kind in ("birth", "authority", "head", "certificate", "bootstrap") else 0o700),
+    _require(info.st_uid == 0 and info.st_gid == (blueprint_gid if kind in ("birth", "authority", "head", "certificate", "bootstrap", "arena_selection") else 0)
+             and stat.S_IMODE(info.st_mode) == (0o750 if kind in ("birth", "authority", "head", "certificate", "bootstrap", "arena_selection") else 0o700),
              "experiment_publication_parent_unsafe")
     try:
         os.stat(name, dir_fd=parent, follow_symlinks=False)

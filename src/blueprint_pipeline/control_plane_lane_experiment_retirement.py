@@ -6,6 +6,7 @@ Legacy experiment directories are not adopted by this interface.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import fcntl
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch_decisions as retained
+from .control_plane_lane_experiment_publication import _BirthFiles, _publish
 from .control_plane_lane_owner_target_io import _TargetFiles
 from .control_plane_lane_owner_target_publication import _publish_owned_metadata
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require
@@ -30,8 +32,11 @@ _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
 _STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|scan-reservation|retiring-head|retired-head))?\.json\Z")
+_ARENA_TAG = re.compile(r"arena-launch-(r[1-9][0-9]{0,5})\Z")
+_ARENA_CLAIM_NAME = re.compile(r"arena-launch-r[1-9][0-9]{0,5}\.arena-claim\.json\Z")
 _ISSUE_SELECTION_NAME = re.compile(r'[0-9a-f]{32}\.issue-selection-[0-9a-f]{64}\.json\Z')
 _PROFILES = {
+    "arena_owner_review.v1": ("arena_construction_launch", "evidence", "owner_review", "arena_construction_launch_chain.v1", 0),
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
     "g1_local_contained_completed.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
@@ -154,14 +159,15 @@ def _capacity(files, parent, *, adding_registration=True):
                 continue
             match = _STORE_NAME.fullmatch(item.name)
             selection = _ISSUE_SELECTION_NAME.fullmatch(item.name) is not None
-            _require(match is not None or selection, "experiment_store_unsafe")
+            arena_claim = _ARENA_CLAIM_NAME.fullmatch(item.name) is not None
+            _require(match is not None or selection or arena_claim, "experiment_store_unsafe")
             records += 1
             if match is not None and match.group(2) is None:
                 count += 1
             total += info.st_size
             _require(records <= MAX_EXPERIMENT_REGISTRATIONS * 12
                      and count <= MAX_EXPERIMENT_REGISTRATIONS - int(adding_registration)
-                     and 0 < info.st_size <= (4096 if selection else 1048576 if match.group(2) in ("manifest", "stage-manifest", "payload-manifest") else _MAX_INTENT)
+                     and 0 < info.st_size <= (4096 if selection or arena_claim else 1048576 if match.group(2) in ("manifest", "stage-manifest", "payload-manifest") else _MAX_INTENT)
                      and total <= MAX_EXPERIMENT_STORE_BYTES,
                      "experiment_store_full")
     files.budget.tick()
@@ -179,6 +185,9 @@ def _issue(files, *, installed_config_path, principal, owner, root, reference_va
              and root in ("work", "inputs") and owners._matches(reference_value, owners._OWNER)
              and participant_profile in _PROFILES and isinstance(request_records, (tuple, list)),
              "experiment_creation_invalid")
+    arena = participant_profile == "arena_owner_review.v1"
+    _require(not arena or root == "inputs" and _ARENA_TAG.fullmatch(reference_value),
+             "experiment_arena_tag_invalid")
     reason, class_intent, cleanup, writer, number = _PROFILES[participant_profile]
     _require(len(request_records) == number, "experiment_creation_invalid")
     policy_raw, policy_record = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
@@ -193,22 +202,44 @@ def _issue(files, *, installed_config_path, principal, owner, root, reference_va
         owners._identity(raw, request[1]["sha256"], request[1]["size_bytes"], files.budget)
         retained._document(raw, owners.MAX_POLICY_BYTES, _work_budget=files.budget)
         selectors.append(_selector(raw, files.budget))
+    parent = _store(files, config.experiment_record_store)
+    occupied = _capacity(files, parent)
+    claim_name = reference_value + ".arena-claim.json" if arena else None
+    if arena:
+        files.location(parent)
+        try:
+            os.stat(claim_name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise OwnerTargetVersionError("experiment_arena_tag_claimed")
     intent_id, generation = secrets.token_hex(16), secrets.token_hex(16)
     _require(owners._matches(intent_id, owners._CONSENT_ID) and owners._matches(generation, owners._CONSENT_ID)
              and intent_id != generation, "experiment_creation_invalid")
     record = dict(schema_version=CREATION_SCHEMA, intent_id=intent_id, generation=generation, issuer_uid=0,
-        principal=principal, owner=owner, root=root, lane="g1", name="registered-" + intent_id,
+        principal=principal, owner=owner, root=root, lane="arena" if arena else "g1", name="registered-" + intent_id,
         reference_kind="run_ref", reference_value=reference_value, reason=reason, class_intent=class_intent,
         cleanup=cleanup, lease_ttl_seconds=lease_ttl_seconds, issued_at_epoch=issued, expires_at_epoch=expiry,
         policy=_selector(policy_raw, files.budget), request_records=selectors,
         writer_scope=writer, participant_profile=participant_profile)
     record["intent_digest"] = canonical_digest(record, digest_field="intent_digest")
     payload = owners._encoded(record, files.budget, cap=_MAX_INTENT)
-    parent = _store(files, config.experiment_record_store)
-    occupied = _capacity(files, parent)
-    _require(occupied + len(payload) <= MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
+    claim_payload = None
+    if arena:
+        _require(len(payload) <= 2304, "experiment_arena_claim_invalid")
+        claim = dict(schema_version="control_plane_lane_arena_issue_claim.v1",
+            tag=_ARENA_TAG.fullmatch(reference_value).group(1), intent_id=intent_id, generation=generation,
+            principal=principal, owner=owner, policy=record["policy"], issued_at_epoch=issued,
+            expires_at_epoch=expiry, intent=_selector(payload, files.budget),
+            intent_payload_base64=base64.b64encode(payload).decode("ascii"))
+        claim["claim_digest"] = canonical_digest(claim, digest_field="claim_digest")
+        claim_payload = owners._encoded(claim, files.budget, cap=4096)
+    _require(occupied + len(payload) + (len(claim_payload) if claim_payload else 0)
+             <= MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
     files.verify_record(policy_record)
     files.verify()
+    if claim_payload is not None:
+        _publish(files, parent, claim_name, claim_payload, kind="arena_claim")
     published = _publish_owned_metadata(files, parent, intent_id + ".json", payload,
                                         mode=0o600, artifact_kind="attestation")
     files.verify()
@@ -220,7 +251,7 @@ def issue_experiment_creation_intent(*, installed_config_path="/etc/blueprint-op
         request_records, expires_at_epoch=None, now=time.time):
     """Root-only authentic immutable intent; no target or child is created here."""
     budget = ReferenceCollectionBudget(values_limit=10000)
-    files = _TargetFiles(budget)
+    files = _BirthFiles(budget)
     try:
         issued = now()
         expiry = (issued + lease_ttl_seconds if expires_at_epoch is None

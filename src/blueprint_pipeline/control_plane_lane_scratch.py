@@ -362,7 +362,7 @@ def create_lane_scratch(
 def _refuse_registered_legacy_mutation(lane, name):
     # A missing birth/authority record cannot opt this reserved name into legacy
     # creation, renewal or release. Fixed root issuance uses an unpublished stage.
-    if lane == "g1-checkpoint" or (lane == "g1" and isinstance(name, str)
+    if lane == "g1-checkpoint" or (lane in ("g1", "arena") and isinstance(name, str)
                                      and re.fullmatch(r"registered-[0-9a-f]{32}", name)):
         raise LaneScratchError("lane_scratch_registered_authority_required")
 
