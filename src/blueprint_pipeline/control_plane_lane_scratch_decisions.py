@@ -11,6 +11,10 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .control_plane_lane_scratch import (
+    MAX_TTL_SECONDS, LaneScratchError, _creation_lease, _id, _REASON,
+)
+
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_ROWS = 10_000
 INVENTORY_SCHEMA = "control_plane_lane_scratch_census.v1"
@@ -121,7 +125,10 @@ def _document(payload: bytes, limit: int) -> dict[str, Any]:
 
 
 def _number(value: Any) -> bool:
-    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    try:
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
 
 
 def _path(value: Any) -> PurePosixPath:
@@ -135,42 +142,154 @@ def _path(value: Any) -> PurePosixPath:
     return path
 
 
+
+def _counter(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _inventory_rows(census: dict, roots: tuple[PurePosixPath, ...]) -> dict[str, dict]:
+    fields = {"schema_version", "status", "observed_at_epoch", "rows", "candidate_count",
+              "entries_visited", "unique_allocated_bytes", "scan_errors", "mutations"}
+    if set(census) != fields or census["schema_version"] != INVENTORY_SCHEMA:
+        _refuse("census_inventory_invalid")
+    if census["status"] != "complete" or census["scan_errors"] != []:
+        _refuse("census_inventory_incomplete")
+    if (not _number(census["observed_at_epoch"])
+            or any(not _counter(census[key]) for key in
+                   ("candidate_count", "entries_visited", "unique_allocated_bytes", "mutations"))
+            or census["mutations"] != 0):
+        _refuse("census_inventory_invalid")
+    rows = census["rows"]
+    if (not isinstance(rows, list) or len(rows) > MAX_ROWS
+            or census["candidate_count"] != len(rows)):
+        _refuse("census_inventory_invalid")
+    row_fields = {"path", "family", "owner_guess", "owner_guess_basis", "allocated_bytes",
+                  "newest_mtime_epoch", "age_seconds", "unreadable", "shared_names",
+                  "references", "owner_decision", "approved_expiry"}
+    indexed: dict[str, dict] = {}
+    known_refs = {"process", "queue", "pin", "live_release", "active_run"}
+    for row in rows:
+        if isinstance(row, dict) and "references" not in row:
+            _refuse("census_reference_invalid")
+        if not isinstance(row, dict) or not row_fields <= set(row):
+            _refuse("census_inventory_invalid")
+        if (any(not _counter(row[key]) for key in ("allocated_bytes", "shared_names", "unreadable"))
+                or any(row[key] is not None and not _number(row[key]) for key in
+                       ("newest_mtime_epoch", "age_seconds"))
+                or row["owner_decision"] is not None or row["approved_expiry"] is not None
+                or any(not isinstance(row[key], str) for key in
+                       ("family", "owner_guess", "owner_guess_basis"))):
+            _refuse("census_inventory_invalid")
+        if row["unreadable"] != 0:
+            _refuse("census_inventory_incomplete")
+        path = _path(row["path"])
+        if not any(root in path.parents for root in roots) or str(path) in indexed:
+            _refuse("census_row_ambiguous")
+        refs = row["references"]
+        if (not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in known_refs for ref in refs)
+                or len(set(refs)) != len(refs)):
+            _refuse("census_reference_invalid")
+        indexed[str(path)] = row
+    for path in indexed:
+        if any(str(parent) in indexed for parent in PurePosixPath(path).parents):
+            _refuse("census_row_ambiguous")
+    if sum(row["allocated_bytes"] for row in rows) != census["unique_allocated_bytes"]:
+        _refuse("census_inventory_invalid")
+    return indexed
+
+
+def _decision_metadata(decision: dict, roots: tuple[PurePosixPath, ...], now: float) -> None:
+    action = decision["action"]
+    base = {"path", "action", "owner"}
+    try:
+        _id(decision.get("owner"), "owner")
+        if action == "keep":
+            expiry = decision.get("expires_at_epoch")
+            if (set(decision) != base | {"expires_at_epoch"} or not _number(expiry)
+                    or not 0 < expiry - now <= MAX_TTL_SECONDS):
+                _refuse("census_decision_metadata_invalid")
+        elif action in ("delete", "offload"):
+            reason = decision.get("reason")
+            if (set(decision) != base | {"reason"} or not isinstance(reason, str)
+                    or _REASON.fullmatch(reason) is None):
+                _refuse("census_decision_metadata_invalid")
+        else:
+            required = {"lane", "name", "reason", "class_intent", "cleanup", "ttl_seconds"}
+            optional = {"run_ref", "scene_ref", "size_budget_bytes"}
+            if (not base | required <= set(decision) or set(decision) - base - required - optional
+                    or ("run_ref" in decision) == ("scene_ref" in decision)
+                    or decision.get("run_ref", decision.get("scene_ref")) is None
+                    or ("size_budget_bytes" in decision and decision["size_budget_bytes"] is None)):
+                _refuse("census_decision_metadata_invalid")
+            metadata = {key: value for key, value in decision.items() if key not in base}
+            _creation_lease(owner=decision["owner"], now=lambda: now, **metadata)
+            path = PurePosixPath(decision["path"])
+            for root in roots:
+                if root not in path.parents:
+                    continue
+                relative = path.relative_to(root).parts
+                if (len(relative) == 3 and relative[0] == "lanes"
+                        and relative[1:] != (decision["lane"], decision["name"])):
+                    _refuse("census_decision_metadata_invalid")
+    except (LaneScratchError, TypeError, ValueError, OverflowError) as exc:
+        raise CensusDecisionError("census_decision_metadata_invalid") from exc
+
+
 def validate_census_annotations(
     census_bytes: bytes, annotation_bytes: bytes, *, now: float, allowed_roots,
     max_input_bytes: int = MAX_JSON_BYTES, max_output_bytes: int = MAX_JSON_BYTES,
 ) -> dict[str, Any]:
     """Validate byte-bound retained proposals; never stat, resolve or operate on targets."""
-    limit = _bound(max_input_bytes)
+    census = _document(census_bytes, _bound(max_input_bytes))
+    annotations = _document(annotation_bytes, _bound(max_input_bytes))
     output_limit = _bound(max_output_bytes)
-    census = _document(census_bytes, limit)
-    annotations = _document(annotation_bytes, limit)
     if not _number(now):
         _refuse("census_annotations_invalid")
     try:
-        roots = tuple(_path(str(root)) for root in allowed_roots)
+        if isinstance(allowed_roots, (str, bytes)):
+            _refuse("census_inventory_invalid")
+        roots = tuple(_path(str(root)) if isinstance(root, (str, PurePosixPath)) else
+                      _path(None) for root in allowed_roots)
     except TypeError as exc:
         raise CensusDecisionError("census_inventory_invalid") from exc
     if not roots:
         _refuse("census_inventory_invalid")
-    if census.get("schema_version") != INVENTORY_SCHEMA:
-        _refuse("census_inventory_invalid")
-    if census.get("status") != "complete" or census.get("scan_errors") != []:
-        _refuse("census_inventory_incomplete")
-    if (census.get("rows") != [] or census.get("candidate_count") != 0
-            or census.get("mutations") != 0 or census.get("unique_allocated_bytes") != 0):
-        _refuse("census_inventory_invalid")
+    rows = _inventory_rows(census, roots)
     if (annotations.get("schema_version") != ANNOTATIONS_SCHEMA
             or set(annotations) != {"schema_version", "census_digest", "decisions"}):
         _refuse("census_annotations_invalid")
     digest = _digest(census_bytes)
     if annotations["census_digest"] != digest:
         _refuse("census_identity_mismatch")
-    if annotations["decisions"] != []:
-        _refuse("census_decision_unknown_target")
+    decisions = annotations["decisions"]
+    if not isinstance(decisions, list) or len(decisions) > MAX_ROWS:
+        _refuse("census_annotations_invalid")
+    validated = {}
+    counts = dict.fromkeys(ACTIONS, 0)
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            _refuse("census_annotations_invalid")
+        path = decision.get("path")
+        if not isinstance(path, str) or path not in rows:
+            _refuse("census_decision_unknown_target")
+        if path in validated:
+            _refuse("census_decision_duplicate")
+        action = decision.get("action")
+        if not isinstance(action, str) or action not in ACTIONS:
+            _refuse("census_decision_action_invalid")
+        _decision_metadata(decision, roots, now)
+        refs = rows[path]["references"]
+        if refs and action in ("delete", "offload"):
+            _refuse("census_decision_referenced")
+        validated[path] = decision | {"references": list(refs)}
+        counts[action] += 1
+    if len(validated) != len(rows):
+        _refuse("census_decision_missing")
     report = {"schema_version": VALIDATION_SCHEMA, "status": "validated",
               "census_digest": digest, "annotations_digest": _digest(annotation_bytes),
-              "decision_count": 0, "decision_counts": dict.fromkeys(ACTIONS, 0),
-              "decisions": [], "mutations": 0, "execution_authorized": False,
+              "decision_count": len(validated), "decision_counts": counts,
+              "decisions": [validated[path] for path in sorted(validated)],
+              "mutations": 0, "execution_authorized": False,
               "requires_fresh_reference_check": True}
     if len(encode_validation_report(report)) > output_limit:
         _refuse("census_validation_output_too_large")
