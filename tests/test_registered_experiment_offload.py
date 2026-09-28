@@ -104,3 +104,49 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert _current_entry(value, intent_id)['state'] == 'retired'
         assert len(list(target.iterdir())) == 2
         assert len(cloud.objects) == 1
+
+
+def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
+        expired_completed_evidence, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_experiment_archive as archive
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    from blueprint_pipeline import control_plane_lane_experiment_restore as restore
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+    value, target, born, action, intent_id = expired_completed_evidence
+    before = {str(path.relative_to(target)): path.read_bytes() for path in target.rglob('*') if path.is_file()}
+    original_inode = target.stat().st_ino
+    cloud = Cloud()
+    monkeypatch.setattr(archive, '_client', lambda *a: (cloud, 'development-only'))
+    assert _gc(value)['registered_experiments']['outcomes'][0]['decision'] == 'retired'
+    grant = root.issue_experiment_restore_intent(intent_id, principal='operator', owner='owner',
+        lease_ttl_seconds=600, expires_at_epoch=3400, installed_config_path=value[0], now=lambda: 2901)
+    class Reservation:
+        released = False
+        def release(self, **kwargs):
+            self.released = True
+    reservation = Reservation()
+    allocations = []
+    def reserve(*args, **kwargs):
+        allocations.append((args, kwargs))
+        return reservation
+    monkeypatch.setattr(restore, 'reserve_control_plane_disk', reserve)
+    outcome = root.restore_registered_experiment(grant['action_id'], expected_restore_intent=grant['restore_intent'],
+        installed_config_path=value[0], now=lambda: 2902, _pins_root=value[0].parent / 'pins')
+    assert outcome['decision'] == 'restored' and reservation.released and len(allocations) == 1
+    assert allocations[0][1]['minimum_bytes'] > 0
+    entry = _current_entry(value, intent_id)
+    assert entry['state'] == 'active' and entry['generation'] == born['generation']
+    assert entry['restoration'] is not None and target.stat().st_ino == original_inode
+    for relative, raw in before.items():
+        if relative != '.lane-scratch.v1.json':
+            assert (target / relative).read_bytes() == raw
+    with consumer.RegisteredExperimentUse.admit(target, now=lambda: 3000) as use:
+        assert use.entry['restoration'] == entry['restoration']
+        from blueprint_pipeline.native_g1_development_pair import _read_result
+        from blueprint_pipeline import native_g1_development_pair as pair
+        value = json.loads((target / (pair.SCHEMA + '.json')).read_bytes())
+        candidate = value['attempts'][0]['candidate_id']
+        worker = json.loads((target / candidate / 'native_g1_development_worker_result.v1.json').read_bytes())
+        result = _read_result(target / candidate / 'native_g1_development_worker_result.v1.json',
+            candidate_id=candidate, scene_plan_digest=value['scene_plan_digest'], request_digest=worker['request_digest'])
+        assert result['status'] == 'blocked'
