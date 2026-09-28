@@ -25,6 +25,7 @@ from .decision_evidence_contracts import canonical_digest
 
 ACTION_SCHEMA = "control_plane_lane_experiment_action_intent.v1"
 MANIFEST_SCHEMA = "control_plane_lane_experiment_manifest.v1"
+_MANIFEST_LIMIT = 1048576
 _ACTION_FIELDS = frozenset({"schema_version", "intent_id", "action_id", "issuer_uid", "principal", "owner",
     "generation", "birth", "target_identity", "lease", "completion", "manifest", "action",
     "issued_at_epoch", "expires_at_epoch", "policy", "controller", "metadata_aggregate", "action_digest"})
@@ -187,9 +188,17 @@ def _install_head(files, public, payload, gid, previous):
 def _manifest(files, target, target_fd, *, binding, hash_payload=True):
     """Five-column compact rows, sequential owned FDs, bounded native metadata."""
     rows, seen, logical, allocated = [], set(), 0, 0
+    # Admit the retained representation before list growth. Reserve the final
+    # digest, largest native counters and every eventual file SHA even during
+    # a metadata-only pass; hashing cannot enlarge it beyond this preview.
+    digest_preview = "sha256:" + "0" * 64
+    header = dict(schema_version=MANIFEST_SCHEMA, members=[], logical_bytes=(1 << 64) - 1,
+                  allocated_bytes=(1 << 64) - 1, manifest_digest=digest_preview,
+                  **{key: binding[key] for key in ("generation", "birth", "target_identity", "lease", "completion")})
+    retained_size = files.budget.measure(header, cap=_MANIFEST_LIMIT - 100)
     started = time.monotonic()
     def walk(parent, prefix, depth):
-        nonlocal logical, allocated
+        nonlocal logical, allocated, retained_size
         _require(depth <= 16, "experiment_manifest_depth")
         files.slot()
         with os.scandir(parent) as stream:
@@ -238,8 +247,18 @@ def _manifest(files, target, target_fd, *, binding, hash_payload=True):
                 if identity not in seen:
                     allocated += info.st_blocks * 512
                     seen.add(identity)
-                rows.append([relative, kind, f"{info.st_dev}:{info.st_ino}:" + ("r" if kind == "file" else "d"),
-                    ":".join(map(str, (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns))), digest])
+                row = [relative, kind, f"{info.st_dev}:{info.st_ino}:" + ("r" if kind == "file" else "d"),
+                    ":".join(map(str, (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns))), digest]
+                preview = row[:-1] + [digest_preview if kind == "file" else None]
+                row_size = files.budget.measure(preview, cap=_MANIFEST_LIMIT)
+                _require(retained_size + row_size + (2 if rows else 0) <= _MANIFEST_LIMIT - 100,
+                         "experiment_manifest_limit")
+                retained_size += row_size + (2 if rows else 0)
+                if type(files) is _ActionFiles:
+                    files.reserve_output(retained_size)
+                else:
+                    files.budget.available("output_bytes", retained_size)
+                rows.append(row)
                 if kind == "directory":
                     walk(fd, relative + "/", depth + 1)
                 _require(owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)) == owners._metadata(info)
