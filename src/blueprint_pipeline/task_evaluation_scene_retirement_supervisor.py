@@ -510,7 +510,9 @@ def _continuous_loaded_command(value, command):
                  and key not in fields, _READER_ERROR)
         fields[key] = item
     _require(set(fields) == {'start_time', 'stop_time', 'pid', 'code', 'status'}
-             and fields['pid'].isdecimal() and fields['status'].lstrip('-').isdecimal(), _READER_ERROR)
+             and fields['pid'].isdecimal()
+             and (fields['status'].lstrip('-').isdecimal()
+                  or (fields['status'] == '0/0' and fields['code'] == '(null)')), _READER_ERROR)
 
 
 def _exact_continuous_unit(row, module, native):
