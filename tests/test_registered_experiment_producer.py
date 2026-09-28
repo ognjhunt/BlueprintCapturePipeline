@@ -720,3 +720,36 @@ def test_native_unit_observer_requests_complete_empty_systemd_properties(monkeyp
     assert observed['AmbientCapabilities'] == observed['CapabilityBoundingSet'] == ''
     assert calls == [[contained._SYSTEMCTL, 'show', 'blueprint-experiment-' + 'a' * 32 + '.service',
                       '--no-pager', '--all', '--property=' + ','.join(contained._UNIT_PROPERTIES)]]
+
+
+# Exact NONSECRET systemctl show bytes from Ubuntu24 native job109119465042.
+_ABSENT_UNIT_SHOW = 'TimeoutStopUSec=1min 30s\nRemainAfterExit=no\nMainPID=0\nResult=success\nExecMainStatus=0\nControlGroup=\nDelegate=no\nTasksMax=19151\nUMask=0022\nCapabilityBoundingSet=cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf cap_checkpoint_restore\nAmbientCapabilities=\nUser=\nGroup=\nReadWritePaths=\nReadOnlyPaths=\nPrivateTmp=no\nProtectControlGroups=no\nPrivateNetwork=no\nProtectHome=no\nProtectSystem=no\nNoNewPrivileges=no\nRestrictSUIDSGID=no\nRestrictNamespaces=no\nKillMode=control-group\nId=blueprint-experiment-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nInvocationID=\n'
+
+def test_actual_systemd_absent_exec_array_is_typed_no_command(monkeypatch):
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    monkeypatch.setattr(contained, '_native_control', lambda arguments: _ABSENT_UNIT_SHOW)
+    value = contained._show_unit('a' * 32)
+    assert set(value) == set(contained._UNIT_PROPERTIES)
+    assert value['ExecStart'] == '' and value['LoadState'] == 'not-found'
+
+
+@pytest.mark.parametrize('change', ['loaded','active','substate','pid','invocation','group',
+                                  'wrong_id','missing_other','duplicate','result','status'])
+def test_missing_native_exec_never_repairs_loaded_or_ambiguous_unit(monkeypatch, change):
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    lines = _ABSENT_UNIT_SHOW.splitlines()
+    replacements = {'loaded': ('LoadState','loaded'), 'active': ('ActiveState','active'),
+        'substate': ('SubState','running'), 'pid': ('MainPID','12'),
+        'invocation': ('InvocationID','b'*32), 'group': ('ControlGroup','/system.slice/other.service'),
+        'wrong_id': ('Id','blueprint-experiment-'+ 'b'*32+'.service'),
+        'result': ('Result','failed'), 'status': ('ExecMainStatus','1')}
+    if change == 'missing_other':
+        lines = [line for line in lines if not line.startswith('User=')]
+    elif change == 'duplicate':
+        lines.append('Id=blueprint-experiment-'+ 'a'*32+'.service')
+    else:
+        key,value = replacements[change]
+        lines = [key+'='+value if line.startswith(key+'=') else line for line in lines]
+    monkeypatch.setattr(contained, '_native_control', lambda arguments: '\n'.join(lines)+'\n')
+    with pytest.raises(ValueError, match='experiment_unit_observation_failed'):
+        contained._show_unit('a'*32)
