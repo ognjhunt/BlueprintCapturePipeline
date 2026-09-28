@@ -27,6 +27,12 @@ table: it estimates from names, link counts and sizes, though it still parses
 each replay's report. A tick that applies reads no scratch input's bytes
 either, since nothing that makes one scratch rests on a digest; it rechecks
 each by inode, links, size and mtime.
+
+Scratch several lookaheads share (``control_plane_replay_cache_shared_scratch``) is
+planned once per tick across every lookahead scanned, after each one's own pass, and
+reported under ``shared_scratch``. It is removed only when the tick applies with
+``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1`` beside the retention
+opt-in, and only then do its bytes join the phase's totals.
 """
 
 from __future__ import annotations
@@ -110,6 +116,8 @@ def reclaim_replay_caches(
     verified ``candidate_bytes`` of its plans. A linked activation or lookahead is
     reported and never followed. One lookahead's error is recorded by exception type
     and never stops the others. Each row list is capped, with a count of the rows left out.
+    Then scratch the lookaheads share is planned across all of them, and removed only with
+    ``shared_scratch_enabled`` on a tick that applies; its failure is one more error.
     """
 
     roots = [Path(root).expanduser() for root in parent_roots]
