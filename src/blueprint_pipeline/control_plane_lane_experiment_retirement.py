@@ -268,6 +268,90 @@ def issue_experiment_creation_intent(*, installed_config_path="/etc/blueprint-op
             budget.close()
 
 
+
+def recover_arena_issue(tag, *, principal, owner,
+        installed_config_path="/etc/blueprint-operator-door/door.json", now=time.time):
+    """Recover one durably consumed tag's exact original grant, never reissue."""
+    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    try:
+        _require(os.geteuid() == 0, "experiment_issuer_required")
+        _require(isinstance(tag, str) and _ARENA_TAG.fullmatch("arena-launch-" + tag),
+                 "experiment_arena_tag_invalid")
+        issued = now()
+        config = _configuration(files, installed_config_path)
+        _require(config.experiment_creation_enabled is True, "experiment_creation_disabled")
+        parent = _store(files, config.experiment_record_store)
+        occupied = _capacity(files, parent, adding_registration=False)
+        raw, original = files.read(Path(config.experiment_record_store) / ("arena-launch-" + tag + ".arena-claim.json"),
+                                   cap=4096, protected=True, mode=0o600)
+        claim = retained._document(raw, 4096, _work_budget=files.budget)
+        fields = {"schema_version", "tag", "intent_id", "generation", "principal", "owner", "policy",
+                  "issued_at_epoch", "expires_at_epoch", "intent", "intent_payload_base64", "claim_digest"}
+        _require(set(claim) == fields and claim["schema_version"] == "control_plane_lane_arena_issue_claim.v1"
+                 and claim["tag"] == tag and claim["principal"] == principal and claim["owner"] == owner
+                 and owners._matches(claim["intent_id"], owners._CONSENT_ID)
+                 and owners._matches(claim["generation"], owners._CONSENT_ID)
+                 and claim["intent_id"] != claim["generation"]
+                 and _epoch(issued) and _epoch(claim["issued_at_epoch"]) and _epoch(claim["expires_at_epoch"])
+                 and claim["issued_at_epoch"] <= issued < claim["expires_at_epoch"]
+                 and claim["claim_digest"] == canonical_digest(claim, digest_field="claim_digest")
+                 and isinstance(claim["intent_payload_base64"], str)
+                 and 0 < len(claim["intent_payload_base64"]) <= 3072,
+                 "experiment_arena_claim_invalid")
+        files.budget.charge("output_bytes", 2304)
+        try:
+            payload = base64.b64decode(claim["intent_payload_base64"], validate=True)
+        except ValueError:
+            raise OwnerTargetVersionError("experiment_arena_claim_invalid") from None
+        _require(0 < len(payload) <= 2304 and _selector(payload, files.budget) == claim["intent"],
+                 "experiment_arena_claim_invalid")
+        intent = retained._document(payload, 2304, _work_budget=files.budget)
+        from .control_plane_lane_experiment_birth import _INTENT_FIELDS
+        _require(set(intent) == _INTENT_FIELDS and intent["schema_version"] == CREATION_SCHEMA
+                 and intent["intent_digest"] == canonical_digest(intent, digest_field="intent_digest")
+                 and all(intent[key] == claim[key] for key in ("intent_id", "generation", "principal", "owner", "policy",
+                                                              "issued_at_epoch", "expires_at_epoch"))
+                 and intent["issuer_uid"] == 0 and type(intent["issuer_uid"]) is int
+                 and intent["root"] == "inputs" and intent["lane"] == "arena"
+                 and intent["name"] == "registered-" + claim["intent_id"]
+                 and intent["participant_profile"] == "arena_owner_review.v1"
+                 and intent["reference_kind"] == "run_ref" and intent["reference_value"] == "arena-launch-" + tag
+                 and intent["request_records"] == []
+                 and (intent["reason"], intent["class_intent"], intent["cleanup"], intent["writer_scope"])
+                     == _PROFILES["arena_owner_review.v1"][:4]
+                 and type(intent["lease_ttl_seconds"]) is int and 0 < intent["lease_ttl_seconds"] <= 1209600
+                 and intent["expires_at_epoch"] <= intent["issued_at_epoch"] + intent["lease_ttl_seconds"],
+                 "experiment_arena_claim_invalid")
+        policy_raw, policy_record = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
+                                              protected=True, mode=0o600)
+        _require(_selector(policy_raw, files.budget) == claim["policy"], "experiment_policy_changed")
+        policy = owners._policy(policy_raw, principal, files.budget)
+        owners._authorize(dict(action="register", owner=owner, ttl_seconds=intent["lease_ttl_seconds"]),
+                          policy, claim["expires_at_epoch"], claim["issued_at_epoch"])
+        name = claim["intent_id"] + ".json"
+        files.location(parent)
+        try:
+            os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            _require(occupied + len(payload) <= MAX_EXPERIMENT_STORE_BYTES, "experiment_store_full")
+            files.verify_record(original)
+            files.verify_record(policy_record)
+            _publish(files, parent, name, payload, kind="private")
+        else:
+            existing, record = files.read(Path(config.experiment_record_store) / name, cap=2304, protected=True, mode=0o600)
+            _require(existing == payload, "experiment_arena_claim_invalid")
+            files.verify_record(record)
+        files.verify()
+        return {"intent_id": claim["intent_id"], "intent": claim["intent"]}
+    except OSError:
+        raise OwnerTargetVersionError("experiment_arena_claim_invalid") from None
+    finally:
+        try:
+            files.finish()
+        finally:
+            files.budget.close()
+
+
 def issue_experiment_action_intent(intent_id, *, principal, owner, action, expires_at_epoch,
         installed_config_path="/etc/blueprint-operator-door/door.json", now=time.time):
     from .control_plane_lane_experiment_actions import issue_action

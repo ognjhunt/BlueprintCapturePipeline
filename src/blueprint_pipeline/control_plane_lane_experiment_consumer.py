@@ -46,8 +46,8 @@ def registered_target(output, roots):
     for root in roots:
         if output.is_relative_to(root):
             parts = output.relative_to(root).parts
-            if len(parts) >= 2 and parts[0] == "g1" and re.fullmatch(r"registered-[0-9a-f]{32}", parts[1]):
-                return root / "g1" / parts[1]
+            if len(parts) >= 2 and parts[0] in ("g1", "arena") and re.fullmatch(r"registered-[0-9a-f]{32}", parts[1]):
+                return root / parts[0] / parts[1]
     return None
 
 
@@ -95,8 +95,10 @@ class RegisteredExperimentUse(LeasedScratchUse):
     """Borrowed scopes retain the same target SH; they never close the parent."""
     @classmethod
     def admit(cls, target, *, expected_birth=None, expected_generation=None, now=time.time,
-              _producer_request_paths=None, _producer_config_path=None, _producer_bootstrap_path=None):
-        _require(isinstance(target, Path) and registered_target(target, LANE_ROOTS) == target,
+              _producer_request_paths=None, _producer_config_path=None, _producer_bootstrap_path=None, _arena_tag=None):
+        _require((isinstance(target, Path) and registered_target(target, LANE_ROOTS) == target and _arena_tag is None)
+                 or target is None and isinstance(_arena_tag, str) and re.fullmatch(r"r[1-9][0-9]{0,5}", _arena_tag)
+                 and _producer_request_paths is None and _producer_config_path is None and _producer_bootstrap_path is None,
                  "experiment_consumer_authority_required")
         files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
         result = None
@@ -121,10 +123,26 @@ class RegisteredExperimentUse(LeasedScratchUse):
             _require(_epoch(issued) and authority["state"] == "enabled"
                      and authority["issued_at_epoch"] <= issued < authority["expires_at_epoch"],
                      "experiment_consumer_inactive")
+            arena_selection_record = None
+            if _arena_tag is not None:
+                raw, arena_selection_record = _read(files, public, "arena-selection-" + _arena_tag + ".json", 4096, gid)
+                selected = retained._document(raw, 4096, _work_budget=files.budget)
+                _require(set(selected) == {"schema_version", "tag", "intent_id", "generation", "birth", "lease",
+                                          "target_identity", "reference_kind", "reference_value", "selection_digest"}
+                         and selected["schema_version"] == "control_plane_lane_arena_selection.v1"
+                         and selected["selection_digest"] == canonical_digest(selected, digest_field="selection_digest")
+                         and selected["tag"] == _arena_tag
+                         and owners._matches(selected["intent_id"], owners._CONSENT_ID)
+                         and owners._matches(selected["generation"], owners._CONSENT_ID)
+                         and selected["reference_kind"] == "run_ref"
+                         and selected["reference_value"] == "arena-launch-" + _arena_tag,
+                         "experiment_arena_selection_invalid")
+                expected_birth, expected_generation = selected["birth"], selected["generation"]
+                target = LANE_ROOTS[1] / "arena" / ("registered-" + selected["intent_id"])
             root = next(root for root in LANE_ROOTS if target.is_relative_to(root))
             root_selector = "work" if root == LANE_ROOTS[0] else "inputs"
             rows = [entry for entry in authority["enrollments"] if entry["root"] == root_selector
-                    and entry["name"] == target.name and entry["lane"] == "g1"]
+                    and entry["name"] == target.name and entry["lane"] == target.parent.name]
             _require(len(rows) == 1, "experiment_consumer_authority_required")
             entry = rows[0]
             _require(entry["state"] == "active" and issued < entry["expires_at_epoch"]
@@ -140,6 +158,16 @@ class RegisteredExperimentUse(LeasedScratchUse):
                      and birth["birth_digest"] == canonical_digest(birth, digest_field="birth_digest")
                      and all(birth[key] == entry[key] for key in ("intent_id", "generation", "root", "lane", "name",
                                                                 "target_identity", "owner")), "experiment_birth_changed")
+            if entry["lane"] == "arena":
+                _require(birth["participant_profile"] == "arena_owner_review.v1" and entry["root"] == "inputs"
+                         and birth["writer_scope"] == "arena_construction_launch_chain.v1"
+                         and birth["class_intent"] == "evidence" and birth["cleanup"] == "owner_review"
+                         and birth["reference_kind"] == "run_ref"
+                         and isinstance(birth["reference_value"], str)
+                         and re.fullmatch(r"arena-launch-r[1-9][0-9]{0,5}", birth["reference_value"])
+                         and (_arena_tag is None or birth["reference_value"] == selected["reference_value"]
+                              and entry["lease"] == selected["lease"] and entry["target_identity"] == selected["target_identity"]),
+                         "experiment_arena_selection_invalid")
             restoration_record = _restoration(files, public, entry, gid, issued)
             files.proof(lock)
             fcntl.flock(lock, fcntl.LOCK_UN)
@@ -163,17 +191,18 @@ class RegisteredExperimentUse(LeasedScratchUse):
                      and issued < lease["expires_at_epoch"], "experiment_consumer_inactive")
             result = cls()
             result.files, result.fd, result._authority_lock = files, parent, lock
-            result.root, result.lane, result.name = root, "g1", target.name
+            result.root, result.lane, result.name = root, entry["lane"], target.name
             result.exclusive, result.now = False, now
             result.entry, result.birth, result._head_record, result._lease_record = entry, birth, head_record, lease_record
             result._birth_record, result._projection_expiry = birth_record, authority["expires_at_epoch"]
             result._restoration_record = restoration_record
             result._started, result._checks = time.monotonic(), 0
             result._context_tokens = []
-            result.identity = dict(root=str(root), lane="g1", name=target.name, owner=lease["owner"],
+            result.identity = dict(root=str(root), lane=entry["lane"], name=target.name, owner=lease["owner"],
                 run_ref=lease["run_ref"], lease_digest=lease["lease_digest"], consumer_lifetime_contract=scratch.CONSUMER_LIFETIME_PROTOCOL)
             result._producer_requests = []
             result._producer_bootstrap_record = None
+            result._arena_selection_record = arena_selection_record
             result._producer_sources = ()
             result._public_root = AUTHORITY_ROOT
             result._producer_config_path = PRODUCER_CONFIG_PATH if _producer_config_path is None else _producer_config_path
@@ -272,6 +301,8 @@ class RegisteredExperimentUse(LeasedScratchUse):
             fcntl.flock(self._authority_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
             try:
                 records = (self._head_record, self._lease_record, self._birth_record)
+                if self._arena_selection_record is not None:
+                    records += (self._arena_selection_record,)
                 if self._producer_bootstrap_record is not None:
                     records += (self._producer_bootstrap_record,) + self._producer_sources
                 if self._restoration_record is not None:

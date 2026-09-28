@@ -33,6 +33,15 @@ class ArenaScratchError(RuntimeError):
     """An Arena attempt path is missing or unsafe for the requested operation."""
 
 
+
+def admit_registered_arena_attempt(tag, *, now=time.time):
+    """Acquire the fixed current root-owned tag selection and SAME target SH."""
+    from .control_plane_lane_experiment_consumer import RegisteredExperimentUse
+    if not isinstance(tag, str) or re.fullmatch(r"r[1-9][0-9]{0,5}", tag) is None:
+        raise ArenaScratchError("arena_scratch_tag_invalid")
+    return RegisteredExperimentUse.admit(None, _arena_tag=tag, now=now)
+
+
 def _paths(tag: str, *, inputs_root: Path, lane_root: Path) -> tuple[Path, Path, str]:
     if not isinstance(tag, str) or not _TAG.fullmatch(tag):
         raise ArenaScratchError("arena_scratch_tag_invalid")
