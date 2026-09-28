@@ -10,8 +10,9 @@ import time
 from pathlib import Path
 
 from . import task_evaluation_scene_retirement_access as access
-from .task_evaluation_scene_retirement_access import _canonical, _require
+from .task_evaluation_scene_retirement_access import _canonical, _identity, _opened, _require
 from .task_evaluation_scene_retirement_authority import load_document, selected_document
+from .task_evaluation_scene_retirement_generations import _birth_gate, _sealed, _write
 
 
 def enroll_preparation_child(target, *, preparation_root, request, verified_paths=(), now=None):
@@ -45,6 +46,21 @@ def enroll_preparation_child(target, *, preparation_root, request, verified_path
         _require(len(verified_paths) <= 10000
                  and all(_canonical(str(path)).is_relative_to(parent) for path in verified_paths),
                  'scene_retirement_storage_authority_unproven')
-        return access.birth_scene_member(target, owner_intent_id=intent['intent_id'],
+        born = access.birth_scene_member(target, owner_intent_id=intent['intent_id'],
             owner_raw_ref=authority['intent_raw_ref'],
             birth_request_raw_ref=authority['attempt_raw_ref'], now=now)
+        if born is None:
+            return None
+        child_key = hashlib.sha256(str(_canonical(str(target))).encode()).hexdigest()
+        store = Path(policy['generation_store'])
+        with _opened(store, directory=True) as (fd, info), \
+                _birth_gate(fd, child_key, parent_identity=_identity(info)):
+            current, _ = load_document(store / (child_key + '.json'), maximum=65536)
+            _require(current == born
+                     and current.get('source_storage_authority_raw_ref') in (None, reference),
+                     'scene_retirement_storage_authority_unproven')
+            if current.get('source_storage_authority_raw_ref') is None:
+                current = _sealed(dict(current, source_storage_authority_raw_ref=reference,
+                                       state_sequence=current['state_sequence'] + 1))
+                _write(fd, child_key + '.json', current, parent_identity=_identity(info), replace=True)
+            return current
