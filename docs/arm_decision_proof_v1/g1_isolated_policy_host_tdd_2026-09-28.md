@@ -716,8 +716,11 @@ source archive SHA25677b913395c5819e20d6df510e3c42fbd2c745d65365946cca63acf58216
 synthetic archive SHA256cb10b82b59789cee04018af9ba607be016c500ca6a77b1a1e44ff0adcc1de2f9;
 conformance digest05d74b2f62ed132c6a6e00ed2f6df06619dcf28a8f6d11ae7e35e1c22fa5a2ad;
 teardown digestabbc58659743fb117fc462a82d7c07fe6150245c93af655e1fef032a191291a6.
-This root is own G1 scratch, approximately52MiB source/archive, with no existing
-evidence moved or deleted. Both refused roots remain retained. CPU only;
+Measured `du -sx --block-size=1`: the successful root is105893888 bytes;
+the first and second refused roots are105889792 and105893888 bytes. Total
+317677568 bytes includes source archives and extracted source. These are own G1
+scratch, with no existing evidence moved or deleted. Both refused roots remain
+retained. CPU only;
 zero site queries, no task score, no GPU/device-memory proof, no VM qualification,
 no provider mutation, no rights/spend grant. Production VM bootstrap must check
 the installed bubblewrap's actual --ro-bind-fd/--clearenv support, canonical
