@@ -88,6 +88,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# ADP-011: install only in the isolated model worker, never the control plane.
+policy_model_cpu = [
+    "onnx==1.23.0; python_version >= '3.11'",
+    "onnxruntime==1.30.0; python_version >= '3.11'",
+]
 # Website-only source geometry; install in its own runtime without the default
 # dev group (`uv sync --no-dev --extra website_geometry`). MapAnything requires
 # headless OpenCV 4.10.0.84; measurement development tests require 4.11.0.86.

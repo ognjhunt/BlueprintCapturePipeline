@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .common import read_json, write_json
 from .evaluation_run_contract import EVALUATION_RUN_SCHEMA_VERSION, EvaluationRunSpec
@@ -340,6 +340,15 @@ class RobotEvalEvaluationRunExecutor:
 
     adapter_id = "robot_eval_job_orchestrator"
 
+    def __init__(
+        self,
+        *,
+        controlled_policy_executor: Callable[..., Mapping[str, Any]] | None = None,
+    ) -> None:
+        # ADP-050/day 28: the worker supplies its qualified runtime in code.
+        # Spec metadata and customer request JSON cannot supply this callable.
+        self.controlled_policy_executor = controlled_policy_executor
+
     def execute(
         self,
         *,
@@ -408,6 +417,7 @@ class RobotEvalEvaluationRunExecutor:
             training_command=_string(gates.get("training_command")) or None,
             allow_policy_execution=bool(gates.get("allow_policy_execution")),
             policy_execution_commands=_mapping(gates.get("policy_execution_commands")),
+            controlled_policy_executor=self.controlled_policy_executor,
             timeout_seconds=int(
                 spec.runtime_provider_profile.get("timeout_seconds") or 120
             ),
@@ -469,6 +479,7 @@ def execute_robot_eval_request_as_evaluation_run(
     training_command: str | None = None,
     allow_policy_execution: bool = False,
     policy_execution_commands: Mapping[str, str] | None = None,
+    controlled_policy_executor: Callable[..., Mapping[str, Any]] | None = None,
     timeout_seconds: int = 120,
     budget_usd: float | None = None,
     arena_results_dir: str | Path | None = None,
@@ -546,6 +557,7 @@ def execute_robot_eval_request_as_evaluation_run(
         training_command=training_command,
         allow_policy_execution=allow_policy_execution,
         policy_execution_commands=policy_execution_commands,
+        controlled_policy_executor=controlled_policy_executor,
         timeout_seconds=authoritative_timeout,
         budget_usd=authoritative_budget,
         arena_results_dir=arena_results_dir,
