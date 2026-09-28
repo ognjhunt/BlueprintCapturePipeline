@@ -127,6 +127,8 @@ class Graph:
             _extend(inputs, inherited['successor_artifacts'])
             artifacts.update(inherited['successor_artifacts'])
         complete = bool(plan and profile and parent and contract_complete and not predecessor_missing and (not inherited or inherited['complete']))
+        inputs_available = bool(plan and profile and not predecessor_missing and
+                                (not inherited or inherited['inputs_available']))
         start = inherited['phase_count'] if inherited else 0
         phase_rows = value.get('phase_records')
         c.require(isinstance(phase_rows, list) and 1 <= len(phase_rows) <= 10
@@ -138,7 +140,7 @@ class Graph:
         else:
             c.require(phase_names == list(sam.PHASES[end - len(phase_rows):end]), 'adoption_phase_order_invalid')
         for phase_row in phase_rows:
-            complete = self._phase(row, phase_row, parent, inputs, artifacts, complete)
+            complete, inputs_available = self._phase(row, phase_row, parent, inputs, artifacts, complete, inputs_available)
         rebindings, successors = _rebindings(context, row, artifacts, current_host)
         selection = inherited['selection_origin'] if inherited else {
             'task_request': plan[0]['host_inputs']['task_request'] if plan else None,
@@ -148,11 +150,11 @@ class Graph:
             'source_commit': value['original_execution_commit'], 'source_profile': _raw_tuple(value['source_profile'])}
         if not complete:
             context.missing('sam_original_prefix', 'prefix_proof_unavailable_or_unresolved', [proof])
-        return {'complete': complete, 'phase_count': end, 'original_artifacts': artifacts,
+        return {'complete': complete, 'inputs_available': inputs_available, 'phase_count': end, 'original_artifacts': artifacts,
             'successor_artifacts': {**artifacts, **successors}, 'selection_origin': selection,
             'tracking_origin': tracking, 'rebindings': rebindings}
 
-    def _phase(self, adoption, phase_row, parent, inputs, artifacts, complete):
+    def _phase(self, adoption, phase_row, parent, inputs, artifacts, complete, inputs_available):
         context, value, proof = self.context, adoption[0], adoption[1]
         phase = phase_row['phase']
         job = _selected(context, phase_row['job'], proof, 'sam_jobs', sam.SCHEMAS['sam_jobs'][0])
@@ -165,7 +167,7 @@ class Graph:
             c.require(job[1]['path'] == c.child(context.roots['sam_queue_root'], 'completed', job[0]['child_id'] + '.json'), 'adoption_job_path_invalid')
             if parent:
                 c.require(job[0]['parent_preparation_id'] == parent[0]['request']['preparation_id'], 'adoption_job_parent_invalid')
-            if complete:
+            if inputs_available:
                 c.require(job[0]['inputs'] == inputs, 'adoption_job_inputs_invalid')
         if result:
             c.require(result[0]['status'] == 'completed' and result[0]['phase'] == phase
@@ -196,9 +198,12 @@ class Graph:
                 _extend(inputs, {'standard_splat_conversion': result[0]['artifacts']['standard_splat_conversion_receipt']})
                 _extend(artifacts, {'standard_splat_conversion': result[0]['artifacts']['standard_splat_conversion_receipt']})
             sam.artifact_edges(context, artifacts, proof)
-        self.phases.append(c.observation(adoption, role='sam_original_phase', phase=phase, phase_binding_verified=bool(job and result and receipt),
+        self.phases.append(c.observation(adoption, role='sam_original_phase', phase=phase,
+            phase_binding_verified=bool(job and result and receipt and inputs_available),
             selected_provenance=[r[1] for r in (job, result, receipt) if r], original_owner_transfer_authorized=False))
-        return complete
+        # A missing parent/receipt does not erase a supplied input map. A missing
+        # phase result does: its unknown additions cannot be inferred as empty.
+        return complete, inputs_available and result is not None
 
 
 def _extend(target, additions):

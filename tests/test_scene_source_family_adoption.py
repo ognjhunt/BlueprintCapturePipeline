@@ -80,6 +80,53 @@ def fixture(*, through='calibrated_views'):
     return args
 
 
+def change_phase_input_path(args, position):
+    rows = args['source_records']
+    job_path, raw = rows['sam_jobs'][position]
+    job = json.loads(raw)
+    job['inputs']['interiorgs_terms']['path'] = '/retained/metadata/copied-terms.txt'
+    rows['sam_jobs'][position] = pair(job_path, seal(job, 'job_digest'))
+    job = json.loads(rows['sam_jobs'][position][1])
+    result_path, raw = rows['sam_results'][position]
+    rows['sam_results'][position] = pair(result_path, seal(dict(json.loads(raw), job_digest=job['job_digest']), 'result_digest'))
+    receipt_path, raw = rows['sam_execution_receipts'][position]
+    rows['sam_execution_receipts'][position] = pair(receipt_path, seal(dict(json.loads(raw), job_digest=job['job_digest']), 'receipt_digest'))
+    for index, (adoption_path, raw) in enumerate(rows['sam_adoptions']):
+        adoption = json.loads(raw)
+        for phase in adoption['phase_records']:
+            if phase['job']['path'] == job_path:
+                phase.update(job=ref(rows['sam_jobs'][position]), result=ref(rows['sam_results'][position]),
+                             execution_receipt=ref(rows['sam_execution_receipts'][position]))
+        rows['sam_adoptions'][index] = pair(adoption_path, seal(adoption, 'adoption_digest'))
+
+
+@pytest.mark.parametrize('missing', ['parent', 'first_receipt'])
+def test_available_original_phase_inputs_refuse_despite_unrelated_missing_prefix_proof(missing):
+    args = fixture()
+    change_phase_input_path(args, 0 if missing == 'parent' else 1)
+    if missing == 'parent':
+        args['source_records']['sam_parent_envelopes'] = []
+    else:
+        args['source_records']['sam_execution_receipts'].pop(0)
+    refuses(args)
+
+
+@pytest.mark.parametrize('missing', ['plan', 'profile', 'first_result'])
+def test_unreconstructible_original_input_map_stays_unresolved_without_empty_map_inference(missing):
+    args = fixture()
+    change_phase_input_path(args, 1)
+    rows = args['source_records']
+    if missing == 'plan':
+        rows['sam_plans'] = []
+    elif missing == 'profile':
+        rows['sam_profiles'] = []
+    else:
+        rows['sam_results'].pop(0)
+    result = api().join_retained_scene_source_family_inventory(**args)
+    assert not result['adoption_observations'][0]['prefix_binding_verified']
+    assert not next(r for r in result['original_phase_observations'] if r['phase'] == 'standard_splat_conversion')['phase_binding_verified']
+
+
 def test_original_prefix_is_reconstructed_without_owner_transfer_or_scientific_proof():
     result = api().join_retained_scene_source_family_inventory(**fixture())
     adoption = result['adoption_observations'][0]
@@ -258,6 +305,21 @@ def inherited_fixture(*, through='calibrated_views'):
                                    for name in ('standard_splat', 'standard_splat_conversion_receipt', 'standard_splat_conversion')})
     rows['sam_adoptions'].append(pair('/retained/metadata/second_adoption.json', seal(current, 'adoption_digest')))
     return args
+
+
+@pytest.mark.parametrize('missing', ['original_parent', 'original_result'])
+def test_inherited_input_availability_is_independent_of_broader_prefix_proof(missing):
+    args = inherited_fixture()
+    rows = args['source_records']
+    change_phase_input_path(args, 3)  # First phase extending the inherited prefix.
+    if missing == 'original_parent':
+        rows['sam_parent_envelopes'].pop(0)
+        refuses(args)
+    else:
+        rows['sam_results'].pop(0)
+        result = api().join_retained_scene_source_family_inventory(**args)
+        phase = next(r for r in result['original_phase_observations'] if r['phase'] == 'sam31_inputs')
+        assert not phase['phase_binding_verified']
 
 
 @pytest.mark.parametrize('through,tracking_commit', [('calibrated_views', 'b'*40), ('sam31_tracking', 'a'*40)])
