@@ -204,8 +204,9 @@ def _add_current_sam(args, owned_current_task):
     path = args['roots']['preparation_queue_root'] + '/completed/prep-1-' + parent['request_digest'][7:] + '.json'
     parent_pair = pair(path, parent)
     args['seed_records']['preparation_envelopes'][0] = parent_pair
-    # A source-parent retained copy has its own actual configured queue route;
-    # one raw file is never assigned two conflicting parser roles.
+    # Preserve the real producer's retained copy on its own configured route.
+    # Semantic ownership must distinguish identical retained copies from
+    # conflicting byte versions while retaining each raw provenance path.
     parent_queue = '/retained/sam-parent-queue'
     current['parent_routes'].append({'queue_root': parent_queue,
                                     'input_root': args['roots']['preparation_input_root']})
@@ -441,6 +442,9 @@ def test_terminal_scene_retires_every_folder_it_wrote(tmp_path, monkeypatch):
     base = tmp_path.resolve()
     _, policy, placeholder = access_fixture(base, monkeypatch)
     placeholder.rmdir()
+    journals = Path(policy['journal_store'])
+    journals.mkdir(mode=0o700)
+    (journals / 'retired').mkdir(mode=0o700)
     # Issue intake before enrollment: stage's real publisher remains an actual
     # participant; disabled root policy grants it no fictional cleanup authority.
     monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
@@ -464,6 +468,7 @@ def test_terminal_scene_retires_every_folder_it_wrote(tmp_path, monkeypatch):
                             'private_archive_classes': ['host']}]
     policy['private_archive_allowed_classes'] = ['host']
     policy['consumer_cohort'] = _installed_cohort()
+    policy['reference_context'] = context
     policy['limits'] = {'logical_payload_bytes': 1024 * 1024, 'archive_bytes': 2 * 1024 * 1024,
                         'remote_bytes': 4 * 1024 * 1024, 'elapsed_seconds': 60}
     policy_path = base / 'policy.json'
