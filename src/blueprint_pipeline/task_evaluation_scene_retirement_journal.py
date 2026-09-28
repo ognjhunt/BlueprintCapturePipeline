@@ -12,7 +12,7 @@ from pathlib import Path
 from . import task_evaluation_scene_retirement_access as access
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_retirement_access import _canonical, _close_owned, _identity, _opened, _require
-from .task_evaluation_scene_retirement_authority import TOKEN, raw_digest
+from .task_evaluation_scene_retirement_authority import TOKEN, raw_digest, raw_reference, load_document
 from .task_evaluation_scene_retirement_generations import _guard, _named, _new_file
 
 EVENTS={'detach_planned','detached','member_removed','retiring','retired','restoring',
@@ -105,6 +105,7 @@ class SceneJournal:
         self.sequence=0
         self.prior_ref=initial_ref
         self.bytes=initial_ref['size_bytes']
+        self.events=[]
 
     @classmethod
     def create(cls,directory,*,token,initial,allowance):
@@ -115,6 +116,59 @@ class SceneJournal:
         reference=publish_record(directory,token+'.initial.json',value,
                                  maximum=16*1024*1024,allowance=allowance)
         return cls(Path(directory),token,reference,allowance)
+
+    @classmethod
+    def resume(cls,initial_ref,*,allowance):
+        initial_ref=raw_reference(initial_ref)
+        path=_canonical(initial_ref['path'])
+        token=path.name.removesuffix('.initial.json')
+        _require(TOKEN.fullmatch(token) and path.name==token+'.initial.json')
+        allowance.tick()
+        initial,observed=load_document(path,maximum=16*1024*1024,protected=True)
+        _require(observed==initial_ref and initial.get('token')==token and initial.get('sequence')==0
+                 and initial.get('prior_event_sha256') is None
+                 and initial.get('journal_digest')==canonical_digest(initial,digest_field='journal_digest'),
+                 'scene_retirement_journal_chain_unproven')
+        result=cls(path.parent,token,initial_ref,allowance)
+        sequences=set()
+        with _opened(path.parent,directory=True,protected=True) as (fd,info):
+            _require(stat.S_IMODE(info.st_mode)==0o700)
+            expected=_identity(info)
+            examined=0
+            with os.scandir(fd) as entries:
+                for entry in entries:
+                    allowance.tick()
+                    _parent(path.parent,fd,expected)
+                    examined+=1
+                    _require(examined<=100000,'scene_retirement_journal_limit')
+                    name=entry.name
+                    if not name.startswith(token+'.') or name==path.name:
+                        continue
+                    sequence=name.removeprefix(token+'.').removesuffix('.json')
+                    _require(sequence.isdecimal() and str(int(sequence))==sequence and name==token+'.'+sequence+'.json'
+                             and 0<int(sequence)<=10000 and len(sequences)<10000,
+                             'scene_retirement_journal_chain_unproven')
+                    sequences.add(int(sequence))
+            after=os.fstat(fd)
+            _require((after.st_size,after.st_mtime_ns,after.st_ctime_ns)==(info.st_size,info.st_mtime_ns,info.st_ctime_ns),
+                     'scene_retirement_journal_chain_unproven')
+        _require(sequences==set(range(1,len(sequences)+1)),'scene_retirement_journal_chain_unproven')
+        for sequence in range(1,len(sequences)+1):
+            allowance.tick()
+            value,reference=load_document(path.parent/(token+'.'+str(sequence)+'.json'),maximum=65536,protected=True)
+            _require(value.get('schema_version')=='scene_retirement_journal_event.v1' and value.get('token')==token
+                     and value.get('sequence')==sequence and value.get('prior_event_sha256')==result.prior_ref['sha256']
+                     and value.get('event') in EVENTS and type(value.get('member_key')) is str
+                     and len(value['member_key'])<=128 and type(value.get('evidence')) is dict
+                     and value.get('event_digest')==canonical_digest(value,digest_field='event_digest'),
+                     'scene_retirement_journal_chain_unproven')
+            _require(result.bytes+reference['size_bytes']<=32*1024*1024,'scene_retirement_journal_limit')
+            result.events.append(dict(value,raw_ref=reference))
+            result.sequence=sequence
+            result.prior_ref=reference
+            result.bytes+=reference['size_bytes']
+        allowance.tick()
+        return result
 
     def append(self,event,*,member_key,evidence):
         self.allowance.tick()
@@ -130,6 +184,7 @@ class SceneJournal:
         self.sequence=value['sequence']
         self.bytes+=reference['size_bytes']
         self.prior_ref=reference
+        self.events.append(dict(value,raw_ref=reference))
         return reference
 
     def retired_snapshot(self,value):
