@@ -12,7 +12,7 @@ from pathlib import Path
 from .task_evaluation_scene_retirement_access import _close_owned, _identity, _opened, _open_owned, _require
 from .task_evaluation_scene_retirement_generations import _named, _new_file
 from .task_evaluation_scene_retirement_mutation import _current_parent
-from .task_evaluation_scene_retirement_preservation import CHUNK
+from .task_evaluation_scene_retirement_preservation import CHUNK, _payload, _scan
 
 
 class _ArchiveReader:
@@ -54,6 +54,9 @@ class _ArchiveReader:
 
 
 def _consume(preserved,transport,allowance,file_sink=None):
+    _require(type(preserved.get('files')) is list and type(preserved.get('directories')) is list
+             and len(preserved['files'])+len(preserved['directories'])<=10000,
+             'scene_retirement_inventory_limit')
     expected={str(row['member_index'])+'/'+row['relative_path']:(row,'file') for row in preserved['files']}
     expected.update({str(row['member_index'])+'/'+row['relative_path']:(row,'directory') for row in preserved['directories']})
     _require(len(expected)==len(preserved['files'])+len(preserved['directories'])<=10000)
@@ -92,6 +95,60 @@ def _consume(preserved,transport,allowance,file_sink=None):
         _require(seen==expected.keys(),'scene_retirement_readback_unproven')
     except (tarfile.TarError,EOFError,UnicodeError) as error:
         raise ValueError('scene_retirement_readback_unproven') from error
+
+
+def _verify_restored(preserved,roots,directory_identities,file_identities,allowance):
+    """No completion before the full CURRENT union matches its verified archive."""
+    files,directories,members=[],[],[]
+    for index,root in enumerate(roots):
+        allowance.tick()
+        members.append(_scan(root,index,allowance,files,directories))
+    expected_files={(row['member_index'],row['relative_path']):row for row in preserved['files']}
+    expected_directories={(row['member_index'],row['relative_path']):row for row in preserved['directories']}
+    expected_directories.update({(index,''):row for index,row in enumerate(preserved['members'])})
+    current_files={(row['member_index'],row['relative_path']):row for row in files}
+    current_directories={(row['member_index'],row['relative_path']):row for row in directories}
+    current_directories.update({(index,''):row for index,row in enumerate(members)})
+    _require(current_files.keys()==expected_files.keys() and current_directories.keys()==expected_directories.keys(),
+             'scene_retirement_restore_inventory_changed')
+    inodes={}
+    group_identities={}
+    for key,row in current_files.items():
+        allowance.tick()
+        expected=expected_files[key]
+        _require(tuple(row['physical_identity'])==file_identities[key]
+                 and all(row[field]==expected[field] for field in ('mode','uid','gid','size_bytes')),
+                 'scene_retirement_restore_inventory_changed')
+        inode=tuple(row['physical_identity'][:2])
+        group=expected['hardlink_group']
+        identity=('independent',key) if group is None else ('hardlink',group)
+        _require(inode not in inodes or inodes[inode][0]==identity,'scene_retirement_restore_inventory_changed')
+        previous,count=inodes.get(inode,(identity,0))
+        inodes[inode]=(previous,count+1)
+        _require(identity not in group_identities or group_identities[identity]==inode,
+                 'scene_retirement_restore_inventory_changed')
+        group_identities[identity]=inode
+        digest=hashlib.sha256()
+        for chunk in _payload(roots[key[0]]/key[1],row,allowance):
+            digest.update(chunk)
+        _require('sha256:'+digest.hexdigest()==expected['sha256'],'scene_retirement_restore_payload_changed')
+    for row in current_files.values():
+        allowance.tick()
+        _require(row['snapshot'][-1]==inodes[tuple(row['physical_identity'][:2])][1],
+                 'scene_retirement_restore_shared_inode')
+    for key,row in current_directories.items():
+        allowance.tick()
+        expected=expected_directories[key]
+        _require(tuple(row['physical_identity'])==directory_identities[key]
+                 and all(row[field]==expected[field] for field in ('mode','uid','gid')),
+                 'scene_retirement_restore_inventory_changed')
+    # Reobserve exact names and every descriptor's metadata after byte reads.
+    # This is bounded observation under EX, not a lifetime guarantee.
+    after_files,after_directories,after_members=[],[],[]
+    for index,root in enumerate(roots):
+        after_members.append(_scan(root,index,allowance,after_files,after_directories))
+    _require(after_files==files and after_directories==directories and after_members==members,
+             'scene_retirement_restore_inventory_changed')
 
 
 def restore_preserved_members(preserved,*,transport,journal):
@@ -138,6 +195,7 @@ def restore_preserved_members(preserved,*,transport,journal):
         journal.append('restore_directory_created',member_key=str(index),evidence={
             'relative_path':str(relative),'restore_identity':list(directories[(index,str(relative))])})
     groups={}
+    file_identities={}
     @contextmanager
     def file_sink(row):
         index=row['member_index']
@@ -222,6 +280,7 @@ def restore_preserved_members(preserved,*,transport,journal):
             allowance.tick()
             _current_parent(parent_path,parent,expected)
             os.fsync(parent)
+            file_identities[(index,str(relative))]=created
             journal.append('restore_file_created',member_key=str(index),evidence={
                 'relative_path':str(relative),'restore_identity':list(created),'sha256':row['sha256']})
     _consume(preserved,transport,allowance,file_sink=file_sink)
@@ -264,6 +323,7 @@ def restore_preserved_members(preserved,*,transport,journal):
                         incoming.add_note('scene_retirement_descriptor_cleanup_failed')
                     else:
                         raise ValueError('scene_retirement_descriptor_cleanup_failed')
+    _verify_restored(preserved,roots,directories,file_identities,allowance)
     for index,root in enumerate(roots):
         outcome=dict(canonical_path=str(root),outcome='restored',restore_identity=list(directories[(index,'')]))
         journal.append('member_restored',member_key=str(index),evidence=outcome)
