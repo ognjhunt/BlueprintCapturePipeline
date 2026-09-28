@@ -266,7 +266,7 @@ def _measured_members(policy, pending, snapshot, outcomes, allowance, *, partial
     return measured
 
 
-def _projection(policy, consent, reference, allowance):
+def _projection(policy, consent, reference, allowance, *, restoring=False):
     directory = _location(policy, consent, allowance)
     expected = raw_reference(reference)
     _require(expected['path'] == str(directory / NAME), 'scene_retirement_receipt_changed')
@@ -278,7 +278,17 @@ def _projection(policy, consent, reference, allowance):
              and current.get('intent_raw_ref') == consent['intent_raw_ref']
              and type(token) is str and TOKEN.fullmatch(token), 'scene_retirement_receipt_changed')
     status = current.get('status')
-    if status == 'pending':
+    if restoring and 'restore_journal_initial_raw_ref' in current:
+        restore_token = current.get('restore_token')
+        sequence = current.get('journal_sequence')
+        _require(type(restore_token) is str and TOKEN.fullmatch(restore_token)
+                 and type(sequence) is int and 0 <= sequence <= 10000
+                 and status in {'restoring', 'restored', 'incomplete'}, 'scene_retirement_receipt_changed')
+        name = ('scene-retired.' + token + '.restore.' + restore_token + '.' + str(sequence) + '.'
+                + status + '.' + expected['sha256'][7:] + '.json')
+    elif restoring and status == 'retired':
+        name = 'scene-retired.' + token + '.terminal.json'
+    elif status == 'pending':
         name = 'scene-retired.' + token + '.pending.json'
     elif status in {'retiring', 'incomplete'}:
         sequence = current.get('journal_sequence')
@@ -295,7 +305,7 @@ def _projection(policy, consent, reference, allowance):
     pending, _, _ = _read(Path(pending_ref['path']), allowance, selected=pending_ref, projection=True)
     _require(pending.get('status') == 'pending' and pending.get('retiring_token') == token
              and pending.get('receipt_digest') == canonical_digest(pending, digest_field='receipt_digest')
-             and pending.get('plan_raw_ref') == consent['plan_raw_ref']
+             and (restoring or pending.get('plan_raw_ref') == consent['plan_raw_ref'])
              and pending.get('intent_raw_ref') == consent['intent_raw_ref']
              and pending.get('intent_id') == consent['intent_id'], 'scene_retirement_receipt_changed')
     return directory, current, before, history_ref, pending, pending_ref
@@ -319,8 +329,115 @@ def _immutable(directory, name, raw, allowance):
         return observed
 
 
+def _restored_generation(policy, selected, outcome, original_token, allowance):
+    allowance.tick()
+    service = access._service_identity()
+    with _opened(policy['generation_store'], directory=True) as (_, info):
+        _require(stat.S_IMODE(info.st_mode) == 0o700 and (info.st_uid, info.st_gid) == service,
+                 'scene_retirement_service_identity_unproven')
+    key = hashlib.sha256(selected['canonical_path'].encode()).hexdigest() + '.json'
+    state, _, info = _read(Path(policy['generation_store']) / key, allowance)
+    _require(stat.S_IMODE(info.st_mode) == 0o600 and (info.st_uid, info.st_gid) == service
+             and state.get('schema_version') == 'scene_member_generation.v1'
+             and state.get('state_digest') == canonical_digest(state, digest_field='state_digest')
+             and state.get('state') == 'restored-active' and state.get('retirement_token') == original_token
+             and all(state.get(field) == selected[field] for field in
+                     ('canonical_path', 'generation_id', 'owner_intent_id', 'owner_raw_ref')),
+             'scene_retirement_generation_unavailable')
+    identity = outcome.get('restore_identity')
+    _require(type(identity) is list and len(identity) == 3
+             and all(type(value) is int and 0 <= value < 2**63 for value in identity)
+             and identity == [state.get(field) for field in ('dev', 'ino', 'mode')],
+             'scene_retirement_generation_unavailable')
+    with _opened(selected['canonical_path'], directory=True) as (_, current):
+        _require(list(_identity(current)) == identity, 'scene_retirement_generation_unavailable')
+
+
+def _restore_progress(policy, consent, current_raw_ref, progress, allowance):
+    directory, current, before, history_ref, pending, pending_ref = _projection(
+        policy, consent, current_raw_ref, allowance, restoring=True)
+    token = progress.get('token')
+    _require(progress.get('status') in {'restoring', 'restored', 'incomplete'}
+             and type(token) is str and TOKEN.fullmatch(token) and token != pending['retiring_token']
+             and progress.get('original_retirement_token') == pending['retiring_token']
+             and progress.get('intent_id') == consent['intent_id'], 'scene_retirement_receipt_changed')
+    initial_ref = raw_reference(progress['restore_journal_initial_raw_ref'])
+    _require(initial_ref['path'] == str(Path(policy['journal_store']) / (token + '.initial.json')),
+             'scene_retirement_receipt_journal_changed')
+    allowance.tick()
+    initial = selected_document(initial_ref, maximum=16*1024*1024, protected=True)
+    _require(initial.get('schema_version') == 'scene_restore_journal.v1' and initial.get('status') == 'restoring'
+             and initial.get('intent_id') == consent['intent_id'] and initial.get('intent_raw_ref') == consent['intent_raw_ref']
+             and initial.get('members') == consent['members']
+             and initial.get('original_retirement_token') == pending['retiring_token']
+             and initial.get('retired_journal_raw_ref') == consent['retired_journal_raw_ref'],
+             'scene_retirement_receipt_journal_changed')
+    allowance.tick()
+    _require(selected_document(initial['consent_raw_ref'], maximum=512*1024, protected=True) == consent,
+             'scene_retirement_receipt_journal_changed')
+    snapshot_ref = raw_reference(consent['retired_journal_raw_ref'])
+    _require(Path(snapshot_ref['path']).parent == Path(policy['journal_store']) / 'retired'
+             and Path(snapshot_ref['path']).name == snapshot_ref['sha256'][7:] + '.json',
+             'scene_retirement_restore_snapshot_invalid')
+    allowance.tick()
+    snapshot = selected_document(snapshot_ref, maximum=16*1024*1024, protected=True)
+    _require(snapshot.get('schema_version') == 'scene_retirement_journal.v1' and snapshot.get('status') == 'retired'
+             and snapshot.get('journal_digest') == canonical_digest(snapshot, digest_field='journal_digest')
+             and snapshot.get('token') == pending['retiring_token']
+             and snapshot.get('intent_id') == consent['intent_id'] and snapshot.get('members') == consent['members'],
+             'scene_retirement_restore_snapshot_invalid')
+    if 'restore_journal_initial_raw_ref' in current:
+        _require(current['restore_journal_initial_raw_ref'] == initial_ref and current['restore_token'] == token
+                 and current.get('retired_journal_raw_ref') == snapshot_ref
+                 and (current['status'] != 'restored' or progress['status'] == 'restored'),
+                 'scene_retirement_receipt_changed')
+    elif 'retired_journal_raw_ref' in current:
+        _require(current['retired_journal_raw_ref'] == snapshot_ref, 'scene_retirement_receipt_changed')
+    journal = SceneJournal.resume(initial_ref, allowance=allowance)
+    _require(raw_reference(progress['last_event_raw_ref']) == journal.prior_ref,
+             'scene_retirement_receipt_event_invalid')
+    outcomes = progress['members']
+    recorded = [event for event in journal.events if event['event'] == 'member_restored']
+    previous_count = sum('restore_event_raw_ref' in row for row in current['members'])
+    _require(type(outcomes) is list and previous_count <= len(outcomes) <= len(consent['members'])
+             and len(outcomes) <= len(recorded)
+             and (progress['status'] != 'restored' or len(outcomes) == len(consent['members'])),
+             'scene_retirement_receipt_members_invalid')
+    members = _measured_members(policy, pending, snapshot, snapshot['outcomes'], allowance)
+    for index, (selected, outcome) in enumerate(zip(consent['members'], outcomes)):
+        event = recorded[index]
+        _require(type(outcome) is dict and outcome.get('outcome') == 'restored'
+                 and outcome.get('canonical_path') == selected['canonical_path']
+                 and event['member_key'] == str(index) and event['evidence'] == outcome,
+                 'scene_retirement_receipt_members_invalid')
+        _restored_generation(policy, selected, outcome, pending['retiring_token'], allowance)
+        members[index].update(action='restored', outcome='restored', restore_identity=outcome['restore_identity'],
+                              restore_event_raw_ref=event['raw_ref'])
+    for member in members[len(outcomes):]:
+        member.update(action='restoring')
+    if (current.get('status'), current.get('journal_sequence'), current.get('last_event_raw_ref'), current['members']) == (
+            progress['status'], journal.sequence, journal.prior_ref, members):
+        return raw_reference(current_raw_ref)
+    value = {key: item for key, item in pending.items() if key != 'receipt_digest'}
+    value.update(status=progress['status'], members=members, journal_sequence=journal.sequence,
+                 last_event_raw_ref=journal.prior_ref, pending_receipt_raw_ref=pending_ref,
+                 prior_receipt_raw_ref=history_ref, retired_journal_raw_ref=snapshot_ref,
+                 restore_token=token, restore_journal_initial_raw_ref=initial_ref)
+    value['receipt_digest'] = canonical_digest(value, digest_field='receipt_digest')
+    raw = _encode(value)
+    name = ('scene-retired.' + pending['retiring_token'] + '.restore.' + token + '.' + str(journal.sequence) + '.'
+            + progress['status'] + '.' + _ref(directory / NAME, raw)['sha256'][7:] + '.json')
+    with _opened(directory / NAME) as (prior_fd, info):
+        _require(_version(info) == _version(before), 'scene_retirement_receipt_changed')
+        _immutable(directory, name, raw, allowance)
+        return _publish(directory, NAME, raw, allowance, prior=(prior_fd, info))
+
+
 def publish_progress_receipt(policy, consent, current_raw_ref, progress, allowance):
     """Record actual retirement progress without clearing or extending authority."""
+    _require(type(progress) is dict, 'scene_retirement_receipt_changed')
+    if 'restore_journal_initial_raw_ref' in progress or progress.get('status') in {'restoring', 'restored'}:
+        return _restore_progress(policy, consent, current_raw_ref, progress, allowance)
     directory, current, before, history_ref, pending, pending_ref = _projection(
         policy, consent, current_raw_ref, allowance)
     _require(type(progress) is dict and progress.get('status') in {'retiring', 'incomplete'}
