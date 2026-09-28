@@ -110,15 +110,15 @@ def verify_evidence_reference(row: Mapping[str, Any], roots: Sequence[Path]) -> 
 @scene_participant()
 def load_progress(root: Path, filename: str, request_digest: str) -> dict | None:
     directory = root / "source-progress" / Path(filename).stem
-    from .task_evaluation_scene_retirement_metadata import retained_progress_paths
-    retained=retained_progress_paths(directory)
+    from .task_evaluation_scene_retirement_metadata import retained_progress_records
+    retained=retained_progress_records(directory)
     if retained is None and not directory.exists():
         return None
     _require(not directory.is_symlink(), "progress_path_invalid")
-    paths=retained if retained is not None else sorted(directory.glob("*.json"))
+    paths=retained if retained is not None else ((path,None) for path in sorted(directory.glob("*.json")))
     prior = None
-    for index, path in enumerate(paths, 1):
-        value = _read(path)
+    for index, (path,raw) in enumerate(paths, 1):
+        value = json.loads(raw) if raw is not None else _read(path)
         _require(value.get("schema_version") == PROGRESS_SCHEMA
                  and value.get("request_digest") == request_digest
                  and value.get("sequence") == index

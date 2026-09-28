@@ -211,23 +211,27 @@ def read_logical_metadata(path, *, expected_sha256=None, expected_size_bytes=Non
                 found.append(row)
         _require(len(found)==1,'scene_retirement_metadata_unavailable')
         row=found[0]
-        reference=raw_reference(row['retained_raw_ref'])
-        _require(Path(reference['path']).parent==store and reference['sha256']==row['sha256']
-                 and reference['size_bytes']==row['size_bytes']
-                 and (expected_size_bytes is None or row['size_bytes']==expected_size_bytes),
-                 'scene_retirement_metadata_changed')
-        return _retained_bytes(reference,gid,audience=row.get('audience'))
+        return _row_bytes(store,gid,row,expected_size_bytes)
+
+
+def _row_bytes(store,gid,row,expected_size_bytes=None):
+    reference=raw_reference(row['retained_raw_ref'])
+    _require(Path(reference['path']).parent==store and reference['sha256']==row['sha256']
+             and reference['size_bytes']==row['size_bytes']
+             and (expected_size_bytes is None or row['size_bytes']==expected_size_bytes),
+             'scene_retirement_metadata_changed')
+    return _retained_bytes(reference,gid,audience=row.get('audience'))
 
 
 
-def retained_progress_paths(directory):
+def retained_progress_records(directory):
     """Select a complete immutable original progress listing, never infer empty."""
     directory=_canonical(str(directory))
     with access.scene_access():
         selected=_selected_closure(directory)
         if selected is None:
             return None
-        _,_,closure,_=selected
+        store,gid,closure,_=selected
         listings=closure.get('progress_listings')
         _require(type(listings) is list and len(listings)<=10000,'scene_retirement_metadata_unavailable')
         _require(all(type(row) is dict and set(row)=={'logical_directory','paths'} for row in listings),
@@ -236,7 +240,10 @@ def retained_progress_paths(directory):
         _require(len(found)==1 and type(found[0].get('paths')) is list and len(found[0]['paths'])<=10000,
                  'scene_retirement_metadata_unavailable')
         paths=[]
-        known_paths={row['logical_path'] for row in closure['rows']}
+        known_paths={}
+        for row in closure['rows']:
+            _require(row['logical_path'] not in known_paths,'scene_retirement_metadata_changed')
+            known_paths[row['logical_path']]=row
         for name in found[0]['paths']:
             path=_canonical(name)
             _require(path.parent==directory and _sam_kind(path)==('task_evaluation_sam31_preparation_progress.v1','progress_digest'),
@@ -244,7 +251,15 @@ def retained_progress_paths(directory):
             _require(name in known_paths,'scene_retirement_metadata_changed')
             paths.append(path)
         _require(len(set(paths))==len(paths),'scene_retirement_metadata_changed')
-        return tuple(sorted(paths))
+        records=[]
+        total=0
+        for path in sorted(paths):
+            row=known_paths[str(path)]
+            _require(type(row['size_bytes']) is int and 0<row['size_bytes']<=MAX_ROW_BYTES
+                     and total+row['size_bytes']<=MAX_METADATA_BYTES,'scene_retirement_metadata_limit')
+            total+=row['size_bytes']
+            records.append((path,_row_bytes(store,gid,row)))
+        return tuple(records)
 
 def _publish_raw(store,name,raw,allowance,*,maximum=MAX_ROW_BYTES,audience=None):
     _require(len(raw)<=maximum,'scene_retirement_metadata_limit')
