@@ -69,3 +69,22 @@ def test_generation_publisher_never_mutates_reused_foreign_descriptor(tmp_path, 
             except OSError:
                 pass
         os.close(foreign_fd)
+
+
+def test_generation_metadata_publication_preserves_installed_store_owner_before_link(tmp_path,monkeypatch):
+    store=tmp_path/'service-generations';store.mkdir(mode=0o700)
+    calls=[]
+    real_chown,real_link=os.fchown,os.link
+    def chown(fd,uid,gid):
+        calls.append((uid,gid))
+        return real_chown(fd,uid,gid)
+    def link(source,destination,**kwargs):
+        assert calls==[(store.stat().st_uid,store.stat().st_gid)]
+        return real_link(source,destination,**kwargs)
+    monkeypatch.setattr(os,'fchown',chown)
+    monkeypatch.setattr(os,'link',link)
+    with access._opened(store,directory=True) as (parent,info):
+        generations._write(parent,'state.json',{'state':'retired'},parent_identity=access._identity(info))
+    info=(store/'state.json').stat()
+    assert info.st_uid==store.stat().st_uid and info.st_gid==store.stat().st_gid
+    assert info.st_mode & 0o777==0o600
