@@ -442,3 +442,12 @@ def test_continuous_loaded_command_rejects_extra_native_objects(tmp_path, monkey
     row['ExecStart'] = row['ExecStart'][:-2] + suffix + ' }'
     with pytest.raises(access.SceneRetirementAccessError, match='reader_closure_unproven'):
         module._exact_continuous_unit(row, 'blueprint_pipeline.live_pipeline_intake_service', native)
+
+
+def test_continuous_loaded_command_accepts_actual_active_systemd_status(tmp_path, monkeypatch):
+    module, _, row, native, _ = continuous_unit_fixture(tmp_path, monkeypatch)
+    # Actual Ubuntu systemd active ExecStart observation in native run36479632654
+    # records code=(null), status=0/0 before the genuine child exits.
+    row['ExecStart'] = row['ExecStart'].replace('status=0 }', 'status=0/0 }')
+    observed = module._exact_continuous_unit(row, 'blueprint_pipeline.live_pipeline_intake_service', native)
+    assert observed['loaded_exec_start'] == row['ExecStart']
