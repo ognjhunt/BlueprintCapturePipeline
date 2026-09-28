@@ -563,3 +563,68 @@ def test_oversized_lexical_root_refuses_before_component_allocation(monkeypatch)
     monkeypatch.setattr(observer, "MAX_PATH_BYTES", 4)
     with pytest.raises(observer.StoragePinObservationError, match="^pin_parameters_invalid$"):
         observer.observe_storage_pins(NoSlice("/oversized"), observed_at_epoch=50)
+
+
+@pytest.mark.parametrize("failure,code", [("deadline", "pin_deadline_exceeded"),
+                                          ("invalid", "pin_clock_invalid"),
+                                          ("backwards", "pin_clock_invalid")])
+@pytest.mark.parametrize("edge", ["second_row", "finalize"])
+def test_accepted_first_row_then_clock_failure_uses_early_empty_fallback(root, monkeypatch, failure, code, edge):
+    import builtins
+    write(root, pin(owner="a"))
+    write(root, pin(owner="z"))
+    state = {"failed": False, "accepted": False}
+    opened = set()
+    real_open, real_close = observer.os.open, observer.os.close
+    real_read_row, real_result = observer._Scan.read_row, observer._Scan.result
+    real_asdict = observer.asdict
+
+    def clock():
+        if not state["failed"]:
+            return 1.0
+        return {"deadline": 7.0, "invalid": float('nan'), "backwards": 0.0}[failure]
+
+    def read_row(scan, kind_fd, kind, name):
+        if name == "z.json":
+            assert len(scan.rows) == 1 and scan.rows[0].owner_id == "a"
+            state["accepted"] = True
+            if edge == "second_row":
+                state["failed"] = True
+        return real_read_row(scan, kind_fd, kind, name)
+
+    def result(scan):
+        if edge == "finalize":
+            assert len(scan.rows) == 2
+            state["failed"] = True
+        return real_result(scan)
+
+    def guarded_sorted(values, *args, **kwargs):
+        if state["failed"] and values and isinstance(values, list) and isinstance(values[0], observer.ObservedStoragePin):
+            pytest.fail("expired/invalid finalization must stop before sorting accepted evidence")
+        return builtins.sorted(values, *args, **kwargs)
+
+    def guarded_asdict(value):
+        if state["failed"]:
+            pytest.fail("expired/invalid finalization must not convert accepted evidence")
+        return real_asdict(value)
+
+    def tracked_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.add(fd)
+        return fd
+
+    def tracked_close(fd):
+        opened.remove(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(observer._Scan, "read_row", read_row)
+    monkeypatch.setattr(observer._Scan, "result", result)
+    monkeypatch.setattr(observer, "sorted", guarded_sorted, raising=False)
+    monkeypatch.setattr(observer, "asdict", guarded_asdict)
+    monkeypatch.setattr(observer.os, "open", tracked_open)
+    monkeypatch.setattr(observer.os, "close", tracked_close)
+    report = observe(root, monotonic=clock)
+    incomplete(report, code)
+    assert state["accepted"] is True
+    assert report.rows == report.protected_identities == report.protected_paths == ()
+    assert not opened

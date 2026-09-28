@@ -15,7 +15,7 @@ import re
 import stat
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from .control_plane_storage_pins import PIN_KINDS, SCHEMA_VERSION
@@ -365,16 +365,33 @@ class _Scan:
                 self.close(fd)
         _require([identity for _, identity in self.walk()] == [identity for _, identity in chain], "pin_root_changed")
 
+    def fallback(self, code: str) -> StoragePinObservation:
+        """Bounded empty evidence is always unknown, never negative authority."""
+        self.block(code)
+        return StoragePinObservation(False, self.observed, self.root, self.root_identity,
+                                     (), (), (), tuple(sorted(self.blockers)))
+
     def result(self) -> StoragePinObservation:
-        rows = tuple(sorted(self.rows, key=lambda row: (row.kind, row.owner_id)))
-        indexed = {PinIdentity(row.kind, row.owner_id): row for row in rows}
-        protected: set[PinIdentity] = set()
         try:
+            self.tick()  # Refuse before any accepted-evidence sort/allocation.
+            rows = tuple(sorted(self.rows, key=lambda row: (row.kind, row.owner_id)))
+            self.tick()
+            indexed = {}
+            pending = []
             for row in rows:
                 self.tick()
-                if any(dependency not in indexed for dependency in row.depends_on):
-                    self.block("pin_dependency_unavailable")
-            pending = [identity for identity, row in indexed.items() if row.released_at_epoch is None]
+                identity = PinIdentity(row.kind, row.owner_id)
+                indexed[identity] = row
+                if row.released_at_epoch is None:
+                    pending.append(identity)
+            self.tick()
+            for row in rows:
+                self.tick()
+                for dependency in row.depends_on:
+                    self.tick()
+                    if dependency not in indexed:
+                        self.block("pin_dependency_unavailable")
+            protected: set[PinIdentity] = set()
             while pending:
                 self.tick()
                 identity = pending.pop()
@@ -382,28 +399,37 @@ class _Scan:
                     continue
                 protected.add(identity)
                 if identity in indexed:
-                    pending.extend(indexed[identity].depends_on)
-        except _Blocked as error:
-            self.block(error.code)
-        result = StoragePinObservation(not self.blockers, self.observed, self.root, self.root_identity, rows,
-                                       tuple(sorted(protected)), tuple(sorted({path for identity in protected
-                                                                             if identity in indexed
-                                                                             for path in indexed[identity].paths})),
-                                       tuple(sorted(self.blockers)))
-        try:
-            size = 0
+                    for dependency in indexed[identity].depends_on:
+                        self.tick()
+                        pending.append(dependency)
+            paths = set()
+            for identity in protected:
+                self.tick()
+                if identity in indexed:
+                    for path in indexed[identity].paths:
+                        self.tick()
+                        paths.add(path)
+            self.tick()
+            identities = tuple(sorted(protected))
+            self.tick()
+            protected_paths = tuple(sorted(paths))
+            self.tick()
+            result = StoragePinObservation(not self.blockers, self.observed, self.root, self.root_identity,
+                                           rows, identities, protected_paths, tuple(sorted(self.blockers)))
             self.tick()
             document = asdict(result)
             self.tick()
+            size = 0
             for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(document):
                 self.tick()
                 size += len(chunk.encode("utf-8"))
                 _require(size <= MAX_OUTPUT_BYTES, "pin_output_limit")
+            self.tick()
+            return result
         except _Blocked as error:
-            self.block(error.code)
-            result = replace(result, complete=False, rows=(), protected_identities=(), protected_paths=(),
-                             blockers=tuple(sorted(self.blockers)))
-        return result
+            return self.fallback(error.code)
+        except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError, OSError):
+            return self.fallback("pin_result_invalid")
 
 
 def observe_storage_pins(pins_root: str, *, observed_at_epoch: float,
@@ -431,9 +457,4 @@ def observe_storage_pins(pins_root: str, *, observed_at_epoch: float,
         for _pass in range(2):
             for fd in tuple(reversed(scan.fds)):
                 scan.close(fd)
-    try:
-        return scan.result()
-    except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
-        scan.block("pin_result_invalid")
-        return StoragePinObservation(False, scan.observed, root, scan.root_identity, (), (), (),
-                                     tuple(sorted(scan.blockers)))
+    return scan.result()
