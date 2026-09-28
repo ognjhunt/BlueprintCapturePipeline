@@ -177,7 +177,7 @@ def _installed_cohort(policy, allowance):
     # unknown older process. Such lifetimes require their own retained evidence.
 
 
-def _plan_members(plan, consent, allowance=None):
+def _plan_members(plan, consent, allowance=None, *, cache_inventory=None):
     rows=plan.get('measured_members')
     _require(type(rows) in (list,_Rows) and len(rows)<=10000,'scene_retirement_members_unproven')
     selected=consent['members']
@@ -185,6 +185,23 @@ def _plan_members(plan, consent, allowance=None):
     roots=[Path(member['canonical_path']) for member in selected]
     _require(not any(a!=b and a.is_relative_to(b) for a in roots for b in roots),
              'scene_retirement_members_unproven')
+    aliases={}
+    if cache_inventory is not None:
+        _require(type(cache_inventory) is dict and set(cache_inventory)=={
+            'members','files','directories','cache_aliases','unique_allocated_bytes'},'scene_retirement_members_unproven')
+        cache_rows=cache_inventory['cache_aliases']
+        targets=consent.get('cache_objects',[])
+        _require(type(cache_rows) is list and len(cache_rows)<=256 and type(targets) is list
+                 and len(targets)==len(cache_rows),'scene_retirement_members_unproven')
+        targets={row['canonical_path']:(row['digest'],row['size_bytes']) for row in targets}
+        _require(len(targets)==len(cache_rows)
+                 and [row['path'] for row in cache_inventory['members']]==[str(root) for root in roots],
+                 'scene_retirement_members_unproven')
+        for alias in cache_rows:
+            _require(type(alias) is dict and targets.get(alias['path'])==(alias['digest'],alias['size_bytes'])
+                     and alias['path'] not in aliases,'scene_retirement_members_unproven')
+            aliases[alias['path']]=alias
+    cache_matched=set()
     matched=set()
     observed={row['path'] for row in rows if type(row) is dict and row.get('status')=='observed_scoped_metadata'}
     for row in rows:
@@ -193,6 +210,13 @@ def _plan_members(plan, consent, allowance=None):
         _require(type(row) is dict and type(row.get('path')) is str,'scene_retirement_members_unproven')
         path=_canonical(row['path'])
         owners=[index for index,root in enumerate(roots) if path.is_relative_to(root)]
+        if not owners and str(path) in aliases:
+            _require(row.get('status')=='observed_scoped_metadata' and row.get('storage_class')=='cache'
+                     and type(row.get('keeps')) in (list,_Rows)
+                     and set(row['keeps'])<= {'shared_content_object_not_exclusive',
+                         'external_hardlink_or_unobserved_alias'},'scene_retirement_shared_or_unresolved_member')
+            cache_matched.add(str(path))
+            continue
         _require(len(owners)==1,'scene_retirement_members_unproven')
         if row.get('status')=='coalesced_descendant_member':
             attributed=_canonical(row.get('attributed_root'))
@@ -213,9 +237,14 @@ def _plan_members(plan, consent, allowance=None):
         retention={'sam_evidence_retention_policy_required'} if (
             selected[owners[0]]['class'] in consent['private_archive_classes']
             and row.get('storage_class')!='cache') else set()
+        if cache_inventory is not None:
+            # Every regular inode in this exact folder union was observed with
+            # nlink == inventoried projections + separately selected aliases.
+            # Logical/current other-owner references still independently KEEP.
+            retention.add('external_hardlink_or_unobserved_alias')
         _require(set(keeps)<=retention,'scene_retirement_shared_or_unresolved_member')
         matched.add(owners[0])
-    _require(len(matched)==len(selected),'scene_retirement_members_unproven')
+    _require(len(matched)==len(selected) and cache_matched==set(aliases),'scene_retirement_members_unproven')
 
 
 def _current_plan(policy, consent, retained, allowance, now, monotonic):
@@ -234,7 +263,14 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
     _require(type(provenance) is dict and provenance.get('role')=='intent'
              and {key:provenance.get(key) for key in ('path','sha256','size_bytes')}==consent['intent_raw_ref'],
              'scene_retirement_owner_changed')
-    _plan_members(fresh,consent,allowance)
+    cache_inventory=None
+    if consent.get('cache_objects'):
+        from .task_evaluation_scene_retirement_cache import validate_cache_objects
+        from .task_evaluation_scene_retirement_preservation import _inventory_members
+        cache_targets=validate_cache_objects(policy,consent,allowance)
+        cache_inventory=_inventory_members([row['canonical_path'] for row in consent['members']],allowance,
+            cache_aliases=[{key:row[key] for key in ('canonical_path','digest','size_bytes')} for row in cache_targets])
+    _plan_members(fresh,consent,allowance,cache_inventory=cache_inventory)
     _installed_cohort(policy,allowance)
     _require(not fresh.get('other_owner_capture_keeps'),
              'scene_retirement_reference_protected')

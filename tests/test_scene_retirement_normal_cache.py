@@ -395,7 +395,8 @@ def test_native_action_targets_exact_normal_cache_union_without_claiming_store_p
 def test_native_cache_union_metadata_refuses_a_second_owner_alias_before_payload(tmp_path,monkeypatch):
     import os
     from blueprint_pipeline import task_evaluation_scene_retirement_preservation as preservation
-    member=tmp_path/'projection';member.mkdir()
+    member=tmp_path/'projection'
+    member.mkdir()
     (member/'file').write_bytes(b'object')
     alias=tmp_path/hashlib.sha256(b'object').hexdigest()
     os.link(member/'file',alias)

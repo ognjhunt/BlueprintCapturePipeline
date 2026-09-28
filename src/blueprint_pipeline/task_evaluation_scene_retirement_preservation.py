@@ -292,13 +292,8 @@ def read_archive_chunks(transport,uri,allowance):
                 incoming.add_note('scene_retirement_remote_cleanup_unproven')
 
 
-def preserve_members(paths, *, transport, allowance, token, before_payload=None, before_upload=None, archive_name=None, cache_aliases=None):
-    """Stream and freshly verify exactly inventoried private archive bytes."""
-    allowance.tick()
-    _require(type(token) is str and re.fullmatch('[0-9a-f]{32}',token))
-    name=token+'.tar' if archive_name is None else archive_name
-    _require(type(name) is str and re.fullmatch(re.escape(token)+r'(?:\.[1-9][0-9]{0,2})?\.tar',name)
-             and (name==token+'.tar' or int(name.split('.')[1])<=256),'scene_retirement_archive_name_unproven')
+def _inventory_members(paths,allowance,*,cache_aliases=None):
+    """Bound exact names/inodes before payload access; no action authority."""
     _require(type(paths) in (list,tuple) and 0 < len(paths) <= 256)
     roots = [_canonical(str(path)) for path in paths]
     _require(len(set(roots)) == len(roots))
@@ -325,8 +320,9 @@ def preserve_members(paths, *, transport, allowance, token, before_payload=None,
                      and type(selected['digest']) is str and _SHA.fullmatch(selected['digest'])
                      and path.name==selected['digest'][7:] and type(selected['size_bytes']) is int
                      and selected['size_bytes']>=0,'scene_retirement_cache_alias_unproven')
+            _require(len(files)+len(directories)+len(aliases)<10000,'scene_retirement_inventory_limit')
             seen.add(str(path))
-            with _opened(path) as (_,info):
+            with _opened(path.parent,directory=True) as (_,parent_info),_opened(path) as (_,info):
                 identity=_identity(info)
                 key=identity[:2]
                 matches=inodes.get(key,[])
@@ -337,7 +333,7 @@ def preserve_members(paths, *, transport, allowance, token, before_payload=None,
                     physical_identity=list(identity),snapshot=list(_snapshot(info)),
                     member_index=matches[0]['member_index'],relative_path=matches[0]['relative_path'],
                     mode=stat.S_IMODE(info.st_mode),uid=info.st_uid,gid=info.st_gid,
-                    parent_identity=list(_identity(os.stat(path.parent,follow_symlinks=False)))))
+                    parent_identity=list(_identity(parent_info))))
                 alias_counts[key]=alias_counts.get(key,0)+1
     for key,rows in inodes.items():
         expected=len(rows)+alias_counts.get(key,0)
@@ -346,6 +342,21 @@ def preserve_members(paths, *, transport, allowance, token, before_payload=None,
             group = 'inode-'+str(rows[0]['physical_identity'][0])+'-'+str(rows[0]['physical_identity'][1])
             for row in rows:
                 row['hardlink_group'] = group
+    return dict(members=members,files=files,directories=directories,cache_aliases=aliases,
+                unique_allocated_bytes=sum(rows[0]['allocated_bytes'] for rows in inodes.values()))
+
+
+def preserve_members(paths, *, transport, allowance, token, before_payload=None, before_upload=None, archive_name=None, cache_aliases=None):
+    """Stream and freshly verify exactly inventoried private archive bytes."""
+    allowance.tick()
+    _require(type(token) is str and re.fullmatch('[0-9a-f]{32}',token))
+    name=token+'.tar' if archive_name is None else archive_name
+    _require(type(name) is str and re.fullmatch(re.escape(token)+r'(?:\.[1-9][0-9]{0,2})?\.tar',name)
+             and (name==token+'.tar' or int(name.split('.')[1])<=256),'scene_retirement_archive_name_unproven')
+    inventory=_inventory_members(paths,allowance,cache_aliases=cache_aliases)
+    members,files,directories,aliases=(inventory[key] for key in ('members','files','directories','cache_aliases'))
+    unique_allocated_bytes=inventory['unique_allocated_bytes']
+    roots=[Path(member['path']) for member in members]
     if before_payload is not None:
         before_payload(files,directories,archive_size(files,directories,allowance))
         allowance.tick()
@@ -400,7 +411,7 @@ def preserve_members(paths, *, transport, allowance, token, before_payload=None,
     _require(received == sent[0] and verified.digest() == digest.digest(),'scene_retirement_readback_unproven')
     archive = dict(archive,fresh_readback_sha256='sha256:'+verified.hexdigest(),fresh_readback_size_bytes=received)
     result=dict(members=members,files=files,directories=directories,archive=archive,
-                unique_allocated_bytes=sum(rows[0]['allocated_bytes'] for rows in inodes.values()))
+                unique_allocated_bytes=unique_allocated_bytes)
     if cache_aliases is not None:
         result['cache_aliases']=aliases
     return result
