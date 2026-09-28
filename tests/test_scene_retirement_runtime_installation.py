@@ -371,3 +371,38 @@ def test_runtime_refresh_selects_only_exact_generation_after_many_prior_deploys(
     assert result['status'] == 'refreshed'
     assert len(list(parent.iterdir())) == 34
     assert all((parent / f'{index:064x}').is_dir() for index in range(33))
+
+
+def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(tmp_path, monkeypatch):
+    import subprocess
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'signed source-shaped fixture'], check=True)
+    commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
+    # Service-owned checkout bytes may drift; installed root source must come
+    # from the exact already-authorized Git object, not these mutable bytes.
+    (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'raise RuntimeError("uncommitted mutable source")\n')
+    result = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent)
+    assert result['status'] == 'prepared'
+    assert result['source_commit'] == commit
+    assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py').read_bytes() == b'# trusted package\n'
+    assert (module._RUNTIME_ROOT / 'dependencies/fixture_sdk/__init__.py').read_bytes() == b'value = 1\n'
+    assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
+    assert result['authority_issued'] is False and result['cleanup_enabled'] is False
+
+
+def test_live_installer_prepares_immutable_runtime_before_service_ownership_and_units():
+    value = (SCRIPT.parent / 'install_live_pipeline_control_plane.sh').read_text()
+    selected = value.index('install_scene_retirement_runtime.py')
+    assert selected < value.index('run chown -R')
+    assert selected < value.index('blueprint-pipeline-intake.service')
+    assert '/usr/bin/python3 -I -S' in value[:selected]
+
+
+def test_deployer_provisions_root_runtime_before_release_activation():
+    value = (SCRIPT.parent / 'deploy_control_plane_commit.py').read_text()
+    body = value[value.index('        staged_release = stage_task_evaluation_control_plane_release('):]
+    assert body.index('_prepare_scene_retirement_runtime(') < body.index('activate=True')
+    assert 'scene_retirement_runtime' in body[:body.index('activate=True')]
