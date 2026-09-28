@@ -21,7 +21,12 @@ import pytest
 
 from blueprint_pipeline import vast_official_billing_extractor as billing
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.policy_canary_staged_object_absence import NOT_DURABLE
+from blueprint_pipeline import provider_output_promotion_records as records
+from blueprint_pipeline.policy_canary_staged_object_absence import (
+    NOT_DURABLE,
+    NOT_FINAL,
+    billing_staged_objects_absent,
+)
 from blueprint_pipeline.task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError,
 )
@@ -99,6 +104,42 @@ def test_closeout_reads_no_proof_when_the_lane_proved_absence_and_refuses_a_fore
     assert tampered["session_closeout"]["teardown_completed"] is False
     assert "policy_canary_staged_object_absence_proof_invalid:staged_object_absence_proof_digest_mismatch" in (
         tampered["blockers"])
+
+
+def _receipt(staging: Path, *, witness: str) -> dict:
+    """A promotion receipt bound to the staging manifest, its witness in ``witness`` state."""
+    manifest = json.loads((staging / records.STAGING_MANIFEST_FILENAME).read_text())
+    key = manifest["output_key"]
+    return records.write_promotion_receipt(staging, {
+        "schema_version": records.RECEIPT_SCHEMA, "status": "promoted",
+        "staging_manifest_sha256": records.staging_manifest_sha256(staging),
+        "staged_objects": {
+            "output": {"key_sha256": records.key_sha256(key), "state": "promoted",
+                       "versions": [{"size_bytes": 10, "etag": '"spaces-1"'}]},
+            "paired_witness": {"key_sha256": records.key_sha256(key + ".witness"), "state": witness,
+                               "versions": []}},
+        "witness": {"disposition": witness, "reference": None, "redundancy": None},
+        "blockers": [], "private_url_recorded": False, "raw_secret_values_recorded": False})
+
+
+def test_a_promotion_checkpoint_with_its_witness_pending_is_not_final(tmp_path):
+    """A proof stands for closeout and billing only while no promotion is mid-run: a receipt
+    checkpointed before its witness step (witness pending) means one is running or was cut short."""
+    attempt = tmp_path / "attempt_001"
+    proof = write_staged_absence_proof(attempt, promotion_status="promoted")
+    lane = _lane(attempt, sealed_absent=False)
+    assert billing_staged_objects_absent(lane) == (True, proof)
+
+    _receipt(proof.parent, witness="pending")
+    waiting = _join_session_closeout(inner=_completed_inner(), adapter=lane, provider_zero=ZERO)
+    assert waiting["session_closeout"]["teardown_completed"] is False
+    assert NOT_FINAL in waiting["blockers"]
+    assert billing_staged_objects_absent(lane) == (False, None)
+
+    _receipt(proof.parent, witness="absent_confirmed")  # the promotion ran to the end
+    closed = _join_session_closeout(inner=_completed_inner(), adapter=lane, provider_zero=ZERO)
+    assert closed["session_closeout"]["teardown_completed"] is True and NOT_FINAL not in closed["blockers"]
+    assert billing_staged_objects_absent(lane) == (True, proof)
 
 
 def _failing_publisher(**_kwargs):

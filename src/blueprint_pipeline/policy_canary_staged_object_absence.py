@@ -19,6 +19,13 @@ Any other proof -- ``failed``, or ``absent_confirmed`` beside a provider
 result -- still seals, so the run leaves the queue, but carries the blocker
 ``policy_canary_provider_output_not_durable``: its staged objects are gone and
 its output was not kept. An invalid proof proves nothing and is named.
+
+Not yet final. A promotion checkpoints its receipt, witness ``pending``, before
+its witness step. While the staging dir's current receipt is such a
+checkpoint, a promotion is running or was cut short, so neither billing nor
+closeout accepts the proof yet (``policy_canary_provider_output_promotion_not_final``
+names why): the run waits rather than sealing on a promotion that has not
+finished.
 """
 
 from __future__ import annotations
@@ -30,12 +37,14 @@ from typing import Any
 from .provider_output_promotion_records import (
     ABSENCE_PROOF_FILENAME,
     ProviderOutputPromotionRecordError,
+    load_promotion_receipt,
     load_staged_object_absence_proof,
 )
 
 # The arena lane's staging directory under its attempt root.
 STAGING_DIRNAME = "object_store_staging"
 NOT_DURABLE = "policy_canary_provider_output_not_durable"
+NOT_FINAL = "policy_canary_provider_output_promotion_not_final"
 
 
 def _sealed_absent(lane_result: Mapping[str, Any]) -> bool:
@@ -43,8 +52,17 @@ def _sealed_absent(lane_result: Mapping[str, Any]) -> bool:
     return isinstance(closeout, Mapping) and closeout.get("all_staged_objects_absent") is True
 
 
-def staged_object_absence_proof(lane_result: Mapping[str, Any]) -> tuple[dict, Path] | None:
-    """The attempt's validated absence proof and its path, or None when there is none.
+def _promotion_in_progress(staging: Path, proof: Mapping[str, Any]) -> bool:
+    """Whether the staging dir's current promotion receipt is a checkpoint (witness pending)."""
+    receipt = load_promotion_receipt(staging, staging_manifest_sha256=proof.get("staging_manifest_sha256"))
+    if receipt is None:
+        return False
+    section = (receipt.get("staged_objects") or {}).get("paired_witness") or {}
+    return (receipt.get("witness") or {}).get("disposition") == "pending" or section.get("state") == "pending"
+
+
+def staged_object_absence_proof(lane_result: Mapping[str, Any]) -> tuple[dict, Path, bool] | None:
+    """The attempt's validated absence proof, its path and whether promotion is final; else None.
 
     Only a proof for a staging manifest that required promotion counts. A
     proof file that does not validate raises
@@ -57,7 +75,7 @@ def staged_object_absence_proof(lane_result: Mapping[str, Any]) -> tuple[dict, P
     proof = load_staged_object_absence_proof(staging)
     if proof is None or proof.get("output_promotion_required") is not True:
         return None
-    return proof, staging / ABSENCE_PROOF_FILENAME
+    return proof, staging / ABSENCE_PROOF_FILENAME, not _promotion_in_progress(staging, proof)
 
 
 def billing_staged_objects_absent(lane_result: Mapping[str, Any]) -> tuple[bool, Path | None]:
@@ -68,7 +86,7 @@ def billing_staged_objects_absent(lane_result: Mapping[str, Any]) -> tuple[bool,
         found = staged_object_absence_proof(lane_result)
     except ProviderOutputPromotionRecordError:
         return False, None
-    return (True, found[1]) if found is not None else (False, None)
+    return (True, found[1]) if found is not None and found[2] else (False, None)
 
 
 def closeout_staged_objects(lane_result: Mapping[str, Any]) -> dict[str, Any]:
@@ -81,6 +99,8 @@ def closeout_staged_objects(lane_result: Mapping[str, Any]) -> dict[str, Any]:
         return {"absent": False, "blockers": [f"policy_canary_staged_object_absence_proof_invalid:{exc}"]}
     if found is None:
         return {"absent": False, "blockers": []}
+    if not found[2]:
+        return {"absent": False, "blockers": [NOT_FINAL]}
     status = found[0].get("promotion_status")
     produced_output = bool(str(lane_result.get("native_control_result_path") or "").strip())
     durable = status == "promoted" or (status == "absent_confirmed" and not produced_output)
@@ -89,6 +109,7 @@ def closeout_staged_objects(lane_result: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "NOT_DURABLE",
+    "NOT_FINAL",
     "STAGING_DIRNAME",
     "billing_staged_objects_absent",
     "closeout_staged_objects",
