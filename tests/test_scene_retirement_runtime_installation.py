@@ -407,3 +407,85 @@ def test_deployer_provisions_root_runtime_before_release_activation():
     body = value[value.index('        staged_release = stage_task_evaluation_control_plane_release('):]
     assert body.index('_prepare_scene_retirement_runtime(') < body.index('activate=True')
     assert 'scene_retirement_runtime' in body[:body.index('activate=True')]
+
+
+def test_raw_signed_release_git_cannot_execute_repository_promisor_helper(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    marker = tmp_path / 'mutable-helper-executed'
+    helper = tmp_path / 'mutable-helper.sh'
+    helper.write_text('#!/bin/sh\ntouch ' + str(marker) + '\nexit 1\n')
+    helper.chmod(0o700)
+    def git(*arguments):
+        subprocess.run(['/usr/bin/git', '-C', str(source), *arguments], check=True, capture_output=True)
+    git('init', '-q')
+    git('config', 'remote.origin.url', 'ext::/bin/sh ' + str(helper))
+    git('config', 'remote.origin.promisor', 'true')
+    git('config', 'protocol.ext.allow', 'always')
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._sdk_git_command(source, ['cat-file', 'blob', '1' * 40], time.monotonic() + 5, raw_checkout=True)
+    assert not marker.exists(), 'root acquisition must not execute mutable repository remote helpers before authentication'
+
+
+def test_locked_sdk_resumes_exact_owned_partial_extraction_without_recopying_completed_bytes(tmp_path, monkeypatch):
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    write = module.os.write
+    interrupted = False
+    def fail_after_prefix(fd, value):
+        nonlocal interrupted
+        if not interrupted and bytes(value).startswith(b'value = 1'):
+            interrupted = True
+            write(fd, value[:1])
+            raise OSError('actual partial SDK extraction interruption')
+        return write(fd, value)
+    monkeypatch.setattr(module.os, 'write', fail_after_prefix)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.build_sdk(source, wheelhouse=wheel.parent)
+    partial = next(module._sdk_root().rglob('__init__.py.pending'))
+    inode = partial.stat().st_ino
+    assert partial.read_bytes() == b'v'
+    monkeypatch.setattr(module.os, 'write', write)
+    selected = module.build_sdk(source, wheelhouse=wheel.parent)
+    final = Path(selected['dependencies_root']) / 'fixture_sdk/__init__.py'
+    assert final.read_bytes() == b'value = 1\n'
+    assert final.stat().st_ino == inode
+    assert not partial.exists()
+
+
+def test_locked_sdk_resumes_hash_bound_download_prefix_under_same_origin(tmp_path, monkeypatch):
+    import hashlib
+    import time
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    raw = wheel.read_bytes()
+    row = {'url': 'https://files.pythonhosted.org/' + wheel.name, 'size': len(raw),
+           'hash': 'sha256:' + hashlib.sha256(raw).hexdigest()}
+    requests = []
+    class Response:
+        status = 200
+        url = row['url']
+        def __init__(self, fail):
+            self.offset = 0
+            self.fail = fail
+        def __enter__(self): return self
+        def __exit__(self, *arguments): return False
+        def read(self, amount):
+            if self.fail and self.offset:
+                raise OSError('actual interrupted native download')
+            result = raw[self.offset:self.offset + (1 if self.fail else amount)]
+            self.offset += len(result)
+            return result
+    def open_response(url, timeout):
+        requests.append(url)
+        return Response(len(requests) == 1)
+    monkeypatch.setattr(module.urllib.request, 'urlopen', open_response)
+    deadline = time.monotonic() + 10
+    with pytest.raises(OSError, match='actual interrupted'):
+        module._sdk_artifact(row, None, deadline)
+    partial = next(module._sdk_root().rglob('*.whl.pending'))
+    inode = partial.stat().st_ino
+    result = module._sdk_artifact(row, None, deadline)
+    assert result.read_bytes() == raw and result.stat().st_ino == inode
+    assert not partial.exists() and len(requests) == 2
