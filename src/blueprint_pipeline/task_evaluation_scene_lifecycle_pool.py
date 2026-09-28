@@ -292,7 +292,13 @@ def select(decoded, context, intent_id, budget):
     bridge = {role: [] for role in native.ROLES}
     raw_index, canonical, by_path, parent_modes, activation_modes = {}, {}, {}, {}, {}
     explicit = {row['path'] for row in _work_items(context.get('retained_metadata_files', []), budget)}
-    sam_hints, linked_parents = set(), set()
+    sam_hints, linked_parents, primary_parents = set(), set(), set()
+    primary_queue = context['roots']['preparation_queue_root']
+    alternate_queues = set()
+    for route in _work_items(context.get('parent_routes', []), budget):
+        if route['queue_root'] != primary_queue:
+            budget.charge('facts')
+            alternate_queues.add(route['queue_root'])
     for selector in _work_items(context.get('retained_metadata_files', []), budget):
         if selector['role'] == 'sam_parent_envelopes':
             budget.charge('facts')
@@ -317,6 +323,11 @@ def select(decoded, context, intent_id, budget):
             if isinstance(request, dict):
                 budget.charge('facts')
                 parent_modes.setdefault((str(PurePosixPath(row['path']).parent.parent), PurePosixPath(row['path']).name), set()).add(request.get('run_mode'))
+                if (str(PurePosixPath(row['path']).parent.parent) == primary_queue
+                        and request.get('run_mode') == 'scene_configuration'):
+                    budget.charge('facts')
+                    primary_parents.add((PurePosixPath(row['path']).name,
+                        row['sha256'], len(row['raw']), row['value'].get('request_digest')))
         if row['role'] == 'activation_envelopes' and supported(row):
             request = row['value'].get('request')
             if isinstance(request, dict):
@@ -391,10 +402,15 @@ def select(decoded, context, intent_id, budget):
             p = PurePosixPath(row['path'])
             modes = parent_modes.get((str(p.parent.parent), p.name), set())
             if (role == 'parent_envelopes' and row['path'] in sam_hints
-                    and modes == {'scene_configuration'} and value.get('request_digest') not in linked_parents):
+                    and modes == {'scene_configuration'} and (
+                        value.get('request_digest') not in linked_parents or (
+                            str(p.parent.parent) in alternate_queues
+                            and (p.name, row['sha256'], len(row['raw']), value.get('request_digest')) in primary_parents))):
                 # An exact explicit historical SAM role cannot establish an
                 # owner-link. Its source-family reader independently checks the
                 # real route/name/request, and adoption selects exact raw bytes.
+                # A current parent's identical retained copy belongs to its
+                # configured SAM route; the primary queue remains the seed.
                 role = 'sam_parent_envelopes'
             elif modes == {'scene_configuration'}:
                 role = 'preparation_envelopes' if role == 'parent_envelopes' else 'preparation_results'
