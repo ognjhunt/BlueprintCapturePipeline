@@ -185,15 +185,22 @@ def fill_cache(value, monkeypatch):
     fetcher = native._fetcher()
     calls = []
     class Response(io.BytesIO):
-        def __init__(self, url):
+        def __init__(self, url, headers=None):
             path = unquote(url.removeprefix(fetcher.MODEL_BASE))
-            super().__init__(value['payloads'][path])
+            content = value['payloads'][path]
+            self.status, self.headers = 200, {}
+            if headers and 'Range' in headers:
+                start, end = map(int, headers['Range'].removeprefix('bytes=').split('-'))
+                self.status = 206
+                self.headers = {'Content-Range': f'bytes {start}-{end}/{len(content)}'}
+                content = content[start:end+1]
+            super().__init__(content)
             self.url = url
         def geturl(self):
             return self.url
     def response(url, **kwargs):
         calls.append(url)
-        return Response(url)
+        return Response(url, kwargs.get('headers'))
     monkeypatch.setattr(fetcher, '_open_https', response)
     monkeypatch.setattr(native, '_fetcher', lambda: fetcher)
     monkeypatch.setattr(cache, '_process_identity', lambda: dict(boot_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -358,3 +365,101 @@ def test_root_revoke_during_actual_hash_stops_next_payload_read(cache_installati
             use.hash_file(target / next(iter(value['payloads'])), role='wam_hash')
         assert len(data_reads) == 1 and use.failure is not None
     assert {path: (target / path).read_bytes() for path in value['payloads']} == value['payloads']
+
+
+@pytest.mark.parametrize('record', ['birth', 'inventory'])
+def test_retained_root_source_substitution_refuses_before_first_payload_read(
+        cache_installation, monkeypatch, record):
+    import os
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, result, _, _, _ = fill_cache(value, monkeypatch)
+    target = Path(result['path'])
+    path = (value['public'] / (grant['intent_id']+'.birth.json') if record == 'birth' else value['inventory_path'])
+    with cache.NeededCheckpointCacheUse.open_registered(target, mode='read',
+            installed_config_path=value['config'], now=lambda: 1200) as use:
+        replacement = path.with_suffix('.foreign')
+        replacement.write_bytes(path.read_bytes())
+        replacement.chmod(path.stat().st_mode & 0o777)
+        replacement.rename(path)
+        monkeypatch.setattr(os, 'pread', lambda *a, **kw: pytest.fail('payload after root source substitution'))
+        with pytest.raises(ValueError, match='needed_cache'):
+            use.hash_file(target / next(iter(value['payloads'])), role='wam_hash')
+        assert use.failure is not None
+
+
+def test_actual_ranged_fetcher_uses_same_guard_and_joins_before_ready(cache_installation, monkeypatch):
+    from blueprint_pipeline import native_g1_checkpoint_cache as native
+    fetcher = native._fetcher()
+    actual, calls = fetcher._download_pinned_ranges, []
+    def ranged(*args, **kwargs):
+        assert kwargs['_cache_use'] is not None
+        calls.append(kwargs['_cache_use'])
+        return actual(*args, **kwargs)
+    monkeypatch.setattr(fetcher, 'RANGED_DOWNLOAD_MIN_BYTES', 1)
+    monkeypatch.setattr(fetcher, '_download_pinned_ranges', ranged)
+    monkeypatch.setattr(native, '_fetcher', lambda: fetcher)
+    _, result, _, _, reservations = fill_cache(cache_installation, monkeypatch)
+    assert result['status'] == 'cache_ready' and len(calls) == 24
+    assert all(use is calls[0] for use in calls) and calls[0].closed
+    assert reservations[0].released is True
+    assert result['resource_counters']['roles']['network']['bytes'] == sum(map(len, cache_installation['payloads'].values()))
+
+
+def test_complete_ready_hit_never_reserves_redownloads_or_republishes_ready(cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, result, fetcher, _, _ = fill_cache(value, monkeypatch)
+    before = {str(p.relative_to(value['private'])): p.read_bytes() for p in value['private'].glob('*.json')}
+    head = (value['authority'] / 'HEAD.json').read_bytes()
+    monkeypatch.setattr(cache, 'reserve_control_plane_disk', lambda *a, **kw: pytest.fail('complete hit reserved bytes'))
+    monkeypatch.setattr(fetcher, '_open_https', lambda *a, **kw: pytest.fail('complete hit downloaded bytes'))
+    hit = cache.fill_needed_checkpoint_cache(grant['intent_id'], expected_sha256=grant['intent']['sha256'],
+        expected_size_bytes=grant['intent']['size_bytes'], installed_config_path=value['config'], now=lambda: 1200)
+    assert hit['status'] == 'cache_ready' and hit['reservation_required'] is False
+    assert hit['path'] == result['path']
+    assert {str(p.relative_to(value['private'])): p.read_bytes() for p in value['private'].glob('*.json')} == before
+    assert (value['authority'] / 'HEAD.json').read_bytes() == head
+
+
+def test_expired_needed_bytes_stay_kept_and_explicit_owner_renewal_preserves_generation(
+        cache_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    grant, result, _, _, _ = fill_cache(value, monkeypatch)
+    target = Path(result['path'])
+    before = {name: (target/name).read_bytes() for name in value['payloads']}
+    birth = (value['public'] / (grant['intent_id']+'.birth.json')).read_bytes()
+    with pytest.raises(ValueError, match='needed_cache'):
+        cache.NeededCheckpointCacheUse.open_registered(target, mode='read',
+            installed_config_path=value['config'], now=lambda: 2900)
+    renewed = cache.renew_needed_checkpoint_cache(grant['intent_id'], principal='operator', owner='owner',
+        lease_ttl_seconds=1200, size_budget_bytes=8*1024*1024, installed_config_path=value['config'], now=lambda: 2900)
+    assert renewed['generation'] == result['generation'] and renewed['expires_at_epoch'] == 4100
+    assert renewed['cleanup'] == 'owner_review' and renewed['class_intent'] == 'cache'
+    assert (value['public'] / (grant['intent_id']+'.birth.json')).read_bytes() == birth
+    assert {name: (target/name).read_bytes() for name in value['payloads']} == before
+    with cache.NeededCheckpointCacheUse.open_registered(target, mode='read',
+            installed_config_path=value['config'], now=lambda: 3000) as use:
+        assert use.hash_file(target / next(iter(value['payloads'])), role='wam_hash')[1] > 0
+
+
+def test_ninth_fragment_failure_is_sticky_across_other_pinned_files(cache_installation, monkeypatch):
+    import os
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    value = cache_installation
+    _, result, _, _, _ = fill_cache(value, monkeypatch)
+    target = Path(result['path'])
+    pread, observed = os.pread, []
+    def tiny(fd, size, offset):
+        observed.append((fd, size, offset))
+        return pread(fd, min(size, 1), offset)
+    with cache.NeededCheckpointCacheUse.open_registered(target, mode='read',
+            installed_config_path=value['config'], now=lambda: 1200) as use:
+        monkeypatch.setattr(os, 'pread', tiny)
+        with pytest.raises(ValueError, match='needed_cache_fragment_limit'):
+            use.hash_file(target / list(value['payloads'])[0], role='wam_hash')
+        assert len(observed) == 8 and use.failure == 'needed_cache_fragment_limit'
+        with pytest.raises(ValueError, match='needed_cache_fragment_limit'):
+            use.hash_file(target / list(value['payloads'])[1], role='wam_hash')
+        assert len(observed) == 8
