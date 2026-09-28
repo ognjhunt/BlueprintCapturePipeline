@@ -69,7 +69,18 @@ def _show_unit(intent_id):
     rows = raw.splitlines()
     _require(len(rows) <= len(_UNIT_PROPERTIES) and all("=" in row for row in rows), "experiment_unit_observation_failed")
     value = dict(row.split("=", 1) for row in rows)
-    _require(len(value) == len(rows) and set(value) == set(_UNIT_PROPERTIES), "experiment_unit_observation_failed")
+    _require(len(value) == len(rows), "experiment_unit_observation_failed")
+    # Native systemd omits an empty ExecStart array even with --all for a
+    # genuinely absent unit. This finite NO COMMAND representation applies only
+    # to the exact absent identity; loaded/active/incomplete units stay refused.
+    if set(value) == set(_UNIT_PROPERTIES) - {"ExecStart"}:
+        _require(value["Id"] == unit and value["LoadState"] == "not-found"
+                 and value["ActiveState"] == "inactive" and value["SubState"] == "dead"
+                 and value["MainPID"] == "0" and value["InvocationID"] == ""
+                 and value["ControlGroup"] == "" and value["Result"] == "success"
+                 and value["ExecMainStatus"] == "0", "experiment_unit_observation_failed")
+        value["ExecStart"] = ""
+    _require(set(value) == set(_UNIT_PROPERTIES), "experiment_unit_observation_failed")
     return value
 
 
