@@ -157,7 +157,16 @@ def _supported_path(role: str, path: str, roots: dict, intent_id: str) -> bool:
     return len(parts) == 3 and parts[1] == "preparations" and re.fullmatch(r"[0-9a-f]{64}(?:\.activation)?\.json", parts[2]) is not None
 
 
-def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_id: str) -> tuple:
+def _output_rows(emission_budget, values=(), *, reference=False):
+    return emission_budget.rows(values, reference=reference) if emission_budget is not None else list(values)
+
+
+def _proofs(emission_budget, *groups):
+    values = (p for group in groups for p in group)
+    return emission_budget.reserve_provenance(values) if emission_budget is not None else list(values)
+
+
+def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_id: str, *, emission_budget=None) -> tuple:
     local, remote, occurrences, deferred = {}, {}, 0, 0
     index = {_identity(row): (role, row) for role, rows in decoded.items() for row in rows}
     def add(role, ref, sequence):
@@ -186,7 +195,7 @@ def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_
             occurrences += 1
             _require(occurrences <= MAX_REFERENCES, "references_limit")
             remote.setdefault((ref["uri"], ref["digest"], ref["size_bytes"]), set()).add(sequence)
-    rows = []
+    rows = _output_rows(emission_budget, reference=True)
     for key, sequences in sorted(local.items()):
         role, path, digest, size = key
         match = index.get((path, digest, size))
@@ -195,26 +204,37 @@ def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_
             None if match else "historical_reference_bytes_unavailable")
         if reason:
             reasons.add(reason)
-        rows.append({"role": role, "path": path, "sha256": digest, "size_bytes": size, "event_sequences": sorted(sequences),
+        sequences = _output_rows(emission_budget, sequences)
+        sequences.sort()
+        rows.append({"role": role, "path": path, "sha256": digest, "size_bytes": size, "event_sequences": sequences,
                      "status": "matched_retained_bytes" if reason is None else "kept_deferred" if reason == "historical_reference_role_unproven" else "kept_unresolved",
                      "reason": reason, "source_provenance": match[1][1] if reason is None else None})
     for (uri, digest, size), sequences in sorted(remote.items()):
+        sequences = _output_rows(emission_budget, sequences)
+        sequences.sort()
         rows.append({"role": "remote_result_reference", "uri": uri, "digest": digest, "size_bytes": size,
-                     "event_sequences": sorted(sequences), "status": "kept_deferred", "reason": "remote_result_scope_unproven"})
+                     "event_sequences": sequences, "status": "kept_deferred", "reason": "remote_result_scope_unproven"})
     return rows, deferred + len(remote), occurrences
 
 
-def _member(path: str, kind: str, binding: dict, sources: list) -> dict:
-    return {"path": path, "kind": kind, "binding": binding, "source_provenance": sorted(sources, key=lambda p: (p["role"], p["path"], p["sha256"])),
+def _member(path: str, kind: str, binding: dict, sources: list, *, emission_budget=None) -> dict:
+    sources = _proofs(emission_budget, sources)
+    sources.sort(key=lambda p: (p["role"], p["path"], p["sha256"]))
+    return {"path": path, "kind": kind, "binding": binding, "source_provenance": sources,
             "presence_checked": False, "exclusive_ownership_proven": False, "measured_bytes": None}
 
 
-def _sources(intent_id: str, records: dict, roots: dict, reasons: set, members: list) -> list:
-    child = source.join_scene_source_attempt_lineage(intent_id=intent_id, intent_record=records["intent"],
+def _sources(intent_id: str, records: dict, roots: dict, reasons: set, members: list, *, emission_budget=None) -> list:
+    if emission_budget is not None:
+        child = source._join(intent_id, records['intent'], records['attempts'], records['source_snapshots'],
+            records['factories'], records['source_submissions'], {key: roots[key] for key in ('intent_root', 'factory_output_root')},
+            emission_budget=emission_budget)
+    else:
+        child = source.join_scene_source_attempt_lineage(intent_id=intent_id, intent_record=records["intent"],
         attempt_records=records["attempts"], snapshot_records=records["source_snapshots"],
         factory_records=records["factories"], submission_records=records["source_submissions"],
         roots={key: roots[key] for key in ("intent_root", "factory_output_root")})
-    rows = []
+    rows = _output_rows(emission_budget)
     for row in child["attempts"]:
         status = row["status"]
         disposition = "matched_retained_bytes" if row["workspace_membership_bound"] else (
@@ -227,19 +247,21 @@ def _sources(intent_id: str, records: dict, roots: dict, reasons: set, members: 
         if row["workspace_membership_bound"]:
             members.append(_member(row["workspace_path"], "administrative_source_workspace",
                                    {"intent_id": intent_id, "attempt_id": row["attempt_id"], "attempt_digest": row["attempt_digest"]},
-                                   row["source_provenance"]))
+                                   row["source_provenance"], emission_budget=emission_budget))
     return rows
 
 
-def _missing(group: dict, role: str, path: str | None, root: str, states: set, reason: str, missing: dict) -> None:
+def _missing(group: dict, role: str, path: str | None, root: str, states: set, reason: str, missing: dict, *, emission_budget=None) -> None:
     missing["count"] += 1
     _require(missing["count"] <= MAX_REFERENCES, "references_limit")
+    sources = _proofs(emission_budget, group['sources'])
+    sources.sort(key=lambda p: (p['role'], p['path'], p['sha256']))
     missing["joins"].append({"preparation_id": group["link"]["preparation_id"], "request_digest": group["link"]["request_digest"],
         "role": role, "expected_path": path, "expected_root": root, "expected_states": sorted(states), "reason": reason,
-        "status": "kept_unresolved", "source_provenance": sorted(group["sources"], key=lambda p: (p["role"], p["path"], p["sha256"]))})
+        "status": "kept_unresolved", "source_provenance": sources})
 
 
-def _preparations(decoded: dict, records: dict, intent: dict, roots: dict, reasons: set, members: list, missing: dict) -> dict:
+def _preparations(decoded: dict, records: dict, intent: dict, roots: dict, reasons: set, members: list, missing: dict, *, emission_budget=None) -> dict:
     directory = retained._child(roots["intent_root"], intent["intent_id"])
     grouped, envelopes, attempts = {}, {}, {_identity(row): row for row in decoded["attempts"]}
     for value, provenance in decoded["preparation_links"]:
@@ -253,7 +275,7 @@ def _preparations(decoded: dict, records: dict, intent: dict, roots: dict, reaso
             if provenance["variant"] == "activation":
                 grouped[key] = link, sources
         else:
-            grouped[key] = link, [provenance]
+            grouped[key] = link, _proofs(emission_budget, (provenance,))
     for row in decoded["preparation_envelopes"]:
         envelopes.setdefault(PurePosixPath(row[1]["path"]).name, []).append(row)
     complete_links, complete_envelopes, complete_attempts, context = [], [], [], {}
@@ -262,7 +284,7 @@ def _preparations(decoded: dict, records: dict, intent: dict, roots: dict, reaso
         matches = envelopes.pop(link["result_filename"], [])
         _require(len(matches) <= 1, "envelope_ambiguous")
         request = retained._envelope(*matches[0], roots["preparation_queue_root"], link, intent) if matches else None
-        sources = list(sources) + ([matches[0][1]] if matches else [])
+        sources = _proofs(emission_budget, sources, (matches[0][1],) if matches else ())
         absent = set() if matches else {"preparation_envelope_missing"}
         attempt = None
         if "scene_configuration_attempt" in link:
@@ -290,7 +312,7 @@ def _preparations(decoded: dict, records: dict, intent: dict, roots: dict, reaso
                         "queue_state": matches[0][1].get("queue_state") if matches else None}
         if not matches:
             _missing(context[key], "preparation_envelope", None, roots["preparation_queue_root"], retained._STATES,
-                     "preparation_envelope_missing", missing)
+                     "preparation_envelope_missing", missing, emission_budget=emission_budget)
         if not absent:
             complete_links.extend(raw_index[p["path"]] for p in sources if p["role"] == "preparation_links")
             complete_envelopes.append(raw_index[matches[0][1]["path"]])
@@ -298,13 +320,18 @@ def _preparations(decoded: dict, records: dict, intent: dict, roots: dict, reaso
                 complete_attempts.append(raw_index[attempt[1]["path"]])
     _require(not envelopes, "envelope_unmatched")
     if complete_links:
-        child = retained.join_scene_preparation_lineage(intent_id=intent["intent_id"], intent_record=records["intent"],
+        if emission_budget is not None:
+            child = retained._join(intent['intent_id'], records['intent'], complete_links, complete_envelopes,
+                complete_attempts, {key: roots[key] for key in ('intent_root', 'preparation_queue_root', 'preparation_input_root')},
+                emission_budget=emission_budget)
+        else:
+            child = retained.join_scene_preparation_lineage(intent_id=intent["intent_id"], intent_record=records["intent"],
             preparation_links=complete_links, preparation_envelopes=complete_envelopes, configuration_attempt_records=complete_attempts,
             roots={key: roots[key] for key in ("intent_root", "preparation_queue_root", "preparation_input_root")})
         for row in child["preparations"]:
             members.append(_member(row["workspace_path"], "preparation_workspace",
                 {key: row[key] for key in ("preparation_id", "request_digest", "expected_production_commit", "team_namespace", "scene_id", "task_id")},
-                row["source_provenance"]))
+                row["source_provenance"], emission_budget=emission_budget))
     return context
 
 
@@ -339,7 +366,7 @@ def _typed_references(request: dict, budget: dict) -> dict:
 
 
 def _result_references(value: dict, provenance: dict, context: dict, roots: dict, reasons: set,
-                       members: list, shared: dict, deferred: list, budget: dict, promote: bool, missing: dict) -> None:
+                       members: list, shared: dict, deferred: list, budget: dict, promote: bool, missing: dict, *, emission_budget=None) -> None:
     references = value.get("references", [])
     _require(isinstance(references, list), "result_references_invalid")
     budget["result"] += len(references)
@@ -365,38 +392,45 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
             _require(all(row[field] == contract[field] for field in ("uri", "digest", "size_bytes")), "request_reference_rebound")
             observed.add(row["contract_path"])
         if contract is None or not promote:
-            deferred.append({**row, "preparation_id": context["link"]["preparation_id"], "source_provenance": [provenance],
+            deferred.append({**row, "preparation_id": context["link"]["preparation_id"], "source_provenance": _proofs(emission_budget, (provenance,)),
                              "binding_strength": "result_receipt_only", "reason": "deferred_parent_reference_proof"})
         if promote and contract is not None:
             existing = budget["members"].get(path)
             if existing is None:
                 existing = _member(path, "preparation_projected_file", {"preparation_id": context["link"]["preparation_id"],
-                    "request_digest": context["link"]["request_digest"]}, list(context["sources"]) + [provenance])
+                    "request_digest": context["link"]["request_digest"]}, _proofs(emission_budget, context["sources"], (provenance,)), emission_budget=emission_budget)
                 existing.update(binding_strength="request_typed_reference", receipt_digest=row["digest"], receipt_size_bytes=row["size_bytes"], contract_paths=[])
                 members.append(existing)
                 budget["members"][path] = existing
                 budget["edges"][path] = set()
                 budget["provenances"][path] = {(p["path"], p["sha256"], p["size_bytes"]) for p in existing["source_provenance"]}
             _require((existing["receipt_digest"], existing["receipt_size_bytes"]) == identity, "materialized_identity_conflict")
+            if emission_budget is not None:
+                emission_budget.reserve_reference({'contract_path': row['contract_path']})
             budget["edges"][path].add(row["contract_path"])
             if _identity((value, provenance)) not in budget["provenances"][path]:
                 budget["provenances"][path].add(_identity((value, provenance)))
                 existing["source_provenance"].append(provenance)
             _require(row["digest"] not in shared or shared[row["digest"]]["size_bytes"] == row["size_bytes"], "cache_identity_conflict")
-            shared[row["digest"]] = {"digest": row["digest"], "size_bytes": row["size_bytes"],
+            cache_row = {"digest": row["digest"], "size_bytes": row["size_bytes"],
                 "path": retained._child(roots["content_store_root"], row["digest"][7:]), "exclusive_scene_membership": False}
+            if emission_budget is not None:
+                emission_budget.reserve_reference(cache_row)
+            shared[row["digest"]] = cache_row
     if promote and set(request_refs) - observed:
         reasons.add("request_projection_missing")
         for contract_path in sorted(set(request_refs) - observed):
             missing["count"] += 1
             _require(missing["count"] <= MAX_REFERENCES, "references_limit")
+            sources = _proofs(emission_budget, context['sources'], (provenance,))
+            sources.sort(key=lambda p: (p['role'], p['path'], p['sha256']))
             missing["projections"].append({"preparation_id": context["link"]["preparation_id"], "request_digest": context["link"]["request_digest"],
                 "contract_path": contract_path, **request_refs[contract_path], "reason": "request_projection_missing", "status": "kept_unresolved",
-                "source_provenance": sorted(list(context["sources"]) + [provenance], key=lambda p: (p["role"], p["path"], p["sha256"]))})
+                "source_provenance": sources})
 
 
-def _results(decoded: dict, context: dict, roots: dict, reasons: set, members: list, missing: dict) -> tuple:
-    shared, deferred, materialized, seen = {}, [], {}, set()
+def _results(decoded: dict, context: dict, roots: dict, reasons: set, members: list, missing: dict, *, emission_budget=None) -> tuple:
+    shared, deferred, materialized, seen = {}, _output_rows(emission_budget, reference=True), {}, set()
     budget = {"nodes": 0, "typed": 0, "result": 0, "members": {}, "edges": {}, "provenances": {}}
     for group in context.values():
         group["typed"] = _typed_references(group["request"], budget) if group["request"] is not None else {}
@@ -435,7 +469,7 @@ def _results(decoded: dict, context: dict, roots: dict, reasons: set, members: l
             if request is not None:
                 _require(value["run_id"] == request.get("run_id"), "result_identity_invalid")
         promote = known and group["complete"]
-        _result_references(value, provenance, group, roots, reasons, members, shared, deferred, budget, promote, missing)
+        _result_references(value, provenance, group, roots, reasons, members, shared, deferred, budget, promote, missing, emission_budget=emission_budget)
         seen.add(link["preparation_id"])
         if promote:
             materialized[(link["preparation_id"], value["result_digest"])] = value, provenance
@@ -446,14 +480,14 @@ def _results(decoded: dict, context: dict, roots: dict, reasons: set, members: l
         for key in sorted(set(context) - seen):
             group = context[key]
             _missing(group, "preparation_result", retained._child(roots["preparation_queue_root"], "results", group["link"]["result_filename"]),
-                     roots["preparation_queue_root"], {"results"}, "preparation_result_missing", missing)
+                     roots["preparation_queue_root"], {"results"}, "preparation_result_missing", missing, emission_budget=emission_budget)
     for path, member in budget["members"].items():
         member["contract_paths"] = sorted(budget["edges"][path])
         member["source_provenance"].sort(key=lambda p: (p["role"], p["path"], p["sha256"]))
     return shared, deferred, materialized
 
 
-def _configurations(decoded: dict, context: dict, materialized: dict, roots: dict, reasons: set, members: list, missing: dict) -> None:
+def _configurations(decoded: dict, context: dict, materialized: dict, roots: dict, reasons: set, members: list, missing: dict, *, emission_budget=None) -> None:
     envelopes, seen = {}, set()
     identifier = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}\Z")
     for value, provenance in decoded["activation_envelopes"]:
@@ -502,17 +536,17 @@ def _configurations(decoded: dict, context: dict, materialized: dict, roots: dic
                          "request_digest": value["preparation_request_digest"], "result_digest": value["preparation_result_digest"]}, "configuration_identity_invalid")
         if envelope is None or result is None:
             reasons.add("configuration_join_unresolved")
-            _missing({**group, "sources": list(group["sources"]) + [provenance]}, "configuration_join", None,
-                     roots["activation_queue_root"], {"pending", "processing", "prepared", "blocked"}, "configuration_join_unresolved", missing)
+            _missing({**group, "sources": _proofs(emission_budget, group['sources'], (provenance,))}, "configuration_join", None,
+                     roots["activation_queue_root"], {"pending", "processing", "prepared", "blocked"}, "configuration_join_unresolved", missing, emission_budget=emission_budget)
         else:
             members.append(_member(str(PurePosixPath(provenance["path"]).parent), "configuration_progression_workspace",
                 {"preparation_id": preparation_id, "request_digest": value["preparation_request_digest"], "result_digest": value["preparation_result_digest"]},
-                list(group["sources"]) + [provenance, result[1], envelope[1]]))
+                _proofs(emission_budget, group['sources'], (provenance, result[1], envelope[1])), emission_budget=emission_budget))
     for key in sorted(set(context) - seen):
         reasons.add("configuration_join_unresolved")
         _missing(context[key], "configuration_progression", retained._child(roots["configuration_progression_root"],
             "scene-configuration-activations", key, "activation_progression.json"), roots["configuration_progression_root"], set(),
-            "configuration_join_unresolved", missing)
+            "configuration_join_unresolved", missing, emission_budget=emission_budget)
     _require(not envelopes, "activation_unmatched")
 
 
@@ -527,7 +561,9 @@ def join_retained_scene_inventory_seed(*, intent_id: str, records: Any, roots: A
         raise SceneInventoryError("scene_inventory_input_invalid") from None
 
 
-def _join(intent_id: str, records: Any, roots: Any) -> dict:
+def _join(intent_id: str, records: Any, roots: Any, *, emission_budget=None) -> dict:
+    if emission_budget is not None:
+        emission_budget = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
     _shape(intent_id, retained._ID, "parameters_invalid")
     _require(isinstance(records, dict) and set(records) == _ROLES | {"intent", "projection"}
              and all(isinstance(records[role], (list, tuple)) for role in _ROLES)
@@ -538,14 +574,14 @@ def _join(intent_id: str, records: Any, roots: Any) -> dict:
     decoded = _decode(records)
     intent, provenance = decoded["intent"][0]
     retained._intent(intent, provenance, intent_id, roots["intent_root"])
-    reasons, members = set(), []
+    reasons, members = set(), _output_rows(emission_budget)
     history, events = _history(decoded, intent, roots, reasons)
-    obligations, deferred, count = _obligations(events, decoded, reasons, roots, intent_id)
-    missing = {"count": count, "joins": [], "projections": [], "raw": []}
-    source_rows = _sources(intent_id, records, roots, reasons, members)
-    context = _preparations(decoded, records, intent, roots, reasons, members, missing)
-    shared, deferred_results, materialized = _results(decoded, context, roots, reasons, members, missing)
-    _configurations(decoded, context, materialized, roots, reasons, members, missing)
+    obligations, deferred, count = _obligations(events, decoded, reasons, roots, intent_id, emission_budget=emission_budget)
+    missing = {"count": count, **{key: _output_rows(emission_budget, reference=True) for key in ('joins', 'projections', 'raw')}}
+    source_rows = _sources(intent_id, records, roots, reasons, members, emission_budget=emission_budget)
+    context = _preparations(decoded, records, intent, roots, reasons, members, missing, emission_budget=emission_budget)
+    shared, deferred_results, materialized = _results(decoded, context, roots, reasons, members, missing, emission_budget=emission_budget)
+    _configurations(decoded, context, materialized, roots, reasons, members, missing, emission_budget=emission_budget)
     def obligation_key(row):
         return row["role"], row.get("path", row.get("uri", "")), row.get("sha256", row.get("digest", "")), row["size_bytes"]
     obligation_index = {obligation_key(row): row for row in obligations}
@@ -569,5 +605,8 @@ def _join(intent_id: str, records: Any, roots: Any) -> dict:
               "cleanup_authorized": False, "requires_fresh_reference_check": True}
     _require(sum(len(result[key]) for key in ("obligations", "members", "source_attempt_obligations",
                                              "shared_cache_references", "deferred_result_references", "preparation_join_obligations", "request_projection_obligations")) <= MAX_ROWS, "rows_limit")
-    _require(len(retained._encoded(result)) <= MAX_OUTPUT_BYTES, "output_limit")
+    if emission_budget is not None:
+        emission_budget.check_document(result)
+    else:
+        _require(len(retained._encoded(result)) <= MAX_OUTPUT_BYTES, "output_limit")
     return result

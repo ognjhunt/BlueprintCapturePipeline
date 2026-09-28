@@ -184,9 +184,9 @@ def _factory(value: dict, provenance: dict, intent: dict, attempt: dict, family:
 
 
 def _workspace(intent: dict, intent_provenance: dict, attempt: dict, provenance: dict,
-               alias: str, root: str, pools: list[dict]) -> dict:
+               alias: str, root: str, pools: list[dict], *, emission_budget=None) -> dict:
     workspace = retained._child(root, intent["intent_id"], attempt["attempt_id"])
-    sources, reasons = [provenance], set()
+    sources, reasons = (emission_budget.reserve_provenance((provenance,)) if emission_budget is not None else [provenance]), set()
     snapshots = {}
     for role, filename, seal in _SNAPSHOTS:
         record = pools[0].pop(retained._child(workspace, filename), None)
@@ -256,13 +256,14 @@ def _workspace(intent: dict, intent_provenance: dict, attempt: dict, provenance:
             "source_provenance": sorted(sources, key=lambda row: (row["role"], row["path"]))}
 
 
-def _paid_row(attempt: dict, provenance: dict, alias: str) -> dict:
+def _paid_row(attempt: dict, provenance: dict, alias: str, *, emission_budget=None) -> dict:
+    sources = emission_budget.reserve_provenance((provenance,)) if emission_budget is not None else [provenance]
     return {"attempt_id": attempt["attempt_id"], "attempt_digest": attempt["attempt_digest"],
             "attempt_schema": attempt["schema_version"], "attempt_alias": alias,
             "source_commit": attempt["source_commit"], "runtime_digest": attempt["runtime_digest"],
             "input_digest": attempt["input_digest"], "source_family": None, "status": "kept_out_of_scope",
             "reasons": ["paid_attempt_out_of_scope"], "workspace_path": None, "workspace_membership_bound": False,
-            "snapshot_binding_strength": None, "preparation_identity": None, "source_provenance": [provenance]}
+            "snapshot_binding_strength": None, "preparation_identity": None, "source_provenance": sources}
 
 
 def join_scene_source_attempt_lineage(*, intent_id: str, intent_record: Any, attempt_records: Any,
@@ -282,7 +283,10 @@ def join_scene_source_attempt_lineage(*, intent_id: str, intent_record: Any, att
         raise SceneSourceLineageError("scene_source_lineage_input_invalid") from None
 
 
-def _join(intent_id, intent_record, attempts, snapshots, factories, submissions, roots):
+def _join(intent_id, intent_record, attempts, snapshots, factories, submissions, roots, *, emission_budget=None):
+    if emission_budget is not None:
+        emission_budget = emission_budget.scope(max_bytes=retained.MAX_OUTPUT_BYTES, max_rows=retained.MAX_RECORDS,
+                                                max_references=retained.MAX_RECORDS)
     _require(retained._matches(intent_id, retained._ID) and isinstance(roots, dict)
              and set(roots) == {"intent_root", "factory_output_root"}, "parameters_invalid")
     groups = (attempts, snapshots, factories, submissions)
@@ -309,13 +313,13 @@ def _join(intent_id, intent_record, attempts, snapshots, factories, submissions,
             provenance.update(seal_field=None, seal_digest=None)
     pools = [{record[1]["path"]: record for record in group} for group in decoded[1:]]
     directory = retained._child(roots["intent_root"], intent_id)
-    rows, ids = [], set()
+    rows, ids = (emission_budget.rows() if emission_budget is not None else []), set()
     for value, provenance in decoded[0]:
         alias = _attempt(value, provenance, intent, directory)
         _require(value["attempt_id"] not in ids, "attempt_ambiguous")
         ids.add(value["attempt_id"])
-        rows.append(_workspace(intent, intent_provenance, value, provenance, alias, roots["factory_output_root"], pools)
-                    if value["schema_version"] == _ADMIN_SCHEMA else _paid_row(value, provenance, alias))
+        rows.append(_workspace(intent, intent_provenance, value, provenance, alias, roots["factory_output_root"], pools, emission_budget=emission_budget)
+                    if value["schema_version"] == _ADMIN_SCHEMA else _paid_row(value, provenance, alias, emission_budget=emission_budget))
     _require(not any(pools), "record_unmatched")
     result = {"schema_version": "task_evaluation_scene_source_attempt_lineage.v1", "status": "joined_supplied_records",
               "scope": "supplied_retained_source_attempt_records", "intent_id": intent_id,
@@ -326,5 +330,8 @@ def _join(intent_id, intent_record, attempts, snapshots, factories, submissions,
               "payload_presence_checked": False, "payload_members_verified": False, "publication_readback_checked": False,
               "remote_availability_checked": False, "finished_state_checked": False, "references_checked": False,
               "consumer_fence_checked": False, "requires_fresh_reference_check": True}
-    _require(len(retained._encoded(result)) <= retained.MAX_OUTPUT_BYTES, "output_limit")
+    if emission_budget is not None:
+        emission_budget.check_document(result)
+    else:
+        _require(len(retained._encoded(result)) <= retained.MAX_OUTPUT_BYTES, "output_limit")
     return result
