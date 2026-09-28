@@ -372,6 +372,23 @@ def test_reclaim_ineffective_requires_zero_candidates_and_zero_reclaimed(
     assert ineffective is expected_ineffective
 
 
+@pytest.mark.parametrize("lane_complete", [True, False])
+def test_report_only_lane_phase_never_changes_existing_reclaim_outlook(lane_complete):
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+    raw = {"status": "applied", "observed_at_epoch": 50, "skipped_roots": [], "phase_errors": [],
+           "content_store": {"status": "applied", "candidate_bytes": 20, "removed_bytes": 10,
+                             "retained_by_reason": {"protected_pin": {"count": 1, "bytes": 5}}}}
+    baseline = cap._reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked")
+    assert baseline[0]["reclaimable_bytes"] == 20
+    raw["lane_scratch"] = {"status": "report_only", "complete": lane_complete, "candidate_bytes": None,
+                           "removed_bytes": 0, "retained_by_reason": {"references_unknown": {"count": 1, "bytes": None}}}
+    raw["opt_in"] = {"lane_scratch": True}
+    assert cap._reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked") == baseline
+    del raw["content_store"]
+    outlook, reasons, ineffective = cap._reclaim_outlook(build_storage_gc_summary(raw), now=50, volume_growth="blocked")
+    assert outlook["reclaimable_bytes"] is None and not reasons and ineffective is False
+
+
 def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",
@@ -960,6 +977,39 @@ def _survey_result(**overrides):
               "top_owners": [], "unclassified_roots": []}
     result.update(overrides)
     return result
+
+
+@pytest.mark.parametrize(("total", "largest"), [
+    (5 * GIB + 1, GIB), (3 * GIB, 2 * GIB + 1),
+])
+def test_orphan_scratch_pages_once_without_folder_names(total, largest):
+    survey = _survey_result(orphan_scratch_bytes=total, orphan_scratch_count=4,
+                            orphan_scratch_largest_bytes=largest,
+                            unclassified_roots=[{"root": "/mnt/blueprint-work/private-name",
+                                                 "allocated_bytes": largest}])
+    alerts = cap.usage_alerts(survey)
+    assert alerts == [{"code": "orphan_scratch_large", "allocated_bytes": total,
+                       "count": 4, "largest_bytes": largest}]
+    cap._annotate_alerts(alerts)
+    assert alerts[0]["severity"] == "page"
+    assert "private-name" not in json.dumps(alerts)
+
+
+def test_orphan_scratch_page_reaches_the_controller_poster(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    posted = []
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        disk_usage=_usage(free_gib=100.0), now=1_000.0,
+        survey=lambda **_kwargs: _survey_result(orphan_scratch_bytes=6 * GIB, orphan_scratch_count=3,
+                                                  orphan_scratch_largest_bytes=3 * GIB),
+        poster=lambda _url, payload: posted.append(payload),
+    )
+    assert len(posted) == 1
+    assert report["alert_posted"] is True
+    assert any(row["code"] == "orphan_scratch_large" and row["severity"] == "page"
+               for row in posted[0]["alerts"])
 
 
 def _no_project_spend(monkeypatch, value=None):

@@ -55,6 +55,10 @@ class DoorConfig:
     control_plane_state: str = _CONTROL_PLANE
     # The capacity controller's secret-free summary: its other reports are root-only.
     capacity_summary: str = f"{_CONTROL_PLANE}/capacity/summary.json"
+    lane_scratch_work_root: str = "/mnt/blueprint-work/lanes"
+    lane_scratch_inputs_root: str = "/var/lib/blueprint/task-evaluation-inputs/lanes"
+    owner_census_decisions_enabled: int = 0
+    lane_owner_policy_file: str = "/etc/blueprint-operator-door/lane-owner-policy.json"
     active_release_link: str = "/opt/blueprint/task-evaluation-control-plane"
     unit_prefix: str = "blueprint-"
     controller_units: tuple[str, ...] = (
@@ -98,6 +102,10 @@ class DoorConfig:
         return str(Path(self.state_root) / "requests")
 
     @property
+    def owner_consent_store(self) -> str:
+        return str(Path(self.spool_root) / "owner-consents")
+
+    @property
     def audit_path(self) -> str:
         return str(Path(self.state_root) / "audit" / "audit.jsonl")
 
@@ -107,11 +115,15 @@ _PATH_SCALARS = (
     "state_root", "token_file", "install_root", "control_plane_state", "active_release_link",
     "source_clone", "reference_repo", "github_deploy_key", "github_known_hosts", "venv_python",
     "capacity_summary",
+    "lane_scratch_work_root", "lane_scratch_inputs_root", "lane_owner_policy_file",
 )
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
-def _coerce(name: str, value: Any, default: Any) -> Any:
+def _coerce(name: str, value: Any, default: Any, *, _work_budget=None) -> Any:
+    if _work_budget is not None:
+        _work_budget.tick()
+        _work_budget.measure(value, cap=64 * 1024)
     if isinstance(default, tuple):
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise DoorConfigError(f"door_config_type:{name}")
@@ -134,27 +146,52 @@ def load_config(path: str | os.PathLike[str] = "/etc/blueprint-operator-door/doo
         overrides = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise DoorConfigError("door_config_unreadable") from error
+    return config_from_mapping(overrides)
+
+
+def config_from_mapping(overrides, *, _work_budget=None) -> DoorConfig:
+    """Validate one finite mapping; optional private caller shares its budget."""
+    config = DoorConfig()
+    if _work_budget is not None:
+        _work_budget.tick()
+        _work_budget.measure(overrides, cap=64 * 1024)
     if not isinstance(overrides, dict):
         raise DoorConfigError("door_config_not_object")
     known = {item.name for item in dataclasses.fields(DoorConfig)}
     values: dict[str, Any] = {}
     for name, value in overrides.items():
+        if _work_budget is not None:
+            _work_budget.charge("entries")
         if name not in known:
             raise DoorConfigError(f"door_config_unknown_key:{name}")
-        values[name] = _coerce(name, value, getattr(config, name))
-    return _validated(dataclasses.replace(config, **values))
+        values[name] = _coerce(name, value, getattr(config, name), _work_budget=_work_budget)
+    return _validated(dataclasses.replace(config, **values), _work_budget=_work_budget)
 
 
-def _validated(config: DoorConfig) -> DoorConfig:
+def _validated(config: DoorConfig, *, _work_budget=None) -> DoorConfig:
+    if type(config.owner_census_decisions_enabled) is not int or config.owner_census_decisions_enabled not in (0, 1):
+        raise DoorConfigError("door_config_owner_enablement_invalid")
     for name in _PATH_TUPLES:
-        if not all(os.path.isabs(item) for item in getattr(config, name)):
-            raise DoorConfigError(f"door_config_path_not_absolute:{name}")
+        for item in getattr(config, name):
+            if _work_budget is not None:
+                _work_budget.charge("entries")
+                _work_budget.measure(item, cap=4098)
+            if not os.path.isabs(item):
+                raise DoorConfigError(f"door_config_path_not_absolute:{name}")
     for name in _PATH_SCALARS:
+        if _work_budget is not None:
+            _work_budget.charge("entries")
+            _work_budget.measure(getattr(config, name), cap=4098)
         if not os.path.isabs(getattr(config, name)):
             raise DoorConfigError(f"door_config_path_not_absolute:{name}")
     trusted_parent = Path(DoorConfig().source_clone).parent
     source_clone = Path(config.source_clone)
-    if source_clone.parent != trusted_parent or source_clone.is_symlink():
+    if _work_budget is not None:
+        _work_budget.tick()
+    linked = source_clone.is_symlink()
+    if _work_budget is not None:
+        _work_budget.tick()
+    if source_clone.parent != trusted_parent or linked:
         raise DoorConfigError("door_config_source_clone_outside_trusted_root")
     if config.listen_host not in _LOOPBACK:
         raise DoorConfigError("door_config_listener_not_loopback")

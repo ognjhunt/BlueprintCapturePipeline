@@ -182,6 +182,205 @@ def test_pair_runs_same_scene_in_catalog_order_and_preserves_two_scores(tmp_path
     assert json.loads((tmp_path / "comparison" / (pair.SCHEMA + ".json")).read_text()) == result
 
 
+def test_new_lane_output_needs_lease_before_worker_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _ = _paired_requests(tmp_path)
+    lane_root = tmp_path / "lanes"
+    lane_root.mkdir()
+    monkeypatch.setattr(pair, "LANE_SCRATCH_ROOTS", (lane_root,))
+    output = lane_root / "g1" / "pair-run"
+
+    with pytest.raises(ValueError, match="g1_pair_lane_scratch_metadata_required"):
+        pair.run_g1_development_pair(request_paths=paths, output_dir=output,
+                                     local_runner=lambda **_kwargs: pytest.fail("worker ran"))
+    assert not output.exists()
+
+    def run(*, request: dict, output_dir: Path) -> dict:
+        lease = json.loads((output / ".lane-scratch.v1.json").read_text())
+        assert lease["owner"] == "operator-a"
+        assert lease["run_ref"] == "pair-run"
+        assert lease["class_intent"] == "evidence"
+        assert lease["cleanup"] == "owner_review"
+        return _fake_result(request, output_dir)
+
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=output, local_runner=run,
+        scratch_owner="operator-a", scratch_run_ref="pair-run", scratch_ttl_seconds=86400,
+    )
+    assert result["status"] == "completed_development_only"
+    assert (output / (pair.SCHEMA + ".json")).is_file()
+    original_lease = (output / ".lane-scratch.v1.json").read_bytes()
+    with pytest.raises(ValueError, match="g1_pair_output_directory_invalid"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=output, local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+            scratch_owner="operator-a", scratch_run_ref="pair-run", scratch_ttl_seconds=86400,
+        )
+    assert (output / ".lane-scratch.v1.json").read_bytes() == original_lease
+
+
+def test_lane_output_rejects_nested_and_wrong_lane_before_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _ = _paired_requests(tmp_path)
+    lane_root = tmp_path / "lanes"
+    lane_root.mkdir()
+    monkeypatch.setattr(pair, "LANE_SCRATCH_ROOTS", (lane_root,))
+    for output in (lane_root / "g1" / "nested" / "pair-run", lane_root / "arena" / "pair-run"):
+        with pytest.raises(ValueError, match="g1_pair_lane_scratch_output_invalid"):
+            pair.run_g1_development_pair(
+                request_paths=paths, output_dir=output,
+                scratch_owner="operator-a", scratch_run_ref="pair-run", scratch_ttl_seconds=86400,
+                local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+            )
+        assert not output.exists()
+
+
+@pytest.mark.parametrize("release_before_diagnostics", [False, True])
+def test_lane_diagnostics_use_live_capability_before_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release_before_diagnostics: bool,
+) -> None:
+    from blueprint_pipeline.control_plane_leased_scratch import LeasedScratchDirectory
+    from blueprint_pipeline.control_plane_lane_scratch import LaneScratchError, release_lane_scratch
+
+    paths, _ = _paired_requests(tmp_path)
+    root = tmp_path / "lanes"
+    root.mkdir()
+    output = root / "g1" / "diagnostic-pair"
+    launcher = tmp_path / "python.sh"
+    launcher.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(pair, "LANE_SCRATCH_ROOTS", (root,))
+    monkeypatch.setattr(pair, "sys", SimpleNamespace(platform="linux"))
+    calls = []
+    original_mkdir, original_create = LeasedScratchDirectory.mkdir, pair.create_lane_scratch
+
+    def observed_mkdir(self, relative, **kwargs):
+        calls.append(relative)
+        return original_mkdir(self, relative, **kwargs)
+
+    def create(*args, **kwargs):
+        folder = original_create(*args, **kwargs)
+        if release_before_diagnostics:
+            lease = json.loads((folder / ".lane-scratch.v1.json").read_text())
+            release_lane_scratch(root=root, lane="g1", name=folder.name, owner="operator-a",
+                                 expected_digest=lease["lease_digest"])
+        return folder
+
+    monkeypatch.setattr(LeasedScratchDirectory, "mkdir", observed_mkdir)
+    monkeypatch.setattr(pair, "create_lane_scratch", create)
+    monkeypatch.setattr(pair.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=-11))
+    options = dict(request_paths=paths, output_dir=output, mode="subprocess", worker_launcher=launcher,
+                   scratch_owner="operator-a", scratch_run_ref="run-a", scratch_ttl_seconds=86400)
+    if release_before_diagnostics:
+        with pytest.raises(LaneScratchError, match="inactive"):
+            pair.run_g1_development_pair(**options)
+        assert not (output / "_worker_diagnostics").exists()
+    else:
+        result = pair.run_g1_development_pair(**options)
+        assert result["status"] == "blocked"
+        assert calls == ["_worker_diagnostics"]
+        marker = (output / "_worker_diagnostics" / "kept")
+        marker.write_text("retain")
+        with pytest.raises(ValueError, match="g1_pair_output_directory_invalid"):
+            pair.run_g1_development_pair(**options)
+        assert marker.read_text() == "retain"
+
+
+def test_new_unbound_work_volume_output_refuses_but_bound_run_output_still_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _ = _paired_requests(tmp_path)
+    volume = tmp_path / "work-volume"
+    volume.mkdir()
+    (volume / "pipeline-control-plane").mkdir()
+    monkeypatch.setattr(pair, "WORK_VOLUME_ROOT", volume)
+    inputs = tmp_path / "task-evaluation-inputs"
+    inputs.mkdir()
+    monkeypatch.setattr(pair, "INPUTS_ROOT", inputs)
+    control = tmp_path / "pipeline-control-plane"
+    control.mkdir()
+    monkeypatch.setattr(pair, "CONTROL_PLANE_ROOT", control)
+    for output in (volume / "g1-unowned", volume / "pipeline-control-plane" / "unowned"):
+        with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+            pair.run_g1_development_pair(
+                request_paths=paths, output_dir=output,
+                local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+            )
+        assert not output.exists()
+
+    unowned_input = volume / "task-evaluation-inputs" / "run-owned-pair"
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=unowned_input,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not unowned_input.exists()
+    direct_input = inputs / "unowned-pair"
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=direct_input,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not direct_input.exists()
+
+    classified_run = volume / "pipeline-control-plane" / "task-evaluation-launch-runs" / "run-a" / "pair"
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=classified_run,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not classified_run.exists()
+    logical_run = control / "task-evaluation-launch-runs" / "run-a" / "pair"
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=logical_run,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not logical_run.exists()
+
+    existing_run = volume / "existing-provider-run"
+    existing_run.mkdir()
+    nested_output = existing_run / "pair"
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=nested_output,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not nested_output.exists()
+
+    preflight = {"schema_version": "native_g1_runtime_import_preflight.v1", "status": "passed", "imports": []}
+    preflight["receipt_digest"] = canonical_digest(preflight, digest_field="receipt_digest")
+    preflight_path = existing_run / "native_g1_runtime_import_preflight.v1.json"
+    preflight_path.write_text(json.dumps({**preflight, "receipt_digest": "sha256:" + "0" * 64}))
+    with pytest.raises(ValueError, match="g1_pair_provider_run_proof_invalid"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=nested_output, provider_run_root=existing_run,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    preflight_path.write_text(json.dumps(preflight))
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=nested_output,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=nested_output, provider_run_root=existing_run,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not nested_output.exists()
+
+    provider_root = tmp_path / "provider-output"
+    provider_root.mkdir()
+    (provider_root / preflight_path.name).write_text(json.dumps(preflight))
+    nested = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=provider_root / "pair",
+        provider_run_root=provider_root,
+        local_runner=lambda *, request, output_dir: _fake_result(request, output_dir),
+    )
+    assert nested["status"] == "completed_development_only"
+
+
 def test_pair_accepts_the_rigid_scorers_report_digest(tmp_path: Path) -> None:
     from blueprint_pipeline.adp_task_scoring import score_task_episode_from_spec
     from tests.test_adp_task_scoring import _rigid_v2_sample, _rigid_v2_spec

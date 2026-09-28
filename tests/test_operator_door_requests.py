@@ -117,6 +117,32 @@ def test_request_ids_name_exactly_the_known_kinds() -> None:
             validate_request_id(bad)
 
 
+def test_lane_scratch_requests_are_bounded_and_require_operate_scope() -> None:
+    digest = "sha256:" + "a" * 64
+    assert required_scope("lane-scratch") == "operate"
+    assert validate_request({"kind": "lane-scratch", "action": "ls", "root": "work", "lane": "g1",
+                             "limit": 20, "offset": 0}) == {
+        "kind": "lane-scratch", "action": "ls", "root": "work", "lane": "g1", "limit": 20, "offset": 0}
+    assert validate_request({"kind": "lane-scratch", "action": "renew", "root": "inputs", "lane": "g1",
+                             "name": "run-1", "owner": "agent-1", "expected_digest": digest,
+                             "ttl_seconds": 3600})["ttl_seconds"] == 3600
+    assert validate_request({"kind": "lane-scratch", "action": "release", "root": "work", "lane": "g1",
+                             "name": "run-1", "owner": "agent-1", "expected_digest": digest})["action"] == "release"
+
+
+@pytest.mark.parametrize("change", [
+    {"root": "/tmp"}, {"root": "other"}, {"lane": "../g1"}, {"lane": "."},
+    {"name": "../../etc"}, {"owner": "a/b"}, {"expected_digest": "sha256:bad"},
+    {"ttl_seconds": 0}, {"ttl_seconds": 14 * 86400 + 1}, {"path": "/etc/passwd"},
+])
+def test_lane_scratch_rejects_unsafe_renewals(change: dict) -> None:
+    body = {"kind": "lane-scratch", "action": "renew", "root": "work", "lane": "g1",
+            "name": "run-1", "owner": "agent-1", "expected_digest": "sha256:" + "a" * 64,
+            "ttl_seconds": 3600, **change}
+    with pytest.raises(RequestRefused):
+        validate_request(body)
+
+
 def test_hold_and_release_hold_have_operate_scope_and_strict_fields() -> None:
     hold = {"kind": "hold", "unit": "blueprint-scene-progression.timer", "owner": "alice@example.org",
             "reason": "pause for inspected capture", "expires_in_seconds": 3600}

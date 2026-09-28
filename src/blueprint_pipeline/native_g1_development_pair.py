@@ -10,12 +10,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .control_plane_lane_scratch import create_lane_scratch
+from .control_plane_leased_scratch import LeasedScratchDirectory
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_worker import (
     PATH_FIELDS,
@@ -44,9 +49,49 @@ PAIR_ORDER = (
 # Leave a bounded close window while the independent provider watchdog and
 # campaign hard cap remain authoritative for paid spend.
 SUBPROCESS_EPISODE_TIMEOUT_SECONDS = 55 * 60
+LANE_SCRATCH_ROOTS = (
+    Path("/mnt/blueprint-work/lanes"),
+    Path("/var/lib/blueprint/task-evaluation-inputs/lanes"),
+)
+WORK_VOLUME_ROOT = Path("/mnt/blueprint-work")
+INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
+CONTROL_PLANE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane")
+_PROVIDER_PREFLIGHT_FILE = "native_g1_runtime_import_preflight.v1.json"
 CANDIDATE_FIELDS = frozenset({
     "candidate_id", "rights_review", "request_digest",
 })
+
+
+def _verified_provider_run_output(output: Path, provider_run_root: Path | None) -> bool:
+    """Accept a pair child only after its parent sealed the provider preflight."""
+
+    if provider_run_root is None:
+        return False
+    parent = Path(provider_run_root)
+    if (not parent.is_absolute() or parent != output.parent or parent.is_symlink()
+            or parent.resolve() != parent or not parent.is_dir()):
+        return False
+    path = parent / _PROVIDER_PREFLIGHT_FILE
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(65537)
+        finally:
+            os.close(fd)
+        if len(raw) > 65536:
+            return False
+        receipt = json.loads(raw)
+        return (
+            isinstance(receipt, dict)
+            and receipt.get("schema_version") == "native_g1_runtime_import_preflight.v1"
+            and receipt.get("status") == "passed"
+            and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest")
+        )
+    except (OSError, ValueError, TypeError, OverflowError):
+        return False
 
 
 def _sealed_json(path: Path) -> dict[str, Any]:
@@ -361,7 +406,7 @@ def _verified_review_media(
     }
 
 
-def run_g1_development_pair(
+def _run_g1_development_pair(
     *,
     request_paths: Sequence[Path],
     output_dir: Path,
@@ -371,10 +416,21 @@ def run_g1_development_pair(
     policy_runtime_root: Path | None = None,
     worker_launcher: Path | None = None,
     local_runner: Callable[..., dict[str, Any]] = run_g1_development_worker,
+    scratch_owner: str | None = None,
+    scratch_run_ref: str | None = None,
+    scratch_ttl_seconds: int | None = None,
+    provider_run_root: Path | None = None,
+    cooperating_lifetime: bool = False,
+    lifetime_stack: ExitStack,
 ) -> dict[str, Any]:
     """Execute in catalog order; stop on an infrastructure block to limit spend."""
 
     pair = validate_g1_development_pair(request_paths)
+    if type(cooperating_lifetime) is not bool:
+        raise ValueError("g1_pair_lifetime_option_invalid")
+    if cooperating_lifetime and (mode == "container" or mode == "local" and local_runner is not run_g1_development_worker
+                                or mode == "subprocess" and worker_launcher != Path(sys.executable).resolve()):
+        raise ValueError("g1_pair_consumer_participation_unproven")
     if mode not in {"local", "container", "subprocess"} or (mode == "container" and (
         sys.platform != "linux" or source_receipt_path is None
         or source_packet_path is None or policy_runtime_root is None
@@ -401,10 +457,51 @@ def run_g1_development_pair(
         or any(char in str(output) for char in ",\n\r")
     ):
         raise ValueError("g1_pair_output_directory_invalid")
-    output.mkdir(parents=True)
+    provider_run_proved = _verified_provider_run_output(output, provider_run_root)
+    if provider_run_root is not None and not provider_run_proved:
+        raise ValueError("g1_pair_provider_run_proof_invalid")
+    lane_root = next((root for root in LANE_SCRATCH_ROOTS if output.is_relative_to(root)), None)
+    scratch_metadata = (scratch_owner, scratch_run_ref, scratch_ttl_seconds)
+    lifetime = None
+    if lane_root is not None:
+        relative = output.relative_to(lane_root)
+        if len(relative.parts) != 2 or relative.parts[0] != "g1":
+            raise ValueError("g1_pair_lane_scratch_output_invalid")
+        if any(value is None for value in scratch_metadata):
+            raise ValueError("g1_pair_lane_scratch_metadata_required")
+        if cooperating_lifetime:
+            from .control_plane_scratch_lifetime import LeasedScratchUse
+            lifetime = lifetime_stack.enter_context(LeasedScratchUse.create(
+                root=lane_root, lane="g1", name=relative.parts[1], owner=scratch_owner,
+                run_ref=scratch_run_ref, ttl_seconds=scratch_ttl_seconds))
+        else:
+            create_lane_scratch(
+                "g1", relative.parts[1], root=lane_root, owner=scratch_owner,
+                run_ref=scratch_run_ref, ttl_seconds=scratch_ttl_seconds,
+                reason="g1_development_pair", class_intent="evidence", cleanup="owner_review",
+            )
+    elif any(value is not None for value in scratch_metadata):
+        raise ValueError("g1_pair_lane_scratch_output_invalid")
+    else:
+        if cooperating_lifetime:
+            raise ValueError("g1_pair_lane_scratch_output_invalid")
+        # A storage class or self-sealed provider preflight is not proof that
+        # this exact host run owns a new child. Host scratch uses a lane lease.
+        if any(output.is_relative_to(root) for root in (
+            WORK_VOLUME_ROOT, INPUTS_ROOT, CONTROL_PLANE_ROOT,
+        )):
+            raise ValueError("g1_pair_unbound_work_volume_output")
+        output.mkdir(parents=True)
     diagnostics = output / "_worker_diagnostics"
     if mode == "subprocess":
-        diagnostics.mkdir()
+        if lifetime is not None:
+            lifetime.mkdir("_worker_diagnostics")
+        elif lane_root is not None:
+            with LeasedScratchDirectory.open(root=lane_root, lane="g1", name=relative.parts[1],
+                                             owner=scratch_owner, run_ref=scratch_run_ref) as scratch:
+                scratch.mkdir("_worker_diagnostics")
+        else:
+            diagnostics.mkdir()
     by_candidate = {request["candidate_id"]: (path, request)
                     for path, request in zip(request_paths, requests, strict=True)}
     attempts: list[dict[str, Any]] = []
@@ -418,7 +515,8 @@ def run_g1_development_pair(
         review_media: dict[str, Any] | None = None
         try:
             if mode == "local":
-                worker = local_runner(request=request, output_dir=attempt_root)
+                worker = local_runner(request=request, output_dir=attempt_root,
+                                      **({"scratch_lifetime": lifetime} if lifetime is not None else {}))
                 result_path = attempt_root / RESULT_FILENAME
                 episode_path = attempt_root / "episode" / EPISODE_FILENAME
             elif mode == "subprocess":
@@ -428,12 +526,18 @@ def run_g1_development_pair(
                 exit_path = diagnostics / (candidate_id + ".exit.json")
                 with (diagnostics / (candidate_id + ".log")).open("x", encoding="utf-8") as stream:
                     try:
-                        process = subprocess.run(
-                            [str(worker_launcher), "-m", "blueprint_pipeline.native_g1_development_worker",
-                             "--request", str(request_path), "--output-dir", str(attempt_root)],
-                            stdout=stream, stderr=subprocess.STDOUT, check=False,
-                            timeout=SUBPROCESS_EPISODE_TIMEOUT_SECONDS,
-                        )
+                        if lifetime is not None:
+                            from .control_plane_g1_lifetime_adapter import controlled_worker_run
+                            process = controlled_worker_run(executable=worker_launcher, request=request_path,
+                                                            output=attempt_root, request_digest=worker_request_digest,
+                                                            use=lifetime, stdout=stream, timeout=SUBPROCESS_EPISODE_TIMEOUT_SECONDS)
+                        else:
+                            process = subprocess.run(
+                                [str(worker_launcher), "-m", "blueprint_pipeline.native_g1_development_worker",
+                                 "--request", str(request_path), "--output-dir", str(attempt_root)],
+                                stdout=stream, stderr=subprocess.STDOUT, check=False,
+                                timeout=SUBPROCESS_EPISODE_TIMEOUT_SECONDS,
+                            )
                     except subprocess.TimeoutExpired as exc:
                         exit_path.write_text(
                             json.dumps({"status": "timed_out", "timeout_seconds":
@@ -560,6 +664,9 @@ def run_g1_development_pair(
         "mode": mode,
         "attempts": attempts,
         "not_attempted_candidate_ids": pair["candidate_ids"][len(attempts):],
+        **({"consumer_lifetime_scope": "coordinator_and_direct_worker_only",
+            "consumer_lifetime_omissions": ["child_consumer_participation_unproven", "external_input_consumers_unproven"]}
+           if lifetime is not None else {}),
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     (output / (SCHEMA + ".json")).write_text(
@@ -567,6 +674,25 @@ def run_g1_development_pair(
         encoding="utf-8",
     )
     return result
+
+
+def run_g1_development_pair(
+    *, request_paths: Sequence[Path], output_dir: Path, mode: str = "local",
+    source_receipt_path: Path | None = None, source_packet_path: Path | None = None,
+    policy_runtime_root: Path | None = None, worker_launcher: Path | None = None,
+    local_runner: Callable[..., dict[str, Any]] = run_g1_development_worker,
+    scratch_owner: str | None = None, scratch_run_ref: str | None = None,
+    scratch_ttl_seconds: int | None = None, provider_run_root: Path | None = None,
+    cooperating_lifetime: bool = False,
+) -> dict[str, Any]:
+    """Hold an explicitly enrolled target through every coordinator output access."""
+    with ExitStack() as lifetime_stack:
+        return _run_g1_development_pair(
+            request_paths=request_paths, output_dir=output_dir, mode=mode, source_receipt_path=source_receipt_path,
+            source_packet_path=source_packet_path, policy_runtime_root=policy_runtime_root,
+            worker_launcher=worker_launcher, local_runner=local_runner, scratch_owner=scratch_owner,
+            scratch_run_ref=scratch_run_ref, scratch_ttl_seconds=scratch_ttl_seconds,
+            provider_run_root=provider_run_root, cooperating_lifetime=cooperating_lifetime, lifetime_stack=lifetime_stack)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -578,6 +704,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-packet", type=Path)
     parser.add_argument("--policy-runtime-root", type=Path)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--scratch-owner")
+    parser.add_argument("--scratch-run-ref")
+    parser.add_argument("--scratch-ttl-seconds", type=int)
+    parser.add_argument("--cooperating-lifetime", action="store_true")
     args = parser.parse_args(argv)
     if not args.execute:
         print(json.dumps(validate_g1_development_pair(args.request), indent=2, sort_keys=True))
@@ -591,6 +721,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_receipt_path=args.source_receipt,
         source_packet_path=args.source_packet,
         policy_runtime_root=args.policy_runtime_root,
+        scratch_owner=args.scratch_owner,
+        scratch_run_ref=args.scratch_run_ref,
+        scratch_ttl_seconds=args.scratch_ttl_seconds,
+        cooperating_lifetime=args.cooperating_lifetime,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "completed_development_only" else 1

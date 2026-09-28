@@ -64,6 +64,7 @@ STORAGE_CLASSES = frozenset(
         "staging",
         "scratch",
         "scene_workspace",
+        "lane_scratch",
     }
 )
 
@@ -84,6 +85,11 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint", "container", "blueprint", "service state tree"),
     StorageRoot(_CONTROL_PLANE, "container", "blueprint", "control-plane state"),
     StorageRoot(_INPUTS, "container", "blueprint", "immutable and derived launch inputs"),
+    StorageRoot("/mnt/blueprint-work", "container", "blueprint", "bulk work volume"),
+    StorageRoot("/mnt/blueprint-work/lanes", "container", "blueprint", "lane scratch parent"),
+    StorageRoot("/mnt/blueprint-work/lanes/*", "lane_scratch", "blueprint", "owned lane scratch folders"),
+    StorageRoot(f"{_INPUTS}/lanes", "container", "blueprint", "lane input scratch parent"),
+    StorageRoot(f"{_INPUTS}/lanes/*", "lane_scratch", "blueprint", "owned lane input scratch folders"),
     StorageRoot("/var/lib/blueprint-staging", "staging", "blueprint", "isolated staging intake"),
     # --- evidence that live services read; never evicted or offloaded
     StorageRoot(f"{_CONTROL_PLANE}/agent-execution", "evidence_hot", "blueprint", "durable agent task and operation journals with inference budget evidence"),

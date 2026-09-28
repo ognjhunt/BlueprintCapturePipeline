@@ -1,0 +1,132 @@
+{
+  "schema_version": "lane_scratch_writer_manifest.v1",
+  "sources": [
+    {
+      "path": "src/blueprint_pipeline/control_plane_lane_scratch.py",
+      "sha256": "c7426a1d4e319d216e9b115cdebf3a1fa12b97b80f1dc5ceb23300b6c86f9188",
+      "responsibility": "constructor",
+      "output_class": "lane_scratch",
+      "admission_method": "atomic sealed lease publication",
+      "characterization_tests": [
+        "tests/test_control_plane_lane_scratch.py"
+      ],
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 c7426a1d4e319d216e9b115cdebf3a1fa12b97b80f1dc5ceb23300b6c86f9188; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
+      "historical_exceptions": []
+    },
+    {
+      "path": "src/blueprint_pipeline/control_plane_leased_scratch.py",
+      "sha256": "9e36969189b6cfd521a15c8627d631d759b0fa65f57fa055c43ae87b791ce890",
+      "responsibility": "constructor",
+      "output_class": "lane_scratch",
+      "admission_method": "retained descriptor publication and exact active lease",
+      "characterization_tests": [
+        "tests/test_leased_scratch_directory.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": []
+    },
+    {
+      "path": "src/blueprint_pipeline/control_plane_arena_scratch.py",
+      "sha256": "35c348a8f9d2c67ad60e3f7782604bd70990afb0dab84cfc074bb04d9d7db0aa",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "validated arena evidence lease and descriptor capability",
+      "characterization_tests": [
+        "tests/test_control_plane_arena_scratch.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": [
+        "Recorded r1-r32 folders remain read-only under the existing proof rules; never silently register or write them."
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/native_g1_development_pair.py",
+      "sha256": "c56fa092d586decd664a9ec9946923eb8d813c97cd5ade8d892edc9125a48243",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "atomic lease before new output; opt-in coordinator and controlled direct-worker inode lifetime; legacy diagnostics descriptor capability",
+      "characterization_tests": [
+        "tests/test_native_g1_development_pair.py",
+        "tests/test_g1_scratch_lifetime_admission.py",
+        "tests/test_g1_lifetime_handshake.py"
+      ],
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 c56fa092d586decd664a9ec9946923eb8d813c97cd5ade8d892edc9125a48243; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
+      "historical_exceptions": [
+        "Non-host/provider outputs retain existing admission; every existing output remains refused."
+      ]
+    },
+    {
+      "path": "scripts/arena_construction_launch_chain.sh",
+      "sha256": "9d3fe27ddc43006039afb001f8a64ff471812adc79822d01a7a54ac80d8f48ca",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "prepare admitted arena attempt then mkdir-payload CLI",
+      "characterization_tests": [
+        "tests/test_arena_construction_launch_scripts.py",
+        "tests/test_control_plane_arena_scratch.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": [
+        "Historical predecessor folders are resolved read-only; cp and subsequent file writes are outside the descriptor guarantee."
+      ]
+    },
+    {
+      "path": "scripts/install_live_pipeline_control_plane.sh",
+      "sha256": "a74031c63524148156a5efca8d12e52f9fa81b7fecf095bf3d4a6f8aa0e1aeb3",
+      "responsibility": "parent_provisioning",
+      "output_class": "container",
+      "admission_method": "mounted volume preflight then bounded install -d",
+      "characterization_tests": [
+        "tests/test_lane_scratch_install_wiring.py"
+      ],
+      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "historical_exceptions": [
+        "Provisioning lane parents does not register or authorize historical scratch."
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/control_plane_scratch_lifetime.py",
+      "sha256": "bc1e569f1e2b5e8a072118b0d1f3e844d9b8b0fcaf26f90405a3f962090a7d02",
+      "responsibility": "constructor",
+      "output_class": "lane_scratch",
+      "admission_method": "optional protocol publication under root lock and retained shared inode lifetime before first output access",
+      "characterization_tests": [
+        "tests/test_leased_scratch_lifetime.py",
+        "tests/test_lane_reference_collection.py"
+      ],
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 bc1e569f1e2b5e8a072118b0d1f3e844d9b8b0fcaf26f90405a3f962090a7d02; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
+      "historical_exceptions": [
+        "Unknown initial descriptor identity aborts with explicitly unresolved cleanup; legacy, Arena, external policy-server, containers and unknown descendants do not claim participation."
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/native_g1_development_worker.py",
+      "sha256": "cfa52fecaf04232b34b39e44b9410521e632991c6bddd92a6670fe10fa6d5859",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "enrolled target guard before first mkdir through teardown and terminal receipt; controlled inherited handshake",
+      "characterization_tests": [
+        "tests/test_native_g1_development_worker.py",
+        "tests/test_g1_scratch_lifetime_admission.py"
+      ],
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 cfa52fecaf04232b34b39e44b9410521e632991c6bddd92a6670fe10fa6d5859; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
+      "historical_exceptions": [
+        "Legacy/non-lane output compatibility is unchanged; external policy-server and unknown grandchildren remain unproved."
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/control_plane_g1_lifetime_adapter.py",
+      "sha256": "3e4f778aa890b3a6ae976da7d1647d95079e58d9c9394818effdddc8387be144",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "exact controlled direct-worker proof and bounded startup handshake; inherited close-only ownership",
+      "characterization_tests": [
+        "tests/test_g1_lifetime_handshake.py"
+      ],
+      "review_reference": "2026-09-28: independent ROOT SPEC approval then independent plan12_full_suite_triage QUALITY approval of implementation df6cb19ed47b0d28959a4f3dbf041cf04ffccab8, including this source SHA256 3e4f778aa890b3a6ae976da7d1647d95079e58d9c9394818effdddc8387be144; ordered handoff evidence: 12d6-independent-renewed-spec-approval-df6cb19e-20260928.md and 12d6-independent-final-quality-approval-df6cb19e-20260928.md; review-reference-only final head confirmation and exact hosted CI remain separate merge gates",
+      "historical_exceptions": [
+        "Arbitrary wrappers and containers cannot enroll through this adapter; direct worker participation does not authenticate external input readers."
+      ]
+    }
+  ]
+}

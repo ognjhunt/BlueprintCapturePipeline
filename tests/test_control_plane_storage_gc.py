@@ -1,3 +1,4 @@
+# Covers: src/blueprint_pipeline/control_plane_storage_gc.py
 from __future__ import annotations
 
 import functools
@@ -59,6 +60,110 @@ def _blob(root, payload: bytes):
     path.write_bytes(payload)
     os.utime(path, (10, 10))
     return path
+
+
+@pytest.mark.parametrize("apply", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_lane_report_cannot_apply_even_with_global_authorization(tmp_path, monkeypatch, apply, enabled):
+    from blueprint_pipeline import control_plane_lane_scratch as producer
+    from blueprint_pipeline import control_plane_lane_scratch_retention as lane
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root, pins = tmp_path.resolve() / "lanes", tmp_path.resolve() / "pins"
+    path = root / "lane-1" / "folder-1"
+    path.mkdir(parents=True)
+    pins.mkdir()
+    value = producer._creation_lease("lane-1", "folder-1", owner="owner-1", reason="fixture",
+        class_intent="cache", cleanup="delete", ttl_seconds=100, run_ref="run-1", size_budget_bytes=16, now=lambda: 10)
+    (path / producer.LEASE_FILE).write_text(json.dumps(value))
+    (path / "payload").write_bytes(b"tiny")
+    before = {str(p): p.read_bytes() for p in path.iterdir()}
+    monkeypatch.setattr(lane, "_ALLOWED_ROOTS", frozenset({str(root)}))
+    monkeypatch.setattr(gc_module, "reconcile_terminal_cache_pins", lambda **kwargs: {"status": "applied"})
+    for name in ("build_scratch_manifest", "apply_scratch_manifest", "build_derived_directory_manifest",
+                 "build_workspace_bundle_manifest"):
+        monkeypatch.setattr(gc_module, name, lambda **kwargs: pytest.fail("lane routed to applying phase"))
+    report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=pins,
+        lane_scratch_roots=(str(root),), lane_scratch_enabled=enabled,
+        apply=apply, ack=RUN_ACK if apply else "", now=lambda: 50)
+    phase = report["lane_scratch"]
+    assert phase["complete"] and phase["status"] == "report_only"
+    assert phase["enabled_requested"] is enabled and report["opt_in"]["lane_scratch"] is enabled
+    assert phase["mutations"] == phase["removed_bytes"] == 0 and phase["candidate_bytes"] is None
+    assert phase["apply_supported"] is phase["execution_authorized"] is False
+    assert before == {str(p): p.read_bytes() for p in path.iterdir()}
+    assert report["report_digest"] == canonical_digest(report, digest_field="report_digest")
+
+
+@pytest.mark.parametrize("mode", ["missing", "invalid_flag", "foreign_root", "too_many_roots"])
+def test_expected_lane_unknowns_stay_out_of_global_gc_failure_fields(tmp_path, monkeypatch, mode):
+    from blueprint_pipeline import control_plane_lane_scratch_retention as lane
+    root, pins = tmp_path.resolve() / "missing", tmp_path.resolve() / "pins"
+    pins.mkdir()
+    monkeypatch.setattr(lane, "_ALLOWED_ROOTS", frozenset({str(root)}))
+    monkeypatch.setattr(gc_module, "reconcile_terminal_cache_pins", lambda **kwargs: {"status": "applied"})
+    roots = (str(root),) if mode != "foreign_root" else ("/PRIVATE_MARKER",)
+    if mode == "too_many_roots":
+        roots *= 3
+    report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=pins,
+        lane_scratch_roots=roots, lane_scratch_enabled=1 if mode == "invalid_flag" else False, now=lambda: 50)
+    phase = report["lane_scratch"]
+    assert phase["status"] == "report_only" and not phase["complete"]
+    assert report["skipped_roots"] == [] and not report.get("phase_errors")
+    assert report["alerts"] == ["lane_scratch_observation_incomplete"]
+    assert "PRIVATE_MARKER" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError])
+def test_unexpected_lane_fault_preserves_global_isolation(tmp_path, monkeypatch, error_type):
+    monkeypatch.setattr(gc_module, "reconcile_terminal_cache_pins", lambda **kwargs: {"status": "applied"})
+    calls = 0
+    def failing(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise error_type("synthetic internal fault")
+        return {"status": "not_configured", "complete": False}
+    monkeypatch.setattr(gc_module, "observe_lane_scratch_retention", failing)
+    report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=tmp_path,
+        lane_scratch_roots=(), now=lambda: 50)
+    assert report["phase_errors"] == ["lane_scratch"]
+    assert report["lane_scratch"] == {"status": "error", "error": error_type.__name__}
+    assert calls == 1
+
+
+@pytest.mark.parametrize("flag,expected,invalid", [(None, False, False), ("", False, False), ("0", False, False),
+    ("FALSE", False, False), ("1", True, False), ("TrUe", True, False), ("yes_PRIVATE_MARKER", False, True)])
+def test_lane_cli_flag_is_strict_and_report_only(tmp_path, monkeypatch, capsys, flag, expected, invalid):
+    if flag is None:
+        monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH", raising=False)
+    else:
+        monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH", flag)
+    captured = {}
+    def fake(**kwargs):
+        captured.update(kwargs)
+        return {"status": "dry_run"}
+    monkeypatch.setattr(gc_module, "run_storage_gc", fake)
+    monkeypatch.setattr(gc_module, "running_release_commit", lambda: "")
+    assert gc_main(["run", "--pins-root", str(tmp_path), "--lane-scratch-root", "/mnt/blueprint-work/lanes"]) == 0
+    assert captured["lane_scratch_enabled"] is expected
+    assert captured["lane_scratch_roots"] == (() if invalid else ("/mnt/blueprint-work/lanes",))
+    assert bool(captured["lane_scratch_alert"]) is invalid
+    assert "PRIVATE_MARKER" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("source", ["argv", "environment"])
+def test_lane_cli_root_count_is_bounded_before_collection(tmp_path, monkeypatch, source):
+    captured = {}
+    monkeypatch.setattr(gc_module, "run_storage_gc", lambda **kwargs: captured.update(kwargs) or {})
+    monkeypatch.setattr(gc_module, "running_release_commit", lambda: "")
+    arguments = ["run", "--pins-root", str(tmp_path)]
+    if source == "argv":
+        arguments += [item for _ in range(3) for item in ("--lane-scratch-root", "/mnt/blueprint-work/lanes")]
+    else:
+        monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH_ROOTS", "a:b:c")
+    assert gc_main(arguments) == 0
+    assert captured["lane_scratch_roots"] == ()
+    assert captured["lane_scratch_alert"] == "lane_configuration_invalid"
 
 
 def test_gc_only_selects_old_unreferenced_verified_blobs(tmp_path) -> None:

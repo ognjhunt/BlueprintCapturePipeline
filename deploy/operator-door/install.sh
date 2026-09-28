@@ -50,7 +50,7 @@ rm -rf "$stage"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
-  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-hold-expire.sh \
+  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-hold-expire.sh \
   "$source_dir"/install.sh "$stage/"
 git -C "$repo_root" rev-parse HEAD >"$stage/INSTALLED_COMMIT" 2>/dev/null || echo unknown >"$stage/INSTALLED_COMMIT"
 find "$stage" -name '__pycache__' -prune -exec rm -rf {} +
@@ -119,6 +119,43 @@ if [ ! -e "$config_dir/tokens.json" ]; then
 fi
 chown root:blueprint "$config_dir/tokens.json"
 chmod 0640 "$config_dir/tokens.json"
+
+# OWNER CONSENT PROVISIONING BEGIN
+# Existing policy, records and lock inode are preserved. This never enables intent.
+owner_store="$state_root/requests/owner-consents"
+owner_policy="$config_dir/lane-owner-policy.json"
+if [ ! -e "$owner_store" ] && [ ! -L "$owner_store" ]; then
+  install -d -o root -g root -m 0700 "$owner_store"
+fi
+# Refuse an unsafe existing store before any pathname below it is used.
+python3 - "$owner_store" <<'PYSTORE'
+import os, stat, sys
+value = os.lstat(sys.argv[1])
+if (not stat.S_ISDIR(value.st_mode) or value.st_uid != 0 or value.st_gid != 0
+        or stat.S_IMODE(value.st_mode) != 0o700):
+    raise SystemExit("owner_consent_provisioning_unsafe")
+PYSTORE
+if [ ! -e "$owner_policy" ] && [ ! -L "$owner_policy" ]; then
+  (umask 077; set -o noclobber; printf '{"schema_version": "control_plane_lane_owner_policy.v1", "enabled": false, "principals": []}\n' >"$owner_policy")
+  chown root:root "$owner_policy"
+  chmod 0600 "$owner_policy"
+fi
+owner_lock="$owner_store/.owner-consents.lock"
+if [ ! -e "$owner_lock" ] && [ ! -L "$owner_lock" ]; then
+  (umask 077; set -o noclobber; : >"$owner_lock")
+  chown root:root "$owner_lock"
+  chmod 0600 "$owner_lock"
+fi
+python3 - "$owner_store" "$owner_policy" "$owner_lock" <<'PYOWNER'
+import os, stat, sys
+for path, directory, mode in zip(sys.argv[1:], (True, False, False), (0o700, 0o600, 0o600)):
+    value = os.lstat(path)
+    kind = stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)
+    if (not kind or value.st_uid != 0 or value.st_gid != 0 or stat.S_IMODE(value.st_mode) != mode
+            or (not directory and value.st_nlink != 1)):
+        raise SystemExit("owner_consent_provisioning_unsafe")
+PYOWNER
+# OWNER CONSENT PROVISIONING END
 
 # 3b. The repository is private and the host has no other GitHub credential, so
 #     deploys fetch with a read-only deploy key. It is generated once, never

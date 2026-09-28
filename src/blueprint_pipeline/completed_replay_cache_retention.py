@@ -464,7 +464,7 @@ def _remove_empty_directories(held, root):
     return skipped
 
 
-def _remove_group(held, group, names, *, changed, sha256=None):
+def _remove_group(held, group, names, *, changed, sha256=None, unlinked=None):
     """Recheck every name of a planned inode group through held descriptors, then unlink every name.
 
     The group's planned device, each of its names' devices now, and the file opened to hash
@@ -473,7 +473,8 @@ def _remove_group(held, group, names, *, changed, sha256=None):
     inode, those names all of its links, its size and mtime unchanged and, with ``sha256``,
     its bytes that digest; otherwise the group is a ``changed`` skip. One failed check keeps
     every name, and a store name goes last, so a removal cut short leaves a group the next
-    plan still recognises.
+    plan still recognises. Each name it unlinks is appended to ``unlinked`` when given, so a
+    caller knows exactly which names an ``unlink_failed`` removal already took.
     """
     if group.get("dev") != held.device:
         return "cross_device"
@@ -511,6 +512,8 @@ def _remove_group(held, group, names, *, changed, sha256=None):
             os.unlink(name.name, dir_fd=directory)
         except OSError as exc:
             return f"unlink_failed:{type(exc).__name__}"
+        if unlinked is not None:
+            unlinked.append(name)
     return None
 
 
@@ -634,6 +637,55 @@ def process_reference(root, *, process_root=Path("/proc"), ignored_process_ids=(
 def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()):
     """Whether a live process may still read ``root``; an entry that cannot be read counts as one."""
     return process_reference(root, process_root=process_root, ignored_process_ids=ignored_process_ids) is not None
+
+
+def process_reference_index(*, process_root=Path("/proc"), ignored_process_ids=()):
+    """One sweep of the process table, for checking many roots: ``index(root)`` answers as ``active_reference``.
+
+    It reads each process's command line, environment, working directory and
+    open descriptors once, and never returns or stores anything but what it
+    matches against. A root is referenced when one of them names it; when any
+    entry could not be read, every root counts as referenced, as
+    ``active_reference`` counts an unreadable inventory. A missing process root
+    still raises.
+    """
+    if not process_root.is_dir():
+        raise ValueError("replay_cache_process_inventory_unavailable")
+    blobs, targets, unreadable = [], [], False
+    try:
+        processes = list(process_root.iterdir())
+    except OSError:
+        return lambda _root: True
+    for process in processes:
+        if not process.name.isdigit() or int(process.name) in ignored_process_ids:
+            continue
+        for name in ("cmdline", "environ"):
+            try:
+                blobs.append((process / name).read_bytes())
+            except _EXITED:
+                continue
+            except OSError:
+                unreadable = True
+        try:
+            descriptors = list((process / "fd").iterdir())
+        except _EXITED:
+            continue
+        except OSError:
+            unreadable, descriptors = True, []
+        for descriptor in (process / "cwd", *descriptors):
+            try:
+                targets.append(os.readlink(descriptor))
+            except _EXITED:
+                continue
+            except OSError:
+                unreadable = True
+
+    def referenced(root):
+        needle = str(root)
+        return (unreadable or any(needle.encode() in blob for blob in blobs)
+                or any(target == needle or target.startswith(needle + "/") for target in targets))
+
+    return referenced
 
 
 def _scan(

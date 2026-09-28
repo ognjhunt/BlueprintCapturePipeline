@@ -599,3 +599,21 @@ def test_restore_launches_the_active_release_in_a_bounded_sandbox(config: DoorCo
     assert "--setenv=DOOR_BUCKET=blueprint-8c1ca.appspot.com" in call
     assert call[-1] == "/opt/blueprint/operator-door/door-restore-scene-workspace.sh"
     assert _result(config, request_id)["status"] == "launched"
+
+
+def test_lane_scratch_renew_launches_only_the_configured_root(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "lane-scratch", "action": "renew", "root": "inputs",
+                                   "lane": "g1", "name": "run-1", "owner": "agent-1",
+                                   "expected_digest": "sha256:" + "a" * 64, "ttl_seconds": 3600})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    assert "--property=RuntimeMaxSec=2min" in call
+    assert "--property=ProtectSystem=strict" in call
+    assert "--property=ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/lanes " \
+           + str(Path(config.spool_root) / "results") in call
+    assert "--setenv=DOOR_SCRATCH_ROOT=/var/lib/blueprint/task-evaluation-inputs/lanes" in call
+    assert "--setenv=DOOR_SCRATCH_LANE=g1" in call
+    assert "--setenv=DOOR_SCRATCH_ACTION=renew" in call
+    assert call[-1] == "/opt/blueprint/operator-door/door-lane-scratch.sh"
+    assert _result(config, request_id)["status"] == "launched"
