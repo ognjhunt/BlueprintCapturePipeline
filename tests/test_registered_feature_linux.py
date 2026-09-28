@@ -7,12 +7,15 @@ Root-owned installation lives under /var/lib, with actual blueprint group modes.
 
 from __future__ import annotations
 
+import base64
+import errno
 import grp
 import hashlib
 import io
 import json
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +28,21 @@ import pytest
 
 def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+
+def _substitute_gc_paths(line, replacements):
+    expression = '|'.join(re.escape(path) for path in sorted(replacements, key=len, reverse=True))
+    return re.sub(expression, lambda match: replacements[match.group(0)], line)
+
+
+def test_shipped_gc_path_substitution_does_not_rewrite_inserted_fixture_root():
+    root = Path('/var/lib/blueprint-adp-contained-static-fixture')
+    replacements = {'/mnt/blueprint-work/lanes/g1': str(root / 'work/lanes/g1'),
+                    '/var/lib/blueprint': str(root / 'sandbox-blueprint')}
+    line = 'ReadWritePaths=-/mnt/blueprint-work/lanes/g1 /var/lib/blueprint/storage-gc'
+    assert _substitute_gc_paths(line, replacements) == (
+        'ReadWritePaths=-' + str(root / 'work/lanes/g1') + ' '
+        + str(root / 'sandbox-blueprint/storage-gc'))
 
 
 def install_protected_feature(root):
@@ -643,7 +661,6 @@ def _linux_completed_gc_restore(
     from blueprint_pipeline import control_plane_disk_budget as disk
     from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
     from blueprint_pipeline import control_plane_lane_scratch as scratch
-    from blueprint_pipeline.control_plane_storage_gc import run_storage_gc, RUN_ACK
     from tests.test_registered_experiment_offload import Cloud
 
     target = Path(born["path"])
@@ -665,25 +682,15 @@ def _linux_completed_gc_restore(
         installed_config_path=value["config"],
         now=lambda: clock,
     )
+    sandbox = _run_shipped_gc_sandbox(value, action, clock + 1, pins)
+    report = sandbox['report']
     cloud = Cloud()
-    # Native multipart upload and complete full-byte service-account readback
-    # remain real; only the no-network object client is an in-memory transport.
+    cloud.objects = {item['key']: base64.b64decode(item['payload'], validate=True)
+                     for item in sandbox['objects']}
+    cloud.metadata = sandbox['object_metadata']
+    # Restore consumes the exact bytes uploaded and freshly read back by the
+    # actual shipped GC sandbox. The fake object client performs no network.
     archive._client = lambda *args: (cloud, "development-only")
-    report = run_storage_gc(
-        content_store_roots=(),
-        derived_roots=(),
-        queue_roots=(),
-        pins_root=pins,
-        apply=True,
-        ack=RUN_ACK,
-        lane_scratch_roots=(
-            value["settings"]["lane_scratch_work_root"],
-            value["settings"]["lane_scratch_inputs_root"],
-        ),
-        lane_scratch_enabled=True,
-        _experiment_config_path=value["config"],
-        now=lambda: clock + 1,
-    )
     rows = report["registered_experiments"]["outcomes"]
     row = next(row for row in rows if row["action_id"] == action["action_id"])
     assert row["decision"] == "retired", row
@@ -702,7 +709,7 @@ def _linux_completed_gc_restore(
     assert ready["sequence"] < min(
         e["sequence"] for e in events if e["event_kind"] == "member_removed"
     )
-    assert cloud.objects and all(body.closed for body in cloud.bodies)
+    assert cloud.objects and sandbox['all_native_responses_closed']
     restore = issuer.issue_experiment_restore_intent(
         grant["intent_id"],
         principal="operator",
@@ -780,10 +787,134 @@ def _linux_completed_gc_restore(
         os.waitpid(child, 0)
     return dict(
         actual_expired_gc_offload=True,
+        actual_shipped_gc_sandbox=True,
         native_archive_full_readback=True,
         actual_root_restore=True,
         ordinary_uid_restored_reader=True,
     )
+
+
+def _run_shipped_gc_sandbox(value, action, clock, pins):
+    """Run actual GC under the shipped unit's protections and finite RW roots."""
+    root = value['config'].parent
+    installed = root / 'installed'
+    report_root = root / 'sandbox-control-plane/storage-gc'
+    report_root.mkdir(parents=True, mode=0o700)
+    selected = report_root / 'selected.json'
+    selected.write_bytes(encoded(dict(config=str(value['config']), pins=str(pins), now=clock,
+                                     action_id=action['action_id'])))
+    selected.chmod(0o600)
+    wrapper = root / 'fixture-gc-python'
+    dependencies = installed / 'dependencies'
+    wrapper.write_text('#!' + str(Path(sys._base_executable).resolve()) + '\nimport sys\n'
+        + 'sys.path[:0]=' + repr([str(installed), str(dependencies)]) + '\n'
+        + 'from tests.test_registered_feature_linux import _gc_sandbox_main\n'
+        + 'assert len(sys.argv)==2\n_gc_sandbox_main(sys.argv[1])\n')
+    wrapper.chmod(0o755)
+    unit = 'blueprint-experiment-gc-' + action['action_id'] + '.service'
+    unit_path = Path('/etc/systemd/system') / unit
+    assert not unit_path.exists() and not unit_path.is_symlink()
+    original = (installed / 'deploy/systemd/blueprint-control-plane-storage-gc.service').read_text()
+    replacements = {
+        '/var/lib/blueprint-operator-door/requests/experiment-records': str(root / 'state/requests/experiment-records'),
+        '/var/lib/blueprint-operator-door/experiment-authority': str(root / 'state/experiment-authority'),
+        '/mnt/blueprint-work/lanes/g1': str(value['work'] / 'g1'),
+        '/var/lib/blueprint/task-evaluation-inputs/lanes/g1': str(root / 'inputs/lanes/g1'),
+        '/var/lib/blueprint/pipeline-control-plane/storage-pins': str(pins),
+        '/var/lib/blueprint/pipeline-control-plane': str(root / 'sandbox-control-plane'),
+        '/var/lib/blueprint/task-evaluation-inputs': str(root / 'sandbox-inputs'),
+        '/var/lib/blueprint/pubsub-handoffs': str(root / 'sandbox-pubsub'),
+        '/var/lib/blueprint': str(root / 'sandbox-blueprint'),
+        '/etc/blueprint': str(root / 'sandbox-etc'),
+    }
+    lines = []
+    for line in original.splitlines():
+        line = _substitute_gc_paths(line, replacements)
+        if line.startswith('ExecStart='):
+            line = 'ExecStart=' + str(wrapper) + ' ' + str(selected)
+        if line.startswith(('ReadWritePaths=', 'ReadOnlyPaths=')):
+            for path in line.split('=', 1)[1].split():
+                Path(path.removeprefix('-')).mkdir(parents=True, exist_ok=True)
+        lines.append(line)
+    # Preserve all shipped restrictions. This disposable job has no provider
+    # network, and its only executable/data substitutions are root protected.
+    lines.extend(['Environment=PYTHONDONTWRITEBYTECODE=1', 'PrivateNetwork=yes',
+        'BindReadOnlyPaths=' + str(Path(__import__('site').getsitepackages()[0])) + ':' + str(dependencies)])
+    unit_path.write_text('\n'.join(lines) + '\n')
+    unit_path.chmod(0o644)
+    try:
+        subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=True)
+        started = subprocess.run(['/usr/bin/systemctl', 'start', unit], capture_output=True,
+                                 text=True, timeout=90)
+        if started.returncode:
+            log = subprocess.run(['/usr/bin/journalctl', '--unit=' + unit, '--no-pager',
+                '--lines=40', '--output=cat', '--quiet'], capture_output=True, text=True)
+            assert len(log.stdout.encode()) <= 65536
+            raise AssertionError(started.stderr + log.stdout)
+        output = report_root / 'native-result.json'
+        raw = output.read_bytes()
+        assert len(raw) <= 10 * 1024**2 and output.stat().st_uid == 0
+        result = json.loads(raw)
+        assert result['actual_shipped_sandbox'] and result['outside_rw_refused']
+        assert result['no_new_privileges'] == '1'
+        assert result['effective_caps'] == (1 | 2 | (1 << 19))
+        return result
+    finally:
+        subprocess.run(['/usr/bin/systemctl', 'stop', unit], check=False)
+        unit_path.unlink()
+        subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=True)
+
+
+def _gc_sandbox_main(selected):
+    """Root fixture entry: real GC, fake archive service, actual kernel sandbox."""
+    from blueprint_pipeline import control_plane_lane_owner_consents as owners
+    from blueprint_pipeline import control_plane_lane_experiment_archive as archive
+    from blueprint_pipeline.control_plane_storage_gc import run_storage_gc, RUN_ACK
+    from tests.test_registered_experiment_offload import Cloud
+
+    selected = Path(selected)
+    assert os.geteuid() == 0 and selected.name == 'selected.json'
+    root = selected.parents[2]
+    assert root.parent == Path('/var/lib') and root.name.startswith('blueprint-adp-contained-')
+    selection = json.loads(selected.read_bytes())
+    assert set(selection) == {'config', 'pins', 'now', 'action_id'}
+    assert selection['config'] == str(root / 'door.json')
+    owners.INSTALLED_PACKAGE_ROOT = root / 'installed'
+    settings = json.loads((root / 'door.json').read_bytes())
+    status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+    effective = int(status['CapEff'].strip(), 16)
+    assert effective == (1 | 2 | (1 << 19)) and status['NoNewPrivs'].strip() == '1'
+    probe = root / 'outside-gc-rw-probe'
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as error:
+        assert error.errno == errno.EROFS
+    else:
+        os.close(fd)
+        raise AssertionError('shipped ProtectSystem=strict failed to fence unlisted writes')
+    cloud = Cloud()
+    archive._client = lambda *args: (cloud, 'development-only')
+    report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
+        pins_root=Path(selection['pins']), apply=True, ack=RUN_ACK,
+        lane_scratch_roots=(settings['lane_scratch_work_root'], settings['lane_scratch_inputs_root']),
+        lane_scratch_enabled=True, _experiment_config_path=root / 'door.json',
+        now=lambda: selection['now'])
+    outcomes = report['registered_experiments']['outcomes']
+    assert next(row for row in outcomes if row['action_id'] == selection['action_id'])['decision'] == 'retired'
+    assert cloud.objects and all(body.closed for body in cloud.bodies)
+    result = dict(report={'registered_experiments': report['registered_experiments']},
+        objects=[dict(key=key, payload=base64.b64encode(raw).decode('ascii'))
+                 for key, raw in cloud.objects.items()], object_metadata=cloud.metadata,
+        all_native_responses_closed=True, actual_shipped_sandbox=True,
+        outside_rw_refused=True, no_new_privileges=status['NoNewPrivs'].strip(), effective_caps=effective)
+    raw = encoded(result)
+    assert len(raw) <= 10 * 1024**2
+    output = selected.parent / 'native-result.json'
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _linux_contained_roundtrip():
@@ -830,6 +961,10 @@ def _linux_contained_roundtrip():
                 (source / "deploy/operator-door/operator_door" / name).read_bytes()
             )
             (operator / name).chmod(0o644)
+        shipped_gc = installed / 'deploy/systemd/blueprint-control-plane-storage-gc.service'
+        shipped_gc.parent.mkdir(parents=True, mode=0o755)
+        shipped_gc.write_bytes((source / 'deploy/systemd/blueprint-control-plane-storage-gc.service').read_bytes())
+        shipped_gc.chmod(0o644)
         substitutions = {
             "/mnt/blueprint-work/lanes": str(root / "work/lanes"),
             "/var/lib/blueprint/task-evaluation-inputs/lanes": str(root / "inputs/lanes"),
@@ -951,6 +1086,7 @@ def test_actual_contained_blueprint_native_pair_child_and_kernel_completion():
         and receipt["root_kernel_completion"]
     )
     assert receipt["postpair_reader_sh"]
+    assert receipt['actual_shipped_gc_sandbox']
     assert receipt["actual_expired_gc_offload"] and receipt["native_archive_full_readback"]
     assert receipt["actual_root_restore"] and receipt["ordinary_uid_restored_reader"]
 
