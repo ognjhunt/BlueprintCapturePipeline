@@ -558,3 +558,59 @@ def test_first_upgrade_unknown_fixed_installer_refuses_without_overwriting_or_ex
     with pytest.raises(ValueError, match='deploy_scene_retirement_runtime_unproven'):
         namespace['_prepare_scene_retirement_runtime'](source_repo=tmp_path, source_commit='1' * 40)
     assert helper.read_bytes() == b'unknown prior root helper' and helper.stat().st_ino == before.st_ino
+
+
+def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monkeypatch):
+    import stat
+    import subprocess
+    import time
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    checkout, commit = _pinned_contracts_checkout(tmp_path)
+    blob = subprocess.check_output(['/usr/bin/git', '-C', str(checkout), 'rev-parse',
+        commit + ':src/blueprint_contracts/__init__.py']).decode().strip()
+    real_read = module.os.read
+    native_bytes = []
+    def counted_read(fd, amount):
+        fifo = stat.S_ISFIFO(os.fstat(fd).st_mode)
+        raw = real_read(fd, amount)
+        if fifo and raw:
+            native_bytes.append(len(raw))
+        return raw
+    monkeypatch.setattr(module.os, 'read', counted_read)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._sdk_git_command(checkout, ['cat-file', 'blob', blob], time.monotonic() + 5, cap=4)
+    assert sum(native_bytes) <= 5, 'native stdout cap must apply before an oversized read/append, not after communicate allocated output'
+
+
+def test_native_git_zero_byte_blob_remains_supported_with_zero_output_allowance(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    checkout, _ = _pinned_contracts_checkout(tmp_path)
+    blob = subprocess.check_output(['/usr/bin/git', '-C', str(checkout), 'hash-object', '-w', '--stdin'], input=b'').decode().strip()
+    assert module._sdk_git_command(checkout, ['cat-file', 'blob', blob], time.monotonic() + 5, cap=0) == b''
+
+
+@pytest.mark.parametrize('phase', ['download', 'extraction'])
+def test_sdk_preserves_protected_disk_floor_before_native_download_or_payload_write(tmp_path, monkeypatch, phase):
+    import hashlib
+    import time
+    from types import SimpleNamespace
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    monkeypatch.setattr(module, '_FREE_FLOOR', 1)
+    monkeypatch.setattr(module.os, 'statvfs', lambda path: SimpleNamespace(f_bavail=0, f_frsize=4096))
+    if phase == 'download':
+        raw = wheel.read_bytes()
+        row = {'url': 'https://files.pythonhosted.org/' + wheel.name, 'size': len(raw),
+               'hash': 'sha256:' + hashlib.sha256(raw).hexdigest()}
+        monkeypatch.setattr(module.urllib.request, 'urlopen', lambda *a, **kw: pytest.fail('SDK floor refusal must precede native download'))
+        with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+            module._sdk_artifact(row, None, time.monotonic()+5)
+        assert not list(module._sdk_root().glob('wheel-artifacts/*/*.pending'))
+    else:
+        rows = module._wheel_entries(wheel, time.monotonic()+5)
+        destination = module._sdk_root() / 'space-refused-sdk'
+        with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+            module._sdk_extract(destination, rows, time.monotonic()+5)
+        assert not destination.exists()
