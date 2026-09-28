@@ -213,3 +213,44 @@ def test_fixed_kernel_boot_record_accepts_zero_stat_size_with_bounded_original_r
     finally:
         files.finish()
         files.budget.close()
+
+
+@pytest.mark.parametrize('kind', ['member_removed', 'restore_directory', 'restore_member'])
+def test_all_row_event_kinds_refuse_oversized_payload_before_publication(tmp_path, root_metadata, kind):
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
+
+    operation = tmp_path / 'operation'
+    operation.mkdir(mode=0o700)
+    action = dict(action_id='a'*32, intent_id='b'*32, generation='c'*32)
+    files = _ActionFiles()
+    try:
+        parent, _ = files.parent(operation / 'e-00000.json', protected=True)
+        with pytest.raises(ValueError, match='experiment_record_limit'):
+            actions._event(files, parent, action, kind, dict(path='\\'*2500), 0, None, 2000)
+        assert not list(operation.iterdir())
+    finally:
+        files.finish()
+        files.budget.close()
+
+
+def test_known_escaped_row_event_refusal_keeps_all_payload_before_unlink(retirement_installation):
+    from tests.test_registered_experiment_retirement_flow import _gc, _payload_snapshot
+
+    setup = retirement_installation
+    grant = issue(setup)
+    born = birth(setup, grant)
+    target = Path(born['path'])
+    directory = target
+    for number in range(3):
+        directory = directory / ('\\'*230 + str(number))
+        directory.mkdir()
+    payload = directory / ('\\'*230 + 'payload')
+    payload.write_bytes(b'known event envelope refusal must preserve this')
+    before = _payload_snapshot(target)
+    action = _issue_action(setup, grant)
+    report = _gc(setup)
+    outcome = next(value for value in report['registered_experiments']['outcomes']
+                   if value['action_id'] == action['action_id'])
+    assert outcome['decision'] == 'kept', outcome
+    assert _payload_snapshot(target) == before
