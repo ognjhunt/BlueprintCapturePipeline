@@ -159,7 +159,7 @@ def test_public_recovery_cannot_borrow_a_changed_consent(tmp_path,monkeypatch):
     assert entered==[] and Path(scope['members'][1]['canonical_path']).exists()
 
 
-def test_crash_before_private_initial_cannot_start_another_archive_or_origin(tmp_path,monkeypatch):
+def test_completed_preparation_before_private_initial_resumes_without_second_upload(tmp_path,monkeypatch):
     engine,_,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
     create=engine.SceneJournal.create
     def interrupted(*args,**kwargs):
@@ -171,8 +171,9 @@ def test_crash_before_private_initial_cannot_start_another_archive_or_origin(tmp
     monkeypatch.setattr(engine.SceneJournal,'create',create)
     second=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
     assert set(transport.objects)==old_objects,'unproven preparation retried under a new archive token'
-    assert second['reason']=='scene_retirement_preparation_resume_unproven'
-    assert all(Path(row['canonical_path']).exists() for row in scope['members'])
+    assert second['status']=='retired',second
+    assert second['token']==Path(next(iter(old_objects))).name.split('.')[0]
+    assert all(not Path(row['canonical_path']).exists() for row in scope['members'])
 
 
 def test_private_initial_without_public_projection_resumes_exact_token_and_origin(tmp_path,monkeypatch):
@@ -199,3 +200,72 @@ def test_unfinished_preparation_claim_cannot_renew_original_deadline(tmp_path,mo
     result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:230,monotonic=lambda:30)
     assert result['reason']=='scene_retirement_deadline',result
     assert set(transport.objects)==old_objects and all(Path(row['canonical_path']).exists() for row in scope['members'])
+
+
+def interrupt_partial_archive(transport):
+    put=transport.put_archive
+    entered=[]
+    def interrupted(key,chunks):
+        entered.append(key)
+        stream=iter(chunks)
+        raw=next(stream)
+        transport.objects['s3://private-fixture/'+key]=raw
+        stream.close()
+        raise OSError('owned partial upload interruption')
+    transport.put_archive=interrupted
+    return put,entered
+
+
+def test_unknown_partial_preparation_retries_same_original_token_without_overwrite(tmp_path,monkeypatch):
+    engine,policy,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    put,entered=interrupt_partial_archive(transport)
+    first=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    assert first['status']!='retired' and len(entered)==1
+    old_objects=dict(transport.objects)
+    transport.put_archive=put
+    second=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    assert second['status']=='retired',second
+    assert entered[0]==second['token']+'.1.tar'
+    assert second['token']+'.2.tar' in {Path(key).name for key in transport.objects}
+    assert all(transport.objects[key]==raw for key,raw in old_objects.items())
+    claim=json.loads((Path(policy['journal_store'])/('retirement-attempt.'+scope['consent_id']+'.json')).read_bytes())
+    initial=json.loads(Path(second['retired_journal_raw_ref']['path']).read_bytes())
+    assert initial['action_allowance']['start_monotonic']==claim['action_allowance']['start_monotonic']==0
+    assert initial['action_allowance']['started_wall']==200
+
+
+def test_preparation_escrow_is_durable_before_first_payload_read(tmp_path,monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_preservation as preservation
+    engine,policy,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    original=preservation._payload
+    observed=[]
+    def payload(*args,**kwargs):
+        records=list(Path(policy['journal_store']).glob('preparation.*.escrow.json'))
+        assert records,'payload read occurred before durable original-budget escrow'
+        escrow=json.loads(records[-1].read_bytes())
+        assert escrow['action_allowance']['counts']['local_bytes']>0
+        assert escrow['action_allowance']['counts']['archive_bytes']>0
+        assert escrow['action_allowance']['counts']['remote_bytes']>0
+        observed.append(escrow)
+        yield from original(*args,**kwargs)
+    monkeypatch.setattr(preservation,'_payload',payload)
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    assert result['status']=='retired',result
+    assert observed
+
+
+def test_unknown_partial_attempt_never_refunds_escrow_on_retry(tmp_path,monkeypatch):
+    engine,policy,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    policy['limits']['remote_bytes']=10000
+    policy['policy_digest']=canonical_digest(policy,digest_field='policy_digest')
+    policy_path=Path(os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE'])
+    policy_path.write_text(json.dumps(policy))
+    scope['policy_sha256']=raw_ref(policy_path)['sha256']
+    scope['consent_digest']=canonical_digest(scope,digest_field='consent_digest')
+    consent.write_text(json.dumps(scope))
+    _,entered=interrupt_partial_archive(transport)
+    engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    assert result['reason']=='scene_retirement_byte_limit',result
+    assert len(entered)==1,'retry reached physical transport after original escrow exhausted remaining cap'
+    assert all(Path(row['canonical_path']).exists() for row in scope['members'])
