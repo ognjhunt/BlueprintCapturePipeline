@@ -182,3 +182,34 @@ def test_gc_cannot_reset_original_issue_controller_after_boot_change(retirement_
                    if value['action_id'] == selected['action_id'])
     assert outcome['decision'] == 'kept', outcome
     assert payload.read_bytes() == b'retain across unknown operation boot'
+
+
+def test_fixed_kernel_boot_record_accepts_zero_stat_size_with_bounded_original_read(tmp_path, root_metadata, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_lane_experiment_work as work
+
+    path = tmp_path / 'kernel-boot-id'
+    path.write_bytes(b'12345678-1234-1234-1234-123456789abc\n')
+    path.chmod(0o444)
+    identity = (path.stat().st_dev, path.stat().st_ino)
+    original_stat, original_fstat = os.stat, os.fstat
+
+    def proc_shape(info):
+        if (info.st_dev, info.st_ino) != identity:
+            return info
+        values = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+        values['st_size'] = 0  # Real procfs boot_id reports size zero, while read yields37bytes.
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(os, 'stat', lambda *args, **kwargs: proc_shape(original_stat(*args, **kwargs)))
+    monkeypatch.setattr(os, 'fstat', lambda *args, **kwargs: proc_shape(original_fstat(*args, **kwargs)))
+    monkeypatch.setattr(work, '_BOOT_PATH', path)
+    files = work._ActionFiles()
+    try:
+        assert work._controller_boot_id(files) == '12345678-1234-1234-1234-123456789abc'
+        assert not any((value.st_dev, value.st_ino) == identity for fd, value in files.acquired.items()
+                       if fd in files.owned)
+    finally:
+        files.finish()
+        files.budget.close()
