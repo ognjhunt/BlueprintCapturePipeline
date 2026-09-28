@@ -1,11 +1,15 @@
 """Resume only an exact protected action; no fresh origin or orphan adoption."""
 from pathlib import Path
+import os
+import re
+
+from .task_evaluation_scene_retirement_access import _opened, _identity
 
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_retirement_access import _require
 from .task_evaluation_scene_retirement_authority import selected_document, load_document, TOKEN
 from .task_evaluation_scene_retirement_intent_receipt import _projection, _resume, publish_pending_receipt
-from .task_evaluation_scene_retirement_journal import publish_record, SceneJournal
+from .task_evaluation_scene_retirement_journal import publish_record, SceneJournal, _parent
 
 
 def _attempt_path(policy,consent):
@@ -31,13 +35,14 @@ def claim_retirement(policy,authority,token,allowance):
         action_allowance=allowance.checkpoint())
     value['claim_digest']=canonical_digest(value,digest_field='claim_digest')
     path=_attempt_path(policy,consent)
-    return publish_record(path.parent,path.name,value,maximum=65536,allowance=allowance)
+    reference=publish_record(path.parent,path.name,value,maximum=65536,allowance=allowance)
+    return dict(claim=value,claim_raw_ref=reference,index=0,archive_index=0,prior_raw_ref=reference,ready=None)
 
 
 def _claim(policy,authority):
     consent=authority['consent']
     try:
-        value,_=load_document(_attempt_path(policy,consent),maximum=65536,protected=True)
+        value,reference=load_document(_attempt_path(policy,consent),maximum=65536,protected=True)
     except FileNotFoundError:
         return None
     keys={'schema_version','token','intent_id','consent_id','intent_raw_ref','plan_raw_ref',
@@ -50,7 +55,109 @@ def _claim(policy,authority):
                  'plan_raw_ref','policy_sha256','cohort_sha256','members'))
              and value['initial_path']==str(Path(policy['journal_store'])/(value['token']+'.initial.json')),
              'scene_retirement_resume_unproven')
-    return value
+    return value,reference
+
+
+def _preparation(policy,claim,reference,allowance):
+    token=claim['token']
+    directory=Path(policy['journal_store'])
+    prefix='preparation.'+token+'.'
+    indexes=set()
+    archive_refs=[]
+    with _opened(directory,directory=True,protected=True) as (fd,info):
+        with os.scandir(fd) as entries:
+            examined=0
+            for entry in entries:
+                allowance.tick()
+                _parent(directory,fd,_identity(info))
+                examined+=1
+                _require(examined<=100000,'scene_retirement_journal_limit')
+                if not entry.name.startswith(prefix) or not entry.name.endswith('.escrow.json'):
+                    continue
+                text=entry.name[len(prefix):-len('.escrow.json')]
+                _require(re.fullmatch(r'[1-9][0-9]{0,2}',text) and int(text)<=256,
+                         'scene_retirement_preparation_resume_unproven')
+                indexes.add(int(text))
+        _parent(directory,fd,_identity(info))
+        after=os.fstat(fd)
+        _require((_identity(after),after.st_size,after.st_mtime_ns,after.st_ctime_ns)==(
+            _identity(info),info.st_size,info.st_mtime_ns,info.st_ctime_ns),
+            'scene_retirement_preparation_resume_unproven')
+    _require(indexes==set(range(1,len(indexes)+1)),'scene_retirement_preparation_resume_unproven')
+    state=dict(claim=claim,claim_raw_ref=reference,index=0,archive_index=0,prior_raw_ref=reference,ready=None)
+    checkpoint=claim['action_allowance']
+    keys={'schema_version','token','index','archive_index','phase','claim_raw_ref','prior_raw_ref',
+          'action_allowance','reserved_bytes','archive_name','escrow_digest'}
+    for index in range(1,len(indexes)+1):
+        value,observed=load_document(directory/(prefix+str(index)+'.escrow.json'),maximum=65536,protected=True)
+        _require(set(value)==keys and value['schema_version']=='scene_retirement_preparation_escrow.v1'
+            and value['token']==token and type(value['index']) is int and value['index']==index
+            and value['claim_raw_ref']==reference and value['prior_raw_ref']==state['prior_raw_ref']
+            and value['phase'] in {'archive','ready-revalidation','finalize'}
+            and type(value['archive_index']) is int and value['archive_index']==state['archive_index']+(value['phase']=='archive')
+            and value['escrow_digest']==canonical_digest(value,digest_field='escrow_digest'),
+            'scene_retirement_preparation_resume_unproven')
+        selected=value['action_allowance']
+        reserved=value['reserved_bytes']
+        _require(type(selected) is dict and type(reserved) is dict and set(reserved)=={'local_bytes','archive_bytes','remote_bytes'}
+            and all(selected.get(k)==checkpoint.get(k) for k in ('start_monotonic','started_wall','expires_at','elapsed_seconds','limits'))
+            and type(selected.get('counts')) is dict and set(selected['counts'])==set(reserved)
+            and all(type(reserved[k]) is int and reserved[k]>=0 and type(selected['counts'][k]) is int
+                and selected['counts'][k]>=checkpoint['counts'][k]+reserved[k] for k in reserved),
+            'scene_retirement_preparation_resume_unproven')
+        expected=token+'.'+str(value['archive_index'])+'.tar'
+        _require(value['archive_name']==expected,'scene_retirement_preparation_resume_unproven')
+        checkpoint=selected
+        if value['phase']=='archive':
+            archive_refs.append(observed)
+        state.update(index=index,archive_index=value['archive_index'],prior_raw_ref=observed)
+    allowance.bind_resume(checkpoint)
+    try:
+        ready,ready_ref=load_document(directory/(prefix+'ready.json'),maximum=16*1024*1024,protected=True)
+    except FileNotFoundError:
+        return state
+    _require(set(ready)=={'schema_version','token','claim_raw_ref','escrow_raw_ref','preserved','ready_digest'}
+        and ready['schema_version']=='scene_retirement_preparation_ready.v1' and ready['token']==token
+        and ready['claim_raw_ref']==reference and ready['ready_digest']==canonical_digest(ready,digest_field='ready_digest')
+        and type(ready['preserved']) is dict,'scene_retirement_preparation_resume_unproven')
+    selected=ready['escrow_raw_ref']
+    _require(type(selected) is dict and selected in archive_refs,
+             'scene_retirement_preparation_resume_unproven')
+    escrow=selected_document(selected,maximum=65536,protected=True)
+    _require(escrow.get('claim_raw_ref')==reference and escrow.get('phase')=='archive'
+        and 1<=escrow['index']<=state['index'] and escrow.get('token')==token
+        and Path(ready['preserved']['archive']['uri']).name==escrow['archive_name'],
+        'scene_retirement_preparation_resume_unproven')
+    state.update(ready=ready['preserved'],ready_raw_ref=ready_ref)
+    return state
+
+
+def preparation_escrow(policy,state,allowance,*,phase,local_bytes=0,archive_bytes=0,remote_bytes=0):
+    _require(state['index']<256 and phase in {'archive','ready-revalidation','finalize'},
+             'scene_retirement_preparation_limit')
+    reserved=dict(local_bytes=local_bytes,archive_bytes=archive_bytes,remote_bytes=remote_bytes)
+    for key,count in reserved.items():
+        allowance.charge(key,count)
+    index=state['index']+1
+    archive_index=state['archive_index']+(phase=='archive')
+    value=dict(schema_version='scene_retirement_preparation_escrow.v1',token=state['claim']['token'],
+        index=index,archive_index=archive_index,phase=phase,claim_raw_ref=state['claim_raw_ref'],
+        prior_raw_ref=state['prior_raw_ref'],reserved_bytes=reserved,action_allowance=allowance.checkpoint(),
+        archive_name=state['claim']['token']+'.'+str(archive_index)+'.tar')
+    value['escrow_digest']=canonical_digest(value,digest_field='escrow_digest')
+    name='preparation.'+value['token']+'.'+str(index)+'.escrow.json'
+    reference=publish_record(policy['journal_store'],name,value,maximum=65536,allowance=allowance)
+    state.update(index=index,archive_index=archive_index,prior_raw_ref=reference)
+    return value['archive_name']
+
+
+def complete_preparation(policy,state,preserved,allowance):
+    value=dict(schema_version='scene_retirement_preparation_ready.v1',token=state['claim']['token'],
+        claim_raw_ref=state['claim_raw_ref'],escrow_raw_ref=state['prior_raw_ref'],preserved=preserved)
+    value['ready_digest']=canonical_digest(value,digest_field='ready_digest')
+    name='preparation.'+value['token']+'.ready.json'
+    reference=publish_record(policy['journal_store'],name,value,maximum=16*1024*1024,allowance=allowance)
+    state.update(ready=preserved,ready_raw_ref=reference)
 
 
 def select_retirement(policy, authority, allowance):
@@ -59,7 +166,8 @@ def select_retirement(policy, authority, allowance):
     if not isinstance(context, dict):
         return None
     path = Path(context['roots']['intent_root']) / consent['intent_id'] / 'scene-retired.v1.json'
-    claim=_claim(policy,authority)
+    selected_claim=_claim(policy,authority)
+    claim=None if selected_claim is None else selected_claim[0]
     missing_projection=False
     try:
         _, reference = load_document(path, maximum=65536)
@@ -69,11 +177,7 @@ def select_retirement(policy, authority, allowance):
         try:
             initial,initial_ref=load_document(claim['initial_path'],maximum=16*1024*1024,protected=True)
         except FileNotFoundError:
-            # Unknown transfer work cannot be refunded by a fresh invocation.
-            # Recoverable private completion is handled below; this partial
-            # phase deliberately remains KEEP until original-token recovery.
-            allowance.bind_resume(claim['action_allowance'])
-            _require(False,'scene_retirement_preparation_resume_unproven')
+            return _preparation(policy,claim,selected_claim[1],allowance)
         journal=SceneJournal.resume(initial_ref,allowance=allowance)
         missing_projection=True
     else:

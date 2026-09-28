@@ -277,8 +277,14 @@ def _resume_current_references(policy,consent,retained,allowance,now,monotonic):
         budget.close()
 
 
-def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance,restore_context=None):
+def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance,restore_context=None,preparation=None):
     result=_kept(reason,journal=journal,members=outcomes)
+    if preparation is not None and journal is None:
+        result.update(status='incomplete',mutations=None,token=preparation['claim']['token'],
+            preparation_claim_raw_ref=preparation['claim_raw_ref'],
+            last_preparation_escrow_raw_ref=preparation['prior_raw_ref'],
+            preparation_budget_counts=dict(allowance.counts),
+            preparation_budget_method='conservative_escrow_plus_observed_physical_work')
     if journal is None or pending is None:
         return result
     # The action context has unwound. Reacquire actual EX before advancing a
@@ -328,6 +334,7 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
 
 
 def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic=time.monotonic):
+    preparation=None
     journal=None
     pending=None
     policy=consent=allowance=None
@@ -347,7 +354,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             _require(current==authority,'scene_retirement_policy_changed')
             retained=selected_document(consent['plan_raw_ref'],maximum=16*1024*1024)
             resumed=recovery.select_retirement(policy,authority,allowance)
-            if resumed is not None:
+            if resumed is not None and type(resumed) is tuple:
                 journal,pending,initial=resumed
                 _resume_current_references(policy,consent,retained,allowance,now,monotonic)
                 generations=recovery.resumed_generations(sys.modules[__name__],policy,consent,journal,initial)
@@ -374,11 +381,41 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                              ==(generation['dev'],generation['ino'],generation['mode']),
                              'scene_retirement_generation_changed')
                 generations.append(generation)
-            token=secrets.token_hex(32)[:32]
-            recovery.claim_retirement(policy,authority,token,allowance)
-            preserved=preserve_members([member['canonical_path'] for member in consent['members']],
-                transport=transport,allowance=allowance,token=token)
-            verified_bytes=_verify_declared_bytes(fresh,preserved,transport,allowance)
+            if resumed is None:
+                token=secrets.token_hex(32)[:32]
+                preparation=recovery.claim_retirement(policy,authority,token,allowance)
+            else:
+                preparation=resumed
+                token=preparation['claim']['token']
+            if preparation['ready'] is None:
+                name=token+'.'+str(preparation['archive_index']+1)+'.tar'
+                def escrow(files,directories,archive_bytes):
+                    selected=recovery.preparation_escrow(policy,preparation,allowance,phase='archive',
+                        local_bytes=2*sum(row['size_bytes'] for row in files),archive_bytes=archive_bytes,
+                        remote_bytes=2*archive_bytes+1)
+                    _require(selected==name,'scene_retirement_preparation_resume_unproven')
+                def before_upload(inventory):
+                    for index,member in enumerate(consent['members']):
+                        _require(inventory_digest(inventory,index)==member['inventory_sha256'],
+                                 'scene_retirement_inventory_changed')
+                    _verify_declared_bytes(fresh,inventory,transport,allowance,verify_remote=False)
+                preserved=preserve_members([member['canonical_path'] for member in consent['members']],
+                    transport=transport,allowance=allowance,token=token,before_payload=escrow,
+                    before_upload=before_upload,archive_name=name)
+                recovery.complete_preparation(policy,preparation,preserved,allowance)
+            else:
+                preserved=preparation['ready']
+                _require([row['path'] for row in preserved['members']]==[
+                    member['canonical_path'] for member in consent['members']],
+                    'scene_retirement_preparation_resume_unproven')
+                recovery.preparation_escrow(policy,preparation,allowance,phase='ready-revalidation',
+                    remote_bytes=preserved['archive']['size_bytes']+1)
+                _consume(preserved,transport,allowance)
+            verified_bytes=_verify_declared_bytes(fresh,preserved,transport,allowance,verify_remote=False)
+            recovery.preparation_escrow(policy,preparation,allowance,phase='finalize',
+                local_bytes=2*sum(row['size_bytes'] for row in preserved['files']),
+                remote_bytes=sum(row['size_bytes']+1 for row in verified_bytes['published_objects']))
+            verify_publication_rows(verified_bytes['published_objects'],transport,allowance)
             for index,member in enumerate(consent['members']):
                 _require(inventory_digest(preserved,index)==member['inventory_sha256'],
                          'scene_retirement_inventory_changed')
@@ -413,9 +450,9 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             return _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance)
     except access.SceneRetirementAccessError as error:
         code=str(error) if str(error).startswith('scene_retirement_') and len(str(error))<=128 else 'scene_retirement_action_unproven'
-        return _partial_result(code,journal,outcomes,policy,consent,pending,allowance)
+        return _partial_result(code,journal,outcomes,policy,consent,pending,allowance,preparation=preparation)
     except (ValueError,OSError,KeyError,TypeError,AttributeError,OverflowError,RecursionError):
-        return _partial_result('scene_retirement_action_unproven',journal,outcomes,policy,consent,pending,allowance)
+        return _partial_result('scene_retirement_action_unproven',journal,outcomes,policy,consent,pending,allowance,preparation=preparation)
 
 
 def _finish_restore(policy,consent,retired,reference,journal,pending,restore_context,generations,outcomes,allowance,transport,*,was_restored=False):

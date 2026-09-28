@@ -82,7 +82,7 @@ def verify_publication_rows(rows,transport,allowance):
         allowance.tick()
 
 
-def verify_declared_bytes(fresh,preserved,transport,allowance):
+def verify_declared_bytes(fresh,preserved,transport,allowance,*,verify_remote=True):
     physical={str(Path(preserved['members'][row['member_index']]['path'])/row['relative_path']):row
               for row in preserved['files']}
     local,publications={},{}
@@ -138,5 +138,6 @@ def verify_declared_bytes(fresh,preserved,transport,allowance):
                          'scene_retirement_publication_unproven')
                 publications[row['uri']]=selected
     rows=list(publications.values())
-    verify_publication_rows(rows,transport,allowance)
+    if verify_remote:
+        verify_publication_rows(rows,transport,allowance)
     return dict(local_objects_verified=len(local),published_objects_verified=len(rows),published_objects=rows)

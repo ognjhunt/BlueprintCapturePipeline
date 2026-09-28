@@ -36,7 +36,7 @@ def _store(policy):
         return store,info.st_gid
 
 
-def _read_raw(path,maximum,gid,*,audience=None):
+def _read_raw(path,maximum,gid,*,audience=None,allowance=None):
     expected=audience or dict(uid=access._POLICY_UID,gid=gid,mode=0o640)
     _require(type(expected) is dict and set(expected)=={'uid','gid','mode'} and all(
         type(expected[key]) is int and 0<=expected[key]<2**32-1 for key in ('uid','gid'))
@@ -54,7 +54,10 @@ def _read_raw(path,maximum,gid,*,audience=None):
         chunks=[]
         while remaining:
             _require(_identity(os.fstat(fd))==identity,'scene_retirement_metadata_changed')
-            chunk=os.read(fd,min(65536,remaining))
+            count=min(65536,remaining)
+            if allowance is not None:
+                allowance.charge('local_bytes',count)
+            chunk=os.read(fd,count)
             _require(chunk,'scene_retirement_metadata_changed')
             chunks.append(chunk)
             remaining-=len(chunk)
@@ -265,6 +268,18 @@ def retained_progress_records(directory):
 
 def _publish_raw(store,name,raw,allowance,*,maximum=MAX_ROW_BYTES,audience=None):
     _require(len(raw)<=maximum,'scene_retirement_metadata_limit')
+    # Same-token crash recovery may find a complete earlier immutable clone.
+    # Reuse only exact bytes and original audience; never replace an entry.
+    with _opened(store,directory=True,protected=True) as (_,store_info):
+        expected_audience=audience or dict(uid=access._POLICY_UID,gid=store_info.st_gid,mode=0o640)
+    try:
+        existing=_read_raw(store/name,maximum,store_info.st_gid,audience=expected_audience,allowance=allowance)
+    except FileNotFoundError:
+        pass
+    else:
+        _require(existing==raw,'scene_retirement_metadata_changed')
+        allowance.tick()
+        return dict(path=str(store/name),sha256=raw_digest(raw),size_bytes=len(raw))
     temporary='.'+secrets.token_hex(16)+'.metadata'
     with _opened(store,directory=True,protected=True) as (parent,info):
         _require(info.st_uid==access._POLICY_UID and stat.S_IMODE(info.st_mode)==0o750)

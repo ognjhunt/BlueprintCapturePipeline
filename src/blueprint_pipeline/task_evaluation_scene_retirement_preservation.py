@@ -210,6 +210,24 @@ def _payload(path, row, allowance):
         _require(list(_snapshot(os.fstat(fd))) == row['snapshot'],'scene_retirement_payload_changed')
 
 
+def archive_size(files,directories,allowance):
+    """Exact deterministic tar framing before any payload is opened."""
+    total=1024
+    for kind,rows in (('directory',directories),('file',files)):
+        for row in rows:
+            allowance.tick()
+            header=tarfile.TarInfo(str(row['member_index'])+'/'+row['relative_path'])
+            header.mode,header.uid,header.gid=row['mode'],row['uid'],row['gid']
+            header.mtime=0
+            header.type=tarfile.DIRTYPE if kind=='directory' else tarfile.REGTYPE
+            header.size=row.get('size_bytes',0)
+            total+=len(header.tobuf(format=tarfile.PAX_FORMAT))
+            if kind=='file':
+                total+=header.size+(-header.size)%512
+            _require(total<=48*1024**3,'scene_retirement_byte_limit')
+    return total
+
+
 def _archive_chunks(roots, files, directories, allowance):
     rows = [dict(row,type='directory') for row in directories]+[dict(row,type='file') for row in files]
     _require(len(rows) <= 10000,'scene_retirement_inventory_limit')
@@ -274,10 +292,13 @@ def read_archive_chunks(transport,uri,allowance):
                 incoming.add_note('scene_retirement_remote_cleanup_unproven')
 
 
-def preserve_members(paths, *, transport, allowance, token):
+def preserve_members(paths, *, transport, allowance, token, before_payload=None, before_upload=None, archive_name=None):
     """Stream and freshly verify exactly inventoried private archive bytes."""
     allowance.tick()
     _require(type(token) is str and re.fullmatch('[0-9a-f]{32}',token))
+    name=token+'.tar' if archive_name is None else archive_name
+    _require(type(name) is str and re.fullmatch(re.escape(token)+r'(?:\.[1-9][0-9]{0,2})?\.tar',name)
+             and (name==token+'.tar' or int(name.split('.')[1])<=256),'scene_retirement_archive_name_unproven')
     _require(type(paths) in (list,tuple) and 0 < len(paths) <= 256)
     roots = [_canonical(str(path)) for path in paths]
     _require(len(set(roots)) == len(roots))
@@ -295,11 +316,17 @@ def preserve_members(paths, *, transport, allowance, token):
             group = 'inode-'+str(rows[0]['physical_identity'][0])+'-'+str(rows[0]['physical_identity'][1])
             for row in rows:
                 row['hardlink_group'] = group
+    if before_payload is not None:
+        before_payload(files,directories,archive_size(files,directories,allowance))
+        allowance.tick()
     for row in files:
         digest = hashlib.sha256()
         for chunk in _payload(roots[row['member_index']]/row['relative_path'],row,allowance):
             digest.update(chunk)
         row['sha256'] = 'sha256:'+digest.hexdigest()
+    if before_upload is not None:
+        before_upload(dict(members=members,files=files,directories=directories))
+        allowance.tick()
     digest, sent, complete = hashlib.sha256(), [0], [False]
     def upload():
         for chunk in _archive_chunks(roots,files,directories,allowance):
@@ -309,7 +336,7 @@ def preserve_members(paths, *, transport, allowance, token):
             yield chunk
         complete[0] = True
     allowance.tick()
-    archive = transport.put_archive(token+'.tar',upload())
+    archive = transport.put_archive(name,upload())
     allowance.tick()
     _require(complete[0], 'scene_retirement_archive_incomplete')
     _require(type(archive) is dict and set(archive) == {'uri','sha256','size_bytes'})

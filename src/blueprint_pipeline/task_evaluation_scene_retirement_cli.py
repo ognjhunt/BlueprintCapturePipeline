@@ -163,7 +163,8 @@ class SceneArchiveTransport:
         return self._call('complete_multipart_upload',**kwargs)
 
     def put_archive(self, name, chunks):
-        _require(type(name) is str and re.fullmatch(r'[0-9a-f]{32}\.tar',name))
+        _require(type(name) is str and re.fullmatch(r'[0-9a-f]{32}(?:\.[1-9][0-9]{0,2})?\.tar',name)
+                 and (name.count('.')==1 or int(name.split('.')[1])<=256))
         self._tick()
         _require(self.upload is None,'scene_retirement_transport_upload_busy')
         key = _PREFIX+name
@@ -286,7 +287,8 @@ class SceneArchiveTransport:
         self._tick()
         prefix = 's3://'+self.bucket+'/'+_PREFIX
         _require(type(uri) is str and uri.startswith(prefix)
-                 and re.fullmatch(r'[0-9a-f]{32}\.tar',uri[len(prefix):]),
+                 and re.fullmatch(r'[0-9a-f]{32}(?:\.[1-9][0-9]{0,2})?\.tar',uri[len(prefix):])
+                 and (uri[len(prefix):].count('.')==1 or int(uri[len(prefix):].split('.')[1])<=256),
                  'scene_retirement_transport_archive_scope_invalid')
         response = self._call('get_object',Bucket=self.bucket,Key=uri[len('s3://'+self.bucket+'/'):])
         body = response.get('Body')
