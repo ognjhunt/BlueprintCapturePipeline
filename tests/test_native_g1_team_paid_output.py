@@ -24,8 +24,11 @@ from blueprint_pipeline.native_g1_team_scored_scene_episode import RESULT_FILENA
 from tests.test_native_g1_team_supervised_episode import _run
 
 
-def _evidence(tmp_path: Path, monkeypatch):
-    supervised, produced, _ = _run(tmp_path, monkeypatch)
+def _evidence(tmp_path: Path, monkeypatch, *, execution_packet=None, scene_plan=None,
+              scene_packet_receipt_digest=None):
+    supervised, produced, _ = _run(
+        tmp_path, monkeypatch, execution_packet=execution_packet, scene_plan=scene_plan,
+    )
     assert supervised["status"] == "completed_development_only"
     root = tmp_path / "paid-output"
     root.mkdir()
@@ -54,7 +57,9 @@ def _evidence(tmp_path: Path, monkeypatch):
         "owner": packet["request"]["owner"], "run_id": packet["request"]["run_id"],
     }).removeprefix("sha256:")
     packet["packet_digest"] = cross_runtime_canonical_digest(packet, digest_field="packet_digest")
-    scene_receipt_digest = "sha256:" + "f" * 64
+    if execution_packet is not None:
+        packet = execution_packet
+    scene_receipt_digest = scene_packet_receipt_digest or "sha256:" + "f" * 64
     core = {
         "claim_ceiling": "development_only",
         "execution_packet_digest": packet["packet_digest"],

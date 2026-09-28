@@ -22,7 +22,8 @@ from tests.test_native_task_episode_environment import _RigidNativeReadback
 from tests.test_team_policy_delivery_profile import OWNER, _profile
 
 
-def _run(tmp_path: Path, monkeypatch, *, reject_scene_inference: bool = False):
+def _run(tmp_path: Path, monkeypatch, *, reject_scene_inference: bool = False,
+         execution_packet=None, scene_plan=None):
     from blueprint_pipeline import adp_task_scoring
     from blueprint_pipeline import native_g1_joint_episode_environment as g1_environment
     from blueprint_pipeline import native_task_arena_readback
@@ -34,6 +35,10 @@ def _run(tmp_path: Path, monkeypatch, *, reject_scene_inference: bool = False):
         "auth_secret_ref": "secretref:team/policy",
         "timeout_ms": 5000,
     })
+    if execution_packet is not None:
+        setup = execution_packet["trusted_setup"]
+        profile = execution_packet["request"]["policy_profile"]
+        scene.plan = dict(scene_plan)
     requests = []
 
     def fetcher(url, **options):
@@ -81,6 +86,8 @@ def _run(tmp_path: Path, monkeypatch, *, reject_scene_inference: bool = False):
     approval = _approval(setup, profile, binding)
     approval["expires_at_epoch"] = time.time() + 3600
     approval["approval_digest"] = canonical_digest(approval, digest_field="approval_digest")
+    if execution_packet is not None:
+        approval = execution_packet["operator_approval"]
     result = run_g1_team_supervised_episode(
         built=type("Built", (), {"plan": scene.plan})(),
         profile=profile,

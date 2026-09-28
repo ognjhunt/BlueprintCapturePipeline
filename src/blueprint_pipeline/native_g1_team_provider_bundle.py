@@ -13,8 +13,10 @@ from __future__ import annotations
 import hashlib
 import argparse
 import json
+import re
 import stat
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -373,11 +375,31 @@ def build_g1_team_provider_bundle(
     )
 
 
-def load_verified_g1_team_provider_bundle(
-    receipt_path: Path, *, expected_implementation_commit: str, authority_arguments: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Reopen current authority and exact dry-run bytes before admission."""
+@dataclass(frozen=True, repr=False)
+class RetainedG1TeamBundleEvidence:
+    """Frozen-input evidence only; never an authorization to dispatch or spend."""
 
+    bundle: Mapping[str, Any] = field(repr=False)
+    execution_packet: Mapping[str, Any] = field(repr=False)
+    spend_admitted: bool = field(default=False, init=False)
+
+    def __repr__(self) -> str:
+        return "RetainedG1TeamBundleEvidence(spend_admitted=False)"
+
+
+def read_retained_g1_team_provider_bundle(
+    receipt_path: Path, *, expected_implementation_commit: str,
+) -> RetainedG1TeamBundleEvidence:
+    """Reverify frozen bytes for settlement without renewing launch authority.
+
+    The current-authority launch loader below remains the only dispatch input
+    loader. This reader returns sealed_not_admitted evidence, not that loader's
+    result, and performs no owner, network, allocator or provider mutation.
+    """
+
+    if (not isinstance(expected_implementation_commit, str)
+            or re.fullmatch(r"[0-9a-f]{40}", expected_implementation_commit) is None):
+        raise ValueError("g1_team_bundle_implementation_commit_invalid")
     receipt = _json(receipt_path)
     path = Path(str(receipt.get("bundle_path") or ""))
     manifest = {key: value for key, value in receipt.items() if key not in _RECEIPT_ONLY_FIELDS}
@@ -410,7 +432,6 @@ def load_verified_g1_team_provider_bundle(
         or packet.get("packet_digest") != cross_runtime_canonical_digest(packet, digest_field="packet_digest")
     ):
         raise ValueError("g1_team_bundle_packet_binding_invalid")
-    _authority_matches(packet, verify_g1_team_policy_authority(**authority_arguments))
     verify_g1_team_manifest_binding(manifest, packet)
     layer = manifest["runtime_source_packet"]
     runtime_path = Path(str(layer.get("packet_path") or ""))
@@ -426,7 +447,19 @@ def load_verified_g1_team_provider_bundle(
         or _sha256(runtime_path) != layer.get("packet_sha256")
     ):
         raise ValueError("g1_team_bundle_external_runtime_bytes_invalid")
-    return receipt
+    return RetainedG1TeamBundleEvidence(bundle=receipt, execution_packet=packet)
+
+
+def load_verified_g1_team_provider_bundle(
+    receipt_path: Path, *, expected_implementation_commit: str, authority_arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reopen exact bytes AND current authority before every paid boundary."""
+
+    retained = read_retained_g1_team_provider_bundle(
+        receipt_path, expected_implementation_commit=expected_implementation_commit,
+    )
+    _authority_matches(retained.execution_packet, verify_g1_team_policy_authority(**authority_arguments))
+    return dict(retained.bundle)
 
 
 def main(argv=None) -> int:

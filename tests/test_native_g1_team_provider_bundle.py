@@ -21,6 +21,8 @@ from tests.test_native_g1_team_policy_run_request import NOW
 from tests.test_native_g1_team_policy_run_request import _request
 from tests.test_native_g1_team_policy_approval import _approval
 from tests.test_team_policy_delivery_profile import _profile
+from tests.test_native_g1_shared_scene_episode import _Scene
+from tests.test_native_rigid_episode_telemetry import _spec
 
 
 COMMIT = "a" * 40
@@ -71,9 +73,11 @@ def _inputs(tmp_path: Path, monkeypatch, *, endpoint=False):
     }
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     plan = {
+        **_Scene.plan,
         "scene_id": setup["scene_id"], "task_id": setup["task_id"],
         "task_kind": "rigid_pick_place", "robot": {"robot_id": "unitree_g1"},
-        "task_spec": {"task_success_contract": setup["task_success_contract"],
+        "task_spec": {**_spec(), "prompt": "pick the box", "task_kind": "rigid_pick_place",
+                      "task_success_contract": setup["task_success_contract"],
                       "task_success_contract_digest": setup["task_success_contract_digest"]},
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
@@ -270,3 +274,45 @@ def test_selected_bundle_entrypoints_import_in_isolated_provider_interpreter(tmp
         assert "usage:" in result.stdout
     shell = root / bundle.ENTRYPOINT
     assert subprocess.run(["bash", "-n", str(shell)], capture_output=True).returncode == 0
+
+
+def test_retained_bundle_evidence_survives_expired_launch_approval_without_admitting_spend(tmp_path, monkeypatch):
+    args, _ = _inputs(tmp_path, monkeypatch, endpoint=True)
+    receipt = bundle.build_g1_team_provider_bundle(**args)
+    authority = {**args["authority_arguments"], "now_epoch": NOW + 7200}
+    with pytest.raises(ValueError):
+        bundle.load_verified_g1_team_provider_bundle(
+            Path(receipt["receipt_path"]), expected_implementation_commit=COMMIT,
+            authority_arguments=authority,
+        )
+    retained = bundle.read_retained_g1_team_provider_bundle(
+        Path(receipt["receipt_path"]), expected_implementation_commit=COMMIT,
+    )
+    assert retained.bundle == receipt
+    assert retained.execution_packet["packet_digest"] == receipt["execution_packet_digest"]
+    assert retained.bundle["status"] == "sealed_not_admitted"
+    assert retained.spend_admitted is False
+
+
+@pytest.mark.parametrize("change", ["manifest", "external_runtime", "archive_bytes"])
+def test_retained_bundle_read_refuses_changed_input_bytes(tmp_path, monkeypatch, change):
+    args, _ = _inputs(tmp_path, monkeypatch, endpoint=True)
+    receipt = bundle.build_g1_team_provider_bundle(**args)
+    if change == "manifest":
+        _rewrite_bundle(receipt, change_manifest=lambda value: value.update({"intent_id": "foreign-intent"}))
+    elif change == "external_runtime":
+        Path(receipt["runtime_source_packet"]["packet_path"]).write_bytes(b"changed")
+    else:
+        Path(receipt["bundle_path"]).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="g1_team_bundle"):
+        bundle.read_retained_g1_team_provider_bundle(
+            Path(receipt["receipt_path"]), expected_implementation_commit=COMMIT,
+        )
+
+
+@pytest.mark.parametrize("commit", [None, "", "main", "a" * 39, "g" * 40])
+def test_retained_reader_requires_exact_commit_before_opening_inputs(tmp_path, commit):
+    with pytest.raises(ValueError, match="g1_team_bundle_implementation_commit_invalid"):
+        bundle.read_retained_g1_team_provider_bundle(
+            tmp_path / "absent.json", expected_implementation_commit=commit,
+        )

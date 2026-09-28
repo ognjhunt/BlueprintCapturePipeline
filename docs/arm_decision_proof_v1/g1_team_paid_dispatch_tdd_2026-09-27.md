@@ -552,3 +552,82 @@ this increment. Hosted previous-head impacted tests passed; full shard 1 in
 passes. Retrieved exact job log shows the miss inside executed_code_identity;
 its suite cause remains on #2236, not silently declared a new G1 regression or
 ignored as a successful promotion.
+
+## Selected settlement: retained evidence and handoff review
+
+ADP-050 Day 28 / ADP-060, next required slice. Reuse the full sealed-bundle
+byte/manifest/packet/external-source checks for post-run reading, separately
+from the launch loader's mandatory current registry/approval checks. Return
+an evidence object, not a paid admission grant. Expired launch authority must
+still prohibit a new launch; it must not prevent verifying an already finished
+episode. No fake current timestamp or renewed approval is written.
+
+The post-run verifier must reopen a completed allocator report, its full sealed
+bundle, exact attempt/native worker result, score and every lossless frame plus
+both videos. Reported verification must equal this fresh verification. Reuse
+the existing delivery and ingest CLIs for selected records with their actual
+three artifacts, submitted run ID and packet-bound owner. Preserve strict
+legacy four-episode behavior. All local/registered bytes are rechecked before
+signed network contact, including interrupted registration replay.
+
+Then add selected settlement to the existing settlement worker/oneshot:
+immutable intent/preparation/start/final plus exact adapter digest/path and
+packet must agree; one provider instance/label must match its startup manifest
+and posted charge; fresh global provider-zero and exact billing gate all
+registration/ingestion. A durable settlement is replayable but never authorizes
+another allocator attempt. Pending charges or another live provider are
+reported without starving later eligible intents. Full simulator output
+verification is independent of the controller's optimistic completion flags.
+
+Red first: real sealed input evidence remains readable after approval expiry
+while launch still refuses; changed archive/source/manifest refuses; actual
+hermetic worker evidence on that packet reaches the current private registry
+and signed ingest; mismatched owner/run, altered score/frame/video, wrong
+adapter path/digest, provider label/billing mismatch, pending zero/charge,
+interrupted registration and repeated settlement refuse or resume correctly
+without spend. No live provider or WebApp calls in tests. Use real fixture
+bundle and worker where their contracts meet; injected billing/zero collectors
+remain explicitly fake. This is agent design review against actual bundle,
+output, registry, ingest and existing settlement seams; no owner decision or
+scope reduction. Three delivery-mode qualification and full four-policy GPU
+campaign remain completion requirements.
+
+Implementation checkpoint (2026-09-28): the retained reader now requires an
+exact commit and reopens all sealed archive/source bytes without producing
+spend authority. The launch loader still rechecks current approval. Selected
+settlement binds the accepted intent, preparation, consumed start, final
+adapter digest, native worker and exact provider startup identity; validates
+historical approval at the recorded start; collects fresh global provider-zero;
+and reopens the official charge before registration and signed ingestion.
+Cached settlement reopens the same input/output, billing and registered bytes;
+an interrupted registration resumes without replacement allocation or a
+duplicate successful post. Pending zero/charges and held intent locks do not
+starve later selected intents. The existing oneshot routes selected-only queues
+and retains visible built-in delivery while a selected charge is pending.
+
+The real official billing extractor now accepts the selected paid schema, with
+the same attempt copy, provider teardown, staging absence, watchdog and charge
+bindings as the built-in path. Completed, blocked and typed pre-native failures
+can reconcile payment without inferring policy qualification or scientific
+success. Hermetic fixtures use fabricated provider responses, not live charges.
+The actual sealed bundle and fake-Isaac worker produce the retained score,
+queries, frames and videos used by the complete fixture settlement.
+
+Verification: 61 focused retained-input/output, selected settlement, official
+billing, legacy delivery and signed ingest tests passed together; 30 separate
+selected/legacy settlement, installed shell and storage classification tests
+passed. After the CLI visibility refinement, all eight legacy settlement and
+installed-command tests passed. Two final tests advance the actual test clock
+past approval expiry: a new launch is refused, while already-consumed evidence
+still verifies and settles. Six provider import-closure plus 19 lifecycle
+rehearsal cases passed. Changed-file Ruff and diff checks passed.
+
+Exact-head d0116ddbe CI 36373585119 finished red despite green impacted checks.
+Its G1-owned missing classifications were repaired: policy work is work;
+approved SONIC assets and operator approval records are protected evidence.
+This adds no cleanup execution or deletion authority. The static CPU import
+path through provider_credit_admission is unchanged against the CI base;
+other quality/materializer/supervisor/cache failures remain diagnosed on #2236.
+This increment does not qualify provider-native container/archive modes,
+complete four built-in trials, deploy the shared UI, verify a live owner URL,
+or authorize public publication. Those remain part of the original goal.

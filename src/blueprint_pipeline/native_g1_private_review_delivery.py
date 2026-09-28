@@ -231,6 +231,18 @@ def materialize_g1_private_review_delivery(
 ) -> dict[str, Any]:
     adapter = _read(adapter_result_path)
     bundle_receipt = _read(bundle_receipt_path)
+    if bundle_receipt.get("schema_version") == "native_g1_team_provider_bundle.v1":
+        from .native_g1_team_review_evidence import verify_retained_g1_team_review
+
+        evidence = verify_retained_g1_team_review(
+            adapter_result_path=adapter_result_path, bundle_receipt_path=bundle_receipt_path,
+        )
+        if _read(retained_review_path) != evidence.review:
+            raise ValueError("g1_review_delivery_retained_review_changed")
+        return _stage_review_artifacts(
+            review=evidence.review, source_root=evidence.source_root,
+            result_root=result_root, run_id=run_id,
+        )
     bundle = load_verified_g1_provider_bundle(
         bundle_receipt_path,
         expected_implementation_commit=bundle_receipt["implementation_commit"],
