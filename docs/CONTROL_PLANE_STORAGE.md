@@ -917,3 +917,47 @@ Default evidence offload now makes a deterministic hashing pass over a tar strea
 Restore supplies the complete artifact identity required by the actual downloader and checks every restored member. The regression uses the real download implementation, so a fixture cannot hide a missing reference field. The GC service can preserve pointer ownership and inspect active process references; ptrace and process-vm syscalls remain denied.
 
 New scene-preparation installations require a whole-chain capacity check before creating an attempt. A workspace that fits only the next stage waits for capacity before work starts. The existing stage reservations remain authoritative and account for competing work; this initial check is an admission forecast, not an additional reservation or a guarantee against untracked external disk writers. Already-started attempts can continue. Cloud-backed reclamation can recover space without needing archive-sized local scratch, allowing the automatic scene timer to retry admission.
+
+### Optional exact lane-reference report
+
+The GC `run` entry point accepts `--lane-reference-target` for one exact leased
+folder below an installed lane parent. It attaches bounded historical evidence
+at `lane_scratch.reference_collection`: selected queue raw identities, finite
+preparation/activation reference meanings, pin protections, selected config
+provenance and fixed Linux process-channel positives. Input JSON, environment
+and command text are not copied into the report. Missing, changed or unsupported
+sources remain explicit keeps. Default ticks do not collect this extra evidence.
+
+Resolved GC arguments and the collector's whitelisted environment are labelled
+`collector_process_effective_only`; a supplied historical config and a stable
+live producer's selected config retain different origins. This does not prove
+another service's installed/enabled configuration, all namespaces/processes,
+auxiliary consumer joins, owner approval or final offload/restore readiness.
+The existing report publication and operator-door readback path are reused.
+
+New G1 pair outputs may explicitly opt into `cooperating_lifetime=True` (CLI
+`--cooperating-lifetime`). Their sealed lease declares
+`consumer_lifetime_contract="leased_scratch_use.v1"`; it remains evidence with
+`owner_review`. The coordinator and audited direct worker retain a shared lock
+on the target directory inode before first output access through teardown and
+terminal receipt publication. Controlled subprocess admission uses a dedicated
+bounded handshake; unknown adapters and container execution cannot opt in.
+Inherited descriptors are close-only. Real policy-server/container descendants,
+external inputs, existing Arena paths and legacy/manual consumers remain unproved.
+No declaration is silently added to historical leases.
+
+The collector's exclusive nonblocking probe, if successful, ends before return.
+Its interval is historical evidence, never a reusable fence or permission to
+retire a folder. `references_clear`, `consumer_fence_checked`, general inventory
+and execution authority remain false; `candidate_bytes` stays null and mutations
+stay zero, including with `--apply` or the lane opt-in true. This report supplies
+no queue ETA or reclaimed-space forecast. An initial descriptor identity failure
+can leave ownership unprovable: preserve the unproven numeric handle, return a
+fixed incomplete refusal, and claim neither success nor guaranteed closure.
+The selected process channels include observed collector-owned metadata and
+probe descriptors as conservative positives; no self PID or arbitrary own FD
+is suppressed. Probe opens and final lease checks use the same collection clock,
+while descriptor cleanup runs independently after that clock expires. A changed
+raw lease version invalidates the recorded exclusive interval even if its
+canonical sealed meaning is unchanged. Checked report CLI errors emit fixed
+JSON refusals without command arguments; ordinary GC CLI parsing is unchanged.

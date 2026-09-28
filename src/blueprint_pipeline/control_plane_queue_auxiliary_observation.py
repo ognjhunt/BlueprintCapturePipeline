@@ -11,7 +11,9 @@ import stat
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
+if TYPE_CHECKING:
+    from .control_plane_reference_budget import ReferenceCollectionBudget
 
 from . import control_plane_queue_observation as primary
 
@@ -127,8 +129,8 @@ def _attempted(family: str) -> tuple[str, ...]:
 
 
 class _AuxScan(primary._Scan):
-    def __init__(self, contracts, observed, clock, budget):
-        super().__init__((), observed, clock, budget)
+    def __init__(self, contracts, observed, clock, budget, shared=None):
+        super().__init__((), observed, clock, budget, shared)
         self.aux_contracts = contracts
         self._row_bytes_limit = MAX_AUXILIARY_ROW_BYTES
         self.directory_count = 0
@@ -149,6 +151,10 @@ class _AuxScan(primary._Scan):
         except primary.QueueObservationError:
             raise primary._Blocked("auxiliary_location_invalid") from None
 
+    def evidence(self, relative, identity, status):
+        self.shared_retain({"relative_path": relative, "identity": identity, "status": status})
+        return ObservedAuxiliaryDirectory(relative, identity, status)
+
     def directory(self, contract, relative, parent, name, directories, evidence):
         self.tick()
         self.location(contract.root_path, relative)
@@ -159,11 +165,11 @@ class _AuxScan(primary._Scan):
             metadata = self.call(os.fstat, fd)
             names = self.names(fd, 0)
             directories[relative] = (fd, metadata, names, parent, name)
-            evidence[relative] = ObservedAuxiliaryDirectory(relative, (metadata.st_dev, metadata.st_ino), "observed")
+            evidence[relative] = self.evidence(relative, (metadata.st_dev, metadata.st_ino), "observed")
             return fd, names
         except OSError:
             self.block("auxiliary_directory_unavailable")
-            evidence[relative] = ObservedAuxiliaryDirectory(relative, None, "unavailable")
+            evidence[relative] = self.evidence(relative, None, "unavailable")
             return None
 
     def rows_in(self, contract, relative, fd, names, role, pattern):
@@ -188,6 +194,9 @@ class _AuxScan(primary._Scan):
                 if not recognized:
                     self.block("auxiliary_layout_unknown")
                 row = self.read_row(contract.root_path, relative, fd, name)
+                self.shared_retain({"family": contract.family, "layout_role": layout_role,
+                                    "expected_container_role": layout_role if recognized else role,
+                                    "relative_directory": relative, "root_path": contract.root_path})
                 self.aux_rows.append(ObservedAuxiliaryRow(
                     contract.family, layout_role, layout_role if recognized else role, contract.root_path,
                     relative, row.row_path, row.raw_text, row.raw_sha256, row.raw_size_bytes, row.row_identity))
@@ -218,7 +227,7 @@ class _AuxScan(primary._Scan):
                 parent_relative, _, name = relative.rpartition("/")
                 parent_record = directories.get(parent_relative)
                 if parent_record is None or name not in parent_record[2]:
-                    evidence[relative] = ObservedAuxiliaryDirectory(relative, None, "missing_unproven")
+                    evidence[relative] = self.evidence(relative, None, "missing_unproven")
                     self.block("auxiliary_directory_missing_unproven")
                     continue
                 opened = self.directory(contract, relative, parent_record[0], name, directories, evidence)
@@ -230,12 +239,14 @@ class _AuxScan(primary._Scan):
                     continue
                 for group in names:
                     self.tick()
+                    self.shared_charge("groups")
                     try:
                         self.location(contract.root_path, relative + "/" + group)
                         child_relative = relative + "/" + group
                         if re.fullmatch(grouping, group) is None:
-                            evidence[child_relative] = ObservedAuxiliaryDirectory(child_relative, None, "unknown_layout")
+                            evidence[child_relative] = self.evidence(child_relative, None, "unknown_layout")
                             raise primary._Blocked("auxiliary_group_unknown")
+                        self.shared_retain(child_relative)
                         groups.append(child_relative)
                         child = self.directory(contract, child_relative, fd, group, directories, evidence)
                         if child is not None:
@@ -267,6 +278,9 @@ class _AuxScan(primary._Scan):
                 if name not in top_names:
                     unobserved_names.append(name)
             self.tick()
+            self.shared_retain({"family": contract.family, "root_path": contract.root_path,
+                                "root_identity": identity, "attempted_roles": _attempted(contract.family),
+                                "unobserved_root_entries": tuple(unobserved_names)})
             self.aux_roots[contract.root_path] = ObservedAuxiliaryRoot(
                 contract.family, contract.root_path, identity, _attempted(contract.family),
                 tuple(observed_directories), tuple(observed_groups), tuple(unobserved_names))
@@ -310,6 +324,12 @@ class _AuxScan(primary._Scan):
             self.tick()
             result = AuxiliaryQueueObservation(not self.blockers, self.observed, tuple(roots), rows,
                                                tuple(sorted(self.blockers)))
+            if self.shared is not None:
+                from .control_plane_reference_budget import ReferenceCollectionBudgetError
+                try:
+                    self.shared.measure(result)
+                except ReferenceCollectionBudgetError as error:
+                    raise primary._Blocked(error.code) from None
             self.output_size(asdict(result))
             self.tick()
             return result
@@ -322,15 +342,22 @@ class _AuxScan(primary._Scan):
 
 def observe_preparation_sam_auxiliaries(contracts: Sequence[AuxiliaryQueueContract], *, observed_at_epoch: float,
                                       monotonic: Callable[[], float] = time.monotonic,
-                                      time_budget_seconds: float = 5.0) -> AuxiliaryQueueObservation:
+                                      time_budget_seconds: float = 5.0,
+                                      budget: ReferenceCollectionBudget | None = None) -> AuxiliaryQueueObservation:
     """Observe fixed auxiliary layouts; never validate, repair or clear references."""
+    if budget is not None:
+        from .control_plane_reference_budget import bind_budget
+        bind_budget(budget, monotonic=monotonic, time_budget_seconds=time_budget_seconds,
+                    error=AuxiliaryQueueObservationError, code="auxiliary_parameters_invalid")
     normalized = _contracts(contracts)
     if not (primary._finite(observed_at_epoch) and observed_at_epoch >= 0 and primary._finite(time_budget_seconds)
             and 0 < time_budget_seconds <= 5 and callable(monotonic)):
         raise AuxiliaryQueueObservationError("auxiliary_parameters_invalid")
-    scan = _AuxScan(normalized, float(observed_at_epoch), monotonic, float(time_budget_seconds))
+    scan = _AuxScan(normalized, float(observed_at_epoch), monotonic, float(time_budget_seconds), budget)
     exhausted = False
     try:
+        scan.shared_charge("roots", len(normalized))
+        scan.shared_charge("groups", sum(len(_attempted(row.family)) for row in normalized))
         for contract in normalized:
             try:
                 scan.observe_aux_root(contract)
@@ -354,6 +381,8 @@ def observe_preparation_sam_auxiliaries(contracts: Sequence[AuxiliaryQueueContra
                     scan.block(error.code)
                     if error.code.endswith("limit") or error.code in primary._RESOURCE_CODES:
                         break
+    except primary._Blocked as error:
+        scan.block(error.code)
     finally:
         for _pass in range(2):
             for fd in tuple(reversed(scan.fds)):

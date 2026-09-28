@@ -11,7 +11,9 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+if TYPE_CHECKING:
+    from .control_plane_reference_budget import ReferenceCollectionBudget
 
 from .control_plane_queue_observation import _Blocked, _finite, _Scan
 
@@ -85,7 +87,8 @@ class _Invalid(Exception):
 
 
 def _resource(code: str) -> bool:
-    return code.endswith("limit") or code in {"queue_deadline_exceeded", "queue_clock_invalid", "queue_result_invalid"}
+    return code.endswith("limit") or code in {"queue_deadline_exceeded", "queue_clock_invalid", "queue_result_invalid",
+                                               "reference_deadline_exceeded", "reference_clock_invalid", "reference_budget_closed", "reference_output_invalid"}
 
 
 @dataclass(frozen=True)
@@ -219,9 +222,9 @@ class _Document:
 
 
 class _Interpretation:
-    def __init__(self, clock: Callable[[], float], budget: float):
+    def __init__(self, clock: Callable[[], float], budget: float, shared: ReferenceCollectionBudget | None = None):
         # Only unchanged pure methods are used; no descriptor/queue methods.
-        self.scan = _Scan((), 0.0, clock, budget)
+        self.scan = _Scan((), 0.0, clock, budget, shared)
         self.records: list[ReferenceRecordDisposition] = []
         self.documents: list[_Document] = []
         self.facts: dict[str, list[ReferenceFact]] = {k: [] for k in (
@@ -296,6 +299,7 @@ class _Interpretation:
         if size > MAX_OUTPUT_BYTES - self.output_bytes:
             raise _Blocked("reference_output_limit")
         self.output_bytes += size
+        self.scan.shared_charge("output_bytes", size)
 
     def provenance_document(self, source: RawReferenceProvenance) -> dict[str, Any]:
         return {"family": source.family, "queue_root": source.queue_root, "role": source.role,
@@ -312,6 +316,7 @@ class _Interpretation:
         if count > MAX_FACTS - self.fact_count:
             raise _Blocked("reference_facts_limit")
         self.fact_count += count
+        self.scan.shared_charge("facts", count)
         wire = {"source": self.provenance_document(source), "contract_path": contract_path, "digest": None,
                 "path": None, "uri": None, "size_bytes": None, "related_sources": (), **kwargs}
         wire["related_sources"] = tuple(self.provenance_document(item) for item in related)
@@ -323,6 +328,12 @@ class _Interpretation:
         document = {k: v for k, v in value.items() if k != field}
         # Default-spaced size is an upper bound for the compact canonical form.
         self.scan.output_size(document)
+        if self.scan.shared is not None:
+            from .control_plane_reference_budget import ReferenceCollectionBudgetError
+            try:
+                self.scan.shared.measure(document)
+            except ReferenceCollectionBudgetError as error:
+                raise _Blocked(error.code) from None
         self.scan.tick()
         output = hashlib.sha256()
         for chunk in json.JSONEncoder(sort_keys=True, separators=(",", ":"), ensure_ascii=False).iterencode(document):
@@ -992,8 +1003,13 @@ class _Interpretation:
 def interpret_preparation_activation_references(
     contracts: Sequence[ReferenceFamilyContract], records: Sequence[RetainedReferenceRecord], *,
     monotonic: Callable[[], float] = time.monotonic, time_budget_seconds: float = 5.0,
+    budget: ReferenceCollectionBudget | None = None,
 ) -> PreparationActivationReferenceInterpretation:
     """Interpret finite supplied bytes; never load payloads or confer action authority."""
+    if budget is not None:
+        from .control_plane_reference_budget import bind_budget
+        bind_budget(budget, monotonic=monotonic, time_budget_seconds=time_budget_seconds,
+                    error=PreparationActivationReferenceError, code="reference_parameters_invalid")
     if (not isinstance(contracts, (tuple, list)) or not 1 <= len(contracts) <= MAX_ROOTS
             or not isinstance(records, (tuple, list)) or not callable(monotonic)
             or not _finite(time_budget_seconds) or not 0 < time_budget_seconds <= 5):
@@ -1008,9 +1024,11 @@ def interpret_preparation_activation_references(
                for _, prior in roots):
             raise PreparationActivationReferenceError("reference_parameters_invalid")
         roots.add((contract.family, root))
-    engine = _Interpretation(monotonic, float(time_budget_seconds))
+    engine = _Interpretation(monotonic, float(time_budget_seconds), budget)
     try:
         engine.scan.tick()
+        engine.scan.shared_charge("roots", len(roots))
+        engine.scan.shared_charge("rows", len(records))
         # Fixed result overhead is charged once, before retained collections.
         engine.charge(PreparationActivationReferenceInterpretation(False, (), (), (), (), (), (), tuple("x" * 64 for _ in range(33))).__dict__)
         if len(records) > MAX_RECORDS:
@@ -1034,6 +1052,7 @@ def interpret_preparation_activation_references(
             total += len(row.raw_bytes)
             if len(row.raw_bytes) > MAX_RECORD_BYTES or total > MAX_TOTAL_BYTES:
                 raise _Blocked("reference_bytes_limit")
+        engine.scan.shared_charge("raw_bytes", total)
         # Prove lexical aggregate limits for every row before any parser/hash.
         prepared = []
         for row in records:

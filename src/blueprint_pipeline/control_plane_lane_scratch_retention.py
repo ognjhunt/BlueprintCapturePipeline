@@ -97,7 +97,9 @@ def _lease(raw: bytes, lane: str, name: str) -> dict[str, Any]:
                            parse_float=_number, parse_constant=_number)
         _require(isinstance(value, dict), "lane_lease_invalid")
         reference = {"run_ref", "scene_ref"} & value.keys()
-        _require(len(reference) == 1 and set(value) in (_FIELDS | reference, _FIELDS | reference | {"renewed_at_epoch"}),
+        optional = {"renewed_at_epoch", "consumer_lifetime_contract"}
+        _require(len(reference) == 1 and _FIELDS | reference <= set(value)
+                 and set(value) <= _FIELDS | reference | optional,
                  "lane_lease_invalid")
         timestamps = [value[k] for k in ("created_at_epoch", "expires_at_epoch")]
         timestamps += [value[k] for k in ("renewed_at_epoch", "released_at_epoch") if k in value and value[k] is not None]
