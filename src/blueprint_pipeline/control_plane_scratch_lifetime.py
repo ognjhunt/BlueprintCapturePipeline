@@ -239,6 +239,7 @@ class LeasedScratchUse:
             result._root_fd = result._absolute(self.root)
             result._lane_fd = result._open(self.lane, _DIR_FLAGS, result._root_fd)
             result.fd = os.dup(self.fd)
+            result._owned[result.fd] = None
             result._owned[result.fd] = _identity(result.fd)
             result.check()
             if [_identity(fd) for fd in (result._root_fd, result._lane_fd, result.fd)] != self.identity["inodes"]:
@@ -278,6 +279,16 @@ class LeasedScratchUse:
             result._root_fd = result._absolute(result.root)
             result._lane_fd = result._open(result.lane, _DIR_FLAGS, result._root_fd)
             with result._root_lock():
+                # Never change the inherited OFD's mode. A separate retained SH
+                # establishes real authority even for an initially unlocked FD.
+                inherited_fd = result.fd
+                result.fd = result._open(result.name, _DIR_FLAGS, result._lane_fd)
+                if _identity(inherited_fd) != _identity(result.fd):
+                    raise LaneScratchError("lane_scratch_lifetime_identity_changed")
+                try:
+                    fcntl.flock(result.fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise LaneScratchError("lane_scratch_consumer_busy") from None
                 result.check()
                 if [_identity(fd) for fd in (result._root_fd, result._lane_fd, result.fd)] != result.identity["inodes"]:
                     raise LaneScratchError("lane_scratch_lifetime_identity_changed")

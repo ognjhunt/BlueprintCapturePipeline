@@ -1,6 +1,7 @@
-# Covers (for impacted-test selection): src/blueprint_pipeline/native_g1_development_worker.py
-# Covers (for impacted-test selection): src/blueprint_pipeline/native_g1_development_pair.py
-# Covers (for impacted-test selection): src/blueprint_pipeline/control_plane_scratch_lifetime.py
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/native_g1_development_worker.py
+#   src/blueprint_pipeline/native_g1_development_pair.py
+#   src/blueprint_pipeline/control_plane_scratch_lifetime.py
 """Fake direct workers prove lifetime admission before every output path check."""
 
 import json

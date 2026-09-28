@@ -1,5 +1,6 @@
-# Covers (for impacted-test selection): src/blueprint_pipeline/control_plane_g1_lifetime_adapter.py
-# Covers (for impacted-test selection): src/blueprint_pipeline/control_plane_scratch_lifetime.py
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/control_plane_g1_lifetime_adapter.py
+#   src/blueprint_pipeline/control_plane_scratch_lifetime.py
 """Bounded dedicated admission channels cannot promote an unproved worker."""
 
 import os
@@ -71,3 +72,16 @@ def test_channel_encoding_bound_precedes_encoder(monkeypatch):
     monkeypatch.setattr(adapter.json, "dumps", lambda *args, **kwargs: pytest.fail("encoded oversized proof"))
     with pytest.raises(LaneScratchError, match="handshake"):
         adapter.write_message(-1, {"oversized": "x" * 4097})
+
+
+def test_unlocked_inherited_descriptor_establishes_separate_shared_authority(tmp_path):
+    from blueprint_pipeline.control_plane_scratch_lifetime import LeasedScratchUse
+    root, path = folder(tmp_path)
+    use = open_use(root)
+    proof = adapter.worker_proof(use, output=path / "candidate", request_digest="sha256:" + "a" * 64)
+    use.close()
+    unlocked = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    with adapter.adopt_worker_proof(unlocked, proof, output=path / "candidate",
+                                   request_digest="sha256:" + "a" * 64, now=lambda: 110):
+        with pytest.raises(LaneScratchError, match="consumer_busy"):
+            LeasedScratchUse.probe(path, now=lambda: 110)

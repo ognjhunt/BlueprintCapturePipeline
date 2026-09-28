@@ -1,6 +1,7 @@
-# Covers (for impacted-test selection): src/blueprint_pipeline/control_plane_scratch_lifetime.py
-# Covers (for impacted-test selection): src/blueprint_pipeline/control_plane_lane_scratch.py
-# Covers (for impacted-test selection): src/blueprint_pipeline/control_plane_lane_scratch_retention.py
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/control_plane_scratch_lifetime.py
+#   src/blueprint_pipeline/control_plane_lane_scratch.py
+#   src/blueprint_pipeline/control_plane_lane_scratch_retention.py
 """Cooperating lifetime authority is inode-bound, optional and close-only."""
 
 import fcntl
@@ -170,6 +171,29 @@ def test_create_retains_root_coordination_until_target_shared_admission(tmp_path
     with lifetime.LeasedScratchUse.create(root=root, lane="g1", name="pair", owner="owner", run_ref="run",
                                          ttl_seconds=100, now=lambda: 100):
         assert observed == ["continuous_root_ownership"]
+
+
+def test_borrow_registers_duplicate_before_its_first_fstat_fault(tmp_path, monkeypatch):
+    root, path = folder(tmp_path)
+    with open_use(root) as use:
+        original_dup, original_stat = os.dup, os.fstat
+        duplicate = []
+        failed = []
+        def dup(fd):
+            result = original_dup(fd)
+            duplicate.append(result)
+            return result
+        def info(fd):
+            if fd in duplicate and not failed:
+                failed.append(fd)
+                raise OSError("injected identity failure")
+            return original_stat(fd)
+        monkeypatch.setattr(os, "dup", dup)
+        monkeypatch.setattr(os, "fstat", info)
+        with pytest.raises(leases.LaneScratchError, match="descriptor_invalid"):
+            use.borrow(path / "candidate")
+        with pytest.raises(OSError):
+            original_stat(duplicate[0])
 
 
 @pytest.mark.slow
