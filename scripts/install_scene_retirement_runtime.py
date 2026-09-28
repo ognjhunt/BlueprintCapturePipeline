@@ -11,6 +11,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import math
 import importlib.util
 import os
 from pathlib import Path
@@ -1143,9 +1144,10 @@ def _publish_installer(source, deadline):
     _require(_record_bytes(target, deadline)[0] == raw and _record_bytes(record, deadline)[0] == value)
 
 
-def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None):
+def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None):
     """Complete root snapshot and ABI SDK before callers expose service units."""
-    deadline = time.monotonic() + _MAX_SECONDS
+    deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
+    _require(type(deadline) is float and math.isfinite(deadline) and time.monotonic() <= deadline)
     protected_source = _signed_release(source, source_commit, deadline)
     sdk = build_sdk(protected_source, wheelhouse=wheelhouse, contracts_checkout=contracts_checkout, _deadline=deadline)
     _require(time.monotonic() <= deadline)
@@ -1167,6 +1169,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', required=True, type=Path)
     parser.add_argument('--source-commit')
+    parser.add_argument('--deadline-monotonic', type=float)
     parser.add_argument('--wheelhouse', type=Path)
     parser.add_argument('--contracts-checkout', type=Path)
     sdk = parser.add_mutually_exclusive_group(required=True)
@@ -1177,7 +1180,7 @@ def main(argv=None):
     if arguments.locked_sdk:
         _require(arguments.source_commit is not None)
         result = prepare_deployment(arguments.source, source_commit=arguments.source_commit,
-            wheelhouse=arguments.wheelhouse, contracts_checkout=arguments.contracts_checkout)
+            wheelhouse=arguments.wheelhouse, contracts_checkout=arguments.contracts_checkout, _deadline=arguments.deadline_monotonic)
     else:
         dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
         result = prepare(arguments.source, dependencies)
