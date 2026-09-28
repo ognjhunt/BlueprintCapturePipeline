@@ -104,6 +104,7 @@ def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_install
     outcome = next(row for row in report['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
     assert outcome['decision'] == 'retired', outcome
     assert phases.count('removal_batch') == 3
+    assert {path.name for path in target.iterdir()} == {'.lane-scratch.v1.json', '.registered-experiment.v1.json'}
 
 
 def test_same_payload_role_cannot_rewind_and_refund_its_source_window(tmp_path):
