@@ -74,9 +74,15 @@ def _download_pinned_ranges(
     chunk_size: int = 128 * 1024 * 1024, workers: int = 8,
     deadline_seconds: float = RANGED_DOWNLOAD_DEADLINE_SECONDS,
     cancel_event: Event | None = None,
+    _cache_use=None,
 ) -> int:
     """Fetch one large model into a private temporary file, then hash it whole."""
 
+    if _cache_use is not None:
+        from blueprint_pipeline.control_plane_registered_checkpoint_cache import require_cache_use
+        from blueprint_pipeline.control_plane_registered_checkpoint_io import download_pinned_ranges
+        return download_pinned_ranges(require_cache_use(_cache_use), url, descriptor, expected_size,
+            chunk_size=chunk_size, workers=workers, deadline_seconds=deadline_seconds, cancel_event=cancel_event)
     if (expected_size <= 0 or chunk_size <= 0 or not 1 <= workers <= 24
             or deadline_seconds <= 0):
         raise ValueError("g1_checkpoint_range_bounds_invalid")

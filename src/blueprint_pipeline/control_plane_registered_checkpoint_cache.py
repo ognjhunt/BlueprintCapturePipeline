@@ -485,6 +485,30 @@ def _read_layout(files, config_path):
                 private=Path(config.needed_checkpoint_cache_record_store), config=config)
 
 
+def _retain_source_records(files, payload, records):
+    selected = set()
+    for record in records:
+        files.verify_record(record)
+        current = record.fd
+        for _ in range(64):
+            selected.add(current)
+            parent, _, _ = files.bindings[current]
+            if parent is None:
+                break
+            current = parent
+        else:
+            raise NeededCheckpointCacheError("needed_cache_resource_exhausted")
+    _require(len(payload.owned) + len(selected) < 104, "needed_cache_descriptor_limit")
+    for fd in selected:
+        files.location(fd)
+        _require(fd not in payload.owned, "needed_cache_descriptor_collision")
+        payload.owned[fd] = files.proof(fd)
+        payload.bindings[fd] = files.bindings[fd]
+    for fd in selected:
+        files.owned.pop(fd)
+    return tuple(records)
+
+
 def _open_registered(cls, root, *, mode="read", installed_config_path=_DEFAULT_CONFIG,
                      now=time.time, monotonic=time.monotonic):
     _require(cls is NeededCheckpointCacheUse and mode in ("read", "fill"), "needed_cache_use_invalid")
@@ -515,13 +539,15 @@ def _open_registered(cls, root, *, mode="read", installed_config_path=_DEFAULT_C
                  and birth.get("birth_digest") == canonical_digest(birth, digest_field="birth_digest")
                  and birth.get("target") == entry["target"] and birth.get("generation") == entry["generation"]
                  and birth.get("intent_id") == entry["intent_id"], "needed_cache_birth_invalid")
-        inventory_raw, _ = files.read(layout["inventory"], cap=65536)
+        birth_record = files.records[-1]
+        inventory_raw, inventory_record = files.read(layout["inventory"], cap=65536)
         owners._identity(inventory_raw, entry["inventory_raw_sha256"], entry["inventory_raw_size_bytes"], files.budget)
         inventory = retained._document(inventory_raw, 65536, _work_budget=files.budget)
         rows = _inventory_rows(inventory)
-        # Release administrative SH before opening/locking an existing target.
+        # Preserve named originals while releasing the administrative SH.
+        sources = _retain_source_records(files, payload, (birth_record, inventory_record))
         files.finish()
-        files.budget.close()
+        files.budget.tick()
         root_fd = payload.directory(target)
         info = payload.proof(root_fd)
         _require(info.st_uid == 0 and info.st_gid == gid and stat.S_IMODE(info.st_mode) == 0o750
@@ -540,6 +566,7 @@ def _open_registered(cls, root, *, mode="read", installed_config_path=_DEFAULT_C
         result._initialized, result._closed = _USE_TOKEN, False
         result._files, result._root_fd, result._root = payload, root_fd, target
         result._layout, result._entry, result._birth = layout, entry, birth
+        result._sources = sources
         result._rows, result._inventory, result._gid, result._mode = rows, inventory, gid, mode
         result._authority_epoch, result._authority_version = head["authority_epoch_id"], head["version"]
         result._writer, result._now, result._monotonic = writer, now, monotonic
@@ -584,6 +611,11 @@ def _use_check(self):
             self._checks += 1
             _require(self._checks <= 2*self._resources["maximum_checks"], "needed_cache_check_limit")
             self._files.location(self._root_fd)
+            for record in self._sources:
+                self._files.location(record.fd)
+                _require(owners._metadata(self._files.proof(record.fd)) == owners._metadata(record.info)
+                         == owners._metadata(os.stat(record.name, dir_fd=record.parent, follow_symlinks=False)),
+                         "needed_cache_source_changed")
             if self._health is not None:
                 self._health.check()
             with _metadata(self._monotonic) as files:
@@ -681,6 +713,14 @@ def _payload_open(self, row):
 
 
 def _use_chunks(self, path, *, role):
+    try:
+        yield from _use_chunks_checked(self, path, role=role)
+    except (OSError, ValueError) as exc:
+        self._failure = str(exc) if isinstance(exc, NeededCheckpointCacheError) else "needed_cache_payload_failed"
+        raise NeededCheckpointCacheError(self._failure) from None
+
+
+def _use_chunks_checked(self, path, *, role):
     _require(role in ("verify", "wam_hash", "upload", "preverify", "fill_hash"), "needed_cache_role_invalid")
     row = self.row(path)
     with self.payload_open(row) as (fd, parent, name, before):
@@ -862,19 +902,24 @@ def _publish_metadata(files, parent, name, payload, *, mode, gid=0, cap=32768):
 
 
 def _head_cas(files, parent, payload, previous):
-    """Only mutable cache HEAD: original in-place CAS, never rename/replace."""
+    return _mutable_record_cas(files, parent, payload, previous, name="HEAD.json", cap=4096)
+
+
+def _mutable_record_cas(files, parent, payload, previous, *, name, cap):
+    """Only the two fixed cache current records; original inode, no replacement."""
+    _require(name in ("HEAD.json", scratch.LEASE_FILE) and len(payload) <= cap, "needed_cache_cas_invalid")
     files.location(parent)
     if previous is None:
-        return _publish_metadata(files, parent, "HEAD.json", payload, mode=0o640,
-                                 gid=_blueprint_identity()[1], cap=4096)
-    fd = files.open("HEAD.json", os.O_RDWR, parent=parent)
+        return _publish_metadata(files, parent, name, payload, mode=0o640,
+                                 gid=_blueprint_identity()[1], cap=cap)
+    fd = files.open(name, os.O_RDWR, parent=parent)
     old = files.acquired[fd]
-    _require(files.read_bytes(fd, 4096) == previous and old.st_uid == 0 and old.st_nlink == 1
+    _require(files.read_bytes(fd, cap) == previous and old.st_uid == 0 and old.st_nlink == 1
              and old.st_gid == _blueprint_identity()[1] and stat.S_IMODE(old.st_mode) == 0o640,
              "needed_cache_head_changed")
     # Remove only exact retained historical HEAD observations after its CAS proof.
     for record in tuple(files.records):
-        if record.parent == parent and record.name == "HEAD.json":
+        if record.parent == parent and record.name == name:
             files.verify_record(record)
             files.records.remove(record)
     expected, size = files.proof(fd), old.st_size
@@ -885,7 +930,7 @@ def _head_cas(files, parent, payload, previous):
         info = os.fstat(fd)
         _require(info.st_uid == old.st_uid and info.st_gid == old.st_gid and info.st_nlink == 1
                  and stat.S_IMODE(info.st_mode) == 0o640 and info.st_size == size
-                 and owners._metadata(info) == owners._metadata(os.stat("HEAD.json", dir_fd=parent, follow_symlinks=False)),
+                 and owners._metadata(info) == owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)),
                  "needed_cache_head_changed")
     guard()
     os.ftruncate(fd, 0)
@@ -899,7 +944,7 @@ def _head_cas(files, parent, payload, previous):
     os.fsync(fd)
     guard()
     os.lseek(fd, 0, os.SEEK_SET)
-    _require(files.read_bytes(fd, 4096) == payload, "needed_cache_head_readback")
+    _require(files.read_bytes(fd, cap) == payload, "needed_cache_head_readback")
     guard()
     os.fsync(parent)
     guard()
@@ -1168,6 +1213,7 @@ def _create_cache(files, layout, intent, intent_ref, inventory, rows, reservatio
     use._initialized, use._closed = _USE_TOKEN, False
     use._files, use._root_fd, use._root = payload, stage, layout["root"] / "g1-checkpoint" / intent["name"]
     use._layout, use._entry, use._birth, use._rows, use._inventory, use._gid, use._mode = layout, entry, birth, rows, inventory, gid, "fill"
+    use._sources = []
     use._writer, use._now, use._monotonic = None, None, monotonic
     use._origin = use._last = origin
     use._deadline, use._failure = deadline, None
@@ -1179,132 +1225,8 @@ def _create_cache(files, layout, intent, intent_ref, inventory, rows, reservatio
 
 
 def _use_download(self, row):
-    from .native_g1_checkpoint_cache import _fetcher
-    from urllib.parse import quote
-    require_cache_use(self)
-    _require(self._mode == "fill" and self._reservation is not None and not self._reservation.released,
-             "needed_cache_write_unadmitted")
-    fetcher = _fetcher()
-    self.check()
-    parent, opened = self._root_fd, []
-    parts = PurePosixPath(row["relative_path"]).parts
-    fd, temporary, published = None, None, False
-    try:
-        for part in parts[:-1]:
-            self.check()
-            self._files.location(parent)
-            try:
-                os.stat(part, dir_fd=parent, follow_symlinks=False)
-            except FileNotFoundError:
-                self.check()
-                os.mkdir(part, 0o750, dir_fd=parent)
-            child = self._files.open(parent, part, os.O_RDONLY | os.O_DIRECTORY)
-            info = self._files.proof(child)
-            _require(info.st_uid == 0 and info.st_dev == self._files.proof(self._root_fd).st_dev,
-                     "needed_cache_directory_unsafe")
-            if info.st_gid != self._gid:
-                self.check()
-                os.fchown(child, 0, self._gid)
-                self._files.bindings[child] = (parent, part, owners._security(os.stat(part, dir_fd=parent, follow_symlinks=False)))
-            opened.append(child)
-            parent = child
-        temporary = ".needed-payload-" + secrets.token_hex(16)
-        self.check()
-        fd = self._files.open(parent, temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL)
-        if self._files.proof(fd).st_gid != self._gid:
-            self.check()
-            os.fchown(fd, 0, self._gid)
-            self._files.bindings[fd] = (parent, temporary, owners._security(os.stat(temporary, dir_fd=parent, follow_symlinks=False)))
-        url = fetcher.MODEL_BASE + quote(row["relative_path"], safe="/")
-        self.check()
-        response = fetcher._open_https(url)
-        self.check()
-        digest, size = hashlib.sha256(), 0
-        with response:
-            _require(response.geturl().startswith("https://"), "needed_cache_insecure_redirect")
-            while size < row["size_bytes"]:
-                self.check()
-                remaining = min(_QUANTUM-size % _QUANTUM, row["size_bytes"]-size)
-                key = ("network", row["relative_path"], size // _QUANTUM)
-                self._windows[key] = self._windows.get(key, 0)+1
-                _require(self._windows[key] <= 8, "needed_cache_fragment_limit")
-                block = response.read(remaining)
-                self.check()
-                _require(type(block) is bytes and 0 < len(block) <= remaining, "needed_cache_download_short")
-                offset = 0
-                while offset < len(block):
-                    self.check()
-                    self._files.location(fd)
-                    info = self._files.proof(fd)
-                    _require(info.st_size == size+offset and info.st_nlink == 1, "needed_cache_temp_changed")
-                    wkey = ("write", row["relative_path"], (size+offset)//_QUANTUM)
-                    self._windows[wkey] = self._windows.get(wkey, 0)+1
-                    _require(self._windows[wkey] <= 8, "needed_cache_fragment_limit")
-                    written = os.pwrite(fd, block[offset:], size+offset)
-                    self.check()
-                    _require(type(written) is int and 0 < written <= len(block)-offset, "needed_cache_write_short")
-                    offset += written
-                size += len(block)
-                digest.update(block)
-                for role in ("network", "write"):
-                    counts = self._counts.setdefault(role, dict(bytes=0, calls=0))
-                    counts["bytes"] += len(block)
-                    counts["calls"] += 1
-                    _require(counts["bytes"] <= self._resources["logical_bytes"], "needed_cache_role_byte_limit")
-            self.check()
-            _require(response.read(1) == b"", "needed_cache_download_extra")
-            self.check()
-        _require(size == row["size_bytes"] and "sha256:"+digest.hexdigest() == row["sha256"],
-                 "needed_cache_download_hash_changed")
-        self.check()
-        self._files.location(fd)
-        os.fsync(fd)
-        self.check()
-        # Whole temporary readback is a distinct conserved hash pass before publication.
-        digest, offset = hashlib.sha256(), 0
-        while offset < size:
-            self.check()
-            self._files.location(fd)
-            part = os.pread(fd, min(_QUANTUM, size-offset), offset)
-            self.check()
-            _require(type(part) is bytes and 0 < len(part) <= min(_QUANTUM, size-offset), "needed_cache_temp_short")
-            digest.update(part)
-            offset += len(part)
-            counts = self._counts.setdefault("fill_hash", dict(bytes=0, calls=0))
-            counts["bytes"] += len(part)
-            counts["calls"] += 1
-        _require("sha256:"+digest.hexdigest() == row["sha256"], "needed_cache_temp_hash_changed")
-        self.check()
-        self._files.location(fd)
-        self._files.location(parent)
-        os.link(temporary, parts[-1], src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
-        published = True
-        self.check()
-        _require(owners._metadata(self._files.proof(fd)) == owners._metadata(os.stat(parts[-1], dir_fd=parent, follow_symlinks=False))
-                 and self._files.proof(fd).st_nlink == 2, "needed_cache_payload_publication_changed")
-        self._files.location(fd)
-        os.unlink(temporary, dir_fd=parent)
-        temporary = None
-        self._files.bindings[fd] = (parent, parts[-1], owners._security(os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)))
-        self.check()
-        self._files.location(parent)
-        os.fsync(parent)
-        self.check()
-    finally:
-        if fd is not None:
-            if temporary is not None and not published:
-                try:
-                    self._files.location(fd)
-                    self._files.location(parent)
-                    os.unlink(temporary, dir_fd=parent)
-                except (OSError, ValueError):
-                    pass
-            self._files.close(fd)
-        for directory in reversed(opened):
-            self._files.close(directory)
-        _require(not self._files.unresolved, "needed_cache_cleanup_incomplete")
-
-
+    from .control_plane_registered_checkpoint_io import download_file
+    return download_file(self, row)
 
 
 def _finish_fill(use, intent, intent_ref, operation, fill_ref, moment):
@@ -1371,10 +1293,39 @@ def fill_needed_checkpoint_cache(intent_id, *, expected_sha256, expected_size_by
             need = sum(((r["size_bytes"]+unit-1)//unit)*unit for r in rows) + _QUANTUM
             _require(need <= intent["size_budget_bytes"] and need <= _MAX_BYTES, "needed_cache_owner_budget_exceeded")
             target = layout["root"] / "g1-checkpoint" / intent["name"]
+            try:
+                os.stat(layout["authority"] / "HEAD.json", follow_symlinks=False)
+            except FileNotFoundError:
+                authority = None
+            else:
+                head, authority, _ = _current_projection(files, layout["authority"], _blueprint_identity()[1])
+            entry = next((r for r in authority["enrollments"] if r["intent_id"] == intent_id), None) if authority else None
+            if entry is not None and entry["admission_state"] == "ready":
+                files.finish()
+                with NeededCheckpointCacheUse.open_registered(target, installed_config_path=installed_config_path,
+                                                              now=now, monotonic=monotonic) as hit:
+                    hit._resources = derive_checkpoint_flow_resources(inventory, "hit")
+                    for row in hit._rows:
+                        hit.hash_file(target / row["relative_path"], role="preverify")
+                    return dict(status="cache_ready", path=str(target), reservation_required=False,
+                                target_ready_observed=True, generation=entry["generation"],
+                                resource_counters=hit.resource_counters)
+            files.finish()
+            files.parents.clear()
+            files.records.clear()
+            files.budget.tick()
             reservation = reserve_control_plane_disk("g1_checkpoint_cache", target_root=layout["root"],
                 expected_bytes=need, minimum_bytes=need, workspace=target, fresh=True, evictor=None)
             use, operation, create_ref = _create_cache(files, layout, intent, expected, inventory, rows,
                                                        reservation, now(), monotonic)
+            sources = _BirthFiles(files.budget)
+            try:
+                _public_read(sources, layout["public"] / (intent_id+".birth.json"), 32768, 0o644, 0)
+                birth_record = sources.records[-1]
+                _, inventory_record = sources.read(layout["inventory"], cap=65536)
+                use._sources = _retain_source_records(sources, use._files, (birth_record, inventory_record))
+            finally:
+                sources.finish()
         use._now = now
         with keep_reservation_live(reservation) as health:
             use._health = health
@@ -1438,3 +1389,133 @@ def update_needed_checkpoint_cache_authority(*, operation, intent_id=None,
             next_entries, "disabled" if operation == "disable" else previous[1]["state"], now(),
             max(now()+1, previous[1]["expires_at_epoch"]))
         return dict(status="current_authority_updated", authority_epoch_id=head["authority_epoch_id"], version=head["version"])
+
+def renew_needed_checkpoint_cache(intent_id, *, principal, owner, lease_ttl_seconds,
+        size_budget_bytes, installed_config_path=_DEFAULT_CONFIG, now=time.time, monotonic=time.monotonic):
+    """Explicit root owner renewal; expiry never deletes, transfers or renews bytes itself."""
+    _require(os.geteuid() == 0 and owners._matches(intent_id, owners._CONSENT_ID)
+             and owners._matches(principal, owners._PRINCIPAL) and owners._matches(owner, owners._OWNER)
+             and type(lease_ttl_seconds) is int and 0 < lease_ttl_seconds <= 1209600
+             and type(size_budget_bytes) is int and 0 < size_budget_bytes <= _MAX_BYTES,
+             'needed_cache_renewal_invalid')
+    with _metadata(monotonic) as files:
+        layout = _read_layout(files, installed_config_path)
+        moment = now()
+        _require(owners._number(moment), 'needed_cache_renewal_invalid')
+        raw, acquired = files.read(layout['private'] / (intent_id+'.json'), cap=32768,
+                                   protected=True, mode=0o600)
+        intent = retained._document(raw, 32768, _work_budget=files.budget)
+        _require(set(intent) == _INTENT_FIELDS and intent['schema_version'] == SCHEMA
+                 and intent['intent_id'] == intent_id and intent['issuer_uid'] == 0
+                 and intent['issuer_kind'] == 'local_root'
+                 and intent['intent_digest'] == canonical_digest(intent, digest_field='intent_digest')
+                 and intent['owner'] == owner and intent['class_intent'] == 'cache'
+                 and intent['cleanup'] == 'owner_review' and intent['size_budget_bytes'] == size_budget_bytes,
+                 'needed_cache_renewal_invalid')
+        policy_raw, policy_record = files.read(layout['config'].lane_owner_policy_file, cap=65536,
+                                               protected=True, mode=0o600)
+        policy = owners._policy(policy_raw, principal, files.budget)
+        expiry = moment+lease_ttl_seconds
+        owners._authorize(dict(action='register', owner=owner, ttl_seconds=lease_ttl_seconds),
+                          policy, expiry, moment)
+        target = layout['root'] / 'g1-checkpoint' / intent['name']
+        target_parent, _ = files.parent(target / scratch.LEASE_FILE)
+        files.location(target_parent)
+        _require(os.fstat(target_parent).st_uid == 0 and os.fstat(target_parent).st_gid == _blueprint_identity()[1]
+                 and stat.S_IMODE(os.fstat(target_parent).st_mode) == 0o750, 'needed_cache_target_changed')
+        try:
+            fcntl.flock(target_parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise NeededCheckpointCacheError('needed_cache_busy') from None
+        authority_parent = _authority_parent(files, layout['config'], fcntl.LOCK_EX)
+        store = _private_store(files, layout['config'])
+        previous = _existing_projection(files, layout, _blueprint_identity()[1])
+        _require(previous is not None and previous[1]['state'] == 'enabled', 'needed_cache_renewal_refused')
+        selected = next((r for r in previous[1]['enrollments'] if r['intent_id'] == intent_id), None)
+        _require(selected is not None and selected['admission_state'] == 'ready'
+                 and selected['generation'] == intent['generation'] and selected['owner'] == owner
+                 and selected['size_budget_bytes'] == size_budget_bytes, 'needed_cache_renewal_refused')
+        birth, birth_raw = _public_read(files, layout['public'] / (intent_id+'.birth.json'), 32768, 0o644, 0)
+        owners._identity(birth_raw, selected['birth_raw_sha256'], selected['birth_raw_size_bytes'], files.budget)
+        info = os.fstat(target_parent)
+        _require(birth['target_identity'] == dict(dev=info.st_dev, ino=info.st_ino, type='directory')
+                 and birth['generation'] == selected['generation']
+                 and birth['birth_digest'] == canonical_digest(birth, digest_field='birth_digest'),
+                 'needed_cache_target_changed')
+        lease, lease_raw = _public_read(files, target / scratch.LEASE_FILE, 8192, 0o640, _blueprint_identity()[1])
+        owners._identity(lease_raw, selected['lease_raw_sha256'], selected['lease_raw_size_bytes'], files.budget)
+        _require(scratch._lease_fields_valid(lease) and lease['lease_digest'] ==
+                 canonical_digest(lease, digest_field='lease_digest') and lease['released_at_epoch'] is None
+                 and lease['class_intent'] == 'cache' and lease['cleanup'] == 'owner_review'
+                 and lease['lane'] == 'g1-checkpoint' and lease['name'] == intent['name']
+                 and lease['owner'] == owner and lease['size_budget_bytes'] == size_budget_bytes,
+                 'needed_cache_renewal_refused')
+        inventory_raw, inventory_record = files.read(layout['inventory'], cap=65536, protected=True)
+        owners._identity(inventory_raw, selected['inventory_raw_sha256'], selected['inventory_raw_size_bytes'], files.budget)
+        inventory = retained._document(inventory_raw, 65536, _work_budget=files.budget)
+        rows = _inventory_rows(inventory)
+        _require(_renew_allocation(files, target_parent, rows) + _QUANTUM <= size_budget_bytes,
+                 'needed_cache_owner_budget_exceeded')
+        _, count = _store_capacity(files, store)
+        _require(count+5 <= 256, 'needed_cache_store_full')
+        files.verify_record(acquired)
+        files.verify_record(policy_record)
+        files.verify_record(inventory_record)
+        operation = secrets.token_hex(16)
+        updated, payload = _encode(files, lease | dict(renewed_at_epoch=moment, expires_at_epoch=expiry),
+                                   'lease_digest', 8192)
+        _require(scratch._lease_fields_valid(updated), 'needed_cache_renewal_invalid')
+        pending = _record_event(files, store, intent, _raw(raw), operation, 'renewal_pending', None, moment,
+            principal=principal, owner=owner, policy_raw_sha256=_raw(policy_raw)['sha256'],
+            policy_raw_size_bytes=len(policy_raw), prior_lease_raw_sha256=selected['lease_raw_sha256'],
+            prior_lease_raw_size_bytes=selected['lease_raw_size_bytes'], next_lease_raw_sha256=_raw(payload)['sha256'],
+            next_lease_raw_size_bytes=len(payload), expires_at_epoch=expiry, size_budget_bytes=size_budget_bytes,
+            target_identity=birth['target_identity'])
+        lease_ref = _mutable_record_cas(files, target_parent, payload, lease_raw, name=scratch.LEASE_FILE, cap=8192)
+        changed = selected | dict(lease_raw_sha256=lease_ref['sha256'], lease_raw_size_bytes=lease_ref['size_bytes'],
+                                 expires_at_epoch=expiry)
+        next_entries = [changed if r['intent_id'] == intent_id else r for r in previous[1]['enrollments']]
+        projection_intent = intent | dict(policy_sha256=_raw(policy_raw)['sha256'], policy_size_bytes=len(policy_raw))
+        head, _ = _publish_projection(files, layout, authority_parent, store, projection_intent, _raw(raw), operation,
+                                     previous, next_entries, 'enabled', moment, expiry)
+        _record_event(files, store, intent, _raw(raw), operation, 'renewal_complete', pending, moment,
+            lease_raw_sha256=lease_ref['sha256'], lease_raw_size_bytes=lease_ref['size_bytes'],
+            authority_version=head['version'], expires_at_epoch=expiry, generation=selected['generation'])
+        return dict(status='needed_cache_renewed', generation=selected['generation'], expires_at_epoch=expiry,
+                    class_intent='cache', cleanup='owner_review', size_budget_bytes=size_budget_bytes)
+
+
+def _renew_allocation(files, root, rows):
+    """Finite original-parent inventory; unlisted bytes refuse renewed budget admission."""
+    expected = {r['relative_path']: r for r in rows}
+    metadata = {scratch.LEASE_FILE, MARKER, '.needed-cache-lifetime.lock', '.needed-cache-writer.lock'}
+    stack, total, observed, directories = [(root, '')], 0, set(), 0
+    while stack:
+        parent, prefix = stack.pop()
+        files.location(parent)
+        with os.scandir(parent) as entries:
+            for item in entries:
+                files.budget.charge('entries')
+                files.location(parent)
+                path = prefix+item.name
+                info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
+                _require(info.st_uid == 0 and info.st_gid == _blueprint_identity()[1]
+                         and not info.st_mode & 0o022, 'needed_cache_renewal_payload_unsafe')
+                if stat.S_ISDIR(info.st_mode):
+                    directories += 1
+                    _require(directories <= 256 and len(PurePosixPath(path).parts) <= 64
+                             and any(p.startswith(path+'/') for p in expected), 'needed_cache_unknown_payload')
+                    child = files.open(item.name, os.O_RDONLY | os.O_DIRECTORY, parent=parent)
+                    _require(os.fstat(child).st_dev == os.fstat(root).st_dev, 'needed_cache_cross_device')
+                    stack.append((child, path+'/'))
+                else:
+                    _require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                             and info.st_dev == os.fstat(root).st_dev, 'needed_cache_renewal_payload_unsafe')
+                    if not prefix and item.name in metadata:
+                        continue
+                    _require(path in expected and info.st_size == expected[path]['size_bytes'],
+                             'needed_cache_unknown_payload')
+                    observed.add(path)
+                    total += info.st_blocks*512
+    _require(observed == set(expected), 'needed_cache_payload_missing')
+    return total
