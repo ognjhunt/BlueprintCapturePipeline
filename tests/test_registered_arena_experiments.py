@@ -358,3 +358,23 @@ def test_arena_shell_does_not_reuse_expired_admission_budget(retirement_installa
 
     monkeypatch.setattr(subprocess, "run", child)
     assert arena.run_registered_arena_chain("r33", previous_tag="r32", now=lambda: 1102) == 0
+
+
+def test_existing_arena_resolver_selects_current_registration_for_fixed_namespace(
+    retirement_installation, monkeypatch
+):
+    from blueprint_pipeline import control_plane_arena_scratch as arena
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+
+    setup = retirement_installation
+    born = birth(setup, _arena(setup))
+    monkeypatch.setattr(consumer, "AUTHORITY_ROOT", setup[2].parents[1] / "experiment-authority")
+    monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
+    root = Path(setup[1]["lane_scratch_inputs_root"])
+    assert arena.resolve_arena_attempt(
+        "r33", inputs_root=root.parent, lane_root=root, now=lambda: 1102
+    ) == Path(born["path"])
+    with pytest.raises(ValueError, match="experiment_consumer_inactive"):
+        arena.resolve_arena_attempt(
+            "r33", writable=True, inputs_root=root.parent, lane_root=root, now=lambda: 2800
+        )
