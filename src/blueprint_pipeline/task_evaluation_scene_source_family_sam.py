@@ -223,9 +223,16 @@ def inventory(context, old, *, work_budget=None):
         parent = _parent(context, row, **_work_kwargs(work_budget))
         if parent:
             parents.append(parent)
-    parent_index = {}
+    parent_index, parent_proofs, parent_raw_keys = {}, {}, set()
     for row in (_work_items(parents, work_budget) if work_budget is not None else parents):
-        parent_index.setdefault((row[0]['request']['preparation_id'], row[0]['request_digest']), []).append(row)
+        key = (row[0]['request']['preparation_id'], row[0]['request_digest'])
+        raw_key = (*key, row[1]['sha256'], row[1]['size_bytes'])
+        if work_budget is not None:
+            work_budget.charge('facts', 3)
+        parent_proofs.setdefault(raw_key, []).append(row[1])
+        if raw_key not in parent_raw_keys:
+            parent_raw_keys.add(raw_key)
+            parent_index.setdefault(key, []).append(row)
     context.sam_parents = parent_index
     context.sam_current_plans = {}
     context.sam_plan_parent_checked = set()
@@ -252,7 +259,7 @@ def inventory(context, old, *, work_budget=None):
     # context.raw/observations, but do not Cartesian-scan their content joins.
     semantic_parents = {}
     for parent in (_work_items(parents, work_budget) if work_budget is not None else parents):
-        semantic_parents.setdefault(parent[0]['request_digest'], parent)
+        semantic_parents.setdefault((parent[0]['request_digest'], parent[1]['sha256'], parent[1]['size_bytes']), parent)
     for parent in (_work_items(semantic_parents.values(), work_budget) if work_budget is not None else semantic_parents.values()):
         request = parent[0]['request']
         mounts = request.get('runtime', {}).get('mounts', [])
@@ -295,15 +302,17 @@ def inventory(context, old, *, work_budget=None):
         if selected_plan and selected_plan[0].get('schema_version') == SCHEMAS['sam_plans'][0]:
             c.require(selected_plan[0]['source_commit'] == value['expected_source_commit'], 'sam_job_plan_commit_invalid', **_work_kwargs(work_budget))
         parent_rows = parent_index.get((value['parent_preparation_id'], value['parent_request_digest']), [])
-        if parent_rows and selected_plan:
-            _plan_parent(context, selected_plan, parent_rows[0], **_work_kwargs(work_budget))
+        if selected_plan:
+            for selected_parent in (_work_items(parent_rows, work_budget) if work_budget is not None else parent_rows):
+                _plan_parent(context, selected_plan, selected_parent, **_work_kwargs(work_budget))
         matched = results_by_job.get((value['child_id'], value['job_digest']), [])
         observations.append(c.observation(row, role='sam_job', child_id=value['child_id'], phase=value['phase'],
             result_binding_verified=len(matched) == 1, parent_binding_verified=len(parent_rows) == 1, **_work_kwargs(work_budget)))
         if (value['parent_preparation_id'], value['parent_request_digest']) in owner_keys and len(parent_rows) == 1:
             context.member(c.child(context.roots['sam_execution_root'], value['parent_request_digest'][7:], value['child_id'], **_work_kwargs(work_budget)),
                 'sam_execution_dependency', {'binding_strength': 'owner_parent_exact_job', 'intent_id': context.intent_id},
-                [proof, parent_rows[0][1]])
+                [proof, *parent_proofs[(value['parent_preparation_id'], value['parent_request_digest'],
+                    parent_rows[0][1]['sha256'], parent_rows[0][1]['size_bytes'])]])
         if not parent_rows:
             context.missing('sam_parent', 'parent_selector_unavailable', [proof], selector={
                 'preparation_id': value['parent_preparation_id'], 'request_digest': value['parent_request_digest']})

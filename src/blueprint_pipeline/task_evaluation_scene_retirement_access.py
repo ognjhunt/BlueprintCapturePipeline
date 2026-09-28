@@ -172,7 +172,8 @@ def _policy():
     if not selected:
         return None
     value = _read(selected, protected=True)
-    _require(set(value) == _POLICY_KEYS and value['schema_version'] == 'scene_retirement_policy.v1'
+    _require(set(value) in (_POLICY_KEYS, _POLICY_KEYS | {'reference_context'})
+             and value['schema_version'] == 'scene_retirement_policy.v1'
              and type(value['enabled']) is bool)
     _require(value['policy_digest'] == canonical_digest(value, digest_field='policy_digest'))
     _require(type(value['roots']) is list and len(value['roots']) <= 64)

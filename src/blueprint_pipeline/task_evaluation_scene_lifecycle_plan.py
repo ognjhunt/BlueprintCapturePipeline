@@ -202,6 +202,10 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
             result['measured_members'], result['sharing'], result['unique_observed_allocated_bytes'], _ = measure(
                 reader, historical, sink, result['family_obligations'], context['roots'])
             result['family_obligations'] = sink.rows(result['family_obligations'])
+        # Target evidence only: action admission additionally binds the exact
+        # contracts to protected installed policy and repeats them under EX.
+        sink.reserve_row(context)
+        result['planner_context'] = context
         if context_anchor is not None:
             sink.reserve_row({'metadata_only': True, 'anchor_coalesced': context_anchor.coalesced})
             result['context_acquisition'] = {'metadata_only': True, 'anchor_coalesced': context_anchor.coalesced}
