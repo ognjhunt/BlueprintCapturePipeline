@@ -14,6 +14,7 @@ from .task_evaluation_scene_retirement_access import _canonical, _require, Scene
 from .task_evaluation_scene_retirement_authority import selected_document
 from .task_evaluation_scene_retirement_declared_bytes import _selector
 from .task_evaluation_scene_lineage_budget import _Rows
+from .task_evaluation_scene_compilation_owner_contracts import FIELD_SETS
 
 _SCOPES={'pins','primary_queues','auxiliary_queues'}
 _ROLE_SCHEMAS={
@@ -169,14 +170,91 @@ def _current_sam_results(selected,fresh,allowance):
         selected[identity]=[proofs[0]]
 
 
-def _selected_sam(protection,selected,fresh,allowance):
+def _bound_compilations(fresh,selected,allowance):
+    """Index selected successful output joins once; raw history never qualifies."""
+    result={}
+    for row in _rows(fresh.get('historical_lineage',{}).get('compilation_native_owner_observations',[])):
+        allowance.tick()
+        _require(type(row) is dict,_REASON)
+        if (row.get('kind')!='compilation_output' or row.get('adapter_metadata_binding_verified') is not True
+                or row.get('compiler_output_metadata_binding_verified') is not True):
+            continue
+        proofs=_rows(row.get('source_provenance'))
+        envelope_names=set()
+        for proof in proofs:
+            allowance.tick()
+            if proof.get('role')!='compilation_envelopes':
+                continue
+            identity=_selector(proof)
+            if identity in selected and proof.get('seal_field')=='envelope_digest':
+                _require(len(envelope_names)<10000,'scene_retirement_reference_limit')
+                envelope_names.add(Path(identity[0]).name)
+        for proof in proofs:
+            allowance.tick()
+            if proof.get('role') not in {'compilation_envelopes','compilation_results'}:
+                continue
+            identity=_selector(proof)
+            if identity not in selected or Path(identity[0]).name not in envelope_names:
+                continue
+            _require(len(result)<10000 or identity in result,'scene_retirement_reference_limit')
+            result.setdefault(identity,set()).add(proof['role'])
+    return result
+
+
+def _compilation_value(identity,proofs,fresh,bound,allowance):
+    allowance.tick()
+    _require(proofs and identity in bound,_REASON)
+    roles={proof.get('role') for proof in proofs}
+    _require(len(roles)==1 and roles<=bound[identity],_REASON)
+    role=next(iter(roles))
+    _require(role in {'compilation_envelopes','compilation_results'},_REASON)
+    roots=fresh.get('planner_context',{}).get('roots')
+    _require(type(roots) is dict and type(roots.get('compilation_queue_root')) is str,_REASON)
+    root=_canonical(roots['compilation_queue_root'])
+    path=Path(identity[0])
+    state='completed' if role=='compilation_envelopes' else 'results'
+    _require(path.is_relative_to(root) and len(path.relative_to(root).parts)==2 and path.parent.name==state,_REASON)
+    try:
+        value=selected_document(dict(zip(('path','sha256','size_bytes'),identity)),maximum=4*1024*1024)
+    except (OSError,ValueError,TypeError,UnicodeError):
+        raise SceneRetirementAccessError('scene_retirement_reference_changed') from None
+    field='envelope_digest' if role=='compilation_envelopes' else 'result_digest'
+    schema='task_evaluation_episode_compilation_'+('envelope' if role=='compilation_envelopes' else 'result')+'.v1'
+    probe_fields={'destination_native_probe_request_path','destination_native_probe_request_digest',
+                  'destination_native_probe_request_document_digest'}
+    required=FIELD_SETS[role]-(probe_fields if role=='compilation_results' else set())
+    _require(required<=set(value)<=FIELD_SETS[role] and value.get('schema_version')==schema
+        and (not (set(value)&probe_fields) or probe_fields<=set(value))
+        and type(value.get('compilation_id')) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',value['compilation_id'])
+        and value.get(field)==canonical_digest(value,digest_field=field)
+        and all(proof.get('seal_field')==field and proof.get('seal_digest')==value[field] for proof in proofs),_REASON)
+    suffix=path.name.removeprefix(value['compilation_id']+'-').removesuffix('.json')
+    _require(path.name==value['compilation_id']+'-'+suffix+'.json' and re.fullmatch('[0-9a-f]{64}',suffix),_REASON)
+    if role=='compilation_envelopes':
+        _require(suffix==value[field][7:] and value.get('preparation_id')==value['compilation_id']
+            and all(value.get(k) is True for k in ('automatic_progression_required',
+                'robot_specific_episode_packet_compiled_in_production','production_compiler_owns_episode_packet')),_REASON)
+    else:
+        _require(value.get('status')=='compiled_for_production_launch' and value.get('blockers')==[]
+            and value.get('compiled_by_production') is True and value.get('automatic_progression_required') is True,_REASON)
+    _require(all(value.get(k) is False for k in ('customer_supplied_prebuilt_episode_packet',
+        'provider_mutation_performed','paid_execution_requested')),_REASON)
+    return value,role,root,field
+
+
+def _selected_sam(protection,selected,fresh,allowance,bound):
     """Transfer an exact prefix-selected terminal SAM record, never raw history."""
     allowance.tick()
     _require(set(protection)=={'kind','path','raw_sha256','raw_size_bytes','scope','action'}
              and protection['scope'] in {'selected_primary_queue_states_only','preparation_sam_auxiliary_layouts_only'}
              and protection['action']=='KEEP',_REASON)
     identity=_selector(protection,'path','raw_sha256','raw_size_bytes')
-    value,role,root,field=_sam_value(identity,selected.get(identity,[]),fresh,allowance)
+    proofs=selected.get(identity,[])
+    if proofs and proofs[0].get('role') in {'compilation_envelopes','compilation_results'}:
+        _require(protection['scope']=='selected_primary_queue_states_only',_REASON)
+        value,role,root,field=_compilation_value(identity,proofs,fresh,bound,allowance)
+    else:
+        value,role,root,field=_sam_value(identity,proofs,fresh,allowance)
     return dict(source={'row_path':identity[0],'raw_sha256':identity[1],'raw_size_bytes':identity[2],
                         'role':role,'queue_root':str(root)},canonical_digest=value[field],
                 disposition='exact_selected_closed_metadata_retained',action='KEEP')
@@ -191,6 +269,7 @@ def validate_current_reference_transfer(fresh,allowance):
              and not observation.get('blockers'),'scene_retirement_reference_scope_unproven')
     selected=_sources(fresh,allowance)
     _current_sam_results(selected,fresh,allowance)
+    compilations=_bound_compilations(fresh,selected,allowance)
     records=[]
     emitted=0
     for row in _rows(observation.get('record_dispositions')):
@@ -206,7 +285,7 @@ def validate_current_reference_transfer(fresh,allowance):
         allowance.tick()
         _require(type(protection) is dict,_REASON)
         if protection.get('kind')=='unsupported_queue_observation':
-            current=_selected_sam(protection,selected,fresh,allowance)
+            current=_selected_sam(protection,selected,fresh,allowance,compilations)
             emitted+=1024+len(current['source']['row_path'].encode('utf-8'))
             _require(emitted<=1024*1024,'scene_retirement_reference_limit')
             auxiliaries.append(current)
