@@ -104,3 +104,25 @@ def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_install
     outcome = next(row for row in report['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
     assert outcome['decision'] == 'retired', outcome
     assert phases.count('removal_batch') == 3
+
+
+def test_same_payload_role_cannot_rewind_and_refund_its_source_window(tmp_path):
+    import os
+    from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
+    root = tmp_path/'target'
+    root.mkdir()
+    (root/'member').write_bytes(b'tiny')
+    files = _ActionFiles()
+    try:
+        target, _ = files.parent(root/'member')
+        files.payload(root, target, expected_payload_bytes=4)
+        fd = files.open('member', os.O_RDONLY, parent=target)
+        assert files.payload_read(fd, 4, role='issue_hash') == b'tiny'
+        os.lseek(fd, 0, os.SEEK_SET)
+        with pytest.raises(ValueError, match='experiment_work_payload_cursor_changed'):
+            files.payload_read(fd, 4, role='issue_hash')
+        with pytest.raises(ValueError, match='experiment_work_'):
+            files.phase('finalize')
+    finally:
+        files.finish()
+        files.budget.close()
