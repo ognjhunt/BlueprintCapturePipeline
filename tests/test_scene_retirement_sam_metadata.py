@@ -134,3 +134,32 @@ def test_metadata_framing_quota_refuses_before_payload_read(tmp_path,monkeypatch
     value[seal]=canonical_digest(value,digest_field=seal)
     with pytest.raises(ValueError,match='scene_retirement_metadata_limit'):
         publish(tmp_path,monkeypatch,[(relative,value)])
+
+
+@pytest.mark.parametrize('reader',['adoption','preparation_evidence'])
+def test_actual_sam_reference_reader_keeps_exact_original_metadata_identity(tmp_path,monkeypatch,reader):
+    relative,schema,seal=CASES[2]
+    value=dict(schema_version=schema)
+    value[seal]=canonical_digest(value,digest_field=seal)
+    raws,_,member=publish(tmp_path,monkeypatch,[(relative,value)])
+    path,raw=next(iter(raws.items()))
+    reference=dict(path=str(path),sha256='sha256:'+hashlib.sha256(raw).hexdigest(),size_bytes=len(raw))
+    if reader=='adoption':
+        from blueprint_pipeline.task_evaluation_sam31_prefix_adoption import _ref as resolve
+    else:
+        from blueprint_pipeline.task_evaluation_sam31_preparation_queue import verify_evidence_reference as resolve
+    assert resolve(reference,[member])==path
+    reference['size_bytes']+=1
+    with pytest.raises(ValueError):
+        resolve(reference,[member])
+
+
+def test_retired_scientific_payload_requires_restore_before_consumer_or_rerun(tmp_path,monkeypatch):
+    relative,schema,seal=CASES[2]
+    value=dict(schema_version=schema)
+    value[seal]=canonical_digest(value,digest_field=seal)
+    _,_,member=publish(tmp_path,monkeypatch,[(relative,value)])
+    from blueprint_pipeline.task_evaluation_sam31_preparation_queue import verify_evidence_reference
+    reference=dict(path=str(member/'scientific-payload.bin'),sha256='sha256:'+'b'*64,size_bytes=1)
+    with pytest.raises(ValueError,match='scene_retirement_restore_required'):
+        verify_evidence_reference(reference,[member])
