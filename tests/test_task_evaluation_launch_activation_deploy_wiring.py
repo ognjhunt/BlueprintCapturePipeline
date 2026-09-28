@@ -18,7 +18,7 @@ def test_activation_worker_is_hardened_and_watches_only_its_queue() -> None:
     assert "User=blueprint" in service
     assert "NoNewPrivileges=true" in service
     assert "ProtectSystem=strict" in service
-    assert "task_evaluation_launch_activation_worker --max-messages 1" in service
+    assert "-m blueprint_pipeline.task_evaluation_scene_retirement_supervisor --worker blueprint_pipeline.task_evaluation_launch_activation_worker -- --max-messages 1" in service
     assert "task-evaluation-scene-constructions" in service
     assert "task-evaluation-inputs/system-runtimes" in service
     assert "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=" in service
