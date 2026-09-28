@@ -522,3 +522,55 @@ that partial scratch is preserved, not deleted or used as qualified runtime.
 Actual extraction and cold import must be rehearsed on Linux before the VM
 bootstrap is integrated or admitted. Neither download hashes nor fixture probes
 establish VM, Docker, GPU inference, scene scoring or public rights.
+
+## Reviewed repair: minimal host cold-import closure
+
+ADP-050 Day 28, owner-authorized shared G1 configuration extension. The actual
+Linux rehearsal at `host-python-cold-20260928T0640Z` extracted all three exact
+assets, but its fresh interpreter failed importing Torch through catalogue →
+preflight → SONIC bridge. No simulator, policy query or provider allocation ran.
+An import-graph inspection also found the packet verifier loading the allocator
+merely for its image constant, and CAD receipt metadata loading Pillow merely
+for rendering helpers. Those edges would discover the next missing dependency
+on an otherwise minimal host. Do not install the simulator stack on that host.
+
+Smallest repair: defer Torch and Pillow imports to the existing tensor/image
+operations, and use the identical pinned image constant from the lightweight
+launcher in the scene bundle verifier. Preserve all actual tensor validation,
+image decoding, source hashes, scene verification and execution behavior.
+The production cold probe must reject simulator/model/render/provider imports
+even if a developer interpreter happens to have them installed.
+
+Test first: import the actual host/output and catalogue in a fresh interpreter
+with those imports explicitly denied; require pure metadata to remain usable.
+Call the actual tensor conversion under the same denial and require a failure,
+not a substitute tensor. Re-run existing SONIC tensor and CAD image tests to
+protect unchanged numerical/image behavior, sealed provider closure and the
+policy lifecycle rehearsal. Replay the complete production probe on Linux with
+the retained actual Python and wheels, a new committed source snapshot, and a
+new receipt. Preserve the failed receipt and all originals; no new downloads,
+GPU spend, hand data deletions, or paid admission relaxation.
+
+Design review: inspected every top-level dependency path from both host modules;
+Torch, Pillow and the allocator constant are the relevant eager edges. Runtime
+imports remain mandatory at the operations that need them. Accepted for a
+focused red-first repair; cold-import success alone does not qualify a VM,
+GPU execution, delivery mode, episode, rights or billing.
+
+Execute-path lookahead additionally found `preflight_g1_vm_host` importing the
+allocator to read its driver constant, pulling YAML even after cold import was
+fixed. A fresh-process hardware-preflight test with fake Docker/driver responses
+reproduced that failure before any VM spend. Move the identical `580.65.06` floor
+to the lightweight launcher and re-export the existing allocator API from it.
+The fake hardware test proves only that execute-path dependency boundary; actual
+driver/runtime/image observations remain mandatory on an admitted VM.
+
+Verification checkpoint: all 106 existing host/bootstrap/SONIC/image/preflight/
+provider-closure/lifecycle cases pass; all four fresh-process boundary cases
+pass after supplying the missing packet digest in the new preflight fixture.
+The combined run's sole failure was that incomplete fixture, not another missing
+runtime dependency; the corrected four-case run passes in 1.10s. The shared
+launcher has 27 passing cases. A separate selected-bundle/host/closure/lifecycle
+run passed all 69 cases before the additional driver-constant repair. Changed
+file Ruff and diff checks pass. These proofs still use fake hardware; a retained
+real Linux cold replay of the committed snapshot is required next.

@@ -268,7 +268,13 @@ def extract_host_dependency_wheel(path: Path, destination: Path, row):
 
 
 _PROBE = '''
-import importlib, importlib.metadata, json, pathlib, platform, sys
+import importlib, importlib.abc, importlib.metadata, json, pathlib, platform, sys
+class HostImportBoundary(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'torch', 'onnxruntime', 'pxr', 'isaaclab',
+                'isaacsim', 'PIL', 'yaml', 'packaging'} or fullname == 'blueprint_pipeline.vast_provider_adapter':
+            raise ImportError('g1_host_import_forbidden:' + fullname)
+sys.meta_path.insert(0, HostImportBoundary())
 runtime = pathlib.Path(sys.argv[1])
 python = pathlib.Path(sys.prefix).resolve()
 sys.path.insert(0, str(runtime))

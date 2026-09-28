@@ -35,7 +35,9 @@ from .native_g1_team_runtime_session import open_g1_team_runtime_session
 from .native_g1_team_worker_supervisor import (
     MAX_TIMEOUT_SECONDS, run_g1_team_worker_process,
 )
-from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .native_task_isaaclab_launch import (
+    NATIVE_TASK_ARENA_IMAGE, NATIVE_TASK_ARENA_MINIMUM_DRIVER_VERSION,
+)
 
 HOST_SCHEMA = "native_g1_team_vm_host_result.v1"
 HOST_FILENAME = HOST_SCHEMA + ".json"
@@ -129,8 +131,7 @@ def preflight_g1_vm_host(packet: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("g1_vm_host_nvidia_runtime_unavailable")
     gpu = subprocess.run(["nvidia-smi", "--query-gpu=index,driver_version", "--format=csv,noheader"],
                          capture_output=True, text=True, check=False, timeout=20)
-    from .native_task_arena_vast import MINIMUM_DRIVER_VERSION
-    floor = tuple(int(part) for part in MINIMUM_DRIVER_VERSION.split("."))
+    floor = tuple(int(part) for part in NATIVE_TASK_ARENA_MINIMUM_DRIVER_VERSION.split("."))
     drivers = [row.strip().split(",") for row in gpu.stdout.splitlines()]
     if (gpu.returncode != 0 or not any(len(row) == 2 and row[0].strip() == "0"
             and re.fullmatch(r"\d+\.\d+\.\d+", row[1].strip())
