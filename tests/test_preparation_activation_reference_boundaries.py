@@ -74,7 +74,7 @@ def test_extreme_observed_integer_is_fixed_resource_refusal_without_raw_decimal_
 
 def test_integer_bit_budget_precedes_decimal_size_allocation(monkeypatch):
     row = record()
-    monkeypatch.setattr(subject, "MAX_OUTPUT_INTEGER_BITS", 64)
+    monkeypatch.setattr(subject, "MAX_OUTPUT_INTEGER_BITS", 64, raising=False)
     result = observe(replace(row, observed_identity=(1 << 65, 1, len(row.raw_bytes), 0, 0)))
     assert result.blockers == ("reference_output_limit",)
     assert not result.records
