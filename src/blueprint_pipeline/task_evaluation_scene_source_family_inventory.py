@@ -49,7 +49,7 @@ def join_retained_scene_source_family_inventory(*, intent_id, seed_records, down
         raise SceneSourceFamilyInventoryError('scene_source_family_input_invalid') from None
 
 
-def _join(intent_id, seed_records, downstream_records, source_records, roots, parent_routes, metadata_roots):
+def _join(intent_id, seed_records, downstream_records, source_records, roots, parent_routes, metadata_roots, *, emission_budget=None):
     c = contracts
     c.require(c.matches(intent_id, downstream.contracts.ID) and isinstance(seed_records, dict)
         and set(seed_records) == downstream.seed_module._ROLES | {'intent', 'projection'}
@@ -76,7 +76,11 @@ def _join(intent_id, seed_records, downstream_records, source_records, roots, pa
     limits = {k: globals()[k] for k in ('MAX_RECORD_BYTES', 'MAX_TOTAL_BYTES', 'MAX_OUTPUT_BYTES',
         'MAX_RECORDS', 'MAX_REFERENCES', 'MAX_ROWS', 'MAX_NODES', 'MAX_DEPTH', 'MAX_ADOPTION_DEPTH', 'MAX_ADOPTION_NODES')}
     decoded = c.decode(groups, limits)
-    emission_budget = RetainedEmissionBudget(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
+    if emission_budget is None:
+        emission_budget = RetainedEmissionBudget(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
+    else:
+        c.require(isinstance(emission_budget, RetainedEmissionBudget), 'parameters_invalid')
+        emission_budget = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
     context = c.Context(decoded, roots, limits, intent_id, ROLES, emission_budget=emission_budget)
     context.routes, context.metadata_roots = routes, metadata_roots
     context.references()
