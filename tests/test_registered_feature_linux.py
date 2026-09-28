@@ -15,6 +15,7 @@ import io
 import json
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,11 @@ import pytest
 
 def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+
+def _substitute_gc_paths(line, replacements):
+    expression = '|'.join(re.escape(path) for path in sorted(replacements, key=len, reverse=True))
+    return re.sub(expression, lambda match: replacements[match.group(0)], line)
 
 
 def test_shipped_gc_path_substitution_does_not_rewrite_inserted_fixture_root():
@@ -823,8 +829,7 @@ def _run_shipped_gc_sandbox(value, action, clock, pins):
     }
     lines = []
     for line in original.splitlines():
-        for source, target in replacements.items():
-            line = line.replace(source, target)
+        line = _substitute_gc_paths(line, replacements)
         if line.startswith('ExecStart='):
             line = 'ExecStart=' + str(wrapper) + ' ' + str(selected)
         if line.startswith(('ReadWritePaths=', 'ReadOnlyPaths=')):
