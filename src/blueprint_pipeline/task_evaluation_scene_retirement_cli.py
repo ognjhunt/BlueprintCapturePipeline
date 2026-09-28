@@ -30,6 +30,10 @@ _SETTING = 'BLUEPRINT_CONTROL_PLANE_SCENE_RETIREMENT'
 _FILES = dict(access_key='ACCESS_KEY_ID', secret_key='SECRET_ACCESS_KEY', bucket='BUCKET',
               endpoint='ENDPOINT_URL', region='REGION')
 _ENV_FILES = {key:'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_'+name+'_FILE' for key,name in _FILES.items()}
+_PUBLICATION_ENV_FILES = {key:'BLUEPRINT_WAM_OBJECT_STORE_'+name+'_FILE' for key,name in _FILES.items()}
+_PUBLICATION_DEFAULT_FILES = dict(access_key='digitalocean_spaces_access_key_id',
+    secret_key='digitalocean_spaces_secret_access_key',bucket='digitalocean_spaces_bucket',
+    endpoint='digitalocean_spaces_endpoint_url',region='digitalocean_spaces_region')
 _DEFAULT_FILES = dict(access_key='backblaze_b2_key_id', secret_key='backblaze_b2_application_key',
     bucket='backblaze_b2_bucket', endpoint='backblaze_b2_s3_endpoint_url', region='backblaze_b2_region')
 
@@ -115,6 +119,7 @@ class SceneArchiveTransport:
         self.allowance = None
         self.upload = None
         self.closed = False
+        self.publication = None
 
     def bind_allowance(self, allowance):
         from .task_evaluation_scene_retirement_preservation import ActionAllowance
@@ -200,6 +205,66 @@ class SceneArchiveTransport:
         _require(allowance is self.allowance,'scene_retirement_transport_origin_unproven')
         return self._read_archive(uri,charge=True)
 
+    def read_published_object_charged(self, uri, allowance, *, expected_size_bytes):
+        """Read only an exact receipt-selected derivative from its existing store.
+
+        Publication URIs really use Bucket=blueprint with the legacy credential
+        set. They are not aliases for this transport's private B2 archive bucket.
+        The engine additionally proves the namespace, full digest and owner.
+        """
+        from urllib.parse import urlsplit
+        self._tick()
+        _require(allowance is self.allowance,'scene_retirement_transport_origin_unproven')
+        _require(type(uri) is str and 0<len(uri)<=4096,
+                 'scene_retirement_transport_publication_scope_invalid')
+        parsed=urlsplit(uri)
+        parts=parsed.path.removeprefix('/').split('/')
+        _require(parsed.scheme=='s3' and parsed.netloc=='blueprint'
+                 and not parsed.query and not parsed.fragment and 4<=len(parts)<=64
+                 and parts[:2]==['task-evaluation','production-inputs'] and parts[3]!='source'
+                 and all(0<len(part)<=255 and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*',part)
+                         for part in parts)
+                 and uri=='s3://blueprint/'+'/'.join(parts),
+                 'scene_retirement_transport_publication_scope_invalid')
+        _require(type(expected_size_bytes) is int and 0<expected_size_bytes<=_ARCHIVE_MAX
+                 and expected_size_bytes<=allowance.limits['remote_bytes']-allowance.counts['remote_bytes'],
+                 'scene_retirement_byte_limit')
+        if self.publication is None:
+            client=installed_publication_client()
+            try:
+                publication=SceneArchiveTransport(client=client,bucket='blueprint')
+                publication.bind_allowance(allowance)
+            except BaseException as failure:
+                try:
+                    client.close()
+                except Exception:
+                    failure.add_note('scene_retirement_remote_cleanup_unproven')
+                raise
+            self.publication=publication
+        response=self.publication._call('get_object',Bucket='blueprint',Key='/'.join(parts))
+        body=response.get('Body')
+        try:
+            _require(type(response.get('ContentLength')) is int
+                     and response['ContentLength']==expected_size_bytes,
+                     'scene_retirement_transport_readback_unproven')
+            received=0
+            while received<expected_size_bytes:
+                self._tick()
+                count=min(_CHUNK,expected_size_bytes-received)
+                allowance.charge('remote_bytes',count)
+                chunk=self._read_body(body,count)
+                self._tick()
+                _require(type(chunk) is bytes and 0<len(chunk)<=count,
+                         'scene_retirement_transport_readback_unproven')
+                received+=len(chunk)
+                yield chunk
+            self._tick()
+            _require(self._read_body(body,1)==b'','scene_retirement_transport_readback_unproven')
+            self._tick()
+        finally:
+            if callable(getattr(body,'close',None)):
+                self._close_response(body)
+
     def _read_body(self, body, count):
         try:
             return body.read(count)
@@ -255,10 +320,20 @@ class SceneArchiveTransport:
     def close(self):
         if not self.closed:
             self.closed = True
-            try:
-                self.client.close()
-            except Exception:
-                raise access.SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
+            incoming=sys.exc_info()[1]
+            failed=False
+            for owned in (self.publication,self.client):
+                if owned is None:
+                    continue
+                try:
+                    owned.close()
+                except Exception:
+                    failed=True
+            if failed:
+                if incoming is not None:
+                    incoming.add_note('scene_retirement_remote_cleanup_unproven')
+                else:
+                    raise access.SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
 
 
 def _scalar(path):
@@ -272,6 +347,23 @@ def _scalar(path):
     value=raw.decode().strip()
     _require(value and '\n' not in value and '\r' not in value)
     return value
+
+
+def installed_publication_client():
+    """Existing protected Spaces binding; no generic object-store fallback."""
+    import boto3
+    from botocore.config import Config
+    from urllib.parse import urlsplit
+    values={key:_scalar(os.environ.get(_PUBLICATION_ENV_FILES[key]) or
+            '/etc/blueprint/provider-secrets/'+_PUBLICATION_DEFAULT_FILES[key]) for key in _FILES}
+    _require(values['bucket']=='blueprint','scene_retirement_transport_publication_scope_invalid')
+    endpoint=urlsplit(values['endpoint'])
+    _require(endpoint.scheme=='https' and endpoint.hostname and not endpoint.username and not endpoint.password
+             and not endpoint.query and not endpoint.fragment,
+             'scene_retirement_transport_publication_scope_invalid')
+    return boto3.client('s3',aws_access_key_id=values['access_key'],aws_secret_access_key=values['secret_key'],
+        endpoint_url=values['endpoint'],region_name=values['region'],config=Config(signature_version='s3v4',
+        connect_timeout=5,read_timeout=30,retries={'total_max_attempts':1},max_pool_connections=4))
 
 
 def installed_transport():
@@ -299,7 +391,7 @@ def installed_transport():
 
 def load_installed_environment():
     """Read only this action's literal settings from the protected host file."""
-    allowed=set(_ENV_FILES.values()) | {'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',
+    allowed=set(_ENV_FILES.values()) | set(_PUBLICATION_ENV_FILES.values()) | {'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',
         'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET'}
     def version(info):
         return (access._identity(info),info.st_uid,info.st_gid,info.st_size,
