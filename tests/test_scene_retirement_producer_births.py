@@ -32,6 +32,7 @@ def test_authenticated_child_is_born_before_producer_payload(tmp_path, monkeypat
     assert result['state'] == 'active'
     assert result['owner_raw_ref'] == prior['owner_raw_ref']
     assert result['birth_request_raw_ref'] == prior['birth_request_raw_ref']
+    assert result['source_storage_authority_raw_ref'] == prior['source_storage_authority_raw_ref']
     assert target.stat().st_ino == result['ino']
 
 
