@@ -40,7 +40,7 @@ def test_actual_member_detaches_only_after_durable_exact_intent_then_removes_kno
     assert observed and outcome['outcome']=='removed' and not member.exists()
     assert not (member.parent/observed[0]).exists()
     events=[json.loads(path.read_text()) for path in journal.directory.glob('*.json')]
-    assert [event['event'] for event in sorted([v for v in events if 'event' in v],key=lambda v:v['sequence'])] == ['detach_planned','detached','member_removed']
+    assert [event['event'] for event in sorted([v for v in events if 'event' in v],key=lambda v:v['sequence'])] == ['detach_planned','detached','leaf_unlink_planned','leaf_unlinked','member_removed']
 
 
 def test_new_detach_destination_is_never_overwritten(tmp_path,monkeypatch):

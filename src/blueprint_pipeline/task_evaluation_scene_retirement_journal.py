@@ -16,7 +16,8 @@ from .task_evaluation_scene_retirement_authority import TOKEN, raw_digest, raw_r
 from .task_evaluation_scene_retirement_generations import _guard, _named, _new_file
 
 EVENTS={'detach_planned','detached','member_removed','retiring','retired','restoring',
-        'restore_directory_created','restore_file_created','member_restored','restored-active','kept'}
+        'restore_directory_created','restore_file_created','member_restored','restored-active','kept',
+        'leaf_unlink_planned','leaf_unlinked'}
 
 
 def _parent(directory,fd,expected):

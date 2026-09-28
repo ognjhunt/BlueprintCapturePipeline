@@ -26,12 +26,18 @@ def inventory_digest(preserved,index):
     return canonical_digest({'files':files,'directories':directories})
 
 
-def _verify_current(preserved,index,allowance,removed_inodes,*,detached_path=None):
+def _verify_current(preserved,index,allowance,removed_inodes,*,detached_path=None,missing_files=()):
     member=preserved['members'][index]
     files,directories=[],[]
     root=Path(member['path']) if detached_path is None else detached_path
     current=_scan(root,index,allowance,files,directories)
-    if detached_path is None:
+    if missing_files:
+        _require(current['snapshot'][:3]+current['snapshot'][4:6]
+                 ==member['snapshot'][:3]+member['snapshot'][4:6]
+                 and current['snapshot'][-1] in {member['snapshot'][-1],member['snapshot'][-1]-sum(
+                     str(Path(name).parent)=='.' for name in missing_files)},
+                 'scene_retirement_member_changed')
+    elif detached_path is None:
         _require(current['snapshot']==member['snapshot'],'scene_retirement_member_changed')
     else:
         # A proved atomic rename can change only the root directory ctime here.
@@ -42,11 +48,19 @@ def _verify_current(preserved,index,allowance,removed_inodes,*,detached_path=Non
                  'scene_retirement_member_changed')
     expected_files={row['relative_path']:row for row in preserved['files'] if row['member_index']==index}
     expected_directories={row['relative_path']:row for row in preserved['directories'] if row['member_index']==index}
-    _require({row['relative_path'] for row in files}==expected_files.keys()
+    _require({row['relative_path'] for row in files}==expected_files.keys()-set(missing_files)
              and {row['relative_path'] for row in directories}==expected_directories.keys(),
              'scene_retirement_member_changed')
     for row in directories:
-        _require(row['snapshot']==expected_directories[row['relative_path']]['snapshot'],'scene_retirement_member_changed')
+        original=expected_directories[row['relative_path']]
+        if any(Path(name).is_relative_to(Path(row['relative_path'])) for name in missing_files):
+            _require(row['snapshot'][:3]+row['snapshot'][4:6]
+                     ==original['snapshot'][:3]+original['snapshot'][4:6]
+                     and row['snapshot'][-1] in {original['snapshot'][-1],original['snapshot'][-1]-sum(
+                         str(Path(name).parent)==row['relative_path'] for name in missing_files)},
+                     'scene_retirement_member_changed')
+        else:
+            _require(row['snapshot']==original['snapshot'],'scene_retirement_member_changed')
     for row in files:
         original=expected_files[row['relative_path']]
         removed=removed_inodes.get(tuple(original['physical_identity'][:2]),0)
@@ -71,6 +85,31 @@ def _current_parent(path,fd,expected):
     _guard(fd,expected)
 
 
+def _leaf_plans(preserved,index,journal,generation_id):
+    expected={row['relative_path']:row for row in preserved['files'] if row['member_index']==index}
+    plans={}
+    for event in journal.events:
+        journal.allowance.tick()
+        if event['event']!='leaf_unlink_planned' or event['member_key']!=str(index):
+            continue
+        proof=selected_document(event['raw_ref'],maximum=65536,protected=True)
+        value=proof.get('evidence',{})
+        relative=value.get('relative_path')
+        _require(type(relative) is str and relative in expected and relative not in plans,
+                 'scene_retirement_journal_chain_unproven')
+        row=expected[relative]
+        _require(proof.get('token')==journal.token and proof.get('event')=='leaf_unlink_planned'
+                 and proof.get('member_key')==str(index)
+                 and value.get('generation_id')==generation_id
+                 and value.get('canonical_path')==preserved['members'][index]['path']
+                 and value.get('physical_identity')==row['physical_identity']
+                 and value.get('sha256')==row['sha256'] and value.get('size_bytes')==row['size_bytes']
+                 and type(value.get('nlink_before')) is int and 0<value['nlink_before']<=row['snapshot'][-1],
+                 'scene_retirement_journal_chain_unproven')
+        plans[relative]=(event['raw_ref'],value)
+    return plans
+
+
 def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_inodes=None):
     """Internal: durable pre-detach proof, atomic no-replace and exact leaf union."""
     allowance=journal.allowance
@@ -80,6 +119,8 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
     source=Path(member['path'])
     destination=source.parent/('.scene-retirement-'+journal.token+'-'+str(member_index))
     removed=removed_inodes if removed_inodes is not None else {}
+    leaf_plans=_leaf_plans(preserved,member_index,journal,generation_id)
+    missing_files=set()
     plans=[row for row in journal.events if row['event']=='detach_planned' and row['member_key']==str(member_index)]
     _require(len(plans)<=1,'scene_retirement_journal_chain_unproven')
     with _opened(source.parent,directory=True) as (parent,parent_info):
@@ -104,7 +145,26 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
             _current_parent(source.parent,parent,parent_identity)
             found=os.stat(destination.name,dir_fd=parent,follow_symlinks=False)
             _require(list(_identity(found))==member['physical_identity'],'scene_retirement_member_changed')
-            _verify_current(preserved,member_index,allowance,removed,detached_path=destination)
+            for relative in leaf_plans:
+                candidate=Path(relative)
+                with _opened(destination/candidate.parent,directory=True) as (leaf_fd,leaf_info):
+                    expected_parent=tuple(member['physical_identity']) if str(candidate.parent)=='.' else next(
+                        tuple(row['physical_identity']) for row in preserved['directories']
+                        if row['member_index']==member_index and row['relative_path']==str(candidate.parent))
+                    _require(_identity(leaf_info)==expected_parent,'scene_retirement_member_changed')
+                    _current_parent(destination/candidate.parent,leaf_fd,expected_parent)
+                    try:
+                        os.stat(candidate.name,dir_fd=leaf_fd,follow_symlinks=False)
+                    except FileNotFoundError:
+                        missing_files.add(relative)
+            by_inode={}
+            for row in preserved['files']:
+                if row['member_index']==member_index and row['relative_path'] in missing_files:
+                    key=tuple(row['physical_identity'][:2])
+                    by_inode[key]=by_inode.get(key,0)+1
+            for key,count in by_inode.items():
+                removed[key]=max(removed.get(key,0),count)
+            _verify_current(preserved,member_index,allowance,removed,detached_path=destination,missing_files=missing_files)
         else:
             _require(list(_identity(original))==member['physical_identity'],'scene_retirement_member_changed')
             _verify_current(preserved,member_index,allowance,removed)
@@ -126,8 +186,17 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
         directories={row['relative_path']:row for row in preserved['directories'] if row['member_index']==member_index}
         directory_ids={'':tuple(member['physical_identity']),**{
             name:tuple(row['physical_identity']) for name,row in directories.items()}}
-        removed_allocated=0
+        removed_allocated=sum(row['allocated_bytes'] for row in files if row['relative_path'] in missing_files
+            and leaf_plans[row['relative_path']][1]['nlink_before']==1)
         for row in files:
+            if row['relative_path'] in missing_files:
+                planned_leaf=leaf_plans[row['relative_path']][0]
+                if not any(event['event']=='leaf_unlinked' and event['member_key']==str(member_index)
+                           and event['evidence'].get('leaf_plan_raw_ref')==planned_leaf for event in journal.events):
+                    journal.append('leaf_unlinked',member_key=str(member_index),evidence={
+                        'relative_path':row['relative_path'],'leaf_plan_raw_ref':planned_leaf,
+                        'absence_verified_after_interruption':True})
+                continue
             relative=Path(row['relative_path'])
             parent_relative='' if str(relative.parent)=='.' else str(relative.parent)
             leaf_parent=destination/relative.parent
@@ -151,6 +220,17 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
                 _current_parent(leaf_parent,leaf_fd,expected)
                 _require(list(_snapshot(os.stat(relative.name,dir_fd=leaf_fd,follow_symlinks=False)))==current['snapshot'],
                          'scene_retirement_payload_changed')
+                if row['relative_path'] in leaf_plans:
+                    planned_leaf=leaf_plans[row['relative_path']][0]
+                else:
+                    planned_leaf=journal.append('leaf_unlink_planned',member_key=str(member_index),evidence={
+                        'canonical_path':str(source),'relative_path':row['relative_path'],
+                        'generation_id':generation_id,'physical_identity':row['physical_identity'],
+                        'size_bytes':row['size_bytes'],'sha256':row['sha256'],'nlink_before':info.st_nlink})
+                allowance.tick()
+                _current_parent(leaf_parent,leaf_fd,expected)
+                _require(list(_snapshot(os.stat(relative.name,dir_fd=leaf_fd,follow_symlinks=False)))==current['snapshot'],
+                         'scene_retirement_payload_changed')
                 os.unlink(relative.name,dir_fd=leaf_fd)
                 removed[key]=removed_count+1
                 if info.st_nlink==1:
@@ -158,6 +238,9 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
                 allowance.tick()
                 _current_parent(leaf_parent,leaf_fd,expected)
                 os.fsync(leaf_fd)
+                journal.append('leaf_unlinked',member_key=str(member_index),evidence={
+                    'relative_path':row['relative_path'],'leaf_plan_raw_ref':planned_leaf,
+                    'absence_verified_after_interruption':False})
         for relative,row in sorted(directories.items(),key=lambda pair:len(Path(pair[0]).parts),reverse=True):
             value=Path(relative)
             parent_relative='' if str(value.parent)=='.' else str(value.parent)
