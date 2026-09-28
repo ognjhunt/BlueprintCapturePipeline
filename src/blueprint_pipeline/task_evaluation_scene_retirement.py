@@ -20,7 +20,7 @@ from . import task_evaluation_scene_retirement_access as access
 from .task_evaluation_scene_retirement_access import _canonical, _identity, _opened, _require
 from .task_evaluation_scene_retirement_authority import load_authority, selected_document, load_document
 from .task_evaluation_scene_retirement_generations import _write, _sealed
-from .task_evaluation_scene_retirement_journal import SceneJournal, publish_record
+from .task_evaluation_scene_retirement_journal import SceneJournal
 from .task_evaluation_scene_retirement_mutation import detach_and_remove, inventory_digest, removal_records
 from .task_evaluation_scene_retirement_preservation import ActionAllowance, preserve_members
 from .task_evaluation_scene_retirement_restore import restore_preserved_members
@@ -48,6 +48,14 @@ def _allowance(authority, now, monotonic):
         'logical_payload_bytes','archive_bytes','remote_bytes','elapsed_seconds'},'scene_retirement_limits_invalid')
     return ActionAllowance(expires_at=authority['consent']['expires_at'],now=now,monotonic=monotonic,
         **{('local_bytes' if key=='logical_payload_bytes' else key):value for key,value in limits.items()})
+
+
+def _bind_transport(transport,allowance):
+    bind=getattr(transport,'bind_allowance',None)
+    if bind is not None:
+        allowance.tick()
+        bind(allowance)
+        allowance.tick()
 
 
 def _path_relation(a,b):
@@ -181,17 +189,7 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
     return fresh
 
 
-def _intent_receipt(policy, intent_id, receipt, allowance):
-    # Root-owned immutable projection; readable status is never action authority.
-    directory=Path(policy['journal_store'])
-    name=receipt['token']+'.receipt.json'
-    reference=publish_record(directory,name,receipt,maximum=65536,allowance=allowance)
-    # A public projection lives in the private journal until the installed door
-    # adds its fixed readable route; no protected consent is copied into it.
-    return reference['path']
-
-
-def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance):
+def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance,restore_context=None):
     result=_kept(reason,journal=journal,members=outcomes)
     if journal is None or pending is None:
         return result
@@ -201,9 +199,12 @@ def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance):
     try:
         with access.exclusive_scene_access() as locked:
             _require(locked==policy,'scene_retirement_policy_changed')
-            reference=publish_progress_receipt(policy,consent,pending,dict(status='incomplete',
+            progress=dict(status='incomplete',
                 token=journal.token,intent_id=consent['intent_id'],members=outcomes,
-                last_event_raw_ref=journal.prior_ref),allowance)
+                last_event_raw_ref=journal.prior_ref)
+            if restore_context is not None:
+                progress.update(restore_context)
+            reference=publish_progress_receipt(policy,consent,pending,progress,allowance)
         result['intent_receipt_raw_ref']=reference
     except (ValueError,OSError,KeyError,TypeError,AttributeError):
         result['receipt_finalization']='unavailable_existing_durable_evidence_retained'
@@ -219,6 +220,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
         authority=load_authority(consent_path,action='retire',now=now)
         policy,consent=authority['policy'],authority['consent']
         allowance=_allowance(authority,now,monotonic)
+        _bind_transport(transport,allowance)
         _require(str(_canonical(str(plan_path)))==consent['plan_raw_ref']['path'],
                  'scene_retirement_raw_reference_changed')
         with access.exclusive_scene_access() as locked:
@@ -300,11 +302,14 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
 
 def restore_scene(retired_journal_path, consent_path, *, transport, now=time.time, monotonic=time.monotonic):
     journal=None
+    pending=restore_context=None
+    policy=consent=allowance=None
     outcomes=[]
     try:
         authority=load_authority(consent_path,action='restore',now=now)
         policy,consent=authority['policy'],authority['consent']
         allowance=_allowance(authority,now,monotonic)
+        _bind_transport(transport,allowance)
         reference=consent['retired_journal_raw_ref']
         _require(str(_canonical(str(retired_journal_path)))==reference['path'],'scene_retirement_raw_reference_changed')
         with access.exclusive_scene_access() as locked:
@@ -333,20 +338,33 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 intent_raw_ref=consent['intent_raw_ref'],members=consent['members'],
                 original_retirement_token=retired['token'],
                 retired_journal_raw_ref=reference,consent_raw_ref=authority['consent_raw_ref']),allowance=allowance)
+            receipt_path=Path(policy['reference_context']['roots']['intent_root'])/consent['intent_id']/'scene-retired.v1.json'
+            allowance.tick()
+            _,pending=load_document(receipt_path,maximum=16*1024*1024)
+            restore_context=dict(original_retirement_token=retired['token'],restore_journal_initial_raw_ref=journal.initial_ref)
+            pending=publish_progress_receipt(policy,consent,pending,dict(status='restoring',token=token,
+                intent_id=consent['intent_id'],members=[],last_event_raw_ref=journal.prior_ref,**restore_context),allowance)
             for index,generation in enumerate(generations):
                 event=journal.append('restoring',member_key=str(index),evidence={'generation_id':generation['generation_id']})
                 generations[index]=_transition(policy,generation,state='restoring',token=retired['token'],journal_ref=event)
-            outcomes=restore_preserved_members(retired['preserved'],transport=transport,journal=journal)
-            for index,(generation,outcome) in enumerate(zip(generations,outcomes)):
+            restored=restore_preserved_members(retired['preserved'],transport=transport,journal=journal)
+            for index,(generation,outcome) in enumerate(zip(generations,restored)):
                 event=journal.append('restored-active',member_key=str(index),evidence=outcome)
                 _transition(policy,generation,state='restored-active',token=retired['token'],journal_ref=event,
                             identity=outcome['restore_identity'])
+                outcomes.append(outcome)
+                pending=publish_progress_receipt(policy,consent,pending,dict(status='restoring',token=token,
+                    intent_id=consent['intent_id'],members=list(outcomes),last_event_raw_ref=journal.prior_ref,
+                    **restore_context),allowance)
             receipt=dict(schema_version='scene_restore_receipt.v1',status='restored',intent_id=consent['intent_id'],
                          token=token,members=outcomes,retired_journal_raw_ref=reference)
-            receipt['intent_receipt_path']=_intent_receipt(policy,consent['intent_id'],receipt,allowance)
+            receipt['intent_receipt_raw_ref']=publish_progress_receipt(policy,consent,pending,dict(status='restored',
+                token=token,intent_id=consent['intent_id'],members=outcomes,last_event_raw_ref=journal.prior_ref,
+                **restore_context),allowance)
+            receipt['intent_receipt_path']=receipt['intent_receipt_raw_ref']['path']
             return receipt
     except access.SceneRetirementAccessError as error:
         code=str(error) if str(error).startswith('scene_retirement_') and len(str(error))<=128 else 'scene_retirement_action_unproven'
-        return _kept(code,journal=journal,members=outcomes)
+        return _partial_result(code,journal,outcomes,policy,consent,pending,allowance,restore_context)
     except (ValueError,OSError,KeyError,TypeError,AttributeError,OverflowError,RecursionError):
-        return _kept('scene_retirement_action_unproven',journal=journal,members=outcomes)
+        return _partial_result('scene_retirement_action_unproven',journal,outcomes,policy,consent,pending,allowance,restore_context)
