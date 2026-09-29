@@ -29,6 +29,7 @@ from blueprint_pipeline import remote_cpu_environment as census
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import remote_cpu_output_archive as archive
 from blueprint_pipeline import remote_cpu_worker as worker
+from blueprint_pipeline import remote_cpu_worker_stage as stage_child
 from tests.remote_cpu_allocator_fakes import B2_BUCKET, JOB, RemoteCpuWorld
 from tests.remote_cpu_worker_stages import NEW_BYTES, sealed_result
 from tests.remote_cpu_worker_support import (
@@ -453,6 +454,31 @@ def test_undeclared_write_or_changed_input_is_an_infrastructure_failure(tmp_path
         assert world.staged("blobs.tar") is None and world.staged("index.json") is None, label
 
 
+def test_release_audit_resolves_relative_reads_against_the_release_root(tmp_path: Path) -> None:
+    """Review I2: the host compiles from its checkout, so a read relative to the working directory is a release
+    read.  Only an ``os.open`` (no mode in its audit event) may be relative to a directory descriptor."""
+
+    release = tmp_path / "release"
+    roots = (os.path.normpath(release) + os.sep,)
+
+    def read(path: object, mode: object = "r", flags: int = os.O_RDONLY) -> str | None:
+        found = stage_child.release_read(path, mode, flags, roots=roots, cwd=str(release))
+        return None if found is None else found[1]
+
+    assert read(str(release / "docs/schemas/a.json")) == "docs/schemas/a.json"
+    assert read("docs/schemas/b.json") == read("./docs/schemas/b.json") == "docs/schemas/b.json"
+    assert read("docs/./schemas/../schemas/c.json") == "docs/schemas/c.json"
+    assert read("assets/d.json") == "assets/d.json" and read(b"configs/e.json") == "configs/e.json"
+    assert read("docs/f.json", mode=None) == read("./docs/f.json", mode=None) == "docs/f.json"
+    assert read("schemas/g.json", mode=None) is None  # an os.open that may be relative to a directory descriptor
+    assert stage_child.release_read("docs/h.json", "r", 0, roots=roots, cwd=str(tmp_path)) is None
+    for path, mode, flags in ((str(release / "docs/i.json"), "w", 0), (str(release / "docs/j.json"), "r+", 0),
+                              (str(release / "docs/k.json"), None, os.O_WRONLY | os.O_CREAT),
+                              (str(release / "src/__pycache__/l.pyc"), "r", 0), ("../outside.json", "r", 0),
+                              (str(tmp_path / "elsewhere.json"), "r", 0), (7, "r", 0)):
+        assert read(path, mode, flags) is None, (path, mode, flags)
+
+
 def _gone(pid: int) -> bool:
     """Killed: no such process, or (on Linux) a zombie its new parent has yet to reap."""
     for _ in range(200):
@@ -491,6 +517,16 @@ def test_missing_release_path_is_an_infrastructure_failure_not_a_blocked_result(
         "blocked", [], [])
     assert receipt["result"]["blockers"] == ["episode_compilation_envelope_invalid"]
     assert _verdict(present) == ("blocked", True)
+
+    # Reads relative to the working directory, the release root as the checkout is the host's, are audited too;
+    # an os.open through a directory descriptor, like a stat or a listdir, cannot be (4.3 and shadow mode are
+    # the backstop).
+    relative = WorkerWorld(tmp_path / "relative", archive=worker_release_archive())
+    assert relative.run(stage="reads_relative") == 0
+    receipt = relative.receipt()
+    assert (receipt["status"], receipt["release_path_misses"]) == ("infrastructure_failed", [
+        "assets/missing.json", "configs/missing.json", "docs/schemas/missing-dot.json"])
+    assert _verdict(relative) == ("infrastructure_failed", False)
 
 
 @pytest.mark.slow

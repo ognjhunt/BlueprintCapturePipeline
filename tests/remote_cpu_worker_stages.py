@@ -85,3 +85,19 @@ def reads_success_schema(descriptor: dict[str, Any], roots: Any) -> dict[str, An
     except OSError:
         blocker = "rigid_task_success_contract_schema_unavailable"
     return sealed_result(descriptor, blockers=[blocker], automatic_retry_performed=False)
+
+
+def reads_relative(descriptor: dict[str, Any], roots: Any) -> dict[str, Any]:
+    """Read repo-root paths relative to the working directory, as a compile run from its checkout may."""
+
+    directory = os.open("docs", os.O_RDONLY)
+    reads = (lambda: open("./docs/schemas/missing-dot.json"), lambda: open("assets/missing.json"),
+             lambda: Path("configs/missing.json").read_text(),
+             lambda: os.open("schemas/missing-fd.json", os.O_RDONLY, dir_fd=directory))
+    for read in reads:
+        try:
+            read()
+        except OSError:
+            pass
+    os.close(directory)
+    return sealed_result(descriptor, blockers=["episode_compilation_envelope_invalid"])

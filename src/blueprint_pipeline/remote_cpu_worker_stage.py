@@ -12,7 +12,7 @@ import importlib
 import json
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,31 +38,45 @@ class StageRoots:
         return Path(self.filesystem_root) / str(path).lstrip("/")
 
 
+def release_read(path: Any, mode: Any, flags: Any, *, roots: Sequence[str], cwd: str) -> tuple[str, str] | None:
+    """The path, and its release-relative label, that an ``open`` audit event reads under the release root.
+
+    Writes and creates are not reads, and bytecode caches are not release paths.  A builtin, io, pathlib, zip
+    or tar open (the event's ``mode`` is a str) names a path relative to the working directory, which is the
+    release root as the host's is its checkout.  An ``os.open`` (``mode`` is None) may be relative to a
+    directory descriptor the event does not carry, so a relative one is followed only from a release top
+    level; an ``open`` through such an ``opener`` would be misread, and no compile code uses one.
+    """
+    if isinstance(path, int) or (isinstance(mode, str) and any(flag in mode for flag in "wax+")) or (
+            isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT)):
+        return None
+    name = os.path.normpath(os.fsdecode(os.fspath(path)))
+    if not os.path.isabs(name):
+        if mode is None and name.split(os.sep, 1)[0] not in _RELEASE_TOPS:
+            return None
+        name = os.path.normpath(os.path.join(cwd, name))
+    root = next((root for root in roots if name.startswith(root)), None)
+    if root is None or "__pycache__" in name.split(os.sep):
+        return None
+    return name, safe_label(name[len(root):])
+
+
 def install_release_audit(release: str | Path) -> list[str]:
     """Record, in this process, every read of a missing path under the release root (plan 14 §5).
 
-    The stage's working directory is the release root, as the host compiles from its checkout.  An
-    ``os.open`` relative to a directory descriptor also looks relative in the audit event, so a
-    relative path counts only when it starts at a release top level.  Bytecode caches are not release paths.
+    Only opens are audited: a probe by ``stat``, ``exists`` or ``listdir`` is not observable, so the byte-identity
+    test from the archive (plan 14 task 4.3) and shadow mode remain the backstop for those.
     """
     roots = tuple({os.path.normpath(release) + os.sep, os.path.realpath(release) + os.sep})
     misses: list[str] = []
 
     def hook(event: str, args: tuple[Any, ...]) -> None:
-        if event != "open" or len(misses) >= MAX_RELEASE_MISSES or len(args) < 3 or isinstance(args[0], int):
+        if event != "open" or len(misses) >= MAX_RELEASE_MISSES or len(args) < 3:
             return
         try:
-            mode, flags, path = args[1], args[2], os.fsdecode(os.fspath(args[0]))
-            if ((isinstance(mode, str) and any(flag in mode for flag in "wax+"))
-                    or (isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT))
-                    or (not os.path.isabs(path) and path.split(os.sep, 1)[0] not in _RELEASE_TOPS)):
-                return
-            full = os.path.normpath(os.path.join(os.getcwd(), path))
-            root = next((root for root in roots if full.startswith(root)), None)
-            if root is not None and "__pycache__" not in full.split(os.sep) and not os.path.exists(full):
-                relative = safe_label(full[len(root):])
-                if relative not in misses:
-                    misses.append(relative)
+            found = release_read(args[0], args[1], args[2], roots=roots, cwd=os.getcwd())
+            if found is not None and not os.path.exists(found[0]) and found[1] not in misses:
+                misses.append(found[1])
         except Exception:  # noqa: BLE001 - a hook that raises would fail the open it observes
             return
 
