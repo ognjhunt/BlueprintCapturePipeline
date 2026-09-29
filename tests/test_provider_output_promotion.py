@@ -111,9 +111,10 @@ class World:
     def __init__(self, tmp_path: Path, monkeypatch, *, witness: bool = True, torn_down: bool = True):
         self.tmp_path = tmp_path
         tmp_path.mkdir(parents=True, exist_ok=True)
-        # The dedicated B2 store is explicitly configured (review I4).
-        for name in scene_store._ARTIFACT_STORE_FILE_ENV.values():
-            monkeypatch.setenv(name, str(tmp_path / "b2-configured-by-file"))
+        # The dedicated B2 store is explicitly configured (review I4), by readable files (minor 8).
+        for key, name in scene_store._ARTIFACT_STORE_FILE_ENV.items():
+            (tmp_path / f"b2-{key}").write_text("configured-by-file\n", encoding="utf-8")
+            monkeypatch.setenv(name, str(tmp_path / f"b2-{key}"))
         for name, value in (("ACCESS_KEY_ID", "access"), ("SECRET_ACCESS_KEY", "secret"),
                             ("BUCKET", StagedSpaces.BUCKET)):
             path = tmp_path / f"spaces-{name.lower()}"

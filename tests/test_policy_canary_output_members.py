@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -94,6 +95,37 @@ def test_stream_refuses_before_consumption_without_the_b2_artifact_store(context
     for name in _ARTIFACT_STORE_FILE_ENV.values():
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(next(iter(_ARTIFACT_STORE_FILE_ENV.values())), str(tmp_path / "only-one-of-five"))
+    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
+
+    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
+
+    assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
+    assert result["blockers"] == ["policy_canary_output_stream_artifact_store_not_configured"]
+
+
+@pytest.mark.parametrize("defect", ["missing", "directory", "unreadable"])
+def test_stream_refuses_before_consumption_unless_every_b2_setting_is_a_readable_file(
+        context, tmp_path, monkeypatch, defect):
+    """Review minor 8: a B2 setting naming a missing file, a directory or an unreadable file would
+    only fail when promotion first reads it, after the paid run. The session refuses first."""
+    if defect == "unreadable" and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    settings = tmp_path / "b2"
+    settings.mkdir()
+    for key, name in _ARTIFACT_STORE_FILE_ENV.items():
+        (settings / key).write_text("configured\n", encoding="utf-8")
+        monkeypatch.setenv(name, str(settings / key))
+    assert members.artifact_store_configured()
+    broken = settings / "secret_key"
+    if defect == "missing":
+        broken.unlink()
+    elif defect == "directory":
+        broken.unlink()
+        broken.mkdir()
+    else:
+        broken.chmod(0)
+    assert not members.artifact_store_configured()
+    monkeypatch.setenv(members.DELIVERY_ENV, "stream")
     monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
 
     result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)

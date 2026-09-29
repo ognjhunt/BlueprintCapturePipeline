@@ -1264,8 +1264,9 @@ Two stream-mode records look alarming and are not:
 archive reaches the host. Unset, empty or `download` is today's path, byte for
 byte (a test pins the lane result and artifact manifest to digests taken before
 the stream path existed). `stream` is read only by the Quick-10 session, before
-its authority is consumed; any other value, or `stream` without the five
-dedicated B2 settings, refuses there with zero provider mutations
+its authority is consumed; any other value, or `stream` unless all five
+dedicated B2 settings name readable regular files, refuses there with zero
+provider mutations
 (`policy_canary_output_delivery_mode_invalid`,
 `policy_canary_output_stream_artifact_store_not_configured`). Every other arena
 caller keeps the lane's `download` default. The canary dispatcher and the

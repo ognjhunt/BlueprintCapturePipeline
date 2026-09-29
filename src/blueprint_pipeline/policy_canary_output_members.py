@@ -46,7 +46,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 DELIVERY_ENV = "BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY"
@@ -90,11 +90,20 @@ def resolve_output_delivery(environ: Mapping[str, str] | None = None) -> str:
 
 
 def artifact_store_configured(environ: Mapping[str, str] | None = None) -> bool:
-    """Whether all five dedicated B2 artifact-store settings are present (review I4)."""
+    """Whether all five dedicated B2 artifact-store settings name readable regular files (review I4).
+
+    A setting that is empty, or names a missing file, a directory or a file
+    this process cannot read, would only fail when promotion first reads it,
+    after the paid run (review minor 8).
+    """
     from .task_evaluation_configured_scene_object_store import _ARTIFACT_STORE_FILE_ENV
 
     values = os.environ if environ is None else environ
-    return all(str(values.get(name) or "").strip() for name in _ARTIFACT_STORE_FILE_ENV.values())
+    for name in _ARTIFACT_STORE_FILE_ENV.values():
+        setting = str(values.get(name) or "").strip()
+        if not setting or not Path(setting).is_file() or not os.access(setting, os.R_OK):
+            return False
+    return True
 
 
 def _needed(path: str) -> bool:
