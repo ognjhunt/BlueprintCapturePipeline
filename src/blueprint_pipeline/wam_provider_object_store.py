@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .provider_output_promotion_records import load_promotion_receipt, promotion_gate_decision
 from .provider_signed_object_binding import signed_output_object_binding_sha256
 from .secret_artifact_policy import (
     redacted_secret_file_status,
@@ -590,18 +591,20 @@ def _safe_transfer_exception(exc: Exception) -> dict[str, Any]:
     return {"error_type": type(exc).__name__}
 
 
+def _s3_object_missing(exc: Exception) -> bool:
+    response = _mapping(getattr(exc, "response", None))
+    status = _mapping(response.get("ResponseMetadata")).get("HTTPStatusCode")
+    code = _string(_mapping(response.get("Error")).get("Code"))
+    return status == 404 or code.lower() in {"404", "nosuchkey", "notfound"}
+
+
 def _s3_absence_confirmed(client: Any, *, bucket: str, key: str) -> dict[str, Any]:
     """Prove an S3 object is absent without recording its key."""
 
     try:
         client.head_object(Bucket=bucket, Key=key)
     except Exception as exc:
-        response = _mapping(getattr(exc, "response", None))
-        metadata = _mapping(response.get("ResponseMetadata"))
-        error = _mapping(response.get("Error"))
-        status = metadata.get("HTTPStatusCode")
-        code = _string(error.get("Code"))
-        if status == 404 or code.lower() in {"404", "nosuchkey", "notfound"}:
+        if _s3_object_missing(exc):
             return {
                 "status": "passed",
                 "absence_confirmed": True,
@@ -622,6 +625,103 @@ def _s3_absence_confirmed(client: Any, *, bucket: str, key: str) -> dict[str, An
     }
 
 
+def _promotion_gate(
+    client: Any, *, bucket: str, key: str, role: str, receipt: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """HEAD one staged output or witness key and apply the promotion gate to it.
+
+    A versioned store's non-null ``VersionId`` is kept on a delete decision, so
+    the delete removes exactly the version whose identity the gate matched.
+    """
+
+    try:
+        head: dict[str, Any] | None = _mapping(client.head_object(Bucket=bucket, Key=key))
+    except Exception as exc:
+        if not _s3_object_missing(exc):
+            raise
+        head = None
+    size = (head or {}).get("ContentLength")
+    present = None if head is None else (
+        size if isinstance(size, int) and not isinstance(size, bool) else -1,
+        _string(head.get("ETag")),
+    )
+    gate = promotion_gate_decision(receipt, role=role, key=key, present=present)
+    version = _string((head or {}).get("VersionId"))
+    if gate["decision"] == "deleted_after_promotion_receipt" and version not in {"", "null"}:
+        gate["version_id"] = version
+    return gate
+
+
+def _staging_store_values(
+    *,
+    access_key_id_file: str | Path | None,
+    secret_access_key_file: str | Path | None,
+    endpoint_url: str,
+    endpoint_url_file: str | Path | None,
+    bucket: str,
+    bucket_file: str | Path | None,
+    region: str,
+    region_file: str | Path | None,
+) -> tuple[str, str, str, str, str]:
+    """The staging store's access key, secret, endpoint, bucket and region."""
+
+    access_key, _ = _read_first_file(
+        explicit_path=access_key_id_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
+        default_paths=DEFAULT_ACCESS_KEY_FILES,
+        label="object_store_access_key_id",
+    )
+    secret_key, _ = _read_first_file(
+        explicit_path=secret_access_key_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
+        default_paths=DEFAULT_SECRET_KEY_FILES,
+        label="object_store_secret_access_key",
+    )
+    endpoint, _ = _read_first_file(
+        explicit_path=endpoint_url_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
+        default_paths=DEFAULT_ENDPOINT_FILES,
+        label="object_store_endpoint_url",
+        allow_env_value=True,
+    )
+    bucket_value, _ = _read_first_file(
+        explicit_path=bucket_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
+        default_paths=DEFAULT_BUCKET_FILES,
+        label="object_store_bucket",
+        allow_env_value=True,
+    )
+    region_value, _ = _read_first_file(
+        explicit_path=region_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
+        default_paths=DEFAULT_REGION_FILES,
+        label="object_store_region",
+        allow_env_value=True,
+    )
+    return (
+        access_key,
+        secret_key,
+        endpoint_url or endpoint,
+        bucket or bucket_value,
+        region or region_value or "us-east-1",
+    )
+
+
+def _s3_client(*, access_key: str, secret_key: str, endpoint: str, region: str) -> Any:
+    import boto3  # type: ignore[import-not-found]
+    from botocore.client import Config  # type: ignore[import-not-found]
+
+    kwargs: dict[str, Any] = {
+        "aws_access_key_id": access_key,
+        "aws_secret_access_key": secret_key,
+        "region_name": region,
+        "config": Config(signature_version="s3v4"),
+    }
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+    return boto3.client("s3", **kwargs)
+
+
 def cleanup_staged_wam_provider_objects(
     job_dir: str | Path,
     *,
@@ -635,7 +735,17 @@ def cleanup_staged_wam_provider_objects(
     region_file: str | Path | None = None,
     expiration_seconds: int = 12 * 60 * 60,
 ) -> dict[str, Any]:
-    """Delete and absence-prove only the exact objects in a staging manifest."""
+    """Delete and absence-prove only the exact objects in a staging manifest.
+
+    When the manifest carries ``output_promotion_required``, the output and
+    paired-witness keys pass the promotion gate first: each is HEADed, an
+    absent one needs nothing, and a present one is deleted only when the
+    promotion receipt bound to this manifest records its exact (size, ETag) as
+    durable. Otherwise it stays, its row is ``deferred`` with
+    ``absence_confirmed: false`` (so ``all_objects_absent`` is false), and the
+    reason is a blocker. The bundle key is cleaned as before. Without the flag
+    nothing here changes.
+    """
 
     del expiration_seconds
     resolved_job_dir = Path(job_dir).expanduser().resolve()
@@ -666,6 +776,10 @@ def cleanup_staged_wam_provider_objects(
             cleanup_keys = [*cleanup_keys, witness["witness_key"]]
     if not all(keys) or len(set(keys)) != 2:
         blockers.append("exact_staged_object_keys_required")
+    gated = manifest.get("output_promotion_required") is True
+    gated_roles = {output_key: "output"} if gated else {}
+    if gated and witness.get("status") == "ready":
+        gated_roles[_string(witness.get("witness_key"))] = "paired_witness"
     object_store = _mapping(manifest.get("object_store"))
     expected_prefix = _string(object_store.get("key_prefix")).strip("/")
     if not expected_prefix or any(
@@ -721,47 +835,29 @@ def cleanup_staged_wam_provider_objects(
         ):
             blockers.append("blocked_staging_binding_invalid")
 
-    access_key, _ = _read_first_file(
-        explicit_path=access_key_id_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
-        default_paths=DEFAULT_ACCESS_KEY_FILES,
-        label="object_store_access_key_id",
+    access_key, secret_key, endpoint, bucket_value, region_value = _staging_store_values(
+        access_key_id_file=access_key_id_file,
+        secret_access_key_file=secret_access_key_file,
+        endpoint_url=endpoint_url,
+        endpoint_url_file=endpoint_url_file,
+        bucket=bucket,
+        bucket_file=bucket_file,
+        region=region,
+        region_file=region_file,
     )
-    secret_key, _ = _read_first_file(
-        explicit_path=secret_access_key_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
-        default_paths=DEFAULT_SECRET_KEY_FILES,
-        label="object_store_secret_access_key",
-    )
-    endpoint, _ = _read_first_file(
-        explicit_path=endpoint_url_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
-        default_paths=DEFAULT_ENDPOINT_FILES,
-        label="object_store_endpoint_url",
-        allow_env_value=True,
-    )
-    endpoint = endpoint_url or endpoint
-    bucket_value, _ = _read_first_file(
-        explicit_path=bucket_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
-        default_paths=DEFAULT_BUCKET_FILES,
-        label="object_store_bucket",
-        allow_env_value=True,
-    )
-    bucket_value = bucket or bucket_value
-    region_value, _ = _read_first_file(
-        explicit_path=region_file,
-        env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
-        default_paths=DEFAULT_REGION_FILES,
-        label="object_store_region",
-        allow_env_value=True,
-    )
-    region_value = region or region_value or "us-east-1"
     if not access_key or not secret_key or not bucket_value:
         blockers.append("object_store_cleanup_credentials_missing")
 
     cleanup_rows: list[dict[str, Any]] = []
     cleanup_attempts = 0
+    receipt = (
+        load_promotion_receipt(
+            resolved_job_dir,
+            staging_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        )
+        if gated and manifest_path.is_file()
+        else None
+    )
     if not blockers:
         # Deleting an object and proving its absence are both idempotent, so a
         # transient transport failure is retried rather than left as staged
@@ -773,27 +869,42 @@ def cleanup_staged_wam_provider_objects(
             cleanup_rows = []
             attempt_blockers: list[str] = []
             try:
-                import boto3  # type: ignore[import-not-found]
-                from botocore.client import Config  # type: ignore[import-not-found]
-
-                kwargs: dict[str, Any] = {
-                    "aws_access_key_id": access_key,
-                    "aws_secret_access_key": secret_key,
-                    "region_name": region_value,
-                    "config": Config(signature_version="s3v4"),
-                }
-                if endpoint:
-                    kwargs["endpoint_url"] = endpoint
-                client = boto3.client("s3", **kwargs)
+                client = _s3_client(
+                    access_key=access_key,
+                    secret_key=secret_key,
+                    endpoint=endpoint,
+                    region=region_value,
+                )
                 for key in cleanup_keys:
-                    client.delete_object(Bucket=bucket_value, Key=key)
-                    absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
-                    cleanup_rows.append(
-                        {
-                            "key_sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
-                            "absence": absence,
-                        }
+                    key_sha256 = hashlib.sha256(key.encode("utf-8")).hexdigest()
+                    gate = (
+                        _promotion_gate(
+                            client,
+                            bucket=bucket_value,
+                            key=key,
+                            role=gated_roles[key],
+                            receipt=receipt,
+                        )
+                        if key in gated_roles
+                        else None
                     )
+                    if gate is not None and gate["decision"] != "deleted_after_promotion_receipt":
+                        absence = gate.pop("absence")
+                        cleanup_rows.append(
+                            {"key_sha256": key_sha256, "absence": absence, "promotion_gate": gate}
+                        )
+                        if absence.get("absence_confirmed") is not True:
+                            attempt_blockers.append(gate["reason"])
+                        continue
+                    version = gate.pop("version_id", None) if gate is not None else None
+                    client.delete_object(
+                        Bucket=bucket_value, Key=key, **({"VersionId": version} if version else {})
+                    )
+                    absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
+                    row = {"key_sha256": key_sha256, "absence": absence}
+                    if gate is not None:
+                        row["promotion_gate"] = {**gate, **({"version_pinned": True} if version else {})}
+                    cleanup_rows.append(row)
                     if absence.get("absence_confirmed") is not True:
                         attempt_blockers.append("staged_object_absence_unverified")
             except Exception as exc:  # noqa: BLE001 - fail-closed cleanup evidence
@@ -841,6 +952,8 @@ def cleanup_staged_wam_provider_objects(
             else None
         ),
         "signed_url_files_removed": not any(path.exists() for path in signed_url_files),
+        **({"output_promotion_gate": {"required": True, "receipt_digest": (receipt or {}).get(
+            "receipt_digest"), "receipt_status": (receipt or {}).get("status")}} if gated else {}),
         "blockers": sorted(set(blockers)),
         "raw_secret_values_recorded": False,
     }
@@ -999,7 +1112,16 @@ def stage_wam_provider_bundle_object_store(
     generated_at: str | None = None,
     retain_content_addressed_bundle: bool = False,
     paired_witness_binding: Mapping[str, Any] | None = None,
+    output_promotion_required: bool = False,
 ) -> dict[str, Any]:
+    """Stage one provider bundle and a run-unique output key with signed URLs.
+
+    ``output_promotion_required=True`` records ``"output_promotion_required":
+    true`` in the manifest, which makes ``cleanup_staged_wam_provider_objects``
+    delete a present output or paired witness only when a promotion receipt
+    bound to this manifest allows it. Without it the manifest has no such key
+    and cleanup is unchanged.
+    """
     generated = generated_at or utc_now_iso()
     expiry_metadata = _presigned_url_expiry_metadata(generated, expiration_seconds)
     resolved_job_dir = Path(job_dir).expanduser().resolve()
@@ -1403,6 +1525,7 @@ def stage_wam_provider_bundle_object_store(
         "fresh_output_key_absence": output_key_absence,
         "output_key_run_unique": bool(binding_initialized and output_key),
         "output_url_object_binding_sha256": (output_url_object_binding_sha256 or None),
+        **({"output_promotion_required": True} if output_promotion_required else {}),
         "bundle_key": bundle_key if binding_initialized else None,
         "output_key": output_key if binding_initialized else None,
         "provider_bundle_url_file": bundle_url_file_status,
@@ -1434,6 +1557,93 @@ def stage_wam_provider_bundle_object_store(
     }
     write_json(resolved_job_dir / STAGING_MANIFEST_FILENAME, manifest)
     return manifest
+
+
+STAGED_OBJECT_ROLES = ("output", "paired_witness")
+
+
+def presign_staged_object_get(
+    job_dir: str | Path,
+    *,
+    object_role: str,
+    expiration_seconds: int = 2 * 60 * 60,
+    access_key_id_file: str | Path | None = None,
+    secret_access_key_file: str | Path | None = None,
+    endpoint_url: str = "",
+    endpoint_url_file: str | Path | None = None,
+    bucket: str = "",
+    bucket_file: str | Path | None = None,
+    region: str = "",
+    region_file: str | Path | None = None,
+) -> str:
+    """Return a GET URL for one staged object, in memory only.
+
+    ``object_role`` is ``output`` or ``paired_witness``. Unlike
+    ``refresh_wam_provider_output_get_url`` this never rewrites the staging
+    manifest, whose digest promotion receipts and the continuation's
+    ingestion binding pin, and never writes a URL file. It reads the manifest
+    and the staging store's credentials; the only store call is presigning.
+    Refusals raise ``ValueError`` with a stable, secret-free code.
+    """
+
+    if object_role not in STAGED_OBJECT_ROLES:
+        raise ValueError("staged_object_presign_role_invalid")
+    if (
+        isinstance(expiration_seconds, bool)
+        or not isinstance(expiration_seconds, int)
+        or not 60 <= expiration_seconds <= 7 * 24 * 60 * 60
+    ):
+        raise ValueError("staged_object_presign_expiration_invalid")
+    manifest_path = Path(job_dir).expanduser().resolve() / STAGING_MANIFEST_FILENAME
+    try:
+        manifest = _mapping(json.loads(manifest_path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        manifest = {}
+    output_key = _string(manifest.get("output_key"))
+    key = output_key
+    if object_role == "paired_witness":
+        from .native_task_arena_paired_witness_staging import SUFFIX
+
+        witness = _mapping(manifest.get("paired_witness"))
+        key = _string(witness.get("witness_key")) if witness.get("status") == "ready" else ""
+        if key != output_key + SUFFIX:
+            key = ""
+    if (
+        manifest.get("schema_version") != SCHEMA_VERSION
+        or _string(manifest.get("status")) not in {"completed", "blocked"}
+        or not output_key
+        or not key
+    ):
+        raise ValueError("staged_object_presign_manifest_invalid")
+    access_key, secret_key, endpoint, bucket_value, region_value = _staging_store_values(
+        access_key_id_file=access_key_id_file,
+        secret_access_key_file=secret_access_key_file,
+        endpoint_url=endpoint_url,
+        endpoint_url_file=endpoint_url_file,
+        bucket=bucket,
+        bucket_file=bucket_file,
+        region=region,
+        region_file=region_file,
+    )
+    if not access_key or not secret_key or not bucket_value:
+        raise ValueError("staged_object_presign_credentials_missing")
+    try:
+        client = _s3_client(
+            access_key=access_key,
+            secret_key=secret_key,
+            endpoint=endpoint,
+            region=region_value,
+        )
+        return str(
+            client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket_value, "Key": key},
+                ExpiresIn=expiration_seconds,
+                HttpMethod="GET",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - never echo a signed URL or key
+        raise ValueError(f"staged_object_presign_failed:{type(exc).__name__}") from None
 
 
 def refresh_wam_provider_output_get_url(
