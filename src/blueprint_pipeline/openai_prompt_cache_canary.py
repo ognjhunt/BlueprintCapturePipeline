@@ -1,4 +1,4 @@
-"""Bounded five-call GPT-6 Sol explicit prompt-cache mechanics canary."""
+"""Bounded five-call GPT-6.1 Sol explicit prompt-cache mechanics canary."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from .openai_prompt_cache import (
 
 
 SCHEMA_VERSION = "openai_prompt_cache_mechanics_canary.v1"
-DEFAULT_MODEL = "gpt-6-sol"
+DEFAULT_MODEL = "gpt-6.1-sol"
 EXACT_REQUEST_COUNT = 5
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
@@ -73,7 +73,7 @@ def _policy(*, contract_version: str, stable_prefix: str, reuse_count: int):
         stable_prefix_tokens=len(stable_prefix.encode("utf-8")) // 5,
         tool_schema=[],
         output_schema={"type": "text", "exact": "OK"},
-        reasoning_effort="none",
+        reasoning_effort="low",
         verbosity="low",
         privacy_scope="synthetic_rights_safe",
         processing_region="default",
@@ -106,7 +106,7 @@ def run_mechanics_canary(
     verify_source_commit: bool = True,
 ) -> dict[str, Any]:
     if model != DEFAULT_MODEL:
-        raise OpenAIPromptCacheCanaryError("canary_model_must_be_gpt_6_sol")
+        raise OpenAIPromptCacheCanaryError("canary_model_must_be_gpt_6_1_sol")
     if not 0 < max_total_cost_usd <= 1.0:
         raise OpenAIPromptCacheCanaryError("canary_cost_cap_invalid")
     if _COMMIT.fullmatch(source_commit) is None:
@@ -176,7 +176,7 @@ def run_mechanics_canary(
         stable_prefix_tokens=0,
         tool_schema=[],
         output_schema={"type": "text", "exact": "OK"},
-        reasoning_effort="none",
+        reasoning_effort="low",
         verbosity="low",
         privacy_scope="synthetic_rights_safe",
         processing_region="default",
@@ -220,7 +220,7 @@ def run_mechanics_canary(
         projected = worst_case_reservation_usd(
             model=model,
             input_token_ceiling=input_ceiling,
-            max_output_tokens=32,
+            max_output_tokens=1024,
             cache_policy=policy,
         )
         if projected is None or cumulative_cost + projected > max_total_cost_usd:
@@ -237,15 +237,15 @@ def run_mechanics_canary(
             "cache_key_present": policy.cache_key is not None,
             "breakpoint_count": 1 if stable_prefix is not None else 0,
             "store": False,
-            "max_output_tokens": 32,
-            "reasoning_effort": "none",
+            "max_output_tokens": 1024,
+            "reasoning_effort": "low",
         }
         started = time.monotonic()
         response = client.responses.create(
             model=model,
             input=rendered_input,
-            max_output_tokens=32,
-            reasoning={"effort": "none"},
+            max_output_tokens=1024,
+            reasoning={"effort": "low"},
             text={"verbosity": "low"},
             store=False,
             **explicit_cache_request_kwargs(policy),

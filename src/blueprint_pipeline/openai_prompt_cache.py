@@ -41,7 +41,7 @@ class OpenAIModelPricing(BaseModel):
 
 
 _GPT56_PRICING: dict[str, OpenAIModelPricing] = {
-    # Standard API rates verified 2026-09-23 against
+    # Standard API rates verified 2026-09-29 against
     # https://developers.openai.com/api/docs/pricing and the model pages.
     # Authoring callers stay below the long-context threshold and use no Fast tier.
     "astra": OpenAIModelPricing(
@@ -52,6 +52,14 @@ _GPT56_PRICING: dict[str, OpenAIModelPricing] = {
         output_per_million_usd=50.0,
     ),
     "sol": OpenAIModelPricing(
+        model_family="gpt-6.1-sol",
+        uncached_input_per_million_usd=2.0,
+        cache_write_per_million_usd=2.5,
+        cached_read_per_million_usd=0.1,
+        output_per_million_usd=10.0,
+    ),
+    # Preserve the rates used by retained GPT-6 Sol receipts.
+    "previous_sol": OpenAIModelPricing(
         model_family="gpt-6-sol",
         uncached_input_per_million_usd=2.0,
         cache_write_per_million_usd=2.5,
@@ -93,8 +101,10 @@ def pricing_for_model(model: str) -> OpenAIModelPricing | None:
     normalized = model.strip().lower()
     if normalized == "gpt-6-astra" or normalized.startswith("gpt-6-astra-"):
         return _GPT56_PRICING["astra"]
-    if normalized == "gpt-6-sol" or normalized.startswith("gpt-6-sol-"):
+    if normalized == "gpt-6.1-sol" or normalized.startswith("gpt-6.1-sol-"):
         return _GPT56_PRICING["sol"]
+    if normalized == "gpt-6-sol" or normalized.startswith("gpt-6-sol-"):
+        return _GPT56_PRICING["previous_sol"]
     if normalized == "gpt-6-luna" or normalized.startswith("gpt-6-luna-"):
         return _GPT56_PRICING["luna"]
     if normalized in {"gpt-5.6", "gpt-5.6-sol"} or normalized.startswith("gpt-5.6-sol-"):

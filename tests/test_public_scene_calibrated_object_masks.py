@@ -624,8 +624,8 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
         "kind": "ai",
         "identity": "blueprint-openai-agents-sdk-sam31-visual-reviewer",
         "runtime": "openai_agents_sdk",
-        "model": "gpt-6-sol",
-        "model_version": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
+        "model_version": "gpt-6.1-sol",
         "sdk_version": receipt["reviewer"]["sdk_version"],
         "method": AI_REVIEW_METHOD,
     }

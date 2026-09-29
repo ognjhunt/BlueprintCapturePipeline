@@ -1130,7 +1130,7 @@ def build_scene_configuration_provider_bundle(
            if any(value.get("authoring_model_provider") == "anthropic"
                   for value in configuration_values.values()) else {}),
         **next(({"replacement_authoring_agent_runtime": "openai_agents_api",
-            "replacement_authoring_model": "gpt-6-sol",
+            "replacement_authoring_model": "gpt-6.1-sol",
             "replacement_authoring_agents_api_policy": dict(value["agents_api_policy"])}
            for value in configuration_values.values()
            if value.get("authoring_agent_runtime") == "openai_agents_api"), {}),

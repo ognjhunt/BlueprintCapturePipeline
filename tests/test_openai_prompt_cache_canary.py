@@ -91,6 +91,12 @@ def test_five_call_canary_retains_write_read_version_and_one_off_proof(
         "mechanics-v1-" + "1" * 12
     )
     assert report["request_count"] == 5
+    for request, call in zip(requests, report["calls"], strict=True):
+        assert request["model"] == "gpt-6.1-sol"
+        assert request["reasoning"] == {"effort": "low"}
+        assert request["max_output_tokens"] == 1024
+        assert call["request_shape"]["reasoning_effort"] == "low"
+        assert call["cache_policy"]["reasoning_effort"] == "low"
     assert report["retry_cap"] == 0
     assert report["provider_stable_prefix_write_tokens"] == 1_464
     assert report["calls"][0]["usage"]["cache_write_tokens"] == 1_464

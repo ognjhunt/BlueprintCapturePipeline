@@ -98,7 +98,7 @@ def completed_visual_review(prior_root: Path, request_value: dict, budget_root: 
     references = phase.get("references") or []
     source = request_value["source_frames"]
     if (phase.get("request_digest") != request_value["request_digest"]
-            or phase.get("model") not in {"gpt-6-astra", "gpt-6-sol"}
+            or phase.get("model") not in {"gpt-6-astra", "gpt-6.1-sol"}
             or phase.get("provider") != "openai" or references[:len(source)] != source
             or len(references) != len(source) + 3):
         raise AssetAuthoringError("astra_retained_visual_review_inputs_changed")
@@ -124,7 +124,7 @@ def completed_visual_review(prior_root: Path, request_value: dict, budget_root: 
 
 
 def completed_authoring(prior_root: Path, request_value: dict, *, record_validator=verified,
-                        allowed_models=frozenset({"gpt-6-astra", "gpt-6-sol"})) -> dict[str, Any]:
+                        allowed_models=frozenset({"gpt-6-astra", "gpt-6.1-sol"})) -> dict[str, Any]:
     path = prior_root / "result.json"
     result = json.loads(path.read_text())
     if (result.get("schema_version") != "task_object_astra_authoring_result.v1"

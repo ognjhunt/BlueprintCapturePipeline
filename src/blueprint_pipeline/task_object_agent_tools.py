@@ -28,7 +28,7 @@ class AssetTools:
     def __init__(self, *, request_value, output_root, cad_executor, blender_runner, blender_executable,
                  author_model="gpt-6-astra", author_provider="openai", restore=False):
         if (author_model, author_provider) not in {
-                ("gpt-6-astra", "openai"), ("gpt-6-sol", "openai"),
+                ("gpt-6-astra", "openai"), ("gpt-6.1-sol", "openai"),
                 ("claude-opus-5-5", "anthropic")}:
             raise AssetAuthoringError("authoring_model_provider_invalid")
         self.author_model, self.author_provider = author_model, author_provider

@@ -40,7 +40,7 @@ def failed_review(adopted, tmp_path):  # noqa: F811
         "schema_version": "task_evaluation_robot_placement_receipt.v1",
         "status": "blocked",
         "accepted_pose": None,
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "reasoning_effort": "high",
         "native_attempt_count": 0,
         "model_grades_controls": False,
@@ -51,7 +51,7 @@ def failed_review(adopted, tmp_path):  # noqa: F811
         "rounds": [
             {
                 "proposal": proposal,
-                "proposal_model": "gpt-6-sol",
+                "proposal_model": "gpt-6.1-sol",
                 "geometry_gate": {"status": "passed"},
                 "visual_review": {"camera_views_are_sufficient": False, "status": "uncertain"},
                 "native_attempt": None,

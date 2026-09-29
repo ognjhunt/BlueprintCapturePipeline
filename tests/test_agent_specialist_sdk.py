@@ -118,11 +118,11 @@ def test_image_context_uses_pixels_not_compressed_bytes_and_rejects_external_url
     data = io.BytesIO()
     Image.new("RGB", (1024,1024), "white").save(data, format="PNG")
     url = "data:image/png;base64," + base64.b64encode(data.getvalue()).decode()
-    output, tokens = encode_tool_output([{"type": "input_image", "image_url": url}], model="gpt-6-sol")
+    output, tokens = encode_tool_output([{"type": "input_image", "image_url": url}], model="gpt-6.1-sol")
     assert tokens == 1229 + 1 + 256
     assert output[0].image_url == url
     with pytest.raises(ValueError, match="source_invalid"):
-        encode_tool_output([{"type": "input_image", "image_url": "https://private.invalid/a.png"}], model="gpt-6-sol")
+        encode_tool_output([{"type": "input_image", "image_url": "https://private.invalid/a.png"}], model="gpt-6.1-sol")
     with pytest.raises(ValueError, match="model_or_content_invalid"):
         encode_tool_output([{"type": "input_image", "image_url": url}], model="unqualified-model")
 

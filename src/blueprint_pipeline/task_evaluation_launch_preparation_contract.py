@@ -282,7 +282,7 @@ def _validate_launch_preparation_request(
         # sealed recipe and native-input evidence before paid authority.
         prepared_website = request["scene"].get("website_native_inputs") is not None
         agents_api_selected = request.get("replacement_authoring_agent_runtime") == "openai_agents_api"
-        if (agents_api_selected != (request.get("replacement_authoring_model") == "gpt-6-sol")
+        if (agents_api_selected != (request.get("replacement_authoring_model") == "gpt-6.1-sol")
                 or (agents_api_selected and (anthropic_selected or not prepared_website
                     or request.get("replacement_authoring_backend") != "astra_cad_blender_v1"
                     or request["runtime"]["network"]["allowlist"] != ["api.openai.com"]

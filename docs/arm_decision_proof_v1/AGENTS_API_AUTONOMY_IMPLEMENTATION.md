@@ -5,7 +5,7 @@
 ADP-009B/day-21 needs a reversible authoring option for an exact later scene.
 The existing local OpenAI Agents SDK and Claude SDK loops can author through
 the confined CAD/Blender tools, but neither is a managed Agents API session.
-`task_object_agents_api.py` now prepares an immutable `gpt-6-sol` Agents API
+`task_object_agents_api.py` now prepares an immutable `gpt-6.1-sol` Agents API
 task for an explicitly admitted run. It reuses the existing CAD/Blender and
 independent-review contracts, retains local tool outcomes by operation ID,
 refuses uncertain outcomes, and prepares a same-session continuation only from
@@ -16,7 +16,7 @@ focused wire-shaped test exercises the adapter without a provider call.
 
 The scene-configuration driver now selects this path only when a fresh website
 sponsorship record signs `authoring_agent_runtime=openai_agents_api`,
-`authoring_model=gpt-6-sol`, and a bounded `agents_api_policy`. The Pipeline
+`authoring_model=gpt-6.1-sol`, and a bounded `agents_api_policy`. The Pipeline
 verifies that sponsorship digest, carries the selection through the website
 preparation, launch request, immutable stage configuration and bundle receipt,
 then stages an owner-only project guard file for the exact OpenAI project/key.

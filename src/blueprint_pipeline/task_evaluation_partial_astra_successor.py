@@ -121,7 +121,7 @@ def prepare_completed_articulated_successor(*, value: Mapping, part_requests: Ma
     if (authored.get('schema_version') != 'task_object_astra_articulated_authoring_result.v1'
             or authored.get('status') != 'parts_authored_pending_native_qualification'
             or authored.get('provider') != 'openai' or authored.get('agent_runtime') != 'openai_agents_api'
-            or authored.get('model') != 'gpt-6-sol'
+            or authored.get('model') != 'gpt-6.1-sol'
             or authored.get('result_digest') != canonical_digest(authored, digest_field='result_digest')
             or authored.get('part_request_digests') != {
                 part: row['request_digest'] for part, row in previous.items()}

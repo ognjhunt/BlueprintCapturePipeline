@@ -26,7 +26,7 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 ENABLE_ENV = "BLUEPRINT_WEBSITE_IMAGE_REPAIR_AGENT"
-MODEL = "gpt-6-sol"
+MODEL = "gpt-6.1-sol"
 MAX_REPAIRS = 3
 MAX_OUTPUT_TOKENS = 2000
 MAX_INPUT_TOKENS = 32_000

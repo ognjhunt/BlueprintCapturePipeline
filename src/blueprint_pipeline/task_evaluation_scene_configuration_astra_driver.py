@@ -753,7 +753,7 @@ def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, pr
 def _managed_authoring_receipt(path: Path, authored: Mapping[str, Any]) -> dict[str, Any]:
     value = _read(path, code="agents_api_stage_receipt_missing")
     if (value.get("schema_version") != "task_asset_agents_api_stage_receipt.v1"
-            or value.get("provider") != "openai" or value.get("model") != "gpt-6-sol"
+            or value.get("provider") != "openai" or value.get("model") != "gpt-6.1-sol"
             or value.get("runtime") != "openai_agents_api"
             or value.get("session_cleanup") != "deleted"
             or value.get("result_digest") != authored.get("result_digest")
@@ -1197,7 +1197,7 @@ def _execute_agents_api_stage(*, values, stage_input, rights, request, articulat
     authority_digest = values.get("BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST")
     if (configuration.get("authoring_agent_runtime") != "openai_agents_api"
             or configuration.get("authoring_model_provider") != "openai"
-            or configuration.get("authoring_model") != "gpt-6-sol"
+            or configuration.get("authoring_model") != "gpt-6.1-sol"
             or configuration.get("source_observation_kind") != "website_capture_frames"
             or values.get("BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_RUNTIME") != "openai_agents_api"
             or rights.get("schema_version") != "website_native_rights_admission.v1"
@@ -1257,7 +1257,7 @@ def _execute_agents_api_stage(*, values, stage_input, rights, request, articulat
                         maximum_cost_usd=maximum_cost, key_file=key_path.resolve(),
                         authoring_instructions=instructions)
                 authored = {"schema_version": ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
-                    "status": "parts_authored_pending_native_qualification", "model": "gpt-6-sol",
+                    "status": "parts_authored_pending_native_qualification", "model": "gpt-6.1-sol",
                     "provider": "openai", "agent_runtime": "openai_agents_api",
                     "plan": dict(plan), "parts": parts, "reused_part_ids": [],
                     "part_models": {part_id: part["model"] for part_id, part in parts.items()},

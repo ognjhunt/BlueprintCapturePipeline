@@ -520,7 +520,7 @@ def materialize_scene_configuration_submission(
         request["replacement_authoring_model_provider"] = "anthropic"
     if configs[2].get("authoring_agent_runtime") == "openai_agents_api":
         request["replacement_authoring_agent_runtime"] = "openai_agents_api"
-        request["replacement_authoring_model"] = "gpt-6-sol"
+        request["replacement_authoring_model"] = "gpt-6.1-sol"
     if sam_plan_ref is not None:
         request["runtime"]["mounts"].append({
             "source": sam_plan_ref, "container_path": "/inputs/sam31-preparation-plan.json",
