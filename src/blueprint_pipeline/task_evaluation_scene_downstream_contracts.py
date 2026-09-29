@@ -180,7 +180,9 @@ def lexical_preflight(raw, limits, budget, *, work_budget=None):
     if work_budget is not None:
         work_budget.preflight(text)
     depth, quoted, escaped, primitive = 0, False, False, False
-    for char in (_work_items(text, work_budget) if work_budget is not None else text):
+    for offset, char in enumerate(text):
+        if work_budget is not None and offset % 1024 == 0:
+            _work(work_budget)
         if quoted:
             if escaped:
                 escaped = False
@@ -197,16 +199,18 @@ def lexical_preflight(raw, limits, budget, *, work_budget=None):
         elif char in '{[':
             depth += 1
             budget['tokens'] += 1
-            require(depth <= limits['MAX_DEPTH'], 'depth_limit', **_work_kwargs(work_budget))
+            require(depth <= limits['MAX_DEPTH'], 'depth_limit')
             primitive = False
         elif char in '}]':
             depth -= 1
-            require(depth >= 0, 'json_invalid', **_work_kwargs(work_budget))
+            require(depth >= 0, 'json_invalid')
         elif char not in ' \t\r\n,:' and not primitive:
             budget['tokens'] += 1
             primitive = True
-        require(budget['tokens'] <= limits['MAX_NODES'], 'nodes_limit', **_work_kwargs(work_budget))
-    require(not quoted and depth == 0, 'json_invalid', **_work_kwargs(work_budget))
+        require(budget['tokens'] <= limits['MAX_NODES'], 'nodes_limit')
+    if work_budget is not None:
+        _work(work_budget)
+    require(not quoted and depth == 0, 'json_invalid')
 
 
 def decode(groups, limits, *, work_budget=None):
