@@ -10,7 +10,7 @@ import pytest
 
 from tests.test_scene_retirement_real_participants import access_fixture, authenticated_birth_refs
 from tests.test_scene_retirement_connected_acceptance import _sealed_file
-from tests.test_task_evaluation_launch_dispatcher import _profile, _request, _write_profile_and_request
+from tests.test_task_evaluation_launch_dispatcher import _profile, _write_profile_and_request
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
@@ -111,3 +111,36 @@ def test_legacy_profile_cannot_adopt_existing_launch_directory(tmp_path, monkeyp
     assert enroll_launch_output(target, request=request, profile=profile, now=101) is None
     assert (target / 'legacy').read_bytes() == b'keep'
     assert list(Path(policy['generation_store']).glob('*.json')) == []
+
+
+def test_actual_existing_launch_output_preserves_birth_after_owner_expiry(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
+    from blueprint_pipeline import task_evaluation_scene_execution_authority as execution
+    from blueprint_pipeline.task_evaluation_scene_retirement_launch_births import enroll_launch_output
+    policy, _, _, profile, request, profiles, request_path, outputs = owned_launch(tmp_path, monkeypatch)
+    target = outputs / request['launch_id']
+    original = enroll_launch_output(target, request=request, profile=profile, now=101)
+    monkeypatch.setattr(execution.time, 'time', lambda: 1001)
+    key = hashlib.sha256(str(target).encode()).hexdigest() + '.json'
+    def retained_metadata(path, value):
+        assert json.loads((Path(policy['generation_store']) / key).read_bytes()) == original
+        raise RuntimeError('existing launch remains original without a new birth')
+    monkeypatch.setattr(dispatcher, '_write_immutable', retained_metadata)
+    with pytest.raises(RuntimeError, match='existing launch remains'):
+        dispatcher.dispatch_launch_request(request_path=request_path, profile_dir=profiles,
+            state_root=outputs, execute=False, allocator_runner=lambda argv: pytest.fail('no paid execution'))
+
+
+def test_existing_owned_launch_cannot_be_borrowed_by_foreign_attempt(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
+    from blueprint_pipeline.task_evaluation_scene_retirement_launch_births import enroll_launch_output
+    _, _, _, profile, request, profiles, request_path, outputs = owned_launch(tmp_path, monkeypatch)
+    target = outputs / request['launch_id']
+    enroll_launch_output(target, request=request, profile=profile, now=101)
+    profile['scene_attempt_binding']['attempt_id'] = profile['scene_attempt_id'] = 'foreign'
+    profile['profile_digest'] = canonical_digest(profile, digest_field='profile_digest')
+    _write_profile_and_request(request_path.parent, profile)
+    monkeypatch.setattr(dispatcher, '_write_immutable', lambda *a, **k: pytest.fail('foreign metadata write'))
+    with pytest.raises(ValueError):
+        dispatcher.dispatch_launch_request(request_path=request_path, profile_dir=profiles,
+            state_root=outputs, execute=False, allocator_runner=lambda argv: pytest.fail('no paid execution'))

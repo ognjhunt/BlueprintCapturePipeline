@@ -177,3 +177,19 @@ def test_actual_retained_canary_output_does_not_reserve_new_birth_after_expiry(t
             execution_setup_path=setup_path, output_root=output,
             implementation_commit=request['expected_production_commit'],
             allocator_runner=lambda argv: pytest.fail('no provider execution'))
+
+
+def test_existing_owned_canary_cannot_be_borrowed_by_foreign_request(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+    from blueprint_pipeline.task_evaluation_scene_retirement_producer_births import enroll_activation_child
+    _, request, result, result_path, setup_path, _, _, output = owned_activation(tmp_path, monkeypatch)
+    enroll_activation_child(output, activation_result=result, now=101)
+    result['request_digest'] = 'sha256:' + 'f' * 64
+    result['result_digest'] = canonical_digest(result, digest_field='result_digest')
+    result_path.write_text(json.dumps(result))
+    monkeypatch.setattr(dispatcher, '_event_and_sync', lambda *a, **k: pytest.fail('foreign metadata write'))
+    with pytest.raises(ValueError):
+        dispatcher.dispatch_policy_canary_activation(activation_result_path=result_path,
+            execution_setup_path=setup_path, output_root=output,
+            implementation_commit=request['expected_production_commit'],
+            allocator_runner=lambda argv: pytest.fail('no provider execution'))
