@@ -106,38 +106,71 @@ def _root_fixture() -> dict:
                 break
             time.sleep(0.05)
         assert ready.exists() and child.poll() is None
+        # Install the exact source scanner under /var/lib: the transient has
+        # ProtectHome=yes and cannot import from the checkout in /Users.
+        package = root / "installed" / "blueprint_pipeline"
+        package.mkdir(parents=True)
+        sources = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
+        for name in ("__init__", "control_plane_lane_scratch_census",
+                     "control_plane_disk_usage", "control_plane_lane_scratch",
+                     "control_plane_storage_pins", "control_plane_storage_roots",
+                     "decision_evidence_contracts"):
+            shutil.copyfile(sources / f"{name}.py", package / f"{name}.py")
+        process_root = root / "fixture-proc"
+        process_root.mkdir()
+        (process_root / str(child.pid)).symlink_to(Path("/proc") / str(child.pid))
         probe = root / "probe.py"
         probe.write_text(
-            "import ctypes,errno,fcntl,json,os,sys\n"
+            "import ctypes,errno,fcntl,json,os,sys,time\n"
             "from pathlib import Path\n"
-            "payload,registry,lock,environment,hidden,results,pid=sys.argv[1:]\n"
+            "payload,registry,lock,environment,hidden,results,pid,installed,process_root=sys.argv[1:]\n"
             "pid=int(pid)\n"
+            "stage='start'\n"
+            "def failed(cls,value,tb):\n"
+            " Path(results).write_text(json.dumps({'status':'failed','code':stage}))\n"
+            "sys.excepthook=failed\n"
+            "stage='foreign_payload'\n"
             "assert Path(payload).read_bytes()==b'foreign writer bytes'\n"
+            "stage='fixed_environment'\n"
             "assert b'SECRET_CANARY' in Path(environment).read_bytes()\n"
+            "stage='hidden_secret'\n"
             "try: Path(hidden,'secret').read_bytes()\n"
             "except OSError: pass\n"
             "else: raise AssertionError('hidden provider secret readable')\n"
+            "stage='foreign_proc_metadata'\n"
+            "assert Path('/proc/%d/cmdline'%pid).read_bytes()\n"
+            "Path('/proc/%d/environ'%pid).read_bytes()\n"
             "links=[os.readlink('/proc/%d/fd/%s'%(pid,n)) for n in os.listdir('/proc/%d/fd'%pid)]\n"
             "assert payload in links\n"
+            "stage='exact_process_scanner'\n"
+            "sys.path.insert(0,installed)\n"
+            "from blueprint_pipeline.control_plane_lane_scratch_census import _process_references\n"
+            "errors=[]\n"
+            "found=_process_references([Path(payload).parent],Path(process_root),errors,time.monotonic()+10)\n"
+            "assert not errors and Path(payload).parent in found\n"
+            "stage='foreign_memory'\n"
             "for mode in ('rb','r+b'):\n"
             " try: open('/proc/%d/mem'%pid,mode).close()\n"
             " except PermissionError: pass\n"
             " else: raise AssertionError('foreign process memory readable')\n"
+            "stage='ptrace'\n"
             "libc=ctypes.CDLL(None,use_errno=True)\n"
             "assert libc.ptrace(0x7fffffff,pid,0,0)==-1 and ctypes.get_errno()==errno.EPERM\n"
             "assert libc.process_vm_readv(pid,None,0,None,0,0)==-1 and ctypes.get_errno()==errno.EPERM\n"
             "assert libc.process_vm_writev(pid,None,0,None,0,0)==-1 and ctypes.get_errno()==errno.EPERM\n"
+            "stage='lock'\n"
             "locked=False\n"
             "with open(lock,'rb') as handle:\n"
             " try: fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
             " except BlockingIOError: locked=True\n"
             "assert locked\n"
+            "stage='read_only'\n"
             "denied=[]\n"
             "for path in (payload,registry+'/forbidden'):\n"
             " try: open(path,'wb').write(b'wrong')\n"
             " except OSError: denied.append(True)\n"
             "assert len(denied)==2\n"
-            "Path(results).write_text(json.dumps({'status':'passed','lock_blocked':locked,'cross_uid_process_seen':True,'read_only':True,'ptrace_denied':True,'hidden_secret_denied':True,'foreign_memory_denied':True}))\n"
+            "Path(results).write_text(json.dumps({'status':'passed','lock_blocked':locked,'cross_uid_process_seen':True,'process_scan_complete':True,'read_only':True,'ptrace_denied':True,'hidden_secret_denied':True,'foreign_memory_denied':True}))\n"
         )
         probe.chmod(0o644)
         receipt = results / "probe.json"
@@ -146,9 +179,16 @@ def _root_fixture() -> dict:
                 "--wait", "--collect", "--service-type=exec", "--property=RuntimeMaxSec=60s",
                 *("--property=" + item for item in properties), "--",
                 "/usr/bin/python3", str(probe), str(payload), str(registry), str(lock_path),
-                str(environment), str(hidden), str(receipt), str(child.pid)]
+                str(environment), str(hidden), str(receipt), str(child.pid),
+                str(package.parent), str(process_root)]
         run = subprocess.run(argv, capture_output=True, text=True, timeout=75)
-        assert run.returncode == 0, run.stdout + run.stderr
+        if run.returncode:
+            detail = json.loads(receipt.read_bytes()) if receipt.exists() else {}
+            code = detail.get("code", "unit_before_report")
+            assert code in {"start", "foreign_payload", "fixed_environment", "hidden_secret",
+                            "foreign_proc_metadata", "exact_process_scanner", "foreign_memory",
+                            "ptrace", "lock", "read_only", "unit_before_report"}
+            raise AssertionError(f"disposable unit failed at {code}; exit={run.returncode}")
         result = json.loads(receipt.read_bytes())
         assert result["status"] == "passed"
         assert "SECRET_CANARY" not in json.dumps(result) + run.stdout + run.stderr
@@ -192,6 +232,7 @@ def test_actual_legacy_owner_door_privilege_and_revocation():
     assert result == dict(status="passed", foreign_uid=result["foreign_uid"],
                           private_denials=3, lock_blocked=True,
                           cross_uid_process_seen=True, read_only=True,
+                          process_scan_complete=True,
                           ptrace_denied=True, hidden_secret_denied=True,
                           foreign_memory_denied=True,
                           target_generation_revoked=True)
