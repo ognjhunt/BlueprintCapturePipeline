@@ -354,6 +354,25 @@ def test_valid_multi_principal_policy_does_not_exhaust_gc_selection_budget(retir
     assert {row['action_id'] for row in outcomes} <= {action['action_id'] for action in issued}
 
 
+def test_valid_maximum_owner_policy_still_allows_actual_retirement(retirement_installation):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+
+    installation = retirement_installation  # noqa: F811
+    policy_path = installation[3]
+    policy = json.loads(policy_path.read_bytes())
+    policy['principals'].extend(policy['principals'][0] | {'principal': f'operator-{index}'}
+                                for index in range(1, 64))
+    policy_path.write_bytes(encoded(policy))
+    grant, _, target = _born_scratch(installation)
+    action = root.issue_experiment_action_intent(grant['intent_id'], principal='operator',
+        owner='owner', action='delete', expires_at_epoch=3500,
+        installed_config_path=installation[0], now=lambda: 2900)
+    report = _gc(installation, at=2901)
+    assert any(row['action_id'] == action['action_id'] and row['decision'] == 'retired'
+               for row in report['registered_experiments']['outcomes']), report['registered_experiments']
+    assert not (target / 'intermediate.bin').exists()
+
+
 @pytest.mark.parametrize('fault', ['alternate_empty_root', 'duplicate', 'relative'])
 def test_actual_action_refuses_wrong_or_ambiguous_installed_reference_authority(
         retirement_installation, monkeypatch, fault):
