@@ -138,6 +138,39 @@ def test_supported_original_metadata_survives_actual_offload_restore(installatio
     assert selected[0].stat().st_mode & 0o7777 == mode
 
 
+def test_restored_active_entry_does_not_abort_later_gc_actions(expired_completed_evidence, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_experiment_archive as archive
+    from blueprint_pipeline import control_plane_lane_experiment_restore as restore
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+
+    value, _, _, _, intent_id = expired_completed_evidence
+    cloud = Cloud()
+    monkeypatch.setattr(archive, '_client', lambda *args: (cloud, 'development-only'))
+    assert _gc(value)['registered_experiments']['outcomes'][0]['decision'] == 'retired'
+    grant = root.issue_experiment_restore_intent(intent_id, principal='operator', owner='owner',
+        lease_ttl_seconds=600, expires_at_epoch=3400, installed_config_path=value[0], now=lambda: 2901)
+
+    class Reservation:
+        def release(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(restore, 'reserve_control_plane_disk', lambda *args, **kwargs: Reservation())
+    assert root.restore_registered_experiment(grant['action_id'], expected_restore_intent=grant['restore_intent'],
+        installed_config_path=value[0], now=lambda: 2902,
+        _pins_root=value[0].parent / 'pins')['decision'] == 'restored'
+    report = _gc(value, at=2903)
+    assert report['registered_experiments'] == {'enabled': True, 'outcomes': []}
+    later = root.issue_experiment_action_intent(intent_id, principal='operator', owner='owner',
+        action='owner_review', expires_at_epoch=3900, installed_config_path=value[0],
+        now=lambda: 3502)
+    later_report = _gc(value, at=3503)
+    assert later_report['registered_experiments']['outcomes'] == [{
+        'action_id': later['action_id'], 'intent_id': intent_id, 'decision': 'kept',
+        'reason': 'owner_review', 'receipt': None, 'removed_logical_bytes': 0,
+        'removed_allocated_bytes': 0,
+    }]
+
+
 @pytest.mark.parametrize('boundary', ['first', 'second', 'directory', 'foreign', 'extra', 'readback', 'event'])
 def test_archived_unlink_before_event_reconciles_without_unknown_byte_credit(expired_completed_evidence, monkeypatch, boundary):
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions

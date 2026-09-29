@@ -833,6 +833,29 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
             files.budget.close()
 
 
+def _is_selected_restoration(files, public, entry, gid):
+    """A restored active generation's current operation is not a GC action."""
+    selected = entry['restoration']
+    if selected is None:
+        return False
+    _require(_valid_digest(selected['sha256']) and 0 < selected['size_bytes'] <= 8192,
+             'experiment_restoration_changed')
+    name = 'restoration-' + selected['sha256'][7:] + '.json'
+    raw, _ = _read(files, public, name, 8192, gid)
+    _require(len(raw) == selected['size_bytes']
+             and retained._digest(raw, _work_budget=files.budget) == selected['sha256'],
+             'experiment_restoration_changed')
+    certificate = retained._document(raw, 8192, _work_budget=files.budget)
+    _require(set(certificate) == {'schema_version', 'restoration_id', 'intent_id', 'generation',
+             'birth', 'target_identity', 'new_lease', 'manifest', 'restored_at_epoch',
+             'lease_expires_at_epoch', 'certificate_digest'}
+             and certificate['schema_version'] == 'control_plane_lane_experiment_restoration_certificate.v1'
+             and certificate['certificate_digest'] == canonical_digest(certificate, digest_field='certificate_digest')
+             and all(certificate[key] == entry[key] for key in ('intent_id', 'generation', 'birth', 'target_identity'))
+             and certificate['new_lease'] == entry['lease'], 'experiment_restoration_changed')
+    return certificate['restoration_id'] == entry['operation_id']
+
+
 def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
     empty = dict(enabled=False, outcomes=[])
     if enabled is not True or apply is not True:
@@ -849,6 +872,8 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
         if current is not None:
             for entry in current[1]["enrollments"]:
                 if entry["state"] in ("active", "retiring") and entry["operation_id"] is not None:
+                    if entry["state"] == "active" and _is_selected_restoration(files, public, entry, gid):
+                        continue
                     if len(actions) == 2:
                         break
                     raw, _ = files.read(Path(config.experiment_record_store) / (entry["operation_id"] + ".action.json"),

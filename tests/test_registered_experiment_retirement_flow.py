@@ -99,7 +99,7 @@ def _issue_action(installation, grant, *, action='delete'):  # noqa: F811
         action=action, expires_at_epoch=3500, installed_config_path=installation[0], now=lambda: 2900)
 
 
-def _gc(installation, *, enabled=True):  # noqa: F811
+def _gc(installation, *, enabled=True, at=2900):  # noqa: F811
     from blueprint_pipeline.control_plane_storage_gc import run_storage_gc, RUN_ACK
     pins = installation[0].parent / 'pins'
     pins.mkdir(exist_ok=True)
@@ -108,7 +108,7 @@ def _gc(installation, *, enabled=True):  # noqa: F811
     return run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=pins,
         apply=True, ack=RUN_ACK, lane_scratch_roots=(installation[1]['lane_scratch_work_root'],
                                                   installation[1]['lane_scratch_inputs_root']),
-        lane_scratch_enabled=enabled, _experiment_config_path=installation[0], now=lambda: 2900)
+        lane_scratch_enabled=enabled, _experiment_config_path=installation[0], now=lambda: at)
 
 
 def _no_archive(monkeypatch):
