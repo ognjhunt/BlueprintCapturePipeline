@@ -875,18 +875,25 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                 if entry["state"] in ("active", "retiring") and entry["operation_id"] is not None:
                     if entry["state"] == "active" and _is_selected_restoration(files, public, entry, gid):
                         continue
-                    raw, _ = files.read(Path(config.experiment_record_store) / (entry["operation_id"] + ".action.json"),
-                                        cap=32768, protected=True, mode=0o600)
-                    candidate = retained._document(raw, 32768, _work_budget=files.budget)
-                    _require(set(candidate) == _ACTION_FIELDS and candidate['schema_version'] == ACTION_SCHEMA
-                             and candidate['action_digest'] == canonical_digest(candidate, digest_field='action_digest')
-                             and candidate['action_id'] == entry['operation_id']
-                             and candidate['intent_id'] == entry['intent_id']
-                             and all(candidate[key] == entry[key] for key in
-                                     ('generation', 'birth', 'target_identity', 'lease', 'completion', 'owner'))
-                             and candidate['action'] in ('delete', 'offload', 'owner_review')
-                             and _epoch(candidate['issued_at_epoch']) and _epoch(candidate['expires_at_epoch']),
-                             'experiment_action_invalid')
+                    raw, record = files.read(Path(config.experiment_record_store) / (entry["operation_id"] + ".action.json"),
+                                             cap=32768, protected=True, mode=0o600)
+                    files.verify_record(record)
+                    try:
+                        candidate = retained._document(raw, 32768, _work_budget=files.budget)
+                        _require(set(candidate) == _ACTION_FIELDS and candidate['schema_version'] == ACTION_SCHEMA
+                                 and candidate['action_digest'] == canonical_digest(candidate, digest_field='action_digest')
+                                 and candidate['action_id'] == entry['operation_id']
+                                 and candidate['intent_id'] == entry['intent_id']
+                                 and all(candidate[key] == entry[key] for key in
+                                         ('generation', 'birth', 'target_identity', 'lease', 'completion', 'owner'))
+                                 and candidate['action'] in ('delete', 'offload', 'owner_review')
+                                 and _epoch(candidate['issued_at_epoch']) and _epoch(candidate['expires_at_epoch']),
+                                 'experiment_action_invalid')
+                    except (retained.CensusDecisionError, OwnerTargetVersionError):
+                        expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
+                                            decision='kept', reason='experiment_action_invalid', receipt=None,
+                                            removed_logical_bytes=0, removed_allocated_bytes=0))
+                        continue
                     if issued >= candidate['expires_at_epoch']:
                         expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
                                             decision='kept', reason='experiment_action_expired', receipt=None,
