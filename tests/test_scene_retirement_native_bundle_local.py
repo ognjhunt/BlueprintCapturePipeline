@@ -2,7 +2,6 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
 
 import pytest
 
@@ -64,6 +63,15 @@ def test_selected_native_bundle_receipt_only_local_fact_requires_archive_identit
     proofs.transfer(protection)
     assert proofs.transferred[0]['preservation_proof']['kind']=='selected_native_bundle_local_bytes'
     assert proofs.covered
+
+
+def test_same_selected_result_provenance_in_two_measured_members_is_not_a_second_source(tmp_path):
+    proofs, protection = _native_bundle_fact(tmp_path)
+    source = protection['observation']['source']
+    identity = (source['row_path'], source['raw_sha256'], source['raw_size_bytes'])
+    proofs.selected[identity].append(copy.deepcopy(proofs.selected[identity][0]))
+    proofs.transfer(protection)
+    assert proofs.transferred[0]['preservation_proof']['kind'] == 'selected_native_bundle_local_bytes'
 
 
 @pytest.mark.parametrize('change',['fact_digest','fact_path','fact_size','result_readback',

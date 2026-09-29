@@ -68,7 +68,9 @@ def _sources(fresh,allowance):
     native=lineage.get('compilation_native_owner_inventory',lineage)
     observations=_rows(native.get('preparation_handoff_observations',[]))
     fields={'configured_revisions':'revision_digest',
-            'compilation_intake_receipts':'receipt_digest'}
+            'compilation_intake_receipts':'receipt_digest',
+            'native_preparation_envelopes':'envelope_digest',
+            'native_preparation_results':'result_digest'}
     for row in observations:
         allowance.tick()
         if type(row) is not dict or row.get('pre_handoff_binding_verified') is not True:
@@ -639,6 +641,12 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
             elif reason=='deferred_downstream_document':
                 if protection.get('observation',{}).get('contract_path')=='configured_scene_bundle_digest':
                     facts.transfer_native_bundle(protection)
+                elif protection.get('observation',{}).get('contract_path') in {
+                    'configuration_render_inputs_result_digest',
+                    'construction_recipe_digest',
+                    'construction_queue_envelope_digest',
+                    'construction_queue_receipt_digest'}:
+                    facts.transfer_scene_handoff(protection)
                 else:
                     facts.transfer_native_downstream(protection)
             elif reason=='deferred_parent_reference_proof':

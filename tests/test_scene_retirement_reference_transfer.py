@@ -84,6 +84,48 @@ def test_exact_closed_selected_preparation_record_is_transferred_not_discarded(t
     assert fresh['reference_observation']['record_dispositions']==[record]
 
 
+def test_selected_envelope_proves_only_its_valid_nested_surface_target(tmp_path):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.control_plane_preparation_activation_references import (
+        RawReferenceProvenance, ReferenceFact)
+    from tests.test_task_evaluation_surface_target import target_fixture
+
+    fresh, record, proof, allowance = setup(tmp_path)
+    source = RawReferenceProvenance(**record['source'])
+    target = target_fixture()
+    fact = ReferenceFact(source, 'task.surface_target.target_digest', 'selector_only',
+        'declared_document_selector', 'canonical_document_seal', target['target_digest'])
+    fresh['reference_observation']['protections'] = [{
+        'kind': 'canonical_document_selector_obligations',
+        'observation': json.loads(json.dumps(asdict(fact))),
+        'action': 'KEEP'}]
+
+    def publish(candidate):
+        envelope = json.loads(Path(proof['path']).read_bytes())
+        envelope['request']['task']['surface_target'] = candidate
+        envelope['request_digest'] = canonical_digest(envelope['request'])
+        envelope['envelope_digest'] = canonical_digest(envelope, digest_field='envelope_digest')
+        raw = json.dumps(envelope, sort_keys=True).encode()
+        Path(proof['path']).write_bytes(raw)
+        sha = 'sha256:' + hashlib.sha256(raw).hexdigest()
+        for member in fresh['measured_members']:
+            for selected in member['source_provenance']:
+                if selected['path'] == proof['path']:
+                    selected.update(sha256=sha, size_bytes=len(raw),
+                                    seal_digest=envelope['envelope_digest'])
+        record['source'].update(raw_sha256=sha, raw_size_bytes=len(raw))
+        record['canonical_digest'] = envelope['envelope_digest']
+        fresh['reference_observation']['protections'][0]['observation']['source'] = dict(record['source'])
+
+    publish(target)
+    assert check(fresh, allowance)['transferred_obligations'][0]['preservation_proof'][
+        'kind'] == 'selected_canonical_seal_with_original_raw_proof'
+    invalid = dict(target, radius_m=target['radius_m'] + 0.01)
+    publish(invalid)
+    with pytest.raises(ValueError, match='scene_retirement_reference_closure_unproven'):
+        check(fresh, allowance)
+
+
 def test_exact_observed_queue_identity_is_retained_only_with_selected_envelope(tmp_path):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.task_evaluation_scene_retirement_authority import selected_document

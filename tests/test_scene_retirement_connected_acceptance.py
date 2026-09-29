@@ -19,6 +19,7 @@ import tempfile
 import stat
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -106,6 +107,12 @@ def _rebase_complete_graph(args, anchor, changes, *, requests=None, immutable_pa
             return [visit(item) for item in value]
         if not isinstance(value, dict):
             return value
+        # Intake owns these original bytes. Rewriting a protected raw selector
+        # through another fixture record's digest alias can detach it from the
+        # very file whose identity it is meant to prove.
+        if (set(value) == {'path', 'sha256', 'size_bytes'}
+                and value['path'] in immutable_paths):
+            return copy.deepcopy(value)
         replacement = (requests or {}).get(canonical_digest(value)) if allow_replacement else None
         if replacement is not None:
             return visit(copy.deepcopy(replacement), allow_replacement=False)
@@ -567,7 +574,9 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
     from blueprint_pipeline.task_evaluation_launch_preparation_worker import process_launch_preparation_queue
     from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
     from tests.test_task_evaluation_launch_preparation_worker import (
-        fetcher, fake_scene_render_inputs, production_request_with_fetchable_bytes)
+        fetcher, production_request_with_fetchable_bytes)
+    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+        materialize_scene_configuration_render_inputs)
 
     queue_root = Path(args['roots']['preparation_queue_root'])
     queue_root.mkdir(parents=True, exist_ok=True)
@@ -617,6 +626,22 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
         request['scene_intent_digest'] = json.loads(Path(owner['path']).read_bytes())['intent_digest']
         request['scene']['identity'] = copy.deepcopy(source['request']['scene']['identity'])
         request['task']['identity'] = copy.deepcopy(source['request']['task']['identity'])
+        # These historical branches are test-owned completed meshes. Feed the
+        # actual CPU materializer a real, tiny mesh and its sealed normalization.
+        mesh = b'o fixture_surface\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n'
+        mesh_ref = request['scene']['geometry']['collision']
+        mesh_ref.update(digest='sha256:' + hashlib.sha256(mesh).hexdigest(), size_bytes=len(mesh))
+        payloads[mesh_ref['uri']] = mesh
+        request['scene']['appearance']['kind'] = 'other_observed'
+        normalization = {'schema_version': 'fixture_completed_mesh_normalization.v1',
+                         'output': {'sha256': mesh_ref['digest']}, 'normalization_digest': ''}
+        normalization['normalization_digest'] = canonical_digest(
+            normalization, digest_field='normalization_digest')
+        normalization_bytes = json.dumps(normalization, sort_keys=True).encode()
+        normalization_ref = request['scene']['geometry']['validation']
+        normalization_ref.update(digest='sha256:' + hashlib.sha256(normalization_bytes).hexdigest(),
+                                 size_bytes=len(normalization_bytes))
+        payloads[normalization_ref['uri']] = normalization_bytes
         if identifier == 'prep-1':
             definition = {'schema_version': 'task_evaluation_rigid_relocation_template.v1',
                 'task_identity': request['task']['identity'],
@@ -647,7 +672,15 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
         stage = json.loads(payloads[stage_ref['uri']])
         if identifier == 'current-parent':
             stage_ref['uri'] = 's3://blueprint-production-inputs/current-parent-stage-1.json'
-        stage.update(sam31_review_kind='ai', sam31_preparation_plan=copy.deepcopy(mount))
+        recipe['stage_sequence'][0]['adapter']['id'] = 'provided_mesh_appearance_excision'
+        recipe['stage_sequence'][0]['execution_class'] = 'no_spend'
+        stage.update(schema_version='task_evaluation_provided_mesh_appearance_excision.v1',
+                     source_origin='owner_provided_completed_asset',
+                     source_bytes_unchanged_required=True,
+                     unobserved_surfaces_recovered=False, physical_truth_claimed=False,
+                     generated_appearance=False, collision_source_digest=mesh_ref['digest'],
+                     exact_target_prim='/Root/fixture_surface',
+                     sam31_review_kind='ai', sam31_preparation_plan=copy.deepcopy(mount))
         stage_bytes = json.dumps(stage, sort_keys=True).encode()
         stage_ref.update(digest='sha256:'+hashlib.sha256(stage_bytes).hexdigest(),
                          size_bytes=len(stage_bytes))
@@ -685,8 +718,9 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
             allowed_uri_prefixes=['s3://blueprint-production-inputs/','s3://test/'],
             service_account=pwd.getpwuid(os.geteuid()).pw_name,
             source_commit=request['expected_production_commit'],fetcher=fetcher(payloads),
-            adapter_materializer=forbidden_adapter,scene_render_input_materializer=fake_scene_render_inputs,
-            construction_queue_root=base/'worker-construction-queue')
+            adapter_materializer=forbidden_adapter,
+            scene_render_input_materializer=materialize_scene_configuration_render_inputs,
+            construction_queue_root=source['base']/'construction')
         assert len(run['results'])==1 and run['results'][0]['status']=='queued_for_production_scene_configuration',run
         digest=canonical_digest(request)
         name=identifier+'-'+digest[7:]+'.json'
@@ -828,7 +862,6 @@ def _source_owned_configuration(base, monkeypatch, policy):
     assert len(preparation_run['results']) == 1
     assert preparation_run['results'][0]['status'] == 'queued_for_production_scene_configuration', preparation_run
     result_path = next((queue / 'results').glob('*.json'))
-    result = json.loads(result_path.read_bytes())
     envelope_path = next((queue / state / result_path.name for state in ('materialized', 'completed')
                           if (queue / state / result_path.name).is_file()), queue / 'materialized' / result_path.name)
     assert envelope_path.is_file()
@@ -840,6 +873,139 @@ def _source_owned_configuration(base, monkeypatch, policy):
             'intake': intake, 'intent_id': intent_id, 'owner': _raw(intake / intent_id / 'intent.json'),
             'request': request, 'envelope': (str(envelope_path), envelope_path.read_bytes()),
             'result': (str(result_path), result_path.read_bytes()), 'issued_at': issued_at}
+
+
+def _website_owned_configuration(base, monkeypatch, policy):
+    """Produce one capture, registration, intent and preparation for the same owner."""
+    import copy
+    import pwd
+    from urllib.parse import urlsplit
+
+    import numpy as np
+    import trimesh
+
+    from blueprint_pipeline import public_scene_host_input_intake
+    from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
+    from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as publication
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_json
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import ensure_launch_preparation_queue_root
+    from blueprint_pipeline.task_evaluation_public_scene_attempt_factory import RELEASE_SCHEMA, record
+    from blueprint_pipeline.task_evaluation_scene_intake import stage_scene_intent
+    from blueprint_pipeline.website_scene_handoff import prepare_website_scene_handoff
+    from tests.test_task_evaluation_scene_configuration_submission import SHA, production_fixture
+    from tests.test_task_evaluation_scene_configuration_submission_publication import Store
+    from tests.test_website_native_appearance import inputs
+    from tests.test_website_task_preparation import _task_context
+
+    source = base / 'website-source-produced'
+    capture = source / 'pubsub' / 'bucket' / 'scenes' / 'site-req1' / 'captures' / 'walkthrough-req1'
+    pipeline = capture / 'pipeline'
+    pipeline.mkdir(parents=True)
+    args, _, _ = inputs(pipeline)
+    args['task_context'] = _task_context(confirmed_at=SCENE_SOURCE_EPOCH - 100)
+    args['spend'] = copy.deepcopy(args['spend'])
+    args['spend']['expires_at_epoch'] = SCENE_SOURCE_EPOCH + 6 * 24 * 60 * 60
+    args['spend']['max_paid_attempts'] = 4
+    args['spend']['consent']['accepted_at_epoch'] = SCENE_SOURCE_EPOCH - 1
+    collider = Path(args['base_scene']['collision_mesh_path'])
+    mesh = trimesh.load(collider, force='mesh')
+    mesh.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
+    mesh.export(collider)
+    assets = pipeline / 'assets.json'
+    write_json(assets, {'world_id': 'world-1', 'downloads': [
+        {'kind': kind, 'local_path': args['base_scene'][key + '_path'],
+         'sha256': _sha256_file(Path(args['base_scene'][key + '_path']))[7:]}
+        for kind, key in (('splat_ply', 'splat'), ('collider_mesh_glb', 'collision_mesh'))]})
+    removal = pipeline / 'removal.json'
+    write_json(removal, args['removal_manifest'])
+    binding_root = source / 'bindings'
+    monkeypatch.setenv('BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT', str(binding_root))
+    handoff = prepare_website_scene_handoff(
+        descriptor={'capture_id': 'walkthrough-req1', 'scene_id': 'site-req1', 'metadata': {
+            'site_task_context': args['task_context'], 'website_scene_execution_authority': args['spend']}},
+        clean_plate={'privacy_verified': True, 'status': 'objects_removed',
+                     'task_masks': args['task_masks'], 'source_geometry': args['source_geometry'],
+                     'removal_manifest_path': str(removal)},
+        provider_run={'status': 'ready', 'world_id': 'world-1', 'provider_run_id': 'op-1',
+                      'worldlabs_asset_materialization': {'manifest_path': str(assets)}},
+        capture_root=capture, now=SCENE_SOURCE_EPOCH)
+    assert handoff['status'] == 'intake_ready' and handoff.get('source_registration'), handoff
+    preparation = json.loads(Path(handoff['preparation_path']).read_bytes())
+    intake = source / 'intents'
+    accepted = stage_scene_intent(value=json.loads(cross_runtime_canonical_json(preparation['intake_request'])),
+                                  queue_root=intake, authenticated_client='blueprint-webapp',
+                                  trusted_clients={'blueprint-webapp'}, now=SCENE_SOURCE_EPOCH)
+    intent_id = accepted['intent_id']
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT', str(intake))
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'blueprint-webapp')
+    queue = ensure_launch_preparation_queue_root(source / 'queue')
+    input_root = source / 'inputs'
+    input_root.mkdir()
+    progression_output = source / 'factories'
+    progression_output.mkdir()
+    policy['roots'] = [
+        {'root': str(input_root), 'storage_class': 'cache', 'device': input_root.stat().st_dev},
+        {'root': str(progression_output), 'storage_class': 'host',
+         'device': progression_output.stat().st_dev}]
+    _sealed_file(base / 'policy.json', policy, 'policy_digest', mode=0o644)
+    monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(base / 'policy.json'))
+    fixture = production_fixture(source / 'release')
+    machinery_path = source / 'machinery.json'
+    _sealed_file(machinery_path, {
+        'schema_version': 'task_evaluation_website_scene_machinery.v1',
+        'maximum_preparation_spend_usd': 0, 'provider': 'vast'}, 'machinery_digest')
+    (source / 'repo').mkdir()
+    release_path = source / 'release.json'
+    _sealed_file(release_path, {
+        'schema_version': RELEASE_SCHEMA, 'source_commit': SHA,
+        'runtime_digest': 'sha256:' + 'f' * 64, 'repo_root': str(source / 'repo'),
+        'runtime_publication_root': str(fixture['runtime_publication_root']),
+        'namespace_timestamp': '20260919T120000Z', 'release_admission_mode': 'promoted',
+        **{key: record(fixture[key]) for key in
+           ('deploy_receipt', 'release_provenance', 'release_environment')}}, 'release_digest')
+    config = source / 'config.json'
+    _sealed_file(config, {
+        'schema_version': engine.CONFIG_SCHEMA, 'intent_root': str(intake),
+        'public_source_binding_root': str(source / 'unused'),
+        'website_source_binding_root': str(binding_root),
+        'website_source_machinery_path': str(machinery_path),
+        'release_binding_path': str(release_path),
+        'factory_output_root': str(progression_output),
+        'trusted_clients': ['blueprint-webapp'], 'submission_enabled': True,
+        'submission_transport': 'local_owned_queue', 'preparation_queue_root': str(queue),
+        'service_account': pwd.getpwuid(os.geteuid()).pw_name,
+        'publication_lock_root': str(source / 'locks')}, 'config_digest')
+    monkeypatch.setattr(public_scene_host_input_intake, '_verified_checkout_head', lambda: SHA)
+    monkeypatch.setattr(publication, '_verified_checkout_head', lambda: SHA)
+    store = Store()
+    def publish(**kwargs):
+        return publication.publish_scene_configuration_submission(**kwargs, client=store)
+    progression = engine.process_scene_intents(config_path=config, publisher=publish, now=SCENE_SOURCE_EPOCH)
+    assert len(progression['results']) == 1 and progression['results'][0]['status'] == 'running', progression
+    def fetch(uri, destination, maximum_bytes):
+        data = store.objects[urlsplit(uri).path.lstrip('/')]
+        assert len(data) <= maximum_bytes
+        destination.write_bytes(data)
+    prepared = worker.process_launch_preparation_queue(
+        queue_root=queue, input_root=input_root,
+        allowed_uri_prefixes=['s3://blueprint/task-evaluation/production-inputs/'],
+        service_account=pwd.getpwuid(os.geteuid()).pw_name, source_commit=SHA,
+        fetcher=fetch, construction_queue_root=source / 'construction')
+    assert len(prepared['results']) == 1
+    assert prepared['results'][0]['status'] == 'queued_for_production_scene_configuration', prepared
+    result_path = next((queue / 'results').glob('*.json'))
+    envelope_path = next((queue / state / result_path.name for state in ('materialized', 'completed')
+                          if (queue / state / result_path.name).is_file()), queue / 'materialized' / result_path.name)
+    request = json.loads(envelope_path.read_bytes())['request']
+    return {'base': source, 'queue': queue, 'input_root': input_root, 'progression_output': progression_output,
+            'intake': intake, 'intent_id': intent_id, 'owner': _raw(intake / intent_id / 'intent.json'),
+            'request': request, 'envelope': (str(envelope_path), envelope_path.read_bytes()),
+            'result': (str(result_path), result_path.read_bytes()), 'issued_at': SCENE_SOURCE_EPOCH,
+            'capture': capture, 'handoff': handoff, 'binding_root': binding_root,
+            'published_objects': dict(store.objects)}
 
 
 def _select_source_owned_lineage(args, source, base, original_graph):
@@ -860,6 +1026,11 @@ def _select_source_owned_lineage(args, source, base, original_graph):
         if json.loads(row[1])['schema_version'] == 'task_evaluation_scene_preparation_attempt.v1']
     assert len(original_admin) == 1
     historical.append(('attempt', original_admin[0]))
+    if 'capture' in source:
+        for role in ('website_registrations', 'website_bindings', 'website_handoffs',
+                     'website_preparations', 'website_runtime_inputs', 'website_task_contexts',
+                     'submission_publications'):
+            historical.extend((role, row) for row in original_graph['source_records'][role])
     retained_index = []
     for index, (role, (original_path, raw)) in enumerate(historical):
         path = history / f'source-history-{index:02d}-{role}.json'
@@ -889,14 +1060,57 @@ def _select_source_owned_lineage(args, source, base, original_graph):
             assert path.is_file(), path
             records[role].append((str(path), path.read_bytes()))
     args['roots']['factory_output_root'] = str(source['progression_output'])
+    if 'capture' in source:
+        publication = workspace / 'publication.json'
+        assert publication.is_file(), publication
+        args['source_records']['submission_publications'] = [
+            (str(publication), publication.read_bytes())]
+        capture_base = source['capture'] / 'pipeline' / 'website_scene_preparation'
+        website_paths = {
+            'website_registrations': [Path(source['handoff']['source_registration']['path'])],
+            'website_bindings': list((source['progression_output'] / source['intent_id'] /
+                                      'website-source').glob('*.json')),
+            'website_handoffs': [capture_base / 'handoff.json'],
+            'website_preparations': [capture_base / 'preparation.json'],
+            'website_runtime_inputs': [capture_base / 'native' / 'runtime_inputs.json'],
+            'website_task_contexts': [capture_base / 'task_context.json'],
+        }
+        for role, paths in website_paths.items():
+            assert len(paths) == 1 and paths[0].is_file(), (role, paths)
+            args['source_records'][role] = [(str(path), path.read_bytes()) for path in paths]
+        args['roots']['website_source_binding_root'] = str(source['binding_root'])
+        args['roots']['pubsub_root'] = str(source['base'] / 'pubsub')
 
 
-def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True):
+def _park_synthetic_native_activation(args, base):
+    """Keep an old test-only native pair outside the selected real queue."""
+    history = base / 'unselected-queue-history' / 'synthetic-native-activation'
+    history.mkdir(parents=True)
+    records = []
+    for role in ('native_activation_envelopes', 'native_activation_results',
+                 'native_owner_records'):
+        rows = args['bridge_records'][role]
+        for index, (original_path, raw) in enumerate(rows):
+            target = history / f'{role}-{index}.json'
+            target.write_bytes(raw)
+            records.append({'role': role, 'original_path': original_path,
+                            'retained_path': str(target),
+                            'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(),
+                            'size_bytes': len(raw), 'disposition': 'KEEP'})
+        args['bridge_records'][role] = []
+    assert records
+    (history / 'index.json').write_text(json.dumps({
+        'schema_version': 'retained_synthetic_native_fixture.v1',
+        'records': records}, sort_keys=True))
+
+
+def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True, website=False):
     from tests.test_scene_lifecycle_connected_acquisition import full_connected_finished_scene, installed
-    from tests.test_task_evaluation_scene_intake import request, stage, attempt
+    from tests.test_task_evaluation_scene_intake import stage, attempt
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
-    source = _source_owned_configuration(base, monkeypatch, policy)
+    source = (_website_owned_configuration(base, monkeypatch, policy) if website
+              else _source_owned_configuration(base, monkeypatch, policy))
     original_graph = full_connected_finished_scene()
     args = _native_fixture_records(original_graph)
     # The source-family regression fixture deliberately has no current parent
@@ -947,7 +1161,6 @@ def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True):
         return task
     task_versions = [json.loads(raw) for _, raw in args['source_records']['sam_host_tasks']]
     original_task = next(task for task in task_versions if task['expected_production_commit'] == 'a'*40)
-    adopted_task = next(task for task in task_versions if task['expected_production_commit'] == 'b'*40)
     own_current = owned_task(original_task, actual, owner, birth)
     replacements = {canonical_digest(old_intent['request']): actual['request']}
     for task in task_versions:
@@ -1003,6 +1216,8 @@ def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True):
     args = _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth, current_birth, source)
     _link_current_parent(args, current_birth)
     _select_source_owned_lineage(args, source, base, original_graph)
+    if website:
+        _park_synthetic_native_activation(args, base)
     assert Path(args['roots']['preparation_queue_root']) == source['queue']
     assert Path(args['roots']['preparation_input_root']) == source['input_root']
     source_identity = source['queue'] / 'identities' / (source['request']['preparation_id'] + '.json')
@@ -1063,7 +1278,8 @@ def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True):
     args['seed_records']['projection'] = (str(projection_path), projection_path.read_bytes())
     authentic_pair = (str(actual_path), actual_path.read_bytes())
     args['seed_records']['intent'] = None
-    args, context, _, _ = installed(base, args, already_rebased=True)
+    args, context, _, _ = installed(base, args, already_rebased=True,
+                                   shared_hardlinks=not website)
     args['seed_records']['intent'] = authentic_pair
     _complete_installed_queue_layouts(context)
     _produce_current_sam_phase(args, context, base, monkeypatch)
@@ -1126,7 +1342,8 @@ def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True):
     _join(**source_args)
     if activation:
         _produce_current_activation(args, context, base, monkeypatch, policy, source)
-    return args, context, (accepted['intent_id'], owner, birth), (prior['intent_id'], prior_owner, prior_birth)
+    context['scene_construction_queue_root'] = str(source['base'] / 'construction')
+    return args, context, (accepted['intent_id'], owner, birth), (prior['intent_id'], prior_owner, prior_birth), source
 
 
 def _produce_current_activation(args, context, base, monkeypatch, policy, source):
@@ -1260,11 +1477,23 @@ def _produce_current_activation(args, context, base, monkeypatch, policy, source
     assert run['results'][0]['status'] == 'profile_authority_materialized_no_execution', run
     assert run['results'][0]['provider_mutation_performed'] is False
     assert run['results'][0]['paid_execution_requested'] is False
+    actual_name = next((activation_queue / 'prepared').glob(activation_id + '-*.json')).name
+    activation_request = json.loads((activation_queue / 'prepared' / actual_name).read_bytes())['request']
     receipt = owned / 'launch-set' / 'profile_publication_receipt.v1.json'
     authorization = next((owned / 'standing-authorizations').glob('*.json'))
+    profile = owned / 'profiles' / (run['results'][0]['profile_id'] + '.json')
+    release_window = owned / 'references' / activation_request['release_window']['digest'][7:]
+    assert json.loads(profile.read_bytes())['profile_digest'] == run['results'][0]['profile_digest']
+    assert _raw(release_window) == {'path': str(release_window),
+        'sha256': activation_request['release_window']['digest'],
+        'size_bytes': activation_request['release_window']['size_bytes']}
+    assert json.loads(release_window.read_bytes())['window_digest'] == run['results'][0]['release_window_digest']
     assert run['results'][0]['profile_publication_receipt_digest'] == _raw(receipt)['sha256']
     assert run['results'][0]['standing_authorization_digest'] == _raw(authorization)['sha256']
-    actual_name = next((activation_queue / 'prepared').glob(activation_id + '-*.json')).name
+    for artifact in (profile, release_window, receipt, authorization):
+        raw = artifact.read_bytes()
+        args['source_records']['opaque_evidence'].append((str(artifact), raw))
+        context['retained_metadata_files'].append({'role': 'opaque_evidence', 'path': str(artifact)})
     args['seed_records']['activation_envelopes'].append((str(activation_queue / 'prepared' / actual_name),
         (activation_queue / 'prepared' / actual_name).read_bytes()))
     args['downstream_records']['activation_results'].append((str(activation_queue / 'results' / actual_name),
@@ -1452,7 +1681,8 @@ def _consented_inventories(members, cache_objects=()):
     from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance, _inventory_members, _payload
     from blueprint_pipeline.task_evaluation_scene_retirement_mutation import inventory_digest
     allowance = ActionAllowance(expires_at=999, now=lambda: 200, monotonic=time.monotonic,
-        local_bytes=1024*1024, archive_bytes=2*1024*1024, remote_bytes=4*1024*1024, elapsed_seconds=60)
+        local_bytes=64*1024*1024, archive_bytes=96*1024*1024,
+        remote_bytes=192*1024*1024, elapsed_seconds=180)
     preserved = _inventory_members(members, allowance, cache_aliases=[
         {key: row[key] for key in ('canonical_path', 'digest', 'size_bytes')} for row in cache_objects])
     files = preserved['files']
@@ -1542,7 +1772,7 @@ def test_current_sam_worker_and_parent_link_use_real_selected_owner(short_scene_
     journals.mkdir(mode=0o700)
     (journals / 'retired').mkdir(mode=0o700)
     monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
-    args, _, main_owner, original_owner = _authentic_connected_graph(base, monkeypatch, policy, activation=False)
+    args, _, main_owner, original_owner, _ = _authentic_connected_graph(base, monkeypatch, policy, activation=False)
     history_index = json.loads((base / 'unselected-queue-history' / 'source-history-index.json').read_bytes())['records']
     assert history_index and all(row['disposition'] == 'KEEP' for row in history_index)
     for row in history_index:
@@ -1588,7 +1818,7 @@ def test_source_produced_preparation_reaches_local_activation_receipt(short_scen
     journals.mkdir(mode=0o700)
     (journals / 'retired').mkdir(mode=0o700)
     monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
-    args, _, _, _ = _authentic_connected_graph(base, monkeypatch, policy)
+    args, _, _, _, _ = _authentic_connected_graph(base, monkeypatch, policy)
     results = [json.loads(raw) for _, raw in args['downstream_records']['activation_results']]
     assert len(results) == 1
     result = results[0]
@@ -1608,15 +1838,32 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
     from tests.test_scene_retirement_real_participants import access_fixture
 
     base = short_scene_directory.resolve()
+    # The website producer has a real running progression, without a task
+    # result. The fixture owner ends future execution with the real intake
+    # revocation writer, then waits its seven-day grace period.
+    retirement_epoch = SCENE_SOURCE_EPOCH + 14 * 24 * 60 * 60
     _, policy, placeholder = access_fixture(base, monkeypatch)
     placeholder.rmdir()
     journals = Path(policy['journal_store'])
     journals.mkdir(mode=0o700)
+    (journals / 'processes').mkdir(mode=0o700)
     (journals / 'retired').mkdir(mode=0o700)
+    Path(str(journals) + '.metadata').mkdir(mode=0o750)
     # Issue intake before enrollment: stage's real publisher remains an actual
     # participant; disabled root policy grants it no fictional cleanup authority.
     monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
-    args, context, main_owner, original_owner = _authentic_connected_graph(base, monkeypatch, policy)
+    args, context, main_owner, original_owner, source = _authentic_connected_graph(
+        base, monkeypatch, policy, website=True)
+    native_history = json.loads((base / 'unselected-queue-history' /
+                                 'synthetic-native-activation' / 'index.json').read_bytes())['records']
+    assert {row['role'] for row in native_history} == {
+        'native_activation_envelopes', 'native_activation_results', 'native_owner_records'}
+    selected_metadata = {row['path'] for row in context['retained_metadata_files']}
+    for row in native_history:
+        retained = Path(row['retained_path']).read_bytes()
+        assert row['sha256'] == 'sha256:' + hashlib.sha256(retained).hexdigest()
+        assert row['size_bytes'] == len(retained) and row['retained_path'] not in selected_metadata
+        assert not Path(row['original_path']).exists()
     current_job = next(json.loads(raw) for _, raw in args['source_records']['sam_jobs']
                        if json.loads(raw)['parent_preparation_id'] == 'current-parent')
     current_result = next(json.loads(raw) for _, raw in args['source_records']['sam_results']
@@ -1633,11 +1880,13 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
     active_cache = sorted(path for path in cache_root.iterdir() if len(path.name) == 64 and path.is_file())
     assert active_cache
     for path in active_cache:
-        os.utime(path, (200 - DEFAULT_MINIMUM_AGE_SECONDS - 1,
-                        200 - DEFAULT_MINIMUM_AGE_SECONDS - 1))
+        os.utime(path, (retirement_epoch - DEFAULT_MINIMUM_AGE_SECONDS - 1,
+                        retirement_epoch - DEFAULT_MINIMUM_AGE_SECONDS - 1))
     stable_shared_ancestors(monkeypatch, base)
-    initial = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context, observed_at_epoch=200)
+    initial = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context,
+                                         observed_at_epoch=retirement_epoch)
     assert 'historical_lineage' in initial, (initial.get('blockers'),initial.get('reason'),initial.get('status'))
+    assert initial['finished_observation']['status'] == 'unknown'
     assert {row['family'] for row in initial['family_obligations'] if row['member_count']} == set(FAMILIES), initial
     selected = [row for row in initial['measured_members'] if row.get('kinds')]
     shared_rows = [row for row in selected if 'prepared_cache_object' in row.get('kinds',[])]
@@ -1646,7 +1895,15 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
     absent_shared = [row for row in shared_rows if not Path(row['path']).exists()]
     assert not absent_shared, [(row['path'], row['status'], row['keeps']) for row in shared_rows]
     missing_cache = sorted(path.name for path in set(active_cache) - set(shared_content))
-    assert not missing_cache, missing_cache
+    assert not missing_cache, {
+        'missing_cache': missing_cache,
+        'shared_references': [(row['digest'], row['path']) for row in
+            initial['historical_lineage']['source_family_inventory']['downstream_inventory']['seed']['shared_cache_references']
+            if row['digest'][7:] in missing_cache],
+        'projected': [(row['receipt_digest'], row.get('binding_strength'), row['path']) for row in
+            initial['historical_lineage']['source_family_inventory']['downstream_inventory']['seed']['members']
+            if row.get('kind') == 'preparation_projected_file' and row.get('receipt_digest', '')[7:] in missing_cache],
+    }
     # A birth owns directories. Native compilation's exact file obligations are
     # retained under their actual owning directory. The original planner
     # remains KEEP; action must independently prove each policy-born CAS alias.
@@ -1669,10 +1926,13 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
     policy['private_archive_allowed_classes'] = ['host']
     policy['consumer_cohort'] = _installed_cohort()
     policy['reference_context'] = context
-    policy['limits'] = {'logical_payload_bytes': 1024 * 1024, 'archive_bytes': 2 * 1024 * 1024,
-                        'remote_bytes': 4 * 1024 * 1024, 'elapsed_seconds': 60}
+    # The real website producer includes its local toolchain bundle; these
+    # finite fixture caps cover those bytes while remaining below native limits.
+    policy['limits'] = {'logical_payload_bytes': 512 * 1024 * 1024,
+                        'archive_bytes': 96 * 1024 * 1024,
+                        'remote_bytes': 192 * 1024 * 1024, 'elapsed_seconds': 1800}
     policy_path = base / 'policy.json'
-    _sealed_file(policy_path, policy, 'policy_digest', mode=0o644)
+    policy = _sealed_file(policy_path, policy, 'policy_digest', mode=0o644)
     monkeypatch.setattr(access, '_INSTALLED_POLICY', policy_path)
     monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(policy_path))
     generations = {}
@@ -1691,7 +1951,8 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
         member.rename(parked)
         selected_owner = original_owner if any(path.is_relative_to(member) for path in original_paths) else main_owner
         state = access.birth_scene_member(member, owner_intent_id=selected_owner[0],
-            owner_raw_ref=selected_owner[1], birth_request_raw_ref=selected_owner[2], now=200)
+            owner_raw_ref=selected_owner[1], birth_request_raw_ref=selected_owner[2],
+            now=200 if selected_owner == original_owner else SCENE_SOURCE_EPOCH + 3)
         assert state and state['state'] == 'active'
         generations[str(member)] = state
         for child in list(parked.iterdir()):
@@ -1709,9 +1970,81 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
             'generation_raw_ref': _raw(generation_path),
             'source_raw_ref': generation['source_publication_raw_ref']})
     inventories = _consented_inventories(members, cache_objects)
-    plan = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context, observed_at_epoch=200)
-    assert 'finished_observation' in plan, plan
-    assert plan['finished_observation']['status'] == 'completed'
+    from blueprint_pipeline.task_evaluation_scene_intake import revoke_scene_intent
+    selected_intent = json.loads(Path(main_owner[1]['path']).read_bytes())
+    revoked = revoke_scene_intent(queue_root=Path(context['roots']['intent_root']),
+                                  intent_id=args['intent_id'],
+                                  intent_digest=selected_intent['intent_digest'],
+                                  owner=selected_intent['request']['owner'],
+                                  now=SCENE_SOURCE_EPOCH + 5 * 24 * 60 * 60)
+    assert revoked['status'] == 'revoked' and revoked['provider_mutation_performed'] is False
+    from blueprint_pipeline.task_evaluation_scene_construction_queue import finalize_scene_construction
+    construction_root = Path(context['scene_construction_queue_root'])
+    pending = sorted((construction_root / 'pending').glob('*.json'))
+    assert len(pending) == 3, pending
+    for path in pending:
+        queued = json.loads(path.read_bytes())
+        final = finalize_scene_construction(queue_root=construction_root,
+            envelope={**queued, 'control_plane_envelope_digest': queued['envelope_digest']},
+            terminal_result={'status': 'blocked', 'run_id': queued['run_id'],
+                'source_commit': queued['expected_production_commit'],
+                'configuration_completed': False, 'configured_scene_published': False,
+                'configured_scene_revision_digest': None, 'publication_result_digest': None,
+                'full_byte_service_account_readback_passed': False,
+                'continuing_spend_from_this_run': False,
+                'blockers': ['scene_owner_revoked']})
+        assert final['status'] == 'blocked' and not path.exists()
+    plan = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context,
+                                      observed_at_epoch=retirement_epoch)
+    assert 'finished_observation' in plan, plan.get('blockers', plan)
+    assert plan['finished_observation']['status'] == 'revoked_grace_elapsed', plan['finished_observation']
+    activation_result = next(json.loads(raw) for _, raw in args['downstream_records']['activation_results'])
+    source_inventory = plan['historical_lineage']['source_family_inventory']
+    raw_bound = [row for row in source_inventory['lexical_members']
+                 if row.get('binding', {}).get('raw_artifacts_bound')]
+    assert raw_bound, (
+        [(row['kind'], row['path']) for row in source_inventory['lexical_members']
+         if row['kind'] == 'activation_workspace'],
+        [(row['role'], row['sha256'] == activation_result['profile_publication_receipt_digest'])
+         for row in source_inventory['raw_versions'] if row['role'] == 'opaque_evidence'],
+        activation_result['status'])
+    assert any(proof['sha256'] == activation_result['profile_publication_receipt_digest']
+               for row in plan['measured_members'] for proof in row['source_provenance']), (
+        [(row['path'], [(proof['role'], proof['sha256'] ==
+          activation_result['profile_publication_receipt_digest']) for proof in row['source_provenance']])
+         for row in plan['measured_members'] if 'activation_workspace' in row['kinds']],
+        [(row['path'], [(proof['role'], proof['sha256'] ==
+          activation_result['profile_publication_receipt_digest']) for proof in row['source_provenance']])
+         for row in raw_bound])
+    assert any(proof.get('seal_digest') == activation_result['profile_digest']
+               for row in plan['measured_members'] for proof in row['source_provenance'])
+    assert any(proof.get('seal_digest') == activation_result['release_window_digest']
+               for row in plan['measured_members'] for proof in row['source_provenance'])
+    selected_digests = {proof['sha256'] for row in plan['measured_members']
+                        for proof in row['source_provenance']}
+    unselected_raw = [(row['observation']['contract_path'], row['observation']['digest'],
+                       row['observation']['source']['role'], row['observation']['source']['row_path'])
+                      for row in plan['reference_observation']['protections']
+                      if row['kind'] == 'raw_digest_selector_obligations'
+                      and row['observation']['digest'] not in selected_digests]
+    assert not unselected_raw, unselected_raw
+    selected_rows = {(proof['path'], proof['sha256'], proof['size_bytes'])
+                     for row in plan['measured_members'] for proof in row['source_provenance']
+                     if proof['role'] not in {'preparation_identity','activation_identity','queue_identities'}}
+    bound_preparations = [row for row in
+        plan['historical_lineage']['preparation_handoff_observations']
+        if row.get('pre_handoff_binding_verified') is True]
+    assert bound_preparations
+    selected_rows.update((proof['path'], proof['sha256'], proof['size_bytes'])
+                         for row in bound_preparations for proof in row['source_provenance']
+                         if proof['role'] in {'native_preparation_envelopes','native_preparation_results'})
+    missing_records = [(row['source']['family'], row['source']['role'],
+                        Path(row['source']['row_path']).name)
+                       for row in plan['reference_observation']['record_dispositions']
+                       if row['source']['role'] != 'identity'
+                       and (row['source']['row_path'], row['source']['raw_sha256'],
+                            row['source']['raw_size_bytes']) not in selected_rows]
+    assert not missing_records, missing_records[:5]
     assert {row['family'] for row in plan['family_obligations'] if row['member_count']} == set(FAMILIES)
     assert plan['action'] == 'KEEP' and plan['cleanup_authorized'] is False
     assert all(row['action'] == 'KEEP' for row in plan['family_obligations'])
@@ -1735,7 +2068,8 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
         'plan_raw_ref': _raw(plan_path), 'retired_journal_raw_ref': None,
         'policy_sha256': _raw(policy_path)['sha256'],
         'cohort_sha256': cohort_digest(policy['consumer_cohort']),
-        'action': 'retire', 'created_at': 199, 'expires_at': 999,
+        'action': 'retire', 'created_at': retirement_epoch - 1,
+        'expires_at': retirement_epoch + 10,
         'members': [{'canonical_path': str(path), 'class': 'host',
             'owner_intent_id': generations[str(path)]['owner_intent_id'],
             'owner_raw_ref': generations[str(path)]['owner_raw_ref'],
@@ -1746,21 +2080,38 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
         'cache_objects': cache_objects}
     _sealed_file(consent_path, consent, 'consent_digest')
     published = {}
-    for _, raw in args['source_records']['submission_publications']:
+    for receipt_path, raw in args['source_records']['submission_publications']:
         receipt = json.loads(raw)
         for row in receipt['published_objects']:
             assert not row['relative_path'].startswith('source/')
             matches = [data for path, data in _record_pairs(args) if path.endswith('/' + row['relative_path'])
                        and 'sha256:' + hashlib.sha256(data).hexdigest() == row['digest']]
-            assert matches and all(data == matches[0] for data in matches), row
+            if not matches:
+                produced = source['published_objects'].get(urlsplit(row['uri']).path.lstrip('/'))
+                if produced is not None and len(produced) == row['size_bytes'] and (
+                        'sha256:' + hashlib.sha256(produced).hexdigest() == row['digest']):
+                    matches = [produced]
+            assert matches and all(data == matches[0] for data in matches), (
+                receipt_path, row, urlsplit(row['uri']).path.lstrip('/') in source['published_objects'],
+                len(source['published_objects']))
             published[row['uri']] = bytes(matches[0])
     transport = MemoryArchiveTransport(members, published)
     from blueprint_pipeline.task_evaluation_scene_retirement import retire_scene, restore_scene
+    from blueprint_pipeline import task_evaluation_scene_retirement_supervisor as supervisor
+    # The production reader closure requires a protected Linux installation.
+    # The native refusal is covered separately; this fixture verifies archive,
+    # journal and restore mechanics under an exact test-only reader boundary.
+    def fixture_reader_closure(observed_policy, allowance):
+        allowance.tick()
+        assert observed_policy['policy_digest'] == policy['policy_digest']
+        assert observed_policy['consumer_cohort'] == _installed_cohort()
+    monkeypatch.setattr(supervisor, 'require_current_reader_closure', fixture_reader_closure)
     assert any(row.get('pre_handoff_binding_verified') for row in
         plan['historical_lineage']['preparation_handoff_observations']), (
         plan['historical_lineage']['preparation_handoff_observations'])
-    retired = retire_scene(plan_path, consent_path, transport=transport, now=lambda: 200, monotonic=time.monotonic)
-    assert retired['status'] == 'retired', retired
+    retired = retire_scene(plan_path, consent_path, transport=transport,
+                           now=lambda: retirement_epoch, monotonic=time.monotonic)
+    assert retired['status'] == 'retired', retired.get('reason')
     shared_keeps = [{'canonical_path':row['path'],'action':'KEEP',
                      'observation_status':row['status'],'reasons':list(row['keeps'])}
                     for row in absent_shared]
@@ -1784,7 +2135,7 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
     _sealed_file(restore_path, restore_consent, 'consent_digest')
     transport.retirement = False
     restored = restore_scene(Path(journal_ref['path']), restore_path, transport=transport,
-                             now=lambda: 201, monotonic=time.monotonic)
+                             now=lambda: retirement_epoch + 1, monotonic=time.monotonic)
     assert restored['status'] == 'restored', restored
     assert restored['unselected_shared_content_keeps'] == shared_keeps
     assert json.loads(intent_receipt.read_bytes())['unselected_shared_content_keeps'] == shared_keeps
@@ -1804,7 +2155,7 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
     before = _snapshot(members)
     try:
         repeated = restore_scene(Path(journal_ref['path']), restore_path, transport=transport,
-                                 now=lambda: 202, monotonic=time.monotonic)
+                                 now=lambda: retirement_epoch + 2, monotonic=time.monotonic)
     except (ValueError, RuntimeError):
         pass
     else:
