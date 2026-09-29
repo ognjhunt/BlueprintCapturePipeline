@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import shutil
 from pathlib import Path
 import zipfile
 
@@ -698,6 +699,65 @@ def test_partial_provider_result_preserves_completed_cell_and_types_remaining_ga
         row["relative_path"].endswith("worker_console.log")
         for row in result["artifact_inventory"]
     )
+
+
+def test_partial_recovery_reads_excluded_children_through_the_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review I7: a streamed attempt keeps the ten child results in the archive, so partial
+    recovery of a run that did not complete reads them lazily through the member view and
+    preserves exactly what download mode preserves from the extracted children."""
+    from tests.provider_output_fixtures import serve_member_views, stream_evidence_tree
+
+    source = tmp_path / "provider_output"
+    _write(source / "native_task_arena_policy_canary_session_result.v1.json",
+           {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
+            "blockers": ["policy_canary_worker_failed_without_result"]})
+    cells = [{"cell_id": f"cell-{index}", "seed": 3100 + index, "resolved_scenario": {"ordinal": index}}
+             for index in range(10)]
+    for index in (0, 4):
+        child = {"schema_version": "native_task_arena_policy_canary_session_result.v1",
+                 "status": "runtime_selected_cell_completed_pending_aggregation", "selected_cell_index": index,
+                 "episodes": [{"candidate_id": candidate, "cell_id": f"cell-{index}", "seed": 3100 + index,
+                               "status": "completed", "candidate_policy_queried": True,
+                               "evidence_artifacts": {"review_video": {
+                                   "relative_path": f"episodes/{candidate}.mp4",
+                                   "sha256": "sha256:" + "1" * 64, "size_bytes": 10}}}
+                              for candidate in ("pi05_droid", "groot_n17_droid")],
+                 "artifact_inventory": [{"role": "review_video", "relative_path": "episodes/pi05.mp4",
+                                         "sha256": "sha256:" + "2" * 64, "size_bytes": 10}],
+                 "result_digest": ""}
+        child["result_digest"] = canonical_digest(child, digest_field="result_digest")
+        _write(source / f"cell_runs/{index:02d}/native_task_arena_policy_canary_session_result.v1.json", child)
+        (source / f"cell_runs/{index:02d}/episodes").mkdir(parents=True)
+        (source / f"cell_runs/{index:02d}/episodes/pi05.mp4").write_bytes(b"0123456789")
+    downloaded_root = tmp_path / "download" / "immutable_execution"
+    shutil.copytree(source, downloaded_root)
+    streamed = stream_evidence_tree(source, tmp_path / "streamed" / "attempt_001")
+    serve_member_views(monkeypatch, streamed.store)
+    children = [f"cell_runs/{index:02d}/native_task_arena_policy_canary_session_result.v1.json" for index in (0, 4)]
+    assert all(not (streamed.evidence / path).exists() for path in children)
+    inputs = {"cells": cells, "task_success_contract": public_setup()["task_success_contract"],
+              "task_success_contract_digest": public_setup()["task_success_contract_digest"]}
+    specs = {candidate: {"checkpoint_digest": "sha256:" + character * 64,
+                         "runtime_identity_digest": "sha256:" + character.upper() * 64}
+             for candidate, character in (("pi05_droid", "a"), ("groot_n17_droid", "b"))}
+
+    results = {}
+    for mode, root in (("download", downloaded_root), ("stream", streamed.evidence)):
+        native_path = root / "native_task_arena_policy_canary_session_result.v1.json"
+        results[mode] = _partial_policy_canary_result(
+            native_path=native_path, fallback=json.loads(native_path.read_text(encoding="utf-8")),
+            runtime_inputs=inputs, specs=specs)
+
+    (downloaded, _), (recovered, recovered_path) = results["download"], results["stream"]
+    assert recovered == downloaded and recovered["completed_cell_count"] == 2
+    assert recovered_path == streamed.evidence / "policy_canary_partial_provider_result.v1.json"
+    # One range request per excluded child; the children are still not on disk.
+    assert sorted(streamed.data_ranges()) == sorted(
+        (streamed.rows[path]["data_offset"], streamed.rows[path]["data_offset"]
+         + streamed.rows[path]["compressed_size"] - 1) for path in children)
+    assert all(not (streamed.evidence / path).exists() for path in children)
 
 
 def test_complete_provider_result_is_not_rebuilt_from_child_receipts(

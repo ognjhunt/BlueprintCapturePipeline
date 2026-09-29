@@ -677,15 +677,18 @@ class StreamedAttempt:
 
 
 def _contract_v1_needed(path: str) -> bool:
-    return PurePosixPath(path).suffix.lower() == ".json" and "policy-requests" not in PurePosixPath(path).parts
+    """The lane's contract rule (JSON outside policy-requests, less the ten child results)."""
+    from blueprint_pipeline.policy_canary_output_members import POLICY_CANARY_OUTPUT_CONTRACT
+
+    return POLICY_CANARY_OUTPUT_CONTRACT.needed(path)
 
 
 def stream_evidence_tree(source, attempt, *, needed=None, block_bytes=128 * 1024) -> StreamedAttempt:
     """Stream ``source``'s files into ``attempt``: index, seal, ingest ``needed``, write the view.
 
-    ``needed`` decides which archive paths are materialized (contract v1 --
-    JSON outside ``policy-requests`` -- by default). Nothing is written under
-    ``source``.
+    ``needed`` decides which archive paths are materialized (the lane's contract
+    v1 by default: JSON outside ``policy-requests``, less the ten per-cell child
+    results). Nothing is written under ``source``.
     """
     from pathlib import Path
     from types import SimpleNamespace

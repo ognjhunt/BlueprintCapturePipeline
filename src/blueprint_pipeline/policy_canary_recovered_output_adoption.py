@@ -10,8 +10,14 @@ be the recovery record's bytes, hold exactly 120 MP4s, and carry the ten child
 results byte for byte. In stream mode the ZIP was published to B2 and removed
 behind its pointer, and only the contract's JSON is on the host: the evidence
 root's member view must index an archive whose sha256 and size are the
-recovery record's, with 120 MP4 members, and each child result on disk must
-hash to its index member. No member byte is read.
+recovery record's, with 120 MP4 members. The contract leaves the ten child
+results in the archive (review I7), so each is read through the view -- one
+range request, checked against its index CRC-32 and SHA-256 (PR B review M7);
+a child that is on disk (an older layout) must hash to its index member
+instead. Bytes that are not the indexed member's make the recovery
+unadoptable, as a mismatch does in download mode; a read that fails for any
+other reason is typed (``policy_canary_recovered_output_member_read_failed``)
+rather than read as "not a complete recovery". No other member byte is read.
 
 Adoption copies (review I8). The evidence tree is copied into
 ``recovered_provider_output_adoption/``: every file the aggregator could
@@ -28,6 +34,7 @@ descriptor lets later readers of the adoption root reach those members.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import zipfile
@@ -43,6 +50,8 @@ from .provider_output_member_index import BULK_EXTENSIONS
 
 ADOPTION_DIRNAME = "recovered_provider_output_adoption"
 EXPECTED_MP4_COUNT = 120
+# The Quick-10 packer keeps any member but the aggregate only up to 100 MB.
+MAXIMUM_CHILD_RESULT_BYTES = 128 * 1024**2
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -82,19 +91,54 @@ def _local_members_match(archive: Path, expected_members: Mapping[str, Path]) ->
     return True
 
 
-def _indexed_members_match(view, recovery: Mapping[str, Any], expected_members: Mapping[str, Path],
-                           sha256: Callable[[Path], str]) -> bool:
+def _indexed_children(view, recovery: Mapping[str, Any], expected_members: Mapping[str, Path],
+                      error_factory: Callable[[str], Exception], adoption_root: Path) -> list[bytes] | None:
+    """The ten children's bytes when the indexed archive is the recovery's, else None.
+
+    A child comes from the evidence root when an older layout kept it there, else
+    from an earlier pass's adopted copy that still hashes to its index member,
+    else through the view; a replay therefore reads nothing from B2 again.
+    """
+    from .provider_output_member_view import CONTENT_MISMATCH_CODES, ProviderOutputMemberViewError
+
     archive = view.index["archive"]
     files = {row["path"]: row for row in view.index["members"] if row["kind"] == "file"}
     if (archive["sha256"] != recovery.get("recovered_sha256")
             or archive["size"] != recovery.get("recovered_size_bytes")
             or sum(path.lower().endswith(".mp4") for path in files) != EXPECTED_MP4_COUNT):
-        return False
+        return None
+    children = []
     for member, extracted in expected_members.items():
         row = files.get(member)
-        if row is None or (sha256(extracted), extracted.stat().st_size) != (row["sha256"], row["size"]):
-            return False
-    return True
+        if row is None:
+            return None
+        adopted = adoption_root / member
+        if extracted.is_file() and not extracted.is_symlink():
+            data = extracted.read_bytes()
+        elif (adopted.is_file() and not adopted.is_symlink() and adopted.stat().st_size == row["size"]
+              and "sha256:" + hashlib.sha256(adopted.read_bytes()).hexdigest() == row["sha256"]):
+            data = adopted.read_bytes()
+        else:
+            try:
+                data = view.read_member(member, maximum_bytes=MAXIMUM_CHILD_RESULT_BYTES)
+            except ProviderOutputMemberViewError as exc:
+                if str(exc) in CONTENT_MISMATCH_CODES:
+                    return None
+                raise error_factory("policy_canary_recovered_output_member_read_failed") from None
+        if ("sha256:" + hashlib.sha256(data).hexdigest(), len(data)) != (row["sha256"], row["size"]):
+            return None
+        children.append(data)
+    return children
+
+
+def _child_record(data: bytes, error_factory: Callable[[str], Exception]) -> dict[str, Any]:
+    try:
+        value = json.loads(data)
+    except (UnicodeError, ValueError):
+        value = None
+    if not isinstance(value, dict):
+        raise error_factory("policy_canary_recovered_child_result_invalid")
+    return value
 
 
 def _adoption_view(view, adoption_root: Path, evidence_root: Path, error_factory) -> dict:
@@ -176,20 +220,25 @@ def adopt_recovered_complete_result(
         evidence_root / "cell_runs" / f"{index:02d}" / PROVIDER_RESULT_FILENAME
         for index in range(10)
     ]
-    if any(not path.is_file() or path.is_symlink() for path in child_paths):
-        return None
     expected_members = {
         f"cell_runs/{index:02d}/{PROVIDER_RESULT_FILENAME}": child_paths[index]
         for index in range(10)
     }
-    if view is None and not _local_members_match(archive, expected_members):
-        return None
-    if view is not None and not _indexed_members_match(view, recovery, expected_members, sha256):
-        return None
-    children = [
-        read_record(path, code="policy_canary_recovered_child_result_invalid")
-        for path in child_paths
-    ]
+    child_data: list[bytes] | None = None
+    if view is None:
+        if any(not path.is_file() or path.is_symlink() for path in child_paths):
+            return None
+        if not _local_members_match(archive, expected_members):
+            return None
+        children = [
+            read_record(path, code="policy_canary_recovered_child_result_invalid")
+            for path in child_paths
+        ]
+    else:
+        child_data = _indexed_children(view, recovery, expected_members, error_factory, root / ADOPTION_DIRNAME)
+        if child_data is None:
+            return None
+        children = [_child_record(data, error_factory) for data in child_data]
     lineage_modes = {
         str(child.get("construction_lineage_mode") or "") for child in children
     }
@@ -227,10 +276,12 @@ def adopt_recovered_complete_result(
                 / f"{index:02d}"
                 / PROVIDER_RESULT_FILENAME
             )
+            expected = (sha256(original) if child_data is None
+                        else "sha256:" + hashlib.sha256(child_data[index]).hexdigest())
             if (
                 adopted.is_symlink()
                 or not adopted.is_file()
-                or sha256(adopted) != sha256(original)
+                or sha256(adopted) != expected
             ):
                 raise error_factory(
                     "policy_canary_recovered_output_adoption_partial"
@@ -238,6 +289,12 @@ def adopt_recovered_complete_result(
     else:
         try:
             shutil.copytree(evidence_root, adoption_root, copy_function=_adoption_copier(evidence_root))
+            for index, data in enumerate(child_data or []):
+                # Children read through the view: fresh, writable copies (review I8).
+                adopted = adoption_root / "cell_runs" / f"{index:02d}" / PROVIDER_RESULT_FILENAME
+                if not adopted.is_file():
+                    adopted.parent.mkdir(parents=True, exist_ok=True)
+                    adopted.write_bytes(data)
         except OSError as exc:
             raise error_factory(
                 "policy_canary_recovered_output_adoption_copy_failed"
