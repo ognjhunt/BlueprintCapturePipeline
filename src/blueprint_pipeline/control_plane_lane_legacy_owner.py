@@ -11,9 +11,10 @@ import json
 import fcntl
 import os
 import re
+import secrets
 import stat
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .control_plane_disk_usage import allocated_bytes
@@ -336,6 +337,7 @@ class LegacyOwnerStore:
     _ID = re.compile(r"[0-9a-f]{32}\Z")
     _ENTRY = re.compile(r"(?:[0-9a-f]{32}\.(?:packet|approval|registration|receipt)\.json|"
                         r"[0-9a-f]{64}\.[0-9a-f]{32}\.head\.json)\Z")
+    _TEMP = re.compile(r"\.consent-[0-9a-f]{32}\.tmp\Z")
     _KINDS = frozenset(("packet", "approval", "registration", "receipt"))
     _CAP = 32768
     _MAX_RECORDS = 1024
@@ -374,12 +376,13 @@ class LegacyOwnerStore:
                     _require(count <= self._MAX_RECORDS + 1, "legacy_owner_store_full")
                     info = os.stat(entry.name, dir_fd=self.parent, follow_symlinks=False)
                     owners._protected(info, mode=0o600)
-                    _require(entry.name == self._LOCK or self._ENTRY.fullmatch(entry.name) is not None,
+                    _require(entry.name == self._LOCK or self._ENTRY.fullmatch(entry.name) is not None
+                             or self._TEMP.fullmatch(entry.name) is not None,
                              "legacy_owner_store_unsafe")
                     _require(0 <= info.st_size <= self._CAP, "legacy_owner_store_unsafe")
                     if entry.name == self._LOCK:
                         _require(info.st_size == 0, "legacy_owner_store_unsafe")
-                    else:
+                    elif self._ENTRY.fullmatch(entry.name) is not None:
                         names.append(entry.name)
                     size += info.st_size
                     _require(size <= self._MAX_BYTES, "legacy_owner_store_full")
@@ -489,3 +492,189 @@ class LegacyOwnerStore:
                      "legacy_owner_record_invalid")
             heads.append(head)
         return heads
+
+
+def _registry_root(config) -> Path:
+    """Derived from the protected installed store; never caller selected."""
+    return Path(config.owner_consent_store).parent / "legacy-owner-registrations"
+
+
+@contextmanager
+def _installed_session(installed_config_path: str, monotonic):
+    from . import control_plane_lane_owner_consents as owners
+    from .control_plane_reference_budget import ReferenceCollectionBudget
+
+    _require(os.geteuid() == 0, "legacy_owner_root_required")
+    budget = ReferenceCollectionBudget(monotonic=monotonic, values_limit=10_000)
+    files = owners._Files(budget, raw_cap=2 * 1024 * 1024)
+    try:
+        config = owners._installed_config(files, installed_config_path)
+        store = LegacyOwnerStore(files, _registry_root(config))
+        yield files, budget, config, store
+        files.verify()
+    except owners.OwnerCensusConsentError as error:
+        raise LegacyOwnerError("legacy_owner_installed_authority_unavailable") from error
+    finally:
+        try:
+            files.finish()
+        finally:
+            budget.close()
+
+
+def _policy_bytes(files, config) -> bytes:
+    from . import control_plane_lane_owner_consents as owners
+
+    raw, _ = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
+                        protected=True, mode=0o600)
+    return raw
+
+
+def _load_old_consent(files, budget, config, *, consent_id: str,
+                      expected_sha256: str, expected_size_bytes: int, now: float) -> dict:
+    from . import control_plane_lane_owner_consents as owners
+
+    _require(isinstance(consent_id, str) and re.fullmatch(r"[0-9a-f]{32}", consent_id) is not None
+             and isinstance(expected_sha256, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", expected_sha256)
+             and type(expected_size_bytes) is int and 0 < expected_size_bytes <= owners.MAX_RECORD_BYTES,
+             "legacy_owner_consent_selector_invalid")
+    raw, _ = files.read(Path(config.owner_consent_store) / (consent_id + ".json"),
+                        cap=owners.MAX_RECORD_BYTES, protected=True, mode=0o600)
+    _require(len(raw) == expected_size_bytes
+             and "sha256:" + hashlib.sha256(raw).hexdigest() == expected_sha256,
+             "legacy_owner_consent_changed")
+    return owners._record(raw, consent_id, _policy_bytes(files, config),
+                          owners._roots(config, budget), now, budget)
+
+
+_GC_UNIT = Path("/etc/systemd/system/blueprint-control-plane-storage-gc.service")
+_REFERENCE_KEYS = frozenset({"BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS",
+                             "BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS",
+                             "BLUEPRINT_CONTROL_PLANE_GC_SETTLEMENT_ROOTS",
+                             "BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT"})
+
+
+def _reference_settings(files, config) -> dict[str, tuple[Path, ...] | Path]:
+    """Read current root-controlled GC selections; empty caller claims are ignored."""
+    unit_raw, _ = files.read(_GC_UNIT, cap=65536, protected=True)
+    env_raw, _ = files.read(config.experiment_gc_environment_file, cap=65536, protected=True)
+    selected = {}
+    try:
+        for source in (unit_raw, env_raw):
+            for line in source.decode("utf-8").splitlines():
+                value = line.strip()
+                if value.startswith("Environment="):
+                    value = value[len("Environment="):]
+                key, separator, raw = value.partition("=")
+                if separator and key in _REFERENCE_KEYS:
+                    raw = raw.strip().strip('"').strip("'")
+                    _require(raw and not any(char in raw for char in ("$", "`", "\\", "\n", "\r")),
+                             "legacy_owner_references_incomplete")
+                    selected[key] = raw
+        def paths(key):
+            values = selected[key].split(":")
+            _require(0 < len(values) <= 64 and all(values), "legacy_owner_references_incomplete")
+            result = tuple(Path(value) for value in values)
+            for value in result:
+                _absolute(value)
+            return result
+        queues = paths("BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS")
+        active = paths("BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS") + paths(
+            "BLUEPRINT_CONTROL_PLANE_GC_SETTLEMENT_ROOTS")
+        pins = paths("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT")
+        _require(len(pins) == 1, "legacy_owner_references_incomplete")
+        return dict(queue_roots=queues, active_run_roots=active, pins_root=pins[0])
+    except (KeyError, UnicodeError):
+        raise LegacyOwnerError("legacy_owner_references_incomplete") from None
+
+
+def _fresh_census(files, config, *, now: float) -> dict:
+    from .control_plane_lane_scratch_census import build_census
+
+    selected = _reference_settings(files, config)
+    report = build_census(work_root=Path(config.lane_scratch_work_root).parent,
+                          inputs_root=Path(config.lane_scratch_inputs_root).parent,
+                          process_root=Path("/proc"), pins_root=selected["pins_root"],
+                          queue_roots=selected["queue_roots"],
+                          active_run_roots=selected["active_run_roots"],
+                          release_link=Path(config.active_release_link), now=now, max_seconds=120)
+    _require(report.get("status") == "complete" and report.get("scan_errors") == [],
+             "legacy_owner_references_incomplete")
+    return report
+
+
+def _snapshot_for(config, path: str) -> dict:
+    roots = (Path(config.lane_scratch_work_root).parent,
+             Path(config.lane_scratch_inputs_root).parent)
+    return snapshot_generation(path, allowed_roots=roots)
+
+
+def issue_version_packet(*, consent_id: str, consent_sha256: str, consent_size_bytes: int,
+                         selected_path: str, installed_config_path: str, now: float,
+                         monotonic=time.monotonic) -> dict:
+    """Persist a reviewable target packet; no owner decision is inferred."""
+    with _installed_session(installed_config_path, monotonic) as (files, budget, config, store):
+        consent = _load_old_consent(files, budget, config, consent_id=consent_id,
+                                    expected_sha256=consent_sha256,
+                                    expected_size_bytes=consent_size_bytes, now=now)
+        census = _fresh_census(files, config, now=now)
+        generation = _snapshot_for(config, selected_path)
+        packet = build_version_packet(consent, selected_path=selected_path,
+                                      generation=generation, fresh_census=census, now=now)
+        packet_id = secrets.token_hex(16)
+        store.publish(packet_id, "packet", packet)
+        _require(_snapshot_for(config, selected_path) == generation,
+                 "legacy_target_changed")
+        return dict(status="packet_ready_for_separate_owner_review", packet_id=packet_id,
+                    packet=packet, packet_digest=packet["packet_digest"],
+                    execution_authorized=False, gc_eligible=False, target_mutations=0)
+
+
+def issue_generation_approval(*, packet_id: str, ack_packet_digest: str,
+                              principal: str, owner: str, installed_config_path: str,
+                              now: float, monotonic=time.monotonic) -> dict:
+    """Distinct root/owner action requiring the exact packet digest as input."""
+    with _installed_session(installed_config_path, monotonic) as (files, _, config, store):
+        packet = store.read(packet_id, "packet")
+        approval = approve_version_packet(packet, ack_packet_digest=ack_packet_digest,
+                                          current_policy_bytes=_policy_bytes(files, config),
+                                          principal=principal, owner=owner, now=now)
+        _require(_snapshot_for(config, packet["selected_path"]) == packet["target_generation"],
+                 "legacy_target_changed")
+        store.publish(packet_id, "approval", approval)
+        return dict(status="owner_generation_approval_recorded", packet_id=packet_id,
+                    packet_digest=packet["packet_digest"],
+                    approval_digest=approval["approval_digest"],
+                    expires_at_epoch=approval["expires_at_epoch"],
+                    execution_authorized=False, gc_eligible=False, target_mutations=0)
+
+
+def apply_owner_review(*, packet_id: str, installed_config_path: str,
+                       now: float, monotonic=time.monotonic) -> dict:
+    """Publish only a protected external owner label and recoverable receipt."""
+    with _installed_session(installed_config_path, monotonic) as (files, _, config, store):
+        packet, approval = store.read(packet_id, "packet"), store.read(packet_id, "approval")
+        path = packet["selected_path"]
+        current = _snapshot_for(config, path)
+        registration = validate_registration(packet, approval, current_generation=current,
+                                             fresh_census=_fresh_census(files, config, now=now),
+                                             current_policy_bytes=_policy_bytes(files, config), now=now)
+        for head in store.committed_heads():
+            _require(head["path"] != path or head["packet_id"] == packet_id,
+                     "legacy_owner_active_conflict")
+        _require(_snapshot_for(config, path) == current, "legacy_target_changed")
+        store.publish(packet_id, "registration", registration)
+        _require(_snapshot_for(config, path) == current, "legacy_target_changed")
+        receipt = dict(schema_version="control_plane_lane_legacy_owner_receipt.v1",
+                       packet_digest=packet["packet_digest"],
+                       approval_digest=approval["approval_digest"],
+                       registration=registration, target_mutations=0,
+                       candidate_bytes=None, eta_seconds=None)
+        store.publish(packet_id, "receipt", receipt)
+        _require(_snapshot_for(config, path) == current, "legacy_target_changed")
+        store.publish_head(path, packet_id, registration)
+        _require(_snapshot_for(config, path) == current, "legacy_target_changed")
+        return dict(status="legacy_owner_review_registered", packet_id=packet_id,
+                    path=path, owner=registration["owner"],
+                    expires_at_epoch=registration["expires_at_epoch"],
+                    gc_eligible=False, references_clear=False, target_mutations=0,
+                    candidate_bytes=None, eta_seconds=None)
