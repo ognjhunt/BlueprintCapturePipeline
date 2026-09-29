@@ -360,3 +360,48 @@ def test_actual_existing_legacy_external_layer_runs_without_claiming_new_ownersh
 
 def _key_for_test(path):
     return hashlib.sha256(str(path).encode()).hexdigest()+'.json'
+
+
+@pytest.mark.parametrize('changed', ['source_name', 'generation_missing', 'generation_retired'])
+def test_action_reselects_registered_external_source_and_current_generation(tmp_path, monkeypatch, changed):
+    fixture = generated_fixture(tmp_path, monkeypatch, external=True)
+    manifest, _ = extract(fixture)
+    _, current = generation(fixture, manifest['entries'][0]['sha256'])
+    from blueprint_pipeline import task_evaluation_scene_retirement_generated as generated
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    publication = json.loads(Path(current['source_publication_raw_ref']['path']).read_bytes())
+    assert publication['external_source_raw_ref'] is not None
+    assert publication['external_generation_raw_ref'] is not None
+    if changed == 'source_name':
+        Path(publication['external_source_raw_ref']['path']).unlink()
+    elif changed == 'generation_missing':
+        Path(publication['external_generation_raw_ref']['path']).unlink()
+    else:
+        path = Path(publication['external_generation_raw_ref']['path'])
+        value = json.loads(path.read_bytes())
+        value['state'] = 'retired'
+        value['state_digest'] = canonical_digest(value, digest_field='state_digest')
+        path.write_text(json.dumps(value))
+    with pytest.raises((ValueError, OSError)):
+        generated.validate_publication(publication, policy=fixture['policy'],
+            consent={'intent_raw_ref': fixture['proofs']['intent_raw_ref']},
+            allowance=ActionAllowance(expires_at=3000, now=lambda: 2001))
+
+
+def test_expired_original_external_native_source_uses_current_action_allowance(tmp_path, monkeypatch):
+    fixture = generated_fixture(tmp_path, monkeypatch, external=True)
+    manifest, _ = extract(fixture)
+    _, current = generation(fixture, manifest['entries'][0]['sha256'])
+    from blueprint_pipeline import task_evaluation_scene_retirement_generated as generated
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    publication = json.loads(Path(current['source_publication_raw_ref']['path']).read_bytes())
+    # Creation used the original unexpired owner. Retirement must preserve its
+    # history under the current action grant, without allowing expired readers.
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    monkeypatch.setattr(cache.time, 'time', lambda: 2001)
+    allowance = ActionAllowance(expires_at=3000, now=lambda: 2001)
+    verified = generated.validate_publication(publication, policy=fixture['policy'],
+        consent={'intent_raw_ref': fixture['proofs']['intent_raw_ref']}, allowance=allowance)
+    assert verified['digest'] == manifest['entries'][0]['sha256']
+    assert 0 < allowance.counts['local_bytes'] <= allowance.limits['local_bytes']
