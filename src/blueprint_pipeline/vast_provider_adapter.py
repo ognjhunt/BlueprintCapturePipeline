@@ -3014,8 +3014,8 @@ def _blueprint_bundle_preflight(
                                 if isinstance(row, Mapping)
                             }
                             expected_modules = set(mode_contract.runtime_module_names)
-                            observed_modules = {
-                                Path(entry).name
+                            observed_module_paths = {
+                                entry
                                 for entry in zip_entries
                                 if entry.startswith(
                                     "provider_runtime/blueprint_pipeline/"
@@ -3023,6 +3023,14 @@ def _blueprint_bundle_preflight(
                                 and entry.endswith(".py")
                                 and not entry.endswith("/__init__.py")
                             }
+                            expected_module_paths = {
+                                f"provider_runtime/blueprint_pipeline/{name}"
+                                for name in expected_modules
+                            }
+                            if execution_mode == "controlled_policy":
+                                expected_module_paths.add(
+                                    "provider_runtime/blueprint_pipeline/core/security_controls.py"
+                                )
                             if (
                                 native_manifest.get("schema_version")
                                 != "native_task_arena_provider_bundle.v1"
@@ -3038,7 +3046,12 @@ def _blueprint_bundle_preflight(
                                 or mode_contract.expected_output_filename
                                 not in entrypoint_text
                                 or declared_modules != expected_modules
-                                or observed_modules != expected_modules
+                                or observed_module_paths != expected_module_paths
+                                or (
+                                    execution_mode == "controlled_policy"
+                                    and "provider_runtime/blueprint_pipeline/core/__init__.py"
+                                    not in zip_entries
+                                )
                                 or native_manifest.get("candidate_policy_queried")
                                 is not False
                             ):
