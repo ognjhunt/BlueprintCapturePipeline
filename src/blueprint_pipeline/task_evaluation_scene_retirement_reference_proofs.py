@@ -212,6 +212,10 @@ class TerminalProofs:
         fact,source,value=self._fact(protection)
         kind=protection['kind']
         if kind=='local_path_protections':
+            if (fact['contract_path']=='scene.configured_revision.configured_scene_bundle'
+                    and fact['binding_status']=='receipt_only'):
+                self.transfer_native_bundle(protection,counted=True)
+                return
             proof=self._local(fact,source,value)
         elif kind=='remote_raw_references':
             _require(fact['binding_status']=='declared_remote_raw' and fact['digest_meaning']=='remote_raw_bytes'
@@ -385,21 +389,36 @@ class TerminalProofs:
         self.emitted+=size
         self.transferred.append({'original_obligation':protection,'preservation_proof':proof,'action':'KEEP'})
 
-    def transfer_native_bundle(self,protection):
+    def transfer_native_bundle(self,protection,*,counted=False):
         """Keep the exact nested bundle row and its result digest together."""
         self.allowance.tick()
-        self.count+=1
+        if not counted:
+            self.count+=1
         _require(self.count<=MAX_OCCURRENCES,'scene_retirement_reference_limit')
         fact,source,value=self._fact(protection)
         pair={('configured_scene_bundle_digest','deferred_downstream_document'),
               ('scene.configured_revision.configured_scene_bundle','deferred_parent_reference_proof')}
-        _require(protection['kind']=='missing_edge_obligations'
-            and (fact['contract_path'],fact['reason']) in pair
-            and fact['binding_status']=='unresolved'
-            and fact['digest_meaning']=='no_inferred_raw_identity'
-            and all(fact[key] is None for key in ('digest','path','uri','size_bytes'))
-            and not fact['related_sources']
-            and fact['source']['family']=='preparation' and fact['source']['role']=='result',_REASON)
+        local=protection['kind']=='local_path_protections'
+        _require(fact['source']['family']=='preparation' and fact['source']['role']=='result'
+            and not fact['related_sources'],_REASON)
+        if local:
+            _require(fact['contract_path']=='scene.configured_revision.configured_scene_bundle'
+                and fact['binding_status']=='receipt_only'
+                and fact['reason']=='deferred_parent_reference_proof'
+                and fact['digest_meaning']=='declared_materialized_raw_bytes'
+                and fact['uri'] is None
+                and self.has_inventory
+                and sum(proof.get('role')=='native_preparation_results'
+                    and proof.get('seal_field')=='result_digest'
+                    and proof.get('seal_digest')==value.get('result_digest')
+                    for proof in self.selected.get(source,[]))==1
+                and value.get('result_digest')==canonical_digest(value,digest_field='result_digest'),_REASON)
+        else:
+            _require(protection['kind']=='missing_edge_obligations'
+                and (fact['contract_path'],fact['reason']) in pair
+                and fact['binding_status']=='unresolved'
+                and fact['digest_meaning']=='no_inferred_raw_identity'
+                and all(fact[key] is None for key in ('digest','path','uri','size_bytes')),_REASON)
         references=value.get('references')
         _require(type(references) is list and len(references)<=MAX_OCCURRENCES,_REASON)
         matches=[row for row in references if type(row) is dict and
@@ -407,6 +426,8 @@ class TerminalProofs:
         _require(len(matches)==1,_REASON)
         row=matches[0]
         path,digest,size=_selector(row,'materialized_path','digest','size_bytes')
+        if local:
+            _require((fact['path'],fact['digest'],fact['size_bytes'])==(path,digest,size),_REASON)
         _require(value.get('configured_scene_bundle_digest')==digest
                  and row.get('full_byte_service_account_readback_passed') is True
                  and type(row.get('content_addressed_reuse')) is bool
@@ -453,12 +474,16 @@ class TerminalProofs:
                 bound.append(observation)
         _require(len(bound)==1,_REASON)
         inside=any(Path(path).is_relative_to(root) for root in self.member_roots)
+        if local:
+            _require(inside and self.physical.get(path)==(path,digest,size),_REASON)
         if self.has_inventory:
             _require(inside and self.physical.get(path)==(path,digest,size),_REASON)
-        parts=self.bundle_parts.setdefault(source,set())
-        _require(fact['reason'] not in parts,_REASON)
-        parts.add(fact['reason'])
-        proof={'kind':'selected_native_bundle','raw_digest':digest,
+        if not local:
+            parts=self.bundle_parts.setdefault(source,set())
+            _require(fact['reason'] not in parts,_REASON)
+            parts.add(fact['reason'])
+        proof={'kind':'selected_native_bundle_local_bytes' if local else 'selected_native_bundle',
+               'raw_digest':digest,
                'materialized_path':path,'size_bytes':size,
                'revision_target':dict(zip(('path','sha256','size_bytes'),revision)),
                'archive_inventory_verified':self.has_inventory and inside}
@@ -466,6 +491,12 @@ class TerminalProofs:
         _require(amount<=MAX_BYTES-self.emitted,'scene_retirement_reference_limit')
         self.emitted+=amount
         self.transferred.append({'original_obligation':protection,'preservation_proof':proof,'action':'KEEP'})
+        if local:
+            identity=(path,digest,size)
+            self.locals.setdefault(path,[]).append((identity,source))
+            key=(source,fact['contract_path'],path,digest,size)
+            _require(key not in self.covered,_REASON)
+            self.covered[key]=protection
 
     def _targets(self,targets,protection):
         # Reserve bounded framing before growing any variable target collection.
