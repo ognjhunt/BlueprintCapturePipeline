@@ -389,7 +389,10 @@ class CloudRunRest:
 
 
 def add_bootstrap_job(jobs: FakeCloudRunJobs, *, name: str = JOB, image: str = IMAGE,
-                      command: list[str] | None = None, **changes: Any) -> dict[str, Any]:
-    """The job plan 14 §14 declares: the bootstrap command, no args, one task, no retries."""
+                      command: list[str] | None = None, cpu: str = "4", memory: str = "16Gi",
+                      **changes: Any) -> dict[str, Any]:
+    """The job plan 14 §14 declares: the bootstrap command, no args, one task, no retries, 4 vCPU and 16 GiB."""
 
-    return jobs.add_job(name, image=image, command=list(BOOTSTRAP if command is None else command), **changes)
+    jobs.add_job(name, image=image, command=list(BOOTSTRAP if command is None else command), **changes)
+    jobs.jobs[name]["template"]["template"]["containers"][0]["resources"] = {"limits": {"cpu": cpu, "memory": memory}}
+    return jobs.get_job(name)

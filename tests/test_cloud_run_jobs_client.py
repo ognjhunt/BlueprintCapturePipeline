@@ -165,7 +165,8 @@ def test_client_refuses_overrides_other_than_the_four_identifiers(overrides: dic
 def test_job_definition_must_run_the_bootstrap_command_without_args() -> None:
     def blockers(**changes) -> list[str]:
         jobs = FakeCloudRunJobs()
-        return job_definition_blockers(add_bootstrap_job(jobs, **changes), image=IMAGE, timeout_seconds=1800)
+        return job_definition_blockers(add_bootstrap_job(jobs, **changes), image=IMAGE, timeout_seconds=1800,
+                                       vcpu=4, memory_bytes=16 * 1024**3)
 
     assert blockers() == []
     assert client_module.BOOTSTRAP_COMMAND == ("python", "-m", "blueprint_pipeline.remote_cpu_worker", "bootstrap")
@@ -182,7 +183,7 @@ def test_job_definition_must_run_the_bootstrap_command_without_args() -> None:
     # proto3 JSON omits an unset oneof: a job without maxRetries retries three times.
     del job["template"]["template"]["maxRetries"]
     job.pop("etag")
-    assert job_definition_blockers(job, image=IMAGE, timeout_seconds=1800) == [
+    assert job_definition_blockers(job, image=IMAGE, timeout_seconds=1800, vcpu=4, memory_bytes=16 * 1024**3) == [
         "remote_cpu_job_definition_invalid:etag", "remote_cpu_job_definition_invalid:max_retries"]
 
 
@@ -246,3 +247,26 @@ def test_client_pins_the_run_googleapis_host_and_reads_the_loaded_credential(tmp
             client.get_job(name)
         assert bad.value.code == "cloud_run_resource_name_invalid"
     assert len(rest.requests) == requests_before
+
+
+def test_job_definition_must_match_the_descriptors_cpu_and_memory() -> None:
+    def blockers(limits: dict | None) -> list[str]:
+        job = add_bootstrap_job(FakeCloudRunJobs())
+        container = job["template"]["template"]["containers"][0]
+        container.pop("resources", None)
+        if limits is not None:
+            container["resources"] = {"limits": limits}
+        return job_definition_blockers(job, image=IMAGE, timeout_seconds=1800, vcpu=4, memory_bytes=16 * 1024**3)
+
+    both = ["remote_cpu_job_definition_invalid:cpu", "remote_cpu_job_definition_invalid:memory"]
+    assert blockers({"cpu": "4", "memory": "16Gi"}) == []
+    assert blockers({"cpu": "4000m", "memory": str(16 * 1024**3)}) == []
+    # A job twice the descriptor's size would be billed at twice the ledger's worst case.
+    assert blockers({"cpu": "8", "memory": "32Gi"}) == both
+    assert blockers({"cpu": "2", "memory": "16Gi"}) == ["remote_cpu_job_definition_invalid:cpu"]
+    assert blockers({"cpu": "4", "memory": "16G"}) == ["remote_cpu_job_definition_invalid:memory"]  # decimal units
+    assert blockers({"memory": "16Gi"}) == ["remote_cpu_job_definition_invalid:cpu"]  # unset means the default
+    assert blockers(None) == both
+    assert blockers({"cpu": "four", "memory": "16 Gi"}) == both
+    assert add_bootstrap_job(FakeCloudRunJobs())["template"]["template"]["containers"][0]["resources"] == {
+        "limits": {"cpu": "4", "memory": "16Gi"}}

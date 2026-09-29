@@ -486,7 +486,8 @@ def _dispatch(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
     try:
         job = runtime.cloud_run.get_job(target["job"])
         etag = str(job.get("etag") or "")
-        blockers += job_definition_blockers(job, image=entry["image"], timeout_seconds=target["timeout_seconds"])
+        blockers += job_definition_blockers(job, image=entry["image"], timeout_seconds=target["timeout_seconds"],
+                                            vcpu=descriptor["limits"]["vcpu"], memory_bytes=descriptor["limits"]["memory_bytes"])
     except CloudRunJobsError as exc:
         blockers.append(f"remote_cpu_job_unavailable:{exc.code}")
     binding = allocation_binding(descriptor_digest=descriptor["descriptor_digest"], attempt_id=attempt_id,

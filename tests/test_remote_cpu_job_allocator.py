@@ -961,3 +961,13 @@ def test_mint_failure_after_consumption_discards_the_transport_and_settles_at_ze
     assert (recovered["status"], recovered["success"]) == ("fallback_host", True)
     assert world.bucket._objects == {} and world.lease(second)["state"] == "fallback_host"
     assert sorted(row["usd"] for row in allocator.spend_ledger()) == [0.0, 0.0]
+
+
+def test_dispatch_refuses_a_job_whose_cpu_or_memory_differs_from_the_descriptor(tmp_path: Path, monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    world.record_environment()
+    world.jobs.jobs[JOB]["template"]["template"]["containers"][0]["resources"] = {"limits": {"cpu": "8", "memory": "32Gi"}}
+    result = world.run("dispatch", descriptor=world.descriptor())
+    assert {"remote_cpu_job_definition_invalid:cpu", "remote_cpu_job_definition_invalid:memory"} <= set(
+        result["admission"]["blockers"])
+    world.assert_untouched()

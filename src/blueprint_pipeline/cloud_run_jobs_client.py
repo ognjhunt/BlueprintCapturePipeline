@@ -22,6 +22,7 @@ import stat
 import urllib.error
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
 
@@ -50,6 +51,8 @@ _ATTEMPT = re.compile(r"(rcj-[a-z]{2}-[0-9a-f]{24})-a[1-9][0-9]{0,2}-[0-9a-f]{32
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _GENERATION = re.compile(r"[1-9][0-9]{0,19}")
 _BUCKET = r"[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]"
+_QUANTITY = re.compile(r"([0-9]+(?:\.[0-9]+)?)(m|k|M|G|Ki|Mi|Gi)?")
+_UNITS = {None: 1, "m": Decimal("0.001"), "k": 10**3, "M": 10**6, "G": 10**9, "Ki": 2**10, "Mi": 2**20, "Gi": 2**30}
 
 Transport = Callable[..., tuple[int, bytes]]
 
@@ -128,8 +131,16 @@ def execution_seconds(execution: Mapping[str, Any]) -> float | None:
     return max(0.0, completed - created) if created is not None and completed is not None else None
 
 
-def job_definition_blockers(job: Mapping[str, Any], *, image: str, timeout_seconds: int) -> list[str]:
-    """``jobs.get`` must show the bootstrap command without args, one task, no retries and the timeout."""
+def _quantity(value: Any) -> Decimal | None:
+    """A Kubernetes resource quantity (``4``, ``4000m``, ``16Gi``), exactly; ``None`` when unset or unparsable."""
+    match = _QUANTITY.fullmatch(str(value or ""))
+    return Decimal(match.group(1)) * _UNITS[match.group(2)] if match else None
+
+
+def job_definition_blockers(job: Mapping[str, Any], *, image: str, timeout_seconds: int, vcpu: int,
+                            memory_bytes: int) -> list[str]:
+    """``jobs.get`` must show the bootstrap command without args, one task, no retries, the timeout, and exactly the
+    descriptor's CPU and memory, on which the ledger's worst case is priced."""
 
     template = job.get("template") if isinstance(job.get("template"), Mapping) else {}
     task = template.get("template") if isinstance(template.get("template"), Mapping) else {}
@@ -145,6 +156,8 @@ def job_definition_blockers(job: Mapping[str, Any], *, image: str, timeout_secon
         "task_count": template.get("taskCount") != 1,
         "parallelism": template.get("parallelism", 0) not in (0, 1),
         "timeout": task.get("timeout") != f"{timeout_seconds}s",
+        "cpu": _quantity(((container.get("resources") or {}).get("limits") or {}).get("cpu")) != vcpu,
+        "memory": _quantity(((container.get("resources") or {}).get("limits") or {}).get("memory")) != memory_bytes,
     }
     blockers = [f"remote_cpu_job_definition_invalid:{name}" for name, failure in failed.items() if failure]
     if container.get("image") != image:
