@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import stat
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -22,6 +24,47 @@ from blueprint_pipeline.company_policy_sandbox_executor import (
 from blueprint_pipeline.controlled_policy_bridge_server import QualifiedPolicyBridge
 from blueprint_pipeline.controlled_policy_configuration import canonical_request_digest
 from blueprint_pipeline.policy_model_onnx import validate_model_task_binding
+
+
+class BlueprintArtifactRegistryBroker:
+    """One-use VM identity for a Blueprint-owned private policy image only."""
+
+    def __init__(self, *, lease_id: str, registry_host: str, image_ref: str) -> None:
+        if (not lease_id.startswith("blueprint-worker-token-")
+                or registry_host != "us-central1-docker.pkg.dev"
+                or not image_ref.startswith("us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/")
+                or "@sha256:" not in image_ref):
+            raise ValueError("controlled_policy_worker_registry_scope_invalid")
+        self.lease_id = lease_id
+        self.registry_host = registry_host
+        self.delivery_id: str | None = None
+
+    def claim(self, *, lease_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        if lease_id != self.lease_id or self.delivery_id is not None:
+            raise ValueError("controlled_policy_worker_token_claim_invalid")
+        request = urllib.request.Request(
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+            headers={"Metadata-Flavor": "Google"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            token = json.loads(response.read(4096))
+        if (token.get("token_type") != "Bearer" or not isinstance(token.get("access_token"), str)
+                or len(token["access_token"]) < 32 or int(token.get("expires_in", 0)) < 60):
+            raise ValueError("controlled_policy_worker_token_invalid")
+        self.delivery_id = "blueprint-worker-delivery-" + secrets.token_hex(16)
+        return {"credential": {"registry_server": self.registry_host,
+                               "username": "oauth2accesstoken", "secret": token["access_token"]},
+                "delivery_receipt": {"delivery_id": self.delivery_id}}
+
+    def acknowledge(self, *, lease_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        if (lease_id != self.lease_id or self.delivery_id is None
+                or body.get("delivery_id") != self.delivery_id
+                or not str(body.get("image_pull_receipt_digest", "")).startswith("sha256:")):
+            raise ValueError("controlled_policy_worker_token_ack_invalid")
+        delivery_id = self.delivery_id
+        self.delivery_id = None
+        return {"lease_receipt": {"status": "consumed", "ciphertext_deleted": True,
+                                  "delivery_id": delivery_id,
+                                  "source": "short_lived_vm_identity_no_persisted_ciphertext"}}
 
 
 def _object(path: Path, *, private: bool = False) -> dict[str, Any]:
@@ -77,6 +120,7 @@ def main() -> int:
     parser.add_argument("--maximum-seconds", type=int, default=1800)
     parser.add_argument("--broker-base-url")
     parser.add_argument("--broker-token-file", type=Path)
+    parser.add_argument("--blueprint-owned-vm-identity", action="store_true")
     parser.add_argument("--broker-client-id", default="blueprint-policy-sandbox-worker")
     parser.add_argument("--ack", choices=["authorized-controlled-policy-session"], required=True)
     args = parser.parse_args()
@@ -116,10 +160,18 @@ def main() -> int:
         raise ValueError("controlled_policy_bridge_tls_identity_invalid")
     visibility = contract["container"]["visibility"]
     if visibility == "private":
-        if not args.broker_base_url or args.broker_token_file is None:
-            raise ValueError("controlled_policy_bridge_private_registry_broker_required")
-        broker = HttpCredentialBroker(base_url=args.broker_base_url,
-            token_file=args.broker_token_file, client_id=args.broker_client_id)
+        if args.blueprint_owned_vm_identity:
+            if args.broker_base_url or args.broker_token_file:
+                raise ValueError("controlled_policy_bridge_broker_modes_conflict")
+            broker = BlueprintArtifactRegistryBroker(
+                lease_id=str(plan["credential_broker_request_binding"]["registry_credential_lease_id"]),
+                registry_host=str(plan["registry"]["host"]),
+                image_ref=str(contract["container"]["image"]))
+        else:
+            if not args.broker_base_url or args.broker_token_file is None:
+                raise ValueError("controlled_policy_bridge_private_registry_broker_required")
+            broker = HttpCredentialBroker(base_url=args.broker_base_url,
+                token_file=args.broker_token_file, client_id=args.broker_client_id)
     else:
         broker = None
     bridge = QualifiedPolicyBridge(contract=contract, job_request=request,
