@@ -4,6 +4,8 @@ These local boundary cases use a native retained preparation join and exact
 current metadata bytes. They do not claim whole scene admission or retirement.
 """
 import copy
+import hashlib
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -54,6 +56,44 @@ def test_exact_closed_selected_preparation_record_is_transferred_not_discarded(t
     assert result['transferred_records'][0]['source']==record['source']
     assert result['consumer_fence_checked'] is False and result['references_clear'] is False
     assert fresh['reference_observation']['record_dispositions']==[record]
+
+
+def test_exact_selected_queue_identity_is_transferred_with_original_raw(tmp_path):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_retirement_authority import selected_document
+    fresh,record,proof,allowance=setup(tmp_path)
+    envelope=selected_document({key:proof[key] for key in ('path','sha256','size_bytes')},maximum=4*1024*1024)
+    request=envelope['request']
+    root=Path(record['source']['queue_root'])
+    identity={'schema_version':'task_evaluation_launch_preparation_identity.v1',
+              'preparation_id':request['preparation_id'],'request_digest':envelope['request_digest']}
+    identity['identity_digest']=canonical_digest(identity,digest_field='identity_digest')
+    path=root/'identities'/(request['preparation_id']+'.json')
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(identity))
+    raw=path.read_bytes()
+    selected={'path':str(path),'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(),
+              'size_bytes':len(raw),'role':'preparation_identity','seal_field':'identity_digest',
+              'seal_digest':identity['identity_digest']}
+    fresh['measured_members'].append({'source_provenance':[selected]})
+    source=dict(record['source'],role='identity',row_path=str(path),
+                raw_sha256=selected['sha256'],raw_size_bytes=selected['size_bytes'])
+    fresh['reference_observation']['record_dispositions'].append({
+        'source':source,'disposition':'supported','reason':'supplied_integrity_only',
+        'canonical_digest':identity['identity_digest']})
+    result=check(fresh,allowance)
+    assert result['transferred_record_count']==2
+    assert result['transferred_records'][1]['source']==source
+    identity['request_digest']='sha256:'+'f'*64
+    identity['identity_digest']=canonical_digest(identity,digest_field='identity_digest')
+    path.write_text(json.dumps(identity))
+    raw=path.read_bytes()
+    selected.update(sha256='sha256:'+hashlib.sha256(raw).hexdigest(),size_bytes=len(raw),
+                    seal_digest=identity['identity_digest'])
+    source.update(raw_sha256=selected['sha256'],raw_size_bytes=selected['size_bytes'])
+    fresh['reference_observation']['record_dispositions'][1]['canonical_digest']=identity['identity_digest']
+    with pytest.raises(ValueError,match='scene_retirement_reference_closure_unproven'):
+        check(fresh,allowance)
 
 
 @pytest.mark.parametrize('change',['active','foreign_copy','raw_drift','unsupported'])

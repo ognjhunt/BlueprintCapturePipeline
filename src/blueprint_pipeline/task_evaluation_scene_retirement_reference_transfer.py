@@ -18,7 +18,9 @@ from .task_evaluation_scene_compilation_owner_contracts import FIELD_SETS
 
 _SCOPES={'pins','primary_queues','auxiliary_queues'}
 _ROLE_SCHEMAS={
+    ('preparation','identity'):('task_evaluation_launch_preparation_identity.v1',{'identities'}),
     ('preparation','envelope'):('task_evaluation_launch_preparation_envelope.v1',{'completed','materialized'}),
+    ('activation','identity'):('task_evaluation_launch_activation_identity.v1',{'identities'}),
     ('activation','envelope'):('task_evaluation_launch_activation_envelope.v1',{'prepared'}),
     ('preparation','result'):('task_evaluation_launch_preparation_result.v1',{'results'}),
     ('activation','result'):('task_evaluation_launch_activation_result.v1',{'results'}),
@@ -88,10 +90,19 @@ def _current_record(record,selected,allowance):
     _require(value.get('schema_version')==schema,_REASON)
     if role=='result':
         _require(value.get('status') in _SUCCESS[family],_REASON)
+    if role=='identity':
+        id_field=family+'_id'
+        _require(set(value)=={'schema_version',id_field,'request_digest','identity_digest'}
+                 and type(value.get(id_field)) is str
+                 and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,191}',value[id_field])
+                 and path.name==value[id_field]+'.json'
+                 and type(value.get('request_digest')) is str
+                 and re.fullmatch('sha256:[0-9a-f]{64}',value['request_digest'])
+                 and value.get('identity_digest')==canonical_digest(value,digest_field='identity_digest'),_REASON)
     seal=record.get('canonical_digest')
     _require(type(seal) is str and any(proof.get('seal_digest')==seal for proof in selected[identity]),_REASON)
-    return dict(source=dict(source),canonical_digest=seal,
-                disposition='exact_selected_closed_metadata_retained',action='KEEP')
+    return (dict(source=dict(source),canonical_digest=seal,
+                 disposition='exact_selected_closed_metadata_retained',action='KEEP'),value)
 
 
 def _sam_value(identity,proofs,fresh,allowance):
@@ -377,14 +388,31 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
     progress=_current_sam_progress(selected,fresh,jobs,allowance)
     compilations=_bound_compilations(fresh,selected,allowance)
     records=[]
+    read_records=[]
     emitted=0
     for row in _rows(observation.get('record_dispositions')):
-        current=_current_record(row,selected,allowance)
+        current,value=_current_record(row,selected,allowance)
         # Fixed finite source shape; bound retained duplicate framing before
         # adding it. Original full observer evidence remains in the plan.
         emitted+=1024+sum(len(current['source'][key].encode('utf-8')) for key in ('row_path','queue_root'))
         _require(emitted<=1024*1024,'scene_retirement_reference_limit')
         records.append(current)
+        read_records.append((current,value))
+    envelopes={}
+    for current,value in read_records:
+        allowance.tick()
+        source=current['source']
+        if source['role']=='envelope':
+            request=value.get('request')
+            _require(type(request) is dict and value.get('request_digest')==canonical_digest(request),_REASON)
+            key=(source['family'],source['queue_root'],request.get(source['family']+'_id'),value['request_digest'])
+            envelopes.setdefault(key,[]).append(source)
+    for identity,identity_value in (pair for pair in read_records if pair[0]['source']['role']=='identity'):
+        allowance.tick()
+        source=identity['source']
+        key=(source['family'],source['queue_root'],identity_value[source['family']+'_id'],
+             identity_value['request_digest'])
+        _require(len(envelopes.get(key,[]))==1,_REASON)
     from .task_evaluation_scene_retirement_reference_proofs import TerminalProofs
     facts=TerminalProofs(fresh,selected,records,allowance,preserved)
     from .task_evaluation_scene_retirement_pins import select_terminal_pins, covers
