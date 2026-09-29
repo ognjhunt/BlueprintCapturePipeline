@@ -218,7 +218,8 @@ def _invalid_constant(_value: str) -> None:
 def load_original_owner_observation(
     *, bucket: str, scene_id: str, capture_id: str, marker_generation: str,
     remaining_timeout_ms: int = 10_000,
-) -> dict[str, Any]:
+    include_response_bytes: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], int]:
     """One signed read through the installed Pipeline sync credential and API origin."""
     if not _integer(remaining_timeout_ms, 1, 10_000):
         _refuse("capture_owner_timeout_invalid")
@@ -251,9 +252,10 @@ def load_original_owner_observation(
             _refuse("capture_owner_response_unavailable")
         value = json.loads(response.body.decode("utf-8", errors="strict"),
                            object_pairs_hook=_unique_pairs, parse_constant=_invalid_constant)
-        return validate_observation(value, bucket=bucket, scene_id=scene_id,
-                                    capture_id=capture_id,
-                                    marker_generation=marker_generation)
+        validated = validate_observation(value, bucket=bucket, scene_id=scene_id,
+                                         capture_id=capture_id,
+                                         marker_generation=marker_generation)
+        return (validated, len(response.body)) if include_response_bytes else validated
     except CaptureOwnerObservationError:
         raise
     except Exception as exc:

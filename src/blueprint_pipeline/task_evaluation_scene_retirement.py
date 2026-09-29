@@ -17,10 +17,12 @@ import sys
 from pathlib import Path
 from contextlib import ExitStack
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from . import task_evaluation_scene_retirement_access as access
 from .task_evaluation_scene_retirement_access import _canonical, _identity, _opened, _require
-from .task_evaluation_scene_retirement_authority import load_authority, selected_document, load_document
+from .task_evaluation_scene_retirement_authority import (
+    load_authority, selected_document, load_document, raw_reference,
+)
 from .task_evaluation_scene_retirement_generations import _write, _sealed
 from .task_evaluation_scene_retirement_journal import SceneJournal
 from .task_evaluation_scene_retirement_mutation import detach_and_remove, inventory_digest, removal_records
@@ -133,6 +135,110 @@ def _generation(policy, member, *, expected_states, retired_token=None):
     if retired_token is not None:
         _require(value.get('retirement_token')==retired_token,'scene_retirement_generation_unavailable')
     return value,ref
+
+
+def _capture_action_current(policy, consent, member, allowance, *, expected_states):
+    """Bind one original owner, accepted sponsor and current signed source under EX."""
+    from .capture_original_owner_observer import (
+        CaptureOwnerObservationError, load_original_owner_observation, validate_observation,
+    )
+
+    references=(member['owner_observation_raw_ref'],member['birth_delivery_raw_ref'],
+                member['source_membership_raw_ref'],member['association_raw_ref'],
+                member['scene_intent_raw_ref'])
+    for index,reference in enumerate(references):
+        allowance.charge('local_bytes',reference['size_bytes']*(2 if index<3 else 1))
+    allowance.tick()
+    generation,_=_generation(policy,member,expected_states=expected_states)
+    _require(generation['schema_version']=='scene_capture_generation.v1'
+             and consent['intent_raw_ref']==member['scene_intent_raw_ref'],
+             'scene_retirement_capture_association_unproven')
+    owner=selected_document(member['owner_observation_raw_ref'],maximum=65536)
+    birth=selected_document(member['birth_delivery_raw_ref'],maximum=65536)
+    selected_document(member['source_membership_raw_ref'],maximum=65536)
+    association=selected_document(member['association_raw_ref'],maximum=65536)
+    intent=selected_document(member['scene_intent_raw_ref'],maximum=65536)
+    try:
+        validated=validate_observation(owner,bucket=owner['bucket'],scene_id=owner['scene_id'],
+            capture_id=owner['capture_id'],marker_generation=generation['pinned_marker']['generation'],
+            now_epoch=owner['observed_at_epoch'])
+    except (CaptureOwnerObservationError,KeyError,TypeError) as error:
+        raise access.SceneRetirementAccessError('scene_retirement_capture_original_owner_unproven') from error
+    _require(validated==owner and type(intent) is dict
+             and intent.get('intent_id')==consent['intent_id']
+             and intent.get('intent_digest')==canonical_digest(intent,digest_field='intent_digest')
+             and type(intent.get('request')) is dict,
+             'scene_retirement_capture_association_unproven')
+    request=intent['request']
+    sponsor=request.get('owner')
+    selected=association.get('capture_source') if type(association) is dict else None
+    context=policy.get('reference_context')
+    roots=context.get('roots') if type(context) is dict else None
+    _require(type(roots) is dict and type(roots.get('factory_output_root')) is str
+             and type(roots.get('intent_root')) is str
+             and type(roots.get('website_source_binding_root')) is str
+             and Path(member['association_raw_ref']['path']).parent==(
+                 Path(roots['factory_output_root'])/consent['intent_id']/'website-source')
+             and Path(member['scene_intent_raw_ref']['path'])==(
+                 Path(roots['intent_root'])/consent['intent_id']/'intent.json')
+             and type(association) is dict
+             and Path(member['association_raw_ref']['path']).name==(
+                 association.get('binding_digest','')[7:]+'.json'),
+             'scene_retirement_capture_association_unproven')
+    _require(type(selected) is dict
+             and association.get('schema_version')=='website_scene_source_binding.v1'
+             and association.get('binding_digest')==canonical_digest(
+                 association,digest_field='binding_digest')
+             and association.get('intent_digest')==intent['intent_digest']
+             and association.get('owner')==sponsor
+             and selected.get('canonical_path')==member['canonical_path']
+             and selected.get('generation_id')==member['generation_id']
+             and selected.get('request_id')==member['request_id']
+             and selected.get('capture_owner_user_id')==member['capture_owner_user_id']
+             and selected.get('owner_observation_raw_ref')==member['owner_observation_raw_ref']
+             and selected.get('birth_delivery_raw_ref')==member['birth_delivery_raw_ref']
+             and selected.get('source_membership_raw_ref')==member['source_membership_raw_ref']
+             and selected.get('source_membership_selector')==birth['source_membership_selector']
+             and selected.get('delivery_key')==owner['producer_delivery']['delivery_key']
+             and selected.get('capture_rights_digest')==cross_runtime_canonical_digest(
+                 owner['capture_rights'])
+             and selected.get('sponsoring_owner')==sponsor
+             and selected.get('request_digest')==cross_runtime_canonical_digest(request),
+             'scene_retirement_capture_association_unproven')
+    registration_ref=raw_reference(association.get('registration'))
+    _require(Path(registration_ref['path'])==(
+                 Path(roots['website_source_binding_root'])/
+                 (selected['request_digest'][7:]+'.json')),
+             'scene_retirement_capture_association_unproven')
+    allowance.charge('local_bytes',registration_ref['size_bytes'])
+    registration=selected_document(registration_ref,maximum=65536)
+    _require(registration.get('schema_version')=='website_scene_source_registration.v1'
+             and registration.get('registration_digest')==canonical_digest(
+                 registration,digest_field='registration_digest')
+             and registration.get('request_digest')==selected['request_digest']
+             and registration.get('capture_source')==selected,
+             'scene_retirement_capture_association_unproven')
+    allowance.tick()
+    remaining=min(allowance.expires_at-allowance.last_wall,
+                  allowance.elapsed_seconds-(allowance.last_tick-allowance.start),10)
+    _require(remaining>0,'scene_retirement_deadline')
+    try:
+        current,response_bytes=load_original_owner_observation(
+            bucket=owner['bucket'],scene_id=owner['scene_id'],capture_id=owner['capture_id'],
+            marker_generation=generation['pinned_marker']['generation'],
+            remaining_timeout_ms=max(1,min(10000,int(remaining*1000))),
+            include_response_bytes=True)
+    except CaptureOwnerObservationError as error:
+        raise access.SceneRetirementAccessError('scene_retirement_capture_current_owner_unavailable') from error
+    allowance.charge('remote_bytes',response_bytes)
+    allowance.tick()
+    _require(current['source_projection_digest']==owner['source_projection_digest']
+             and current['capture_owner']==owner['capture_owner']
+             and current['capture_rights']==owner['capture_rights']
+             and current['producer_delivery']==owner['producer_delivery']
+             and current['completion_marker']==owner['completion_marker'],
+             'scene_retirement_capture_current_owner_changed')
+    return generation
 
 
 def _transition(policy, prior, *, state, token, journal_ref, inventory_sha256=None, identity=None):
@@ -502,8 +608,6 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
     try:
         authority=load_authority(consent_path,action='retire',now=now)
         policy,consent=authority['policy'],authority['consent']
-        _require(not any('capture_owner_user_id' in member for member in consent['members']),
-                 'scene_capture_current_owner_unavailable')
         allowance=_allowance(authority,now,monotonic)
         _bind_transport(transport,allowance)
         _require(str(_canonical(str(plan_path)))==consent['plan_raw_ref']['path'],
@@ -515,6 +619,14 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             current=load_authority(consent_path,action='retire',now=now)
             _require(current==authority,'scene_retirement_policy_changed')
             retained=selected_document(consent['plan_raw_ref'],maximum=16*1024*1024)
+            for member in consent['members']:
+                if 'capture_owner_user_id' in member:
+                    _require(retained.get('selected_intent_provenance') is not None
+                             and {key:retained['selected_intent_provenance'].get(key)
+                                  for key in ('path','sha256','size_bytes')}==consent['intent_raw_ref'],
+                             'scene_retirement_capture_association_unproven')
+                    _capture_action_current(policy,consent,member,allowance,expected_states={
+                        'active','restored-active','retiring','retired'})
             resumed=recovery.select_retirement(policy,authority,allowance)
             if resumed is not None and type(resumed) is tuple:
                 journal,pending,initial=resumed
@@ -793,8 +905,6 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
     try:
         authority=load_authority(consent_path,action='restore',now=now)
         policy,consent=authority['policy'],authority['consent']
-        _require(not any('capture_owner_user_id' in member for member in consent['members']),
-                 'scene_capture_current_owner_unavailable')
         allowance=_allowance(authority,now,monotonic)
         _bind_transport(transport,allowance)
         reference=consent['retired_journal_raw_ref']
@@ -807,6 +917,10 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                      and retired.get('journal_digest')==canonical_digest(retired,digest_field='journal_digest')
                      and retired.get('intent_id')==consent['intent_id'] and retired.get('members')==consent['members'],
                      'scene_retirement_restore_snapshot_invalid')
+            for member in consent['members']:
+                if 'capture_owner_user_id' in member:
+                    _capture_action_current(policy,consent,member,allowance,expected_states={
+                        'retired','restoring','restored-active'})
             pin_rows=retired.get('terminal_pin_release_rows',[])
             lifetimes.enter_context(pins.terminal_pin_guard(policy,dict(consent,terminal_pin_refs=[
                 row['original_raw_ref'] for row in pin_rows]),allowance))

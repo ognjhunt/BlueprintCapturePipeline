@@ -119,6 +119,11 @@ def test_signed_read_keeps_exact_generation_and_response_bound(monkeypatch):
     assert calls[0][0].endswith("/creator-captures/walkthrough-req-1/capture-owner")
     assert calls[0][1]["max_response_bytes"] == 65536
     assert calls[0][1]["timeout_seconds"] == 4.321
+    observed, size = observer.load_original_owner_observation(
+        bucket="capture-bucket", scene_id="site-req-1", capture_id="walkthrough-req-1",
+        marker_generation="17000000000000000001", remaining_timeout_ms=4321,
+        include_response_bytes=True)
+    assert observed == got and size == len(json.dumps(observation()).encode())
 
     monkeypatch.setattr(observer, "safe_request", lambda *_args, **_kwargs: SimpleNamespace(
         status=200, body=b"{" + b" " * 65536 + b"}"))
