@@ -18,6 +18,13 @@ def original():
     return namespace['bounded_size']
 
 
+def test_original_measurement_oracle_does_not_require_checkout_history(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise AssertionError('CI shallow checkout has no historical Git objects')
+    monkeypatch.setattr(subprocess, 'check_output', unavailable)
+    assert original()({'rows': [1, True, None]}, 4096) == 22
+
+
 def observe(function, value, limit, *, fail_at=None):
     samples = []
     def clock():
