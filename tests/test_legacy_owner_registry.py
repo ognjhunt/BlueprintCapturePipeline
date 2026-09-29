@@ -110,3 +110,30 @@ def test_crash_between_no_replace_link_and_temp_unlink_recovers_owned_link(regis
     store.recover_publication_links()
     assert not temporary.exists()
     assert final.stat().st_nlink == 1
+
+
+def test_unfinished_hardlinked_head_is_not_committed_until_writer_recovery(registry, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_legacy_owner as legacy
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    import os
+
+    store, root = registry
+    monkeypatch.setattr(legacy, "_root_owned_publication", lambda info: True)
+    packet_id = "d" * 32
+    path = "/work/lanes/diagnostics/old-1"
+    registration = {"path": path, "owner": "owner"}
+    store.publish(packet_id, "registration", registration)
+    store.publish(packet_id, "receipt", {"registration": registration})
+    head = dict(schema_version="control_plane_lane_legacy_owner_head.v1",
+                packet_id=packet_id, path=path,
+                registration_digest=canonical_digest(registration),
+                gc_eligible=False, references_clear=False, mutations=0)
+    temporary = root / (".consent-" + "e" * 32 + ".tmp")
+    temporary.write_bytes(legacy.LegacyOwnerStore._payload(head))
+    temporary.chmod(0o600)
+    final = root / store._head_name(path, packet_id)
+    os.link(temporary, final)
+    with pytest.raises(legacy.LegacyOwnerError, match="legacy_owner_record_invalid"):
+        store.committed_heads()
+    store.recover_publication_links()
+    assert len(store.committed_heads()) == 1
