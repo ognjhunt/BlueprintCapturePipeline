@@ -874,6 +874,11 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
         current_boot = None
         current_monotonic = None
         if current is not None:
+            policy_raw, policy_record = files.read(config.lane_owner_policy_file,
+                                                   cap=owners.MAX_POLICY_BYTES, protected=True, mode=0o600)
+            _require(issuance._selector(policy_raw, files.budget) == current[1]['policy'],
+                     'experiment_policy_changed')
+            files.verify_record(policy_record)
             for entry in current[1]["enrollments"]:
                 if entry["state"] in ("active", "retiring") and entry["operation_id"] is not None:
                     if entry["state"] == "active" and _is_selected_restoration(files, public, entry, gid):
@@ -905,6 +910,20 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                                  and _epoch(candidate['issued_at_epoch']) and _epoch(candidate['expires_at_epoch'])
                                  and candidate['issued_at_epoch'] <= issued,
                                  'experiment_action_invalid')
+                        try:
+                            policy = owners._policy(policy_raw, candidate['principal'], files.budget)
+                            owners._authorize({'owner': candidate['owner'],
+                                               'action': 'keep' if candidate['action'] == 'owner_review'
+                                               else candidate['action'],
+                                               'expires_at_epoch': candidate['expires_at_epoch']},
+                                              policy, candidate['expires_at_epoch'], candidate['issued_at_epoch'])
+                        except owners.OwnerCensusConsentError as error:
+                            if error.code not in ('owner_consent_principal_unmapped',
+                                                  'owner_consent_owner_unmapped',
+                                                  'owner_consent_action_unapproved',
+                                                  'owner_consent_expiry_invalid'):
+                                raise
+                            raise OwnerTargetVersionError('experiment_action_invalid') from None
                     except (retained.CensusDecisionError, OwnerTargetVersionError):
                         expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
                                             decision='kept', reason='experiment_action_invalid', receipt=None,
