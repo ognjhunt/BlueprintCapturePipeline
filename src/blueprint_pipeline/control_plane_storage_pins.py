@@ -22,11 +22,29 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
 
-from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
+def _publisher_observation(function):
+    """Load the opt-in publisher gate only when a pin publisher is called."""
+    observed = None
+
+    @wraps(function)
+    def invoke(*args, **kwargs):
+        nonlocal observed
+        if observed is None:
+            from .control_plane_registered_reference_gate import _publisher_observation as gate
+            observed = gate(function)
+        return observed(*args, **kwargs)
+
+    return invoke
+
+
+def _publisher_checkpoint():
+    from .control_plane_registered_reference_gate import _publisher_checkpoint as checkpoint
+    checkpoint()
 
 SCHEMA_VERSION = "control_plane_storage_pin.v1"
 DEFAULT_PINS_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/storage-pins")
