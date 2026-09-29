@@ -365,7 +365,7 @@ def _selected_sam(protection,selected,fresh,allowance,bound,progress):
     return result
 
 
-def validate_current_reference_transfer(fresh,allowance,*,preserved=None):
+def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=None,consent=None):
     observation=fresh.get('reference_observation')
     _require(type(observation) is dict,'scene_retirement_reference_scope_unproven')
     scopes=_rows(observation.get('child_scopes'))
@@ -387,11 +387,15 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None):
         records.append(current)
     from .task_evaluation_scene_retirement_reference_proofs import TerminalProofs
     facts=TerminalProofs(fresh,selected,records,allowance,preserved)
+    from .task_evaluation_scene_retirement_pins import select_terminal_pins, covers
+    terminal_pins=select_terminal_pins(fresh,policy,consent,facts.documents,allowance) if consent is not None else []
     released=0
     auxiliaries=[]
     for protection in _rows(observation.get('protections')):
         allowance.tick()
         _require(type(protection) is dict,_REASON)
+        if protection.get('kind') in {'positive_pin_path','pin_observation'} and covers(protection,terminal_pins):
+            continue
         if protection.get('kind')=='unsupported_queue_observation':
             current=_selected_sam(protection,selected,fresh,allowance,compilations,progress)
             emitted+=1024+len(current['source']['row_path'].encode('utf-8'))
@@ -414,5 +418,5 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None):
         transferred_records=records,transferred_record_count=len(records),
         transferred_auxiliary_records=auxiliaries,
         retained_released_pin_count=released,transferred_obligations=facts.transferred,
-        archive_inventory_verified=facts.has_inventory,covered_reference_keeps=facts.covered_keeps(),references_clear=False,consumer_fence_checked=False,
+        archive_inventory_verified=facts.has_inventory,covered_reference_keeps=facts.covered_keeps(terminal_pins),terminal_pin_release_rows=terminal_pins,references_clear=False,consumer_fence_checked=False,
         mutations=0,unknown_scopes_cleared=False)

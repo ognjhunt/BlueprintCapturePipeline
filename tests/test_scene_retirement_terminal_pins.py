@@ -74,8 +74,8 @@ def test_terminal_pin_selection_never_clears_unknown_live_or_unrelated_rows(tmp_
     elif change=='changed_raw':
         Path(pin['row_path']).write_bytes(b'{}')
     elif change=='young':
-        allowance.now=lambda:100
-        allowance.last_wall=100
+        from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+        allowance=ActionAllowance(expires_at=40000,now=lambda:100,monotonic=lambda:0)
     elif change=='outside_member':
         consent['members'][0]['canonical_path']=str(tmp_path/'unrelated')
     elif change=='other_dependent':

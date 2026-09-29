@@ -263,13 +263,18 @@ class TerminalProofs:
             result.append(row)
         return result
 
-    def covered_keeps(self):
+    def covered_keeps(self,terminal_pins=()):
         result=[]
         keeps=self.fresh.get('reference_keeps',[])
         _require(type(keeps) in (list,_Rows) and len(keeps)<=MAX_OCCURRENCES,_REASON)
         for keep in keeps:
             self.allowance.tick()
             protection=keep.get('observation')
+            if type(protection) is dict and protection.get('kind')=='positive_pin_path':
+                from .task_evaluation_scene_retirement_pins import covers
+                _require(covers(protection,terminal_pins) and keep.get('protected_path')==protection['path'],_REASON)
+                result.append(keep)
+                continue
             _require(type(protection) is dict and protection.get('kind')=='local_path_protections',_REASON)
             fact,source,_=self._fact(protection)
             key=(source,fact['contract_path'],fact['path'],fact['digest'],fact['size_bytes'])
