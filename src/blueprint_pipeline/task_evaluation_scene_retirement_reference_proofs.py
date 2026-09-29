@@ -198,28 +198,28 @@ class TerminalProofs:
                     'construction_queue_receipt_digest':construction}
 
     def _index_scene_construction_handoff(self,result,request,render):
-        """Accept only a revoked scene's exact, separately retained blocked handoff."""
+        """Bind one terminal construction queue item to its retained producer bytes."""
         from .task_evaluation_scene_compilation_owner_contracts import PREPARATION_BASE_FIELDS
         from .task_evaluation_scene_retirement_authority import load_document
 
         root=self.fresh.get('planner_context',{}).get('scene_construction_queue_root')
         if root is None:
             return
-        _require(type(root) is str and self.fresh.get('finished_observation',{}).get('status')
-                 =='revoked_grace_elapsed',_REASON)
+        finished=self.fresh.get('finished_observation',{}).get('status')
+        _require(type(root) is str and finished in {'completed','revoked_grace_elapsed'},_REASON)
         recipe_digest=result.get('construction_recipe_digest')
         _require(type(recipe_digest) is str and re.fullmatch(r'sha256:[0-9a-f]{64}',recipe_digest),_REASON)
         name=result['preparation_id']+'-'+recipe_digest[7:]+'.json'
         queue=Path(root)
-        blocked=queue/'blocked'/name
+        terminal=queue/('completed' if finished=='completed' else 'blocked')/name
         final_path=queue/'results'/name
         try:
-            envelope,envelope_raw=load_document(blocked,maximum=4*1024*1024)
+            envelope,envelope_raw=load_document(terminal,maximum=4*1024*1024)
             final,final_raw=load_document(final_path,maximum=65536)
         except (OSError,ValueError,TypeError,UnicodeError):
             raise SceneRetirementAccessError('scene_retirement_reference_changed') from None
         self.allowance.charge('local_bytes',envelope_raw['size_bytes']+final_raw['size_bytes'])
-        _require(not self.has_inventory or all(not blocked.is_relative_to(member)
+        _require(not self.has_inventory or all(not terminal.is_relative_to(member)
                  and not final_path.is_relative_to(member) for member in self.member_roots),_REASON)
         pre={key:result[key] for key in PREPARATION_BASE_FIELDS if key in result}
         _require(set(pre)==PREPARATION_BASE_FIELDS,_REASON)
@@ -249,20 +249,27 @@ class TerminalProofs:
                  and seal==result.get('construction_queue_envelope_digest')
                  and seal==canonical_digest(envelope,digest_field='envelope_digest'),_REASON)
         _require(final.get('schema_version')=='task_evaluation_scene_construction_finalization.v1'
-                 and final.get('status')==final.get('queue_state')=='blocked'
+                 and final.get('status')==final.get('queue_state')==terminal.parent.name
                  and final.get('orchestration_id')==result['preparation_id']
                  and final.get('run_id')==result['run_id']
                  and final.get('source_commit')==result['source_commit']
                  and final.get('recipe_digest')==recipe_digest
                  and final.get('construction_envelope_digest')==seal
-                 and final.get('queue_path')==str(blocked)
+                 and final.get('queue_path')==str(terminal)
                  and final.get('result_path')==str(final_path)
-                 and final.get('configuration_completed') is False
-                 and final.get('configured_scene_published') is False
                  and final.get('continuing_spend_from_this_run') is False
                  and final.get('finalization_performed') is True
-                 and final.get('blockers')==['scene_owner_revoked']
                  and final.get('result_digest')==canonical_digest(final,digest_field='result_digest'),_REASON)
+        if finished=='completed':
+            _require(final.get('configuration_completed') is True
+                     and final.get('configured_scene_published') is True
+                     and final.get('full_byte_service_account_readback_passed') is True
+                     and final.get('blockers')==[],_REASON)
+            self._index_completed_construction_publication(final,request)
+        else:
+            _require(final.get('configuration_completed') is False
+                     and final.get('configured_scene_published') is False
+                     and final.get('blockers')==['scene_owner_revoked'],_REASON)
         original_path=queue/'pending'/name
         receipts=[]
         for created in (False,True):
@@ -282,6 +289,74 @@ class TerminalProofs:
         for digest in (recipe_digest,seal,receipts[0]['receipt_digest']):
             self.canonical.setdefault(digest,set()).add(identity)
         return identity
+
+    def _index_completed_construction_publication(self,final,request):
+        """Reread the one archived result and revision selected by finalization."""
+        from .task_evaluation_configured_scene_revision import validate_configured_scene_revision
+        from .task_evaluation_scene_retirement_authority import selected_document
+
+        _require(self.has_inventory,_REASON)
+        name='task_evaluation_scene_configuration_publication.v1.json'
+        candidates=[identity for path,identity in self.physical.items()
+                    if Path(path).name==name and any(Path(path).is_relative_to(root)
+                    for root in self.member_roots)]
+        _require(len(candidates)<=256,_REASON)
+        selected=[]
+        for identity in candidates:
+            self.allowance.tick()
+            self.allowance.charge('local_bytes',identity[2])
+            try:
+                value=selected_document(dict(zip(('path','sha256','size_bytes'),identity)),maximum=4*1024*1024)
+            except (OSError,ValueError,TypeError,UnicodeError):
+                raise SceneRetirementAccessError('scene_retirement_reference_changed') from None
+            _require(type(value) is dict,_REASON)
+            if value.get('result_digest')!=final.get('publication_result_digest'):
+                continue
+            _require(value.get('schema_version')=='task_evaluation_scene_configuration_publication.v1'
+                     and value.get('status')=='configured_scene_published'
+                     and value.get('configuration_run_id')==final['run_id']
+                     and value.get('configured_scene_revision_digest')==final.get('configured_scene_revision_digest')
+                     and value.get('full_byte_service_account_readback_passed') is True
+                     and value.get('provider_mutation_performed') is False
+                     and value.get('paid_execution_requested') is False
+                     and value['result_digest']==canonical_digest(value,digest_field='result_digest'),_REASON)
+            selected.append((identity,value))
+        _require(len(selected)==1,_REASON)
+        publication_identity,publication=selected[0]
+        revision_row=publication.get('configured_scene_revision')
+        _require(type(revision_row) is dict and revision_row.get('role')=='configured_scene_revision',_REASON)
+        revision_identity=_selector(revision_row,'path','digest','size_bytes')
+        revision_path=Path(revision_identity[0])
+        _require(revision_path==Path(publication_identity[0]).parent/'configured_scene_revision.v1.json'
+                 and self.physical.get(str(revision_path))==revision_identity,_REASON)
+        self.allowance.charge('local_bytes',revision_identity[2])
+        try:
+            revision=selected_document(dict(zip(('path','sha256','size_bytes'),revision_identity)),maximum=4*1024*1024)
+            _require(type(revision) is dict,_REASON)
+            validate_configured_scene_revision(revision)
+        except (OSError,ValueError,TypeError,UnicodeError):
+            raise SceneRetirementAccessError('scene_retirement_reference_changed') from None
+        _require(revision.get('revision_digest')==final['configured_scene_revision_digest']
+                 and revision.get('configuration_run_id')==final['run_id']
+                 and revision.get('source_commit')==final['source_commit']
+                 and revision.get('team_namespace')==request['team_namespace']
+                 and revision.get('scene_identity')==request['scene']['identity']
+                 and revision.get('source',{}).get('manifest')==request['scene']['source_manifest']
+                 and revision.get('source',{}).get('rights_admission')==request['scene']['rights']['admission']
+                 and revision.get('source',{}).get('rights_evidence')==request['scene']['rights']['evidence']
+                 and revision.get('appearance',{}).get('observed_source')==request['scene']['appearance']['representation']
+                 and revision.get('geometry',{}).get('candidate_collision_source')==request['scene']['geometry']['collision']
+                 and revision.get('task_template',{}).get('identity')==request['task']['identity']
+                 and revision.get('task_template',{}).get('definition')==request['task']['definition']
+                 and revision.get('task_template',{}).get('success_criteria')==request['task']['success_criteria']
+                 and revision.get('replacement',{}).get('identity')==request['task']['subject']['identity']
+                 and revision.get('configured_scene_bundle')==publication.get('configured_scene_bundle_reference')
+                 and revision['revision_digest']==canonical_digest(revision,digest_field='revision_digest'),_REASON)
+        remote=publication.get('configured_scene_revision_reference')
+        _require(type(remote) is dict and remote.get('digest')==revision_identity[1]
+                 and remote.get('size_bytes')==revision_identity[2],_REASON)
+        self.canonical.setdefault(publication['result_digest'],set()).add(publication_identity)
+        self.canonical.setdefault(revision['revision_digest'],set()).add(revision_identity)
 
     def transfer_scene_handoff(self,protection):
         """Retain an exact selected preparation's blocked construction outputs."""
