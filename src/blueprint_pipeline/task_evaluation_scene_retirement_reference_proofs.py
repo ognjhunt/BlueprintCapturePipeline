@@ -97,6 +97,28 @@ class TerminalProofs:
                 identity=_selector(dict(path=path,sha256=row['sha256'],size_bytes=row['size_bytes']))
                 _require(Path(path).is_relative_to(root) and path not in self.physical,_REASON)
                 self.physical[path]=identity
+            aliases=preserved.get('cache_aliases',[])
+            _require(type(aliases) is list and len(aliases)<=256
+                and len(preserved['files'])+len(aliases)<=MAX_OCCURRENCES,_REASON)
+            files={}
+            for row in preserved['files']:
+                allowance.tick()
+                files[(row['member_index'],row['relative_path'])]=row
+            for alias in aliases:
+                allowance.tick()
+                _require(type(alias) is dict and type(alias.get('member_index')) is int
+                    and type(alias.get('relative_path')) is str,_REASON)
+                source=files.get((alias['member_index'],alias['relative_path']))
+                _require(source is not None and alias.get('physical_identity')==source.get('physical_identity')
+                    and alias.get('digest')==source.get('sha256')
+                    and alias.get('size_bytes')==source.get('size_bytes')
+                    and all(alias.get(key)==source.get(key) for key in ('mode','uid','gid')),_REASON)
+                identity=_selector(alias,'path','digest','size_bytes')
+                path=identity[0]
+                _require(path not in self.physical and Path(path).name==identity[1][7:]
+                    and not any(Path(path).is_relative_to(Path(member['path']))
+                                for member in preserved['members']),_REASON)
+                self.physical[path]=identity
 
     def _read(self,identity):
         self.allowance.tick()

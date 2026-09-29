@@ -287,9 +287,7 @@ def _load_verified_preparation(
     episode_compilation_output_root: Path | None = None,
     scene_construction_queue_root: Path | None = None,
     storage_birth_target: Path | None = None,
-) -> tuple[
-    dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Path]
-]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Path]]:
     binding = activation_request["preparation"]
     preparation_id = str(binding["preparation_id"])
     if os.environ.get("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG"):
@@ -575,23 +573,14 @@ def _load_verified_preparation(
         if storage_birth_target is not None:
             from .task_evaluation_scene_retirement_producer_births import enroll_preparation_child
             enroll_preparation_child(storage_birth_target, preparation_root=preparation_root,
-                                     request=request, verified_paths=list(materialized_references.values()))
-        return (
-            request,
-            result,
-            {
-                "kind": "task_evaluation_scene_configuration",
-                "construction_envelope_path": str(construction_envelope_path),
-                "construction_envelope_digest": construction_envelope[
-                    "envelope_digest"
-                ],
-                "recipe_digest": construction_envelope["recipe_digest"],
-                "source_commit": construction_envelope[
-                    "expected_production_commit"
-                ],
-            },
-            materialized_references,
-        )
+                request=request, verified_paths=list(materialized_references.values()))
+        return request, result, {
+            "kind": "task_evaluation_scene_configuration",
+            "construction_envelope_path": str(construction_envelope_path),
+            "construction_envelope_digest": construction_envelope["envelope_digest"],
+            "recipe_digest": construction_envelope["recipe_digest"],
+            "source_commit": construction_envelope["expected_production_commit"],
+        }, materialized_references
     adapter_root = preparation_root / "native-arena-adapter"
     expected_adapter_digest = result.get("adapter_result_digest")
     if result.get("status") == "queued_for_production_episode_compilation":
@@ -669,9 +658,7 @@ def _load_verified_preparation(
         )
     if storage_birth_target is not None:
         from .task_evaluation_scene_retirement_producer_births import enroll_preparation_child
-        # Compiled adapter references were independently checked above and are
-        # not preparation projections; ownership comes from the exact original
-        # preparation request and its enrolled parent, never the adapter path.
+        # Bind the original preparation owner, after native adapter verification.
         enroll_preparation_child(storage_birth_target, preparation_root=preparation_root,
                                  request=request)
     return request, result, adapter, materialized_references

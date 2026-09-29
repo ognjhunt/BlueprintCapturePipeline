@@ -9,13 +9,20 @@ from blueprint_pipeline.task_evaluation_scene_retirement_preservation import Act
 
 
 @pytest.mark.parametrize('changed',[None,'path','sha256','size_bytes'])
-def test_native_intent_provenance_preserves_exact_raw_owner_tuple(monkeypatch,changed):
+def test_native_intent_provenance_preserves_exact_raw_owner_tuple(tmp_path,monkeypatch,changed):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
     from tests.test_scene_inventory_history import fixture
+    from pathlib import Path
     args=fixture()
+    path,raw=args['records']['intent']
+    target=tmp_path.resolve()/Path(path).relative_to('/retained')
+    target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_bytes(raw)
+    args['records']['intent']=(str(target),raw)
     context={}
     from blueprint_pipeline.task_evaluation_scene_preparation_lineage import _record
-    _,proof=_record(args['records']['intent'],'intent',set())
+    intent,proof=_record(args['records']['intent'],'intent',set())
+    proof.update(seal_field='intent_digest',seal_digest=intent['intent_digest'])
     reference={key:proof[key] for key in ('path','sha256','size_bytes')}
     if changed=='path':
         reference['path']+='.foreign'
@@ -29,9 +36,9 @@ def test_native_intent_provenance_preserves_exact_raw_owner_tuple(monkeypatch,ch
                                'record_dispositions':[],'protections':[]},
         reference_keeps=[],other_owner_capture_keeps=[])
     monkeypatch.setattr(engine,'build_scene_lifecycle_plan',lambda **kwargs:fresh)
-    monkeypatch.setattr(engine,'_plan_members',lambda *args:None)
-    monkeypatch.setattr(engine,'_installed_cohort',lambda *args:None)
-    monkeypatch.setattr(engine,'_current_readers',lambda *args:None,raising=False)
+    monkeypatch.setattr(engine,'_plan_members',lambda *args,**kwargs:None)
+    monkeypatch.setattr(engine,'_installed_cohort',lambda *args,**kwargs:None)
+    monkeypatch.setattr(engine,'_current_readers',lambda *args,**kwargs:None,raising=False)
     allowance=ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
     consent={'intent_id':args['intent_id'],'intent_raw_ref':reference}
     retained={'schema_version':'task_evaluation_scene_lifecycle_plan.v1',
@@ -80,13 +87,20 @@ def test_native_measured_rows_are_accepted_without_accepting_foreign_list_callba
     assert entered==[]
 
 
-def test_empty_complete_current_records_do_not_clear_unknown_processes(monkeypatch):
+def test_empty_complete_current_records_do_not_clear_unknown_processes(tmp_path,monkeypatch):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
     from blueprint_pipeline import task_evaluation_scene_retirement_supervisor as supervisor
     from tests.test_scene_inventory_history import fixture
     from blueprint_pipeline.task_evaluation_scene_preparation_lineage import _record
+    from pathlib import Path
     args=fixture()
-    _,proof=_record(args['records']['intent'],'intent',set())
+    path,raw=args['records']['intent']
+    target=tmp_path.resolve()/Path(path).relative_to('/retained')
+    target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_bytes(raw)
+    args['records']['intent']=(str(target),raw)
+    intent,proof=_record(args['records']['intent'],'intent',set())
+    proof.update(seal_field='intent_digest',seal_digest=intent['intent_digest'])
     context={}
     fresh=dict(schema_version='task_evaluation_scene_lifecycle_plan.v1',
         finished_observation={'status':'completed'},historical_lineage={},selected_intent_provenance=proof,
@@ -95,8 +109,8 @@ def test_empty_complete_current_records_do_not_clear_unknown_processes(monkeypat
             'record_dispositions':[],'protections':[]},
         measured_members=[],reference_keeps=[],other_owner_capture_keeps=[])
     monkeypatch.setattr(engine,'build_scene_lifecycle_plan',lambda **kwargs:fresh)
-    monkeypatch.setattr(engine,'_plan_members',lambda *args:None)
-    monkeypatch.setattr(engine,'_installed_cohort',lambda *args:None)
+    monkeypatch.setattr(engine,'_plan_members',lambda *args,**kwargs:None)
+    monkeypatch.setattr(engine,'_installed_cohort',lambda *args,**kwargs:None)
     # No loaded native authority exists. A complete finite declaration cannot
     # authorize the unknown HTTP/manual/old-code consumer cohort.
     monkeypatch.setattr(supervisor,'require_current_reader_closure',None,raising=False)
