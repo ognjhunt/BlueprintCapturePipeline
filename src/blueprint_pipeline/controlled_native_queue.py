@@ -66,8 +66,7 @@ def routes_controlled_request(request: Mapping[str, Any]) -> bool:
     package = request.get("policy_package") or {}
     return any(isinstance(package.get(name), Mapping)
                and package[name].get("execution_profile") == "controlled_observation_v1"
-               for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin")) \
-        and configured_profile(request) is not None
+               for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin"))
 
 
 def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: Path) -> None:

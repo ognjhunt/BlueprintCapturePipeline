@@ -7,14 +7,19 @@ Wants=network-online.target
 Type=oneshot
 # Native allocator attempts retain independent provider watchdogs.
 TimeoutStartSec=5h
+KillMode=process
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
 User=blueprint
 Group=blueprint
 UMask=0077
 EnvironmentFile=/etc/blueprint/pipeline-control-plane.env
-Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
-Environment=BLUEPRINT_PIPELINE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
 ExecCondition=/bin/bash -lc 'test "$${BLUEPRINT_AGENT_RUN_DISPATCH_ENABLED:-false}" = true'
-ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_PIPELINE_REPO}" || exit; if [ -n "$${BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT:-}" ]; then set -- --capture-partition-root "$${BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT}"; else set -- --capture-root "$${BLUEPRINT_AGENT_RUN_CAPTURE_ROOT}" --capture-id "$${BLUEPRINT_AGENT_RUN_CAPTURE_ID}"; fi; exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.agent_run_executor --webapp-url "$${BLUEPRINT_WEBAPP_URL}" "$$@" --token-file "$${BLUEPRINT_PIPELINE_SYNC_TOKEN_FILE}" --inbox-dir "$${BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX}" --journal-dir "$${BLUEPRINT_AGENT_RUN_JOURNAL_DIR}"'
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; if [ -n "$${BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT:-}" ]; then set -- --capture-partition-root "$${BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT}"; else set -- --capture-root "$${BLUEPRINT_AGENT_RUN_CAPTURE_ROOT}" --capture-id "$${BLUEPRINT_AGENT_RUN_CAPTURE_ID}"; fi; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.agent_run_executor --webapp-url "$${BLUEPRINT_WEBAPP_URL}" "$$@" --token-file "$${BLUEPRINT_PIPELINE_SYNC_TOKEN_FILE}" --inbox-dir "$${BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX}" --journal-dir "$${BLUEPRINT_AGENT_RUN_JOURNAL_DIR}"'
+# Preserve only exact armed hard-TTL watchdogs if the caller exits.
+ExecStopPost=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup --state-root "$${BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT:-$${BLUEPRINT_AGENT_RUN_CAPTURE_ROOT}}" --receipt-dir "$${BLUEPRINT_AGENT_RUN_JOURNAL_DIR}/watchdog-cgroup-cleanup"'
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
