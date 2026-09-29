@@ -805,6 +805,44 @@ def test_known_wam_create_response_is_aborted_on_current_revoke(cache_installati
             assert use._failure is not None  # The original sticky refusal is not cleared.
 
 
+def test_actual_wam_callee_reports_unresolved_creation_abort(cache_installation, monkeypatch):
+    import sys
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline import wam_provider_object_store as wam
+    value = cache_installation
+    grant, result, _, _, _ = fill_cache(value, monkeypatch)
+    fake_wam.payloads = value['payloads']
+    events = fake_wam(monkeypatch, hit=False)
+    original = sys.modules['boto3'].client
+
+    def client(*args, **kwargs):
+        selected = original(*args, **kwargs)
+        create = selected.create_multipart_upload
+        def revoked(**kwargs):
+            response = create(**kwargs)
+            cache.update_needed_checkpoint_cache_authority(operation='revoke', intent_id=grant['intent_id'],
+                installed_config_path=value['config'], now=lambda: 1200)
+            return response
+        def abort(**kwargs):
+            events.append(('abort_unresolved', kwargs['Key']))
+            raise OSError('development_only_unresolved_abort')
+        selected.create_multipart_upload = revoked
+        selected.abort_multipart_upload = abort
+        return selected
+
+    monkeypatch.setattr(sys.modules['boto3'], 'client', client)
+    target = Path(result['path'])
+    with cache.NeededCheckpointCacheUse.open_registered(target, installed_config_path=value['config'], now=lambda: 1200) as use:
+        row = use._rows[0]
+        outcome = wam._stage_registered_runtime_dependency(job_dir=value['config'].parent / 'staged',
+            dependency_path=target / row['relative_path'], expected_sha256=row['sha256'], key_prefix='fixture',
+            expiration_seconds=60, generated_at=None, artifact_kind='g1_checkpoint', use=use)
+        assert outcome['status'] == 'blocked' and not outcome['upload_performed']
+        assert 'runtime_dependency_upload_cleanup_unresolved' in outcome['blockers']
+        assert sum(kind == 'abort_unresolved' for kind, _ in events) == 1
+        assert not any(kind in ('part', 'complete', 'presign') for kind, _ in events)
+
+
 @pytest.mark.parametrize('phase', ['issue', 'fill'])
 def test_uninstalled_root_refuses_before_intent_ledger_or_payload(cache_installation, monkeypatch, phase):
     from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
