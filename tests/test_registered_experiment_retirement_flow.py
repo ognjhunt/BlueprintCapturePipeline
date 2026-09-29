@@ -254,6 +254,47 @@ def test_owner_review_actions_do_not_starve_later_valid_delete(retirement_instal
     assert not (target / 'intermediate.bin').exists()
 
 
+@pytest.mark.parametrize('bad_index', [1, 2])
+def test_malformed_unrelated_action_does_not_hide_valid_cleanup(retirement_installation, bad_index):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+
+    installation = retirement_installation  # noqa: F811
+    candidates = sorted((_born_scratch(installation) for _ in range(3)),
+                        key=lambda value: value[0]['intent_id'])
+    expected = []
+    for index, (grant, _, target) in enumerate(candidates):
+        action = root.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+            action='owner_review' if index == bad_index else 'delete', expires_at_epoch=3500,
+            installed_config_path=installation[0], now=lambda: 2900)
+        expected.append((action, target, _payload_snapshot(target)))
+    invalid, invalid_target, before = expected[bad_index]
+    (installation[2] / (invalid['action_id'] + '.action.json')).write_bytes(b'{')
+    report = _gc(installation, at=2901)
+    outcomes = report['registered_experiments']['outcomes']
+    for index, (action, target, _) in enumerate(expected):
+        matches = [row for row in outcomes if row['action_id'] == action['action_id']]
+        assert len(matches) == 1
+        if index == bad_index:
+            assert matches[0]['decision'] == 'kept' and matches[0]['reason'] == 'experiment_action_invalid'
+        else:
+            assert matches[0]['decision'] == 'retired' and matches[0]['reason'] == 'disposable_expired'
+            assert not (target / 'intermediate.bin').exists()
+    assert _payload_snapshot(invalid_target) == before
+
+
+def test_malformed_current_authority_still_aborts_all_registered_actions(retirement_installation):
+    installation = retirement_installation  # noqa: F811
+    grant, _, target = _born_scratch(installation)
+    _issue_action(installation, grant)
+    before = _payload_snapshot(target)
+    public = installation[2].parents[1] / 'experiment-authority'
+    (public / 'HEAD.json').write_bytes(b'{')
+    report = _gc(installation, at=2901)
+    assert report['registered_experiments']['enabled'] is False
+    assert report['registered_experiments']['outcomes'] == []
+    assert _payload_snapshot(target) == before
+
+
 @pytest.mark.parametrize('fault', ['alternate_empty_root', 'duplicate', 'relative'])
 def test_actual_action_refuses_wrong_or_ambiguous_installed_reference_authority(
         retirement_installation, monkeypatch, fault):
