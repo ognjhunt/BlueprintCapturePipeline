@@ -18,6 +18,11 @@ from tests.test_task_evaluation_launch_preparation_worker import request_with_fe
 
 def owner_submission(tmp_path,monkeypatch,*,production=False):
     access,policy,_=access_fixture(tmp_path,monkeypatch)
+    # macOS can inherit a different gid for pytest's temporary directory.
+    # Model the actual fixture-owned store; production still requires its
+    # configured service identity at every mutation boundary.
+    store_info=Path(policy['generation_store']).stat()
+    monkeypatch.setattr(access,'_SERVICE_IDENTITY',(store_info.st_uid,store_info.st_gid))
     _,owner,attempt=authenticated_birth_refs(tmp_path,monkeypatch)
     intent=json.loads(Path(owner['path']).read_bytes())
     birth=json.loads(Path(attempt['path']).read_bytes())
@@ -334,6 +339,22 @@ def cache_action_consent(tmp_path,monkeypatch,*,cache_age=24*60*60):
     return path,consent
 
 
+def test_cache_generation_transition_rejects_wrong_service_group(tmp_path,monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement as engine
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    _,consent=cache_action_consent(tmp_path,monkeypatch)
+    policy=access._policy()
+    ledger=Path(consent['cache_objects'][0]['generation_raw_ref']['path'])
+    before=ledger.read_bytes()
+    current=json.loads(before)
+    store=Path(policy['generation_store']).stat()
+    monkeypatch.setattr(access,'_SERVICE_IDENTITY',(store.st_uid,store.st_gid+1))
+    with pytest.raises(ValueError,match='scene_retirement_service_identity_unproven'):
+        engine._transition(policy,current,state='retiring',token='4'*32,
+            journal_ref={'sha256':'sha256:'+'a'*64})
+    assert ledger.read_bytes()==before
+
+
 @pytest.mark.parametrize('age',[24*60*60-1,24*60*60,24*60*60+1])
 def test_native_cache_action_preserves_original_idle_grace(tmp_path,monkeypatch,age):
     from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
@@ -352,7 +373,8 @@ def test_native_cache_action_preserves_original_idle_grace(tmp_path,monkeypatch,
     assert (current.st_dev,current.st_ino,current.st_mtime_ns)==(original.st_dev,original.st_ino,original.st_mtime_ns)
 
 
-@pytest.mark.parametrize('closed',['exclusive_action','retired_generation','held_reader','active_generation'])
+@pytest.mark.parametrize('closed',['exclusive_action','retired_generation','held_reader',
+                                   'active_generation','restored_active_generation'])
 def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_path,monkeypatch,closed):
     from blueprint_pipeline import control_plane_storage_gc as gc
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
@@ -368,13 +390,18 @@ def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_p
     original=leaf.read_bytes()
     manifest=gc.build_gc_manifest(content_store_roots=[leaf.parent],minimum_age_seconds=0,now=lambda:101)
     assert manifest['candidate_count']==1
-    if closed=='retired_generation':
+    if closed in {'retired_generation','restored_active_generation'}:
         ledger=Path(row['generation_raw_ref']['path'])
         value=json.loads(ledger.read_bytes())
-        value['state']='retired'
+        value['state']='retired' if closed=='retired_generation' else 'restored-active'
         value['state_digest']=canonical_digest(value,digest_field='state_digest')
         ledger.write_text(json.dumps(value))
         result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
+        if closed=='restored_active_generation':
+            assert result['removed_count']==result['removed_bytes']==0
+            assert result['skipped']==[{'digest':row['digest'],'reason':'logical_reference_unproven'}]
+            assert leaf.read_bytes()==original
+            return
     elif closed=='exclusive_action':
         with access.exclusive_scene_access():
             result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
@@ -395,13 +422,19 @@ def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_p
             return native_read(fd,count)
         monkeypatch.setattr(cache.os,'read',read)
         result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
-        assert result['removed_count']==1 and not leaf.exists() and observed
+        # An nlink==1 observation says nothing about still-live logical request
+        # selectors. Generic blob GC has no owner-wide closure or consent.
+        assert result['removed_count']==result['removed_bytes']==0
+        assert result['skipped']==[{'digest':row['digest'],'reason':'logical_reference_unproven'}]
+        assert leaf.read_bytes()==original
+        assert json.loads(Path(row['generation_raw_ref']['path']).read_bytes())['state']=='active'
+        assert not observed
         return
     assert result['removed_count']==0 and len(result['skipped'])==1
     assert leaf.read_bytes()==original
 
 
-def test_existing_blob_gc_rechecks_physical_idle_age_before_unlink(tmp_path,monkeypatch):
+def test_existing_blob_gc_keeps_registered_leaf_even_after_manifest_age_changes(tmp_path,monkeypatch):
     import time
     from blueprint_pipeline import control_plane_storage_gc as gc
     _,consent=cache_action_consent(tmp_path,monkeypatch)
@@ -419,7 +452,8 @@ def test_existing_blob_gc_rechecks_physical_idle_age_before_unlink(tmp_path,monk
     assert manifest['candidate_count']==1
     os.utime(leaf,(observed,observed))
     result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
-    assert result['removed_count']==0 and len(result['skipped'])==1
+    assert result['removed_count']==result['removed_bytes']==0
+    assert len(result['skipped'])==1
     assert leaf.read_bytes()==original
 
 

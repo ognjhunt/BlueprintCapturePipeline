@@ -307,15 +307,16 @@ def _current_parent(path,fd,identity):
 
 
 def remove_unused_content_for_gc(path,*,digest,size_bytes,minimum_age_seconds=0):
-    """Existing blob-GC phase: EX/current generation, original FD and name.
+    """Existing blob-GC phase: registered names need owner-wide closure.
 
     Missing or disabled installation returns the original native path. This
     does not supply scene ownership, a private action grant or a new birth.
+    The generic GC manifest observes hardlinks, bytes and age, but cannot prove
+    that a request or retained lineage no longer selects a name at nlink one.
     """
     policy=access._policy()
     if policy is None:
         return None
-    from .task_evaluation_scene_retirement_preservation import _snapshot
     path=_canonical(str(path))
     _require(path.parent.name=='sha256' and path.name==digest and len(digest)==64
         and all(char in '0123456789abcdef' for char in digest)
@@ -334,41 +335,13 @@ def remove_unused_content_for_gc(path,*,digest,size_bytes,minimum_age_seconds=0)
                  and generation.get('canonical_path')==str(path)
                  and generation.get('digest')=='sha256:'+digest
                  and generation.get('size_bytes')==size_bytes
-                 and generation.get('state')=='active'
+                 and generation.get('state') in {'active','restored-active'}
                  and generation.get('state_digest')==canonical_digest(generation,digest_field='state_digest'),
                  'scene_retirement_cache_generation_unavailable')
-        access._admit(policy,(path,))
-        with _opened(path.parent,directory=True) as (parent,parent_info),_opened(path) as (fd,info):
-            expected,identity=_identity(parent_info),_identity(info)
-            before=_snapshot(info)
-            _require(info.st_nlink==1 and info.st_size==size_bytes,'scene_retirement_cache_candidate_changed')
-            def prove():
-                _current_parent(path.parent,parent,expected)
-                _guard(fd,identity)
-                _require(_snapshot(os.fstat(fd))==before and
-                    _snapshot(os.stat(path.name,dir_fd=parent,follow_symlinks=False))==before,
-                    'scene_retirement_cache_candidate_changed')
-            hashed=hashlib.sha256()
-            remaining=size_bytes
-            while remaining:
-                prove()
-                data=os.read(fd,min(1024*1024,remaining))
-                prove()
-                _require(data,'scene_retirement_cache_candidate_changed')
-                hashed.update(data)
-                remaining-=len(data)
-            _require(hashed.hexdigest()==digest,'scene_retirement_cache_candidate_changed')
-            prove()
-            # The manifest's age is a past observation.  A just-used leaf may
-            # still have the same digest and size, so recheck physical mtime at
-            # the destructive boundary under the exclusive reader fence.
-            _require(max(0.0,time.time()-os.fstat(fd).st_mtime)>=minimum_age_seconds,
-                     'scene_retirement_cache_candidate_changed')
-            os.unlink(path.name,dir_fd=parent)
-            _current_parent(path.parent,parent,expected)
-            _guard(fd,identity)
-            os.fsync(parent)
-    return size_bytes
+        # A current generation is publication identity, not cleanup authority.
+        # Only the scene retirement action has the authenticated whole-scene
+        # reference closure, consent, archive and journal needed to unlink it.
+        raise access.SceneRetirementAccessError('scene_retirement_cache_reference_closure_unproven')
 
 
 def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):

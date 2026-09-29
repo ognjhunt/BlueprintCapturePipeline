@@ -319,7 +319,14 @@ def apply_gc_manifest(
                     raise OSError("candidate changed after dry run")
                 path.unlink()
                 removed_size = stat.st_size
-        except (OSError,SceneRetirementAccessError):
+        except SceneRetirementAccessError as exc:
+            reason = (
+                "logical_reference_unproven"
+                if str(exc) == "scene_retirement_cache_reference_closure_unproven"
+                else "candidate_changed"
+            )
+            skipped.append({"digest": "sha256:" + digest, "reason": reason})
+        except OSError:
             skipped.append(
                 {"digest": "sha256:" + digest, "reason": "candidate_changed"}
             )
