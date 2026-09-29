@@ -479,7 +479,12 @@ def _read_action(files, config, action_id, expected, issued):
     policy_raw, policy_record = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
                                           protected=True, mode=0o600)
     _require(issuance._selector(policy_raw, files.budget) == action["policy"], "experiment_policy_changed")
-    policy = owners._policy(policy_raw, action["principal"], files.budget)
+    policy_budget = ReferenceCollectionBudget(values_limit=10000)
+    try:
+        policy = owners._policy(policy_raw, action["principal"], policy_budget)
+    finally:
+        policy_budget.close()
+    files.budget.tick()
     owners._authorize({"owner": action["owner"], "action": "keep" if action["action"] == "owner_review" else action["action"],
                       "expires_at_epoch": action["expires_at_epoch"]}, policy, action["expires_at_epoch"], action["issued_at_epoch"])
     files.verify_record(record)
