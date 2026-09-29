@@ -136,7 +136,21 @@ def enroll_activation_child(target, *, activation_result, now=None):
                         reference=reference, now=now)
 
 
+def existing_scene_directory(target):
+    """Existing bytes retain their original admission; this never adopts a birth."""
+    try:
+        with _opened(_canonical(str(target)), directory=True):
+            return True
+    except FileNotFoundError:
+        return False
+
+
 def create_canary_output(target, *, activation_result):
+    if access._policy() is None:
+        Path(target).mkdir(parents=True, exist_ok=True)
+        return
     with access.scene_access(target):
+        if existing_scene_directory(target):
+            return  # Retained delivery/teardown never needs a new paid reservation.
         if enroll_activation_child(target, activation_result=activation_result) is None:
             Path(target).mkdir(parents=True, exist_ok=True)
