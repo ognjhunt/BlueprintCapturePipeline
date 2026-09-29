@@ -76,7 +76,8 @@ HANDOFF_SCHEMA_VERSION = "remote_cpu_worker_handoff.v1"
 STAGE_REQUEST_SCHEMA_VERSION = "remote_cpu_worker_stage_request.v1"
 # ``stage -> "module:function"``; a handler takes the sealed descriptor and ``StageRoots`` and returns the
 # stage's sealed result.  An unregistered stage is an infrastructure failure.
-STAGE_HANDLERS: Mapping[str, str] = {}
+STAGE_HANDLERS: Mapping[str, str] = {PROBE_STAGE: f"{MODULE}:run_environment_probe"}
+PROBE_RESULT_SCHEMA_VERSION = "remote_cpu_environment_probe_result.v1"
 EXIT_REFUSED = 2
 TRANSFER_TIMEOUT_SECONDS = 60.0
 FINAL_RECEIPT_SECONDS = 60
@@ -395,7 +396,7 @@ class _Attempt:
             return False
         return True
 
-    def _environment(self) -> dict[str, Any]:
+    def environment_summary(self) -> dict[str, Any]:
         if self.environment is None:
             try:
                 record = self.runtime.measure()
@@ -407,7 +408,7 @@ class _Attempt:
 
     def _receipt(self, status: str, result: Any, output: Any, failures: Sequence[str],
                  misses: Sequence[str]) -> dict[str, Any]:
-        environment = self._environment()
+        environment = self.environment_summary()
         with self._lock:
             receipt = {
                 "schema_version": RECEIPT_SCHEMA_VERSION,
@@ -467,6 +468,17 @@ def _guards(argv: Sequence[str], environ: Mapping[str, str]) -> str:
     if _NAME.fullmatch(name) is None:
         raise WorkerFailure("remote_cpu_worker_execution_unnamed")
     return name
+
+
+def _environment_gate(attempt: _Attempt) -> None:
+    """Inline NuRec float math needs a qualified CPU class, and any stage but the probe must run in the environment
+    it was dispatched for; an unmeasured class is never qualified (plan 14 §5)."""
+    environment, descriptor = attempt.environment_summary(), attempt.descriptor
+    if (descriptor["closure"]["class"] == "absent_inline_only"
+            and environment["cpu_class"] not in descriptor["limits"]["allowed_cpu_classes"]):
+        raise WorkerFailure("cpu_class_unqualified")
+    if descriptor["stage"] != PROBE_STAGE and environment["environment_digest"] != descriptor["code"]["environment_digest"]:
+        raise WorkerFailure("environment_mismatch")
 
 
 def _require_writable_roots(descriptor: Mapping[str, Any], runtime: WorkerRuntime) -> None:
@@ -704,6 +716,18 @@ def install_release_audit(release: str | Path) -> list[str]:
     return misses
 
 
+def run_environment_probe(descriptor: Mapping[str, Any], roots: StageRoots) -> dict[str, Any]:
+    """``environment_probe`` (plan 14 §8): this worker's census record, sealed as the output and in the result."""
+    record = environment_record()
+    output = roots.local(descriptor["outputs"]["output_root"])
+    output.mkdir(parents=True)
+    (output / "environment.json").write_bytes(record_bytes(record))
+    result = {"schema_version": PROBE_RESULT_SCHEMA_VERSION, "status": STAGES[PROBE_STAGE]["success_status"],
+              "blockers": [], "source_commit": descriptor["code"]["source_commit"], "environment": record,
+              "result_digest": ""}
+    return {**result, "result_digest": canonical_digest(result, digest_field="result_digest")}
+
+
 def _from_release(release: str | Path) -> bool:
     import blueprint_pipeline
 
@@ -930,6 +954,7 @@ def bootstrap(argv: Sequence[str], runtime: WorkerRuntime) -> int:
         return _refuse(runtime, "bootstrap", exc.code)
     attempt.beat()
     try:
+        _environment_gate(attempt)
         _require_writable_roots(transport["descriptor"], runtime)
         release = _fetch_release(transport, runtime, attempt)
     except WorkerFailure as exc:
@@ -950,13 +975,16 @@ def bootstrap(argv: Sequence[str], runtime: WorkerRuntime) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    os.umask(0o077)  # as the host unit does; execute and the stage child inherit it
     if arguments[:1] == ["bootstrap"]:
+        os.umask(0o077)  # as the host unit does; execute and the stage child inherit it
         return bootstrap(arguments, WorkerRuntime(environ=os.environ, http=PresignedTransfers()))
     if arguments == ["execute"]:
         return _execute_main()
     if arguments == ["stage"]:
         return _stage_main()
+    if arguments == ["environment"]:  # the host census's record, measured here (plan 14 §5)
+        print(json.dumps(environment_record(), sort_keys=True))
+        return 0
     return _refuse(WorkerRuntime(environ=os.environ, http=None), "worker", "remote_cpu_worker_argv_invalid")
 
 

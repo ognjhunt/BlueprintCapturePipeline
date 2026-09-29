@@ -24,6 +24,7 @@ import pytest
 
 from blueprint_pipeline import cloud_run_jobs_client
 from blueprint_pipeline import remote_cpu_job_allocator as allocator
+from blueprint_pipeline import remote_cpu_environment as census
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import remote_cpu_output_archive as archive
 from blueprint_pipeline import remote_cpu_worker as worker
@@ -34,6 +35,7 @@ from tests.remote_cpu_worker_support import (
     COMMIT,
     EXECUTION,
     REFERENCES,
+    WORKER_RECORD,
     WorkerWorld,
     digest_of,
     release_archive,
@@ -579,3 +581,74 @@ def test_worker_never_logs_or_persists_a_presigned_url(tmp_path: Path, monkeypat
     assert any(name.endswith("receipt.json:0") for name in texts)
     for name, text in texts.items():
         assert "X-Amz-Signature" not in text and "backblazeb2" not in text, name
+
+
+def _registered(*, runtime, descriptor: dict, release: Path, handler: str, seconds: float) -> dict:
+    """The registered handler, run in this process with the roots a stage child would get."""
+
+    module, _, name = handler.partition(":")
+    function = getattr(__import__(module, fromlist=[name]), name)
+    return report(function(descriptor, worker.StageRoots(runtime.filesystem_root, release)))
+
+
+def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tmp_path: Path, capsys) -> None:
+    umask = os.umask(0o022)
+    os.umask(umask)
+    # ``environment`` prints the host census record (plan 14 PR 1): its schema, and a behaviour digest that
+    # leaves build strings out.  On one machine the worker and the host measure the same environment.
+    assert worker.main(["environment"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    host = census.environment_record()
+    assert printed == host and printed["environment_digest"] == census.environment_digest(printed)
+    assert set(printed) == {"schema_version", *census.DIGESTED_FIELDS, "informational", "environment_digest"}
+    assert worker.main(["environment", "--extra"]) == worker.EXIT_REFUSED
+    assert os.umask(umask) == umask  # a mode other than bootstrap leaves the process's umask alone
+
+    # The environment probe, the stage the allocator's preflight runs, is this PR's one registered stage; its
+    # receipt carries that record.
+    assert worker.STAGE_HANDLERS == {"environment_probe": "blueprint_pipeline.remote_cpu_worker:run_environment_probe"}
+    probe = WorkerWorld(tmp_path / "probe", stage=contract.PROBE_STAGE, environment_digest=host["environment_digest"])
+    runtime = probe.runtime(measure=census.environment_record, run_stage=_registered)
+    assert worker.bootstrap(["bootstrap"], probe.runtime(
+        measure=census.environment_record, launch=lambda handoff: worker.execute_attempt(handoff, runtime))) == 0
+    receipt = probe.receipt()
+    assert (receipt["status"], receipt["result"]["status"]) == ("succeeded", "environment_recorded")
+    recorded = receipt["result"]["environment"]
+    assert recorded["environment_digest"] == receipt["environment"]["environment_digest"] == host["environment_digest"]
+    assert {name: recorded[name] == host[name] for name in allocator.DIGESTED_FIELDS} == dict.fromkeys(
+        census.DIGESTED_FIELDS, True)
+    assert contract.validate_receipt(receipt, descriptor=probe.descriptor, execution_name=EXECUTION)["terminal"]
+    index = json.loads(probe.staged("index.json"))
+    assert [entry["path"] for entry in index["entries"]] == ["environment.json"]
+    assert json.loads(archive.land_subset(
+        index=index, reader=lambda offset, length: io.BytesIO(probe.staged("blobs.tar")[offset:offset + length]),
+        host_sources={}, destination_root=tmp_path / "landed", selectors=["**"], member_store=None) and (
+        tmp_path / "landed" / "environment.json").read_bytes()) == recorded
+
+    # Inline NuRec float math needs a qualified CPU class: bootstrap refuses any other before it fetches.
+    inline = {"class": "absent_inline_only", "source_appearance_digest": "sha256:" + "8" * 64}
+    qualified = WORKER_RECORD["cpu_class"]
+    for label, allowed, measured, refusal in [
+        ("unqualified", ["sha256:" + "e" * 64], WORKER_RECORD, "cpu_class_unqualified"),
+        ("unmeasured", [qualified], {**WORKER_RECORD, "cpu_class": None}, "cpu_class_unqualified"),
+        ("qualified", [qualified], WORKER_RECORD, None),
+        # Any stage but the probe must run on the environment its descriptor was dispatched for.
+        ("elsewhere", [qualified], {**WORKER_RECORD, "environment_digest": "sha256:" + "9" * 64},
+         "environment_mismatch"),
+    ]:
+        world = WorkerWorld(tmp_path / label, closure=inline, limits={"allowed_cpu_classes": allowed})
+        ran: list[int] = []
+        runtime = world.runtime(measure=lambda measured=measured: measured, handlers={"episode_compilation": "x:y"},
+                                run_stage=lambda **_: ran.append(1) or report(
+                                    sealed_result(world.descriptor, blockers=["episode_compilation_envelope_invalid"])))
+        code = worker.bootstrap(["bootstrap"], world.runtime(
+            measure=lambda measured=measured: measured, launch=lambda handoff: worker.execute_attempt(handoff, runtime)))
+        receipt = world.receipt()
+        assert code == 0 and receipt["environment"]["cpu_class"] == measured["cpu_class"], label
+        if refusal is None:
+            assert (receipt["status"], ran) == ("blocked", [1]), label
+            continue
+        assert receipt["infrastructure_failures"] == [f"infrastructure_failed:{refusal}"] and ran == [], label
+        assert _gets(world) == [world.key("receipt.json")], label
+        verdict = contract.validate_receipt(receipt, descriptor=world.descriptor, execution_name=EXECUTION)
+        assert f"infrastructure_failed:{refusal}" in verdict["infrastructure_failures"] and not verdict["terminal"]

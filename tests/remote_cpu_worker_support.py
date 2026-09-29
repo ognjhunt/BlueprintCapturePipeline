@@ -193,13 +193,15 @@ class WorkerWorld:
                                                  "execution_adapter.runtime_source_bundle"),
             f"{REFERENCES}/prep-1/robot.json": (b'{"robot": "franka"}\n', "materialized_reference", "robot.configuration"),
         }
-        config = remote_cpu_config()
         from blueprint_pipeline import remote_cpu_job_allocator as allocator
 
+        config = remote_cpu_config()
         stage_limits = allocator.stage_limits(config, "episode_compilation")
         stage_limits.update(limits or {})
+        # A probe runs on the job of the stage it probes, under the config the allocator derives for it.
+        sealing = allocator._probe_config(config, "episode_compilation") if stage == contract.PROBE_STAGE else config
         self.descriptor = contract.build_descriptor(
-            config=config, stage=stage, mode="shadow", attempt=1,
+            config=sealing, stage=stage, mode="shadow", attempt=1,
             queue_row={"queue": contract.STAGES[stage]["queue"], "name": name,
                        "envelope_digest": "sha256:" + name.removesuffix(".json").rsplit("-", 1)[1]},
             code={"source_commit": commit, "image": IMAGE,
