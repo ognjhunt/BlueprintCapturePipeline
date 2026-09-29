@@ -152,6 +152,20 @@ def materialize_website_attempt(*, intent_path, source_binding_path, machinery_p
             and machinery.get("schema_version") in {"task_evaluation_website_scene_machinery.v1",
                                                    "task_evaluation_completed_scene_machinery.v1"},
             "website_factory_binding_invalid")
+    refs = binding.get('references')
+    require(isinstance(refs, dict) and 'preparation' in refs
+            and 'task_context' in refs, 'website_factory_binding_invalid')
+    preparation = read(refs['preparation']['path'], digest_field='digest')
+    context = read(refs['task_context']['path'], digest_field='context_digest')
+    capture_source = _selected_capture_source(refs['preparation']['path'],
+                                              preparation, context)
+    require(binding.get('capture_source') == capture_source,
+            'website_capture_source_binding_changed')
+    if capture_source is not None:
+        require(capture_source['sponsoring_owner'] == intent['request']['owner']
+                and capture_source['request_digest']
+                    == cross_runtime_canonical_digest(intent['request']),
+                'website_capture_source_intake_mismatch')
     attempt = intake._read(preparation_attempt_path(Path(intent_path).parent, attempt_id), "attempt_digest")
     require(attempt.get("intent_digest") == intent["intent_digest"]
             and attempt.get("input_digest") == binding["binding_digest"]

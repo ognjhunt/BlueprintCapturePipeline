@@ -219,6 +219,48 @@ def test_native_website_registration_binds_original_delivery_and_sponsor_rights(
             task_context_path=context_path, root=tmp_path / 'other-bindings', now=1)
 
 
+def test_materialization_refuses_changed_native_capture_binding_before_attempt_birth(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline import website_scene_dispatch as dispatch
+    from blueprint_pipeline import task_evaluation_scene_owner_authority as authority
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+    from blueprint_pipeline import task_evaluation_scene_preparation_attempts as attempts
+
+    intent_path = tmp_path / 'intent' / 'intent.json'
+    intent_path.parent.mkdir()
+    intent_path.write_text('{}')
+    binding_path = tmp_path / 'binding.json'
+    machinery_path = tmp_path / 'machinery.json'
+    release_path = tmp_path / 'release.json'
+    intent = {'intent_id': 'scene-' + '1' * 32, 'intent_digest': 'sha256:' + '2' * 64,
+              'task_content_digest': 'sha256:' + '3' * 64,
+              'request': {'owner': {'user_id': 'sponsor-2'}}}
+    binding = {'schema_version': 'website_scene_source_binding.v1',
+               'intent_digest': intent['intent_digest'],
+               'task_digest': intent['task_content_digest'],
+               'owner': intent['request']['owner'],
+               'capture_source': {'delivery_key': 'sha256:' + 'a' * 64},
+               'references': {'preparation': {'path': str(tmp_path / 'preparation.json')},
+                              'task_context': {'path': str(tmp_path / 'context.json')}}}
+    monkeypatch.setattr(authority, 'reopen_scene_intent', lambda *_args, **_kwargs: intent)
+    monkeypatch.setattr(dispatch, 'read', lambda path, **_kwargs: (
+        binding if Path(path) == binding_path else
+        {'schema_version': dispatch.RELEASE_SCHEMA} if Path(path) == release_path else
+        {'schema_version': 'task_evaluation_website_scene_machinery.v1'}))
+    monkeypatch.setattr(attempts, 'preparation_attempt_path',
+                        lambda *_args: tmp_path / 'attempt.json')
+    monkeypatch.setattr(intake, '_read', lambda *_args, **_kwargs: {
+        'intent_digest': intent['intent_digest'], 'input_digest': 'sha256:' + '5' * 64,
+        'source_commit': 'commit'})
+    monkeypatch.setattr(dispatch, '_selected_capture_source',
+                        lambda *_args: {'delivery_key': 'sha256:' + 'b' * 64})
+    with pytest.raises(ValueError, match='website_capture_source_binding_changed'):
+        dispatch.materialize_website_attempt(
+            intent_path=intent_path, source_binding_path=binding_path,
+            machinery_path=machinery_path, release_binding_path=release_path,
+            output_root=tmp_path / 'output', attempt_id='attempt-1')
+
+
 def test_capture_birth_rejects_missing_member_or_changed_delivery_without_target(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 
