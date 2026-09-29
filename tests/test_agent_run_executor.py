@@ -505,3 +505,38 @@ def test_controlled_request_without_registry_never_stages_in_legacy_inbox(tmp_pa
     assert terminal["blockers"] == ["controlled_native_task_profile_required"]
     assert not (job / "controlled_native_execution_intent.json").exists()
     assert not (job / "native_allocator_result.json").exists()
+
+
+@pytest.mark.parametrize("legacy_count", [None, 3])
+def test_native_admission_uses_frozen_profile_instead_of_mutable_legacy_episodes(tmp_path: Path, monkeypatch, legacy_count) -> None:
+    from blueprint_pipeline import controlled_native_queue as native
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    row = _row(tmp_path)
+    request = row["execution_admission"]["canonical_execution_request"]
+    request["policy_package"]["policy_api_endpoint"]["execution_profile"] = "controlled_observation_v1"
+    request["execution_authorization"]["episodes"] = row["quoted_episodes"] = 1
+    frozen = json.dumps(row["execution_admission"], sort_keys=True, separators=(",", ":"))
+    row["execution_admission_canonical_json"] = frozen
+    row["execution_admission_digest"] = "sha256:" + hashlib.sha256(frozen.encode()).hexdigest()
+    specs = tmp_path / "pipeline/simulation_automation/episode_specs.json"
+    if legacy_count is None:
+        specs.unlink()
+    else:
+        specs.write_text(json.dumps({"episode_count": legacy_count}))
+    registry = {"schema_version": "blueprint.controlled_native_registry.v1", "profiles": [{
+        "capture_root": str(tmp_path), "task_id": "pick_place", "scenario_id": "nominal",
+        "allowed_team_ids": ["team-1"], "allowed_checkpoint_ids": ["arm-1"]}]}
+    registry["registry_digest"] = canonical_digest(registry, digest_field="registry_digest")
+    path = tmp_path / "native-registry.json"
+    path.write_text(json.dumps(registry))
+    path.chmod(0o600)
+    monkeypatch.setenv(native.REGISTRY_ENV, str(path))
+    assert executor.validate_queue_run(row, capture_root=tmp_path) == []
+    registry["profiles"][0]["allowed_checkpoint_ids"] = []
+    registry["registry_digest"] = canonical_digest(registry, digest_field="registry_digest")
+    path.write_text(json.dumps(registry))
+    assert executor.validate_queue_run(row, capture_root=tmp_path) == ["agent_execution_native_profile_missing"]
+    client = FakeClient([row])
+    summary = executor.poll_once(client=client, capture_root=tmp_path)
+    assert summary["claimed"] == 1 and summary["blocked"] == 1 and summary["staged"] == 0
+    assert client.blocked == ["agent_execution_native_profile_missing"]
