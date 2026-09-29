@@ -122,9 +122,37 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
             if credential_file.is_symlink() or credential_file.stat().st_mode & 0o077:
                 raise ValueError("controlled_native_policy_credential_not_private")
             credential = {**_read(credential_file), "job_id": request["job_id"]}
+        bridge = None
+        bridge_path = profile.get("qualified_sandbox_bridge_path")
+        if modalities[0] != "policy_api_endpoint":
+            if not bridge_path:
+                raise ValueError("controlled_native_qualified_sandbox_not_configured")
+            bridge_file = Path(bridge_path)
+            if (not bridge_file.is_absolute() or bridge_file.is_symlink()
+                    or bridge_file.stat().st_mode & 0o077):
+                raise ValueError("controlled_native_qualified_sandbox_bridge_not_private")
+            from .controlled_policy_remote_sandbox import RemoteQualifiedSandboxFactory, validate_remote_sandbox_bridge
+            from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
+            bridge = validate_remote_sandbox_bridge(_read(bridge_file))
+            if (bridge["job_id"] != request["job_id"]
+                    or bridge["canonical_request_digest"] != canonical_request_digest(request)):
+                raise ValueError("controlled_native_bridge_request_binding_mismatch")
+            offered_contract = dict(config["contract"])
+            offered_contract.pop("contract_digest", None)
+            container = dict(offered_contract["container"])
+            container["image"] = bridge["image_ref"]
+            payload = request["policy_package"][modalities[0]]
+            if payload.get("model_artifact") is not None:
+                container.update({"serve_command": ["python", "-m", "blueprint_pipeline.policy_model_server"],
+                                  "port": 8600, "run_as_uid": 65532, "run_as_gid": 65532,
+                                  "gpu_required": False})
+            offered_contract["container"] = container
+            expected_contract = validate_company_policy_container_contract_v2(offered_contract)
+            RemoteQualifiedSandboxFactory(bridge).preflight(contract=expected_contract, job_request=request)
         bundle = build_controlled_native_policy_bundle(job_dir=job_dir / "native_bundle",
             packet_dir=Path(profile["packet_dir"]), runtime_source_packet_receipt=Path(profile["runtime_source_packet_receipt"]),
-            implementation_commit=commit, configuration=config, job_request=request, observations=[observation], policy_credential=credential)
+            implementation_commit=commit, configuration=config, job_request=request, observations=[observation],
+            policy_credential=credential, qualified_sandbox_bridge=bridge)
         zero = collect_vast_provider_zero_receipt()
         zero_path = job_dir / "initial_provider_zero.json"
         _write(zero_path, zero)

@@ -8,6 +8,7 @@ from pathlib import Path
 from blueprint_pipeline.controlled_policy_configuration import validate_native_configuration, canonical_request_digest
 from blueprint_pipeline.controlled_native_isaac import build_controlled_native_environment, read_controlled_native_outcome
 from blueprint_pipeline.controlled_policy_dispatch import ControlledPolicyExecutor
+from blueprint_pipeline.controlled_policy_remote_sandbox import RemoteQualifiedSandboxFactory, validate_remote_sandbox_bridge
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 RESULT_FILENAME = "controlled_native_policy_result.v1.json"
@@ -32,8 +33,24 @@ def main() -> int:
                 evidence_root=output, **context)
             environments.append(env)
             return env
-        def sandbox_required(**_context):
-            raise ValueError("controlled_native_qualified_sandbox_not_configured")
+        package = request["policy_package"]
+        selected = [name for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin") if package.get(name)]
+        if len(selected) != 1 or len(observations) != 1:
+            raise ValueError("controlled_native_one_policy_episode_required")
+        bridge_path = root / "runtime_inputs/qualified_sandbox_bridge.json"
+        if selected[0] != "policy_api_endpoint":
+            if not bridge_path.is_file() or bridge_path.is_symlink():
+                raise ValueError("controlled_native_qualified_sandbox_not_configured")
+            bridge = validate_remote_sandbox_bridge(json.loads(bridge_path.read_text()))
+            sandbox = RemoteQualifiedSandboxFactory(bridge)
+            def build_model_image(*, artifact, **_context):
+                if artifact.get("sha256") != bridge["model_artifact_sha256"]:
+                    raise ValueError("controlled_native_model_image_binding_mismatch")
+                return bridge["image_ref"]
+        else:
+            def sandbox(**_context):
+                raise ValueError("controlled_native_qualified_sandbox_not_configured")
+            build_model_image = None
         def resolve_credential(*, job_request):
             path = root / "runtime_inputs/policy_credential.json"
             if not path.exists():
@@ -44,14 +61,10 @@ def main() -> int:
                 raise ValueError("controlled_native_policy_credential_binding_mismatch")
             return credential["bearer_token"]
         executor = ControlledPolicyExecutor(task_contract=lambda **_: config["contract"],
-            environment_factory=create_environment, sandbox_factory=sandbox_required,
+            environment_factory=create_environment, sandbox_factory=sandbox,
             allowed_origins=tuple(config["allowed_origins"]), outcome_reader=read_controlled_native_outcome,
             max_queries=config["max_queries"], deadline_seconds=config["deadline_seconds"],
-            credential_resolver=resolve_credential)
-        package = request["policy_package"]
-        selected = [name for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin") if package.get(name)]
-        if len(selected) != 1 or len(observations) != 1:
-            raise ValueError("controlled_native_one_policy_episode_required")
+            credential_resolver=resolve_credential, model_image_builder=build_model_image)
         execution = executor(modality=selected[0], payload=package[selected[0]], job_request=request,
             job_dir=output, observations=observations)
         result.update(execution)
