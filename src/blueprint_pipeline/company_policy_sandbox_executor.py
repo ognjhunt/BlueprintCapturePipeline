@@ -397,8 +397,26 @@ def _validate_command_plan(
         "--memory", f'{resources["memory_mib"]}m', "--tmpfs",
         f'/tmp:rw,noexec,nosuid,nodev,size={resources["tmpfs_mib"]}m',
         "--user", f'{container["run_as_uid"]}:{container["run_as_gid"]}',
-        "--log-driver=none",
     ]
+    model_artifact = plan.get("model_artifact")
+    if model_artifact is not None:
+        from .policy_model_onnx import validate_model_task_binding
+
+        if not isinstance(model_artifact, Mapping):
+            raise CompanyPolicySandboxExecutorError("company_policy_model_binding_invalid")
+        validate_model_task_binding(model_artifact, contract)
+        model_directory = Path(str(plan.get("model_stage_directory") or ""))
+        model_root = runtime_root / "company-policy-model"
+        if (model_directory.parent != model_root or model_directory.name != ipc_dir.name
+                or security.get("policy_mounts") !=
+                [f"{model_directory}:/opt/policy-model:readonly"]):
+            raise CompanyPolicySandboxExecutorError("company_policy_model_mount_invalid")
+        expected_policy_run.extend([
+            "--mount", f"type=bind,src={model_directory},dst=/opt/policy-model,readonly",
+        ])
+    elif plan.get("model_stage_directory") is not None or security.get("policy_mounts") != []:
+        raise CompanyPolicySandboxExecutorError("company_policy_unapproved_mount")
+    expected_policy_run.append("--log-driver=none")
     if container["gpu_required"]:
         expected_policy_run.extend(["--gpus", "all"])
     expected_policy_run.extend(

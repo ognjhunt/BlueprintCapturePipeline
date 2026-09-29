@@ -176,6 +176,13 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
             "--adp-max-spend-usd", str(profile["hard_cap_usd"]), "--adp-hard-ttl-seconds", str(profile["hard_ttl_seconds"]),
             "--adp-machine-avoidlist", profile["machine_avoidlist_path"],
             "--admission-out", str(job_dir / "native_paid_admission.json"), "--adapter-output", str(result_path)]
+        machine_ids = profile.get("allowed_vast_machine_ids", [])
+        if (not isinstance(machine_ids, list)
+                or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                       for value in machine_ids)):
+            raise ValueError("controlled_native_machine_allowlist_invalid")
+        for machine_id in sorted(set(machine_ids)):
+            argv.extend(["--adp-allowed-vast-machine-id", str(machine_id)])
         with (job_dir / "native_allocator.log").open("x") as stream:
             stream_path = job_dir / "native_allocator.log"
             stream_path.chmod(0o600)
