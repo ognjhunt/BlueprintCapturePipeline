@@ -119,6 +119,10 @@ def _root_fixture() -> dict:
             "else: raise AssertionError('hidden provider secret readable')\n"
             "links=[os.readlink('/proc/%d/fd/%s'%(pid,n)) for n in os.listdir('/proc/%d/fd'%pid)]\n"
             "assert payload in links\n"
+            "for mode in ('rb','r+b'):\n"
+            " try: open('/proc/%d/mem'%pid,mode).close()\n"
+            " except PermissionError: pass\n"
+            " else: raise AssertionError('foreign process memory readable')\n"
             "libc=ctypes.CDLL(None,use_errno=True)\n"
             "assert libc.ptrace(0x7fffffff,pid,0,0)==-1 and ctypes.get_errno()==errno.EPERM\n"
             "assert libc.process_vm_readv(pid,None,0,None,0,0)==-1 and ctypes.get_errno()==errno.EPERM\n"
@@ -133,7 +137,7 @@ def _root_fixture() -> dict:
             " try: open(path,'wb').write(b'wrong')\n"
             " except OSError: denied.append(True)\n"
             "assert len(denied)==2\n"
-            "Path(results).write_text(json.dumps({'status':'passed','lock_blocked':locked,'cross_uid_process_seen':True,'read_only':True,'ptrace_denied':True,'hidden_secret_denied':True}))\n"
+            "Path(results).write_text(json.dumps({'status':'passed','lock_blocked':locked,'cross_uid_process_seen':True,'read_only':True,'ptrace_denied':True,'hidden_secret_denied':True,'foreign_memory_denied':True}))\n"
         )
         probe.chmod(0o644)
         receipt = results / "probe.json"
@@ -189,6 +193,7 @@ def test_actual_legacy_owner_door_privilege_and_revocation():
                           private_denials=3, lock_blocked=True,
                           cross_uid_process_seen=True, read_only=True,
                           ptrace_denied=True, hidden_secret_denied=True,
+                          foreign_memory_denied=True,
                           target_generation_revoked=True)
     assert result["foreign_uid"] != 0
 

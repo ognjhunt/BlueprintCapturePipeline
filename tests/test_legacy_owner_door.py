@@ -55,6 +55,9 @@ def test_legacy_report_runner_is_read_only_and_finite(tmp_path):
     assert "--property=ProtectSystem=strict" in argv
     assert "--property=PrivateNetwork=yes" in argv
     assert "--property=SystemCallFilter=~ptrace process_vm_readv process_vm_writev" in argv
+    assert "--property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_PERFMON" in argv
+    assert "--property=AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_PERFMON" in argv
+    assert not any("CAP_SYS_PTRACE" in item for item in argv)
     hidden = next(item for item in argv if item.startswith("--property=InaccessiblePaths="))
     assert "/etc/blueprint/provider-secrets" in hidden
     assert "/var/lib/blueprint/spend-authority" in hidden
