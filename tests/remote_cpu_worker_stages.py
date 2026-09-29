@@ -101,3 +101,11 @@ def reads_relative(descriptor: dict[str, Any], roots: Any) -> dict[str, Any]:
             pass
     os.close(directory)
     return sealed_result(descriptor, blockers=["episode_compilation_envelope_invalid"])
+
+
+def leaves_a_straggler(descriptor: dict[str, Any], roots: Any) -> dict[str, Any]:
+    """Start a process in this session that outlives the stage, then return at once."""
+
+    straggler = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    Path(os.environ["REMOTE_CPU_TEST_PIDS"]).write_text(f"{straggler.pid}\n", encoding="utf-8")
+    return sealed_result(descriptor, blockers=["episode_compilation_envelope_invalid"])

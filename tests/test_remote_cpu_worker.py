@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -495,6 +496,43 @@ def _gone(pid: int) -> bool:
     return False
 
 
+def test_the_stage_session_is_killed_whether_the_child_exits_or_hangs(monkeypatch) -> None:
+    """Review M5: a process the stage started in its session never outlives it into the seal."""
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "killpg", lambda group, number: killed.append((group, number)))
+
+    class Exited:
+        pid = 4321
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            return 0
+
+    class Hung:
+        pid = 4322
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("stage", timeout)
+            return -signal.SIGKILL
+
+    class Unstarted:
+        pid = 0  # never signal a group this process belongs to
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            return 0
+
+    assert worker._wait(Exited(), 5, "phase_deadline:stage") == 0
+    with pytest.raises(worker.WorkerFailure) as hung:
+        worker._wait(Hung(), 5, "phase_deadline:stage")
+    assert hung.value.code == "phase_deadline:stage"
+    assert worker._wait(Unstarted(), 5, "phase_deadline:stage") == 0
+    assert killed == [(4321, signal.SIGKILL), (4322, signal.SIGKILL)]
+
+
 @pytest.mark.slow
 def test_missing_release_path_is_an_infrastructure_failure_not_a_blocked_result(tmp_path: Path) -> None:
     entries = ("blueprint_pipeline.remote_cpu_worker", "blueprint_pipeline.rigid_task_success_contract_schema")
@@ -571,6 +609,13 @@ def test_stage_child_is_spawned_not_forked_and_heartbeats_advance(tmp_path: Path
     assert phases == sorted(phases, key=list(contract.PHASES).index)
     assert _puts(world)[-1] == "receipt.json" and "heartbeat.json" not in _puts(world)[-3:]
 
+    # A process the stage leaves behind in its session is killed when the stage returns (review M5).
+    straggling = WorkerWorld(tmp_path / "straggler", archive=worker_release_archive())
+    pids = tmp_path / "straggler.pid"
+    straggling.environ["REMOTE_CPU_TEST_PIDS"] = str(pids)
+    assert straggling.run(stage="leaves_a_straggler") == 0 and straggling.receipt()["status"] == "blocked"
+    assert _gone(int(pids.read_text(encoding="utf-8")))
+
 
 @pytest.mark.slow
 def test_phase_deadlines_still_upload_a_timeout_receipt(tmp_path: Path) -> None:
@@ -634,17 +679,19 @@ def test_worker_never_logs_or_persists_a_presigned_url(tmp_path: Path, monkeypat
     written = io.BytesIO()
 
     class Process:
-        pid, stdin = 0, written
+        pid, stdin = 4323, written
 
         @staticmethod
         def wait(timeout: float | None = None) -> int:
             return 0
 
     launched: list[tuple[list[str], dict]] = []
+    monkeypatch.setattr(os, "killpg", lambda group, number: launched.append(([f"killpg {group}"], {})))
     monkeypatch.setattr(written, "close", lambda: None)
     monkeypatch.setattr(worker.subprocess, "Popen", lambda args, **kwargs: launched.append((args, kwargs)) or Process())
     assert worker._launch_execute(succeeded.runtime(), handoffs[0]) == 0
-    [(args, kwargs)] = launched
+    [(args, kwargs), killed] = launched
+    assert killed == (["killpg 4323"], {})
     assert "X-Amz-Signature=" in written.getvalue().decode()
     assert not any("X-Amz-" in text for text in [*args, *kwargs["env"].values()])
     # The pinned prefix is configuration, not authority, and the transport's name is gone.

@@ -557,16 +557,21 @@ def _release_environment(runtime: WorkerRuntime, descriptor: Mapping[str, Any], 
 
 
 def _wait(process: subprocess.Popen, seconds: float, timeout_code: str) -> int:
-    """Wait for a child started in its own session; past ``seconds`` its whole group is killed."""
+    """Wait for a child started in its own session, then kill whatever is left of that session, so nothing it
+    started outlives it; past ``seconds`` the child goes with it."""
     try:
-        return process.wait(timeout=max(1.0, seconds))
+        code: int | None = process.wait(timeout=max(1.0, seconds))
     except subprocess.TimeoutExpired:
+        code = None
+    if isinstance(process.pid, int) and process.pid > 1:  # never this process's own group, nor init's
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            pass  # the session is already empty
+    if code is None:
         process.wait()
-        raise WorkerFailure(timeout_code) from None
+        raise WorkerFailure(timeout_code)
+    return code
 
 
 def _launch_execute(runtime: WorkerRuntime, handoff: Mapping[str, Any]) -> int:
