@@ -47,6 +47,11 @@ def _directory_identity(info: os.stat_result) -> dict[str, int | str]:
                 ctime_ns=info.st_ctime_ns)
 
 
+def _root_owned_publication(info: os.stat_result) -> bool:
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0
+            and stat.S_IMODE(info.st_mode) == 0o600)
+
+
 def _absolute(value: Path) -> None:
     _require(value.is_absolute() and value != Path("/") and ".." not in value.parts
              and len(value.parts) <= MAX_DEPTH and len(os.fsencode(value)) <= 4096,
@@ -383,7 +388,11 @@ class LegacyOwnerStore:
                     count += 1
                     _require(count <= self._MAX_RECORDS + 1, "legacy_owner_store_full")
                     info = os.stat(entry.name, dir_fd=self.parent, follow_symlinks=False)
-                    owners._protected(info, mode=0o600)
+                    if info.st_nlink == 1:
+                        owners._protected(info, mode=0o600)
+                    else:
+                        _require(info.st_nlink == 2 and _root_owned_publication(info),
+                                 "legacy_owner_store_unsafe")
                     _require(entry.name == self._LOCK or self._ENTRY.fullmatch(entry.name) is not None
                              or self._TEMP.fullmatch(entry.name) is not None,
                              "legacy_owner_store_unsafe")
@@ -396,6 +405,51 @@ class LegacyOwnerStore:
                     _require(size <= self._MAX_BYTES, "legacy_owner_store_full")
             self.files.verify()
             return sorted(names)
+        except (OSError, owners.OwnerCensusConsentError) as error:
+            raise LegacyOwnerError("legacy_owner_store_unsafe") from error
+
+    def recover_publication_links(self) -> None:
+        """Writer-only repair of this publisher's linked temp, never payload."""
+        from . import control_plane_lane_owner_consents as owners
+
+        self._scan()
+        try:
+            with os.scandir(self.parent) as iterator:
+                names = sorted(entry.name for entry in iterator)
+            for name in names:
+                if self._TEMP.fullmatch(name) is None:
+                    continue
+                temp = os.stat(name, dir_fd=self.parent, follow_symlinks=False)
+                if temp.st_nlink == 1:
+                    continue  # Crash before publication; no final was committed.
+                _require(temp.st_nlink == 2, "legacy_owner_store_unsafe")
+                mates = []
+                for candidate in names:
+                    self.files.budget.charge("entries")
+                    if self._ENTRY.fullmatch(candidate) is None:
+                        continue
+                    info = os.stat(candidate, dir_fd=self.parent, follow_symlinks=False)
+                    if (info.st_dev, info.st_ino) == (temp.st_dev, temp.st_ino):
+                        mates.append(candidate)
+                _require(len(mates) == 1, "legacy_owner_store_unsafe")
+                final_name = mates[0]
+                before = os.stat(final_name, dir_fd=self.parent, follow_symlinks=False)
+                _require(owners._metadata(before) == owners._metadata(temp)
+                         and _root_owned_publication(temp)
+                         and 0 < temp.st_size <= self._CAP,
+                         "legacy_owner_store_unsafe")
+                self.files.verify()
+                _require(owners._metadata(os.stat(name, dir_fd=self.parent, follow_symlinks=False))
+                         == owners._metadata(temp)
+                         and owners._metadata(os.stat(final_name, dir_fd=self.parent, follow_symlinks=False))
+                         == owners._metadata(before), "legacy_owner_store_unsafe")
+                os.unlink(name, dir_fd=self.parent)
+                os.fsync(self.parent)
+                final = os.stat(final_name, dir_fd=self.parent, follow_symlinks=False)
+                owners._protected(final, mode=0o600)
+                _require((final.st_dev, final.st_ino, final.st_size)
+                         == (before.st_dev, before.st_ino, before.st_size), "legacy_owner_store_unsafe")
+            self._scan()
         except (OSError, owners.OwnerCensusConsentError) as error:
             raise LegacyOwnerError("legacy_owner_store_unsafe") from error
 
@@ -508,7 +562,7 @@ def _registry_root(config) -> Path:
 
 
 @contextmanager
-def _installed_session(installed_config_path: str, monotonic):
+def _installed_session(installed_config_path: str, monotonic, *, write: bool = False):
     from . import control_plane_lane_owner_consents as owners
     from .control_plane_reference_budget import ReferenceCollectionBudget
 
@@ -518,6 +572,8 @@ def _installed_session(installed_config_path: str, monotonic):
     try:
         config = owners._installed_config(files, installed_config_path)
         store = LegacyOwnerStore(files, _registry_root(config))
+        if write:
+            store.recover_publication_links()
         yield files, budget, config, store
         files.verify()
     except owners.OwnerCensusConsentError as error:
@@ -622,7 +678,7 @@ def issue_version_packet(*, consent_id: str, consent_sha256: str, consent_size_b
                          selected_path: str, installed_config_path: str, now: float,
                          monotonic=time.monotonic) -> dict:
     """Persist a reviewable target packet; no owner decision is inferred."""
-    with _installed_session(installed_config_path, monotonic) as (files, budget, config, store):
+    with _installed_session(installed_config_path, monotonic, write=True) as (files, budget, config, store):
         consent = _load_old_consent(files, budget, config, consent_id=consent_id,
                                     expected_sha256=consent_sha256,
                                     expected_size_bytes=consent_size_bytes, now=now)
@@ -643,7 +699,7 @@ def issue_generation_approval(*, packet_id: str, ack_packet_digest: str,
                               principal: str, owner: str, installed_config_path: str,
                               now: float, monotonic=time.monotonic) -> dict:
     """Distinct root/owner action requiring the exact packet digest as input."""
-    with _installed_session(installed_config_path, monotonic) as (files, _, config, store):
+    with _installed_session(installed_config_path, monotonic, write=True) as (files, _, config, store):
         packet = store.read(packet_id, "packet")
         approval = approve_version_packet(packet, ack_packet_digest=ack_packet_digest,
                                           current_policy_bytes=_policy_bytes(files, config),
@@ -661,7 +717,7 @@ def issue_generation_approval(*, packet_id: str, ack_packet_digest: str,
 def apply_owner_review(*, packet_id: str, installed_config_path: str,
                        now: float, monotonic=time.monotonic) -> dict:
     """Publish only a protected external owner label and recoverable receipt."""
-    with _installed_session(installed_config_path, monotonic) as (files, _, config, store):
+    with _installed_session(installed_config_path, monotonic, write=True) as (files, _, config, store):
         packet, approval = store.read(packet_id, "packet"), store.read(packet_id, "approval")
         path = packet["selected_path"]
         current = _snapshot_for(config, path)

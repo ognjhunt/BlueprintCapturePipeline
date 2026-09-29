@@ -71,8 +71,10 @@ def test_registry_rejects_foreign_link_and_unknown_entry(registry):
         store.committed_heads()
 
 
-def test_crash_between_no_replace_link_and_temp_unlink_recovers_owned_link(registry):
+def test_crash_between_no_replace_link_and_temp_unlink_recovers_owned_link(registry, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_legacy_owner as legacy
     store, root = registry
+    monkeypatch.setattr(legacy, "_root_owned_publication", lambda info: True)
     packet_id = "b" * 32
     temporary = root / (".consent-" + "c" * 32 + ".tmp")
     final = root / (packet_id + ".packet.json")
@@ -82,5 +84,6 @@ def test_crash_between_no_replace_link_and_temp_unlink_recovers_owned_link(regis
     os.link(temporary, final)
     assert final.stat().st_nlink == 2
     assert final.name in store._scan()
+    store.recover_publication_links()
     assert not temporary.exists()
     assert final.stat().st_nlink == 1
