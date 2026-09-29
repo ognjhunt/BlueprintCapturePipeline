@@ -527,7 +527,7 @@ def _manifest_from_archive(
     return value
 
 
-def _extract_verified_bundle(
+def _extract_verified_bundle_unfenced(
     *,
     bundle_path: Path,
     request: Mapping[str, Any],
@@ -536,6 +536,7 @@ def _extract_verified_bundle(
     destination: Path,
     content_store_root: Path | None = None,
     external_layers: Mapping[str, str | Path] | None = None,
+    _generated_use=None,
 ) -> tuple[dict[str, Any], Path]:
     if role not in _ROLES:
         raise TaskEvaluationNativeArenaAdapterError(
@@ -547,13 +548,13 @@ def _extract_verified_bundle(
         )
     if (
         bundle_path.stat().st_size != expected_reference.get("size_bytes")
-        or _sha256_file(bundle_path) != expected_reference.get("digest")
+        or (_generated_use is None and _sha256_file(bundle_path) != expected_reference.get("digest"))
     ):
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_bundle_source_identity_mismatch"
         )
     try:
-        archive = zipfile.ZipFile(bundle_path)
+        archive = _generated_use.archive() if _generated_use is not None else zipfile.ZipFile(bundle_path)
     except (OSError, zipfile.BadZipFile) as exc:
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_bundle_archive_invalid"
@@ -562,6 +563,7 @@ def _extract_verified_bundle(
         manifest = _manifest_from_archive(
             archive, request=request, expected_role=role
         )
+        manifest_bytes = archive.read(MANIFEST_NAME) if _generated_use is not None else None
         destination.mkdir(parents=True, exist_ok=False, mode=0o750)
         content_root: Path | None = None
         if content_store_root is not None:
@@ -596,7 +598,7 @@ def _extract_verified_bundle(
                             "task_evaluation_adapter_content_store_identity_mismatch"
                         )
                     if cached != target:
-                        os.link(cached, target, follow_symlinks=False)
+                        _project_generated(cached, target, _generated_use)
                     continue
                 layer_source = (
                     _external_layer_source(row, external_layers)
@@ -606,7 +608,7 @@ def _extract_verified_bundle(
                 # A verified immutable external layer can back the member CAS
                 # directly. Copying it again created another 4 GiB runtime
                 # archive even though preparation had already retained it.
-                if (layer_source is not None and cached != target
+                if (_generated_use is None and layer_source is not None and cached != target
                         and stat.S_IMODE(layer_source.stat().st_mode) & 0o222 == 0):
                     if _sha256_file(layer_source) != row["sha256"]:
                         raise TaskEvaluationNativeArenaAdapterError(
@@ -662,7 +664,14 @@ def _extract_verified_bundle(
                     )
                 if cached != target:
                     try:
-                        os.link(temporary, cached, follow_symlinks=False)
+                        authority = None if _generated_use is None else _generated_use.publish(
+                            manifest_bytes=manifest_bytes, manifest=manifest, entry=row)
+                        if authority is None:
+                            os.link(temporary, cached, follow_symlinks=False)
+                        else:
+                            from . import task_evaluation_scene_retirement_cache as scene_cache
+                            scene_cache.publish_content_generation(cached, temporary,
+                                digest=row['sha256'], size_bytes=row['size_bytes'], authority=authority)
                     except FileExistsError:
                         if (
                             cached.stat().st_size != row["size_bytes"]
@@ -673,11 +682,37 @@ def _extract_verified_bundle(
                             )
                     finally:
                         temporary.unlink(missing_ok=True)
-                    os.link(cached, target, follow_symlinks=False)
+                    _project_generated(cached, target, _generated_use)
         except Exception:
             shutil.rmtree(destination, ignore_errors=True)
             raise
     return manifest, destination
+
+
+def _project_generated(source, target, use):
+    if use is None or use.producer is None:
+        os.link(source, target, follow_symlinks=False)
+        return
+    from . import task_evaluation_scene_retirement_cache as scene_cache
+    scene_cache.project_content(source, target,
+        authority=use.producer[1]['source_storage_authority_raw_ref'])
+
+
+def _extract_verified_bundle(*, bundle_path, request, expected_reference, role, destination,
+                             content_store_root=None, external_layers=None):
+    arguments = dict(bundle_path=bundle_path, request=request, expected_reference=expected_reference,
+        role=role, destination=destination, content_store_root=content_store_root,
+        external_layers=external_layers)
+    # Provider/default callers need no host-only package import. An installed
+    # local policy uses the exact native lifetime before any extraction work.
+    if (os.environ.get('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
+            or Path('/etc/blueprint/scene-retirement-policy.json').exists()):
+        from .task_evaluation_scene_retirement_generated import bundle_lifetime
+        with bundle_lifetime(bundle_path=bundle_path, request=request,
+                expected_reference=expected_reference, role=role, destination=destination,
+                content_store_root=content_store_root) as use:
+            return _extract_verified_bundle_unfenced(**arguments, _generated_use=use)
+    return _extract_verified_bundle_unfenced(**arguments)
 
 
 def materialize_native_arena_adapter(

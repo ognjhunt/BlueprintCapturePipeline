@@ -77,6 +77,11 @@ def test_actual_native_generated_member_is_registered_before_final_cas_name(tmp_
     publications = []
     def observe(source, target, *args, **kwargs):
         target = Path(target)
+        directory = kwargs.get('dst_dir_fd')
+        if directory is not None and fixture['store'].exists():
+            observed, expected = os.fstat(directory), fixture['store'].stat()
+            if (observed.st_dev, observed.st_ino) == (expected.st_dev, expected.st_ino):
+                target = fixture['store']/target.name
         if target.parent == fixture['store'] and not target.name.startswith('.'):
             key = hashlib.sha256(str(target).encode()).hexdigest()+'.json'
             assert (Path(fixture['policy']['generation_store'])/key).is_file(), \
@@ -152,6 +157,7 @@ def test_native_source_or_identity_refusal_precedes_any_generated_publication(tm
         fixture['reference']['digest'] = 'sha256:'+'f'*64
     else:
         fixture['request']['runtime']['identity']['version'] = 'foreign-version'
-    with pytest.raises(fixture['adapter'].TaskEvaluationNativeArenaAdapterError):
+    with pytest.raises((fixture['adapter'].TaskEvaluationNativeArenaAdapterError,
+                        fixture['access'].SceneRetirementAccessError)):
         extract(fixture)
     assert not fixture['store'].exists()
