@@ -1,10 +1,28 @@
 """Unsupported publishers refuse decoded registered paths before persistence."""
 
 import importlib
+import sys
 import pytest
 
 TARGET = "/mnt/blueprint-work/lanes/g1/registered-" + "a" * 32
 VALUE = {"nested": [{"path": TARGET + "/payload.bin"}]}
+
+
+def test_current_interpreter_symlink_is_allowed_only_for_nonregistered_target(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    safe = tmp_path / 'python-real'
+    safe.write_bytes(b'fixture')
+    link = tmp_path / 'python'
+    link.symlink_to(safe)
+    monkeypatch.setattr(sys, 'executable', str(link))
+    gate.refuse_registered_references(str(link))
+    registered = tmp_path / 'g1' / ('registered-' + 'a' * 32)
+    registered.mkdir(parents=True)
+    (registered / 'python-real').write_bytes(b'fixture')
+    link.unlink()
+    link.symlink_to(registered / 'python-real')
+    with pytest.raises(ValueError, match='experiment_external_publisher_unsupported'):
+        gate.refuse_registered_references(str(link))
 CASES = [
     (
         "task_evaluation_launch_preparation_queue",
