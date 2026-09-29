@@ -15,7 +15,7 @@ from typing import Any, Mapping
 from .decision_evidence_contracts import canonical_digest
 from .controlled_native_policy_bundle import build_controlled_native_policy_bundle, PROBE_KIND
 from .controlled_policy_outcome import validate_controlled_outcome
-from .controlled_policy_configuration import canonical_request_digest
+from .controlled_policy_configuration import canonical_request_digest, validate_native_configuration
 from .common import utc_now_iso
 
 REGISTRY_ENV = "BLUEPRINT_CONTROLLED_NATIVE_REGISTRY"
@@ -98,11 +98,16 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
 
         from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
         from .native_task_arena_paid_authority import materialize_native_task_arena_paid_attempt_authority
-        config = _read(Path(profile["configuration_path"]))
+        config = validate_native_configuration(_read(Path(profile["configuration_path"])))
         if modalities[0] == "policy_api_endpoint":
             from urllib.parse import urlsplit
             from .controlled_policy_session import customer_hosted_client
             endpoint = request["policy_package"]["policy_api_endpoint"]["endpoint_url"]
+            if isinstance(profile.get("sandbox_manager"), Mapping):
+                parsed = urlsplit(endpoint)
+                config = {**config, "allowed_origins": [f"{parsed.scheme}://{parsed.netloc}"]}
+                config["configuration_digest"] = canonical_digest(config, digest_field="configuration_digest")
+                config = validate_native_configuration(config)
             customer_hosted_client(endpoint=endpoint, allowed_origins=tuple(config["allowed_origins"]),
                 contract=config["contract"])
             parsed = urlsplit(endpoint)
@@ -154,6 +159,9 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
                 bridge_file = job_dir / "qualified_sandbox_bridge.json"
                 _write(bridge_file, bridge)
                 runtime_config = {**config, "contract": contract}
+                runtime_config["configuration_digest"] = canonical_digest(runtime_config,
+                    digest_field="configuration_digest")
+                runtime_config = validate_native_configuration(runtime_config)
             else:
                 if not bridge_path:
                     raise ValueError("controlled_native_qualified_sandbox_not_configured")
