@@ -469,8 +469,10 @@ def test_dispatcher_service_passes_one_capture_scope(tmp_path: Path, partition: 
     printer = tmp_path / "print-argv"
     printer.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
     printer.chmod(0o755)
-    env = {**os.environ, "BLUEPRINT_PIPELINE_REPO": str(tmp_path),
-           "BLUEPRINT_PIPELINE_PYTHON": str(printer), "BLUEPRINT_WEBAPP_URL": "https://example.com",
+    env = {**os.environ, "BLUEPRINT_PIPELINE_REPO": "/archived/check-out",
+           "BLUEPRINT_PIPELINE_PYTHON": "/archived/python",
+           "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO": str(tmp_path),
+           "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON": str(printer), "BLUEPRINT_WEBAPP_URL": "https://example.com",
            "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT": partition,
            "BLUEPRINT_AGENT_RUN_CAPTURE_ROOT": "single capture", "BLUEPRINT_AGENT_RUN_CAPTURE_ID": "capture-1",
            "BLUEPRINT_PIPELINE_SYNC_TOKEN_FILE": "token file", "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX": "inbox",
@@ -480,3 +482,26 @@ def test_dispatcher_service_passes_one_capture_scope(tmp_path: Path, partition: 
     expected_scope = ["--capture-partition-root", partition] if partition else ["--capture-root", "single capture", "--capture-id", "capture-1"]
     assert args == ["-m", "blueprint_pipeline.agent_run_executor", "--webapp-url", "https://example.com",
                     *expected_scope, "--token-file", "token file", "--inbox-dir", "inbox", "--journal-dir", "journal"]
+
+
+def test_controlled_request_without_registry_never_stages_in_legacy_inbox(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import controlled_native_queue as native
+    from blueprint_pipeline import adp_task_evaluation_abstention as abstention
+
+    monkeypatch.delenv(native.REGISTRY_ENV, raising=False)
+    monkeypatch.setattr(abstention, "collect_vast_provider_zero_receipt", lambda: {"provider_zero": True})
+    row = _row(tmp_path)
+    canonical = row["execution_admission"]["canonical_execution_request"]
+    canonical["policy_package"]["policy_api_endpoint"]["execution_profile"] = "controlled_observation_v1"
+    inbox = tmp_path / "inbox"
+    staged = executor._stage_canonical_request(row, inbox)
+    assert staged == inbox / "controlled-native" / "canonical-job-1.json"
+    assert not (inbox / "canonical-job-1.json").exists()
+    job = tmp_path / "native-job"
+    native.execute_staged_controlled_request(request=canonical, job_dir=job)
+    terminal = native.read_native_terminal(job_dir=job, expected_job_id=canonical["job_id"],
+        expected_canonical_request_digest=executor._digest(canonical))
+    assert terminal["status"] == "blocked"
+    assert terminal["blockers"] == ["controlled_native_task_profile_required"]
+    assert not (job / "controlled_native_execution_intent.json").exists()
+    assert not (job / "native_allocator_result.json").exists()

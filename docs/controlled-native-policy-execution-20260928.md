@@ -37,3 +37,10 @@ Before paid execution: validate the service user's asset traversal permissions,
 frozen configuration, bundle/import closure, exact deployed release, spend
 reconciliation, API-origin approval and fresh provider zero. The live completion
 artifact is a new policy/run receipt and its team-only production result readback.
+
+The admitted agent dispatcher runs from the atomically promoted immutable release,
+using the task-evaluation identity keys rather than the archived build-checkout
+keys in the shared credential environment. Controlled requests always stage in
+the native inbox; missing registry/profile bindings block there instead of
+falling back to the legacy executor. Its independent hard-TTL watchdog survives
+caller exit, while the existing cgroup reconciler reaps other descendants.
