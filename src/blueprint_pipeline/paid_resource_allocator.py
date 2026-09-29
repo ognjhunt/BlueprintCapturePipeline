@@ -354,11 +354,7 @@ from .adp_inpaint360_interiorgs_vast import (
     run_inpaint360_interiorgs_vast,
 )
 from .remote_cpu_job_allocator import add_remote_cpu_job_arguments, run_remote_cpu_job
-from .teleport_paid_allocator import (
-    add_teleport_provider_arguments,
-    load_teleport_credentials,
-    run_teleport_provider,
-)
+from .teleport_paid_allocator import add_teleport_provider_arguments, load_teleport_credentials, run_teleport_provider
 from .task_evaluation_profile_preflight import (
     PROBE_KIND as TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
     run_task_evaluation_profile_preflight,
