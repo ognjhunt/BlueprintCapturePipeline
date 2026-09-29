@@ -879,6 +879,12 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
             _require(issuance._selector(policy_raw, files.budget) == current[1]['policy'],
                      'experiment_policy_changed')
             files.verify_record(policy_record)
+            policy_budget = ReferenceCollectionBudget(values_limit=10000)
+            try:
+                policy_index = owners._policies(policy_raw, policy_budget)
+            finally:
+                policy_budget.close()
+            files.budget.tick()
             for entry in current[1]["enrollments"]:
                 if entry["state"] in ("active", "retiring") and entry["operation_id"] is not None:
                     if entry["state"] == "active" and _is_selected_restoration(files, public, entry, gid):
@@ -911,7 +917,10 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                                  and candidate['issued_at_epoch'] <= issued,
                                  'experiment_action_invalid')
                         try:
-                            policy = owners._policy(policy_raw, candidate['principal'], files.budget)
+                            _require(type(candidate['principal']) is str
+                                     and candidate['principal'] in policy_index,
+                                     'experiment_action_invalid')
+                            policy = policy_index[candidate['principal']]
                             owners._authorize({'owner': candidate['owner'],
                                                'action': 'keep' if candidate['action'] == 'owner_review'
                                                else candidate['action'],

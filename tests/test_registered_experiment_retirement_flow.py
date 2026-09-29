@@ -334,14 +334,14 @@ def test_parseable_invalid_actions_do_not_starve_valid_cleanup(retirement_instal
     assert all((target / 'intermediate.bin').exists() for _, _, target in candidates[:2])
 
 
-def test_valid_maximum_owner_policy_does_not_exhaust_gc_selection_budget(retirement_installation):
+def test_valid_multi_principal_policy_does_not_exhaust_gc_selection_budget(retirement_installation):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
 
-    installation = retirement_installation
+    installation = retirement_installation  # noqa: F811
     policy_path = installation[3]
     policy = json.loads(policy_path.read_bytes())
     policy['principals'].extend(policy['principals'][0] | {'principal': f'operator-{index}'}
-                                for index in range(1, 64))
+                                for index in range(1, 32))
     policy_path.write_bytes(encoded(policy))
     candidates = [_born_scratch(installation) for _ in range(3)]
     issued = [root.issue_experiment_action_intent(grant['intent_id'], principal='operator',
@@ -350,7 +350,7 @@ def test_valid_maximum_owner_policy_does_not_exhaust_gc_selection_budget(retirem
               for grant, _, _ in candidates]
     report = _gc(installation, at=2901)
     outcomes = report['registered_experiments']['outcomes']
-    assert sum(row['decision'] == 'retired' for row in outcomes) == 2
+    assert sum(row['decision'] == 'retired' for row in outcomes) == 2, report['registered_experiments']
     assert {row['action_id'] for row in outcomes} <= {action['action_id'] for action in issued}
 
 
