@@ -110,6 +110,15 @@ def test_capture_action_requires_current_owner_and_distinct_sponsor_association(
     assert calls[0]['marker_generation'] == owner['completion_marker']['generation']
     assert calls[0]['include_response_bytes'] is True
     assert allowance.counts['remote_bytes'] == 100
+    swapped = dict(association, owner={'user_id': 'other-sponsor'})
+    swapped['binding_digest'] = canonical_digest(swapped, digest_field='binding_digest')
+    swapped_ref = retained(factory_root / 'scene-1' / 'website-source' /
+                           (swapped['binding_digest'][7:] + '.json'), swapped)
+    with pytest.raises(ValueError, match='scene_retirement_capture_association_unproven'):
+        _capture_action_current(policy, consent, dict(member, association_raw_ref=swapped_ref),
+                                ActionAllowance(expires_at=int(time.time()) + 60,
+                                                elapsed_seconds=30), expected_states={'active'})
+    assert len(calls) == 1
     changed = json.loads(json.dumps(owner))
     changed['capture_rights']['consent_revoked'] = True
     monkeypatch.setattr(observer, 'load_original_owner_observation', lambda **_: (changed, 100))
