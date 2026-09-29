@@ -3,7 +3,7 @@
   "sources": [
     {
       "path": "src/blueprint_pipeline/control_plane_lane_scratch.py",
-      "sha256": "9d1fd44d6b48d355d186e0171bc7b00e02bbf447bdcb8be913468983fd980216",
+      "sha256": "2c7a428b21b78158f7dc1f1fb786f73937e4b176bce15ad522a85ed3a697c472",
       "responsibility": "constructor",
       "output_class": "lane_scratch",
       "admission_method": "atomic sealed lease publication",
