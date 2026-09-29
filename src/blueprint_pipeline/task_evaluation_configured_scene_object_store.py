@@ -1191,6 +1191,38 @@ def delete_remote_cpu_staging_versions(*, staging_prefix: str, client: Any, buck
             "listing_pages": pages}
 
 
+def discard_remote_cpu_output_object(*, uri: str, digest: str, client: Any, bucket: str) -> dict[str, Any]:
+    """Remove every version of one promoted ``remote-cpu-output`` CAS object whose readback failed (plan 14 §9).
+
+    ``copy_remote_cpu_staging_to_cas`` stamps ``Metadata.sha256`` before any byte is read back, so an object
+    whose bytes do not hash to its key would otherwise answer every later promotion of that digest.
+    """
+
+    key = _remote_cpu_key(uri, bucket=bucket, cas=True)
+    parts = key.removeprefix(LARGE_ARTIFACT_KEY_PREFIX + "/").split("/")
+    if parts[0] != "remote-cpu-output" or f"sha256:{parts[2]}" != digest:
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_discard_invalid")
+
+    def versions() -> list[str]:
+        page = client.list_object_versions(Bucket=bucket, Prefix=key, MaxKeys=1000)
+        if page.get("IsTruncated"):
+            raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_discard_listing_unbounded")
+        return [row["VersionId"] for row in [*(page.get("Versions") or []), *(page.get("DeleteMarkers") or [])]
+                if row.get("Key") == key and row.get("VersionId")]
+
+    try:
+        found = versions()
+        for version in found:
+            client.delete_object(Bucket=bucket, Key=key, VersionId=version)
+        remaining = versions()
+    except TaskEvaluationConfiguredSceneObjectStoreError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - typed, never echoing the provider message
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            f"remote_cpu_discard_failed:{type(exc).__name__}") from None
+    return {"versions_deleted": len(found), "versions_remaining": len(remaining)}
+
+
 def _presigned_put(url: str, data: bytes) -> int:
     import urllib.error
 
@@ -1290,6 +1322,7 @@ __all__ = [
     "configured_scene_object_store_publisher",
     "copy_remote_cpu_staging_to_cas",
     "delete_remote_cpu_staging_versions",
+    "discard_remote_cpu_output_object",
     "materialize_configured_scene_artifact",
     "presign_configured_scene_artifact",
     "presign_remote_cpu_get",

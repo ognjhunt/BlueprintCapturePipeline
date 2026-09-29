@@ -66,10 +66,11 @@ def configured_bundle(appearance: bytes, *, appearance_name: str = "appearance.u
     }
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
+    with zipfile.ZipFile(buffer, "w") as archive:  # fixed member times: the same bundle is the same bytes
         for name, data in payloads.items():
-            archive.writestr(name, data)
-        archive.writestr(BUNDLE_MANIFEST, json.dumps(manifest, sort_keys=True) + "\n")
+            archive.writestr(zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)), data)
+        archive.writestr(zipfile.ZipInfo(BUNDLE_MANIFEST, (1980, 1, 1, 0, 0, 0)),
+                         json.dumps(manifest, sort_keys=True) + "\n")
     return buffer.getvalue()
 
 
@@ -529,3 +530,189 @@ class RemoteWorld:
             return self.store.get_object(Bucket=self.bucket_name, Key=key)["Body"].read()
         except ClientError:
             return None
+
+
+class Crash(BaseException):
+    """A process death at a chosen point: nothing in the collector catches a ``BaseException``."""
+
+
+class CollectorWorld:
+    """A host with one handed-off row, a project of fakes (PR 2's ``RemoteCpuWorld``) and the paid unit's
+    collector, whose Cloud Run executions run PR 3's worker at the host's own paths.
+
+    While an execution's worker runs, the host tree moves aside, exactly as a Cloud Run execution's
+    in-memory ``/var/lib/blueprint`` starts empty; the worker's tree is kept under ``workers/`` afterwards.
+    """
+
+    def __init__(self, tmp_path: Path, monkeypatch: Any, *, case: tuple[bool, bool, bool] = (False, False, False),
+                 mode: str = "cloud_run", marker: str = "authoritative", config: dict[str, Any] | None = None,
+                 plan: Any = None, host: Host | None = None) -> None:
+        from blueprint_pipeline import task_evaluation_episode_compilation_remote as remote
+        from tests.remote_cpu_allocator_fakes import RemoteCpuWorld
+        from tests.remote_cpu_worker_stages import install_compile_stand_ins
+
+        self.tmp_path, self.monkeypatch, self.mode = tmp_path, monkeypatch, mode
+        self.host = host or Host(tmp_path / "host")
+        self.remote = RemoteCpuWorld(tmp_path / "remote", monkeypatch, config=config)
+        self.remote.root = self.host.jobs
+        self.clock, self.store, self.bucket = self.remote.clock, self.remote.store, self.remote.bucket
+        self.host.record_worker_environment()
+        self.compiler = install_compile_stand_ins(monkeypatch.setattr)
+        self.stage_override: Any = None
+        self.executed: list[str] = []
+        self.results: list[dict[str, Any]] = []
+        if plan is None:
+            policy, destination, qualification = case
+            self.envelope, self.name = stage_compile(self.host, policy_observation_override=policy,
+                                                     destination_support=destination, qualification_only=qualification)
+            plan = remote.plan_remote_compilation(
+                self.host.claim(self.name), inputs=self.host.inputs, outputs=self.host.outputs,
+                source_commit=self.envelope["expected_production_commit"], config=self.remote.config,
+                jobs_root=self.host.jobs, filesystem_root=self.host.fs, cache_root=self.host.cache,
+                host_environment=HOST_RECORD, require_shadow_gate=False)
+            assert isinstance(plan, remote.RemotePlan), plan
+        self.plan, self.name = plan, plan.queue_row["name"]
+        remote.write_handoff(self.host.jobs, plan, mode=marker, now=self.clock.now)
+
+    # ------------------------------------------------------------------ the paid unit
+    def allocate(self, argv: list[str]) -> dict[str, Any]:
+        import argparse
+
+        from blueprint_pipeline.remote_cpu_job_allocator import run_remote_cpu_job
+
+        values: dict[str, Any] = {}
+        index = 1
+        while index < len(argv):
+            if argv[index] == "--execute":
+                values["--execute"] = True
+                index += 1
+            else:
+                values[argv[index]] = argv[index + 1]
+                index += 2
+        Path(values["--out"]).parent.mkdir(parents=True, exist_ok=True)
+        args = argparse.Namespace(action=values["--action"], stage=values["--stage"],
+                                  descriptor=values.get("--descriptor"), lease=values["--lease"], out=values["--out"],
+                                  execute=bool(values.get("--execute")))
+        return run_remote_cpu_job(args, runtime=self.remote.runtime)
+
+    def stage_release(self, object_store: Any, commit: str) -> dict[str, Any]:
+        from blueprint_pipeline.remote_cpu_transport import SOURCE_FILENAME, SOURCE_KIND, cas_key
+        from tests.remote_cpu_worker_support import release_archive
+
+        archive = release_archive(commit)
+        key = cas_key(SOURCE_KIND, digest_of(archive), SOURCE_FILENAME)
+        object_store[0].put_object(Bucket=object_store[1], Key=key, Body=archive,
+                                   Metadata={"sha256": digest_of(archive)[7:]})
+        return {"source_commit": commit, "digest": digest_of(archive), "size_bytes": len(archive),
+                "uri": f"s3://{object_store[1]}/{key}"}
+
+    def collector(self, **changes: Any) -> Any:
+        from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
+
+        values = {"runtime": self.remote.runtime, "config": self.remote.config, "jobs_root": self.host.jobs,
+                  "queue_root": self.host.queue, "outputs_root": self.host.outputs,
+                  "source_commit": self.plan.source_commit, "mode": self.mode, "allocate": self.allocate,
+                  "stage_release": self.stage_release, "filesystem_root": self.host.fs, **changes}
+        return collector.Collector(**values)
+
+    def collect(self, **changes: Any) -> dict[str, Any]:
+        from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
+
+        result = collector.run_collector(self.collector(**changes))
+        self.results.append(result)
+        return result
+
+    # ------------------------------------------------------------------ Cloud Run
+    def executions(self) -> list[dict[str, Any]]:
+        from tests.remote_cpu_allocator_fakes import JOB
+
+        return [self.remote.jobs.get_execution(row["name"]) for row in self.remote.jobs.executions[JOB]]
+
+    def _stage(self, *, runtime: Any, descriptor: dict[str, Any], release: Path, handler: str,
+               seconds: float) -> dict[str, Any]:
+        from blueprint_pipeline import remote_cpu_worker as worker
+        from blueprint_pipeline.task_evaluation_episode_compilation_remote import run_episode_compilation_in_worker
+
+        roots = worker.StageRoots(runtime.filesystem_root, release)
+        if self.stage_override is not None:
+            return self.stage_override(descriptor, roots)
+        result = run_episode_compilation_in_worker(descriptor, roots, episode_compiler=self.compiler)
+        return {"result": result, "release_path_misses": [], "failures": []}
+
+    def run_workers(self) -> None:
+        """Start PR 3's worker once in each running execution whose container would run it."""
+
+        from blueprint_pipeline import remote_cpu_worker as worker
+        from tests.remote_cpu_worker_support import PREFIX_URL, RecordingHttp
+
+        for view in self.executions():
+            name = view["name"].rsplit("/", 1)[1]
+            behaviour = next(row["behaviour"] for row in self.remote.jobs.executions[view["name"].rsplit(
+                "/executions/", 1)[0]] if row["name"] == view["name"])
+            # A crash or a timeout never gets as far as a receipt; a hang heartbeats once, then stops.
+            if view["runningCount"] != 1 or name in self.executed or behaviour not in {
+                    "succeed", "lost_response", "duplicate", "hang"}:
+                continue
+            self.executed.append(name)
+            container = view["template"]["containers"][0]
+            environ = {**{row["name"]: row["value"] for row in container["env"]}, "CLOUD_RUN_JOB": view["job"],
+                       "CLOUD_RUN_EXECUTION": name, "CLOUD_RUN_TASK_COUNT": "1",
+                       "BLUEPRINT_REMOTE_CPU_STAGE": "episode-compilation", worker.PREFIX_VARIABLE: PREFIX_URL}
+            aside, tree = self.tmp_path / "host-aside", self.tmp_path / "workers" / name
+            tree.parent.mkdir(exist_ok=True)
+            os.rename(self.host.fs, aside)
+            try:
+                common = {"environ": environ, "http": RecordingHttp(self.store), "filesystem_root": self.host.fs,
+                          "clock": self.clock, "measure": lambda: HOST_RECORD, "log": lambda line: None}
+                if behaviour == "hang":
+                    common["launch"] = lambda handoff: (_ for _ in ()).throw(Crash("worker stopped"))
+                    runtime = worker.WorkerRuntime(**common, reader=self.bucket.reader())
+                    try:
+                        worker.bootstrap(["bootstrap"], runtime)
+                    except Crash:
+                        pass
+                    continue
+                execute = worker.WorkerRuntime(**common, run_stage=self._stage)
+                assert worker.bootstrap(["bootstrap"], worker.WorkerRuntime(
+                    **common, reader=self.bucket.reader(),
+                    launch=lambda handoff: worker.execute_attempt(handoff, execute))) == 0
+            finally:
+                os.rename(self.host.fs, tree)
+                os.rename(aside, self.host.fs)
+
+    def advance(self, seconds: float) -> None:
+        """Let time pass in short slices, so every execution's worker runs while its execution does."""
+
+        remaining = float(seconds)
+        while remaining > 0:
+            self.clock.advance(min(30.0, remaining))
+            remaining -= 30.0
+            self.run_workers()
+
+    def drive(self, *, until: Any, step: float = 60.0, limit: int = 200) -> None:
+        """Run the collector, then let time pass and executions run, until ``until()`` holds."""
+
+        for _ in range(limit):
+            self.collect()
+            if until():
+                return
+            self.advance(step)
+        raise AssertionError(f"not reached after {limit} steps: {self.results[-1]}")
+
+    # ------------------------------------------------------------------ observations
+    def lease(self) -> dict[str, Any] | None:
+        from blueprint_pipeline.remote_cpu_job_contract import job_id_for
+
+        path = self.host.jobs / "leases" / f"{job_id_for('episode_compilation', self.name)}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def row_state(self) -> str | None:
+        found = [state for state in ("pending", "processing", "completed", "blocked")
+                 if (self.host.queue / state / self.name).exists()]
+        return found[0] if len(found) == 1 else None
+
+    def terminal(self) -> bool:
+        from blueprint_pipeline.remote_cpu_job_lease import TERMINAL_STATES
+
+        lease = self.lease()
+        return lease is not None and lease["state"] in TERMINAL_STATES

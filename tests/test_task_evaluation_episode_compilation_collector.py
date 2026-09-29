@@ -1,0 +1,470 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py
+#   src/blueprint_pipeline/task_evaluation_episode_compilation_remote.py
+#   src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py
+#   tests/remote_episode_compilation_support.py
+"""ADP-009D/day-28, plan 14 PR 4: the paid unit collects a remote compile and lands only what consumers read."""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline import remote_cpu_job_lease as leases
+from blueprint_pipeline import remote_cpu_job_records as records
+from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
+from blueprint_pipeline import task_evaluation_episode_compilation_remote as remote
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from tests.remote_cpu_allocator_fakes import B2_BUCKET
+from tests.remote_cpu_fakes import FakeGcsError
+from tests.remote_episode_compilation_support import (
+    HOST_RECORD,
+    OUTPUTS,
+    CollectorWorld,
+    Crash,
+    Host,
+    digest_of,
+    tree_snapshot,
+)
+
+# Write URLs outlive the hard deadline (dispatch + 600 + 1800 + 120 s) by the recorded margin: provider-zero
+# is provable only after them.
+PAST_WRITE_EXPIRY = 600 + 1800 + 120 + 300 + 60
+
+
+def _done(world: CollectorWorld) -> bool:
+    return world.terminal() and not remote.marker_path(world.host.jobs, "authoritative", world.name).exists()
+
+
+def _complete(world: CollectorWorld, **drive) -> None:
+    world.drive(until=lambda: _done(world), **drive)
+
+
+def _files(root: Path) -> dict[str, int]:
+    return {path.relative_to(root).as_posix(): path.stat().st_size for path in sorted(root.rglob("*"))
+            if path.is_file()} if root.exists() else {}
+
+
+def _attempts(world: CollectorWorld) -> list[dict]:
+    lease = world.lease()
+    return [*lease["prior_attempts"], lease] if lease else []
+
+
+def _staging_versions(world: CollectorWorld) -> list[str]:
+    listed = world.store.list_object_versions(Bucket=B2_BUCKET, Prefix="")
+    return [row["Key"] for row in [*listed["Versions"], *listed["DeleteMarkers"]] if "/remote-cpu/staging/" in row["Key"]]
+
+
+def _assert_torn_down(world: CollectorWorld) -> None:
+    """Every started attempt has a sealed provider-zero teardown, and nothing of it remains anywhere."""
+
+    started = [attempt for attempt in _attempts(world) if attempt["dispatch_started"]]
+    assert started
+    for attempt in started:
+        teardown = records.validate_teardown(json.loads(
+            (world.host.jobs / "teardowns" / f"{attempt['attempt_id']}.json").read_text(encoding="utf-8")))
+        assert teardown["compute_zero_proven"] and teardown["provider_zero_proven"], attempt["attempt_id"]
+        assert attempt["provider_zero_proven"] and attempt["teardown_digest"] == teardown["teardown_digest"]
+    assert leases.slots_in_use(world.host.jobs) == 0
+    assert _staging_versions(world) == [] and world.bucket._objects == {}
+    assert all(view["completionTime"] for view in world.executions())
+    settled = world.tmp_path / "remote" / "spend-authority" / "remote-cpu-settled"
+    assert len(list(settled.glob("*.json"))) == len(started)
+
+
+def test_remote_stage_writes_only_the_consumer_subset_on_the_host(tmp_path: Path, monkeypatch) -> None:
+    world = CollectorWorld(tmp_path, monkeypatch, case=(False, True, True))
+    compiled = world.host.outputs
+    before = _files(world.host.fs)
+    _complete(world)
+    assert world.lease()["state"] == "completed" and world.row_state() == "completed"
+    compilation = world.plan.compilation_id
+    after = _files(world.host.fs)
+    added = {path: size for path, size in after.items() if before.get(path) != size}
+    landed = {path.removeprefix(f"{OUTPUTS.lstrip('/')}/{compilation}/"): size for path, size in added.items()
+              if path.startswith(f"{OUTPUTS.lstrip('/')}/{compilation}/")}
+    # Only what launch activation and the canary hand-off read: the adapter tree and the probe request.
+    assert landed and all(path.startswith("native-arena-adapter/")
+                          or path == "rigid_destination_native_probe_request.v1.json" for path in landed)
+    assert "rigid_destination_native_probe_request.v1.json" in landed
+    assert not any(path.startswith(("configured-scene/", "native-task-packet/", "native-appearance/", "task-destination/"))
+                   or path == "native-task-arena-bundle.zip" for path in landed)
+    assert sorted(path.name for path in compiled.iterdir()) == sorted([compilation, f"{compilation}.remote-output.v1.json"])
+    # The worker compiled the whole tree; the host holds its consumer subset plus a little metadata.
+    worker_tree = next((tmp_path / "workers").iterdir()) / OUTPUTS.lstrip("/") / compilation
+    subset = sum(size for path, size in _files(worker_tree).items() if path in landed)
+    assert sum(landed.values()) == subset < sum(_files(worker_tree).values())
+    metadata = sum(size for path, size in added.items() if not path.startswith(f"{OUTPUTS.lstrip('/')}/{compilation}/"))
+    assert metadata <= 1024 * 1024
+    pointer = json.loads((compiled / f"{compilation}.remote-output.v1.json").read_text(encoding="utf-8"))
+    assert pointer["landed"] == {"subset": "episode_compilation_consumer.v1", "paths": len(landed),
+                                 "bytes": sum(landed.values())}
+    assert pointer["provider_zero_proven"] and pointer["state"] == "landed"
+    assert (compiled / f"{compilation}.remote-output.v1.json").stat().st_mode & 0o777 == 0o440
+
+
+def test_landed_subset_passes_launch_activation_and_canary_handoff(tmp_path: Path, monkeypatch) -> None:
+    """``tests/test_task_evaluation_launch_activation_worker.py``'s production-compiler case, compiled remotely:
+    activation and the canary hand-off read the landed adapter tree, packet root and runtime receipt."""
+
+    from blueprint_pipeline import task_evaluation_launch_activation_worker as activation
+    from blueprint_pipeline.task_evaluation_launch_preparation_contract import launch_preparation_request_digest
+    from blueprint_pipeline.task_evaluation_policy_canary_handoff import _compiled_construction
+    from tests.test_task_evaluation_launch_activation_worker import _stage_verified_preparation
+
+    preparation, _, _, queue, input_root = _stage_verified_preparation(tmp_path / "preparation")
+    prepared = input_root / preparation["preparation_id"]
+    host = Host(tmp_path)
+    envelope = {"schema_version": "task_evaluation_episode_compilation_envelope.v1",
+                "compilation_id": preparation["preparation_id"], "preparation_id": preparation["preparation_id"],
+                "run_id": preparation["run_id"], "team_namespace": preparation["team_namespace"],
+                "expected_production_commit": preparation["expected_production_commit"],
+                "configured_scene_revision_digest": preparation["task"]["configured_scene_revision_digest"],
+                "request": preparation, "envelope_digest": ""}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    name = f"{envelope['compilation_id']}-{envelope['envelope_digest'][7:]}.json"
+    row = host.queue / "processing" / name
+    row.write_text(json.dumps(envelope), encoding="utf-8")
+    reference = host.inputs / preparation["preparation_id"] / "robot.json"
+    reference.parent.mkdir(parents=True)
+    reference.write_bytes(b'{"robot": "franka"}\n')
+    compilation = envelope["compilation_id"]
+    plan = remote.RemotePlan(
+        queue_row={"queue": remote.QUEUE, "name": name, "envelope_digest": envelope["envelope_digest"]},
+        compilation_id=compilation, source_commit=preparation["expected_production_commit"],
+        image="gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:" + "d" * 64,
+        environment_digest=HOST_RECORD["environment_digest"], host_environment_digest=HOST_RECORD["environment_digest"],
+        closure={"class": "not_applicable", "source_appearance_digest": None}, environment={},
+        inputs=tuple(remote._input(role, contract_path, path, host.fs) for role, contract_path, path in (
+            ("queue_envelope", "queue_envelope", row), ("materialized_reference", "robot.configuration", reference))),
+        output_root=f"{OUTPUTS}/{compilation}", declared_scratch=(f"{OUTPUTS}/content-addressed/",),
+        allowed_cpu_classes=(), ephemeral_bytes_required=0)
+    world = CollectorWorld(tmp_path, monkeypatch, plan=plan, host=host)
+
+    def fabricated(descriptor: dict, roots) -> dict:
+        """What test :685 copies into place, compiled in the worker: the adapter tree, bound to this output."""
+
+        output = roots.local(descriptor["outputs"]["output_root"])
+        adapter_root = output / "native-arena-adapter"
+        shutil.copytree(prepared / "native-arena-adapter", adapter_root)
+        for document in ("native_task_arena_scene_plan.v1.json", "native_task_arena_packet_receipt.v1.json"):
+            (adapter_root / "construction-packet" / document).write_text("{}\n", encoding="utf-8")
+        adapter_path = adapter_root / "task_evaluation_native_arena_adapter_result.v1.json"
+        adapter = json.loads(adapter_path.read_text(encoding="utf-8"))
+        adapter.update(packet_root=str(adapter_root / "construction-packet"), runtime_source_receipt=str(
+            adapter_root / "runtime-source" / "native_task_runtime_source_packet.v1.json"))
+        adapter["result_digest"] = canonical_digest(adapter, digest_field="result_digest")
+        adapter_path.chmod(0o640)
+        adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
+        (output / "configured-scene").mkdir()
+        (output / "configured-scene" / "appearance.usdc").write_bytes(b"appearance" * 1000)
+        packet = output / "native-task-arena-bundle.zip"
+        packet.write_bytes(b"production-owned-episode-packet" * 100)
+        result = {"schema_version": "task_evaluation_episode_compilation_result.v1",
+                  "status": "compiled_for_production_launch", "compilation_id": compilation,
+                  "run_id": envelope["run_id"], "team_namespace": envelope["team_namespace"],
+                  "source_commit": descriptor["code"]["source_commit"],
+                  "configured_scene_revision_digest": envelope["configured_scene_revision_digest"],
+                  "compiled_episode_packet_digest": digest_of(packet.read_bytes()),
+                  "compiled_episode_packet_size_bytes": packet.stat().st_size, "compiled_episode_packet_path": str(packet),
+                  "adapter_result_path": str(adapter_path), "adapter_result_digest": adapter["result_digest"],
+                  "compiler_output_digest": "sha256:" + "c" * 64, "customer_supplied_prebuilt_episode_packet": False,
+                  "compiled_by_production": True, "provider_mutation_performed": False,
+                  "paid_execution_requested": False, "automatic_progression_required": True, "blockers": [],
+                  "result_digest": ""}
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        return {"result": result, "release_path_misses": [], "failures": []}
+
+    world.stage_override = fabricated
+    _complete(world)
+    assert world.lease()["state"] == "completed" and world.row_state() == "completed"
+    assert sorted(path.name for path in (host.outputs / compilation).iterdir()) == ["native-arena-adapter"]
+
+    # Test :685's activation request, pointed at the remotely compiled result.
+    result_path = next((queue / "results").glob("*.json"))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result.update(status="queued_for_production_episode_compilation", episode_compilation_id=compilation,
+                  episode_compilation_queue_envelope_digest=envelope["envelope_digest"])
+    result.pop("adapter_result_digest")
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    result_path.chmod(0o640)
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    request = {"preparation": {"preparation_id": preparation["preparation_id"],
+                               "request_digest": launch_preparation_request_digest(preparation),
+                               "result_digest": result["result_digest"]},
+               "team_namespace": preparation["team_namespace"],
+               "expected_production_commit": preparation["expected_production_commit"]}
+    loaded_request, _, loaded_adapter, _ = activation._load_verified_preparation(
+        activation_request=request, preparation_queue_root=queue, preparation_input_root=input_root,
+        episode_compilation_queue_root=host.queue, episode_compilation_output_root=host.outputs)
+    assert loaded_request["preparation_id"] == compilation
+    assert Path(loaded_adapter["packet_root"]).is_dir()
+    construction = _compiled_construction(host.queue, preparation_id=compilation,
+                                          expected_production_commit=preparation["expected_production_commit"])
+    assert construction["scene_plan_path"].is_file() and construction["runtime_source_receipt_path"].is_file()
+
+
+def test_row_never_moves_before_compute_zero_is_proven(tmp_path: Path, monkeypatch) -> None:
+    world = CollectorWorld(tmp_path, monkeypatch)
+    steps: list[str] = []
+    monkeypatch.setattr(collector, "_after_step", lambda step, attempt_id: steps.append(step))
+    refusals = {"left": 4}
+    delete = world.bucket.delete
+
+    def unavailable(name, *, generation=None):  # the transport cannot yet be proven gone
+        if refusals["left"]:
+            refusals["left"] -= 1
+            raise FakeGcsError(503, "backendError")
+        return delete(name, generation=generation)
+
+    monkeypatch.setattr(world.bucket, "delete", unavailable)
+    world.drive(until=lambda: (world.lease() or {}).get("state") == "collecting", step=30)
+    for _ in range(3):
+        world.collect()
+        # The execution has finished and its receipt is up, but its compute-zero is unproven: nothing moves.
+        assert world.row_state() == "processing" and steps == []
+        assert not (world.host.queue / "results" / world.name).exists()
+        assert not (world.host.outputs / world.plan.compilation_id).exists()
+        assert not world.lease()["compute_zero_proven"]
+    _complete(world)
+    # Plan 14 §9's commit order, compute-zero first; a step repeated on a later run is idempotent.
+    assert list(dict.fromkeys(steps)) == ["compute_zero", "promotion", "validation", "landing", "pointer", "pin",
+                                          "result", "move", "provider_zero"]
+    assert world.row_state() == "completed"
+
+
+def test_second_attempt_and_fallback_wait_for_compute_zero(tmp_path: Path, monkeypatch) -> None:
+    world = CollectorWorld(tmp_path, monkeypatch)
+    world.remote.jobs.script("crash", "crash")
+    delete, refused = world.bucket.delete, {"on": False}
+
+    def gated(name, *, generation=None):
+        if refused["on"]:
+            raise FakeGcsError(503, "backendError")
+        return delete(name, generation=generation)
+
+    monkeypatch.setattr(world.bucket, "delete", gated)
+    # Attempt 1 crashes without a receipt: an infrastructure failure, so the lease expires.
+    world.drive(until=lambda: (world.lease() or {}).get("state") == "expired", step=30)
+    refused["on"] = True
+    for _ in range(3):
+        world.advance(60)
+        world.collect()
+        lease = world.lease()
+        assert (lease["attempt"], lease["compute_zero_proven"]) == (1, False)
+        assert len(world.executions()) == 1  # no second attempt before the first is compute-zero
+    refused["on"] = False
+    world.drive(until=lambda: world.lease()["attempt"] == 2 and world.lease()["state"] == "expired", step=30)
+    assert world.lease()["prior_attempts"][0]["compute_zero_proven"]
+    refused["on"] = True
+    for _ in range(3):
+        world.advance(60)
+        world.collect()
+        assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    refused["on"] = False
+    world.drive(until=lambda: remote.marker_path(world.host.jobs, "fallback", world.name).exists(), step=30)
+    assert all(attempt["compute_zero_proven"] for attempt in _attempts(world))
+    assert world.row_state() == "processing" and len(world.executions()) == 2
+    fallback = remote.read_marker(remote.marker_path(world.host.jobs, "fallback", world.name))
+    assert (fallback["reason"], fallback["attempts"]) == ("remote_cpu_receipt_missing", 2)
+    _complete(world)
+    assert world.lease()["state"] == "fallback_host"
+    _assert_torn_down(world)
+
+
+@pytest.mark.parametrize("scenario", ["success", "blocked", "crash", "timeout", "stale_heartbeat", "lost_response",
+                                      "promotion_failure"])
+def test_every_attempt_ends_with_a_provider_zero_teardown_receipt(tmp_path: Path, monkeypatch, scenario: str) -> None:
+    world = CollectorWorld(tmp_path, monkeypatch)
+    expected = {"success": ("completed", "completed"), "blocked": ("blocked", "blocked"),
+                "lost_response": ("completed", "completed")}.get(scenario, ("fallback_host", "processing"))
+    if scenario == "blocked":
+        from tests.remote_cpu_worker_stages import install_compile_stand_ins
+
+        def refuses(**_kwargs):
+            from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
+                TaskEvaluationNativeArenaEpisodeCompilerError,
+            )
+
+            raise TaskEvaluationNativeArenaEpisodeCompilerError("episode_compiler_destination_usd_format_unrecognized")
+
+        assert install_compile_stand_ins() is not None
+        world.compiler = refuses
+    behaviours = {"crash": ("crash", "crash"), "timeout": ("timeout", "timeout"), "stale_heartbeat": ("hang", "hang"),
+                  "lost_response": ("lost_response",)}
+    world.remote.jobs.script(*behaviours.get(scenario, ()))
+    if scenario == "promotion_failure":
+        def fails(**_kwargs):
+            raise FakeGcsError(500, "InternalError")
+
+        monkeypatch.setattr(world.store, "copy_object", fails)
+    _complete(world, step=300)
+    assert (world.lease()["state"], world.row_state()) == expected, world.results[-1]
+    _assert_torn_down(world)
+    if expected[0] == "fallback_host":
+        assert len([attempt for attempt in _attempts(world) if attempt["dispatch_started"]]) == 2
+        assert remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    if scenario == "blocked":
+        result = json.loads((world.host.queue / "results" / world.name).read_text(encoding="utf-8"))
+        assert result["blockers"] == ["episode_compiler_destination_usd_format_unrecognized"]
+        assert not (world.host.outputs / world.plan.compilation_id).exists()
+    if scenario == "stale_heartbeat":
+        assert {attempt["outcome"] for attempt in _attempts(world)} <= {"heartbeat_stale", "start_timeout"}
+        assert all(view["cancelledCount"] for view in world.executions())
+
+
+def test_promotion_failure_retries_from_staging_without_rerunning(tmp_path: Path, monkeypatch) -> None:
+    world = CollectorWorld(tmp_path, monkeypatch)
+    copy, failures = world.store.copy_object, {"left": 2}
+
+    def flaky(**kwargs):
+        if failures["left"] and kwargs["Key"].endswith("/blobs.tar"):
+            failures["left"] -= 1
+            raise FakeGcsError(500, "InternalError")
+        return copy(**kwargs)
+
+    monkeypatch.setattr(world.store, "copy_object", flaky)
+    _complete(world)
+    assert world.lease()["state"] == "completed" and world.row_state() == "completed"
+    assert len(world.executions()) == 1 and world.lease()["attempt"] == 1
+    row = json.loads((world.host.jobs / "rows" / "episode_compilation" / world.name).read_text(encoding="utf-8"))
+    assert row["failures"] == 2 and row["promoted"]["archive"]["uri"].endswith("/blobs.tar")
+    # A readback that does not match discards the promoted object, so the retry copies again.
+    promoted = row["promoted"]["archive"]["uri"].removeprefix(f"s3://{B2_BUCKET}/")
+    body = world.store.get_object(Bucket=B2_BUCKET, Key=promoted)["Body"].read()
+    assert digest_of(body) == row["promoted"]["archive"]["digest"]
+
+
+def test_partial_landing_then_host_fallback_compiles_cleanly(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline.task_evaluation_episode_compilation_worker import compile_claimed_envelope
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    real = collector._range
+    reads = {"count": 0}
+
+    def breaks(c, uri, offset, length):  # the landing's archive reads fail after its first blob
+        reads["count"] += 1
+        if reads["count"] > 3:
+            raise OSError(5, "Input/output error")
+        return real(c, uri, offset, length)
+
+    monkeypatch.setattr(collector, "_range", breaks)
+    world.drive(until=lambda: remote.marker_path(world.host.jobs, "fallback", world.name).exists(), step=600)
+    compilation = world.plan.compilation_id
+    assert not (world.host.outputs / compilation).exists()
+    assert not list(world.host.outputs.glob(f".{compilation}.landing-*"))
+    # The no-spend unit's host compile of the fallback row starts from an owned output that does not exist.
+    state, result = compile_claimed_envelope(
+        world.host.queue / "processing" / world.name, source_name=world.name, inputs=world.host.inputs.resolve(),
+        outputs=world.host.outputs.resolve(), source_commit=world.plan.source_commit, episode_compiler=world.compiler,
+        disk_reservation_root=None, storage_pins_root=None)
+    assert (state, result["status"]) == ("completed", "compiled_for_production_launch")
+    assert (world.host.outputs / compilation / "native-task-arena-bundle.zip").is_file()
+
+
+def test_abandoned_dispatch_deletes_its_transport_first(tmp_path: Path, monkeypatch) -> None:
+    world = CollectorWorld(tmp_path, monkeypatch)
+    events: list[tuple[str, str]] = []
+    run_job = world.remote.jobs.run_job
+
+    def lost_before_creating(name, **kwargs):  # the request never reached Cloud Run, and nothing ran
+        from tests.remote_cpu_fakes import FakeCloudRunError
+
+        if kwargs.get("validate_only"):
+            return run_job(name, **kwargs)
+        raise FakeCloudRunError(None, "UNAVAILABLE", "connection reset before the request was sent")
+
+    delete = world.bucket.delete
+
+    def recorded(name, *, generation=None):
+        events.append(("transport_deleted", name))
+        return delete(name, generation=generation)
+
+    transition = leases.transition
+
+    def watched(root, job_id, *, attempt_id, to_state, now, updates=None):
+        if to_state == "abandoned_dispatch":
+            assert world.bucket._objects == {}, "abandoned before its transport was deleted"
+            events.append(("abandoned_dispatch", attempt_id))
+        return transition(root, job_id, attempt_id=attempt_id, to_state=to_state, now=now, updates=updates)
+
+    monkeypatch.setattr(world.remote.jobs, "run_job", lost_before_creating)
+    monkeypatch.setattr(world.bucket, "delete", recorded)
+    monkeypatch.setattr(leases, "transition", watched)
+    _complete(world, step=300)
+    assert world.lease()["state"] == "abandoned_dispatch" and world.executions() == []
+    kinds = [kind for kind, _ in events]
+    assert "transport_deleted" in kinds and kinds.index("transport_deleted") < kinds.index("abandoned_dispatch")
+    # Nothing ran, so the row goes back to the host.
+    assert remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    assert world.row_state() == "processing"
+
+
+STEPS = ["compute_zero", "promotion", "validation", "landing", "pointer", "pin", "result", "move", "provider_zero"]
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_collector_resumes_idempotently_after_a_crash_at_each_commit_step(tmp_path: Path, monkeypatch,
+                                                                          step: str) -> None:
+    # The same host paths twice, so the two runs' outputs are comparable byte for byte: a clean run first.
+    root = tmp_path / "run"
+    clean = CollectorWorld(root, monkeypatch)
+    _complete(clean)
+    compilation, name = clean.plan.compilation_id, clean.name
+    expected_result = (clean.host.queue / "results" / name).read_bytes()
+    expected_tree = tree_snapshot(clean.host.outputs / compilation)
+    shutil.rmtree(root)
+    world = CollectorWorld(root, monkeypatch)
+    crashed: list[str] = []
+
+    def crash_once(name: str, attempt_id: str) -> None:
+        if name == step and not crashed:
+            crashed.append(name)
+            raise Crash(name)
+
+    monkeypatch.setattr(collector, "_after_step", crash_once)
+    for _ in range(200):
+        try:
+            world.collect()
+        except Crash:
+            pass
+        if _done(world):
+            break
+        world.advance(60)
+    assert crashed == [step] and _done(world) and world.name == name
+    assert (world.lease()["state"], world.row_state()) == ("completed", "completed")
+    assert len(world.executions()) == 1 and world.lease()["attempt"] == 1
+    assert (world.host.queue / "results" / name).read_bytes() == expected_result
+    assert tree_snapshot(world.host.outputs / compilation) == expected_tree
+    pointer = json.loads((world.host.outputs / f"{compilation}.remote-output.v1.json").read_text(encoding="utf-8"))
+    assert pointer["provider_zero_proven"] and pointer["teardown_receipt_digest"] == world.lease()["teardown_digest"]
+    cas = [key for key in world.store.buckets[B2_BUCKET] if "/remote-cpu-output/" in key]
+    assert len(cas) == 2 and all(len(world.store.buckets[B2_BUCKET][key]) == 1 for key in cas)
+    _assert_torn_down(world)
+    assert not list(world.host.outputs.glob(f".{compilation}.landing-*"))
+
+
+def test_the_collector_writes_object_storage_only_through_its_approved_promotion() -> None:
+    """Plan 14 §9: the collector's CAS writes are the server-side promotion and, after a failed readback, the
+    discard of that promoted object; the verifier names ``_promote`` as their only new caller."""
+
+    import importlib.util
+
+    root = Path(collector.__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("verify_paid_resource_allocator",
+                                                  root / "scripts" / "verify_paid_resource_allocator.py")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    module = "src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py"
+    source = (root / module).read_text(encoding="utf-8")
+    assert "discard_remote_cpu_output_object" in verifier.REMOTE_CPU_OBJECT_STORE_WRITERS
+    assert verifier._s3_transport_capability_callers(
+        {module: source}, verifier.REMOTE_CPU_OBJECT_STORE_WRITERS) == {(module, "_promote")}
+    assert {(path, name) for path, name in verifier.APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS
+            if path == module} == {(module, "_promote")}
+    # No direct provider mutation of its own: executions start and stop only through the allocator subcommand.
+    assert verifier._direct_paid_mutation_signals(source) == set()
+    assert not {"require_paid_resource_admission", "build_paid_lane_admission"} & verifier._all_calls(root / module)

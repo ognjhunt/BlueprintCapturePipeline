@@ -70,6 +70,11 @@ EPISODE_COMPILATION_CONSUMER_SUBSET = ("native-arena-adapter/**", "rigid_destina
 WORKER_ENVIRONMENT_SCHEMA_VERSION = "remote_cpu_worker_environment.v1"
 JOB_IMAGE_SCHEMA_VERSION = "remote_cpu_job_image_observation.v1"
 PARITY_SCHEMA_VERSION = "task_evaluation_episode_compilation_shadow_parity.v1"
+HANDOFF_SCHEMA_VERSION = "task_evaluation_episode_compilation_handoff.v1"
+FALLBACK_SCHEMA_VERSION = "task_evaluation_episode_compilation_fallback.v1"
+# Where each marker lives under the jobs root: a hand-off (``cloud_run``) or shadow marker names a plan for the
+# paid unit; a fallback marker returns a claimed row to the no-spend unit.  None is inside the queue root.
+MARKERS = {"authoritative": "handoffs", "shadow": "shadow", "fallback": "fallback"}
 BUNDLE_MANIFEST = "configured_scene_bundle_candidate.v1.json"
 CACHE_MANIFEST = "particlefield_runtime_asset_cache.v1.json"
 CACHE_SCHEMA_VERSION = "particlefield_runtime_asset_cache.v1"
@@ -98,6 +103,7 @@ class RemotePlan:
     source_commit: str
     image: str
     environment_digest: str
+    host_environment_digest: str
     closure: dict[str, Any]
     environment: dict[str, str]
     inputs: tuple[dict[str, Any], ...]
@@ -115,6 +121,15 @@ class RemotePlan:
         for name in ("inputs", "declared_scratch", "allowed_cpu_classes"):
             fields[name] = tuple(fields[name])
         return cls(**fields)
+
+
+def execution_mode(environ: Mapping[str, str] | None = None) -> tuple[str, list[str]]:
+    """The effective mode and why it differs from the requested one: an invalid value runs as ``host``."""
+
+    requested = str((os.environ if environ is None else environ).get(EXECUTION_ENV) or "host").strip() or "host"
+    if requested not in MODES:
+        return "host", ["episode_compilation_execution_mode_invalid"]
+    return requested, []
 
 
 def _read_record(path: Path, *, forbidden_mode: int = 0o022) -> dict[str, Any] | None:
@@ -420,11 +435,58 @@ def plan_remote_compilation(
     return RemotePlan(
         queue_row={"queue": QUEUE, "name": claimed.name, "envelope_digest": envelope["envelope_digest"]},
         compilation_id=str(envelope["compilation_id"]), source_commit=source_commit, image=entry["image"],
-        environment_digest=str(recorded["environment_digest"]), closure=closure_record,
+        environment_digest=str(recorded["environment_digest"]),
+        host_environment_digest=str(host["environment_digest"]), closure=closure_record,
         environment={CACHE_ROOT_VARIABLE: cache_variable} if closure_record["class"] == "shipped" else {},
         inputs=tuple(rows), output_root=f"{output_parent}/{envelope['compilation_id']}",
         declared_scratch=(f"{output_parent}/content-addressed/",),
         allowed_cpu_classes=(str(cpu_class),) if inline else (), ephemeral_bytes_required=required)
+
+
+def marker_path(jobs_root: str | Path, kind: str, name: str) -> Path:
+    return Path(jobs_root) / MARKERS[kind] / STAGE / name
+
+
+def write_handoff(jobs_root: str | Path, plan: RemotePlan, *, mode: str, now: float) -> dict[str, Any]:
+    """Hand a claimed row's plan to the paid unit: one immutable marker, created exclusively (plan 14 §1)."""
+
+    if mode not in {"authoritative", "shadow"}:
+        raise TaskEvaluationEpisodeCompilationRemoteError("remote_episode_compilation_handoff_mode_invalid")
+    record = {"schema_version": HANDOFF_SCHEMA_VERSION, "mode": mode, "queue_row": dict(plan.queue_row),
+              "plan": plan.record(), "created_at_epoch": float(now), "handoff_digest": ""}
+    record["handoff_digest"] = canonical_digest(record, digest_field="handoff_digest")
+    write_remote_cpu_record(marker_path(jobs_root, mode, plan.queue_row["name"]), record)
+    return record
+
+
+def write_fallback(jobs_root: str | Path, queue_row: Mapping[str, Any], *, reason: str, attempts: int,
+                   now: float) -> dict[str, Any]:
+    """Return a claimed row to the no-spend unit, which compiles it on the host (plan 14 §10)."""
+
+    record = {"schema_version": FALLBACK_SCHEMA_VERSION, "queue_row": dict(queue_row), "reason": reason,
+              "attempts": int(attempts), "created_at_epoch": float(now), "fallback_digest": ""}
+    record["fallback_digest"] = canonical_digest(record, digest_field="fallback_digest")
+    write_remote_cpu_record(marker_path(jobs_root, "fallback", queue_row["name"]), record)
+    return record
+
+
+def read_marker(path: str | Path) -> dict[str, Any] | None:
+    """A sealed hand-off, shadow or fallback marker; ``None`` when absent, foreign or unsealed."""
+
+    record = _read_record(Path(path))
+    for schema, field in ((HANDOFF_SCHEMA_VERSION, "handoff_digest"), (FALLBACK_SCHEMA_VERSION, "fallback_digest")):
+        if record is not None and record.get("schema_version") == schema:
+            if record.get(field) == canonical_digest(record, digest_field=field) and isinstance(
+                    record.get("queue_row"), Mapping) and record["queue_row"].get("name") == Path(path).name:
+                return record
+    return None
+
+
+def markers(jobs_root: str | Path, kind: str) -> list[tuple[Path, dict[str, Any] | None]]:
+    """Every marker of one kind, oldest name first; an unreadable one is listed as ``None``."""
+
+    directory = Path(jobs_root) / MARKERS[kind] / STAGE
+    return [(path, read_marker(path)) for path in sorted(directory.glob("*.json"))] if directory.is_dir() else []
 
 
 def input_sources(plan: RemotePlan, queue_root: str | Path) -> list[dict[str, Any]]:
@@ -468,13 +530,19 @@ __all__ = [
     "MODES",
     "RemotePlan",
     "RemoteCpuContractError",
+    "execution_mode",
     "TaskEvaluationEpisodeCompilationRemoteError",
     "image_drift",
     "input_sources",
+    "marker_path",
+    "markers",
+    "read_marker",
     "plan_remote_compilation",
     "record_job_image",
     "record_shadow_parity",
     "run_episode_compilation_in_worker",
     "shadow_passes",
     "worker_environment",
+    "write_fallback",
+    "write_handoff",
 ]
