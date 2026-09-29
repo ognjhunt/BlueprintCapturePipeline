@@ -13,6 +13,7 @@ completion, descendant closure or archive proof is fabricated here.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -158,6 +159,48 @@ def test_authentic_expired_scratch_reaches_existing_gc_and_durable_retired_recei
         expected_action_intent=action['action_intent'], installed_config_path=installation[0], now=lambda: 2901)
     assert receipt['decision'] == 'retired' and receipt['receipt'] == outcomes[0]['receipt']
     assert _payload_snapshot(target) == before
+
+
+def test_pin_publisher_cannot_enter_between_observation_and_retirement(
+        retirement_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    from blueprint_pipeline import control_plane_storage_pin_observation as observation
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
+
+    installation = retirement_installation  # noqa: F811
+    grant, _, target = _born_scratch(installation)
+    action = _issue_action(installation, grant)
+    pins_root = installation[0].parent / 'pins'
+    pins_root.mkdir(exist_ok=True)
+    (pins_root / 'preparation').mkdir(exist_ok=True)
+    original = observation.observe_storage_pins
+    attempted = []
+
+    def interleaved(*args, **kwargs):
+        result = original(*args, **kwargs)
+        assert result.complete
+        probe = os.open(pins_root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                attempted.append('blocked')
+            else:
+                attempted.append('entered')
+                fcntl.flock(probe, fcntl.LOCK_UN)
+                write_storage_pin(pins_root=pins_root, kind='preparation',
+                                  owner_id='new-ancestor', paths=[target.parent], now=lambda: 2900)
+        finally:
+            os.close(probe)
+        return result
+
+    monkeypatch.setattr(observation, 'observe_storage_pins', interleaved)
+    _no_archive(monkeypatch)
+    root.run_registered_experiment_action(
+        action['action_id'], expected_action_intent=action['action_intent'],
+        installed_config_path=installation[0], now=lambda: 2900, _pins_root=pins_root)
+    assert attempted == ['blocked']
+    assert not list(pins_root.rglob('new-ancestor.json'))
 
 
 @pytest.mark.parametrize('disabled', ['gc_opt_in', 'installed_retirement'])
