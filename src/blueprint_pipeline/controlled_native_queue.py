@@ -52,14 +52,16 @@ def configured_profile(request: Mapping[str, Any]) -> dict[str, Any] | None:
     tasks = request.get("requested_tasks") or []
     if len(tasks) != 1 or len(tasks[0].get("scenario_ids") or []) != 1:
         return None
-    matches = [row for row in registry.get("profiles", []) if row.get("capture_root") == request.get("capture_root")
+    candidates = [row for row in registry.get("profiles", []) if row.get("capture_root") == request.get("capture_root")
         and row.get("task_id") == tasks[0].get("task_id")
         and row.get("scenario_id") == tasks[0]["scenario_ids"][0]
-        and request.get("customer", {}).get("id") in row.get("allowed_team_ids", [])
-        and (request.get("robot_profile", {}).get("robot_profile_id") in row.get("allowed_checkpoint_ids", [])
-             or (row.get("allowed_checkpoint_ids") == ["*"]
-                 and isinstance(row.get("sandbox_manager"), Mapping)
-                 and len(row.get("allowed_team_ids", [])) == 1))]
+        and request.get("customer", {}).get("id") in row.get("allowed_team_ids", [])]
+    checkpoint = request.get("robot_profile", {}).get("robot_profile_id")
+    exact = [row for row in candidates if checkpoint in row.get("allowed_checkpoint_ids", [])]
+    wildcard = [row for row in candidates if row.get("allowed_checkpoint_ids") == ["*"]
+        and isinstance(row.get("sandbox_manager"), Mapping)
+        and len(row.get("allowed_team_ids", [])) == 1]
+    matches = exact or wildcard
     if len(matches) > 1:
         raise ValueError("controlled_native_profile_ambiguous")
     return matches[0] if matches else None
