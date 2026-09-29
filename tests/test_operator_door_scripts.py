@@ -6,6 +6,7 @@
 #   deploy/operator-door/door-upgrade.sh
 #   deploy/operator-door/door-retire-scene-workspace.sh
 #   deploy/operator-door/door-restore-scene-workspace.sh
+#   deploy/operator-door/door-provider-output-resume.sh
 #   deploy/operator-door/install.sh
 
 from __future__ import annotations
@@ -168,7 +169,7 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
 
 @pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh", "door-hold-expire.sh",
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
-                                    "door-lane-scratch.sh", "install.sh"])
+                                    "door-lane-scratch.sh", "door-provider-output-resume.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
 
@@ -471,3 +472,78 @@ def test_hold_expiry_script_releases_only_matching_active_expired_generation(tmp
     assert json.loads(archived.read_text())["status"] == "expired_released"
     assert run(new_id) == 0
     assert log.read_text().splitlines() == [f"enable -- {unit}", f"--no-block start -- {unit}"], "expiry is idempotent"
+
+
+
+# --- provider-output-resume ---------------------------------------------------------------------
+
+RESUME_ID = "20260929T120000Z-provider-output-resume-0000abcd"
+SETPRIV_STUB = r"""#!/bin/bash
+options=()
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do options+=("$1"); shift; done
+shift
+{ echo "setpriv ${options[*]} --"; echo "umask $(umask)"; } >> "$STUB_LOG"
+exec "$@"
+"""
+RESUME_PYTHON_STUB = r"""#!/bin/bash
+{ echo "resume $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"
+  echo "artifact-bucket ${BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET:-unset}"
+  echo "ledger ${BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT:-unset}"
+  echo "from-env-file ${BLUEPRINT_FAKE_FROM_ENV_FILE:-unset}"; } >> "$STUB_LOG"
+printf '%s\n' "${FAKE_RESUME:-}"
+exit "${FAKE_TOOL_RC:-0}"
+"""
+
+
+@pytest.fixture()
+def resume_env(retire_env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "resume-python", RESUME_PYTHON_STUB)
+    canaries = tmp_path / "canaries"
+    (canaries / "activation-1" / "allocator" / "attempts" / "attempt_003").mkdir(parents=True)
+    values = {**retire_env, "DOOR_VENV_PYTHON": str(tmp_path / "resume-python"), "DOOR_CANARY_ROOT": str(canaries),
+              "DOOR_RUN": "activation-1", "DOOR_ATTEMPT": "3", "DOOR_SERVICE_USER": "blueprint"}
+    values.pop("DOOR_SCENE_ID")
+    return values
+
+
+@pytest.mark.parametrize(("ingest", "resume", "status", "code", "rc"), [
+    ("1", {"status": "completed", "blockers": []}, "completed", None, 0),
+    (None, {"status": "blocked", "blockers": ["staged_output_promotion_receipt_missing"]}, "blocked",
+     "staged_output_promotion_receipt_missing", 1),
+])
+def test_provider_output_resume_runs_the_release_module_as_the_service_user(
+        resume_env: dict[str, str], tmp_path: Path, ingest, resume, status, code, rc) -> None:
+    """Review I5: the attempt tree belongs to the service user, so the resume runs as ``blueprint``
+    with a private umask; the root script only keeps the door's log, result and outcome."""
+    extra = {"FAKE_RESUME": json.dumps(resume), **({"DOOR_INGEST": ingest} if ingest else {})}
+    done_rc, outcome, calls = _run("door-provider-output-resume.sh", resume_env, DOOR_REQUEST_ID=RESUME_ID, **extra)
+
+    attempt = tmp_path / "canaries/activation-1/allocator/attempts/attempt_003"
+    assert (done_rc, outcome["status"], outcome["code"], outcome["exit_code"]) == (rc, status, code, rc)
+    assert calls[0] == "setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --"
+    assert calls[1] == "umask 0077"
+    assert calls[2] == ("resume -m blueprint_pipeline.provider_output_promotion resume --attempt-root "
+                        f"{attempt}" + (" --ingest" if ingest else ""))
+    assert calls[3:8] == [f"cwd {tmp_path / 'releases' / SHA}", "pythonpath src",
+                          "artifact-bucket blueprint-task-evaluation-artifacts-prod",
+                          "ledger /var/lib/blueprint/pipeline-control-plane/disk-reservations",
+                          "from-env-file loaded"]
+    result = Path(resume_env["DOOR_RESULTS_DIR"]) / f"{RESUME_ID}.provider-output-resume.json"
+    assert outcome["result"] == str(result) and json.loads(result.read_text()) == resume
+    assert oct(result.stat().st_mode & 0o777) == oct(0o644)  # the door reads it
+    assert not any(call.startswith(("git ", "systemctl ")) for call in calls)
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"DOOR_RUN": "../activation-1"}, "provider_output_resume_run_invalid"),
+    ({"DOOR_RUN": ".."}, "provider_output_resume_run_invalid"),
+    ({"DOOR_ATTEMPT": "0"}, "provider_output_resume_attempt_invalid"),
+    ({"DOOR_ATTEMPT": "3; rm -rf /"}, "provider_output_resume_attempt_invalid"),
+    ({"DOOR_INGEST": "yes"}, "provider_output_resume_ingest_invalid"),
+    ({"DOOR_SERVICE_USER": "root"}, "provider_output_resume_user_invalid"),
+    ({"DOOR_ATTEMPT": "4"}, "provider_output_resume_attempt_missing"),
+])
+def test_provider_output_resume_rechecks_its_inputs(resume_env: dict[str, str], overrides, code) -> None:
+    rc, outcome, calls = _run("door-provider-output-resume.sh", resume_env, DOOR_REQUEST_ID=RESUME_ID, **overrides)
+    assert rc == 2 and outcome["code"] == code and not calls

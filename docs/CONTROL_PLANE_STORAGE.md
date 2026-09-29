@@ -1224,7 +1224,10 @@ path it reads; without one (download mode) it runs exactly its old code.
   promotion receipt is a checkpoint (witness `pending`), neither accepts the
   proof (`policy_canary_provider_output_promotion_not_final`).
 - **The existing-run continuation** promotes a gated staging's output under the
-  per-staging lock (10 s wait) before its gated cleanup.
+  per-staging lock (10 s wait) before its gated cleanup. Without the dedicated
+  B2 store it refuses first and the tick names
+  `continuation_output_promotion_artifact_store_not_configured`; its unit binds
+  the store explicitly.
 - **Offline tools** that need a scratch copy of one cell run
   `python -m blueprint_pipeline.provider_output_member_view materialize --evidence-root <attempt>/immutable_execution --prefix cell_runs/NN/ --output-root <scratch>`.
 
@@ -1249,3 +1252,114 @@ Two stream-mode records look alarming and are not:
   `mp4_validation.blockers` means no MP4 was copied out for ffprobe, by design.
   The Quick-10 bundle kind expects no inspection video smoke, so the run is
   not blocked by it; video smoke is simply not proven by the inspection.
+
+## Streamed provider output: the Quick-10 lane (2026-09-29)
+
+`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY` selects how a Quick-10's provider
+archive reaches the host. Unset, empty or `download` is today's path, byte for
+byte (a test pins the lane result and artifact manifest to digests taken before
+the stream path existed). `stream` is read only by the Quick-10 session, before
+its authority is consumed; any other value, or `stream` without the five
+dedicated B2 settings, refuses there with zero provider mutations
+(`policy_canary_output_delivery_mode_invalid`,
+`policy_canary_output_stream_artifact_store_not_configured`). Every other arena
+caller keeps the lane's `download` default. The canary dispatcher and the
+existing-run continuation units bind the B2 store explicitly, as the intake
+unit does.
+
+**What a streamed run does.**
+
+1. The session takes a `policy_canary_output` forecast hold of the role's
+   declared footprint (1 GiB) before consuming its authority; a host without
+   room refuses with `policy_canary_output_disk_admission_refused` before any
+   spend. The hold is released with the lane's outcome.
+2. In the paid window the adapter observes the staged output by range (the
+   end records, the central directory, the result record): no ZIP and no MP4
+   copy. A 404 or any transport refusal falls back to pinned SSH recovery,
+   which still lands a whole ZIP.
+3. After teardown the lane promotes the staged object (or the SSH ZIP) to B2
+   with a full readback and indexes it, then runs the gated cleanup. The SSH
+   ZIP is removed behind its pointer.
+4. The member contract (`policy_canary_output_member_contract.v1`: JSON outside
+   `policy-requests`, less the ten `cell_runs/NN/…result.v1.json` children,
+   which adoption and partial recovery read through the view) selects the
+   needed set from the sealed index. The hold then shrinks in place to the
+   needed set plus 1 KiB per archive member, the index and 16 MiB, and the
+   members are ingested from B2 by range, each checked against the index. The
+   native result path, the view descriptor and the manifest's archive rows
+   exist only once ingestion is materialized.
+
+**Budget and measurement.** The contract materializes at most 640 MiB
+(`NEEDED_SET_BUDGET_BYTES`). That is 1.5 times the 436,485,098 bytes measured on
+a Quick-10-shaped fixture: the lifecycle rehearsal's real worker output, whose
+needed set is 2.29 times its aggregate, scaled to production's measured
+190,573,875-byte aggregate. The children would have added 191,208,330 bytes.
+**Before flipping the flag, measure one retained Quick-10**:
+`python -m blueprint_pipeline.provider_output_member_view plan --archive <retained vast_provider_runtime_output.zip> --contract policy_canary_output_member_contract.v1`
+prints `dispositions.materialized.bytes`. If it is over the budget, streamed
+runs would block after the run with their archive durable; raise the budget
+or move to a selection v2 before flipping.
+
+**After-run outcomes.** Each seals `blocked` like a failed download, with
+`archive_durable` saying whether B2 holds the output:
+
+| Blocker (`native_task_arena_policy_canary_session_…`) | Archive durable | Recovery |
+|---|---|---|
+| `…_provider_output_promotion_failed` (plus the receipt's code) | no; the staged output stays, the gate defers it | door resume |
+| `…_provider_output_zip_missing` | nothing was staged | none needed |
+| `…_provider_output_not_indexed` (plus `provider_output_index_refused:<code>`) | yes | none: the index refused the archive |
+| `…_provider_output_needed_set_over_budget` | yes | raise the budget, then door resume with `ingest` |
+| `…_provider_output_disk_budget_exceeded_after_run` (plus the ledger's code) | yes | door resume with `ingest` |
+| `…_provider_output_ingestion_blocked` (plus the ingester's code) | yes | door resume with `ingest` |
+
+Resume never rewrites the sealed lane result, so a run that blocked after the
+run stays blocked; its members become readable, its staged objects provably
+gone. Redelivering such a run is out of scope.
+
+**Door resume.** `python3 scripts/operator_door.py provider-output-resume <run>
+<attempt> [--ingest] --wait` runs the active release's
+`provider_output_promotion resume` as `blueprint` with umask 0077, never as root
+(the attempt tree is the service user's). `--ingest` takes an exact
+`policy_canary_output` hold and ingests once: an ingestion already materialized
+for the index short-circuits, because readers (partial recovery,
+interpretation) write into the evidence root afterwards and a second pass would
+refuse the tree.
+
+**Staging-manifest rewrites.** A rewrite that keeps the staged keys
+(`--refresh-output-get-url`) no longer demotes a promoted output: resume
+re-binds the durable receipt for the same output key and observed (size, ETag)
+(`rebound_from_staging_manifest_sha256`), and a durable receipt it cannot
+re-bind is renamed aside, never overwritten.
+
+**Owner rehearsal (no provider, no spend).** Before flipping the flag, promote
+and ingest one retained Quick-10 into the dev bucket on the host:
+
+1. As `blueprint` with umask 0077, lay out a scratch attempt:
+   `<scratch>/attempt_001/vast_provider_run/vast_provider_runtime_output.zip`, a
+   **copy** of a retained ZIP (promotion removes it behind its pointer), and
+   `<scratch>/attempt_001/object_store_staging/wam_provider_object_store_staging_manifest.json`
+   with `schema_version` `wam_provider_object_store_staging.v1`, `status`
+   `completed`, an `object_store` prefix, a `bundle_key` and an `output_key`
+   that name no object, and `"output_promotion_required": true`.
+2. Point the five `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE` settings and
+   `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET` at the dev bucket.
+3. Run `python -m blueprint_pipeline.provider_output_promotion resume
+   --attempt-root <scratch>/attempt_001 --ingest`. Expect promotion `promoted`
+   from `ssh_local_zip`, a CAS key under
+   `policy-canary-provider-output/sha256/…`, the cleanup proving both staged keys
+   absent, and `immutable_execution/` holding exactly the needed set. Run it
+   again: the ingestion short-circuits.
+
+**Documented differences from download mode.** `artifact_manifest.json` (archive
+rows and the streamed roles), and with it the records billing's terminal
+evidence binds for the manifest and the lane result;
+`provider_runtime_output_zip_inspection` (`zip_path`, no ffprobe rows); the
+stream-only lane-result fields (`provider_output_*`, `archive_durable`,
+`provider_output_host_bytes` = M1); `provider_runtime_output_zip_path` naming no
+file; and host bytes. The native result and its digest, the joined terminal
+result, the registry rows, the public delivery and projection, the
+interpretation receipts, the billing verdict, teardown, provider-zero and the
+cleanup rows are the same (`tests/test_policy_canary_output_streaming.py`).
+
+**Rollback.** Unset the flag or set `download`. Never revert the readers of
+the section above while a streamed run is retained.

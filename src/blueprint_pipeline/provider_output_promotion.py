@@ -943,9 +943,14 @@ def resume_provider_output_promotion(
     maximum_archive_bytes: int | None = None,
     cleanup: Callable[[], Mapping[str, Any]] | None = None,
     lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+    ingest: bool = False,
     **dependencies: Any,
 ) -> dict:
     """Rerun promotion, the gated cleanup and the absence proof for one attempt.
+
+    With ``ingest`` the promoted archive's needed members are then ingested
+    (``arena_provider_output_streaming.resume_ingestion``), which
+    short-circuits on an ingestion already materialized.
 
     Reads the arena lane's layout: ``object_store_staging/``, the adapter's
     recorded ``provider_output_remote_observation``, and an SSH-recovered ZIP
@@ -979,6 +984,12 @@ def resume_provider_output_promotion(
             blockers.append(str(exc))
     if proof is None and not blockers:
         blockers.append("staged_object_absence_not_proven")
+    ingestion = None
+    if ingest and refusal is None:
+        from .arena_provider_output_streaming import resume_ingestion
+
+        ingestion = resume_ingestion(attempt)
+        blockers.extend(ingestion["blockers"])
     result = {
         "schema_version": RESUME_SCHEMA,
         "generated_at": utc_now_iso(),
@@ -991,6 +1002,8 @@ def resume_provider_output_promotion(
                           if proof is not None else None),
         "lane_result_rewritten": False,
         **({"quarantined_absence_proof": quarantined} if quarantined is not None else {}),
+        **({"ingestion": {key: ingestion.get(key) for key in ("status", "short_circuited", "ingestion", "needed_set")}}
+           if ingestion is not None else {}),
         "blockers": sorted(set(blockers)),
         "private_url_recorded": False,
         "raw_secret_values_recorded": False,
@@ -1008,18 +1021,20 @@ def main(argv: list[str] | None = None) -> int:
 
     ``python -m blueprint_pipeline.provider_output_promotion resume --attempt-root <attempt>
     [--artifact-kind policy-canary-provider-output] [--maximum-archive-bytes N]
-    [--lock-timeout-seconds S]``
+    [--lock-timeout-seconds S] [--ingest]``
 
     Run it as the ``blueprint`` service user with ``UMask=0077``, never as
     root (review I5). It writes the promotion receipt, the member index, the
     absence proof and ``provider_output_resume.v1.json`` into the attempt tree
     that the lane, the dispatcher and billing read later: files there owned by
     root would break those readers, and files readable by other users would
-    expose run evidence. The operator door kind that launches it this way
-    (``provider-output-resume``) comes with the lane wiring, as does ingestion
-    on resume. It never rewrites the sealed lane result. Exit status 0 means
-    the attempt's staged objects are proven absent with the output promoted or
-    confirmed absent; 1 means the resume receipt names what is still blocked.
+    expose run evidence. The operator door's ``provider-output-resume`` kind
+    launches it exactly so (``door-provider-output-resume.sh``). ``--ingest``
+    also ingests the promoted archive's needed members, once. It never
+    rewrites the sealed lane result. Exit status 0 means the attempt's staged
+    objects are proven absent with the output promoted or confirmed absent
+    (and, with ``--ingest``, its members materialized); 1 means the resume
+    receipt names what is still blocked.
     """
     parser = argparse.ArgumentParser(description="Resume a streamed provider output's promotion.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1028,12 +1043,15 @@ def main(argv: list[str] | None = None) -> int:
     resume.add_argument("--artifact-kind", default=OUTPUT_ARTIFACT_KIND)
     resume.add_argument("--maximum-archive-bytes", type=int, default=DEFAULT_MAXIMUM_ARCHIVE_BYTES)
     resume.add_argument("--lock-timeout-seconds", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
+    resume.add_argument("--ingest", action="store_true")
     args = parser.parse_args(argv)
     result = resume_provider_output_promotion(args.attempt_root, artifact_kind=args.artifact_kind,
                                               maximum_archive_bytes=args.maximum_archive_bytes,
-                                              lock_timeout_seconds=args.lock_timeout_seconds)
+                                              lock_timeout_seconds=args.lock_timeout_seconds,
+                                              **({"ingest": True} if args.ingest else {}))
     print(json.dumps({key: result.get(key) for key in ("status", "blockers", "promotion", "cleanup",
-                                                       "absence_proof")}, sort_keys=True))
+                                                       "absence_proof", "ingestion") if key in result},
+                     sort_keys=True))
     return 0 if result.get("status") == "completed" else 1
 
 

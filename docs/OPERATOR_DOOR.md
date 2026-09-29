@@ -117,6 +117,7 @@ Request kinds:
 | `door-upgrade` | deploy | `commit` on `origin/main` | `door-upgrade.sh`: that commit's `install.sh --upgrade`, rolled back on a failed health check |
 | `retire-scene-workspace` | operate | `scene_id`, optional `bucket`, `apply` (default `false`) | `door-retire-scene-workspace.sh`: the active release's `website_scene_workspace_retention retire` for that scene; without `apply` it only plans. Outcome `planned`, `retained` (code = first reason), `retired` or `failed`; the module's full result is `results/<id>.retirement.json` |
 | `restore-scene-workspace` | operate | `scene_id`, required `bucket` | `door-restore-scene-workspace.sh`: replays the retired receipt to the canonical workspace path, checks every byte and moves the historical receipt aside. Outcome `restored` or `failed`; the module's full result is `results/<id>.restore.json` |
+| `provider-output-resume` | operate | `run` (a canary dispatch directory), `attempt` (1–999), `ingest` (default `false`) | `door-provider-output-resume.sh`: the active release's `provider_output_promotion resume --attempt-root <run>/allocator/attempts/attempt_NNN [--ingest]` for one streamed policy-canary attempt, run as `blueprint` with umask 0077 (the attempt tree is the service user's): promotion to B2, the gated cleanup, the staged-object absence proof and, with `ingest`, the needed members' ingestion, which short-circuits once materialized. Outcome `completed`, or `blocked` with the first blocker as its code; the module's summary is `results/<id>.provider-output-resume.json` |
 
 **`deploy` is root-equivalent.** Whoever holds it can get code that is on
 `origin/main` running as root, which is what a deploy is. Give it only to
@@ -125,10 +126,11 @@ tokens that should be able to ship; `read` and `operate` never run code.
 Every script runs in a transient unit named
 `blueprint-operator-door-{deploy,upgrade}-<sha12>-<id8>.service` or
 `blueprint-operator-door-retire-<sha256(scene_id)[:12]>-<id8>.service` (a hash, so
-a scene id can never match `blueprint-*deploy*`), and the request view shows its live
-state. Each unit's `RuntimeMaxSec` equals its start timeout,
+a scene id can never match `blueprint-*deploy*`), or
+`blueprint-operator-door-output-resume-<sha256(run/attempt)[:12]>-<id8>.service`, and the
+request view shows its live state. Each unit's `RuntimeMaxSec` equals its start timeout,
 because `TimeoutStartSec` does not bound an `exec` unit once it has started:
-deploy 3 h, door upgrade 30 min, retirement 2 h. A retirement unit is further
+deploy 3 h, door upgrade 30 min, retirement and provider-output resume 2 h. A retirement unit is further
 sandboxed (`ProtectSystem=strict`, `PrivateTmp`, `PrivateDevices`, `ProtectHome`,
 `ProtectKernelTunables`, `ProtectControlGroups`, `NoNewPrivileges`, and a narrow
 capability set including `CAP_SYS_PTRACE` for the `/proc` reference check) and may write
@@ -295,7 +297,14 @@ python3 scripts/operator_door.py deploy <sha on main> --wait
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --wait           # plan only
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --apply --wait   # retire behind a receipt
 python3 scripts/operator_door.py restore-scene-workspace <scene_id> --bucket <bucket> --wait
+python3 scripts/operator_door.py provider-output-resume <run> <attempt> --ingest --wait
 ```
+
+A provider-output resume unit may write only the canary dispatch root, the disk
+reservation ledger and its result (`ProtectSystem=strict` and the retirement
+unit's other sandboxing), for at most 2 h. It reads the control-plane
+environment file as data, as the retirement does, and defaults the dedicated B2
+store's settings to the dispatcher unit's.
 
 A retirement that plans or retires exits 0; one the scene does not qualify for
 (`retained`) exits 1 and prints the outcome with its first reason, for example

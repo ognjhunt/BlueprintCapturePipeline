@@ -162,15 +162,16 @@ def ingest_needed_members(
     contract: PolicyCanaryOutputContract = POLICY_CANARY_OUTPUT_CONTRACT,
     reservation: DiskReservation | None,
     blocker_prefix: str,
-    result_name: str,
-    read_json: Callable[[Path], dict[str, Any]],
+    result_name: str | None,
+    read_json: Callable[[Path], dict[str, Any]] | None,
 ) -> dict[str, Any]:
     """Materialize the contract's needed set from the durable archive; the lane's extraction shape.
 
     Returns ``{status, result_path, execution, blockers}`` as the lane's
     ``_extract_provider_output`` does, plus ``archive_durable``,
     ``needed_set``, ``ingestion`` and ``member_view_path``. ``result_path`` is
-    set only once ingestion is materialized and its view descriptor written.
+    set only once ingestion is materialized and its view descriptor written;
+    without ``result_name`` (a resume) no result is read.
     """
     from .provider_output_member_view import ProviderOutputMemberViewError, write_member_view_descriptor
     from .provider_output_promotion import INDEX_FILENAME
@@ -243,6 +244,9 @@ def ingest_needed_members(
     except ProviderOutputMemberViewError as exc:
         return blocked(f"{blocker_prefix}_provider_output_member_view_unbound", str(exc))
     outcome["member_view_path"] = str(attempt_root / DESCRIPTOR_NAME)
+    if result_name is None or read_json is None:
+        outcome.update(status="completed", blockers=[])
+        return outcome
     result_path = attempt_root / EVIDENCE_DIRNAME / result_name
     execution = read_json(result_path)
     outcome.update(result_path=str(result_path), execution=execution)
@@ -250,6 +254,60 @@ def ingest_needed_members(
         return blocked(f"{blocker_prefix}_runtime_result_missing")
     outcome.update(status="completed", blockers=[])
     return outcome
+
+
+def resume_ingestion(attempt_root: str | Path, *, contract: PolicyCanaryOutputContract = POLICY_CANARY_OUTPUT_CONTRACT,
+                     environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Ingest a promoted, indexed attempt's needed set after the fact; never twice.
+
+    The door's ``provider-output-resume --ingest``. An ingestion already
+    materialized for this index, with its view descriptor, short-circuits
+    before any hold, request or check of the evidence root (review I8): readers
+    write there afterwards (partial recovery, interpretation receipts), which a
+    second pass would refuse as a changed inventory. Otherwise the exact hold
+    is admitted now -- the paid run and its dispatch hold are long over -- and
+    released with the outcome. The sealed lane result is never rewritten.
+    """
+    from .provider_output_promotion_records import load_promotion_receipt, staging_manifest_sha256
+
+    attempt = Path(attempt_root).expanduser().resolve()
+    staging = attempt / STAGING_DIRNAME
+    receipt = load_promotion_receipt(staging, staging_manifest_sha256=staging_manifest_sha256(staging))
+    result: dict[str, Any] = {"status": "blocked", "short_circuited": False, "ingestion": None, "needed_set": None,
+                              "blockers": []}
+    if receipt is None or receipt.get("status") != "promoted":
+        return {**result, "blockers": ["provider_output_resume_ingestion_output_not_promoted"]}
+    index = _sealed_index(attempt, receipt)
+    if index is None:
+        return {**result, "blockers": ["provider_output_resume_ingestion_output_not_indexed"]}
+    materialized = _materialized_receipt(attempt, index)
+    receipt_path = attempt / INGESTION_DIRNAME / INGESTION_RECEIPT_NAME
+    if materialized is not None:
+        return {**result, "status": "materialized", "short_circuited": True,
+                "ingestion": _ingestion_summary(materialized, receipt_path)}
+    values = os.environ if environ is None else environ
+    from .provider_output_promotion import INDEX_FILENAME
+
+    need = contract.hold_bytes(needed_bytes=contract.needed_bytes(index), member_count=len(index["members"]),
+                               index_file_bytes=(attempt / INDEX_FILENAME).stat().st_size)
+    try:
+        hold = reserve_control_plane_disk(
+            OUTPUT_ROLE, target_root=attempt, expected_bytes=need,
+            reservation_root=values.get(RESERVATION_ROOT_ENV) or DEFAULT_RESERVATION_ROOT,
+            disk_usage=lambda path: disk_usage_provider(path), workload=WORKLOAD)
+    except ControlPlaneDiskBudgetError as exc:
+        return {**result, "blockers": ["provider_output_resume_ingestion_disk_admission_refused", str(exc)]}
+    outcome_label = "failed"
+    try:
+        outcome = ingest_needed_members(
+            attempt_root=attempt, promotion=receipt, contract=contract, reservation=hold,
+            blocker_prefix="provider_output_resume", result_name=None, read_json=None)
+        done = bool(outcome.get("member_view_path"))
+        outcome_label = "completed" if done else "blocked"
+    finally:
+        hold.release(outcome=outcome_label)
+    return {**result, "status": "materialized" if done else "blocked", "ingestion": outcome.get("ingestion"),
+            "needed_set": outcome.get("needed_set"), "blockers": [] if done else outcome["blockers"]}
 
 
 def stream_manifest_roles(attempt_root: Path, outcome: Mapping[str, Any]) -> tuple[dict, list, dict | None]:
@@ -317,6 +375,7 @@ __all__ = [
     "ingest_needed_members",
     "promote",
     "reserve_forecast_hold",
+    "resume_ingestion",
     "stream_manifest_roles",
     "stream_result_fields",
 ]

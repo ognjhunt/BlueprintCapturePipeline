@@ -733,3 +733,46 @@ def test_streamed_and_downloaded_quick10_seal_identical_evidence(tmp_path, monke
     streamed_attempt = Path(stream["lane"]["attempt_root"])
     assert not any(path.suffix in {".zip", ".mp4", ".png"} for path in streamed_attempt.rglob("*"))
     assert any(path.suffix == ".mp4" for path in Path(download["lane"]["attempt_root"]).rglob("*"))
+
+
+def test_resume_ingests_a_durable_archive_once_and_short_circuits_after_readers_write(lane, capsys):
+    """The door's --ingest materializes a run blocked after promotion; once readers have written
+    into the evidence root (partial recovery, interpretation), a later resume short-circuits on
+    the materialized receipt instead of refusing the tree it no longer owns (review I8)."""
+    from blueprint_pipeline import policy_canary_output_members as output_members
+    from blueprint_pipeline import provider_output_promotion as promotion
+
+    archive, _ = _small_archive()
+    with lane.monkeypatch.context() as patch:
+        patch.setattr(output_members, "POLICY_CANARY_OUTPUT_CONTRACT",
+                      output_members.PolicyCanaryOutputContract(needed_set_budget_bytes=1_000))
+        blocked = lane.run_session(lane.adapter(archive))
+    assert f"{PREFIX}_provider_output_needed_set_over_budget" in blocked["blockers"]
+    attempt = Path(blocked["attempt_root"])
+    assert not (attempt / "immutable_execution").exists()
+
+    resumed = promotion.resume_provider_output_promotion(attempt, ingest=True)
+
+    assert resumed["status"] == "completed", resumed["blockers"]
+    assert resumed["ingestion"]["status"] == "materialized" and resumed["ingestion"]["short_circuited"] is False
+    index = json.loads((attempt / "provider_output_member_index.v1.json").read_text())
+    needed = POLICY_CANARY_OUTPUT_CONTRACT.paths(index)
+    assert sorted(_members(attempt / "immutable_execution")) == sorted(needed)
+    assert (attempt / "immutable_execution.member_view.v1.json").is_file()
+    fetched = len(lane.world.cas.ranged_requests())
+    assert fetched == len(needed)
+    [sample] = lane.history()[-1:]
+    assert (sample["outcome"], sample["observed_bytes"]) == ("completed", POLICY_CANARY_OUTPUT_CONTRACT.needed_bytes(index))
+    # The sealed lane result is never rewritten.
+    assert json.loads((attempt / "adp_arena_vast_result.json").read_text())["native_control_result_path"] is None
+
+    # A reader writes into the evidence root, as partial recovery does.
+    gap = attempt / "immutable_execution" / "partial_terminal_evidence" / "typed_media_gap.json"
+    gap.parent.mkdir()
+    gap.write_text("{}\n", encoding="utf-8")
+
+    assert promotion.main(["resume", "--attempt-root", str(attempt), "--ingest"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["status"] == "completed" and printed["ingestion"]["short_circuited"] is True
+    assert len(lane.world.cas.ranged_requests()) == fetched and gap.is_file()

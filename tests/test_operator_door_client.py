@@ -302,6 +302,14 @@ def test_client_submits_a_canonical_scene_restore(door: dict[str, Any]) -> None:
                                                 "bucket": "blueprint-8c1ca.appspot.com"}
 
 
+def test_client_submits_one_canary_attempt_s_provider_output_resume(door: dict[str, Any]) -> None:
+    code, out = _run("provider-output-resume", "activation-1", "3", "--ingest")
+    request_id = json.loads(out)["id"]
+    spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
+    assert code == 0 and spooled["request"] == {"kind": "provider-output-resume", "run": "activation-1",
+                                                "attempt": 3, "ingest": True}
+
+
 def test_a_retirement_needs_the_operate_scope(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("retire-scene-workspace", "site-capture-1")[0] == 3
