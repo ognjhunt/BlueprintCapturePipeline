@@ -183,6 +183,7 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/remote-cpu-jobs/handoffs/episode_compilation" \
   "${STATE_DIR}/remote-cpu-jobs/shadow/episode_compilation" \
   "${STATE_DIR}/remote-cpu-jobs/fallback/episode_compilation" \
+  "${STATE_DIR}/remote-cpu-jobs/recovery/episode_compilation" \
   "${STATE_DIR}/task-evaluation-launch-activations" \
   "${STATE_DIR}/task-evaluation-launch-activations/pending" \
   "${STATE_DIR}/task-evaluation-launch-activations/processing" \

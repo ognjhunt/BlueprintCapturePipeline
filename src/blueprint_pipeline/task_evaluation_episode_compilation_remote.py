@@ -531,8 +531,14 @@ def _compile_on_host(queue: Path, name: str, claimed: Path, *, inputs: Path, out
     return result
 
 
-def _compile_fallbacks(queue: Path, jobs_root: Path, **host: Any) -> list[dict[str, Any]]:
-    """Host-compile every row the paid unit handed back (plan 14 §10); each is already in ``processing/``."""
+def _compile_fallbacks(queue: Path, jobs_root: Path, now: float, **host: Any) -> list[dict[str, Any]]:
+    """Host-compile every row the paid unit handed back (plan 14 §10); each is already in ``processing/``.
+
+    A handed-back row is never requeued, so a compile of it that died is retried here, from a clean
+    output path, until its third interruption (``prepare_fallback_compile``).
+    """
+
+    from .task_evaluation_episode_compilation_claim_recovery import prepare_fallback_compile
 
     compiled = []
     for path, marker in markers(jobs_root, "fallback"):
@@ -541,7 +547,9 @@ def _compile_fallbacks(queue: Path, jobs_root: Path, **host: Any) -> list[dict[s
         name = marker["queue_row"]["name"]
         claimed = queue / "processing" / name
         if claimed.is_file():
-            compiled.append(_compile_on_host(queue, name, claimed, **host))
+            sealed = prepare_fallback_compile(queue, name, claimed, jobs_root=jobs_root, output_root=host["outputs"],
+                                              source_commit=host["source_commit"], now=now)
+            compiled.append(sealed or _compile_on_host(queue, name, claimed, **host))
         path.unlink(missing_ok=True)
     return compiled
 
@@ -556,8 +564,8 @@ def run_no_spend_unit(
 ) -> dict[str, Any]:
     """One run of the no-spend unit, which owns ``pending/`` in every mode (plan 14 §1).
 
-    It first compiles the rows the paid unit handed back; then it claims pending rows as today.  In ``host``
-    mode that is exactly today's queue run.  In ``cloud_run`` an eligible row gets a hand-off and stays in
+    It first recovers the claims a dead run left (plan 14 §10), then compiles the rows the paid unit handed
+    back; then it claims pending rows as today.  In ``host`` mode that is exactly today's queue run.  In ``cloud_run`` an eligible row gets a hand-off and stays in
     ``processing/``, and any other compiles here; in ``cloud_run_shadow`` every row compiles here and an
     eligible one also gets a shadow marker.  Every run empties ``pending/``, so its ``PathExistsGlob`` cannot
     loop, and no row ever leaves the four queue states.
@@ -565,7 +573,10 @@ def run_no_spend_unit(
 
     import time
 
+    from .task_evaluation_episode_compilation_claim_recovery import recover_interrupted_claims
+
     mode, findings = execution_mode(environ)
+    clock = now or time.time
     compiler = episode_compiler or compile_native_arena_episode
     jobs = Path(jobs_root)
     host = {"inputs": Path(input_root).resolve(strict=True), "source_commit": source_commit, "compiler": compiler,
@@ -574,19 +585,21 @@ def run_no_spend_unit(
     outputs.mkdir(parents=True, exist_ok=True, mode=0o750)
     host["outputs"] = outputs.resolve(strict=True)
     queue = Path(queue_root)
-    fallbacks = _compile_fallbacks(queue, jobs, **host) if queue.is_dir() else []
+    recovered = (recover_interrupted_claims(queue, jobs_root=jobs, output_root=host["outputs"],
+                                            source_commit=source_commit, now=clock()) if queue.is_dir() else [])
+    fallbacks = _compile_fallbacks(queue, jobs, clock(), **host) if queue.is_dir() else []
     if mode == "host":
         run = process_episode_compilation_queue(
             queue_root=queue_root, input_root=input_root, output_root=output_root, source_commit=source_commit,
             episode_compiler=compiler, max_messages=max_messages, disk_reservation_root=disk_reservation_root,
             storage_pins_root=storage_pins_root)
-        return {**run, "fallback_results": fallbacks} if fallbacks else run
+        extras = {"recovered_claims": recovered, "fallback_results": fallbacks}
+        return {**run, **{key: value for key, value in extras.items() if value}}
     from .task_evaluation_scene_construction_queue import ensure_scene_construction_queue_root
 
     queue = ensure_scene_construction_queue_root(queue_root)
     (queue / "results").mkdir(mode=0o750, exist_ok=True)
     config = load_config(environ=environ) if config is None else dict(config)
-    clock = now or time.time
     measured: dict[str, Any] = {}
     processed, handed, decisions = [], [], {}
     for source in sorted((queue / "pending").glob("*.json"))[:max_messages]:
@@ -612,7 +625,7 @@ def run_no_spend_unit(
     return {"schema_version": RUN_SCHEMA_VERSION, "status": "processed" if processed or handed else "idle",
             "processed_count": len(processed), "results": processed, "mode": mode, "findings": findings,
             "handoffs" if mode == "cloud_run" else "shadowed": handed, "host_decisions": decisions,
-            "fallback_results": fallbacks, "provider_mutation_performed": False, "paid_execution_requested": False,
+            "recovered_claims": recovered, "fallback_results": fallbacks, "provider_mutation_performed": False, "paid_execution_requested": False,
             "automatic_retry_performed": False}
 
 

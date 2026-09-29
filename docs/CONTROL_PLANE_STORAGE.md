@@ -1257,8 +1257,9 @@ invalid value runs as `host`, and the chain preflight warns
 `episode_compilation_execution_mode_invalid`.
 
 **Who owns what.** The no-spend unit (`blueprint-task-evaluation-episode-compilation`)
-owns `pending/` in every mode and empties it each run: it compiles every row
-the paid unit handed back, then claims pending rows.
+owns `pending/` in every mode and empties it each run: it recovers the claims
+a dead run left, compiles every row the paid unit handed back, then claims
+pending rows.
 An eligible row in `cloud_run` gets a hand-off and stays in `processing/`; any
 other row compiles on the host. In `cloud_run_shadow` every row compiles on the
 host and an eligible one also gets a shadow marker. Rows never leave the four
@@ -1294,12 +1295,26 @@ that stayed remote; nor does it see the dot-prefixed landing directories.
 |---|---|---|
 | `handoffs/episode_compilation/<row>`, `shadow/episode_compilation/<row>` | no-spend unit | a row's plan, created once |
 | `fallback/episode_compilation/<row>` | paid unit | a row handed back; the no-spend unit compiles it and removes the marker |
+| `recovery/episode_compilation/<row>` | no-spend unit | the row's interruptions; the third blocks it |
 | `descriptors/`, `leases/`, `live/`, `teardowns/` | paid unit, allocator | plan 14 §3, §7, §11 |
 | `receipts/<attempt>.json` | paid unit | the fenced receipt, kept because provider-zero deletes staging early |
 | `rows/episode_compilation/<row>` | paid unit | promotion and landing retries, and a row given up |
 | `parity/episode_compilation/<attempt>.json` | paid unit | one shadow comparison, per closure class |
 | `environment/`, `drift/episode_compilation.json` | allocator, paid unit | the probed worker environment and the job template's image |
 | `summary.json` (0644) | paid unit | door-readable counts: drift, unproven teardowns, orphans cancelled, parity |
+
+**Claim recovery.** At the start of each run, a `processing/` row with no
+hand-off, shadow or fallback marker and no lease record was left by a run that
+died, since every run otherwise finishes or hands off what it claims. Its
+partial output is renamed to `.<id>.interrupted-<epoch>`, which nothing deletes
+and GC never selects; the interruption is counted; and the row goes back to
+`pending/` by link, then unlink. The third interruption seals the row `blocked`
+with `episode_compilation_claim_interrupted:worker_process_terminated`. A
+claim's empty placeholder beside its pending row is dropped, and a row whose
+result was written before it moved is moved as that result says; neither
+counts. A handed-back row is never requeued: a compile of it that died leaves
+its output at `<id>`, which the next fallback compile sets aside and counts
+against the same three.
 
 **Rollback.** Unset the flag. The no-spend unit compiles everything; the paid
 unit's ExecCondition keeps it running only to drain live leases and to hand
