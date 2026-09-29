@@ -311,6 +311,12 @@ def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):
     from .task_evaluation_scene_retirement_preservation import _snapshot,_payload
     aliases=preserved.get('cache_aliases',[])
     _require(type(aliases) is list and len(aliases)<=256,'scene_retirement_inventory_limit')
+    remaining={}
+    for index,alias in enumerate(aliases):
+        journal.allowance.tick()
+        if _cache_event(journal,'cache_unlinked','cache-'+str(index)) is None:
+            inode=tuple(alias['physical_identity'][:2])
+            remaining[inode]=remaining.get(inode,0)+1
     outcomes=[]
     for index,alias in enumerate(aliases):
         journal.allowance.tick()
@@ -338,7 +344,8 @@ def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):
                     original=alias['snapshot']
                     observed=list(_snapshot(info))
                     removed=removed_inodes.get(tuple(alias['physical_identity'][:2]),0)
-                    _require(observed[:-2]==original[:-2] and observed[-1]==original[-1]-removed==1,
+                    _require(observed[:-2]==original[:-2] and observed[-1]==original[-1]-removed
+                             ==remaining[tuple(alias['physical_identity'][:2])] and observed[-1]>=1,
                              'scene_retirement_shared_inode')
                     digest=hashlib.sha256()
                     row=dict(alias,snapshot=observed)
@@ -346,7 +353,7 @@ def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):
                         digest.update(chunk)
                     _require('sha256:'+digest.hexdigest()==alias['digest'],'scene_retirement_cache_alias_changed')
                     outcome=dict(outcome='removed',canonical_path=str(path),digest=alias['digest'],
-                        size_bytes=alias['size_bytes'],removed_allocated_bytes=info.st_blocks*512,
+                        size_bytes=alias['size_bytes'],removed_allocated_bytes=info.st_blocks*512 if info.st_nlink==1 else 0,
                         allocation_method='observed_file_st_blocks_512_last_union_link_unlinked')
                     evidence=dict(canonical_path=str(path),original_identity=alias['physical_identity'],
                         parent_identity=list(parent_identity),snapshot=observed,outcome=outcome)
@@ -363,8 +370,9 @@ def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):
                     journal.allowance.tick()
                     _current_parent(path.parent,parent,parent_identity)
                     os.fsync(parent)
-                    inode=tuple(alias['physical_identity'][:2])
-                    removed_inodes[inode]=removed+1
+            inode=tuple(alias['physical_identity'][:2])
+            removed_inodes[inode]=removed_inodes.get(inode,0)+1
+            remaining[inode]-=1
             reference=journal.append('cache_unlinked',member_key=key,evidence=outcome)
             outcomes.append(dict(outcome,event_raw_ref=reference))
     return outcomes

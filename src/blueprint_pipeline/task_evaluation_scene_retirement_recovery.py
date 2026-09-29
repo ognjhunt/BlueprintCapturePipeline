@@ -358,4 +358,22 @@ def removed_inode_counts(journal):
             seen.add(selected['sha256'])
             inode = tuple(plan['evidence']['physical_identity'][:2])
             result[inode] = result.get(inode, 0) + 1
+    cache_plans={}
+    for event in journal.events:
+        journal.allowance.tick()
+        if event['event']=='cache_unlink_planned':
+            _require(event['member_key'] not in cache_plans,'scene_retirement_journal_chain_unproven')
+            cache_plans[event['member_key']]=event
+    for event in journal.events:
+        journal.allowance.tick()
+        if event['event']!='cache_unlinked':
+            continue
+        plan=cache_plans.get(event['member_key'])
+        _require(plan is not None and plan['sequence']<event['sequence']
+            and plan['evidence']['outcome']==event['evidence'],'scene_retirement_journal_chain_unproven')
+        selected=plan['raw_ref']['sha256']
+        _require(selected not in seen,'scene_retirement_journal_chain_unproven')
+        seen.add(selected)
+        inode=tuple(plan['evidence']['original_identity'][:2])
+        result[inode]=result.get(inode,0)+1
     return result
