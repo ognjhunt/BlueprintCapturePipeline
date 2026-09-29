@@ -83,17 +83,30 @@ def _strings(value, *, maximum, grammar=ID):
 def _scopes(policy):
     principals=policy['principals']
     _require(type(principals) is list and len(principals)<=64)
-    rows, intent_count = {},0
+    rows, owner_count = {},0
     for row in principals:
-        _require(type(row) is dict and set(row)=={'principal_id','actions','owner_intent_ids','private_archive_classes'})
+        _require(type(row) is dict and {'principal_id','actions','owner_intent_ids',
+                 'private_archive_classes'} <= set(row) <= {'principal_id','actions',
+                 'owner_intent_ids','private_archive_classes','capture_owner_scopes'})
         _require(type(row['principal_id']) is str and ID.fullmatch(row['principal_id']) and row['principal_id'] not in rows)
         actions=_strings(row['actions'],maximum=2)
         _require(actions and actions <= {'retire','restore'})
         owners=_strings(row['owner_intent_ids'],maximum=256)
-        intent_count += len(owners)
-        _require(intent_count<=256)
+        capture_rows=row.get('capture_owner_scopes',[])
+        _require(type(capture_rows) is list and len(capture_rows)<=256)
+        captures=set()
+        for capture in capture_rows:
+            _require(type(capture) is dict and set(capture)=={'user_id','request_id'}
+                     and all(type(capture[key]) is str and ID.fullmatch(capture[key])
+                             for key in ('user_id','request_id')))
+            pair=(capture['user_id'],capture['request_id'])
+            _require(pair not in captures)
+            captures.add(pair)
+        owner_count += len(owners)+len(captures)
+        _require(owner_count<=256)
         private=_strings(row['private_archive_classes'],maximum=64)
-        rows[row['principal_id']] = dict(actions=actions,owners=owners,private=private)
+        rows[row['principal_id']] = dict(actions=actions,owners=owners,
+                                         captures=captures,private=private)
     return rows
 
 

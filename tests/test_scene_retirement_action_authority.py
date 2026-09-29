@@ -74,3 +74,25 @@ def test_protected_scope_load_keeps_exact_raw_identity_without_cleanup_grant(tmp
     assert result['consent']==value
     assert result['consent_raw_ref']['sha256']=='sha256:'+hashlib.sha256(path.read_bytes()).hexdigest()
     assert 'cleanup_authorized' not in result
+
+
+def test_capture_owner_scope_requires_exact_user_request_pair_and_shares_owner_cap():
+    from blueprint_pipeline.task_evaluation_scene_retirement_authority import _scopes
+
+    principal = dict(principal_id='operator', actions=['retire', 'restore'],
+                     owner_intent_ids=['sponsor-intent'], private_archive_classes=[],
+                     capture_owner_scopes=[dict(user_id='capture-user', request_id='request-1')])
+    scopes = _scopes({'principals': [principal]})
+    assert scopes['operator']['owners'] == {'sponsor-intent'}
+    assert scopes['operator']['captures'] == {('capture-user', 'request-1')}
+
+    for invalid in (
+        [dict(user_id='capture-user', request_id='request-1'),
+         dict(user_id='capture-user', request_id='request-1')],
+        [dict(user_id='capture-user', request_id='*')],
+        [dict(user_id='capture-user', request_id='request-1', owner_intent_id='sponsor-intent')],
+    ):
+        with pytest.raises(ValueError):
+            _scopes({'principals': [dict(principal, capture_owner_scopes=invalid)]})
+    with pytest.raises(ValueError):
+        _scopes({'principals': [dict(principal, owner_intent_ids=[f'intent-{i}' for i in range(256)])]})
