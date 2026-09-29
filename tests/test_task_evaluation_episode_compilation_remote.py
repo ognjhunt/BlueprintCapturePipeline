@@ -433,9 +433,12 @@ def test_episode_compilation_is_a_registered_worker_stage() -> None:
 
 @pytest.mark.slow
 def test_a_worker_compile_loads_no_allocation_or_staging_authority(tmp_path: Path) -> None:
-    """The handler runs inside the paid execution: a real compile through it loads no allocator, Cloud Run
-    client, host staging, boto3 or google.oauth2.  (The compiler itself imports the admission chokepoint and
-    the object-store module's key constants; neither holds or reaches a credential in the worker.)"""
+    """Review M3 for the compile stage.  Its static closure is the compiler's, about 1,260 modules through lazy
+    imports that reach the allocator (``task_evaluation_launch_preparation_contract`` -> scene appearance review ->
+    agent execution -> stage replay -> ... -> ``paid_resource_allocator``), so what a real compile in a fresh
+    interpreter actually loads is the proof: no allocator, Cloud Run client, object store or host staging, and no
+    boto3 or google.oauth2.  The admission chokepoint is the one exception, imported at load by the compiler's
+    supervisor package; it mints nothing without an admission, and the worker holds no credential."""
 
     host = Host(tmp_path)
     envelope, name = stage_compile(host, destination_support=True, qualification_only=True)
@@ -449,7 +452,10 @@ def test_a_worker_compile_loads_no_allocation_or_staging_authority(tmp_path: Pat
     report = json.loads(out.read_text(encoding="utf-8"))
     assert (report["status"], report["handler"]) == ("compiled_for_production_launch", "run_episode_compilation_in_worker")
     loaded = set(report["loaded"])
-    assert not {"blueprint_pipeline.paid_resource_allocator", "blueprint_pipeline.remote_cpu_job_allocator",
-                "blueprint_pipeline.cloud_run_jobs_client", "blueprint_pipeline.remote_cpu_transport",
-                "blueprint_pipeline.task_evaluation_episode_compilation_collector"} & loaded
-    assert not {name for name in loaded if name == "boto3" or name.startswith(("boto3.", "google.oauth2"))}
+    authority = {"blueprint_pipeline.paid_resource_admission", "blueprint_pipeline.paid_resource_allocator",
+                 "blueprint_pipeline.remote_cpu_job_allocator", "blueprint_pipeline.cloud_run_jobs_client",
+                 "blueprint_pipeline.task_evaluation_configured_scene_object_store",
+                 "blueprint_pipeline.remote_cpu_transport", "blueprint_pipeline.task_evaluation_episode_compilation_collector"}
+    assert authority & loaded == {"blueprint_pipeline.paid_resource_admission"}
+    assert not {name for name in loaded if name == "boto3" or name.startswith(("boto3.", "botocore", "google.oauth2",
+                                                                               "google.auth"))}

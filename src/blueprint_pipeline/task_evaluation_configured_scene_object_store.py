@@ -20,11 +20,12 @@ from urllib.parse import urlsplit
 from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 
 
-DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/configured-scenes"
-LARGE_ARTIFACT_KEY_PREFIX = f"{DEFAULT_KEY_PREFIX}/artifacts"
-# Runtime-source wrapper layers are published under this artifact kind; the
-# wrapper builder embeds the resulting URI, so the two must agree exactly.
-EXTERNAL_LAYER_ARTIFACT_KIND = "native-runtime-source-layer"
+from .task_evaluation_configured_scene_object_keys import (
+    DEFAULT_KEY_PREFIX,
+    EXTERNAL_LAYER_ARTIFACT_KIND,
+    LARGE_ARTIFACT_KEY_PREFIX,
+)
+
 _RANGE_READBACK_THRESHOLD_BYTES = 32 * 1024 * 1024
 _RANGE_READBACK_CHUNK_BYTES = 8 * 1024 * 1024
 _RANGE_READBACK_CONCURRENCY = 4
