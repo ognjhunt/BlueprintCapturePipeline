@@ -59,9 +59,9 @@ def expired_completed_evidence(installation, tmp_path, monkeypatch):  # noqa: F8
     installation[3].write_bytes(encoded(policy))
     config, settings, _, _ = installation
     settings['experiment_retirement_enabled'] = True
-    pins = tmp_path / 'pins'
+    pins = config.parent / 'pins'
     pins.mkdir()
-    env = tmp_path / 'gc.env'
+    env = config.parent / 'gc.env'
     env.write_text('BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=' + str(pins) + '\n')
     env.chmod(0o600)
     settings['experiment_gc_environment_file'] = str(env)

@@ -3571,3 +3571,28 @@ def test_immutable_input_digest_is_reused_by_stat_identity_and_fails_closed_on_c
     assert immutable_input_digest(bundle) != first
     assert dispatcher.verify_profile_immutable_inputs(profile) == [
         "launch_profile_immutable_input_digest_mismatch:bundle"]
+
+
+def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    clock = [0.0]
+    budgets = []
+    def create(**kw):
+        budget = ReferenceCollectionBudget(monotonic=lambda: clock[0], **kw)
+        budgets.append(budget)
+        return budget
+    monkeypatch.setattr(gate, 'ReferenceCollectionBudget', create)
+    profile_dir, request_path = _write_profile_and_request(tmp_path, _profile(tmp_path))
+    def runner(_argv):
+        assert len(budgets) == 1 and budgets[0].closed
+        clock[0] = 60.0
+        print('retained fake allocator terminal output')
+        return 0
+    receipt = dispatch_launch_request(request_path=request_path, profile_dir=profile_dir, state_root=tmp_path/'state', allocator_runner=runner)
+    assert receipt['status'] == 'dry_run_completed'
+    run = tmp_path/'state'/'launch-interiorgs-sage-001'
+    assert json.loads((run/'launch_receipt.json').read_text()) == receipt
+    assert 'retained fake allocator terminal output' in (run/'allocator.stdout.log').read_text()
+    assert len(budgets) == 1 and budgets[0].closed
+    assert budgets[0].deadline == 5.0 and budgets[0].failure is None

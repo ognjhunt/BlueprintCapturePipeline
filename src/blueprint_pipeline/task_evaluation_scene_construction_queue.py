@@ -18,7 +18,7 @@ from .task_evaluation_scene_configuration_disclosure import (
 from .task_evaluation_release_reference_lock import release_reference_lock
 
 
-from .control_plane_registered_reference_gate import _publisher_observation
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_scene_construction_envelope.v1"
 FINALIZATION_SCHEMA_VERSION = "task_evaluation_scene_construction_finalization.v1"
@@ -45,6 +45,7 @@ def ensure_scene_construction_queue_root(queue_root: str | Path) -> Path:
         raise TaskEvaluationSceneConstructionQueueError(
             "scene_construction_queue_root_unsafe"
         )
+    _publisher_checkpoint()
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     root = root.resolve(strict=True)
     if not stat.S_ISDIR(root.stat().st_mode):
@@ -57,6 +58,7 @@ def ensure_scene_construction_queue_root(queue_root: str | Path) -> Path:
             raise TaskEvaluationSceneConstructionQueueError(
                 "scene_construction_queue_state_unsafe"
             )
+        _publisher_checkpoint()
         child.mkdir(mode=0o750, exist_ok=True)
     return root
 
@@ -65,6 +67,7 @@ def _write_exclusive_locked(path: Path, value: Mapping[str, Any]) -> None:
     payload = _canonical_bytes(value)
     descriptor = -1
     try:
+        _publisher_checkpoint()
         descriptor = os.open(
             path,
             os.O_WRONLY
@@ -76,10 +79,12 @@ def _write_exclusive_locked(path: Path, value: Mapping[str, Any]) -> None:
         )
         view = memoryview(payload)
         while view:
+            _publisher_checkpoint()
             written = os.write(descriptor, view)
             if written <= 0:
                 raise OSError("short immutable scene-construction queue write")
             view = view[written:]
+        _publisher_checkpoint()
         os.fsync(descriptor)
         # Preparation and corrective-revision minting may run as root while
         # the production queue consumer runs as the directory's service
@@ -88,7 +93,9 @@ def _write_exclusive_locked(path: Path, value: Mapping[str, Any]) -> None:
         # Bind the immutable file to the queue state's already-authoritative
         # group before publishing it.
         parent_gid = path.parent.stat().st_gid
+        _publisher_checkpoint()
         os.fchown(descriptor, -1, parent_gid)
+        _publisher_checkpoint()
         os.fchmod(descriptor, 0o440)
         metadata = os.fstat(descriptor)
         if (
@@ -100,6 +107,7 @@ def _write_exclusive_locked(path: Path, value: Mapping[str, Any]) -> None:
             path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         )
         try:
+            _publisher_checkpoint()
             os.fsync(directory)
         finally:
             os.close(directory)

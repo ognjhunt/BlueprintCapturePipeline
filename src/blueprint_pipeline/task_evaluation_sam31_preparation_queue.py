@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .control_plane_registered_reference_gate import _publisher_observation
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
 
@@ -75,6 +75,7 @@ def ensure_progress_roots(root: Path) -> None:
                  "source-resume-completed", "source-resume-blocked"):
         path = root / name
         _require(not path.is_symlink(), "queue_path_invalid")
+        _publisher_checkpoint()
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -139,6 +140,7 @@ def _progress(root: Path, envelope: Mapping[str, Any], advancement: dict) -> dic
     }
     value["progress_digest"] = canonical_digest(value, digest_field="progress_digest")
     directory = root / "source-progress" / Path(filename).stem
+    _publisher_checkpoint()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{value['sequence']:06d}-{value['progress_digest'].removeprefix('sha256:')}.json"
     try:

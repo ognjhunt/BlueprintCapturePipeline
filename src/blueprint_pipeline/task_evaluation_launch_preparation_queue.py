@@ -21,7 +21,7 @@ from .task_evaluation_launch_preparation_contract import (
 from .task_evaluation_release_reference_lock import release_reference_lock
 
 
-from .control_plane_registered_reference_gate import _publisher_observation
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_preparation_envelope.v1"
 IDENTITY_SCHEMA_VERSION = "task_evaluation_launch_preparation_identity.v1"
@@ -50,6 +50,7 @@ def ensure_launch_preparation_queue_root(queue_root: str | Path) -> Path:
             "launch_preparation_queue_root_unsafe"
         )
     try:
+        _publisher_checkpoint()
         root.mkdir(parents=True, exist_ok=True, mode=0o750)
         resolved = root.resolve(strict=True)
         metadata = resolved.stat()
@@ -67,12 +68,14 @@ def ensure_launch_preparation_queue_root(queue_root: str | Path) -> Path:
             raise TaskEvaluationLaunchPreparationQueueError(
                 "launch_preparation_queue_state_unsafe"
             )
+        _publisher_checkpoint()
         child.mkdir(mode=0o750, exist_ok=True)
     identities = resolved / "identities"
     if identities.is_symlink():
         raise TaskEvaluationLaunchPreparationQueueError(
             "launch_preparation_queue_identity_root_unsafe"
         )
+    _publisher_checkpoint()
     identities.mkdir(mode=0o750, exist_ok=True)
     return resolved
 
@@ -87,6 +90,7 @@ def _write_launch_preparation_record_exclusive_locked(
     )
     descriptor = -1
     try:
+        _publisher_checkpoint()
         descriptor = os.open(
             temporary_path,
             os.O_WRONLY
@@ -98,18 +102,23 @@ def _write_launch_preparation_record_exclusive_locked(
         )
         view = memoryview(payload)
         while view:
+            _publisher_checkpoint()
             written = os.write(descriptor, view)
             if written <= 0:
                 raise OSError("short immutable preparation queue write")
             view = view[written:]
+        _publisher_checkpoint()
         os.fsync(descriptor)
+        _publisher_checkpoint()
         os.fchmod(descriptor, 0o440)
         os.close(descriptor)
         descriptor = -1
+        _publisher_checkpoint()
         os.link(temporary_path, path, follow_symlinks=False)
         temporary_path.unlink()
         directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
+            _publisher_checkpoint()
             os.fsync(directory)
         finally:
             os.close(directory)

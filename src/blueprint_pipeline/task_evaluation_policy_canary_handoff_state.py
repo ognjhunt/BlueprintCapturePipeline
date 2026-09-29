@@ -12,7 +12,7 @@ import stat
 import tempfile
 from typing import Any, Callable, Mapping
 
-from .control_plane_registered_reference_gate import _publisher_observation
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -28,24 +28,33 @@ def _atomic_write(path: Path, value: Mapping[str, Any], *, replace: bool) -> Non
     if any(p.is_symlink() for p in (path, *path.parents)):
         raise PolicyCanaryHandoffError("policy_canary_handoff_unsafe_state_path")
     payload = _payload(value)
+    _publisher_checkpoint()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    _publisher_checkpoint()
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".handoff-", delete=False) as stream:
         temporary = Path(stream.name)
         try:
+            _publisher_checkpoint()
             stream.write(payload)
+            _publisher_checkpoint()
             stream.flush()
+            _publisher_checkpoint()
             os.fsync(stream.fileno())
+            _publisher_checkpoint()
             os.fchmod(stream.fileno(), 0o440)
             if replace:
+                _publisher_checkpoint()
                 os.replace(temporary, path)
             else:
                 try:
+                    _publisher_checkpoint()
                     os.link(temporary, path)
                 except FileExistsError:
                     if path.is_symlink() or path.read_bytes() != payload:
                         raise PolicyCanaryHandoffError("policy_canary_handoff_immutable_conflict") from None
             directory = os.open(path.parent, os.O_RDONLY)
             try:
+                _publisher_checkpoint()
                 os.fsync(directory)
             finally:
                 os.close(directory)

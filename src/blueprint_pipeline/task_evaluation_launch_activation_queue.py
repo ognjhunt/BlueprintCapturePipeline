@@ -19,7 +19,7 @@ from .task_evaluation_launch_preparation_queue import (
 )
 
 
-from .control_plane_registered_reference_gate import _publisher_observation
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_activation_envelope.v1"
 IDENTITY_SCHEMA_VERSION = "task_evaluation_launch_activation_identity.v1"
@@ -65,6 +65,7 @@ def ensure_launch_activation_queue_root(queue_root: str | Path) -> Path:
             "launch_activation_queue_root_unsafe"
         )
     try:
+        _publisher_checkpoint()
         root.mkdir(parents=True, exist_ok=True, mode=0o750)
         resolved = root.resolve(strict=True)
         if not resolved.is_dir():
@@ -73,6 +74,7 @@ def ensure_launch_activation_queue_root(queue_root: str | Path) -> Path:
             child = resolved / name
             if child.is_symlink():
                 raise OSError("activation queue child is a symlink")
+            _publisher_checkpoint()
             child.mkdir(mode=0o750, exist_ok=True)
     except OSError as exc:
         raise TaskEvaluationLaunchActivationQueueError(

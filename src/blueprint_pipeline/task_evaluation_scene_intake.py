@@ -26,10 +26,10 @@ from .task_evaluation_scene_execution_budget import (
     ATTEMPT_GRANT_FIELD, effective_execution_budget, validate_attempt_execution_budget,
 )
 from .task_evaluation_launch_preparation_queue import (
-    _write_launch_preparation_record_exclusive_locked as write_exclusive,
+    _write_launch_preparation_record_exclusive_locked as _write_exclusive_native,
 )
 
-from .control_plane_registered_reference_gate import _publisher_observation
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 
 TASK_STRATEGIES = ("pick_and_place", "articulated_open_close")
 ARTICULATION_JOINT_TYPES = ("prismatic", "revolute")
@@ -144,14 +144,33 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
         raise SceneIntakeError("scene_intake_json_invalid") from exc
 
 
+def _scene_publisher_checkpoint():
+    from .control_plane_lane_experiment_errors import OwnerTargetVersionError
+    try:
+        _publisher_checkpoint()
+    except OwnerTargetVersionError as exc:
+        raise SceneIntakeError(exc.code) from None
+
+
+def write_exclusive(path, value):
+    from .control_plane_lane_experiment_errors import OwnerTargetVersionError
+    _scene_publisher_checkpoint()
+    try:
+        return _write_exclusive_native(path, value)
+    except OwnerTargetVersionError as exc:
+        raise SceneIntakeError(exc.code) from None
+
+
 def _root(root: Path) -> Path:
     _require(not root.is_symlink(), "root_unsafe")
+    _scene_publisher_checkpoint()
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     return root.resolve(strict=True)
 
 
 @contextmanager
 def _lock(root: Path):
+    _scene_publisher_checkpoint()
     descriptor = os.open(root / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -195,6 +214,7 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
     with _lock(root):
         directory = root / intent_id
         _require(not directory.is_symlink(), "record_unsafe")
+        _scene_publisher_checkpoint()
         directory.mkdir(mode=0o750, exist_ok=True)
         path = directory / "intent.json"
         if path.exists():

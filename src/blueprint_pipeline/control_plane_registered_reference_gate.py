@@ -50,6 +50,34 @@ def _publisher_observation(function):
     return observed
 
 
+def _publisher_checkpoint():
+    """Check the SAME active observation before a native publication effect.
+
+    Existing unrelated/lifecycle callers without this finite scope are unchanged.
+    Finalization of already-owned handles never depends on an expired allowance.
+    """
+    budget = _PUBLISHER_BUDGET.get()
+    if budget is not None:
+        try:
+            budget.tick()
+        except ReferenceCollectionBudgetError:
+            raise OwnerTargetVersionError("experiment_publisher_input_limit") from None
+
+
+def _finish_publisher_admission():
+    """End input/publication observation before the existing provider lifecycle.
+
+    The original B is checked and permanently closed, never reset/replaced. This
+    scope creates no provider grant, clock or watchdog. Existing spend/teardown
+    receipts after allocator work retain their original lifecycle boundaries.
+    """
+    _publisher_checkpoint()
+    budget = _PUBLISHER_BUDGET.get()
+    if budget is not None:
+        budget.close()
+        _PUBLISHER_BUDGET.set(None)
+
+
 def _reference(text, budget):
     # A URI is interpreted by its declared scheme. Remote URI names cannot
     # confer local authority; file URIs must have no remote authority/query.

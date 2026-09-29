@@ -77,7 +77,7 @@ from .launch_immutable_input_writer import (
 )
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
 
-from .control_plane_registered_reference_gate import _publisher_observation
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint, _finish_publisher_admission
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
@@ -1001,9 +1001,12 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
 
     with release_reference_lock(path.parents[2], exclusive=False):
         payload = (_canonical_json(value) + "\n").encode("utf-8")
+        _publisher_checkpoint()
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            _publisher_checkpoint()
             with path.open("xb") as stream:
+                _publisher_checkpoint()
                 stream.write(payload)
             return True
         except FileExistsError:
@@ -1153,8 +1156,10 @@ def _stage_profile_immutable_inputs_reserved(
     """Snapshot immutable inputs and redirect exact allocator path arguments."""
 
     stage_root = run_root / "immutable_inputs"
+    _publisher_checkpoint()
     stage_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
+        _publisher_checkpoint()
         stage_root.chmod(0o700)
     except OSError as exc:
         raise TaskEvaluationLaunchError("immutable_input_staging_directory_not_private") from exc
@@ -1204,6 +1209,7 @@ def _stage_profile_immutable_inputs_reserved(
             )
             continue
         destination = stage_root / f"{index:03d}-{expected_digest[len(_DIGEST_PREFIX) :]}.input"
+        _publisher_checkpoint()
         _write_exclusive_private_bytes(destination, payload)
         readback = destination.read_bytes()
         staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
@@ -1308,6 +1314,7 @@ def _stage_profile_immutable_inputs_reserved(
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path = run_root / "immutable_input_staging_receipt.json"
+    _publisher_checkpoint()
     _write_exclusive_private_bytes(receipt_path, (_canonical_json(receipt) + "\n").encode("utf-8"))
     if _read_json(receipt_path) != receipt:
         raise TaskEvaluationLaunchError("immutable_input_staging_receipt_readback_mismatch")
@@ -1606,6 +1613,7 @@ def dispatch_launch_request(
         blockers.append("launch_profile_live_execution_disabled")
 
     run_root = Path(state_root).expanduser().resolve() / str(request.get("launch_id") or "invalid")
+    _publisher_checkpoint()
     run_root.mkdir(parents=True, exist_ok=True)
     prior_receipt_path = run_root / "launch_receipt.json"
     if prior_receipt_path.is_file():
@@ -1684,6 +1692,10 @@ def dispatch_launch_request(
     }
     started["started_digest"] = canonical_digest(started, digest_field="started_digest")
     _write_immutable(run_root / "launch_started.json", started)
+
+    # All reference inputs and immutable pre-admission bindings are sealed.
+    # Allocator/prelaunch work retains its original spend/terminal watchdogs.
+    _finish_publisher_admission()
 
     prelaunch_skill_execution: dict[str, Any] = {
         "schema_version": "task_evaluation_prelaunch_skill_execution.v1",

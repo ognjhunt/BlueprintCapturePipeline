@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 
-from .control_plane_registered_reference_gate import _publisher_observation
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 
 SCHEMA_VERSION = "control_plane_storage_pin.v1"
 DEFAULT_PINS_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/storage-pins")
@@ -59,22 +59,30 @@ def pin_path(pins_root: str | Path, kind: str, owner_id: str) -> Path:
 
 
 def _write_atomic(path: Path, payload: Mapping[str, Any], *, exclusive: bool) -> bool:
+    _publisher_checkpoint()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    _publisher_checkpoint()
     descriptor, temporary_name = tempfile.mkstemp(prefix=".pin-", dir=path.parent)
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+            _publisher_checkpoint()
             stream.write("\n")
+            _publisher_checkpoint()
             stream.flush()
+            _publisher_checkpoint()
             os.fsync(stream.fileno())
+        _publisher_checkpoint()
         temporary.chmod(0o640)
         if exclusive:
             try:
+                _publisher_checkpoint()
                 os.link(temporary, path)
             except FileExistsError:
                 return False
         else:
+            _publisher_checkpoint()
             os.replace(temporary, path)
         return True
     finally:
@@ -98,6 +106,7 @@ def storage_pin_guard(pins_root: str | Path, *, exclusive: bool):
     """Publish pins and retire cache targets under the same stable directory lock."""
     from .task_evaluation_release_reference_lock import release_reference_lock
     root = Path(pins_root).expanduser()
+    _publisher_checkpoint()
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     with release_reference_lock(root, exclusive=exclusive):
         yield
