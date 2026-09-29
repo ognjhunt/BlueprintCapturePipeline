@@ -28,14 +28,16 @@ from blueprint_pipeline import remote_cpu_environment as census
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import remote_cpu_output_archive as archive
 from blueprint_pipeline import remote_cpu_worker as worker
-from tests.remote_cpu_allocator_fakes import B2_BUCKET
+from tests.remote_cpu_allocator_fakes import B2_BUCKET, JOB, RemoteCpuWorld
 from tests.remote_cpu_worker_stages import NEW_BYTES, sealed_result
 from tests.remote_cpu_worker_support import (
     BUNDLE_MEMBERS,
     COMMIT,
     EXECUTION,
+    PREFIX_URL,
     REFERENCES,
     WORKER_RECORD,
+    RecordingHttp,
     WorkerWorld,
     digest_of,
     release_archive,
@@ -652,3 +654,68 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
         assert _gets(world) == [world.key("receipt.json")], label
         verdict = contract.validate_receipt(receipt, descriptor=world.descriptor, execution_name=EXECUTION)
         assert f"infrastructure_failed:{refusal}" in verdict["infrastructure_failures"] and not verdict["terminal"]
+
+
+def test_the_allocators_preflight_completes_against_the_real_worker(tmp_path: Path, monkeypatch) -> None:
+    """PR 2's preflight, with this worker where PR 2's tests had a fake: the transport the allocator mints is
+    one the worker trusts, its heartbeats renew the lease, and its receipt records the worker environment."""
+
+    from blueprint_pipeline.remote_cpu_transport import SOURCE_FILENAME, SOURCE_KIND, cas_key
+
+    world = RemoteCpuWorld(tmp_path / "host", monkeypatch)
+    source = release_archive(COMMIT)
+    key = cas_key(SOURCE_KIND, digest_of(source), SOURCE_FILENAME)
+
+    def stage_release(object_store: tuple) -> dict:
+        object_store[0].put_object(Bucket=B2_BUCKET, Key=key, Body=source, Metadata={"sha256": digest_of(source)[7:]})
+        return {"source_commit": COMMIT, "digest": digest_of(source), "size_bytes": len(source),
+                "uri": f"s3://{B2_BUCKET}/{key}"}
+
+    started: list[str] = []
+
+    def run_workers() -> None:  # what Cloud Run starts for each execution: the job's command, once
+        for execution in world.jobs.executions[JOB]:
+            view, name = world.jobs.get_execution(execution["name"]), execution["name"].rsplit("/", 1)[1]
+            if view["runningCount"] != 1 or name in started:
+                continue
+            started.append(name)
+            environ = {**{row["name"]: row["value"] for row in view["template"]["containers"][0]["env"]},
+                       "CLOUD_RUN_JOB": view["job"], "CLOUD_RUN_EXECUTION": name, "CLOUD_RUN_TASK_COUNT": "1",
+                       "BLUEPRINT_REMOTE_CPU_STAGE": "episode-compilation", worker.PREFIX_VARIABLE: PREFIX_URL}
+            common = {"environ": environ, "http": RecordingHttp(world.store), "filesystem_root": tmp_path / name,
+                      "clock": world.clock, "measure": census.environment_record, "log": lambda line: None}
+            execute = worker.WorkerRuntime(**common, run_stage=_registered)
+            assert worker.bootstrap(["bootstrap"], worker.WorkerRuntime(
+                **common, reader=world.bucket.reader(),
+                launch=lambda handoff, execute=execute: worker.execute_attempt(handoff, execute))) == 0
+
+    world.runtime.stage_release_source, world.on_sleep = stage_release, run_workers
+    result = world.run("preflight")
+    assert (result["status"], result["outcome"], result["blockers"]) == ("completed", "environment_recorded", [])
+    assert len(started) == 1 and result["teardown"]["provider_zero_proven"]
+    lease = json.loads((world.root / "leases" / f"{result['probe']['job_id']}.json").read_text(encoding="utf-8"))
+    assert lease["state"] == "completed" and lease["heartbeat"]["sequence"] >= 2
+    recorded = json.loads((world.root / "environment" / "episode_compilation.json").read_text(encoding="utf-8"))
+    assert recorded["worker_environment"] == census.environment_record()
+    assert recorded["environment_digest"] == census.environment_record()["environment_digest"]
+
+
+def test_the_worker_holds_no_allocation_authority() -> None:
+    """The worker runs inside the paid execution: nothing in its import closure can admit, mint or dispatch."""
+
+    import ast
+
+    from blueprint_pipeline.task_evaluation_production_chain_preflight import import_closure
+
+    root = Path(worker.__file__).resolve().parents[1]
+    closure = import_closure(root.parent, "blueprint_pipeline.remote_cpu_worker")
+    assert not {"blueprint_pipeline.paid_resource_admission", "blueprint_pipeline.paid_resource_allocator",
+                "blueprint_pipeline.remote_cpu_job_allocator", "blueprint_pipeline.cloud_run_jobs_client",
+                "blueprint_pipeline.task_evaluation_configured_scene_object_store",
+                "blueprint_pipeline.remote_cpu_transport"} & set(closure), sorted(closure)
+    source = Path(worker.__file__).read_text(encoding="utf-8")
+    called = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+              for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)}
+    assert not called & {"require_paid_resource_admission", "require_paid_resource_admission_grant",
+                         "build_paid_lane_admission", "generate_presigned_url", "client", "run_job"}
+    assert "boto3" not in source and "service_account" not in source
