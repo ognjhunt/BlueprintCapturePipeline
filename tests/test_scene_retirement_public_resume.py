@@ -326,7 +326,8 @@ def test_public_pin_phase_releases_before_removal_and_restores_after_current_gen
     removed=engine.detach_and_remove
     def remove(*args,**kwargs):
         assert json.loads(pin.read_bytes())['released_at_epoch'] is not None
-        assert kwargs['journal'].events[-1]['event'] in {'pin_released','retiring','member_removed'}
+        assert any(event['event']=='pin_released' and
+            event['evidence']['released_raw_ref']==raw_ref(pin) for event in kwargs['journal'].events)
         return removed(*args,**kwargs)
     monkeypatch.setattr(engine,'detach_and_remove',remove)
     if interrupted:
@@ -342,11 +343,12 @@ def test_public_pin_phase_releases_before_removal_and_restores_after_current_gen
         initial=json.loads(Path(result['journal_initial_raw_ref']['path']).read_bytes())
         from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
         from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
-        journal=SceneJournal.resume(policy['journal_store'],initial['token'],
+        journal=SceneJournal.resume(result['journal_initial_raw_ref'],
             allowance=ActionAllowance(expires_at=999,now=lambda:201,monotonic=lambda:1))
         history=pin_history(policy,scope,journal)
-        assert history[0]['original_raw_ref']==reference
-        assert history[0]['observed_raw_ref']==raw_ref(pin)
+        observed=history[tuple(reference[key] for key in ('path','sha256','size_bytes'))]
+        assert observed['original_raw_ref']==reference
+        assert observed['observed_raw_ref']==raw_ref(pin)
         original_objects=set(transport.objects)
         monkeypatch.setattr(engine,'detach_and_remove',remove)
         result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
