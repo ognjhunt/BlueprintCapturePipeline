@@ -82,7 +82,9 @@ def registered_target(output, roots, *, _budget=None):
     for root in roots:
         if selected.is_relative_to(root):
             parts = selected.relative_to(root).parts
-            if len(parts) >= 2 and parts[0] in ('g1', 'arena') and parts[1].startswith('registered-'):
+            if len(parts) >= 2 and parts[1].startswith('registered-'):
+                _require(scratch._ID.fullmatch(parts[0]) is not None,
+                         'experiment_consumer_path_unsafe')
                 _require(re.fullmatch(r'registered-[0-9a-f]{32}', parts[1]) is not None,
                          'experiment_consumer_path_unsafe')
                 return root / parts[0] / parts[1]
