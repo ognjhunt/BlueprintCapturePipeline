@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
 from .policy_model_onnx import MAX_MODEL_BYTES, validate_model_task_binding
 
 SOURCE_FILES = (
@@ -138,16 +139,39 @@ def main() -> None:
     parser.add_argument("--allowed-bucket", required=True)
     parser.add_argument("--image-tag")
     parser.add_argument("--allowed-registry")
+    parser.add_argument("--job-request", type=Path)
+    parser.add_argument("--materialized-contract-out", type=Path)
     args = parser.parse_args()
+    artifact = json.loads(args.artifact.read_text())
+    contract = json.loads(args.contract.read_text())
+    if args.materialized_contract_out:
+        if not args.job_request or not args.image_tag or not args.allowed_registry:
+            raise ValueError("policy_model_materialization_inputs_required")
+        request = json.loads(args.job_request.read_text())
+        package = (request.get("policy_package") or {}).get("docker_container") or {}
+        if package.get("model_artifact") != artifact:
+            raise ValueError("policy_model_materialization_request_binding_mismatch")
     from google.cloud import storage
     receipt = stage_model_build_context(
-        artifact=json.loads(args.artifact.read_text()), contract=json.loads(args.contract.read_text()),
+        artifact=artifact, contract=contract,
         output=args.output, allowed_bucket=args.allowed_bucket, storage_client=storage.Client(),
         source_root=Path(__file__).resolve().parents[2],
     )
     if args.image_tag:
         receipt["image_ref"] = publish_model_image(context=args.output, image_tag=args.image_tag,
                                                   allowed_registry=args.allowed_registry or "")
+    if args.materialized_contract_out:
+        final = dict(contract)
+        final.pop("contract_digest", None)
+        final["container"] = {**contract["container"], "image": receipt["image_ref"],
+            "serve_command": ["python", "-m", "blueprint_pipeline.policy_model_server"],
+            "port": 8600, "run_as_uid": 65532, "run_as_gid": 65532, "gpu_required": False}
+        final = validate_company_policy_container_contract_v2(final)
+        with args.materialized_contract_out.open("x") as stream:
+            args.materialized_contract_out.chmod(0o600)
+            json.dump(final, stream, sort_keys=True, allow_nan=False)
+            stream.flush()
+        receipt["materialized_contract_digest"] = final["contract_digest"]
     path = args.output.parent / (args.output.name + "-receipt.json")
     with path.open("x") as stream:
         stream.write(json.dumps(receipt, allow_nan=False, indent=2))

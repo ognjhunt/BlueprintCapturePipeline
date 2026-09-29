@@ -250,6 +250,7 @@ CONTROLLED_POLICY_RUNTIME_MODULE_NAMES = tuple(sorted({*CONTROLS_RUNTIME_MODULE_
     "controlled_policy_session.py", "controlled_policy_observations.py", "controlled_policy_actions.py",
     "controlled_policy_outcome.py", "controlled_simulator_adapter.py", "company_policy_container_contract_v2.py",
     "policy_model_onnx.py", "native_rigid_episode_telemetry.py", "controlled_policy_configuration.py",
+    "controlled_policy_remote_sandbox.py",
     "adp009d_groot_worker_identity.py", "groot_n17_wire_client.py", "policy_request_evidence.py",
     "native_g1_navigation_goal.py"}))
 

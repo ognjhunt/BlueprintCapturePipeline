@@ -586,7 +586,7 @@ def execute_company_policy_sandbox_preobservation(
     socket_ready: Callable[[str, int], bool] = wait_for_unix_socket,
     apparmor_profiles_path: Path = Path("/sys/kernel/security/apparmor/profiles"),
     allowed_runtime_root: Path = Path("/run/blueprint"),
-    qualified_session: Callable[[Callable[[bytes, float], bytes]], Mapping[str, Any]] | None = None,
+    qualified_session: Callable[[Callable[[bytes, float], bytes], Mapping[str, Any]], Mapping[str, Any]] | None = None,
     authorize_scene_access: Callable[[Mapping[str, Any], Mapping[str, Any]], bool] | None = None,
 ) -> dict[str, Any]:
     """Qualify the sandbox, then optionally run an authorized controlled session.
@@ -906,7 +906,7 @@ def execute_company_policy_sandbox_preobservation(
                 return json.dumps(actions, allow_nan=False, separators=(",", ":")).encode()
 
             result.update(status="controlled_session_incomplete", scene_access_authorized=True)
-            session = qualified_session(controlled_transport)
+            session = qualified_session(controlled_transport, qualification)
             result.update(status="controlled_session_completed", controlled_session=dict(session),
                           real_observation_sent=real_observation_sent, scene_access_authorized=True)
     except (

@@ -112,7 +112,7 @@ class ControlledSandboxFactory:
             attestation_key=self.attestation_key, attestation_key_id=self.attestation_key_id,
             worker_boot_receipt=boot_receipt,
             output_path=attempt_root / "sandbox_execution.json",
-            qualified_session=qualified_session,
+            qualified_session=lambda transport, _qualification: qualified_session(transport),
             authorize_scene_access=lambda qualified_plan, qualification: self.authorize_scene_access(
                 plan=qualified_plan, qualification=qualification,
                 job_request=job_request,
