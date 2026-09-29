@@ -19,6 +19,7 @@ from .control_plane_reference_budget import ReferenceCollectionBudget
 
 _PHASES = {'event_admission_batch': (256, 10000), 'event_admission_done': (1, 10000), 'scan_completion': (5, 10000), 'restore_checkpoint_manifest': (1, 100000), 'restore_checkpoint_compare': (1, 100000), 'restore_checkpoint_record': (1, 10000), 'manifest': (1, 100000), 'ready': (1, 10000), 'removal_batch': (256, 10000), 'recovery_batch': (256, 10000), 'restore_recovery_batch': (257, 10000), 'restore_activation_manifest': (1, 100000),
            'restore_admission': (1, 10000), 'restore_prepare': (1, 100000), 'restore_stage': (1, 100000), 'restore_stage_verify': (1, 100000), 'restore_union_finalize': (1, 100000), 'restore_directories': (256, 10000), 'restore_cleanup': (256, 10000), 'restore_batch': (256, 10000), 'finalize': (1, 100000)}
+_PHASES.update(uncertainty_inventory=(1, 100000), uncertainty_ready=(1, 10000))
 for _scan_role in ('issue', 'restore_stage', 'restore_final', 'restore_activation', 'restore_checkpoint_compare'):
     _PHASES['scan_admission_' + _scan_role] = (2, 10000)
     _PHASES['scan_batch_' + _scan_role] = (512, 10000)

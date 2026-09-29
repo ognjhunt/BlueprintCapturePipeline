@@ -39,12 +39,6 @@ def _require_restore_metadata(uid, gid, mode):
              and not mode & 0o022, 'experiment_restore_member_mode')
 
 
-def _require_restorable_rows(rows):
-    for row in rows:
-        mode, uid, gid = map(int, row[3].split(':')[:3])
-        _require_restore_metadata(uid, gid, mode)
-
-
 def _issue_selection(files, config, entry, authority, store, *, principal, owner, action, expiry):
     """ONE protected current-authority operation, selected before any new UUID."""
     intent_raw, intent_record = files.read(Path(config.experiment_record_store) / (entry['intent_id'] + '.json'),
@@ -197,7 +191,7 @@ def _install_head(files, public, payload, gid, previous):
         files.close(record.fd)
     return selected
 
-def _manifest(files, target, target_fd, *, binding, hash_payload=True):
+def _manifest(files, target, target_fd, *, binding, hash_payload=True, restorable=False):
     """Five-column compact rows, sequential owned FDs, bounded native metadata."""
     rows, seen, logical, allocated = [], set(), 0, 0
     # Admit the retained representation before list growth. Reserve the final
@@ -236,6 +230,8 @@ def _manifest(files, target, target_fd, *, binding, hash_payload=True):
             fd = files.open(name, os.O_RDONLY | os.O_NONBLOCK | (os.O_DIRECTORY if kind == "directory" else 0), parent=parent)
             info = os.fstat(fd)
             _require(owners._metadata(named) == owners._metadata(info), "experiment_member_changed")
+            if restorable:
+                _require_restore_metadata(info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
             digest = None
             try:
                 if kind == "file":
@@ -286,7 +282,7 @@ def _manifest(files, target, target_fd, *, binding, hash_payload=True):
                 **{key: binding[key] for key in ("generation", "birth", "target_identity", "lease", "completion")})
 
 
-def _manifest_record(files, raw, binding):
+def _manifest_record(files, raw, binding, *, restorable=False):
     """Finite compact decoder; the supplied binding is independently selected."""
     value = retained._document(raw, 1048576, _work_budget=files.budget)
     fields = {'schema_version', 'generation', 'birth', 'target_identity', 'lease', 'completion',
@@ -322,6 +318,8 @@ def _manifest_record(files, raw, binding):
                  and numbers[4] <= 128 * 1024**3
                  and (digest is None if kind == 'directory' else numbers[3] == 1 and _valid_digest(digest)),
                  'experiment_manifest_invalid')
+        if restorable:
+            _require_restore_metadata(numbers[1], numbers[2], numbers[0])
         if kind == 'file':
             logical += numbers[4]
             _require(logical <= 128 * 1024**3, 'experiment_manifest_invalid')
@@ -418,9 +416,8 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         if action != "owner_review":
             from . import control_plane_lane_experiment_acquisition as acquisition
             acquisition.begin(files, config, store, action_id, entry, role='issue')
-            manifest = _manifest(files, target, target_fd, binding=entry, hash_payload=False)
-            if action == 'offload':
-                _require_restorable_rows(manifest['members'])
+            manifest = _manifest(files, target, target_fd, binding=entry, hash_payload=False,
+                                 restorable=action == 'offload')
             files.budget.measure(manifest, cap=1048576 - 100)
             _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
             files.phase('finalize')
@@ -574,7 +571,7 @@ def _pin_fence(files, config, root, target, issued):
     return dict(configuration=configuration, root=str(root), identity=dict(dev=initial.st_dev, ino=initial.st_ino, type="directory")), parent
 
 
-_ROW_EVENT_KINDS = frozenset({'member_removed', 'restore_directory', 'restore_member'})
+_ROW_EVENT_KINDS = frozenset({'member_removed', 'removal_uncertain', 'restore_directory', 'restore_member'})
 
 
 def _event_reservation(member_count):
@@ -604,7 +601,7 @@ def _preflight_row_events(files, action, rows, *, restoring=False):
             else:
                 body.update(index=4095, sha256='sha256:' + 'f'*64, size_bytes=maximum)
         else:
-            kind = 'member_removed'
+            kind = 'removal_uncertain'  # Longest supported removal-row event.
             body = dict(preservation=reference, action=reference, manifest=reference, index=4095,
                 path=row[0], original_identity=identity | {'type':row[1]}, logical_bytes=maximum,
                 eligible_allocated_bytes=maximum, parent_after=dict(path=str(Path(row[0]).parent),
@@ -721,12 +718,10 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         manifest_raw, _ = files.read(Path(config.experiment_record_store) / (action_id + ".manifest.json"),
                                     cap=1048576, protected=True, mode=0o600)
         _require(issuance._selector(manifest_raw, files.budget) == action["manifest"], "experiment_manifest_changed")
-        manifest = _manifest_record(files, manifest_raw, entry)
+        manifest = _manifest_record(files, manifest_raw, entry, restorable=action['action'] == 'offload')
         _require(manifest["schema_version"] == MANIFEST_SCHEMA and manifest["manifest_digest"]
                  == canonical_digest(manifest, digest_field="manifest_digest"), "experiment_manifest_invalid")
         _require(len(manifest["members"]) <= 4096, "experiment_manifest_limit")
-        if action['action'] == 'offload':
-            _require_restorable_rows(manifest['members'])
         from . import control_plane_lane_experiment_recovery as recovery
         rows = sorted(manifest["members"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         files._store_path = config.experiment_record_store
@@ -761,6 +756,9 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
             else:
                 archive.verify_preservation(files, config, preservation[1], archive_guard)
                 files.phase("ready")
+            previous, changed_directories, removed_count = recovery.reconcile_uncertain(
+                files, operation, action, expected_action_intent, target, rows, previous,
+                preservation, changed_directories, removed_count, issued, archive_guard)
         # Exactly 16 source members per declared native mutation phase. Full
         # hashing runs under the original action clock with original FDs held;
         # metadata clocks are never reset inside a batch or payload loop.

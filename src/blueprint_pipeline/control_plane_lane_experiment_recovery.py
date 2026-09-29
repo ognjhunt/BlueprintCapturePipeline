@@ -131,10 +131,10 @@ def begin(files, config, action, expected, entry, current, refreshed, public, st
             preservation = (proof, body['archive'])
             previous = proof
     return (operation, retiring, *progress(files, operation, action, expected, target, rows, previous,
-                                           preservation=preservation), preservation)
+                                           preservation=preservation, _allow_uncertain=True), preservation)
 
 
-def progress(files, operation, action, expected, target, rows, previous, *, preservation=None, _target_transition=None, _restored_union=None):
+def progress(files, operation, action, expected, target, rows, previous, *, preservation=None, _target_transition=None, _restored_union=None, _allow_uncertain=False):
     logical, allocated, changed, count = 0, 0, {}, 0
     offset = 1 if action['action'] == 'offload' else 0
     for index, row in enumerate(rows, 1):
@@ -145,15 +145,18 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
             break
         event, selected = selected
         body = event['body']
-        _require(event['event_kind'] == 'member_removed' and set(body) == {'preservation', 'action', 'manifest',
+        uncertain = event['event_kind'] == 'removal_uncertain'
+        _require((event['event_kind'] == 'member_removed' or uncertain and preservation is not None)
+                 and set(body) == {'preservation', 'action', 'manifest',
                  'index', 'path', 'original_identity', 'logical_bytes', 'eligible_allocated_bytes', 'parent_after'}
                  and body['preservation'] == (preservation[0] if preservation else None) and body['action'] == expected and body['manifest'] == action['manifest']
                  and body['index'] == index - 1 and body['path'] == row[0], 'experiment_operation_invalid')
         identity = row[2].split(':')
         tokens = row[3].split(':')
         _require(body['original_identity'] == dict(dev=int(identity[0]), ino=int(identity[1]), type=row[1])
-                 and type(body['logical_bytes']) is int and body['logical_bytes'] == (int(tokens[4]) if row[1] == 'file' else 0)
-                 and type(body['eligible_allocated_bytes']) is int and 0 <= body['eligible_allocated_bytes'] <= 128 * 1024**3,
+                 and type(body['logical_bytes']) is int and body['logical_bytes'] == (0 if uncertain else int(tokens[4]) if row[1] == 'file' else 0)
+                 and type(body['eligible_allocated_bytes']) is int
+                 and (body['eligible_allocated_bytes'] == 0 if uncertain else 0 <= body['eligible_allocated_bytes'] <= 128 * 1024**3),
                  'experiment_operation_invalid')
         member = target / row[0]
         try:
@@ -176,12 +179,19 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
         allocated += body['eligible_allocated_bytes']
         count, previous = index, selected
     # Only last durable exact own transitions may explain surviving directories.
+    pending = None
+    if _allow_uncertain and preservation is not None and count < len(rows):
+        try:
+            os.stat(target / rows[count][0], follow_symlinks=False)
+        except FileNotFoundError:
+            pending = rows[count][0]
     for path, (identity, metadata) in changed.items():
         destination = target / path
         try:
             named = os.stat(destination, follow_symlinks=False)
         except FileNotFoundError:
-            _require(any(row[0] == path for row in rows[:count]), 'experiment_operation_invalid')
+            _require(any(row[0] == path for row in rows[:count]) or path == pending,
+                     'experiment_operation_invalid')
             continue
         relative = str(destination.relative_to(target))
         restored = _restored_union.get(relative) if type(_restored_union) is dict else None
@@ -195,6 +205,14 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
                      and all(type(v) is int and v >= 0 for v in _target_transition),
                      'experiment_directory_transition_changed')
             metadata = tuple(_target_transition)
+        if pending is not None and path == str(Path(pending).parent):
+            # No clearance here: full archive/current/reference and exact live
+            # namespace proofs must precede reconcile_uncertain's event.
+            _require(identity == dict(dev=named.st_dev, ino=named.st_ino, type='directory')
+                     and stat.S_ISDIR(named.st_mode)
+                     and tuple(getattr(named, key) for key in _STAT[:3]) == metadata[:3],
+                     'experiment_directory_transition_changed')
+            continue
         _require(identity == dict(dev=named.st_dev, ino=named.st_ino, type='directory')
                  and stat.S_ISDIR(named.st_mode) and tuple(getattr(named, key) for key in _STAT) == metadata,
                  'experiment_directory_transition_changed')
@@ -210,6 +228,96 @@ def progress(files, operation, action, expected, target, rows, previous, *, pres
                  and body['eligible_allocated_bytes'] == allocated, 'experiment_operation_invalid')
         completed = selected
     return previous, logical, allocated, {p: v[1] for p, v in changed.items()}, count, completed
+
+
+def reconcile_uncertain(files, operation, action, expected, target, rows, previous,
+                        preservation, changed, count, issued, guard):
+    """Record one absent original frontier ONLY after fresh full preservation.
+
+    The caller has retained original operation/target/current/reference proofs
+    and completed fresh whole-archive readback. Absence credits zero bytes. All
+    surviving selected identities/metadata and the complete bounded namespace
+    must still agree before the immutable uncertainty event can advance it.
+    """
+    from . import control_plane_lane_experiment_actions as code
+    if count == len(rows):
+        return previous, changed, count
+    row = rows[count]
+    guard()
+    parent, name = files.parent(target / row[0])
+    files.location(parent)
+    try:
+        os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        return previous, changed, count
+    files.phase('uncertainty_inventory')
+    files.location(parent)
+    initial = os.fstat(parent)
+    parent_path = str(Path(row[0]).parent)
+    by_path = {}
+    for item in rows:
+        files.budget.charge('values')
+        by_path[item[0]] = item
+    if parent_path != '.':
+        original = by_path[parent_path]
+        identity, metadata = original[2].split(':'), tuple(map(int, original[3].split(':')))
+        _require(original[1] == 'directory' and (initial.st_dev, initial.st_ino) == tuple(map(int, identity[:2]))
+                 and (stat.S_IMODE(initial.st_mode), initial.st_uid, initial.st_gid) == metadata[:3],
+                 'experiment_directory_transition_changed')
+    files.proof(parent)
+    updated = tuple(getattr(initial, key) for key in _STAT)
+    candidate = changed | {parent_path: updated}
+    # Fixed original rows bound all growth. Never follow or adopt a new name.
+    expected_names = {'.': set(code._METADATA)}
+    directories = ['.']
+    for item in rows[count + 1:]:
+        files.budget.charge('values', 3)
+        relative = item[0]
+        expected_names.setdefault(str(Path(relative).parent), set()).add(Path(relative).name)
+        if item[1] == 'directory':
+            directories.append(relative)
+            expected_names.setdefault(relative, set())
+        member_parent, _, fd, _ = code._member(files, target, item, candidate.get(relative), hash_payload=False)
+        files.close(fd)
+        files.location(member_parent)
+    for relative in directories:
+        files.budget.charge('values')
+        directory, _ = files.parent(target / relative / '.uncertainty-probe')
+        files.location(directory)
+        files.proof(directory)
+        before = owners._metadata(os.fstat(directory))
+        names = set()
+        with os.scandir(directory) as stream:
+            for item in stream:
+                files.budget.charge('entries')
+                _require(len(names) < 4098, 'experiment_manifest_limit')
+                names.add(item.name)
+        _require(names == expected_names[relative], 'experiment_uncertain_namespace_changed')
+        files.location(directory)
+        _require(owners._metadata(os.fstat(directory)) == before, 'experiment_directory_transition_changed')
+    guard()
+    files.location(parent)
+    files.proof(parent)
+    _require(owners._metadata(os.fstat(parent)) == owners._metadata(initial),
+             'experiment_directory_transition_changed')
+    try:
+        os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        _require(False, 'experiment_removed_name_reappeared')
+    files.phase('uncertainty_ready')
+    guard()
+    identity = row[2].split(':')
+    previous = code._event(files, operation, action, 'removal_uncertain', dict(
+        preservation=preservation[0], action=expected, manifest=action['manifest'], index=count,
+        path=row[0], original_identity=dict(dev=int(identity[0]), ino=int(identity[1]), type=row[1]),
+        logical_bytes=0, eligible_allocated_bytes=0, parent_after=dict(path=parent_path,
+            identity=dict(dev=initial.st_dev, ino=initial.st_ino, type='directory'),
+            stat_token=':'.join(map(str, updated)))), count + 2, previous, issued)
+    return previous, candidate, count + 1
 
 
 def retired(files, config, action, expected, target, rows, entry, marker, *, _retained_store=None, _target_transition=None, _restored_union=None):

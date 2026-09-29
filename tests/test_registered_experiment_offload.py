@@ -81,7 +81,7 @@ def expired_completed_evidence(installation, tmp_path, monkeypatch):  # noqa: F8
 
 
 @pytest.mark.parametrize('kind,mode', [('file', 0o660), ('directory', 0o770), ('file', 0o1600), ('directory', 0o1700)])
-def test_offload_refuses_original_metadata_native_restore_cannot_reproduce(installation, monkeypatch, request, kind, mode):
+def test_offload_refuses_original_metadata_native_restore_cannot_reproduce(installation, monkeypatch, request, kind, mode):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     actual = root.issue_experiment_action_intent
     selected = []
@@ -103,14 +103,49 @@ def test_offload_refuses_original_metadata_native_restore_cannot_reproduce(insta
     assert _payload_snapshot(member.parent) == snapshot
 
 
-@pytest.mark.parametrize('boundary', ['first', 'second', 'directory', 'foreign', 'readback'])
+@pytest.mark.parametrize('kind,mode', [('file', 0o640), ('directory', 0o750)])
+def test_supported_original_metadata_survives_actual_offload_restore(installation, monkeypatch, request, kind, mode):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    from blueprint_pipeline import control_plane_lane_experiment_archive as archive
+    from blueprint_pipeline import control_plane_lane_experiment_restore as restore
+    actual, selected = root.issue_experiment_action_intent, []
+
+    def issue(intent_id, **kwargs):
+        settings = json.loads(Path(kwargs['installed_config_path']).read_bytes())
+        target = Path(settings['lane_scratch_work_root']) / 'g1' / ('registered-' + intent_id)
+        member = (target / 'native_g1_development_pair.v1.json' if kind == 'file'
+                  else next(path for path in target.iterdir() if path.is_dir()))
+        member.chmod(mode)
+        selected.append(member)
+        return actual(intent_id, **kwargs)
+
+    monkeypatch.setattr(root, 'issue_experiment_action_intent', issue)
+    value, _, _, _, intent_id = request.getfixturevalue('expired_completed_evidence')
+    cloud = Cloud()
+    monkeypatch.setattr(archive, '_client', lambda *args: (cloud, 'development-only'))
+    assert _gc(value)['registered_experiments']['outcomes'][0]['decision'] == 'retired'
+    grant = root.issue_experiment_restore_intent(intent_id, principal='operator', owner='owner',
+        lease_ttl_seconds=600, expires_at_epoch=3400, installed_config_path=value[0], now=lambda: 2901)
+
+    class Reservation:
+        def release(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(restore, 'reserve_control_plane_disk', lambda *args, **kwargs: Reservation())
+    assert root.restore_registered_experiment(grant['action_id'], expected_restore_intent=grant['restore_intent'],
+        installed_config_path=value[0], now=lambda: 2902,
+        _pins_root=value[0].parent / 'pins')['decision'] == 'restored'
+    assert selected[0].stat().st_mode & 0o7777 == mode
+
+
+@pytest.mark.parametrize('boundary', ['first', 'second', 'directory', 'foreign', 'extra', 'readback', 'event'])
 def test_archived_unlink_before_event_reconciles_without_unknown_byte_credit(expired_completed_evidence, monkeypatch, boundary):
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     from blueprint_pipeline import control_plane_lane_experiment_restore as restore
     value, target, born, action, intent_id = expired_completed_evidence
-    before = _payload_snapshot(target)
+    before = {str(path.relative_to(target)): path.read_bytes() for path in target.rglob('*') if path.is_file()}
     cloud, stopped, attempts = Cloud(), [], []
     monkeypatch.setattr(archive, '_client', lambda *args: (cloud, 'development-only'))
     original = actions._event
@@ -134,10 +169,22 @@ def test_archived_unlink_before_event_reconciles_without_unknown_byte_credit(exp
     monkeypatch.setattr(actions, '_event', original)
     if boundary == 'foreign':
         missing.write_bytes(b'foreign')
+    elif boundary == 'extra':
+        (target / 'foreign-extra').write_bytes(b'foreign')
     elif boundary == 'readback':
         cloud.corrupt = True
+    elif boundary == 'event':
+        def after_uncertainty(*args, **kwargs):
+            selected = original(*args, **kwargs)
+            if args[3] == 'removal_uncertain':
+                raise RuntimeError('development_only_after_uncertainty_event')
+            return selected
+        monkeypatch.setattr(actions, '_event', after_uncertainty)
+        interrupted = _gc(value)
+        assert 'registered_experiments' in interrupted['phase_errors']
+        monkeypatch.setattr(actions, '_event', original)
     result = _gc(value)['registered_experiments']['outcomes'][0]
-    if boundary in ('foreign', 'readback'):
+    if boundary in ('foreign', 'extra', 'readback'):
         assert result['decision'] == 'kept' and result['removed_logical_bytes'] == 0
         assert _current_entry(value, intent_id)['state'] == 'retiring'
         if boundary == 'foreign':
@@ -165,6 +212,9 @@ def test_archived_unlink_before_event_reconciles_without_unknown_byte_credit(exp
     for path, raw in before.items():
         if path != '.lane-scratch.v1.json':
             assert (target / path).read_bytes() == raw
+    from blueprint_pipeline.control_plane_lane_experiment_consumer import RegisteredExperimentUse
+    with RegisteredExperimentUse.admit(target, now=lambda: 3000) as use:
+        use.check()
 
 
 @pytest.mark.parametrize('corrupt', [False, True])
