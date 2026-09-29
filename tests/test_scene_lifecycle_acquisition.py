@@ -3,6 +3,7 @@
 """ADP-009D: planner metadata reads own one bounded, retained acquisition."""
 import json
 import os
+import hashlib
 
 import pytest
 
@@ -46,6 +47,25 @@ def test_payload_never_opened_and_linked_metadata_refuses(tmp_path, monkeypatch)
         monkeypatch.setattr(m.os, 'open', lambda *a, **k: pytest.fail('payload opened'))
         info = reader.stat(str(payload))
         assert info.st_size == 6
+
+
+def test_exact_configured_revision_projection_is_the_only_digest_named_metadata(tmp_path):
+    m = module()
+    root = tmp_path / 'inputs'
+    parent = root / 'prep-1'
+    parent.mkdir(parents=True)
+    raw = b'{"schema_version":"task_evaluation_configured_scene_revision.v1"}'
+    path = parent / hashlib.sha256(raw).hexdigest()
+    path.write_bytes(raw)
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        with pytest.raises(m.AcquisitionError, match='metadata_filename_invalid'):
+            reader.read_json(str(path))
+        assert reader.read_json(str(path), configured_revision_root=str(root)) == raw
+        assert reader.verify() is True
+    path.write_bytes(b'{}')
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        with pytest.raises(m.AcquisitionError, match='metadata_'):
+            reader.read_json(str(path), configured_revision_root=str(root))
 
 
 def test_shared_read_allowance_refuses_before_next_read(tmp_path, monkeypatch):

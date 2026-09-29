@@ -6,6 +6,8 @@ neither these checks nor advisory locks provide a filesystem snapshot.
 from __future__ import annotations
 
 import os
+import hashlib
+import re
 import stat as types
 from pathlib import PurePosixPath
 
@@ -37,6 +39,19 @@ def path(value, budget):
     require(len(parts) <= 64 and all(p not in ('', '.', '..') for p in parts), 'path_invalid')
     budget.tick()
     return value
+
+
+def configured_revision_projection(value, root):
+    """The worker's one digest-named JSON projection layout."""
+    if type(value) is not str or type(root) is not str:
+        return False
+    candidate, parent = PurePosixPath(value), PurePosixPath(root)
+    try:
+        parts = candidate.relative_to(parent).parts
+    except ValueError:
+        return False
+    return (len(parts)==2 and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,191}',parts[0]) is not None
+        and re.fullmatch(r'[0-9a-f]{64}',parts[1]) is not None)
 
 
 def identity(info):
@@ -188,8 +203,10 @@ class Acquisition:
         self.memberships.setdefault(value, observed)
         return tuple(names)
 
-    def read_json(self, value):
-        require(type(value) is str and value.endswith('.json'), 'metadata_filename_invalid')
+    def read_json(self, value, *, configured_revision_root=None):
+        digest_named=(type(value) is str and not value.endswith('.json')
+            and configured_revision_projection(value,configured_revision_root))
+        require(type(value) is str and (value.endswith('.json') or digest_named), 'metadata_filename_invalid')
         parent, name = self._parent(value)
         fd = None
         try:
@@ -220,6 +237,8 @@ class Acquisition:
             self.budget.available('raw_bytes', 0)
             payload = b''.join(pieces)
             self.budget.tick()
+            if digest_named:
+                require(hashlib.sha256(payload).hexdigest()==name,'metadata_digest_invalid')
             return payload
         except OSError:
             raise AcquisitionError('scene_lifecycle_metadata_unavailable') from None

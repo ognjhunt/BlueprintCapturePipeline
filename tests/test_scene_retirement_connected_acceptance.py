@@ -737,7 +737,6 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
 def _authentic_connected_graph(base, monkeypatch, policy):
     from tests.test_scene_lifecycle_connected_acquisition import full_connected_finished_scene, installed
     from tests.test_task_evaluation_scene_intake import request, stage, attempt
-    from tests.test_scene_source_family_website import pair, seal
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
     args = _native_fixture_records(full_connected_finished_scene())
@@ -1338,6 +1337,9 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
             published[row['uri']] = bytes(matches[0])
     transport = MemoryArchiveTransport(members, published)
     from blueprint_pipeline.task_evaluation_scene_retirement import retire_scene, restore_scene
+    assert any(row.get('pre_handoff_binding_verified') for row in
+        plan['historical_lineage']['preparation_handoff_observations']), (
+        plan['historical_lineage']['preparation_handoff_observations'])
     retired = retire_scene(plan_path, consent_path, transport=transport, now=lambda: 200, monotonic=time.monotonic)
     assert retired['status'] == 'retired', retired
     shared_keeps = [{'canonical_path':row['path'],'action':'KEEP',

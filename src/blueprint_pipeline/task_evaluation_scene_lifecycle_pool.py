@@ -83,7 +83,11 @@ class Pool:
         if path in self.paths:
             return
         try:
-            raw = self.reader.read_json(path)
+            if role=='configured_revisions' and not path.endswith('.json'):
+                raw=self.reader.read_json(path,configured_revision_root=(
+                    self.context['roots']['preparation_input_root']))
+            else:
+                raw = self.reader.read_json(path)
         except FileNotFoundError:
             self.scope(role, path, 'unavailable')
             return
@@ -307,6 +311,12 @@ def select(decoded, context, intent_id, budget):
     owner = context['roots']['intent_root'] + '/' + intent_id
     for index, row in enumerate(_work_items(decoded, budget)):
         budget.charge('facts', 3)
+        if row['role']=='configured_revisions' and not row['path'].endswith('.json'):
+            budget.tick()
+            revision=row['value']
+            require(revision.get('schema_version')=='task_evaluation_configured_scene_revision.v1'
+                and revision.get('revision_digest')==native.c.canonical_digest(
+                    revision,digest_field='revision_digest'), 'configured_revision_projection_invalid')
         raw_index.setdefault((row['path'], row['sha256'], len(row['raw'])), []).append(index)
         by_path.setdefault(row['path'], []).append(index)
         for key, value in _work_items(row['value'].items() if supported(row) else (), budget):

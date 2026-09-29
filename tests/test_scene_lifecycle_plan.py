@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 from tests.test_scene_inventory_history import fixture, event, project
@@ -79,6 +80,33 @@ def test_raw_context_values_never_enter_typed_refusal(tmp_path):
     report = run(context, intent_id)
     assert report['status'] == 'incomplete' and report['action'] == 'KEEP'
     assert 'secret' not in json.dumps(report)
+
+
+def test_configured_revision_projection_selector_has_exact_worker_shape(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import _context
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    context, _ = context_fixture(tmp_path)
+    root = Path(context['roots']['preparation_input_root'])
+    context['retained_metadata_roots'].append(str(root))
+    raw = b'{"schema_version":"task_evaluation_configured_scene_revision.v1"}'
+    projected = root / 'prep-1' / hashlib.sha256(raw).hexdigest()
+    projected.parent.mkdir(parents=True, exist_ok=True)
+    projected.write_bytes(raw)
+    context['retained_metadata_files'] = [{'role':'configured_revisions','path':str(projected)}]
+    _context(context, ReferenceCollectionBudget(monotonic=lambda: 0))
+    for role, path in (
+        ('sam_plans', projected),
+        ('configured_revisions', root / 'other' / 'nested' / projected.name),
+        ('configured_revisions', root / 'prep-1' / projected.name.upper()),
+        ('configured_revisions', tmp_path / 'foreign' / 'prep-1' / projected.name),
+    ):
+        context['retained_metadata_files'] = [{'role':role,'path':str(path)}]
+        try:
+            _context(context, ReferenceCollectionBudget(monotonic=lambda: 0))
+        except ValueError as error:
+            assert 'context_selectors_invalid' in str(error)
+        else:
+            raise AssertionError((role,path))
 
 
 def preparation_fixture(tmp_path):

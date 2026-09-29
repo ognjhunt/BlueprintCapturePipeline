@@ -41,7 +41,7 @@ def full_connected_finished_scene():
     return args
 
 
-def installed(tmp_path, args):
+def installed(tmp_path, args, *, already_rebased=False):
     from tests.test_scene_source_family_website import fixture as base_fixture
     base = base_fixture()
     args['roots'] = dict(base['roots'], **args['roots'])
@@ -49,13 +49,14 @@ def installed(tmp_path, args):
     args.setdefault('retained_metadata_roots', base['retained_metadata_roots'])
     args.setdefault('source_records', base['source_records'])
     args.setdefault('bridge_records', {role: [] for role in ROLES})
-    args = rebase_graph(args, tmp_path)
+    if not already_rebased:
+        args = rebase_graph(args, tmp_path)
     context, _ = context_fixture(tmp_path)
     context.update(roots=args['roots'], parent_routes=args['parent_routes'],
                    retained_metadata_roots=[str(tmp_path.resolve())])
     context['primary_queue_contracts'][0]['root_path'] = args['roots']['preparation_queue_root']
     for row in context['auxiliary_queue_contracts']:
-        row['root_path'] = args['roots']['preparation_queue_root' if row['family'] == 'preparation' else 'sam_queue_root']
+        row['root_path'] = args['roots'][row['family'] + '_queue_root']
     for row in context['reference_family_contracts']:
         row['queue_root'] = args['roots'][row['family'] + '_queue_root']
     metadata, payload = {}, set()
@@ -65,14 +66,18 @@ def installed(tmp_path, args):
             for path, raw in rows:
                 target = Path(path)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(raw)
-                if target.suffix == '.json':
+                if target.exists() or target.is_symlink():
+                    assert not target.is_symlink() and target.is_file() and target.read_bytes() == raw, 'fixture would overwrite producer bytes'
+                else:
+                    target.write_bytes(raw)
+                if target.suffix == '.json' or (role == 'configured_revisions'
+                        and target.parent.parent == Path(args['roots']['preparation_input_root'])):
                     assert path not in metadata or metadata[path][1] == raw
                     metadata[path] = role, raw
                 else:
                     payload.add(path)
     context['retained_metadata_files'] = [dict(role=role, path=path)
-        for path, (role, _) in metadata.items() if role not in ('intent', 'projection')]
+        for path, (role, _) in metadata.items() if role not in ('intent', 'projection', 'queue_identities')]
     # Actual tiny regular payloads are statted, never opened. Two names and two
     # distinct scene workspaces deliberately share one physical inode.
     first = Path(args['roots']['preparation_input_root']) / 'prep-1' / 'tiny.payload'

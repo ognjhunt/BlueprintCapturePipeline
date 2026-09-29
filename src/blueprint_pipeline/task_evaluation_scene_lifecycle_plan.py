@@ -69,7 +69,10 @@ def _context(value, budget):
         acquisition.require(isinstance(row, dict) and set(row) == {'role', 'path'} and isinstance(row['role'], str)
                             and row['role'] in pool_module.SELECTOR_ROLES, 'context_selectors_invalid')
         path = acquisition.path(row['path'], budget)
-        acquisition.require(path.endswith('.json') and any(PurePosixPath(path).is_relative_to(PurePosixPath(root))
+        digest_revision=(row['role']=='configured_revisions'
+            and acquisition.configured_revision_projection(path,roots['preparation_input_root']))
+        acquisition.require((path.endswith('.json') or digest_revision)
+                            and any(PurePosixPath(path).is_relative_to(PurePosixPath(root))
                             and path != root for root in metadata), 'context_selectors_invalid')
         acquisition.require(path not in selected, 'context_selectors_invalid')
         budget.charge('facts')
