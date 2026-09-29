@@ -882,10 +882,12 @@ def run_arena_native_control_vast(
                 if runtime_dependency.get("status") == "completed"
                 else {"status": "not_required"}
             )
+    inventory_binding = streamed.native_inventory_binding(
+        bundle, expected_output_filename) if streaming else None
     extracted = streamed.ingest_needed_members(
         attempt_root=attempt_root, promotion=promotion, contract=provider_output_member_contract,
         reservation=provider_output_reservation, blocker_prefix=blocker_prefix,
-        result_name=expected_output_filename, read_json=_read_json,
+        result_name=expected_output_filename, read_json=_read_json, inventory_binding=inventory_binding,
     ) if streaming else _extract_provider_output(
         output_zip,
         attempt_root / "immutable_execution",
@@ -1125,7 +1127,8 @@ def run_arena_native_control_vast(
     if streaming:
         result.update(streamed.stream_result_fields(
             attempt_root=attempt_root, promotion=promotion, outcome=extracted,
-            reservation=provider_output_reservation, contract=provider_output_member_contract))
+            reservation=provider_output_reservation, contract=provider_output_member_contract,
+            inventory_binding=inventory_binding))
     _write_run_result(job, attempt_root, result)
     return result
 

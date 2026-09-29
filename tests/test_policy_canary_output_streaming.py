@@ -369,6 +369,54 @@ def test_needed_set_over_budget_blocks_after_run_with_the_archive_durable(lane, 
     assert list(lane.ledger.glob("*.json")) == []
 
 
+IDENTITY = "cell_runs/00/policy_canary_static_startup_preflight.v1.json"  # each cell's worker seals one
+
+
+@pytest.mark.parametrize("tampered", [False, True])
+def test_ingestion_records_the_native_inventory_outcome_and_never_blocks_on_it(lane, tampered):
+    """Review minor 6 (design 4): once ingested, the native inventory is checked against Blueprint's
+    index -- the identity document bound to the run, every inventory row by digest, bulk members
+    included, without their bytes. The outcome is sealed into the ingestion receipt and shown in
+    the lane result; it is never a blocker (download mode never runs it, delivery re-verifies)."""
+    run_id, inputs_digest = "scene-839873-canary-1", "sha256:" + "4" * 64
+    identity = {"schema_version": "policy_canary_static_startup_preflight.v1", "status": "passed",
+                "run_id": run_id, "runtime_inputs_digest": inputs_digest, "result_digest": ""}
+    identity["result_digest"] = canonical_digest(identity, digest_field="result_digest")
+    frame, request = b"\x89PNG" + bytes(4_000), json.dumps({"observation": [0.5] * 8}).encode()
+    frame_path, request_path = "episodes/media/e/frames/external/000000.png", "cell_runs/00/policy-requests/000000.json"
+    rows = [{"role": role, "relative_path": path, "size_bytes": len(data),
+             "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+            for role, path, data in (("lossless_frame", frame_path, frame), ("policy_request", request_path, request))]
+    if tampered:
+        rows[0]["sha256"] = "sha256:" + "0" * 64
+    aggregate = _aggregate(artifact_inventory=rows, artifact_inventory_digest=canonical_digest({"value": rows}))
+    archive = build_zip([Entry(RESULT, json.dumps(aggregate, sort_keys=True).encode()),
+                         Entry(IDENTITY, json.dumps(identity, sort_keys=True).encode()),
+                         Entry(frame_path, frame, method=STORED), Entry(request_path, request)])
+    lane.bundle.update(runtime_inputs_digest=inputs_digest, static_startup_preflight={"run_id": run_id})
+
+    result = lane.run_session(lane.adapter(archive))
+
+    assert result["status"] == "completed", result["blockers"]
+    assert result["provider_output_native_inventory_binding"] == {
+        "identity_document": IDENTITY, "result_document": RESULT, "run_id": run_id,
+        "runtime_inputs_digest": inputs_digest}
+    attempt = Path(result["attempt_root"])
+    receipt = json.loads((attempt / ".provider_output_ingestion" / "receipt.json").read_text())
+    native = receipt["native_inventory"]
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
+    assert result["provider_output_ingestion"]["native_inventory"] == native
+    if tampered:
+        assert native == {"status": "failed", "code": "provider_output_native_artifact_digest_mismatch"}
+    else:
+        assert native == {"status": "verified", "identity_document_digest": identity["result_digest"],
+                          "result_document_digest": aggregate["result_digest"], "verified_native_file_count": 2,
+                          "episode_qualification_performed": False, "image_qualification_performed": False,
+                          "scientific_finalization_pending": True}
+    # The frame and the request stayed in the archive: checked by their index digests, never fetched.
+    assert sorted(_members(attempt / "immutable_execution")) == sorted([IDENTITY, RESULT])
+
+
 def test_ssh_fallback_in_stream_mode_publishes_then_ingests_by_range(lane, tmp_path):
     archive, payloads = _small_archive()
 
@@ -877,6 +925,10 @@ def test_resume_ingests_a_durable_archive_once_and_short_circuits_after_readers_
 
     assert resumed["status"] == "completed", resumed["blockers"]
     assert resumed["ingestion"]["status"] == "materialized" and resumed["ingestion"]["short_circuited"] is False
+    # The native inventory is checked with the binding the sealed lane result recorded (this fixture's
+    # identity document is filler JSON): an outcome, not a blocker.
+    assert resumed["ingestion"]["ingestion"]["native_inventory"] == {
+        "status": "failed", "code": "provider_output_native_identity_mismatch"}
     index = json.loads((attempt / "provider_output_member_index.v1.json").read_text())
     needed = POLICY_CANARY_OUTPUT_CONTRACT.paths(index)
     assert sorted(_members(attempt / "immutable_execution")) == sorted(needed)

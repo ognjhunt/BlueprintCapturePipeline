@@ -1293,8 +1293,13 @@ unit does.
    needed set from the sealed index. The hold then shrinks in place to the
    needed set plus 1 KiB per archive member, the index and 16 MiB, and the
    members are ingested from B2 by range, each checked against the index. The
-   native result path, the view descriptor and the manifest's archive rows
-   exist only once ingestion is materialized.
+   native inventory is then checked against the index, digests without bytes
+   (the first cell's static startup preflight bound to the bundle's run and
+   runtime inputs, every inventory row by digest), and the outcome sealed into
+   the ingestion receipt as `native_inventory`, never as a blocker; a resume
+   reads the binding from the sealed lane result. The native result path, the
+   view descriptor and the manifest's archive rows exist only once ingestion is
+   materialized.
 
 **Budget and measurement.** The contract materializes at most 640 MiB
 (`NEEDED_SET_BUDGET_BYTES`). That is 1.5 times the 436,485,098 bytes measured on

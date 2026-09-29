@@ -37,7 +37,12 @@ from .provider_output_member_index import (
     validate_member_index,
     validate_member_selection,
 )
-from .provider_output_native_inventory import ProviderOutputInventoryError, safe_member_name, verify_native_inventory
+from .provider_output_native_inventory import (
+    ProviderOutputInventoryError,
+    index_member_records,
+    safe_member_name,
+    verify_native_inventory,
+)
 from .provider_output_range_transport import ProviderOutputRangeReader, ProviderOutputTransportError
 from .provider_signed_object_binding import signed_output_object_binding_sha256
 
@@ -533,9 +538,20 @@ def _device(path):
     return os.stat(path).st_dev
 
 
+def _native_inventory(root: Path, binding: Mapping, index: Mapping) -> dict:
+    """The native inventory checked against the index (design 4): an outcome, never a blocker."""
+    try:
+        return {'status': 'verified', **verify_native_inventory(root, binding, index_member_records(index))}
+    except ProviderOutputInventoryError as exc:
+        return {'status': 'failed', 'code': str(exc)}
+    except Exception as exc:  # noqa: BLE001 - recorded, never allowed to block the ingestion
+        return {'status': 'failed', 'code': f'provider_output_native_inventory_failed:{type(exc).__name__}'}
+
+
 def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selection: Mapping,
                             members_root: str | Path, metadata_root: str | Path,
-                            reserve: Callable[[int], object], disk_usage_provider=None) -> dict:
+                            reserve: Callable[[int], object], disk_usage_provider=None,
+                            native_inventory_binding: Mapping | None = None) -> dict:
     """Materialize only a selection's members from a pinned CAS archive; safe to resume.
 
     Each selected member is one range request for its record data under the
@@ -549,6 +565,13 @@ def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selecti
     partial files already hold. Each call supersedes the previous one, so a
     caller keeps a single reservation and resizes it. A refusal it raises stops
     writing and leaves the journal resumable.
+
+    With ``native_inventory_binding`` ({identity_document, result_document,
+    run_id, runtime_inputs_digest}) a materialized run also checks the native
+    inventory against the index, digests without bytes
+    (``verify_native_inventory``), and records the outcome in the receipt as
+    ``native_inventory`` -- ``verified`` with its counts, or ``failed`` with
+    its code -- never as a blocker (design 4).
 
     On resume a verified member is never fetched again. A member interrupted
     mid-transfer is fetched again from its data offset with one range request;
@@ -681,6 +704,8 @@ def ingest_selected_members(*, source: CasArchiveSource, index: Mapping, selecti
                     remote_bytes=sum(row['size'] for row in files if row['path'] not in chosen),
                     resumed_member_count=resumed, transferred_bytes=remote.transferred_bytes,
                     http_request_count=remote.request_count, blockers=[])
+                if native_inventory_binding is not None:
+                    result['native_inventory'] = _native_inventory(members, native_inventory_binding, index)
         except Exception as exc:
             _record_failure(meta, result, exc)
         result.update(disk_usage_sample_count=len(samples),

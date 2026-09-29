@@ -19,9 +19,12 @@ reaches this module.
    sealed index. A needed set over the contract's budget, or a hold that would
    have to grow, blocks with the archive durable; otherwise the hold shrinks in
    place to the need and the members are fetched from B2 by range into
-   ``immutable_execution/`` (0440), each checked against the index. Only once
-   ingestion is materialized is the view descriptor written and the native
-   result path exposed (review I8).
+   ``immutable_execution/`` (0440), each checked against the index. The native
+   inventory is then checked against the index (``native_inventory_binding``,
+   bound to the bundle's run and runtime inputs) and its outcome recorded in
+   the ingestion receipt, never as a blocker (design 4). Only once ingestion is
+   materialized is the view descriptor written and the native result path
+   exposed (review I8).
 5. ``stream_manifest_roles`` and ``stream_result_fields`` add the streamed
    records to the artifact manifest and the lane result.
 
@@ -64,6 +67,11 @@ INGESTION_DIRNAME = ".provider_output_ingestion"
 INGESTION_RECEIPT_NAME = "receipt.json"
 STAGING_DIRNAME = "object_store_staging"
 DESCRIPTOR_NAME = EVIDENCE_DIRNAME + ".member_view.v1.json"
+LANE_RESULT_NAME = "adp_arena_vast_result.json"
+# Each isolated cell's worker seals its static startup preflight at its own root, all ten
+# bound to the session's run and runtime inputs; the first cell's stands for the run.
+IDENTITY_DOCUMENT = "cell_runs/00/policy_canary_static_startup_preflight.v1.json"
+_BINDING_FIELDS = ("identity_document", "result_document", "run_id", "runtime_inputs_digest")
 # The Quick-10 session's output upload bound (native_task_arena_vast: 8 GB plus
 # the paired witness's own capacity); the output alone never exceeds it.
 OUTPUT_ARCHIVE_MAXIMUM_BYTES = 8_000_000_000
@@ -107,6 +115,25 @@ def promote(*, staging_dir: Path, attempt_root: Path, observation: Mapping[str, 
                                 maximum_archive_bytes=OUTPUT_ARCHIVE_MAXIMUM_BYTES)
 
 
+def native_inventory_binding(bundle: Mapping[str, Any], result_name: str) -> dict[str, Any]:
+    """``verify_native_inventory``'s binding for a Quick-10 bundle: its run and runtime inputs."""
+    preflight = bundle.get("static_startup_preflight")
+    return {"identity_document": IDENTITY_DOCUMENT, "result_document": result_name,
+            "run_id": preflight.get("run_id") if isinstance(preflight, Mapping) else None,
+            "runtime_inputs_digest": bundle.get("runtime_inputs_digest")}
+
+
+def _recorded_binding(attempt_root: Path) -> dict | None:
+    """The binding the sealed lane result recorded, for a resume that has no bundle."""
+    path = attempt_root / LANE_RESULT_NAME
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
+    except (OSError, UnicodeError, ValueError):
+        return None
+    binding = value.get("provider_output_native_inventory_binding") if isinstance(value, dict) else None
+    return dict(binding) if isinstance(binding, dict) and set(binding) == set(_BINDING_FIELDS) else None
+
+
 def _sealed_index(attempt_root: Path, receipt: Mapping[str, Any]) -> dict | None:
     """The member index the promotion receipt names, re-checked against its file record."""
     import hashlib
@@ -139,7 +166,8 @@ def _ingestion_summary(receipt: Mapping[str, Any] | None, path: Path) -> dict | 
             "receipt_digest": receipt.get("receipt_digest"),
             **{key: receipt.get(key) for key in ("selection_version", "materialized_member_count",
                                                  "remote_member_count", "materialized_bytes", "remote_bytes",
-                                                 "transferred_bytes", "http_request_count", "blockers")}}
+                                                 "transferred_bytes", "http_request_count", "blockers",
+                                                 "native_inventory")}}
 
 
 def _materialized_receipt(attempt_root: Path, index: Mapping[str, Any]) -> dict | None:
@@ -172,6 +200,7 @@ def ingest_needed_members(
     blocker_prefix: str,
     result_name: str | None,
     read_json: Callable[[Path], dict[str, Any]] | None,
+    inventory_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Materialize the contract's needed set from the durable archive; the lane's extraction shape.
 
@@ -239,7 +268,8 @@ def ingest_needed_members(
             receipt = ingest_selected_members(
                 source=source, index=index, selection=selection, members_root=attempt_root / EVIDENCE_DIRNAME,
                 metadata_root=attempt_root / INGESTION_DIRNAME, reserve=reserve,
-                disk_usage_provider=lambda path: disk_usage_provider(path))
+                disk_usage_provider=lambda path: disk_usage_provider(path),
+                native_inventory_binding=inventory_binding)
         except ProviderOutputIngestionError as exc:
             return blocked(f"{blocker_prefix}_provider_output_ingestion_blocked", str(exc))
     outcome["ingestion"] = _ingestion_summary(receipt, receipt_path)
@@ -329,7 +359,8 @@ def resume_ingestion(attempt_root: str | Path, *, contract: PolicyCanaryOutputCo
     try:
         outcome = ingest_needed_members(
             attempt_root=attempt, promotion=receipt, contract=contract, reservation=hold,
-            blocker_prefix="provider_output_resume", result_name=None, read_json=None)
+            blocker_prefix="provider_output_resume", result_name=None, read_json=None,
+            inventory_binding=_recorded_binding(attempt))
         done = bool(outcome.get("member_view_path"))
         outcome_label = "completed" if done else "blocked"
     finally:
@@ -361,7 +392,8 @@ def stream_manifest_roles(attempt_root: Path, outcome: Mapping[str, Any]) -> tup
 
 def stream_result_fields(*, attempt_root: Path, promotion: Mapping[str, Any], outcome: Mapping[str, Any],
                          reservation: DiskReservation | None,
-                         contract: PolicyCanaryOutputContract = POLICY_CANARY_OUTPUT_CONTRACT) -> dict[str, Any]:
+                         contract: PolicyCanaryOutputContract = POLICY_CANARY_OUTPUT_CONTRACT,
+                         inventory_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The lane-result fields only a streamed attempt carries (measured when the lane seals)."""
     from .provider_output_promotion_records import RECEIPT_FILENAME
 
@@ -380,6 +412,8 @@ def stream_result_fields(*, attempt_root: Path, promotion: Mapping[str, Any], ou
         },
         "provider_output_needed_set": outcome.get("needed_set"),
         "provider_output_ingestion": outcome.get("ingestion"),
+        # What the native inventory is checked against; a later resume reads it from here.
+        "provider_output_native_inventory_binding": dict(inventory_binding) if inventory_binding else None,
         "provider_output_member_view_path": outcome.get("member_view_path"),
         "provider_output_disk_reservation": {
             "role": OUTPUT_ROLE, "workload": WORKLOAD,
@@ -402,6 +436,7 @@ __all__ = [
     "WORKLOAD",
     "collector",
     "ingest_needed_members",
+    "native_inventory_binding",
     "not_ingested_gap",
     "promote",
     "reserve_forecast_hold",
