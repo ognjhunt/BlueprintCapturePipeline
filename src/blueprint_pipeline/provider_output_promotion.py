@@ -29,7 +29,15 @@ again from what is still there, or the run fails
 (``provider_output_durable_copy_missing``). Only that proof downgrades a
 durable receipt: any other failure, a HEAD that errs say, rewrites the prior
 record as it was, with the blocker. A present object that matches no
-recorded version is promoted.
+recorded version is promoted. Versions whose durable copies still answer are
+kept whatever a later run concludes (Probe A3).
+
+A staging-manifest rewrite that keeps the staged keys
+(``--refresh-output-get-url``) changes the digest a receipt binds. A durable
+receipt for the same output key and observed (size, ETag) is then re-bound
+(``rebound_from_staging_manifest_sha256``) rather than replaced, so a
+rewrite never demotes a proven-durable output; a durable receipt that cannot
+be re-bound is renamed aside (``superseded_receipt``), never overwritten.
 
 Steps for the archive a consumer reads (the primary): one index pass
 (``build_member_index`` under the fixed ``INDEX_LIMITS``, so an index never
@@ -107,6 +115,8 @@ from .provider_output_promotion_records import (
     load_promotion_receipt,
     load_staged_object_absence_proof,
     normalized_etag,
+    rebindable_promotion_receipt,
+    set_aside_unbound_durable_receipt,
     staging_manifest_sha256,
     write_promotion_receipt,
     write_staged_object_absence_proof,
@@ -269,6 +279,9 @@ class _Promotion:
         self.staged_reader = None
         self.output_reused = False
         self.prior_copy_missing = False
+        self.carried_versions: list[dict] = []
+        self.rebound_from: str | None = None
+        self.superseded: dict | None = None
         self.witness_carried: list[dict] = []
         self.local_verified: Path | None = None
         self.local_removed_before = False
@@ -480,23 +493,28 @@ class _Promotion:
                 return primary, versions
             # The durable copy the receipt names is gone: promote again from what is there.
             copy_missing = self.prior_copy_missing = True
+        # Every version a prior receipt made durable whose copy still answers is
+        # kept, whatever this run concludes (Probe A3).
+        self.carried_versions = [row for row in ((prior or {}).get("staged_objects") or {})
+                                 .get("output", {}).get("versions", [])
+                                 if row.get("durable_reference") and self._still_durable(row["durable_reference"])]
         observation = self.observation_argument
         if observation is not None and local_present:
             raise ProviderOutputPromotionError("provider_output_promotion_sources_ambiguous")
         if local_present:
-            return self._local_primary(local), []
+            return self._local_primary(local), list(self.carried_versions)
         reader = self._open("output", self.maximum)
         if reader is None:
             if copy_missing:
                 raise ProviderOutputPromotionError("provider_output_durable_copy_missing")
             if observation is not None:
                 raise ProviderOutputPromotionError("provider_output_observed_object_missing")
-            return None, []
+            return None, list(self.carried_versions)
         if observation is not None and not _same(observation, _identity(reader)):
             raise ProviderOutputPromotionError("provider_output_remote_version_changed")
         primary, version = self._remote_primary(
             reader, "remote_observation" if observation is not None else "remote_present")
-        return primary, [version]
+        return primary, [*(row for row in self.carried_versions if not _same(row, version)), version]
 
     # -- phase 2: any other staged object ---------------------------------------
     def _staged_versions(self) -> list[dict]:
@@ -634,7 +652,7 @@ class _Promotion:
             manifest_sha256 = self._staging()
             _require_artifact_store()
             self.manifest_sha256 = manifest_sha256
-            prior = load_promotion_receipt(self.staging, staging_manifest_sha256=manifest_sha256)
+            prior = self._prior(manifest_sha256)
             try:
                 self.primary, self.versions = _retrying(lambda: self._establish(prior), self.attempts, "output")
                 self.status = "promoted" if self.primary else "absent_confirmed"
@@ -643,6 +661,7 @@ class _Promotion:
                 if prior and prior.get("status") == "promoted" and not self.prior_copy_missing:
                     # Only provider_output_durable_copy_missing proves the durable copy gone.
                     return self._restore(prior)
+                self.versions = list(self.carried_versions)
             self.witness_carried = self._carried_witness_versions(prior)
             self._checkpoint()
             if self.status == "promoted":
@@ -665,6 +684,27 @@ class _Promotion:
             for close in self.closers:
                 close()
         return self._receipt(final=True)
+
+    def _prior(self, manifest_sha256: str) -> dict | None:
+        """The receipt this run builds on: bound here, or carried across a manifest rewrite.
+
+        A durable receipt an earlier version of this manifest bound, for the same
+        staged object, is re-bound (the next write names this manifest and
+        ``rebound_from_staging_manifest_sha256``); a proven-durable output is
+        never demoted by a rewrite. A durable receipt that cannot be re-bound is
+        renamed aside (``superseded_receipt``) before anything overwrites it.
+        """
+        prior = load_promotion_receipt(self.staging, staging_manifest_sha256=manifest_sha256)
+        if prior is not None:
+            return prior
+        prior = rebindable_promotion_receipt(
+            self.staging, staging_manifest_sha256=manifest_sha256, output_key=self.output_key,
+            witness_key=self.witness_key, observation=self.observation_argument)
+        if prior is not None:
+            self.rebound_from = prior["staging_manifest_sha256"]
+            return prior
+        self.superseded = set_aside_unbound_durable_receipt(self.staging, staging_manifest_sha256=manifest_sha256)
+        return None
 
     def _checkpoint(self) -> None:
         """Write the receipt as it stands, the witness still pending, before any later step."""
@@ -712,6 +752,8 @@ class _Promotion:
                                                     if primary.get("index_refusal") else set())),
             "private_url_recorded": False,
             "raw_secret_values_recorded": False,
+            **({"rebound_from_staging_manifest_sha256": self.rebound_from} if self.rebound_from else {}),
+            **({"superseded_receipt": self.superseded} if self.superseded else {}),
         }
         if self.manifest_sha256 is None or not self.staging.is_dir():
             receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")

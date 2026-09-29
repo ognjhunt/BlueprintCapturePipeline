@@ -294,3 +294,6 @@ def test_a_proof_a_manifest_rewrite_invalidated_is_named_and_resume_sets_it_asid
     assert terminal["session_closeout"]["teardown_completed"] is True
     assert not any(blocker.startswith("policy_canary_staged_object_absence_proof_invalid")
                    for blocker in terminal["blockers"])
+    # The rewrite never demoted the promoted output: its receipt was re-bound, not failed.
+    assert NOT_DURABLE not in terminal["blockers"]
+    assert records.load_staged_object_absence_proof(world.staging)["promotion_status"] == "promoted"

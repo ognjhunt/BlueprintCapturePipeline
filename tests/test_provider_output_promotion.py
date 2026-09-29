@@ -916,3 +916,92 @@ def test_a_redundant_witness_stands_only_with_the_primary_it_was_proven_against(
     assert end["witness"]["disposition"] == "promoted"
     assert [row["redundancy"]["status"] for row in end["staged_objects"]["paired_witness"]["versions"]] == [
         "not_proven"]
+
+
+# -- A staging-manifest rewrite never demotes a durable output (PR A edge case) ---------
+
+
+def _rewrite_manifest(world):
+    """What ``--refresh-output-get-url`` does: new URL metadata, the same staged keys."""
+    path = world.staging / STAGING_MANIFEST_FILENAME
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["output_get_url_refresh"] = {"schema_version": "wam_provider_output_get_refresh.v1",
+                                          "status": "completed", "output_object_mutated": False}
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def test_resume_after_a_manifest_rewrite_rebinds_the_durable_receipt(world):
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    observation = _observed(archive)
+    (world.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": observation}), encoding="utf-8")
+    first, cleaned = world.promote(observation=observation)
+    assert first["status"] == "promoted" and cleaned["all_objects_absent"] is True
+    old_digest = first["staging_manifest_sha256"]
+    _rewrite_manifest(world)
+    uploads, reads = world.cas.uploads, world.spaces.whole_object_gets(world.keys["output"])
+
+    resumed = world.resume()
+
+    assert resumed["status"] == "completed", resumed["blockers"]
+    receipt = _receipt_now(world)  # bound to the rewritten manifest
+    assert receipt is not None and receipt["status"] == "promoted"
+    for field in ("source", "archive_sha256", "size_bytes", "durable_reference", "member_index", "staged_objects"):
+        assert receipt[field] == first[field], field
+    assert receipt["staging_manifest_sha256"] == records.staging_manifest_sha256(world.staging) != old_digest
+    assert receipt["rebound_from_staging_manifest_sha256"] == old_digest
+    # Carried forward, not re-promoted: nothing was read from Spaces or uploaded to B2 again.
+    assert (world.cas.uploads, world.spaces.whole_object_gets(world.keys["output"])) == (uploads, reads)
+    assert _proof(world)["promotion_status"] == "promoted"
+
+
+def test_a_rewrite_never_rebinds_a_receipt_for_another_staged_object(world):
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    first, _ = world.promote(observation=_observed(archive))
+    _rewrite_manifest(world)
+    # The adapter's recorded observation names another object than the receipt made durable.
+    (world.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": _observed(archive, etag='"spaces-9"')}),
+        encoding="utf-8")
+
+    resumed = world.resume()
+
+    assert resumed["status"] == "blocked" and "provider_output_observed_object_missing" in resumed["blockers"]
+    receipt = _receipt_now(world)
+    assert receipt["status"] == "failed" and "rebound_from_staging_manifest_sha256" not in receipt
+    # The durable record it did not rebind is set aside, never destroyed.
+    [aside] = sorted(world.staging.glob(records.RECEIPT_FILENAME + ".superseded-*"))
+    assert json.loads(aside.read_text())["receipt_digest"] == first["receipt_digest"]
+
+
+def test_a_missing_primary_copy_keeps_the_versions_whose_copies_still_stand(world):
+    """Probe A3: proving the primary's durable copy gone must not also drop the other versions
+    whose copies still answer, on this run or on any later one."""
+    first_archive = quick10_shaped_archive(**SMALL).archive
+    second = quick10_shaped_archive(**SMALL, extra_members={"late-upload.json": b"{}"}).archive
+    blocked = {"cleanup": lambda: {"status": "blocked"}}
+    observation = _observed(first_archive)
+    (world.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": observation}), encoding="utf-8")
+    world.stage("output", first_archive)
+    first, _ = world.promote(observation=observation, **blocked)
+    world.stage("output", second, etag='"spaces-2"')  # a re-upload after promotion
+    world.resume(**blocked)
+    before = _receipt_now(world)["staged_objects"]["output"]["versions"]
+    assert [row["etag"] for row in before] == ['"spaces-1"', '"spaces-2"']
+    assert before[1]["archive_sha256"] == virtual_sha256(second)
+    _drop_from_b2(world, first["durable_reference"]["uri"])  # the primary's copy is proven gone
+
+    # Only the re-upload is staged, which is not the observed output: the run fails.
+    rerun = world.resume(**blocked)
+    assert "provider_output_remote_version_changed" in rerun["blockers"]
+    assert _receipt_now(world)["status"] == "failed"
+    assert _receipt_now(world)["staged_objects"]["output"]["versions"] == [before[1]]
+
+    # Nothing is staged any more: a later run fails too, still naming the copy that stands.
+    world.spaces.stores.pop(world.keys["output"])
+    gone = world.resume(**blocked)
+    assert "provider_output_observed_object_missing" in gone["blockers"]
+    assert _receipt_now(world)["staged_objects"]["output"]["versions"] == [before[1]]
