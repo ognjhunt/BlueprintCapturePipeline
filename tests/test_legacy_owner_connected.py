@@ -81,6 +81,12 @@ def test_connected_owner_review_preserves_payload_and_never_mints_cleanup_lease(
     assert payload.read_bytes() == b"old, preserved"
     assert not (target / ".lane-scratch.v1.json").exists()
     assert list(registry.glob("*.head.json"))
+    observed = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                           monotonic=lambda: 0)
+    row = next(item for item in observed["rows"] if item["path"] == str(target))
+    assert row["owner"] == "owner" and row["classification"] == "legacy_owner_review"
+    assert row["gc_eligible"] is False and row["references_clear"] is False
+    assert row["candidate_bytes"] is None and row["eta_seconds"] is None
 
 
 def test_crash_before_head_is_recoverable_without_promoting_torn_record(installed, monkeypatch):
@@ -94,9 +100,42 @@ def test_crash_before_head_is_recoverable_without_promoting_torn_record(installe
                                   monotonic=lambda: 0)
     assert not list(registry.glob("*.head.json"))
     assert payload.exists()
+    uncommitted = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1021,
+                                              monotonic=lambda: 0)
+    assert all("owner" not in row for row in uncommitted["rows"])
     monkeypatch.setattr(legacy.LegacyOwnerStore, "publish_head", real_publish)
     result = legacy.apply_owner_review(packet_id=packet["packet_id"],
                                        installed_config_path="/fixture/door.json", now=1021,
                                        monotonic=lambda: 0)
     assert result["status"] == "legacy_owner_review_registered"
     assert Path(target / "one.log").read_bytes() == b"old, preserved"
+
+
+def test_survey_drops_owner_label_when_payload_changes_or_approval_expires(installed):
+    target, payload, _, legacy = installed
+    packet, _ = _issue_and_approve(installed)
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+    payload.write_bytes(b"old, preserveD")
+    changed = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                          monotonic=lambda: 0)
+    assert all("owner" not in row for row in changed["rows"])
+    payload.write_bytes(b"old, preserved")
+    expired = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1110,
+                                          monotonic=lambda: 0)
+    assert all("owner" not in row for row in expired["rows"])
+    assert target.exists()
+
+
+def test_survey_ignores_fake_in_folder_lease_and_keeps_target(installed):
+    target, payload, _, legacy = installed
+    packet, _ = _issue_and_approve(installed)
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+    (target / ".lane-scratch.v1.json").write_bytes(b'{"cleanup":"delete"}')
+    report = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                         monotonic=lambda: 0)
+    assert all("owner" not in row for row in report["rows"])
+    assert payload.exists()
