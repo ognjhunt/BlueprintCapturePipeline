@@ -160,11 +160,12 @@ def _json(raw: bytes, *, budget: ReferenceCollectionBudget | None = None) -> dic
 
 class _Scan:
     def __init__(self, root: str, observed: float, clock: Callable[[], float], budget: float,
-                 shared: ReferenceCollectionBudget | None = None):
+                 shared: ReferenceCollectionBudget | None = None, held_root_fd: int | None = None):
         self.root, self.observed, self.clock = root, observed, clock
         self.deadline: float | None = None
         self.budget = budget
         self.shared = shared
+        self.held_root_fd = held_root_fd
         self.fds: list[int] = []
         self.fd_identities: dict[int, tuple[int, int, int]] = {}
         self.failed_closes: set[int] = set()
@@ -385,7 +386,15 @@ class _Scan:
         root = chain[-1][0]
         self.root_identity = chain[-1][1]
         try:
-            self.call(fcntl.flock, root, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if self.held_root_fd is None:
+                self.call(fcntl.flock, root, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                held = self.call(os.fstat, self.held_root_fd)
+                _require(stat.S_ISDIR(held.st_mode) and
+                         (held.st_dev, held.st_ino) == self.root_identity, "pin_root_changed")
+                self.call(fcntl.flock, self.held_root_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                after = self.call(os.fstat, self.held_root_fd)
+                _require(_identity(after) == _identity(held), "pin_root_changed")
         except BlockingIOError:
             raise _Blocked("pin_inventory_busy") from None
         directories = [(root, self.call(os.fstat, root), self.names(root, 0))]
@@ -509,7 +518,8 @@ class _Scan:
 def observe_storage_pins(pins_root: str, *, observed_at_epoch: float,
                          monotonic: Callable[[], float] = time.monotonic,
                          time_budget_seconds: float = 5.0,
-                         budget: ReferenceCollectionBudget | None = None) -> StoragePinObservation:
+                         budget: ReferenceCollectionBudget | None = None,
+                         _held_root_fd: int | None = None) -> StoragePinObservation:
     """Read one explicit ledger, never repairing it or clearing general references."""
     if budget is not None:
         from .control_plane_reference_budget import bind_budget
@@ -517,9 +527,11 @@ def observe_storage_pins(pins_root: str, *, observed_at_epoch: float,
                     error=StoragePinObservationError, code="pin_parameters_invalid")
     root = _path(pins_root)
     if not (_finite(observed_at_epoch) and _finite(time_budget_seconds)
-            and 0 < time_budget_seconds <= 5 and callable(monotonic)):
+            and 0 < time_budget_seconds <= 5 and callable(monotonic)
+            and (_held_root_fd is None or (type(_held_root_fd) is int and _held_root_fd >= 0))):
         raise StoragePinObservationError("pin_parameters_invalid")
-    scan = _Scan(root, float(observed_at_epoch), monotonic, float(time_budget_seconds), budget)
+    scan = _Scan(root, float(observed_at_epoch), monotonic, float(time_budget_seconds), budget,
+                 held_root_fd=_held_root_fd)
     try:
         scan.shared_charge("roots")
         scan.shared_charge("groups", len(PIN_KINDS))

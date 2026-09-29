@@ -50,7 +50,7 @@ rm -rf "$stage"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
-  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-provider-output-resume.sh \
+  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-hold-expire.sh \
   "$source_dir"/install.sh "$stage/"
 git -C "$repo_root" rev-parse HEAD >"$stage/INSTALLED_COMMIT" 2>/dev/null || echo unknown >"$stage/INSTALLED_COMMIT"
 find "$stage" -name '__pycache__' -prune -exec rm -rf {} +
@@ -156,6 +156,30 @@ for path, directory, mode in zip(sys.argv[1:], (True, False, False), (0o700, 0o6
         raise SystemExit("owner_consent_provisioning_unsafe")
 PYOWNER
 # OWNER CONSENT PROVISIONING END
+
+# LEGACY OWNER REVIEW PROVISIONING BEGIN
+# External owner labels never change a legacy folder or make it GC eligible.
+legacy_owner_store="$state_root/requests/legacy-owner-registrations"
+if [ ! -e "$legacy_owner_store" ] && [ ! -L "$legacy_owner_store" ]; then
+  install -d -o root -g root -m 0700 "$legacy_owner_store"
+fi
+legacy_owner_lock="$legacy_owner_store/.legacy-owner.lock"
+if [ ! -e "$legacy_owner_lock" ] && [ ! -L "$legacy_owner_lock" ]; then
+  (umask 077; set -o noclobber; : >"$legacy_owner_lock")
+  chown root:root "$legacy_owner_lock"
+  chmod 0600 "$legacy_owner_lock"
+fi
+python3 - "$legacy_owner_store" "$legacy_owner_lock" <<'PYLEGACYOWNER'
+import os, stat, sys
+for path, directory, mode in zip(sys.argv[1:], (True, False), (0o700, 0o600)):
+    value = os.lstat(path)
+    kind = stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)
+    if (not kind or value.st_uid != 0 or value.st_gid != 0
+            or stat.S_IMODE(value.st_mode) != mode
+            or (not directory and (value.st_nlink != 1 or value.st_size != 0))):
+        raise SystemExit("legacy_owner_provisioning_unsafe")
+PYLEGACYOWNER
+# LEGACY OWNER REVIEW PROVISIONING END
 
 # 3b. The repository is private and the host has no other GitHub credential, so
 #     deploys fetch with a read-only deploy key. It is generated once, never

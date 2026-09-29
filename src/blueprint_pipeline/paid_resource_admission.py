@@ -9,6 +9,7 @@ from typing import Any, Mapping
 PAID_LANE_ADMISSION_SCHEMA_VERSION = "paid_lane_admission.v1"
 PAID_RESOURCE_CLASSES = frozenset(
     {
+        "cloud_run_cpu_job",
         "cpu_build",
         "evaluator_api",
         "gpu_canary",

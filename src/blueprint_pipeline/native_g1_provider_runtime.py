@@ -318,184 +318,188 @@ def _template(
 
 
 def _query_count(pair_output: Path, candidate: str) -> int:
-    episode = _json(pair_output / candidate / "episode" / EPISODE_FILENAME)
-    trace = _json(pair_output / candidate / "episode" / TRACE_FILENAME)
-    if (
-        episode.get("trace_digest") != trace.get("trace_digest")
-        or trace.get("trace_digest") != canonical_digest(trace, digest_field="trace_digest")
-        or trace.get("candidate_id") != candidate
-        or not isinstance(trace.get("policy_query_count"), int)
-        or trace["policy_query_count"] < 1
-    ):
-        raise ValueError("g1_provider_policy_query_evidence_invalid")
-    return trace["policy_query_count"]
+    from .control_plane_lane_experiment_consumer import registered_reader
+    with registered_reader(pair_output):
+        episode = _json(pair_output / candidate / "episode" / EPISODE_FILENAME)
+        trace = _json(pair_output / candidate / "episode" / TRACE_FILENAME)
+        if (
+            episode.get("trace_digest") != trace.get("trace_digest")
+            or trace.get("trace_digest") != canonical_digest(trace, digest_field="trace_digest")
+            or trace.get("candidate_id") != candidate
+            or not isinstance(trace.get("policy_query_count"), int)
+            or trace["policy_query_count"] < 1
+        ):
+            raise ValueError("g1_provider_policy_query_evidence_invalid")
+        return trace["policy_query_count"]
 
 
 def run_g1_provider_campaign(runtime_root: Path, output_dir: Path) -> dict[str, Any]:
     """Run the verified campaign once; always retain a terminal result."""
+    from .control_plane_lane_experiment_consumer import registered_reader
+    with registered_reader(output_dir):
 
-    root = Path(runtime_root)
-    output = Path(output_dir)
-    if (
-        not output.is_absolute()
-        or not output.is_dir()
-        or output.is_symlink()
-        or output.resolve() != output
-        or (output / RESULT_FILENAME).exists()
-        or os.environ.get(PINNED_IMAGE_ENV) != NATIVE_TASK_ARENA_IMAGE
-        or not Path("/isaac-sim/python.sh").is_file()
-    ):
-        raise ValueError("g1_provider_runtime_environment_invalid")
-    stage = "input-verification"
-    pair_results: list[dict[str, Any]] = []
-    queries: dict[str, int] = {}
-    blockers: list[str] = []
-    identity: dict[str, Any] = {}
-    try:
-        with _Heartbeat(stage):
-            identity = verify_g1_provider_inputs(root)
-        stage = "pi-tokenizer"
-        with _Heartbeat(stage):
-            tokenizer = stage_provider_tokenizer(
-                inventory_path=root.parent / "configs/g1_paligemma_tokenizer_inventory.v1.json",
-                bundled_dir=root / "inputs/pi_tokenizer",
-            )
-        (output / "native_g1_pi_tokenizer_stage.v1.json").write_text(
-            json.dumps(tokenizer, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        stage = "runtime-import-preflight"
-        with _Heartbeat(stage):
-            runtime_imports = _preflight_g1_runtime_imports(output)
-        if runtime_imports["status"] != "passed":
-            raise ValueError("g1_provider_runtime_dependency_preflight_blocked")
-        stage = "policy-runtime-build"
-        with _Heartbeat(stage):
-            build = execute_g1_policy_runtime_build(
-                plan=prepare_g1_policy_runtime_build(
-                    checkout=root / "publisher-source/source",
-                    output_dir=output / "policy-runtime-build",
-                    execution_mode="inside_isaac_container",
+        root = Path(runtime_root)
+        output = Path(output_dir)
+        if (
+            not output.is_absolute()
+            or not output.is_dir()
+            or output.is_symlink()
+            or output.resolve() != output
+            or (output / RESULT_FILENAME).exists()
+            or os.environ.get(PINNED_IMAGE_ENV) != NATIVE_TASK_ARENA_IMAGE
+            or not Path("/isaac-sim/python.sh").is_file()
+        ):
+            raise ValueError("g1_provider_runtime_environment_invalid")
+        stage = "input-verification"
+        pair_results: list[dict[str, Any]] = []
+        queries: dict[str, int] = {}
+        blockers: list[str] = []
+        identity: dict[str, Any] = {}
+        try:
+            with _Heartbeat(stage):
+                identity = verify_g1_provider_inputs(root)
+            stage = "pi-tokenizer"
+            with _Heartbeat(stage):
+                tokenizer = stage_provider_tokenizer(
+                    inventory_path=root.parent / "configs/g1_paligemma_tokenizer_inventory.v1.json",
+                    bundled_dir=root / "inputs/pi_tokenizer",
                 )
+            (output / "native_g1_pi_tokenizer_stage.v1.json").write_text(
+                json.dumps(tokenizer, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
-        if build["status"] != "built_import_probe_passed_no_cuda_probe":
-            raise ValueError("g1_provider_policy_runtime_build_blocked")
-        stage = "model-staging"
-        cache_file = os.environ.get(CACHE_FILE_ENV)
-        if not cache_file:
-            raise ValueError("g1_private_checkpoint_cache_required")
-        models = _stage_models(root, output, cache_manifest_path=Path(cache_file))
-        source_handoff = _json(root / "inputs/book_handoff.json")
-        supplied_movement_handoff = root / "inputs/movement_handoff.json"
-        movement_handoff = (
-            _json(supplied_movement_handoff)
-            if supplied_movement_handoff.is_file()
-            else _movement_handoff(source_handoff)
+            stage = "runtime-import-preflight"
+            with _Heartbeat(stage):
+                runtime_imports = _preflight_g1_runtime_imports(output)
+            if runtime_imports["status"] != "passed":
+                raise ValueError("g1_provider_runtime_dependency_preflight_blocked")
+            stage = "policy-runtime-build"
+            with _Heartbeat(stage):
+                build = execute_g1_policy_runtime_build(
+                    plan=prepare_g1_policy_runtime_build(
+                        checkout=root / "publisher-source/source",
+                        output_dir=output / "policy-runtime-build",
+                        execution_mode="inside_isaac_container",
+                    )
+                )
+            if build["status"] != "built_import_probe_passed_no_cuda_probe":
+                raise ValueError("g1_provider_policy_runtime_build_blocked")
+            stage = "model-staging"
+            cache_file = os.environ.get(CACHE_FILE_ENV)
+            if not cache_file:
+                raise ValueError("g1_private_checkpoint_cache_required")
+            models = _stage_models(root, output, cache_manifest_path=Path(cache_file))
+            source_handoff = _json(root / "inputs/book_handoff.json")
+            supplied_movement_handoff = root / "inputs/movement_handoff.json"
+            movement_handoff = (
+                _json(supplied_movement_handoff)
+                if supplied_movement_handoff.is_file()
+                else _movement_handoff(source_handoff)
+            )
+            movement_handoff_path = output / "movement_handoff.json"
+            movement_handoff_path.write_text(
+                json.dumps(movement_handoff, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            for objective, packet_name, handoff_path, candidates in (
+                (MANIPULATION, "manipulation", root / "inputs/book_handoff.json", PAIR_ORDER[:2]),
+                (MOVEMENT, "movement", movement_handoff_path, PAIR_ORDER[2:]),
+            ):
+                packet = root / "inputs/scene_packets" / packet_name
+                template_path = _template(
+                    root=root,
+                    output=output,
+                    packet=packet,
+                    objective_name=packet_name,
+                    models=models,
+                    runtime_python=output / "policy-runtime-build/policy-runtime/bin/python",
+                    provisioning_path=Path(identity["runtime_provisioning_receipt_path"]),
+                )
+                stage = "selection:" + objective
+                selected = stage_g1_development_selection(
+                    setup_path=None,
+                    selection_path=None,
+                    runtime_template_path=template_path,
+                    rights_review_paths={
+                        candidate: _rights_paths(root)[candidate] for candidate in candidates
+                    },
+                    output_dir=output / (packet_name + "_selection"),
+                    navigation_authority_path=(
+                        root / "inputs/navigation_authority.json" if objective == MOVEMENT else None
+                    ),
+                    handoff_path=handoff_path,
+                )
+                stage = "episodes:" + objective
+                with _Heartbeat(stage):
+                    pair = run_g1_development_pair(
+                        request_paths=[Path(path) for path in selected["request_paths"]],
+                        output_dir=output / (packet_name + "_pair"),
+                        provider_run_root=output,
+                        mode="subprocess",
+                        worker_launcher=Path("/isaac-sim/python.sh"),
+                    )
+                pair_results.append(
+                    {
+                        "objective_id": objective,
+                        "pair_result_digest": pair["result_digest"],
+                        "pair_relative_path": packet_name + "_pair/native_g1_development_pair.v1.json",
+                        "status": pair["status"],
+                        "candidate_ids": pair["candidate_ids"],
+                    }
+                )
+                if pair["status"] != "completed_development_only":
+                    raise ValueError("g1_provider_" + packet_name + "_pair_blocked")
+                for candidate in candidates:
+                    queries[candidate] = _query_count(output / (packet_name + "_pair"), candidate)
+        except Exception as exc:  # noqa: BLE001 - terminal paid-run evidence must survive
+            blockers.append(type(exc).__name__ + ":" + str(exc)[:300])
+        for packet_name, candidates in (("manipulation", PAIR_ORDER[:2]), ("movement", PAIR_ORDER[2:])):
+            for candidate in candidates:
+                if candidate in queries:
+                    continue
+                trace_path = output / (packet_name + "_pair") / candidate / "episode" / TRACE_FILENAME
+                if not trace_path.is_file() or trace_path.is_symlink():
+                    continue
+                try:
+                    trace = _json(trace_path)
+                    if (
+                        trace.get("candidate_id") == candidate
+                        and trace.get("trace_digest")
+                        == canonical_digest(trace, digest_field="trace_digest")
+                        and isinstance(trace.get("policy_query_count"), int)
+                        and trace["policy_query_count"] > 0
+                    ):
+                        queries[candidate] = trace["policy_query_count"]
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
+        completed = (
+            not blockers
+            and len(pair_results) == 2
+            and [row["status"] for row in pair_results] == ["completed_development_only"] * 2
+            and list(queries) == list(PAIR_ORDER)
         )
-        movement_handoff_path = output / "movement_handoff.json"
-        movement_handoff_path.write_text(
-            json.dumps(movement_handoff, indent=2, sort_keys=True) + "\n",
+        result = {
+            "schema_version": SCHEMA,
+            "status": "completed" if completed else "blocked",
+            "claim_ceiling": "development_only",
+            "campaign_plan_digest": (identity.get("campaign") or {}).get("plan_digest"),
+            "publisher_source_receipt_digest": (identity.get("publisher_source") or {}).get(
+                "receipt_digest"
+            ),
+            "runtime_source_packet_sha256": identity.get("runtime_source_packet_sha256"),
+            "pairs": pair_results,
+            "policy_query_counts": queries,
+            "candidate_policy_queried": bool(queries),
+            "ranking_eligible": False,
+            "physical_outcome_claimed": False,
+            "stage_reached": stage,
+            "blockers": blockers,
+        }
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        (output / RESULT_FILENAME).write_text(
+            json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
-        for objective, packet_name, handoff_path, candidates in (
-            (MANIPULATION, "manipulation", root / "inputs/book_handoff.json", PAIR_ORDER[:2]),
-            (MOVEMENT, "movement", movement_handoff_path, PAIR_ORDER[2:]),
-        ):
-            packet = root / "inputs/scene_packets" / packet_name
-            template_path = _template(
-                root=root,
-                output=output,
-                packet=packet,
-                objective_name=packet_name,
-                models=models,
-                runtime_python=output / "policy-runtime-build/policy-runtime/bin/python",
-                provisioning_path=Path(identity["runtime_provisioning_receipt_path"]),
-            )
-            stage = "selection:" + objective
-            selected = stage_g1_development_selection(
-                setup_path=None,
-                selection_path=None,
-                runtime_template_path=template_path,
-                rights_review_paths={
-                    candidate: _rights_paths(root)[candidate] for candidate in candidates
-                },
-                output_dir=output / (packet_name + "_selection"),
-                navigation_authority_path=(
-                    root / "inputs/navigation_authority.json" if objective == MOVEMENT else None
-                ),
-                handoff_path=handoff_path,
-            )
-            stage = "episodes:" + objective
-            with _Heartbeat(stage):
-                pair = run_g1_development_pair(
-                    request_paths=[Path(path) for path in selected["request_paths"]],
-                    output_dir=output / (packet_name + "_pair"),
-                    provider_run_root=output,
-                    mode="subprocess",
-                    worker_launcher=Path("/isaac-sim/python.sh"),
-                )
-            pair_results.append(
-                {
-                    "objective_id": objective,
-                    "pair_result_digest": pair["result_digest"],
-                    "pair_relative_path": packet_name + "_pair/native_g1_development_pair.v1.json",
-                    "status": pair["status"],
-                    "candidate_ids": pair["candidate_ids"],
-                }
-            )
-            if pair["status"] != "completed_development_only":
-                raise ValueError("g1_provider_" + packet_name + "_pair_blocked")
-            for candidate in candidates:
-                queries[candidate] = _query_count(output / (packet_name + "_pair"), candidate)
-    except Exception as exc:  # noqa: BLE001 - terminal paid-run evidence must survive
-        blockers.append(type(exc).__name__ + ":" + str(exc)[:300])
-    for packet_name, candidates in (("manipulation", PAIR_ORDER[:2]), ("movement", PAIR_ORDER[2:])):
-        for candidate in candidates:
-            if candidate in queries:
-                continue
-            trace_path = output / (packet_name + "_pair") / candidate / "episode" / TRACE_FILENAME
-            if not trace_path.is_file() or trace_path.is_symlink():
-                continue
-            try:
-                trace = _json(trace_path)
-                if (
-                    trace.get("candidate_id") == candidate
-                    and trace.get("trace_digest")
-                    == canonical_digest(trace, digest_field="trace_digest")
-                    and isinstance(trace.get("policy_query_count"), int)
-                    and trace["policy_query_count"] > 0
-                ):
-                    queries[candidate] = trace["policy_query_count"]
-            except (OSError, ValueError, KeyError, TypeError):
-                pass
-    completed = (
-        not blockers
-        and len(pair_results) == 2
-        and [row["status"] for row in pair_results] == ["completed_development_only"] * 2
-        and list(queries) == list(PAIR_ORDER)
-    )
-    result = {
-        "schema_version": SCHEMA,
-        "status": "completed" if completed else "blocked",
-        "claim_ceiling": "development_only",
-        "campaign_plan_digest": (identity.get("campaign") or {}).get("plan_digest"),
-        "publisher_source_receipt_digest": (identity.get("publisher_source") or {}).get(
-            "receipt_digest"
-        ),
-        "runtime_source_packet_sha256": identity.get("runtime_source_packet_sha256"),
-        "pairs": pair_results,
-        "policy_query_counts": queries,
-        "candidate_policy_queried": bool(queries),
-        "ranking_eligible": False,
-        "physical_outcome_claimed": False,
-        "stage_reached": stage,
-        "blockers": blockers,
-    }
-    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    (output / RESULT_FILENAME).write_text(
-        json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
-    return result
+        return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

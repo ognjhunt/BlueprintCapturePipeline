@@ -19,6 +19,8 @@ from .task_evaluation_launch_preparation_queue import (
 )
 
 
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
+
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_activation_envelope.v1"
 IDENTITY_SCHEMA_VERSION = "task_evaluation_launch_activation_identity.v1"
 INTAKE_RECEIPT_SCHEMA_VERSION = (
@@ -63,6 +65,7 @@ def ensure_launch_activation_queue_root(queue_root: str | Path) -> Path:
             "launch_activation_queue_root_unsafe"
         )
     try:
+        _publisher_checkpoint()
         root.mkdir(parents=True, exist_ok=True, mode=0o750)
         resolved = root.resolve(strict=True)
         if not resolved.is_dir():
@@ -71,6 +74,7 @@ def ensure_launch_activation_queue_root(queue_root: str | Path) -> Path:
             child = resolved / name
             if child.is_symlink():
                 raise OSError("activation queue child is a symlink")
+            _publisher_checkpoint()
             child.mkdir(mode=0o750, exist_ok=True)
     except OSError as exc:
         raise TaskEvaluationLaunchActivationQueueError(
@@ -99,10 +103,13 @@ def _load_sealed(path: Path, *, schema_version: str, digest_field: str) -> dict[
     return dict(value)
 
 
+@_publisher_observation
 def stage_launch_activation_request(
     *, value: Mapping[str, Any], queue_root: str | Path, submitted_by: str
 ) -> dict[str, Any]:
     """Validate and immutably queue one profile/authority activation request."""
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(value, queue_root)
 
     request = validate_launch_activation_request(value)
     activation_id = str(request["activation_id"])

@@ -21,9 +21,20 @@ def _roots(tmp_path: Path) -> tuple[Path, Path]:
     return inputs, lanes
 
 
-def test_new_attempt_has_sealed_evidence_lease_before_any_payload(tmp_path: Path) -> None:
+
+def _historical_lease(tag, *, inputs_root, lane_root, owner, run_ref=None,
+                      scene_ref=None, ttl_seconds, now):
+    # Compatibility fixture for an already present pre-registration native lease.
+    # This is not new experiment admission through the modified Arena writer.
+    from blueprint_pipeline.control_plane_lane_scratch import create_lane_scratch
+    return create_lane_scratch("arena", "arena-launch-" + tag, root=lane_root,
+        owner=owner, run_ref=run_ref, scene_ref=scene_ref, ttl_seconds=ttl_seconds,
+        reason="arena_construction_launch", class_intent="evidence", cleanup="owner_review", now=now)
+
+
+def test_existing_native_leased_attempt_preserves_lease_on_retry(tmp_path: Path) -> None:
     inputs, lanes = _roots(tmp_path)
-    folder = prepare_arena_attempt(
+    folder = _historical_lease(
         "r33", owner="operator-a", run_ref="run-33", ttl_seconds=86400,
         inputs_root=inputs, lane_root=lanes, now=lambda: 1000,
     )
@@ -51,7 +62,7 @@ def test_new_attempt_has_sealed_evidence_lease_before_any_payload(tmp_path: Path
 
 def test_new_attempt_requires_operator_metadata_and_valid_tag(tmp_path: Path) -> None:
     inputs, lanes = _roots(tmp_path)
-    with pytest.raises(ArenaScratchError, match="arena_scratch_metadata_required"):
+    with pytest.raises(ArenaScratchError, match="arena_scratch_registered_authority_required"):
         prepare_arena_attempt("r34", inputs_root=inputs, lane_root=lanes)
     with pytest.raises(ArenaScratchError, match="arena_scratch_tag_invalid"):
         prepare_arena_attempt("../r34", owner="operator-a", run_ref="run-34", ttl_seconds=86400,
@@ -91,8 +102,8 @@ def test_new_tag_cannot_claim_legacy_path_by_adding_a_marker(tmp_path: Path) -> 
 
 def test_ambiguous_or_symlink_attempt_refuses(tmp_path: Path) -> None:
     inputs, lanes = _roots(tmp_path)
-    created = prepare_arena_attempt("r33", owner="operator-a", scene_ref="scene-33",
-                                    ttl_seconds=86400, inputs_root=inputs, lane_root=lanes)
+    created = _historical_lease("r33", owner="operator-a", scene_ref="scene-33",
+                                    ttl_seconds=86400, inputs_root=inputs, lane_root=lanes, now=lambda:1000)
     (inputs / "arena-launch-r33").mkdir()
     with pytest.raises(ArenaScratchError, match="arena_scratch_ambiguous"):
         resolve_arena_attempt("r33", inputs_root=inputs, lane_root=lanes)
@@ -115,7 +126,7 @@ def test_arena_payload_retry_opens_exact_lease_and_keeps_receipts(tmp_path: Path
     from blueprint_pipeline.control_plane_arena_scratch import mkdir_arena_payload
 
     inputs, lanes = _roots(tmp_path)
-    folder = prepare_arena_attempt("r33", owner="operator-a", run_ref="run-a", ttl_seconds=100,
+    folder = _historical_lease("r33", owner="operator-a", run_ref="run-a", ttl_seconds=100,
                                    inputs_root=inputs, lane_root=lanes, now=lambda: 1000)
     payload = mkdir_arena_payload("r33", "arena_packet", inputs_root=inputs,
                                   lane_root=lanes, now=lambda: 1001)
@@ -144,7 +155,7 @@ def test_arena_payload_refuses_legacy_and_traversal(tmp_path: Path) -> None:
     with pytest.raises(ArenaScratchError, match="legacy_write_requires_review"):
         mkdir_arena_payload("r20", "new", inputs_root=inputs, lane_root=lanes)
     assert not (legacy / "new").exists() and not (legacy / ".lane-scratch.v1.json").exists()
-    folder = prepare_arena_attempt("r33", owner="operator-a", scene_ref="scene-a", ttl_seconds=100,
+    folder = _historical_lease("r33", owner="operator-a", scene_ref="scene-a", ttl_seconds=100,
                                    inputs_root=inputs, lane_root=lanes, now=lambda: 1000)
     with pytest.raises(ArenaScratchError, match="payload_path_invalid"):
         mkdir_arena_payload("r33", "../sibling", inputs_root=inputs, lane_root=lanes, now=lambda: 1001)
@@ -155,7 +166,7 @@ def test_arena_payload_cli_uses_bounded_relative_operation(tmp_path, monkeypatch
     from blueprint_pipeline import control_plane_arena_scratch as arena
 
     inputs, lanes = _roots(tmp_path)
-    folder = prepare_arena_attempt("r33", owner="operator-a", run_ref="run-a", ttl_seconds=100,
+    folder = _historical_lease("r33", owner="operator-a", run_ref="run-a", ttl_seconds=100,
                                    inputs_root=inputs, lane_root=lanes, now=lambda: 1000)
     make_payload = arena.mkdir_arena_payload
     monkeypatch.setattr(arena, "mkdir_arena_payload", lambda tag, relative, **metadata: make_payload(

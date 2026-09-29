@@ -69,7 +69,7 @@ def door(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, 
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", TOKEN)
     monkeypatch.delenv("BLUEPRINT_OPERATOR_DOOR_TOKEN_FILE", raising=False)
     try:
-        yield {"data": data, "state": state, "base": base}
+        yield {"data": data, "state": state, "base": base, "config": config}
     finally:
         server.shutdown()
         server.server_close()
@@ -105,6 +105,16 @@ def test_lane_scratch_client_submits_bounded_commands(door: dict[str, Any]) -> N
     code, out = _run("lane-scratch", "release", "g1", "run-1", "--root", "work", "--owner", "agent-1",
                      "--digest", digest)
     assert code == 0 and submitted(out)["action"] == "release"
+
+
+def test_legacy_owner_census_client_submits_only_fixed_report_kind(door: dict[str, Any]) -> None:
+    object.__setattr__(door["config"], "owner_census_decisions_enabled", 1)
+    code, out = _run("legacy-owner-census")
+    assert code == 0
+    request_id = json.loads(out)["id"]
+    path = door["state"] / "requests" / "pending" / f"{request_id}.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["request"] == {
+        "kind": "legacy-owner-census"}
 
 
 def test_unauthorized_exits_3(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:

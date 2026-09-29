@@ -36,6 +36,11 @@ SystemCallFilter=~ptrace process_vm_readv process_vm_writev
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/prepared-references /var/lib/blueprint/task-evaluation-inputs/compiled-episodes /var/lib/blueprint/task-evaluation-inputs/launch-activations /var/lib/blueprint/pipeline-control-plane/profile-install-staging /var/lib/blueprint/pipeline-control-plane/policy-canary-presubmission /var/lib/blueprint/pipeline-control-plane/storage-pins /var/lib/blueprint/pipeline-control-plane/storage-gc /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs /var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries /var/lib/blueprint/pipeline-control-plane/task-evaluation-launches /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations /var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations /var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions -/var/lib/blueprint/pipeline-control-plane/episode-interpretation-backfills -/var/lib/blueprint/pipeline-control-plane/policy-canary-preprovider-audits -/var/lib/blueprint/pipeline-control-plane/engineering -/var/lib/blueprint/pipeline-control-plane/render-probes -/var/lib/blueprint/pipeline-control-plane/diagnostic-checkouts -/var/lib/blueprint/pipeline-control-plane/release-builds -/var/lib/blueprint/task-evaluation-inputs/render-probes
 ReadOnlyPaths=/etc/blueprint/provider-secrets
+# Explicitly enrolled experiment work and its immutable private/public receipts.
+# Flags and current authenticated owner/action/reader checks remain default-off.
+# Missing installation directories do not alter ordinary GC startup.
+ReadWritePaths=-/mnt/blueprint-work/lanes/g1 -/var/lib/blueprint/task-evaluation-inputs/lanes/g1
+ReadWritePaths=-/var/lib/blueprint-operator-door/requests/experiment-records -/var/lib/blueprint-operator-door/experiment-authority
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
 # SAM31 preparation cache is inventoried only; no GC phase may remove it without a separate owner decision.

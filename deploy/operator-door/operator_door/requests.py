@@ -58,6 +58,7 @@ _SCOPES = {
     "restore-scene-workspace": "operate",
     "lane-scratch": "operate",
     "owner-census-decision": "operate",
+    "legacy-owner-census": "operate",
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
 }
@@ -130,6 +131,10 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
+    if kind == "legacy-owner-census":
+        if set(body) != {"kind"}:
+            raise RequestRefused("legacy_owner_options_invalid")
+        return {"kind": kind}
     if kind == "owner-census-decision":
         allowed = {"kind", "consent_id", "expected_sha256", "expected_size_bytes"}
         consent_id, digest, size = (body.get(k) for k in ("consent_id", "expected_sha256", "expected_size_bytes"))

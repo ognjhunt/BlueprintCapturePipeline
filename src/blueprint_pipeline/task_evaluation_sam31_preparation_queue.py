@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
 
@@ -74,6 +75,7 @@ def ensure_progress_roots(root: Path) -> None:
                  "source-resume-completed", "source-resume-blocked"):
         path = root / name
         _require(not path.is_symlink(), "queue_path_invalid")
+        _publisher_checkpoint()
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -138,6 +140,7 @@ def _progress(root: Path, envelope: Mapping[str, Any], advancement: dict) -> dic
     }
     value["progress_digest"] = canonical_digest(value, digest_field="progress_digest")
     directory = root / "source-progress" / Path(filename).stem
+    _publisher_checkpoint()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{value['sequence']:06d}-{value['progress_digest'].removeprefix('sha256:')}.json"
     try:
@@ -183,6 +186,7 @@ def _validate_signal(root: Path, signal: dict, roots: Sequence[Path]) -> tuple[P
     return waiting, signal
 
 
+@_publisher_observation
 def stage_resume_signal(
     *, queue_root: str | Path, preparation_id: str, request_digest: str,
     progress_digest: str, source_commit: str, kind: str, evidence_ref: Mapping[str, Any],
@@ -193,6 +197,8 @@ def stage_resume_signal(
     This is a wake-up signal, not human acceptance or permission to spend.
     The production driver and mask consumer must still run their full validators.
     """
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(evidence_ref, approved_roots, queue_root)
     root = Path(queue_root)
     ensure_progress_roots(root)
     signal = {"schema_version": RESUME_SCHEMA, "preparation_id": preparation_id,
@@ -259,6 +265,7 @@ def _resume_context(root: Path, prior: dict | None) -> dict | None:
     return matches[0] if matches else None
 
 
+@_publisher_observation
 def advance_sam31_for_preparation(
     *, queue_root: Path, envelope_context: dict, approved_roots: Sequence[Path], advancer=None,
 ) -> dict:
@@ -268,6 +275,8 @@ def advance_sam31_for_preparation(
     advancing this preparation is shared across the nested validators (and never
     survives the call), the same way the factory and stage executor already run.
     """
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(envelope_context, approved_roots, queue_root)
     from .validation_file_digests import file_digest_scope
     with file_digest_scope():
         return _advance_sam31_for_preparation(queue_root=queue_root, envelope_context=envelope_context,

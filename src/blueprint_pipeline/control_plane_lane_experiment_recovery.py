@@ -1,0 +1,355 @@
+"""Finite exact-operation reconciliation; no absence-based removal authority."""
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+from pathlib import Path
+
+from . import control_plane_lane_experiment_retirement as issuance
+from . import control_plane_lane_owner_consents as owners
+from . import control_plane_lane_scratch_decisions as retained
+from .control_plane_lane_experiment_publication import _publish
+from .control_plane_lane_experiment_work import _ActionFiles
+from .control_plane_lane_owner_target_versions import _require
+from .decision_evidence_contracts import canonical_digest
+
+_FIELDS = frozenset({'schema_version', 'event_id', 'operation_id', 'event_kind', 'intent_id',
+                     'generation', 'sequence', 'previous_event', 'issued_at_epoch', 'body', 'event_digest'})
+_STAT = ('st_mode', 'st_uid', 'st_gid', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+
+
+def _read_event(files, directory, action, index, previous):
+    name = f'e-{index:05d}.json'
+    files.location(directory)
+    try:
+        os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    raw, record = files.read(Path(files._operation_path) / name, cap=32768, protected=True, mode=0o600)
+    value = retained._document(raw, 32768, _work_budget=files.budget)
+    _require(set(value) == _FIELDS and value['schema_version'] == 'control_plane_lane_experiment_event.v1'
+             and value['event_digest'] == canonical_digest(value, digest_field='event_digest')
+             and owners._matches(value['event_id'], owners._CONSENT_ID)
+             and all(value[key] == action[key] for key in ('intent_id', 'generation'))
+             and value['operation_id'] == action['action_id'] and type(value['sequence']) is int
+             and value['sequence'] == index and value['previous_event'] == previous,
+             'experiment_operation_invalid')
+    selected = issuance._selector(raw, files.budget)
+    if type(files) is _ActionFiles:
+        # Exact root-owned immutable event under the retained operation EX.
+        # The bounded parsed value and hash chain remain; release the original
+        # read token only after named/full original metadata proof, never adopt.
+        files.verify_record(record)
+        files.records.remove(record)
+        files.close(record.fd)
+        _require(record.fd not in files.owned, 'experiment_operation_cleanup_failed')
+    return value, selected
+
+
+def _once(files, parent, name, payload, *, kind):
+    """Already durable bytes are selected, never reissued or overwritten."""
+    files.location(parent)
+    try:
+        os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return _publish(files, parent, name, payload, kind=kind)
+    raw, _ = files.read(Path(files._store_path) / name, cap=32768, protected=True, mode=0o600)
+    _require(raw == payload, 'experiment_operation_invalid')
+    return issuance._selector(raw, files.budget)
+
+
+def begin(files, config, action, expected, entry, current, refreshed, public, store,
+          target, rows, reference, issued, gid):
+    from . import control_plane_lane_experiment_actions as code
+    action_id = action['action_id']
+    files._store_path = config.experiment_record_store
+    files._operation_path = str(Path(config.experiment_record_store) / 'operations' / action_id)
+    files.location(store)
+    try:
+        os.stat('operations', dir_fd=store, follow_symlinks=False)
+    except FileNotFoundError:
+        operations = code._directory(files, store, 'operations', create=True)
+    else:
+        operations = code._directory(files, store, 'operations')
+    files.location(operations)
+    try:
+        os.stat(action_id, dir_fd=operations, follow_symlinks=False)
+    except FileNotFoundError:
+        _require(entry['state'] == 'active', 'experiment_operation_missing')
+        operation = code._directory(files, operations, action_id, create=True)
+    else:
+        operation = code._directory(files, operations, action_id)
+    files.proof(operation)
+    fcntl.flock(operation, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    selected = _read_event(files, operation, action, 0, None)
+    if selected is None:
+        _require(entry['state'] == 'active', 'experiment_operation_missing')
+        previous = code._event(files, operation, action, 'started', dict(action=expected,
+            birth=entry['birth'], initial_authority=current[0]['record'], manifest=action['manifest'],
+            process_identity={'pid': os.getpid()}, controller_origin_epoch=files.controller_epoch,
+            deadline_epoch=files.deadline_epoch, reference_authority=reference, controller=files.controller()),
+            0, None, issued)
+    else:
+        started, previous = selected
+        body = started['body']
+        _require(started['event_kind'] == 'started' and set(body) == {'action', 'birth', 'initial_authority',
+                 'manifest', 'process_identity', 'controller_origin_epoch', 'deadline_epoch', 'reference_authority', 'controller'}
+                 and body['action'] == expected and body['birth'] == entry['birth']
+                 and body['manifest'] == action['manifest'], 'experiment_operation_invalid')
+        files.validate_controller(body['controller'])
+        _require(body['reference_authority'] == reference, 'experiment_reference_authority_changed')
+        _require(type(body['deadline_epoch']) in (int, float) and issued < body['deadline_epoch']
+                 <= action['expires_at_epoch'], 'experiment_action_expired')
+        if entry['state'] == 'active':
+            _require(body['initial_authority'] == current[0]['record'], 'experiment_action_current_changed')
+    if entry['state'] == 'active':
+        prepared, old_head = code._version(files, public, refreshed, entry | {'state': 'retiring'},
+                                          gid, action['policy'], issued)
+        _once(files, store, action_id + '.retiring-head.json', prepared, kind='private')
+        code._install_head(files, public, prepared, gid, old_head)
+        retiring = code._current(files, public, gid)
+    else:
+        _require(entry['state'] == 'retiring', 'experiment_action_current_changed')
+        prepared, _ = files.read(Path(config.experiment_record_store) / (action_id + '.retiring-head.json'),
+                                cap=32768, protected=True, mode=0o600)
+        _require(issuance._selector(prepared, files.budget) == issuance._selector(
+            code._encoded(refreshed[0] | {}, 'head_digest', 4096), files.budget),
+            'experiment_action_current_changed')
+        retiring = refreshed
+    preservation = None
+    if action['action'] == 'offload':
+        selected_ready = _read_event(files, operation, action, 1, previous)
+        if selected_ready is not None:
+            ready, proof = selected_ready
+            body = ready['body']
+            _require(ready['event_kind'] == 'preservation_ready' and set(body) == {'started', 'action', 'birth',
+                     'manifest', 'archive', 'target_identity', 'lease'} and body['started'] == previous
+                     and body['action'] == expected and body['birth'] == entry['birth'] and body['manifest'] == action['manifest']
+                     and body['target_identity'] == entry['target_identity'] and body['lease'] == entry['lease'],
+                     'experiment_operation_invalid')
+            preservation = (proof, body['archive'])
+            previous = proof
+    return (operation, retiring, *progress(files, operation, action, expected, target, rows, previous,
+                                           preservation=preservation, _allow_uncertain=True), preservation)
+
+
+def progress(files, operation, action, expected, target, rows, previous, *, preservation=None, _target_transition=None, _restored_union=None, _allow_uncertain=False):
+    logical, allocated, changed, count = 0, 0, {}, 0
+    offset = 1 if action['action'] == 'offload' else 0
+    for index, row in enumerate(rows, 1):
+        if type(files) is _ActionFiles and (index - 1) % 16 == 0:
+            files.phase('recovery_batch')
+        selected = _read_event(files, operation, action, index + offset, previous) if not offset or preservation else None
+        if selected is None:
+            break
+        event, selected = selected
+        body = event['body']
+        uncertain = event['event_kind'] == 'removal_uncertain'
+        _require((event['event_kind'] == 'member_removed' or uncertain and preservation is not None)
+                 and set(body) == {'preservation', 'action', 'manifest',
+                 'index', 'path', 'original_identity', 'logical_bytes', 'eligible_allocated_bytes', 'parent_after'}
+                 and body['preservation'] == (preservation[0] if preservation else None) and body['action'] == expected and body['manifest'] == action['manifest']
+                 and body['index'] == index - 1 and body['path'] == row[0], 'experiment_operation_invalid')
+        identity = row[2].split(':')
+        tokens = row[3].split(':')
+        _require(body['original_identity'] == dict(dev=int(identity[0]), ino=int(identity[1]), type=row[1])
+                 and type(body['logical_bytes']) is int and body['logical_bytes'] == (0 if uncertain else int(tokens[4]) if row[1] == 'file' else 0)
+                 and type(body['eligible_allocated_bytes']) is int
+                 and (body['eligible_allocated_bytes'] == 0 if uncertain else 0 <= body['eligible_allocated_bytes'] <= 128 * 1024**3),
+                 'experiment_operation_invalid')
+        member = target / row[0]
+        try:
+            os.stat(member, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            restored = _restored_union.get(row[0]) if type(_restored_union) is dict else None
+            _require(type(restored) is tuple and len(restored) == 9
+                     and owners._metadata(os.stat(member, follow_symlinks=False)) == restored,
+                     'experiment_removed_name_reappeared')
+        parent_after = body['parent_after']
+        _require(isinstance(parent_after, dict) and set(parent_after) == {'path', 'identity', 'stat_token'}
+                 and parent_after['path'] == str(Path(row[0]).parent), 'experiment_operation_invalid')
+        parts = parent_after['stat_token'].split(':')
+        _require(len(parts) == 7 and all(part.isdecimal() and len(part) <= 20 for part in parts),
+                 'experiment_operation_invalid')
+        changed[parent_after['path']] = (parent_after['identity'], tuple(map(int, parts)))
+        logical += body['logical_bytes']
+        allocated += body['eligible_allocated_bytes']
+        count, previous = index, selected
+    # Only last durable exact own transitions may explain surviving directories.
+    pending = None
+    if _allow_uncertain and preservation is not None and count < len(rows):
+        try:
+            os.stat(target / rows[count][0], follow_symlinks=False)
+        except FileNotFoundError:
+            pending = rows[count][0]
+    for path, (identity, metadata) in changed.items():
+        destination = target / path
+        try:
+            named = os.stat(destination, follow_symlinks=False)
+        except FileNotFoundError:
+            _require(any(row[0] == path for row in rows[:count]) or path == pending,
+                     'experiment_operation_invalid')
+            continue
+        relative = str(destination.relative_to(target))
+        restored = _restored_union.get(relative) if type(_restored_union) is dict else None
+        if restored is not None:
+            _require(type(restored) is tuple and len(restored) == 9
+                     and owners._metadata(named) == restored, 'experiment_directory_transition_changed')
+            identity = dict(dev=restored[0], ino=restored[1], type='directory')
+            metadata = restored[2:]
+        if destination == target and _target_transition is not None:
+            _require(type(_target_transition) is list and len(_target_transition) == len(_STAT)
+                     and all(type(v) is int and v >= 0 for v in _target_transition),
+                     'experiment_directory_transition_changed')
+            metadata = tuple(_target_transition)
+        if pending is not None and path == str(Path(pending).parent):
+            # No clearance here: full archive/current/reference and exact live
+            # namespace proofs must precede reconcile_uncertain's event.
+            _require(identity == dict(dev=named.st_dev, ino=named.st_ino, type='directory')
+                     and stat.S_ISDIR(named.st_mode)
+                     and tuple(getattr(named, key) for key in _STAT[:3]) == metadata[:3],
+                     'experiment_directory_transition_changed')
+            continue
+        _require(identity == dict(dev=named.st_dev, ino=named.st_ino, type='directory')
+                 and stat.S_ISDIR(named.st_mode) and tuple(getattr(named, key) for key in _STAT) == metadata,
+                 'experiment_directory_transition_changed')
+    completed = _read_event(files, operation, action, len(rows) + 1 + offset, previous) if count == len(rows) else None
+    if completed is not None:
+        event, selected = completed
+        body = event['body']
+        _require(event['event_kind'] == 'retired' and set(body) == {'preservation', 'manifest', 'removed_event_count',
+                 'removed_logical_bytes', 'eligible_allocated_bytes', 'remaining_metadata', 'partial'}
+                 and body['preservation'] == (preservation[0] if preservation else None) and body['manifest'] == action['manifest']
+                 and type(body['partial']) is bool and body['partial'] is False
+                 and body['removed_event_count'] == count and body['removed_logical_bytes'] == logical
+                 and body['eligible_allocated_bytes'] == allocated, 'experiment_operation_invalid')
+        completed = selected
+    return previous, logical, allocated, {p: v[1] for p, v in changed.items()}, count, completed
+
+
+def reconcile_uncertain(files, operation, action, expected, target, rows, previous,
+                        preservation, changed, count, issued, guard):
+    """Record one absent original frontier ONLY after fresh full preservation.
+
+    The caller has retained original operation/target/current/reference proofs
+    and completed fresh whole-archive readback. Absence credits zero bytes. All
+    surviving selected identities/metadata and the complete bounded namespace
+    must still agree before the immutable uncertainty event can advance it.
+    """
+    from . import control_plane_lane_experiment_actions as code
+    if count == len(rows):
+        return previous, changed, count
+    row = rows[count]
+    guard()
+    parent, name = files.parent(target / row[0])
+    files.location(parent)
+    try:
+        os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        return previous, changed, count
+    files.phase('uncertainty_inventory')
+    files.location(parent)
+    initial = os.fstat(parent)
+    parent_path = str(Path(row[0]).parent)
+    by_path = {}
+    for item in rows:
+        files.budget.charge('values')
+        by_path[item[0]] = item
+    if parent_path != '.':
+        original = by_path[parent_path]
+        identity, metadata = original[2].split(':'), tuple(map(int, original[3].split(':')))
+        _require(original[1] == 'directory' and (initial.st_dev, initial.st_ino) == tuple(map(int, identity[:2]))
+                 and (stat.S_IMODE(initial.st_mode), initial.st_uid, initial.st_gid) == metadata[:3],
+                 'experiment_directory_transition_changed')
+    files.proof(parent)
+    updated = tuple(getattr(initial, key) for key in _STAT)
+    candidate = changed | {parent_path: updated}
+    # Fixed original rows bound all growth. Never follow or adopt a new name.
+    expected_names = {'.': set(code._METADATA)}
+    directories = ['.']
+    for item in rows[count + 1:]:
+        files.budget.charge('values', 3)
+        relative = item[0]
+        expected_names.setdefault(str(Path(relative).parent), set()).add(Path(relative).name)
+        if item[1] == 'directory':
+            directories.append(relative)
+            expected_names.setdefault(relative, set())
+        member_parent, _, fd, _ = code._member(files, target, item, candidate.get(relative), hash_payload=False)
+        files.close(fd)
+        files.location(member_parent)
+    for relative in directories:
+        files.budget.charge('values')
+        directory, _ = files.parent(target / relative / '.uncertainty-probe')
+        files.location(directory)
+        files.proof(directory)
+        before = owners._metadata(os.fstat(directory))
+        names = set()
+        with os.scandir(directory) as stream:
+            for item in stream:
+                files.budget.charge('entries')
+                _require(len(names) < 4098, 'experiment_manifest_limit')
+                names.add(item.name)
+        _require(names == expected_names[relative], 'experiment_uncertain_namespace_changed')
+        files.location(directory)
+        _require(owners._metadata(os.fstat(directory)) == before, 'experiment_directory_transition_changed')
+    guard()
+    files.location(parent)
+    files.proof(parent)
+    _require(owners._metadata(os.fstat(parent)) == owners._metadata(initial),
+             'experiment_directory_transition_changed')
+    try:
+        os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        _require(False, 'experiment_removed_name_reappeared')
+    files.phase('uncertainty_ready')
+    guard()
+    identity = row[2].split(':')
+    previous = code._event(files, operation, action, 'removal_uncertain', dict(
+        preservation=preservation[0], action=expected, manifest=action['manifest'], index=count,
+        path=row[0], original_identity=dict(dev=int(identity[0]), ino=int(identity[1]), type=row[1]),
+        logical_bytes=0, eligible_allocated_bytes=0, parent_after=dict(path=parent_path,
+            identity=dict(dev=initial.st_dev, ino=initial.st_ino, type='directory'),
+            stat_token=':'.join(map(str, updated)))), count + 2, previous, issued)
+    return previous, candidate, count + 1
+
+
+def retired(files, config, action, expected, target, rows, entry, marker, *, _retained_store=None, _target_transition=None, _restored_union=None):
+    from . import control_plane_lane_experiment_actions as code
+    files._operation_path = str(Path(config.experiment_record_store) / 'operations' / action['action_id'])
+    store = issuance._store(files, config.experiment_record_store) if _retained_store is None else _retained_store
+    files.location(store)
+    files.proof(store)
+    operations = code._directory(files, store, 'operations')
+    operation = code._directory(files, operations, action['action_id'])
+    files.proof(operation)
+    fcntl.flock(operation, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    started = _read_event(files, operation, action, 0, None)
+    _require(started is not None, 'experiment_operation_invalid')
+    event, previous = started
+    body = event['body']
+    _require(event['event_kind'] == 'started' and set(body) == {'action', 'birth', 'initial_authority', 'manifest',
+             'process_identity', 'controller_origin_epoch', 'deadline_epoch', 'reference_authority', 'controller'}
+             and body['action'] == expected and body['birth'] == entry['birth'] and body['manifest'] == action['manifest'],
+             'experiment_operation_invalid')
+    preservation = None
+    if action['action'] == 'offload':
+        ready = _read_event(files, operation, action, 1, previous)
+        _require(ready is not None and ready[0]['event_kind'] == 'preservation_ready', 'experiment_operation_invalid')
+        value, previous = ready
+        _require(value['body']['started'] == started[1] and value['body']['action'] == expected
+                 and value['body']['manifest'] == action['manifest'], 'experiment_operation_invalid')
+        preservation = (previous, value['body']['archive'])
+    _, logical, allocated, _, count, receipt = progress(files, operation, action, expected, target, rows, previous,
+                                                        preservation=preservation, _target_transition=_target_transition, _restored_union=_restored_union)
+    _require(count == len(rows) and receipt is not None, 'experiment_operation_invalid')
+    raw, _ = files.read(Path(files._operation_path) / f'e-{len(rows) + 1 + (action["action"] == "offload"):05d}.json', cap=32768, protected=True, mode=0o600)
+    final = retained._document(raw, 32768, _work_budget=files.budget)
+    _require(final['body']['remaining_metadata'] == [entry['lease'], marker], 'experiment_operation_invalid')
+    return receipt, logical, allocated

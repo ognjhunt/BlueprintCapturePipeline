@@ -238,6 +238,8 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         "semantic_pretraining",
         "cpu_prestage",
         "scene_configuration_output",
+        "g1_checkpoint_cache",
+        "experiment_restore",
         "policy_canary_output",
     }
     assert next(row for row in report["targets"] if row["role"] == "control_plane_deploy")["refused"] is False
@@ -681,6 +683,7 @@ ROLE_WORKER_UNITS = {
     "launch_dispatch": ("blueprint-task-evaluation-launch-dispatcher.service",),
     "policy_canary_dispatch": ("blueprint-task-evaluation-policy-canary-dispatcher.service",),
     "evidence_offload": ("blueprint-control-plane-storage-gc.service",),
+    "experiment_restore": ("blueprint-control-plane-storage-gc.service",),
     "stage_replay": ("blueprint-agent-stage-replay.service",),
     "semantic_pretraining": ("blueprint-task-evaluation-launch-dispatcher.service",
                              "blueprint-task-evaluation-launch-activation.service"),
@@ -703,7 +706,11 @@ def _start_timeout_seconds(unit_text):
 
 def test_every_role_ttl_outlives_its_worker_units_start_timeout():
     units = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
-    assert set(ROLE_WORKER_UNITS) | {"control_plane_deploy", "result_artifact_download", "handoff_staging"} == set(
+    # Cache fill runs in the fixed root tool, under its actual 4h long-work
+    # controller; it is not attributed to an unrelated systemd worker.
+    from blueprint_pipeline.control_plane_registered_checkpoint_cache import _LONG_WORK_SECONDS
+    assert disk_budget.ROLE_TTL_SECONDS["g1_checkpoint_cache"] >= _LONG_WORK_SECONDS
+    assert set(ROLE_WORKER_UNITS) | {"control_plane_deploy", "result_artifact_download", "handoff_staging", "g1_checkpoint_cache"} == set(
         disk_budget.ROLE_FOOTPRINT_BYTES)
     for role, names in ROLE_WORKER_UNITS.items():
         ttl = disk_budget.ROLE_TTL_SECONDS.get(role, disk_budget.DEFAULT_TTL_SECONDS)

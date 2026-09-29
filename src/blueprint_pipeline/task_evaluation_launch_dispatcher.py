@@ -73,9 +73,12 @@ from .launch_profile_immutable_inputs import immutable_input_digest
 from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
     stage_directory_projections,
+    write_immutable_launch_record,
     write_exclusive_private_bytes as _write_exclusive_private_bytes,
 )
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
+
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint, _finish_publisher_admission, _profile_refusal
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
@@ -995,22 +998,13 @@ def validate_launch_request_against_public_catalog(
 
 
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
-    from .task_evaluation_release_reference_lock import release_reference_lock
-
-    with release_reference_lock(path.parents[2], exclusive=False):
-        payload = (_canonical_json(value) + "\n").encode("utf-8")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with path.open("xb") as stream:
-                stream.write(payload)
-            return True
-        except FileExistsError:
-            if path.read_bytes() != payload:
-                raise TaskEvaluationLaunchError(f"immutable_launch_conflict:{path.name}")
-            return False
+    return write_immutable_launch_record(path, (_canonical_json(value) + "\n").encode("utf-8"))
 
 
+@_publisher_observation
 def stage_launch_request(*, value: Mapping[str, Any], queue_root: str | Path) -> dict[str, Any]:
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(value, queue_root)
     request = dict(value)
     blockers = validate_launch_request(request)
     if blockers:
@@ -1148,8 +1142,10 @@ def _stage_profile_immutable_inputs_reserved(
     """Snapshot immutable inputs and redirect exact allocator path arguments."""
 
     stage_root = run_root / "immutable_inputs"
+    _publisher_checkpoint()
     stage_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
+        _publisher_checkpoint()
         stage_root.chmod(0o700)
     except OSError as exc:
         raise TaskEvaluationLaunchError("immutable_input_staging_directory_not_private") from exc
@@ -1199,6 +1195,7 @@ def _stage_profile_immutable_inputs_reserved(
             )
             continue
         destination = stage_root / f"{index:03d}-{expected_digest[len(_DIGEST_PREFIX) :]}.input"
+        _publisher_checkpoint()
         _write_exclusive_private_bytes(destination, payload)
         readback = destination.read_bytes()
         staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
@@ -1303,6 +1300,7 @@ def _stage_profile_immutable_inputs_reserved(
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path = run_root / "immutable_input_staging_receipt.json"
+    _publisher_checkpoint()
     _write_exclusive_private_bytes(receipt_path, (_canonical_json(receipt) + "\n").encode("utf-8"))
     if _read_json(receipt_path) != receipt:
         raise TaskEvaluationLaunchError("immutable_input_staging_receipt_readback_mismatch")
@@ -1464,6 +1462,7 @@ def _native_policy_terminal_visual_evidence(
     return None
 
 
+@_publisher_observation
 def dispatch_launch_request(
     *,
     request_path: str | Path,
@@ -1475,8 +1474,11 @@ def dispatch_launch_request(
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
     publication_readiness_probe: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(request_path, profile_dir, state_root, public_catalog_path)
     request_source = Path(request_path).expanduser().resolve()
     request = _read_json(request_source)
+    refuse_registered_references(request)
     blockers = validate_launch_request(request)
     if public_catalog_path is not None:
         blockers.extend(
@@ -1493,6 +1495,10 @@ def dispatch_launch_request(
     else:
         try:
             profile = _read_json(profile_path)
+            refusal = _profile_refusal(profile)
+            if refusal:
+                blockers.append(refusal)
+                profile = {}
         except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
             blockers.append("launch_profile_invalid_json")
     if profile:
@@ -1587,6 +1593,7 @@ def dispatch_launch_request(
         blockers.append("launch_profile_live_execution_disabled")
 
     run_root = Path(state_root).expanduser().resolve() / str(request.get("launch_id") or "invalid")
+    _publisher_checkpoint()
     run_root.mkdir(parents=True, exist_ok=True)
     prior_receipt_path = run_root / "launch_receipt.json"
     if prior_receipt_path.is_file():
@@ -1665,6 +1672,10 @@ def dispatch_launch_request(
     }
     started["started_digest"] = canonical_digest(started, digest_field="started_digest")
     _write_immutable(run_root / "launch_started.json", started)
+
+    # All reference inputs and immutable pre-admission bindings are sealed.
+    # Allocator/prelaunch work retains its original spend/terminal watchdogs.
+    _finish_publisher_admission()
 
     prelaunch_skill_execution: dict[str, Any] = {
         "schema_version": "task_evaluation_prelaunch_skill_execution.v1",
@@ -2090,12 +2101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_concurrency=args.max_concurrency,
     )
     print(json.dumps(result, sort_keys=True))
-    # The queue status describes the launch outcome, not whether dispatch
-    # worked. Exiting non-zero on a blocked launch made systemd mark the unit
-    # failed and deactivate the path unit that watches the queue, so one
-    # blocked run -- an entirely normal scientific outcome -- silently stopped
-    # every later website trigger from ever dispatching. Reserve a non-zero
-    # exit for a dispatcher that could not process the queue at all.
+    # Blocked launches are normal queue outcomes; nonzero means dispatch failed.
     return 0 if result.get("schema_version") == QUEUE_RUN_SCHEMA_VERSION else 2
 
 

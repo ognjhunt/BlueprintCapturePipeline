@@ -28,16 +28,23 @@ def test_launch_and_fire_scripts_are_committed_and_parse() -> None:
 def test_arena_scripts_lease_new_attempts_and_resolve_historical_ones() -> None:
     launch = _text(LAUNCH)
     fire = _text(FIRE)
-    assert "control_plane_arena_scratch prepare" in launch
-    assert launch.find("control_plane_arena_scratch prepare") < launch.find("== 0. predecessor provider zero")
-    assert "ARENA_SCRATCH_OWNER" in launch
-    assert "ARENA_SCRATCH_RUN_REF" in launch
-    assert "ARENA_SCRATCH_SCENE_REF" in launch
-    assert "ARENA_SCRATCH_TTL_SECONDS" in launch
+    assert "control_plane_arena_scratch registered-prepare" in launch
+    assert launch.find("control_plane_arena_scratch registered-prepare") < launch.find(
+        "== 0. predecessor provider zero"
+    )
+    assert 'run-chain --tag "$CUR" --prev "$PREV"' in launch
+    assert 'verify-parent --tag "$CUR" --parent-fd "$BLUEPRINT_REGISTERED_ARENA_FD"' in launch
+    assert "ARENA_SCRATCH_OWNER" not in launch
+    assert "ARENA_SCRATCH_TTL_SECONDS" not in launch
     assert "sudo -u blueprint mkdir -p $A\n" not in launch
     assert "sudo -u blueprint mkdir -p $A/arena_packet" not in launch
-    assert 'control_plane_arena_scratch mkdir-payload --tag "$CUR" --relative arena_packet' in launch
-    assert launch.count("control_plane_arena_scratch resolve") >= 3  # predecessor, spend walk, writable check
+    assert (
+        'control_plane_arena_scratch registered-mkdir --tag "$CUR" --relative arena_packet'
+        in launch
+    )
+    assert (
+        launch.count("control_plane_arena_scratch resolve") >= 3
+    )  # predecessor, spend walk, writable check
     assert "control_plane_arena_scratch resolve" in fire
     assert fire.find("control_plane_arena_scratch resolve") < fire.find("PROFILE_JSON=$A/")
 
@@ -103,8 +110,7 @@ def test_spend_reconciliation_walks_past_runs_that_allocated_nothing() -> None:
     # cannot reach past the immediate predecessor
     assert "_ALLRUNS" in text
     assert "JOBSPEND" in text and "ZEROSPEND" in text, (
-        "terminal result, teardown, and provider zero must come from the same "
-        "attempt"
+        "terminal result, teardown, and provider zero must come from the same attempt"
     )
     assert "['vast_instance_ids'][0]" not in text, (
         "indexing the id list unguarded crashes on a run that allocated nothing"
@@ -130,14 +136,12 @@ def test_authority_chains_off_the_same_attempt_the_reconciliation_describes() ->
     step4 = text.find("== 4. attempt authority")
     assert step0 != -1 and step4 != -1
 
-    seal = text[step0:text.find("== 1.")]
+    seal = text[step0 : text.find("== 1.")]
     assert "JOBPREV" in seal, "step 0 must seal the IMMEDIATE predecessor"
 
-    authority = text[step4:text.find("== 5.")]
+    authority = text[step4 : text.find("== 5.")]
     for token in ("PSPEND", "JOBSPEND", "ZEROSPEND"):
-        assert token in authority, (
-            f"step 4 must chain off the spend predecessor ({token} missing)"
-        )
+        assert token in authority, f"step 4 must chain off the spend predecessor ({token} missing)"
     assert "JOBPREV" not in authority, (
         "chaining the authority off a predecessor that never allocated "
         "contradicts the reconciliation"
@@ -203,8 +207,8 @@ def test_chain_carries_the_predecessor_machine_avoidlist_forward() -> None:
 
     text = _text(LAUNCH)
     predecessor = "AVOIDLIST=$JOBPREV/adp_arena_vast_machine_avoidlist.json"
-    fallback_resolve = 'resolve --tag r5)'
-    fallback = 'AVOIDLIST=$_FALLBACK_INPUT/machine_avoidlist.json'
+    fallback_resolve = "resolve --tag r5)"
+    fallback = "AVOIDLIST=$_FALLBACK_INPUT/machine_avoidlist.json"
     profile_flag = "--machine-avoidlist $AVOIDLIST"
     assert predecessor in text
     assert fallback_resolve in text
@@ -271,9 +275,7 @@ def test_the_reconciliation_wait_does_not_claim_to_fix_the_409() -> None:
     """
 
     text = _text(FIRE)
-    assert "does not clear a 409 by itself" in text, (
-        "the block must not imply it fixes the 409"
-    )
+    assert "does not clear a 409 by itself" in text, "the block must not imply it fixes the 409"
     assert "HONEST STATUS" in text
     assert "cooldown" in text, "record where the evidence actually points"
 
