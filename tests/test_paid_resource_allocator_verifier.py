@@ -381,6 +381,14 @@ REVIEW_PROBES = {
                        "s3_object_write_or_delete"),
     "presigned_post": ("client.generate_presigned_post(Bucket=bucket, Key=key, ExpiresIn=600)\n",
                        "s3_presigned_write_authority"),
+    "discovery_build_import": ('from googleapiclient.discovery import build\n'
+                               'build("run", "v2").projects().locations().jobs().run(name=job, body={}).execute()\n',
+                               "gcp_cloud_run_job_mutation"),
+    "gcloud_global_flag_argv": ('import subprocess\n'
+                                'subprocess.run(["gcloud", "--project", project, "run", "jobs", "execute", job])\n',
+                                "gcp_cloud_run_job_mutation"),
+    "gcloud_global_flag_text": ('os.system(f"gcloud --project {project} --quiet run jobs execute {job}")\n',
+                                "gcp_cloud_run_job_mutation"),
 }
 
 
@@ -393,6 +401,8 @@ def test_review_probe_shapes_are_discovered_and_unclassified() -> None:
         'subprocess.run(["gcloud", "run", "jobs", "describe", job])\n',
         'subprocess.run(["gcloud", "run", "jobs", "executions", "list", "--job", job])\n',
         'discovery.build("storage", "v1")\n',
+        'from googleapiclient.discovery import build\nbuild("storage", "v1")\n',
+        'subprocess.run(["gcloud", "--project", project, "run", "jobs", "describe", job])\n',
         "client.generate_presigned_url('get_object', Params=params)\n",
     ):
         assert verifier._direct_paid_mutation_signals(source) == set(), source
@@ -421,3 +431,21 @@ def test_remote_cpu_object_store_writers_have_only_approved_callers() -> None:
     observed = verifier._s3_transport_capability_callers(
         {**production, "src/blueprint_pipeline/new_writer.py": wrapper}, writers)
     assert observed - approved == {("src/blueprint_pipeline/new_writer.py", "ungated")}
+
+
+def test_module_and_class_level_calls_to_object_store_writers_are_callers() -> None:
+    writers = verifier.REMOTE_CPU_OBJECT_STORE_WRITERS
+    module_level = (
+        "from .task_evaluation_configured_scene_object_store import copy_remote_cpu_staging_to_cas\n"
+        "RESULT = copy_remote_cpu_staging_to_cas(client=None, bucket='b', staging='s', cas='c')\n"
+    )
+    class_level = (
+        "from .task_evaluation_configured_scene_object_store import delete_remote_cpu_staging_versions as purge\n"
+        "class Sweeper:\n"
+        "    DONE = purge(staging_prefix='p', client=None, bucket='b')\n"
+    )
+    observed = verifier._s3_transport_capability_callers(
+        {"src/blueprint_pipeline/module_writer.py": module_level,
+         "src/blueprint_pipeline/class_writer.py": class_level}, writers)
+    assert observed == {("src/blueprint_pipeline/module_writer.py", "<module>"),
+                        ("src/blueprint_pipeline/class_writer.py", "Sweeper")}

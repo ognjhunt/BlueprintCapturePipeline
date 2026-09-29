@@ -238,9 +238,14 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         r"|\b(?:JobsClient|ExecutionsClient|RunJobRequest)\b"
         r"|discovery\.build\(\s*[\"']run[\"']"
         r"|\b(?:start|run)(?:ExecutionToken|_execution_token)\b"
-        r"|gcloud\W+(?:(?:alpha|beta)\W+)?run\W+jobs\W+"
+        # Global flags and release tracks may sit between gcloud and its command group.
+        r"|gcloud\b[\s\S]{0,200}?\brun\W+jobs\W+"
         r"(?:execute|create|deploy|replace|update|executions\W+cancel)\b",
         source,
+    ) or (
+        # The discovery client's build, imported by name.
+        re.search(r"\bgoogleapiclient\b", source)
+        and re.search(r"(?<![\w.])build\(\s*[\"']run[\"']", source)
     ):
         signals.add("gcp_cloud_run_job_mutation")
     if (
@@ -336,11 +341,9 @@ def _s3_transport_capability_callers(
                 for alias in node.names:
                     if alias.name in protected:
                         aliases[alias.asname or alias.name] = alias.name
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        def referenced(nodes) -> set[str]:
             references: set[str] = set()
-            for child in ast.walk(node):
+            for child in (inner for node in nodes for inner in ast.walk(node)):
                 if isinstance(child, ast.Name):
                     references.add(aliases.get(child.id, child.id))
                 elif isinstance(child, ast.Attribute):
@@ -348,8 +351,27 @@ def _s3_transport_capability_callers(
                 elif isinstance(child, ast.Constant) and isinstance(child.value, str):
                     if child.value in protected:
                         references.add(child.value)
-            if references & protected:
+            return references
+
+        functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+        for node in ast.walk(tree):
+            if isinstance(node, functions) and referenced([node]) & protected:
                 observed.add((relative, node.name))
+            elif isinstance(node, ast.ClassDef):
+                # Class-level statements run at import, outside any method.
+                body = [child for child in node.body if not isinstance(child, (*functions, ast.ClassDef))]
+                if referenced(body) & protected:
+                    observed.add((relative, node.name))
+        def exports(node) -> bool:  # ``__all__`` names exports; it calls nothing
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else [])
+            return any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets)
+
+        # Module-level statements run at import, outside any function or class.
+        top = [node for node in tree.body
+               if not isinstance(node, (*functions, ast.ClassDef, ast.Import, ast.ImportFrom)) and not exports(node)]
+        if referenced(top) & protected:
+            observed.add((relative, "<module>"))
     return observed
 
 
