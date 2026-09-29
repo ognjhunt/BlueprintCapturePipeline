@@ -585,6 +585,19 @@ def run_native_task_arena_policy_canary_session_vast(
     from .native_task_arena_paired_witness_staging import build_paired_witness_binding
     witness_binding = build_paired_witness_binding(prepared_bundle, authority, validated_environment)
     witness_capacity = witness_binding['maximum_archive_bytes']
+    # The output delivery mode is settled before the authority is consumed:
+    # an invalid mode, or streaming without the B2 store, allocates nothing.
+    from . import policy_canary_output_members as output_members
+    try:
+        delivery = output_members.resolve_output_delivery()
+    except output_members.PolicyCanaryOutputDeliveryError as exc:
+        return _unconsumed_policy_canary_refusal([str(exc)])
+    member_contract = None
+    if delivery == output_members.STREAM:
+        if not output_members.artifact_store_configured():
+            return _unconsumed_policy_canary_refusal([output_members.ARTIFACT_STORE_NOT_CONFIGURED])
+        # Until the lane's stream path is wired (plan 15.C3), streaming allocates nothing.
+        return _unconsumed_policy_canary_refusal(["policy_canary_output_stream_not_available"])
     consumption = (
         consume_session_authority_once(
             authority,
@@ -653,7 +666,22 @@ def run_native_task_arena_policy_canary_session_vast(
         expected_provider_upload_bytes=8_000_000_000 + witness_capacity,
         provider_runtime_environment=validated_environment,
         paired_witness_binding=witness_binding,
+        provider_output_delivery=delivery,
+        provider_output_member_contract=member_contract,
     )
+
+
+def _unconsumed_policy_canary_refusal(blockers: list[str]) -> dict[str, Any]:
+    """A refusal before the session authority is consumed: nothing was allocated or mutated."""
+
+    return {
+        "schema_version": POLICY_CANARY_RESULT_SCHEMA_VERSION,
+        "status": "blocked",
+        "provider_mutations_performed": 0,
+        "provider_allocations_observed": 0,
+        "retry_cap": 0,
+        "blockers": blockers,
+    }
 
 
 def _run_native_task_arena_policy_vast(

@@ -765,3 +765,81 @@ def write_staged_absence_proof(attempt, *, promotion_status: str = "promoted", g
     promotion = {"receipt_digest": "sha256:" + "1" * 64, "status": promotion_status} if gated else None
     records.write_staged_object_absence_proof(staging_dir=staging, cleanup=cleanup, promotion=promotion)
     return staging / records.ABSENCE_PROOF_FILENAME
+
+
+# -- A production-scaled Quick-10 shape, for measuring the member contract ----------------
+# Bytes of each JSON member of one cell of the lifecycle rehearsal's real Quick-10 worker
+# output (tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py: the real
+# orchestration, episode runner and policy clients over a fake Isaac), measured 2026-09-29.
+# Per-episode rows are (pi05_droid, groot_n17_droid). The rehearsal's aggregate result is
+# 4,407,038 bytes; production's is 190,573,875 (provider_output_native_inventory.py), so
+# every JSON row but the policy requests is scaled by that ratio: the receipts the aggregate
+# embeds are the ones the per-episode files and the child results repeat (review I7).
+QUICK10_REHEARSAL_AGGREGATE_BYTES = 4_407_038
+QUICK10_PRODUCTION_AGGREGATE_BYTES = 190_573_875
+_REHEARSAL_CELL_JSON_BYTES = {
+    QUICK10_RESULT: 442_171,  # the per-cell child result
+    "policy_canary_static_startup_preflight.v1.json": 7_165,
+    "policy_canary_telemetry_index.json": 953,
+    "policy_canary_telemetry_schema.json": 239,
+    "prepolicy_dependency_matrix.v1.json": 67,
+    "prepolicy_observation_gate/post_gate_rtx_streaming_guard.v1.json": 547,
+}
+_REHEARSAL_EPISODE_JSON_BYTES = {
+    "action_delivery_readback": (662, 662), "action_sequence": (9_938, 9_938),
+    "contact_force_trace": (2_639, 2_639), "embodiment_parity_diagnostic": (687, 687),
+    "episode_receipt": (122_115, 182_824), "policy_query_receipt": (20_578, 81_553),
+    "reset_state": (5_277, 5_282), "score_receipt": (5_428, 5_428), "state_trace": (14_872, 14_872),
+    "task_object_trajectory": (2_327, 2_327),
+}
+_REHEARSAL_FRAME_MANIFEST_BYTES = {"--prestart-readiness": (13_936, 13_976), "": (20_402, 20_457)}
+_REHEARSAL_TOP_JSON_BYTES = {"policy_canary_telemetry_index.json": 1_136, "policy_canary_telemetry_schema.json": 239,
+                             "adp009d_groot_worker_identity.groot_n17_droid.json": 578}
+_REHEARSAL_POLICY_REQUEST_BYTES = (403_106, 462_852)
+
+
+def quick10_production_shape(*, frames_per_camera: int = 45, png_bytes: int = 400_000, mp4_bytes: int = 12_000_000,
+                             policy_requests_per_episode: int = 45) -> dict[str, int]:
+    """Member path -> size of a production-scaled Quick-10 output (see the table above).
+
+    The layout is the worker's: ten ``cell_runs/NN`` trees, each with two candidates' episode
+    JSON and, per candidate, an episode and a prestart-readiness media directory holding three
+    camera MP4s (120 in all), PNG frames per camera, a frame manifest, and policy requests.
+    Bulk sizes only shape the archive; the contract never selects them.
+    """
+    from fractions import Fraction
+
+    scale = Fraction(QUICK10_PRODUCTION_AGGREGATE_BYTES, QUICK10_REHEARSAL_AGGREGATE_BYTES)
+
+    def scaled(size: int) -> int:
+        return int(size * scale)
+
+    files: dict[str, int] = {}
+    for cell in range(10):
+        root = f"cell_runs/{cell:02d}"
+        files.update({f"{root}/{name}": scaled(size) for name, size in _REHEARSAL_CELL_JSON_BYTES.items()})
+        files[f"{root}/policy_canary_telemetry.jsonl"] = scaled(1_273)
+        files[f"{root}/cell_progress.log"] = 524
+        for position, candidate in enumerate(QUICK10_CANDIDATES):
+            episode = f"scene-839873-quick10--cell-{cell}--{candidate}"
+            files.update({f"{root}/episodes/{episode}.{role}.json": scaled(sizes[position])
+                          for role, sizes in _REHEARSAL_EPISODE_JSON_BYTES.items()})
+            for suffix, sizes in _REHEARSAL_FRAME_MANIFEST_BYTES.items():
+                media = f"{root}/episodes/media/{episode}{suffix}"
+                files[f"{media}/multicamera_frame_manifest.json"] = scaled(sizes[position])
+                for camera in QUICK10_CAMERAS:
+                    files[f"{media}/{camera}.mp4"] = mp4_bytes
+                    for frame in range(frames_per_camera):
+                        files[f"{media}/frames/{camera}/{frame:06d}.png"] = png_bytes
+                if not suffix:
+                    for request in range(policy_requests_per_episode):
+                        files[f"{media}/policy-requests/{request:06d}.json"] = _REHEARSAL_POLICY_REQUEST_BYTES[position]
+    files[QUICK10_RESULT] = QUICK10_PRODUCTION_AGGREGATE_BYTES
+    files.update({name: scaled(size) for name, size in _REHEARSAL_TOP_JSON_BYTES.items()})
+    files["policy_canary_telemetry.jsonl"] = scaled(12_730)
+    return dict(sorted(files.items(), key=lambda item: PurePosixPath(item[0]).parts))
+
+
+def quick10_production_shaped_archive(**options) -> VirtualObject:
+    """``quick10_production_shape`` as a stored ZIP of zero runs: only its directory is real."""
+    return build_zip([Entry(name, Zeros(size)) for name, size in quick10_production_shape(**options).items()])

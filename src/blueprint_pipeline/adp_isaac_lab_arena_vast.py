@@ -434,11 +434,25 @@ def run_arena_native_control_vast(
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     paired_witness_binding: Mapping[str, Any] | None = None,
     allowed_geolocation_country_codes: Sequence[str] = (),
+    provider_output_delivery: str = "download",
+    provider_output_member_contract: Any | None = None,
 ) -> dict[str, Any]:
-    """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog."""
+    """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog.
+
+    ``provider_output_delivery`` is ``download`` (every caller but one: the
+    provider archive is downloaded and extracted, as always) or ``stream``,
+    which only the Quick-10 session passes, with its member contract.
+    """
 
     if retain_warm_instance and not require_independent_watchdog:
         raise ValueError("native_task_arena_warm_session_requires_watchdog")
+    if provider_output_delivery not in ("download", "stream"):
+        raise ValueError("adp_arena_provider_output_delivery_invalid")
+    if provider_output_delivery == "stream":
+        if (provider_output_member_contract is None
+                or provider_bundle_kind != "native_task_arena_policy_canary_session"):
+            raise ValueError("adp_arena_provider_output_stream_contract_missing")
+        raise ValueError("adp_arena_provider_output_stream_not_available")
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
