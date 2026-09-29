@@ -357,10 +357,12 @@ def admit_remote_cpu_job(*, blockers: list[str], binding: Mapping[str, Any],
 def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: str, descriptor: Mapping[str, Any],
                    bucket: Any, object_store: tuple[Any, str, str], clock: Callable[[], float],
                    object_uri: str) -> dict[str, Any]:
-    """Presign an admitted attempt's transport and write it create-if-absent (plan 14 §4).  GETs live through the
-    start allowance, fetch and grace; PUTs to the hard deadline.  botocore signs at the real clock, so each recorded
-    expiry is the clock read after signing, plus the lifetime and a margin.  The transport exists only in memory
-    and in its GCS object; the caller records its name, generation and both expiries on the lease."""
+    """Presign an admitted attempt's transport and write it create-if-absent (plan 14 §4).  Data GETs (inputs and
+    source) live through the start allowance, fetch and grace, and that is the recorded read expiry; the PUTs, and
+    the receipt GET the worker checks before every receipt it writes, live to the hard deadline.  botocore signs
+    at the real clock, so each recorded expiry is the clock read after signing, plus the lifetime and a margin.
+    The transport exists only in memory and in its GCS object; the caller records its name, generation and both
+    expiries on the lease."""
     require_paid_resource_admission_grant(grant, resource_class=RESOURCE_CLASS, allocation_binding_digest=binding_digest,
                                           require_allocation_binding=True)
     client, b2_bucket, limits = object_store[0], object_store[1], descriptor["limits"]
@@ -373,9 +375,10 @@ def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: 
 
     inputs = [{"materialize_at": item["materialize_at"], "digest": item["digest"], "size_bytes": item["size_bytes"],
                "url": get(item["uri"])} for item in descriptor["inputs"]]
-    # PR 3: the receipt GET shares the fetch window, so the worker checks for an earlier receipt before fetching.
-    source, receipt = {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])}, get(
-        staging + "receipt.json")
+    # The worker never overwrites a committed receipt, however long it runs, so this GET outlives the fetch window.
+    source = {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])}
+    receipt = presign_remote_cpu_get(uri=staging + "receipt.json", expires_in_seconds=writes, client=client,
+                                     bucket=b2_bucket)
     outputs = {name: presign_remote_cpu_put(grant=grant, binding_digest=binding_digest, staging_uri=staging + name,
                                             expires_in_seconds=writes, client=client, bucket=b2_bucket)
                for name in STAGING_OBJECTS}
