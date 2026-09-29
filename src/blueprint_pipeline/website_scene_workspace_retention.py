@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .completed_replay_cache_retention import active_reference
+from .capture_delivery_ledger import ended_producer_delivery_keys
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
 from .control_plane_evidence_offload import ControlPlaneEvidenceOffloadError, _HashingSink, _pack_stream
 from .control_plane_storage_gc import _pinned_workspace
@@ -1748,26 +1749,6 @@ def ended_payload_digests(ledger: Mapping[str, Any]) -> set[str]:
             digests.add(text(row.get("terminal_payload_sha256")))
     digests.discard("")
     return digests
-
-
-def ended_producer_delivery_keys(ledger: Mapping[str, Any]) -> set[str]:
-    """Original semantic deliveries ended by this captured job ledger."""
-    def key(value: Any) -> str:
-        return value if isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) else ""
-
-    keys = {key(ledger.get("terminal_producer_delivery_key"))}
-    history = ledger.get("attempt_history")
-    for row in history if isinstance(history, list) else ():
-        if not isinstance(row, Mapping):
-            continue
-        if row.get("status") == TERMINAL_AUTHORITY_STATUS:
-            keys.add(key(row.get("producer_delivery_key")))
-        elif row.get("status") == "reopened_after_terminal_authority":
-            keys.add(key(row.get("terminal_producer_delivery_key")))
-    if ledger.get("status") == "completed":
-        keys.add(key(ledger.get("producer_delivery_key")))
-    keys.discard("")
-    return keys
 
 
 def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,

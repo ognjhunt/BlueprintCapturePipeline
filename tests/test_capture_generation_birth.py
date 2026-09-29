@@ -1,3 +1,8 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/capture_delivery_ledger.py
+#   src/blueprint_pipeline/website_scene_workspace_retention.py
+#   src/blueprint_pipeline/pubsub_handoff_listener.py
+#   src/blueprint_pipeline/pubsub_handoff_scene_operations.py
 """ADP-009D/day28: original-owner capture birth stays separate from intent births."""
 
 import hashlib

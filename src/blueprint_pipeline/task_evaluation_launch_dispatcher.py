@@ -29,18 +29,14 @@ from .adp_articulated_task_success_contract import (
     task_kind_of_contract,
     validate_task_success_contract,
 )
-from .adp_task_scoring import (
-    TaskNeutralScoringError,
-)
+from .adp_task_scoring import TaskNeutralScoringError
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     DEFAULT_RESERVATION_ROOT,
     reserve_control_plane_disk,
 )
-from .episode_interpretation_batch_authority import (
-    validate_episode_interpretation_batch_authority_shape,
-)
+from .episode_interpretation_batch_authority import validate_episode_interpretation_batch_authority_shape
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .paid_attempt_authority import (
     JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
