@@ -281,37 +281,27 @@ _AUDIT = textwrap.dedent('''
     import atexit, json, os, sys
 
     release, out = sys.argv[1], sys.argv[2]
-    roots = tuple({os.path.normpath(release) + os.sep, os.path.realpath(release) + os.sep})
-    tops = ("src", "docs", "pyproject.toml")
-    found, missing = set(), set()
+    import blueprint_pipeline  # the release's package, before tests/conftest.py puts the checkout's src first
+    from blueprint_pipeline.remote_cpu_worker import install_release_audit
 
-    def hook(event, args):
-        # A read of a path under the release root, absolute or relative to it (the working directory); an
-        # os.open relative to a directory descriptor names neither, so only a release top level is followed.
-        if event != "open" or len(args) < 3 or isinstance(args[0], int):
-            return
-        mode, flags = args[1], args[2]
-        if (isinstance(mode, str) and any(flag in mode for flag in "wax+")) or (
-                isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT)):
-            return
-        try:
-            path = os.fsdecode(os.fspath(args[0]))
-        except TypeError:
-            return
-        if not os.path.isabs(path) and path.split(os.sep, 1)[0] not in tops:
-            return
-        full = os.path.normpath(os.path.join(os.getcwd(), path))
-        root = next((root for root in roots if full.startswith(root)), None)
-        if root is not None and "__pycache__" not in full.split(os.sep):
-            (found if os.path.exists(full) else missing).add(full[len(root):])
+    roots = tuple({os.path.normpath(release) + os.sep, os.path.realpath(release) + os.sep})
+    found = set()
+
+    def record(event, args):
+        # The reads that did find their file, for the report; the worker's own audit records the misses.
+        if event == "open" and len(args) >= 3 and isinstance(args[0], str) and os.path.isabs(args[0]):
+            root = next((root for root in roots if args[0].startswith(root)), None)
+            if root is not None and "__pycache__" not in args[0] and os.path.isfile(args[0]):
+                found.add(os.path.normpath(args[0])[len(root):])
 
     def dump():
         with open(out, "w", encoding="utf-8") as stream:
-            json.dump({"found": sorted(found), "missing": sorted(missing)}, stream)
+            json.dump({"found": sorted(found), "missing": sorted(missing), "package": blueprint_pipeline.__file__},
+                      stream)
 
+    missing = install_release_audit(release)
+    sys.addaudithook(record)
     atexit.register(dump)
-    sys.addaudithook(hook)
-    import blueprint_pipeline  # the release's package, before tests/conftest.py puts the checkout's src first
     import pytest
 
     sys.exit(pytest.main(sys.argv[3:]))
@@ -363,10 +353,11 @@ def test_release_source_archive_contains_every_repo_root_read_of_the_compile(tmp
                    or member.name.startswith(("src/", "docs/schemas/")) for member in members)
         archive.extractall(release, filter="data")
 
-    # The compile, run with the extracted archive as its code: the compiler and compile-worker tests, under
-    # an audit hook that records every read under the release root.  None may miss.
+    # The compile, run with the extracted archive as its code: the compiler and compile-worker tests, under the
+    # worker's own release audit (``remote_cpu_worker.install_release_audit``).  No read under the release misses.
     audit = _compile_from(release, tmp_path)
     assert audit["missing"] == []
+    assert Path(audit["package"]).is_relative_to(release)
     assert "src/blueprint_pipeline/task_evaluation_native_arena_episode_compiler.py" in audit["found"]
     # The reads outside src are schemas found through parents[2]: recipe v1 (src and pyproject.toml alone)
     # would have shipped a tree that cannot compile (plan 14 C1).
