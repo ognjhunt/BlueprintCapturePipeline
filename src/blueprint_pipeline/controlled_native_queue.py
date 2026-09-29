@@ -117,7 +117,7 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
             "scenario_id": profile["scenario_id"], "scenario_eval_run_id": request["job_id"] + "-native-0"}
         credential = None
         credential_path = profile.get("policy_credential_path")
-        if credential_path:
+        if credential_path and modalities[0] == "policy_api_endpoint":
             credential_file = Path(credential_path)
             if credential_file.is_symlink() or credential_file.stat().st_mode & 0o077:
                 raise ValueError("controlled_native_policy_credential_not_private")
