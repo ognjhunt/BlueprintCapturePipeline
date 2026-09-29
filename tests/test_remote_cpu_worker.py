@@ -214,9 +214,9 @@ def test_unwritable_path_root_refuses_before_fetching(tmp_path: Path) -> None:
     assert receipt["phases"]["fetch"] is None and receipt["bytes_fetched"] == 0
     verdict = contract.validate_receipt(receipt, descriptor=world.descriptor, execution_name=EXECUTION)
     assert (verdict["outcome"], verdict["terminal"]) == ("infrastructure_failed", False)
-    # The receipt check, a heartbeat and the receipt: no source or input was fetched, and nothing was written.
+    # The receipt check, a heartbeat, and the receipt once none is up: no source or input was fetched.
     assert world.http.requests == [("GET", world.key("receipt.json")), ("PUT", world.key("heartbeat.json")),
-                                   ("PUT", world.key("receipt.json"))]
+                                   ("GET", world.key("receipt.json")), ("PUT", world.key("receipt.json"))]
     assert list(root.iterdir()) == [] and not (world.fs / "tmp" / "blueprint-release" / COMMIT).exists()
     assert world.descriptor["code"]["source_archive"]["digest"] == digest_of(world.archive)
 
@@ -266,7 +266,7 @@ def test_inputs_materialize_at_declared_paths_with_digest_checks(tmp_path: Path)
     # Every input at its declared path with its declared bytes and mode, fetched once, and no partial left.
     assert seen == [(path, data, 0o440) for path, (data, _, _) in world.inputs.items()]
     assert _gets(world) == [world.key("receipt.json"), _key(world.descriptor["code"]["source_archive"]["uri"]),
-                            *(_key(item["uri"]) for item in world.descriptor["inputs"])]
+                            *(_key(item["uri"]) for item in world.descriptor["inputs"]), world.key("receipt.json")]
     assert not [path for path in world.fs.rglob("*") if path.name.endswith(".partial")]
     receipt = world.receipt()
     assert receipt["status"] == "blocked" and _verdict(world) == ("blocked", True)
@@ -318,7 +318,71 @@ def test_duplicate_execution_with_an_existing_receipt_is_a_noop(tmp_path: Path) 
     assert racing.run(stage) == 0
     assert set(_puts(racing)) == {"heartbeat.json"} and racing.staged("receipt.json") == earlier
     assert racing.staged("blobs.tar") is None and racing.staged("index.json") is None
-    assert json.loads(racing.logs[-1]) == {"mode": "execute", "status": "duplicate_execution"}
+    assert json.loads(racing.logs[-1]) == {"mode": "execute", "status": "receipt_already_committed"}
+
+
+def test_a_committed_receipt_is_never_overwritten(tmp_path: Path) -> None:
+    """Review I1: a receipt another execution committed stays, however long this one runs, and when whether one
+    is up cannot be read, nothing is written at all."""
+
+    earlier = b'{"receipt": "committed by another execution of this attempt"}\n'
+    # Past the data GETs' fetch window (1020 s): a duplicate commits while this stage runs 1100 s.
+    late = WorkerWorld(tmp_path / "late")
+
+    def long_stage(*, descriptor: dict, **_: object) -> dict:
+        outputs = _outputs(late, descriptor)
+        late.store.put_object(Bucket=B2_BUCKET, Key=late.key("receipt.json"), Body=earlier)
+        late.clock.advance(1100)
+        return outputs
+
+    assert late.run(long_stage) == 0
+    assert (late.versions("receipt.json"), late.staged("blobs.tar"), late.staged("index.json")) == ([earlier], None, None)
+    assert json.loads(late.logs[-1]) == {"mode": "execute", "status": "receipt_already_committed"}
+
+    # A failure receipt checks too: another execution committed before this one's stage hit an undeclared write.
+    failing = WorkerWorld(tmp_path / "failing")
+
+    def stray(*, descriptor: dict, **_: object) -> dict:
+        outputs = _outputs(failing, descriptor)
+        failing.local("/var/lib/blueprint/stray.json").write_bytes(b"{}")
+        failing.store.put_object(Bucket=B2_BUCKET, Key=failing.key("receipt.json"), Body=earlier)
+        return outputs
+
+    assert failing.run(stray) == 0 and failing.versions("receipt.json") == [earlier]
+
+    # Execute committed, then died before exiting 0: bootstrap keeps that receipt rather than failing over it.
+    killed = WorkerWorld(tmp_path / "killed")
+    execute = killed.runtime(run_stage=lambda *, descriptor, **_: _outputs(killed, descriptor),
+                             handlers={killed.descriptor["stage"]: "x:y"})
+
+    def launch(handoff: dict) -> int:
+        assert worker.execute_attempt(handoff, execute) == 0
+        return -9
+
+    assert worker.bootstrap(["bootstrap"], killed.runtime(launch=launch)) == 0
+    [committed] = [json.loads(data) for data in killed.versions("receipt.json")]
+    assert committed["status"] == "succeeded" and _verdict(killed) == ("succeeded", True)
+    assert json.loads(killed.logs[-1]) == {"mode": "bootstrap", "status": "receipt_already_committed"}
+
+    # Whether a receipt is up cannot be read at seal: nothing is uploaded, and both processes exit non-zero.
+    unknown = WorkerWorld(tmp_path / "unknown")
+    sealing: list[bool] = []
+
+    def refuse_receipt_reads(method: str, key: str) -> None:
+        if sealing and method == "GET" and key == unknown.key("receipt.json"):
+            raise ConnectionResetError("the receipt read failed")
+
+    unknown.http.before = refuse_receipt_reads
+
+    def compiled(*, descriptor: dict, **_: object) -> dict:
+        sealing.append(True)
+        return _outputs(unknown, descriptor)
+
+    assert unknown.run(compiled) == worker.EXIT_REFUSED
+    assert set(_puts(unknown)) == {"heartbeat.json"}
+    assert [json.loads(line) for line in unknown.logs[-2:]] == [
+        {"mode": mode, "status": "refused", "code": "remote_cpu_worker_receipt_unreadable"}
+        for mode in ("execute", "bootstrap")]
 
 
 def test_undeclared_write_or_changed_input_is_an_infrastructure_failure(tmp_path: Path) -> None:
@@ -519,12 +583,12 @@ def test_worker_never_logs_or_persists_a_presigned_url(tmp_path: Path, monkeypat
     caplog.set_level(logging.DEBUG)
     succeeded = WorkerWorld(tmp_path / "succeeded", archive=worker_release_archive())
     assert succeeded.run() == 0 and succeeded.receipt()["status"] == "succeeded"
-    # A write authority that expires mid-upload: every later PUT, the receipt's too, is refused, typed.
+    # An authority that expires mid-upload: every later request is refused, and the refusals are typed.
     expired = WorkerWorld(tmp_path / "expired")
     expired.http.before = lambda method, key: expired.clock.advance(3000) if key == expired.key("blobs.tar") else None
     assert expired.run(lambda *, descriptor, **_: _outputs(expired, descriptor)) == worker.EXIT_REFUSED
     assert [json.loads(line) for line in expired.logs[-2:]] == [
-        {"mode": mode, "status": "refused", "code": "remote_cpu_worker_upload_failed:receipt.json:http_403"}
+        {"mode": mode, "status": "refused", "code": "remote_cpu_worker_receipt_unreadable"}
         for mode in ("execute", "bootstrap")]
 
     # The launcher hands execute the transport on its stdin: never in argv, the environment or a file.
@@ -662,7 +726,7 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
             assert (receipt["status"], ran) == ("blocked", [1]), label
             continue
         assert receipt["infrastructure_failures"] == [f"infrastructure_failed:{refusal}"] and ran == [], label
-        assert _gets(world) == [world.key("receipt.json")], label
+        assert _gets(world) == [world.key("receipt.json")] * 2, label
         verdict = contract.validate_receipt(receipt, descriptor=world.descriptor, execution_name=EXECUTION)
         assert f"infrastructure_failed:{refusal}" in verdict["infrastructure_failures"] and not verdict["terminal"]
 

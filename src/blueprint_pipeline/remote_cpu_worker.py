@@ -108,8 +108,8 @@ class TransferError(WorkerFailure):
     """A presigned transfer that did not complete; ``code`` is a status or an error type, never the URL."""
 
 
-class _Duplicate(WorkerFailure):
-    """Another execution of this attempt committed its receipt first."""
+class _Committed(WorkerFailure):
+    """This attempt's receipt is already up; it is never overwritten (plan 14 §6)."""
 
 
 def _code(exc: BaseException) -> str:
@@ -348,16 +348,13 @@ class _Attempt:
     def elapsed(self) -> float:
         return round(max(0.0, self.runtime.clock() - self.started), 3)
 
-    def receipt_exists(self, *, strict: bool = True) -> bool:
-        """Whether a receipt is up.  Unknown refuses at bootstrap (``strict``); before sealing, when the receipt
-        GET may have outlived its fetch-window lifetime (plan 14 §11), unknown is no."""
+    def receipt_exists(self) -> bool:
+        """Whether a receipt is up; the receipt GET lives as long as the attempt's writes (plan 14 §4)."""
         try:
             return self.runtime.http.read(self.transport["receipt_url"], max_bytes=MAX_RECEIPT_BYTES,
                                           timeout=TRANSFER_TIMEOUT_SECONDS) is not None
         except Exception:  # noqa: BLE001 - whether a receipt exists is unknown: never risk overwriting one
-            if strict:
-                raise WorkerFailure("remote_cpu_worker_receipt_unreadable") from None
-            return False
+            raise WorkerFailure("remote_cpu_worker_receipt_unreadable") from None
 
     def count_fetched(self, size: int) -> None:
         with self._lock:
@@ -424,14 +421,17 @@ class _Attempt:
 
     def commit(self, status: str, *, result: Any = None, output: Any = None, failures: Sequence[str] = (),
                misses: Sequence[str] = ()) -> dict[str, Any]:
-        """Upload the receipt, the commit marker, last.  One the host would refuse keeps its failures but not
-        its result, and failing that says only why it was refused."""
+        """Upload the receipt, the commit marker, last, and only while none is up: a committed receipt is never
+        overwritten, and when that cannot be read nothing is written.  One the host would refuse keeps its
+        failures but not its result, and failing that says only why it was refused."""
         receipt = self._receipt(status, result, output, failures, misses)
         refusal = self._refusal(receipt)
         if refusal is not None:
             receipt = self._receipt("infrastructure_failed", None, None, [*failures, refusal], misses)
             if self._refusal(receipt) is not None:
                 receipt = self._receipt("infrastructure_failed", None, None, [refusal], ())
+        if self.receipt_exists():
+            raise _Committed("receipt_already_committed")
         self.put("receipt.json", record_bytes(receipt))
         return receipt
 
@@ -441,6 +441,9 @@ class _Attempt:
         try:
             self.commit(status, result=result, output=output, failures=[INFRASTRUCTURE_FAILED + code for code in codes],
                         misses=misses)
+        except _Committed:
+            self.runtime.log(_line(mode, "receipt_already_committed"))
+            return 0
         except WorkerFailure as exc:
             return _refuse(self.runtime, mode, exc.code)
         self.runtime.log(_line(mode, status, ",".join(codes) or None))
@@ -749,8 +752,8 @@ def _seal(attempt: _Attempt, runtime: WorkerRuntime, deadline: _Deadline) -> dic
         raise WorkerFailure(f"seal_failed:{safe_label(str(exc))}") from None
     if index["paths_total"] > limits["max_output_paths"] or index["bytes_total"] > limits["max_output_bytes"]:
         raise WorkerFailure("output_exceeds_limits")
-    if attempt.receipt_exists(strict=False):
-        raise _Duplicate("duplicate_execution")
+    if attempt.receipt_exists():  # another execution committed: its blobs and index are the ones it names
+        raise _Committed("receipt_already_committed")
     written: dict[str, Any] = {}
     attempt.put("blobs.tar", lambda sink: written.update(write_blobs_tar(root, index, sink)), size=size,
                 content_type="application/x-tar", timeout=deadline.timeout())
@@ -816,8 +819,8 @@ def execute_attempt(handoff: Mapping[str, Any], runtime: WorkerRuntime, *, shado
             if shadowed:
                 raise WorkerFailure("remote_cpu_worker_source_shadowed")
             status, result, output, codes, misses = _stage_outcome(attempt, runtime, release)
-    except _Duplicate:
-        runtime.log(_line("execute", "duplicate_execution"))
+    except _Committed:
+        runtime.log(_line("execute", "receipt_already_committed"))
         return 0
     except WorkerFailure as exc:
         return attempt.fail(exc.code, mode="execute")
