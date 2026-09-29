@@ -3596,3 +3596,15 @@ def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypat
     assert 'retained fake allocator terminal output' in (run/'allocator.stdout.log').read_text()
     assert len(budgets) == 1 and budgets[0].closed
     assert budgets[0].deadline == 5.0 and budgets[0].failure is None
+
+
+def test_nested_dispatch_cannot_end_parent_publisher_allowance(tmp_path):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    profile_dir, request_path = _write_profile_and_request(tmp_path, _profile(tmp_path))
+    calls = []
+    @gate._publisher_observation
+    def finite_metadata_publisher():
+        return dispatch_launch_request(request_path=request_path, profile_dir=profile_dir, state_root=tmp_path/'state', allocator_runner=lambda argv: calls.append(argv) or 0)
+    with pytest.raises(ValueError, match='experiment_publisher_input_limit'):
+        finite_metadata_publisher()
+    assert calls == []
