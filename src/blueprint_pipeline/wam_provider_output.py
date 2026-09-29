@@ -36,6 +36,7 @@ RUNTIME_RESULT_FILENAMES = (
     "adp009d_source_calibration_gpu_render_result.v1.json",
     "adp009b_gaussian_excision_result.json",
     "native_task_arena_construction_result.v1.json",
+    "controlled_native_policy_result.v1.json",
     "native_task_arena_control_result.v1.json",
     "native_task_arena_policy_result.v1.json",
     "native_task_arena_policy_diagnostic_result.v1.json",
