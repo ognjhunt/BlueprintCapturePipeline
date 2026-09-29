@@ -403,3 +403,86 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                     _write(parent, key + '.json', value, parent_identity=store_identity,
                            replace=True)
                     return value
+
+
+def capture_birth_source_projection(path):
+    """Reopen one native capture's retained original source for registration.
+
+    This is historical producer evidence, not execution or removal consent.
+    An absent native generation returns None for the existing legacy caller.
+    An incomplete enrolled generation refuses instead of becoming legacy.
+    """
+    policy = _policy()
+    if policy is None:
+        return None
+    path = _canonical(str(path))
+    store = Path(policy['generation_store'])
+    key = hashlib.sha256(str(path).encode()).hexdigest()
+    with scene_access():
+        try:
+            state = _read(store / (key + '.json'))
+        except FileNotFoundError:
+            return None
+        if state.get('schema_version') != 'scene_capture_generation.v1':
+            return None
+        _require(state.get('canonical_path') == str(path)
+                 and state.get('state_digest') == canonical_digest(
+                     state, digest_field='state_digest')
+                 and state.get('state') in {'active', 'restored-active'},
+                 'scene_capture_generation_invalid')
+        with _opened(path, directory=True) as (_, info):
+            _require(_identity(info) == (state.get('dev'), state.get('ino'),
+                                         state.get('mode')),
+                     'scene_capture_generation_changed')
+        owner = _raw_reference(state['owner_observation_raw_ref'])
+        from .capture_original_owner_observer import validate_observation
+        from .capture_delivery_membership import validate_capture_delivery_membership
+
+        owner = validate_observation(
+            owner, bucket=owner['bucket'], scene_id=owner['scene_id'],
+            capture_id=owner['capture_id'],
+            marker_generation=state['pinned_marker']['generation'],
+            now_epoch=owner['observed_at_epoch'])
+        delivery = _raw_reference(state['birth_delivery_raw_ref'])
+        _require(delivery.get('schema_version') == 'capture_birth_delivery.v1'
+                 and delivery.get('producer_delivery') == owner['producer_delivery']
+                 and delivery.get('source_finalize') == {
+                     'bucket': owner['bucket'],
+                     'object_name': state['pinned_marker']['object_name'],
+                     'generation': state['pinned_marker']['generation']}
+                 and state['pinned_marker'] == owner['completion_marker'],
+                 'scene_capture_birth_delivery_changed')
+        member_ref = delivery.get('source_membership_raw_ref')
+        _require(type(member_ref) is dict and set(member_ref) == {
+            'path', 'sha256', 'size_bytes'}
+            and type(member_ref['sha256']) is str
+            and member_ref['path'] == str(store / (
+                'capture-membership-' + member_ref['sha256'].removeprefix('sha256:') + '.json')),
+            'scene_capture_membership_ref_invalid')
+        try:
+            member_raw = _bytes(_canonical(member_ref['path']))
+        except FileNotFoundError as exc:
+            raise SceneRetirementAccessError('scene_capture_membership_missing') from exc
+        membership = validate_capture_delivery_membership(
+            member_raw, selector=delivery['source_membership_selector'],
+            observation=owner)
+        _require(len(member_raw) == member_ref['size_bytes']
+                 and 'sha256:' + hashlib.sha256(member_raw).hexdigest() == member_ref['sha256']
+                 and delivery['delivery_key'] == membership['delivery_key'],
+                 'scene_capture_membership_changed')
+        video = next(row for row in membership['raw'] if
+                     row['object_name'] == owner['producer_delivery']['raw_video']['object_name'])
+        return {
+            'schema_version': 'scene_capture_source_projection.v1',
+            'canonical_path': str(path), 'generation_id': state['generation_id'],
+            'request_id': owner['request_id'], 'scene_id': owner['scene_id'],
+            'capture_id': owner['capture_id'],
+            'capture_owner_user_id': owner['capture_owner']['user_id'],
+            'capture_rights': owner['capture_rights'],
+            'owner_observation_raw_ref': state['owner_observation_raw_ref'],
+            'birth_delivery_raw_ref': state['birth_delivery_raw_ref'],
+            'source_membership_raw_ref': member_ref,
+            'source_membership_selector': delivery['source_membership_selector'],
+            'delivery_key': owner['producer_delivery']['delivery_key'],
+            'raw_video': video,
+        }

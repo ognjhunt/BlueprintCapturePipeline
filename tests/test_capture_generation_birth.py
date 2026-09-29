@@ -136,6 +136,89 @@ def test_normal_capture_birth_prepares_absent_parent_under_owned_root(tmp_path, 
         assert parent.stat().st_uid == Path(policy['generation_store']).stat().st_uid
 
 
+def test_capture_birth_source_projection_reopens_exact_retained_membership(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import (
+        birth_capture_member, capture_birth_source_projection,
+    )
+
+    _, _, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch)
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+                                membership_raw=membership_raw)
+    proof = capture_birth_source_projection(target)
+    assert proof['generation_id'] == born['generation_id']
+    assert proof['source_membership_selector'] == selector
+    assert proof['delivery_key'] == owner['producer_delivery']['delivery_key']
+    assert proof['raw_video']['generation'] == owner['producer_delivery']['raw_video']['generation']
+    assert proof['raw_video']['sha256'] == json.loads(membership_raw)['raw'][2]['sha256']
+    assert proof['owner_observation_raw_ref'] == born['owner_observation_raw_ref']
+    Path(json.loads(Path(born['birth_delivery_raw_ref']['path']).read_bytes())[
+        'source_membership_raw_ref']['path']).unlink()
+    with pytest.raises(ValueError):
+        capture_birth_source_projection(target)
+
+
+def test_native_website_registration_binds_original_delivery_and_sponsor_rights(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
+    from blueprint_pipeline.website_scene_dispatch import (
+        register_website_preparation, resolve_website_source,
+    )
+    from blueprint_pipeline import website_native_background as native
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    _, _, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch)
+    born = birth_capture_member(target, observation=owner,
+                                membership_selector=selector, membership_raw=membership_raw)
+    base = target / 'pipeline' / 'website_scene_preparation'
+    native_dir = base / 'native'
+    native_dir.mkdir(parents=True)
+    context = {'schema_version': 'website_site_task_context.v1',
+               'request_id': owner['request_id'], 'scene_id': owner['scene_id'],
+               'capture_id': owner['capture_id'], 'capture_rights': owner['capture_rights']}
+    context['context_digest'] = canonical_digest(context, digest_field='context_digest')
+    request = {'owner': {'user_id': 'sponsor-2'},
+               'consent': {'rights_reference': cross_runtime_canonical_digest(owner['capture_rights'])},
+               'source': {'binding_id': 'website-source',
+                          'content_digest': 'sha256:' + '4' * 64}}
+    preparation = {'intake_request': request,
+                   'binding': {'task_context_digest': context['context_digest']}}
+    preparation['digest'] = canonical_digest(preparation, digest_field='digest')
+    preparation_path = base / 'preparation.json'
+    runtime_path = native_dir / 'runtime_inputs.json'
+    context_path = base / 'task_context.json'
+    preparation_path.write_text(json.dumps(preparation))
+    runtime_path.write_text('{}')
+    context_path.write_text(json.dumps(context))
+    monkeypatch.setattr(native, 'construction_rights_admission', lambda **_: {})
+    monkeypatch.setattr(native, 'prepare_construction_stages',
+                        lambda **_: {'references': []})
+    selected = register_website_preparation(
+        preparation_path=preparation_path, runtime_inputs_path=runtime_path,
+        task_context_path=context_path, root=tmp_path / 'bindings', now=1)
+    registration = json.loads(Path(selected['path']).read_bytes())
+    assert registration['capture_source']['generation_id'] == born['generation_id']
+    assert registration['capture_source']['source_membership_selector'] == selector
+    assert registration['capture_source']['capture_owner_user_id'] == 'owner-1'
+    assert request['owner']['user_id'] != owner['capture_owner']['user_id']
+    intent = {'request': request, 'intent_id': 'scene-' + '1' * 32,
+              'intent_digest': 'sha256:' + '2' * 64,
+              'task_content_digest': 'sha256:' + '3' * 64}
+    resolution = resolve_website_source(intent=intent, config={
+        'website_source_binding_root': str(tmp_path / 'bindings'),
+        'factory_output_root': str(tmp_path / 'factory'),
+        'website_source_machinery_path': str(tmp_path / 'machinery.json'),
+    })
+    binding = json.loads(Path(resolution.binding_path).read_bytes())
+    assert binding['capture_source'] == registration['capture_source']
+    context['capture_rights']['consent_revoked'] = True
+    context['context_digest'] = canonical_digest(context, digest_field='context_digest')
+    context_path.write_text(json.dumps(context))
+    with pytest.raises(ValueError, match='website_capture_source_rights_mismatch'):
+        register_website_preparation(
+            preparation_path=preparation_path, runtime_inputs_path=runtime_path,
+            task_context_path=context_path, root=tmp_path / 'other-bindings', now=1)
+
+
 def test_capture_birth_rejects_missing_member_or_changed_delivery_without_target(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 

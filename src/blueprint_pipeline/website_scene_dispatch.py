@@ -30,19 +30,48 @@ def _index_path(root, request):
     return root / (cross_runtime_canonical_digest(request)[7:] + ".json")
 
 
+def _selected_capture_source(preparation_path, preparation, context):
+    preparation_file = Path(preparation_path)
+    if (preparation_file.parent.name != 'website_scene_preparation'
+            or preparation_file.parent.parent.name != 'pipeline'):
+        return None
+    from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
+
+    source = capture_birth_source_projection(preparation_file.parents[2])
+    if source is None:
+        return None
+    rights_digest = cross_runtime_canonical_digest(source['capture_rights'])
+    request = preparation['intake_request']
+    if (any(context.get(key) != source[key] for key in
+            ('request_id', 'scene_id', 'capture_id'))
+            or context.get('capture_rights') != source['capture_rights']
+            or preparation.get('binding', {}).get('task_context_digest') != context['context_digest']
+            or request.get('consent', {}).get('rights_reference') != rights_digest):
+        raise ValueError('website_capture_source_rights_mismatch')
+    selected = {key: value for key, value in source.items() if key != 'capture_rights'}
+    selected.update(capture_rights_digest=rights_digest,
+                    task_context_digest=context['context_digest'],
+                    preparation_digest=preparation['digest'],
+                    request_digest=cross_runtime_canonical_digest(request),
+                    sponsoring_owner=request['owner'])
+    return selected
+
+
 @scene_participant('preparation_path', 'runtime_inputs_path', 'task_context_path')
 def register_website_preparation(*, preparation_path, runtime_inputs_path, task_context_path, root, now):
     from .website_native_background import prepare_construction_stages, construction_rights_admission
     preparation = read(preparation_path, digest_field="digest")
     context = read(task_context_path, digest_field="context_digest")
     construction_rights_admission(preparation=preparation, task_context=context, now=now)
+    capture_source = _selected_capture_source(preparation_path, preparation, context)
     prepare_construction_stages(runtime_inputs_path=Path(runtime_inputs_path), preparation_path=Path(preparation_path))
     value = {"schema_version": "website_scene_source_registration.v1",
         "request_digest": cross_runtime_canonical_digest(preparation["intake_request"]),
         "references": {"preparation": record(preparation_path), "runtime_inputs": record(runtime_inputs_path),
                        "task_context": record(task_context_path)},
         "provider_mutation_performed": False, "execution_authority_granted": False,
-        "claim_ceiling": "development_only"}
+        "claim_ceiling": "development_only",
+        **({'capture_source': capture_source} if capture_source is not None else {})}
     value["registration_digest"] = canonical_digest(value, digest_field="registration_digest")
     root = safe_path(root)
     require(root.is_absolute(), "website_source_root_invalid")
@@ -69,6 +98,17 @@ def resolve_website_source(*, intent, config):
         checked_file(ref["path"], ref)
     preparation = read(refs["preparation"]["path"], digest_field="digest")
     require(preparation["intake_request"] == intent["request"], "website_source_request_changed")
+    context = read(refs['task_context']['path'], digest_field='context_digest')
+    capture_source = _selected_capture_source(refs['preparation']['path'],
+                                              preparation, context)
+    require(registration.get('capture_source') == capture_source,
+            'website_capture_source_registration_changed')
+    if capture_source is not None:
+        require(capture_source['sponsoring_owner'] == intent['request']['owner']
+                and capture_source['request_digest'] == registration['request_digest']
+                and intent['request'].get('consent', {}).get('rights_reference')
+                    == capture_source['capture_rights_digest'],
+                'website_capture_source_intake_mismatch')
     from .website_native_background import prepare_construction_stages
     construction = prepare_construction_stages(runtime_inputs_path=Path(refs["runtime_inputs"]["path"]),
                                                preparation_path=Path(refs["preparation"]["path"]))
@@ -79,7 +119,8 @@ def resolve_website_source(*, intent, config):
         "task_digest": intent["task_content_digest"], "owner": intent["request"]["owner"],
         "references": refs, "registration": record(path), "physical_scale_measured": False,
         "required_staging_bytes": 2 * sum(files.values()) + 256 * 1024**2,
-        "provider_mutation_performed": False, "claim_ceiling": "development_only"}
+        "provider_mutation_performed": False, "claim_ceiling": "development_only",
+        **({'capture_source': capture_source} if capture_source is not None else {})}
     value["binding_digest"] = canonical_digest(value, digest_field="binding_digest")
     output = safe_path(config["factory_output_root"]) / intent["intent_id"] / "website-source"
     output.mkdir(parents=True, exist_ok=True, mode=0o750)
