@@ -1,5 +1,8 @@
 """Engine-internal terminal pin selection; never process or action authority."""
 import math
+import hashlib
+import os
+import stat
 import re
 
 from .task_evaluation_scene_retirement_access import _canonical, _opened, _identity, _require
@@ -98,6 +101,7 @@ def select_terminal_pins(fresh,policy,consent,documents,allowance):
             allowance.tick()
             target=_canonical(pinned)
             _require(any(target.is_relative_to(_canonical(member['canonical_path'])) for member in members),_REASON)
+        _require(emitted+2*raw[2]+8192<=512*1024,_REASON)
         allowance.charge('local_bytes',raw[2])
         value=selected_document(reference,maximum=16384)
         _require(type(value) is dict and set(value)==_FIELDS and value['schema_version']=='control_plane_storage_pin.v1'
@@ -105,10 +109,17 @@ def select_terminal_pins(fresh,policy,consent,documents,allowance):
         dependencies=_rows(value['depends_on'],256)
         _require(all(type(row) is dict and set(row)=={'kind','owner_id'} and row['kind'] in _SUCCESS
             and type(row['owner_id']) is str and _ID.fullmatch(row['owner_id']) for row in dependencies),_REASON)
-        with _opened(path) as (_,info):
-            _require(info.st_nlink==1 and tuple(observed['row_identity'])==(
+        allowance.charge('local_bytes',raw[2])
+        with _opened(path) as (fd,info):
+            _require(stat.S_IMODE(info.st_mode)==0o640 and info.st_nlink==1 and tuple(observed['row_identity'])==(
                 info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns),_REASON)
-            row=dict(original_raw_ref=reference,original_value=value,physical_identity=list(_identity(info)),
+            before=(info.st_size,info.st_mtime_ns,info.st_ctime_ns,_identity(info))
+            allowance.tick()
+            contents=os.read(fd,info.st_size)
+            after=os.fstat(fd)
+            _require((after.st_size,after.st_mtime_ns,after.st_ctime_ns,_identity(after))==before
+                and len(contents)==raw[2] and 'sha256:'+hashlib.sha256(contents).hexdigest()==raw[1],_REASON)
+            row=dict(original_raw_ref=reference,original_value=value,original_raw_hex=contents.hex(),physical_identity=list(_identity(info)),
                 snapshot=[info.st_dev,info.st_ino,info.st_mode,info.st_size,info.st_uid,info.st_gid,
                           info.st_mtime_ns,info.st_ctime_ns,info.st_nlink])
         emitted+=bounded_size(row,512*1024-emitted)
