@@ -17,7 +17,8 @@ from .control_plane_lane_experiment_errors import OwnerTargetVersionError
 from .control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
 
 _RESERVED = re.compile(r'(?:^|/) (?:g1|arena)/registered-', re.X)
-_RAW_LIMIT = 65536
+_RAW_LIMIT = 256 * 1024
+_SCALAR_RAW_LIMIT = 65536
 _PUBLISHER_BUDGET = ContextVar("registered_publisher_observation_budget", default=None)
 _PUBLISHER_OWNER = ContextVar("registered_publisher_observation_owner", default=None)
 
@@ -124,12 +125,24 @@ def _reference(text, budget):
                 # link still refuses before payload or publisher mutation.
                 system_var = (sys.platform == 'darwin' and current == Path('/var')
                               and info.st_uid == 0 and os.readlink(current) == 'private/var')
-                if not system_var:
+                current_interpreter = False
+                if current == selected == Path(sys.executable):
+                    try:
+                        resolved = Path(os.path.realpath(current, strict=True))
+                        budget.charge('values', len(resolved.parts))
+                        canonical = posixpath.normpath(str(resolved))
+                        current_interpreter = (len(resolved.parts) <= 64 and resolved.is_file()
+                            and not _RESERVED.search(canonical)
+                            and not re.search(r'(?:^|/)g1-checkpoint(?:$|/)', canonical))
+                        budget.tick()
+                    except (OSError, RuntimeError):
+                        pass
+                if not (system_var or current_interpreter):
                     raise OwnerTargetVersionError('experiment_external_publisher_unsupported')
 
 
 def refuse_registered_references(*values):
-    """Observe actual inputs under ONE native 5s/10k/64KiB allowance.
+    """Observe inputs under ONE 5s/10k/256KiB allowance; each scalar stays <=64KiB.
 
     Recursion is depth-bounded and charged before descent; no pending array is
     expanded before admission. This is an unsupported-family refusal, not a
@@ -159,6 +172,7 @@ def refuse_registered_references(*values):
                 raise OwnerTargetVersionError('experiment_publisher_input_limit')
             text = str(value)
             charge_raw(2)
+            scalar_raw = 2
             if len(text) > _RAW_LIMIT - raw:
                 raise OwnerTargetVersionError('experiment_publisher_input_limit')
             for index, char in enumerate(text):
@@ -169,6 +183,9 @@ def refuse_registered_references(*values):
                     raise OwnerTargetVersionError('experiment_publisher_input_limit')
                 width = (2 if char in '\\"\b\f\n\r\t' else 6 if ordinal < 32 else
                          1 if ordinal < 128 else 2 if ordinal < 2048 else 3 if ordinal < 65536 else 4)
+                scalar_raw += width
+                if scalar_raw > _SCALAR_RAW_LIMIT:
+                    raise OwnerTargetVersionError('experiment_publisher_input_limit')
                 charge_raw(width)
             _reference(text, budget)
         elif isinstance(value, Mapping):
@@ -204,3 +221,14 @@ def refuse_registered_references(*values):
     finally:
         if owned:
             budget.close()
+
+
+def _profile_refusal(profile):
+    """Return only the fixed unsupported-reference blocker for a launch profile."""
+    try:
+        refuse_registered_references(profile)
+    except OwnerTargetVersionError as error:
+        if error.code in ('experiment_external_publisher_unsupported', 'experiment_publisher_input_limit'):
+            return error.code
+        raise
+    return None

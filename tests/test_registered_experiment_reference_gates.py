@@ -196,6 +196,12 @@ def test_publisher_respects_native_lower_raw_and_value_allowances(payload):
         refuse_registered_references(payload)
 
 
+def test_publisher_allows_multiple_bounded_scalars_under_one_cumulative_budget():
+    from blueprint_pipeline.control_plane_registered_reference_gate import refuse_registered_references
+
+    refuse_registered_references('a' * 40000, 'b' * 40000)
+
+
 def test_publisher_one_clock_covers_all_roots_before_growth(monkeypatch):
     from blueprint_pipeline import control_plane_registered_reference_gate as gate
     from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
