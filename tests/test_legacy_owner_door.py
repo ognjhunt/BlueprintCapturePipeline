@@ -31,6 +31,30 @@ def test_legacy_report_request_has_no_caller_selected_path_or_action():
             requests.validate_request(request | extra)
 
 
+def test_door_reports_all_candidates_and_keeps_unknown_fd_owner_label():
+    from blueprint_pipeline.control_plane_lane_legacy_owner_door import _public_report
+
+    labeled = dict(path="/work/lanes/diagnostics/old-1", family="diagnostics",
+                   references=[], unreadable=0, allocated_bytes=4096, age_seconds=12,
+                   classification="owner_review_reference_unknown", owner="owner",
+                   approved_expiry=2000, process_fd_references="unknown",
+                   gc_eligible=False, references_clear=False)
+    unregistered = dict(path="/work/lanes/diagnostics/old-2", family="diagnostics",
+                        references=[], unreadable=0, allocated_bytes=2048, age_seconds=20)
+    observed = dict(status="incomplete", scan_errors=["process_inventory_unreadable"],
+                    rows=[labeled, unregistered], candidate_count=2, observed_owner_count=1)
+    report = _public_report(observed)
+    assert report["status"] == "reference_incomplete"
+    assert len(report["rows"]) == 2 and report["observed_owner_count"] == 1
+    assert report["rows"][0]["classification"] == "owner_review_reference_unknown"
+    assert report["rows"][0]["keep_reason"] == "process_fd_references_unknown"
+    assert report["rows"][1]["classification"] == "unclassified"
+    assert all(row["gc_eligible"] is False and row["references_clear"] is False
+               and row["candidate_bytes"] is None for row in report["rows"])
+    unsafe = observed | {"scan_errors": ["process_inventory_unreadable", "queue_inventory_unavailable"]}
+    assert _public_report(unsafe)["rows"] == []
+
+
 def test_legacy_report_door_requires_operate_scope_and_uses_existing_spool(door):
     assert _call(door, "/requests", token=READER,
                  body={"kind": "legacy-owner-census"})[0] == 403

@@ -137,3 +137,49 @@ def test_apply_validation_drops_attribution_on_mutation_or_expiry(tmp_path):
     with pytest.raises(LegacyOwnerError, match="legacy_owner_approval_expired"):
         validate_registration(packet, approval, current_generation=packet["target_generation"],
                               fresh_census=_survey(str(target)), current_policy_bytes=raw, now=packet["expires_at_epoch"])
+
+
+def test_unknown_foreign_fd_requires_explicit_second_ack_and_never_grants_cleanup(tmp_path):
+    from blueprint_pipeline.control_plane_lane_legacy_owner import (
+        LegacyOwnerError, approve_version_packet, build_version_packet,
+        snapshot_generation, validate_registration,
+    )
+    import hashlib
+
+    root = tmp_path / "work"
+    target = root / "lanes" / "diagnostics" / "old-1"
+    target.mkdir(parents=True)
+    raw = b'{"enabled":true,"principals":[{"allowed_actions":["register"],"max_consent_seconds":500,"owners":["owner"],"principal":"operator"}],"schema_version":"control_plane_lane_owner_policy.v1"}\n'
+    consent = _consent(str(target))
+    consent["policy_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+    survey = _survey(str(target))
+    survey.update(status="incomplete", scan_errors=["process_inventory_unreadable"], candidate_count=1)
+    generation = snapshot_generation(target, allowed_roots=(root,))
+    packet = build_version_packet(consent, selected_path=str(target), generation=generation,
+                                  fresh_census=survey, now=1010)
+    assert packet["process_fd_references"] == "unknown"
+    assert packet["fresh_reference_status"] == "process_fd_references_unknown"
+    with pytest.raises(LegacyOwnerError, match="legacy_owner_approval_ack_mismatch"):
+        approve_version_packet(packet, ack_packet_digest=packet["packet_digest"],
+                               current_policy_bytes=raw, principal="operator", owner="owner", now=1020)
+    approval = approve_version_packet(packet, ack_packet_digest=packet["packet_digest"],
+                                      ack_process_fd_unknown=True, current_policy_bytes=raw,
+                                      principal="operator", owner="owner", now=1020)
+    result = validate_registration(packet, approval, current_generation=generation,
+                                   fresh_census=survey, current_policy_bytes=raw, now=1021)
+    assert result["classification"] == "owner_review_reference_unknown"
+    assert result["process_fd_references"] == "unknown"
+    assert result["references_clear"] is False and result["gc_eligible"] is False
+    assert result["candidate_bytes"] is None and result["eta_seconds"] is None
+    for extra_error in ("queue_inventory_unavailable", "tree_scan_truncated"):
+        changed = survey | {"scan_errors": ["process_inventory_unreadable", extra_error]}
+        with pytest.raises(LegacyOwnerError):
+            validate_registration(packet, approval, current_generation=generation,
+                                  fresh_census=changed, current_policy_bytes=raw, now=1021)
+    active = _survey(str(target))
+    active.update(status="incomplete", scan_errors=["process_inventory_unreadable"],
+                  candidate_count=1)
+    active["rows"][0]["references"] = ["process"]
+    with pytest.raises(LegacyOwnerError):
+        build_version_packet(consent, selected_path=str(target), generation=generation,
+                             fresh_census=active, now=1010)
