@@ -304,3 +304,60 @@ def test_installed_source_cannot_copy_needed_cache_without_registered_use(tmp_pa
         InstalledSourceBindings({"https://publisher.example/pinned": source}).resolve(
             "https://publisher.example/pinned", digest, 7
         )
+
+
+def test_actual_nested_queue_publishers_share_one_native_allowance(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
+        stage_launch_preparation_request,
+    )
+    from tests.test_task_evaluation_launch_preparation_contract import request
+
+    budgets = []
+
+    def create(**kw):
+        budget = ReferenceCollectionBudget(**kw)
+        budgets.append(budget)
+        return budget
+
+    monkeypatch.setattr(gate, "ReferenceCollectionBudget", create)
+    result = stage_launch_preparation_request(
+        value=request(), queue_root=tmp_path / "queue", submitted_by="webapp-service"
+    )
+    assert result["accepted"] is True
+    assert len(budgets) == 1
+    assert budgets[0].closed is True
+    assert budgets[0].counts["values"] > 0
+
+
+def test_actual_nested_queue_cannot_restart_deadline_before_publication(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    from blueprint_pipeline import task_evaluation_launch_preparation_queue as queue
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from tests.test_task_evaluation_launch_preparation_contract import request
+
+    clock = [0.0]
+    budgets = []
+
+    def create(**kw):
+        budget = ReferenceCollectionBudget(monotonic=lambda: clock[0], **kw)
+        budgets.append(budget)
+        return budget
+
+    original = queue.validate_launch_preparation_request
+
+    def delayed(value):
+        result = original(value)
+        clock[0] = 6.0
+        return result
+
+    monkeypatch.setattr(gate, "ReferenceCollectionBudget", create)
+    monkeypatch.setattr(queue, "validate_launch_preparation_request", delayed)
+    with pytest.raises(ValueError, match="experiment_publisher_input_limit"):
+        queue.stage_launch_preparation_request(
+            value=request(), queue_root=tmp_path / "queue", submitted_by="webapp-service"
+        )
+    assert not list(tmp_path.rglob("*.json"))
+    assert len(budgets) == 1
+    assert budgets[0].closed is True
