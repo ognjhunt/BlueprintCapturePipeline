@@ -1019,24 +1019,33 @@ def test_the_allocators_preflight_completes_against_the_real_worker(tmp_path: Pa
 
 
 def test_the_worker_holds_no_allocation_authority() -> None:
-    """The worker runs inside the paid execution: nothing in its import closure can admit, mint or dispatch."""
+    """Review M3: the worker runs inside the paid execution, so nothing it, or a stage it runs, imports may admit,
+    mint write authority or dispatch.  A handler is imported by name, which no closure follows, so every
+    registered handler's own closure is proven too (PR 4's compiler handler included)."""
 
     import ast
 
     from blueprint_pipeline.task_evaluation_production_chain_preflight import import_closure
 
-    root = Path(worker.__file__).resolve().parents[1]
-    closure = import_closure(root.parent, "blueprint_pipeline.remote_cpu_worker")
+    src = Path(worker.__file__).resolve().parents[1]
+    closure = import_closure(src, "blueprint_pipeline.remote_cpu_worker")
+    for handler in worker.STAGE_HANDLERS.values():
+        closure.update(import_closure(src, handler.partition(":")[0]))
+    assert {"blueprint_pipeline.remote_cpu_worker", "blueprint_pipeline.remote_cpu_worker_stage",
+            "blueprint_pipeline.remote_cpu_job_contract", "blueprint_pipeline.remote_cpu_output_archive"} <= set(
+        closure), sorted(closure)
     assert not {"blueprint_pipeline.paid_resource_admission", "blueprint_pipeline.paid_resource_allocator",
                 "blueprint_pipeline.remote_cpu_job_allocator", "blueprint_pipeline.cloud_run_jobs_client",
                 "blueprint_pipeline.task_evaluation_configured_scene_object_store",
                 "blueprint_pipeline.remote_cpu_transport"} & set(closure), sorted(closure)
-    source = Path(worker.__file__).read_text(encoding="utf-8")
-    called = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-              for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)}
-    assert not called & {"require_paid_resource_admission", "require_paid_resource_admission_grant",
-                         "build_paid_lane_admission", "generate_presigned_url", "client", "run_job"}
-    assert "boto3" not in source and "service_account" not in source
+    for name, path in sorted(closure.items()):
+        source = path.read_text(encoding="utf-8")
+        called = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                  for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)}
+        assert not called & {"require_paid_resource_admission", "require_paid_resource_admission_grant",
+                             "build_paid_lane_admission", "generate_presigned_url", "generate_presigned_post",
+                             "run_job", "copy_object", "upload_file", "put_object", "delete_object"}, name
+        assert not any(text in source for text in ("boto3", "google.oauth2", "service_account")), name
 
 
 def test_an_unexpected_error_is_typed_never_printed(tmp_path: Path, monkeypatch, capsys) -> None:
