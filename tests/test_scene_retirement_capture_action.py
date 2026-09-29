@@ -161,3 +161,38 @@ def test_capture_action_requires_current_owner_and_distinct_sponsor_association(
     result = retire_scene(Path(plan_ref['path']), consent_path, transport=object())
     assert result['reason'] == 'scene_retirement_installed_context_unproven'
     assert result['mutations'] == 0 and target.exists()
+
+    # A fresh restore consent must repeat the same current original-owner read.
+    from blueprint_pipeline.task_evaluation_scene_retirement import restore_scene
+    token = '2' * 32
+    generation_path = Path(policy['generation_store']) / (
+        hashlib.sha256(str(target).encode()).hexdigest() + '.json')
+    retired_generation = dict(born, state='retired', retirement_token=token,
+                              journal_sha256='sha256:' + '3' * 64,
+                              state_sequence=born['state_sequence'] + 1)
+    retired_generation['state_digest'] = canonical_digest(
+        retired_generation, digest_field='state_digest')
+    generation_path.write_text(json.dumps(retired_generation))
+    policy['principals'][0]['actions'] = ['retire', 'restore']
+    policy['policy_digest'] = canonical_digest(policy, digest_field='policy_digest')
+    policy_path.write_text(json.dumps(policy))
+    journal = {'schema_version': 'scene_retirement_journal.v1', 'status': 'retired',
+               'intent_id': 'scene-1', 'members': [member], 'token': token}
+    journal['journal_digest'] = canonical_digest(journal, digest_field='journal_digest')
+    encoded = json.dumps(journal).encode()
+    retired_root = Path(policy['journal_store']) / 'retired'
+    retired_root.mkdir(parents=True, mode=0o700)
+    retired_path = retired_root / (hashlib.sha256(encoded).hexdigest() + '.json')
+    retired_path.write_bytes(encoded)
+    retired_path.chmod(0o600)
+    protected.update(action='restore', plan_raw_ref=None,
+                     retired_journal_raw_ref={'path': str(retired_path),
+                         'sha256': 'sha256:' + hashlib.sha256(encoded).hexdigest(),
+                         'size_bytes': len(encoded)},
+                     policy_sha256='sha256:' + hashlib.sha256(policy_path.read_bytes()).hexdigest())
+    protected['consent_digest'] = canonical_digest(protected, digest_field='consent_digest')
+    consent_path.write_text(json.dumps(protected))
+    monkeypatch.setattr(observer, 'load_original_owner_observation', lambda **_: (changed, 100))
+    result = restore_scene(retired_path, consent_path, transport=object())
+    assert result['status'] == 'kept' and result['reason'] == 'scene_retirement_capture_current_owner_changed'
+    assert result['mutations'] == 0 and target.exists()
