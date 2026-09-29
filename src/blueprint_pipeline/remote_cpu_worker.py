@@ -601,6 +601,26 @@ class _Deadline:
         self.check()
         return max(1.0, min(TRANSFER_TIMEOUT_SECONDS, self.end - self.clock()))
 
+    def run(self, action: Callable[[], Any]) -> Any:
+        """Run ``action`` bounded by the phase: a transfer that stalls past the deadline is abandoned, the phase
+        fails and its receipt still goes; the process exits after that receipt, taking the transfer with it."""
+        outcome: dict[str, Any] = {}
+
+        def bounded() -> None:
+            try:
+                outcome["value"] = action()
+            except BaseException as exc:  # noqa: BLE001 - raised again in the phase's own thread
+                outcome["error"] = exc
+
+        thread = threading.Thread(target=bounded, name=f"remote-cpu-{self.phase}", daemon=True)
+        thread.start()
+        thread.join(max(0.0, self.end - self.clock()))
+        if thread.is_alive():
+            raise WorkerFailure(f"phase_deadline:{self.phase}")
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["value"]
+
 
 @contextmanager
 def _phase(attempt: _Attempt, name: str) -> Iterator[_Deadline]:
@@ -775,7 +795,7 @@ def _stage_outcome(attempt: _Attempt, runtime: WorkerRuntime, release: Path) -> 
     """Fetch, run the stage child, check it, and seal a success: ``(status, result, output, codes, misses)``."""
     descriptor = attempt.descriptor
     with _phase(attempt, "fetch") as deadline:
-        _materialize_inputs(attempt, runtime, deadline)
+        deadline.run(lambda: _materialize_inputs(attempt, runtime, deadline))
     handler = runtime.handlers.get(descriptor["stage"])
     if handler is None:
         raise WorkerFailure(f"stage_not_registered:{descriptor['stage']}")
@@ -798,7 +818,7 @@ def _stage_outcome(attempt: _Attempt, runtime: WorkerRuntime, release: Path) -> 
     if status != STAGES[descriptor["stage"]]["success_status"]:
         raise WorkerFailure("stage_result_invalid")
     with _phase(attempt, "seal_upload") as deadline:
-        return "succeeded", result, _seal(attempt, runtime, deadline), [], []
+        return "succeeded", result, deadline.run(lambda: _seal(attempt, runtime, deadline)), [], []
 
 
 def execute_attempt(handoff: Mapping[str, Any], runtime: WorkerRuntime, *, shadowed: bool = False) -> int:

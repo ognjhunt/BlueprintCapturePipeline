@@ -135,10 +135,10 @@ class RecordingHttp:
 
     def _send(self, method: str, url: str, body: bytes = b"") -> Any:
         key = unquote(urlsplit(url).path).split("/", 2)[2]
+        if self.before is not None:  # outside the lock: a hook that stalls one transfer stalls only that one
+            self.before(method, key)
         with self._lock:
             self.requests.append((method, key))
-            if self.before is not None:
-                self.before(method, key)
             return self.store.request(method, url, body=body)
 
     def read(self, url: str, *, max_bytes: int, timeout: float) -> bytes | None:

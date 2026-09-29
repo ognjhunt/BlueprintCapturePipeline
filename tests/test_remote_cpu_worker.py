@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import urllib.error
 from pathlib import Path
@@ -494,6 +495,26 @@ def _gone(pid: int) -> bool:
             pass  # no /proc here, or the process has just gone: the next signal says which
         time.sleep(0.05)
     return False
+
+
+def test_a_transfer_that_stalls_is_abandoned_at_its_phase_deadline(tmp_path: Path) -> None:
+    """Review M4: a stalled fetch or upload ends its phase at the phase's deadline, not at the task's timeout."""
+
+    released = threading.Event()
+    budgets = {"fetch": 2, "stage": 900, "seal_upload": 2}
+    try:
+        for phase in ("fetch", "seal_upload"):
+            world = WorkerWorld(tmp_path / phase, limits={"phase_seconds": budgets})
+            stalled = _key(world.descriptor["inputs"][1]["uri"]) if phase == "fetch" else world.key("blobs.tar")
+            world.http.before = lambda method, key, stalled=stalled: released.wait(60) if key == stalled else None
+            started = time.monotonic()
+            assert world.run(lambda *, descriptor, world=world, **_: _outputs(world, descriptor), clock=time.monotonic) == 0
+            assert 2 <= time.monotonic() - started < 30, phase
+            receipt = world.receipt()
+            assert receipt["infrastructure_failures"] == [f"infrastructure_failed:phase_deadline:{phase}"], phase
+            assert 2 <= receipt["phases"][phase] < 30 and receipt["output"] is None, phase
+    finally:
+        released.set()
 
 
 def test_the_stage_session_is_killed_whether_the_child_exits_or_hangs(monkeypatch) -> None:
