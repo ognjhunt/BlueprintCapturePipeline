@@ -124,7 +124,7 @@ def _private_file_value(environment_name: str, *, required: bool) -> str:
 
 def _client_from_file_environment(
     names: Mapping[str, str], *, require_endpoint_and_region: bool = False,
-    checksums_when_required: bool = False,
+    checksums_when_required: bool = False, path_style: bool = False,
 ) -> tuple[Any, str]:
     try:
         import boto3  # type: ignore[import-not-found]
@@ -149,11 +149,14 @@ def _client_from_file_environment(
          "response_checksum_validation": "when_required"}
         if checksums_when_required else {}
     )
+    # A remote-CPU worker pins ``https://<B2 host>/<bucket>/<key prefix>/``,
+    # so its URLs are path style whatever botocore's default becomes.
+    addressing = {"s3": {"addressing_style": "path"}} if path_style else {}
     kwargs: dict[str, Any] = {
         "aws_access_key_id": access_key,
         "aws_secret_access_key": secret_key,
         "region_name": region or "us-east-1",
-        "config": Config(signature_version="s3v4", **checksums),
+        "config": Config(signature_version="s3v4", **addressing, **checksums),
     }
     if endpoint:
         kwargs["endpoint_url"] = endpoint
@@ -203,7 +206,8 @@ def remote_cpu_object_store() -> tuple[Any, str, str]:
             "remote_cpu_object_store_not_dedicated"
         )
     client, bucket = _client_from_file_environment(
-        _ARTIFACT_STORE_FILE_ENV, require_endpoint_and_region=True, checksums_when_required=True
+        _ARTIFACT_STORE_FILE_ENV, require_endpoint_and_region=True, checksums_when_required=True,
+        path_style=True,
     )
     expected_bucket = str(os.getenv(_EXPECTED_ARTIFACT_BUCKET_ENV) or "").strip()
     if expected_bucket and bucket != expected_bucket:

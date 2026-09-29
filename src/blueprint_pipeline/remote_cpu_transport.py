@@ -21,6 +21,7 @@ import os
 import re
 import stat
 import subprocess
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,8 @@ from .task_evaluation_configured_scene_object_store import (
 INPUT_KIND, INPUT_FILENAME = "remote-cpu-input", "input.bin"
 SOURCE_KIND, SOURCE_FILENAME = "remote-cpu-source", "source.tar"
 GIT_TIMEOUT_SECONDS = 120
+# git itself takes about a second; the upload pass streams through the same pipe, so this bounds the upload too.
+ARCHIVE_TIMEOUT_SECONDS = 900
 _CHUNK = 1024 * 1024
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -150,12 +153,23 @@ def _git_environment() -> dict[str, str]:
     return {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
 
 
-def stream_git_archive(repository: Path, source_commit: str, sink: Any) -> None:
-    """Write ``git archive --format=tar <commit> src docs/schemas pyproject.toml`` into ``sink``; git writes no file."""
+def stream_git_archive(repository: Path, source_commit: str, sink: Any, *,
+                       timeout: float = ARCHIVE_TIMEOUT_SECONDS) -> None:
+    """Write ``git archive --format=tar <commit> src docs/schemas pyproject.toml`` into ``sink``; git writes no file.
+    Past ``timeout`` git is killed, as every other git call here is bounded."""
 
     process = subprocess.Popen(
         _git_command(Path(repository), "archive", "--format=tar", source_commit, *SOURCE_ARCHIVE_PATHS),
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=_git_environment())
+    expired = threading.Event()
+
+    def expire() -> None:
+        expired.set()
+        process.kill()
+
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    timer.start()
     try:
         with process.stdout as stdout:
             for chunk in iter(lambda: stdout.read(_CHUNK), b""):
@@ -164,7 +178,12 @@ def stream_git_archive(repository: Path, source_commit: str, sink: Any) -> None:
         process.kill()
         process.wait()
         raise
-    if process.wait() != 0:
+    finally:
+        timer.cancel()
+    code = process.wait()
+    if expired.is_set():
+        raise RemoteCpuTransportError("remote_cpu_release_archive_timeout")
+    if code != 0:
         raise RemoteCpuTransportError("remote_cpu_release_archive_failed")
 
 

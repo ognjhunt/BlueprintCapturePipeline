@@ -24,7 +24,6 @@ transport object; every other byte moves through the attempt's presigned GETs an
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import os
 import re
@@ -56,6 +55,9 @@ from .remote_cpu_job_contract import (
     record_bytes, safe_label, validate_receipt,
 )
 from .remote_cpu_output_archive import RemoteCpuArchiveError, blobs_tar_size, index_bytes, index_tree, write_blobs_tar
+from .remote_cpu_worker_stage import StageRoots as StageRoots  # a handler's roots; re-exported for handlers
+from .remote_cpu_worker_stage import from_release, stage_main
+from .remote_cpu_worker_stage import install_release_audit as install_release_audit
 
 MODULE = "blueprint_pipeline.remote_cpu_worker"
 # What the dispatcher sets (``cloud_run_jobs_client``) and mints (``remote_cpu_job_allocator``); the
@@ -77,21 +79,18 @@ STAGE_REQUEST_SCHEMA_VERSION = "remote_cpu_worker_stage_request.v1"
 # ``stage -> "module:function"``; a handler takes the sealed descriptor and ``StageRoots`` and returns the
 # stage's sealed result.  An unregistered stage is an infrastructure failure.
 STAGE_HANDLERS: Mapping[str, str] = {
-    PROBE_STAGE: f"{MODULE}:run_environment_probe",
+    PROBE_STAGE: "blueprint_pipeline.remote_cpu_worker_stage:run_environment_probe",
     "episode_compilation": "blueprint_pipeline.task_evaluation_episode_compilation_remote:run_episode_compilation_in_worker",
 }
-PROBE_RESULT_SCHEMA_VERSION = "remote_cpu_environment_probe_result.v1"
 EXIT_REFUSED = 2
 TRANSFER_TIMEOUT_SECONDS = 60.0
 FINAL_RECEIPT_SECONDS = 60
 MAX_TRANSPORT_BYTES = 16 * 1024 * 1024
 MAX_HANDOFF_BYTES = 32 * 1024 * 1024
 MAX_NAMED_PATHS = 16
-MAX_RELEASE_MISSES = 64
 _CHUNK = 1024 * 1024
 _NAME = re.compile(r"[a-z][a-z0-9-]{0,126}[a-z0-9]")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-_RELEASE_TOPS = ("src", "docs", "pyproject.toml")
 _GENERATION = re.compile(r"[1-9][0-9]{0,19}")
 _TRANSPORT_OBJECT = re.compile(r"gs://([a-z0-9][a-z0-9._-]{1,61}[a-z0-9])/(transport/(rcj-[a-z]{2}-[0-9a-f]{24})/"
                                r"(\3-a[1-9][0-9]{0,2}-[0-9a-f]{32})-[0-9a-f]{32}\.json)")
@@ -112,8 +111,8 @@ class TransferError(WorkerFailure):
     """A presigned transfer that did not complete; ``code`` is a status or an error type, never the URL."""
 
 
-class _Duplicate(WorkerFailure):
-    """Another execution of this attempt committed its receipt first."""
+class _Committed(WorkerFailure):
+    """This attempt's receipt is already up; it is never overwritten (plan 14 §6)."""
 
 
 def _code(exc: BaseException) -> str:
@@ -352,16 +351,13 @@ class _Attempt:
     def elapsed(self) -> float:
         return round(max(0.0, self.runtime.clock() - self.started), 3)
 
-    def receipt_exists(self, *, strict: bool = True) -> bool:
-        """Whether a receipt is up.  Unknown refuses at bootstrap (``strict``); before sealing, when the receipt
-        GET may have outlived its fetch-window lifetime (plan 14 §11), unknown is no."""
+    def receipt_exists(self) -> bool:
+        """Whether a receipt is up; the receipt GET lives as long as the attempt's writes (plan 14 §4)."""
         try:
             return self.runtime.http.read(self.transport["receipt_url"], max_bytes=MAX_RECEIPT_BYTES,
                                           timeout=TRANSFER_TIMEOUT_SECONDS) is not None
         except Exception:  # noqa: BLE001 - whether a receipt exists is unknown: never risk overwriting one
-            if strict:
-                raise WorkerFailure("remote_cpu_worker_receipt_unreadable") from None
-            return False
+            raise WorkerFailure("remote_cpu_worker_receipt_unreadable") from None
 
     def count_fetched(self, size: int) -> None:
         with self._lock:
@@ -428,14 +424,17 @@ class _Attempt:
 
     def commit(self, status: str, *, result: Any = None, output: Any = None, failures: Sequence[str] = (),
                misses: Sequence[str] = ()) -> dict[str, Any]:
-        """Upload the receipt, the commit marker, last.  One the host would refuse keeps its failures but not
-        its result, and failing that says only why it was refused."""
+        """Upload the receipt, the commit marker, last, and only while none is up: a committed receipt is never
+        overwritten, and when that cannot be read nothing is written.  One the host would refuse keeps its
+        failures but not its result, and failing that says only why it was refused."""
         receipt = self._receipt(status, result, output, failures, misses)
         refusal = self._refusal(receipt)
         if refusal is not None:
             receipt = self._receipt("infrastructure_failed", None, None, [*failures, refusal], misses)
             if self._refusal(receipt) is not None:
                 receipt = self._receipt("infrastructure_failed", None, None, [refusal], ())
+        if self.receipt_exists():
+            raise _Committed("receipt_already_committed")
         self.put("receipt.json", record_bytes(receipt))
         return receipt
 
@@ -445,6 +444,9 @@ class _Attempt:
         try:
             self.commit(status, result=result, output=output, failures=[INFRASTRUCTURE_FAILED + code for code in codes],
                         misses=misses)
+        except _Committed:
+            self.runtime.log(_line(mode, "receipt_already_committed"))
+            return 0
         except WorkerFailure as exc:
             return _refuse(self.runtime, mode, exc.code)
         self.runtime.log(_line(mode, status, ",".join(codes) or None))
@@ -558,16 +560,21 @@ def _release_environment(runtime: WorkerRuntime, descriptor: Mapping[str, Any], 
 
 
 def _wait(process: subprocess.Popen, seconds: float, timeout_code: str) -> int:
-    """Wait for a child started in its own session; past ``seconds`` its whole group is killed."""
+    """Wait for a child started in its own session, then kill whatever is left of that session, so nothing it
+    started outlives it; past ``seconds`` the child goes with it."""
     try:
-        return process.wait(timeout=max(1.0, seconds))
+        code: int | None = process.wait(timeout=max(1.0, seconds))
     except subprocess.TimeoutExpired:
+        code = None
+    if isinstance(process.pid, int) and process.pid > 1:  # never this process's own group, nor init's
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            pass  # the session is already empty
+    if code is None:
         process.wait()
-        raise WorkerFailure(timeout_code) from None
+        raise WorkerFailure(timeout_code)
+    return code
 
 
 def _launch_execute(runtime: WorkerRuntime, handoff: Mapping[str, Any]) -> int:
@@ -584,17 +591,6 @@ def _launch_execute(runtime: WorkerRuntime, handoff: Mapping[str, Any]) -> int:
     return _wait(process, budget, "remote_cpu_worker_execute_timeout")
 
 
-@dataclass(frozen=True)
-class StageRoots:
-    """Where a stage handler finds ``/`` (``local``) and the release it runs from."""
-
-    filesystem_root: Path
-    release_root: Path
-
-    def local(self, path: str) -> Path:
-        return Path(self.filesystem_root) / str(path).lstrip("/")
-
-
 class _Deadline:
     def __init__(self, clock: Callable[[], float], seconds: float, phase: str) -> None:
         self.clock, self.seconds, self.phase, self.end = clock, seconds, phase, clock() + seconds
@@ -607,6 +603,26 @@ class _Deadline:
         """A socket timeout that never outlives the phase."""
         self.check()
         return max(1.0, min(TRANSFER_TIMEOUT_SECONDS, self.end - self.clock()))
+
+    def run(self, action: Callable[[], Any]) -> Any:
+        """Run ``action`` bounded by the phase: a transfer that stalls past the deadline is abandoned, the phase
+        fails and its receipt still goes; the process exits after that receipt, taking the transfer with it."""
+        outcome: dict[str, Any] = {}
+
+        def bounded() -> None:
+            try:
+                outcome["value"] = action()
+            except BaseException as exc:  # noqa: BLE001 - raised again in the phase's own thread
+                outcome["error"] = exc
+
+        thread = threading.Thread(target=bounded, name=f"remote-cpu-{self.phase}", daemon=True)
+        thread.start()
+        thread.join(max(0.0, self.end - self.clock()))
+        if thread.is_alive():
+            raise WorkerFailure(f"phase_deadline:{self.phase}")
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["value"]
 
 
 @contextmanager
@@ -672,76 +688,6 @@ def _materialize_inputs(attempt: _Attempt, runtime: WorkerRuntime, deadline: _De
         finally:
             partial.unlink(missing_ok=True)
     deadline.check()
-
-
-def install_release_audit(release: str | Path) -> list[str]:
-    """Record, in this process, every read of a missing path under the release root (plan 14 §5).
-
-    The stage's working directory is the release root, as the host compiles from its checkout.  An
-    ``os.open`` relative to a directory descriptor also looks relative in the audit event, so a
-    relative path counts only when it starts at a release top level.  Bytecode caches are not release paths.
-    """
-    roots = tuple({os.path.normpath(release) + os.sep, os.path.realpath(release) + os.sep})
-    misses: list[str] = []
-
-    def hook(event: str, args: tuple[Any, ...]) -> None:
-        if event != "open" or len(misses) >= MAX_RELEASE_MISSES or len(args) < 3 or isinstance(args[0], int):
-            return
-        try:
-            mode, flags, path = args[1], args[2], os.fsdecode(os.fspath(args[0]))
-            if ((isinstance(mode, str) and any(flag in mode for flag in "wax+"))
-                    or (isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT))
-                    or (not os.path.isabs(path) and path.split(os.sep, 1)[0] not in _RELEASE_TOPS)):
-                return
-            full = os.path.normpath(os.path.join(os.getcwd(), path))
-            root = next((root for root in roots if full.startswith(root)), None)
-            if root is not None and "__pycache__" not in full.split(os.sep) and not os.path.exists(full):
-                relative = safe_label(full[len(root):])
-                if relative not in misses:
-                    misses.append(relative)
-        except Exception:  # noqa: BLE001 - a hook that raises would fail the open it observes
-            return
-
-    sys.addaudithook(hook)
-    return misses
-
-
-def run_environment_probe(descriptor: Mapping[str, Any], roots: StageRoots) -> dict[str, Any]:
-    """``environment_probe`` (plan 14 §8): this worker's census record, sealed as the output and in the result."""
-    record = environment_record()
-    output = roots.local(descriptor["outputs"]["output_root"])
-    output.mkdir(parents=True)
-    (output / "environment.json").write_bytes(record_bytes(record))
-    result = {"schema_version": PROBE_RESULT_SCHEMA_VERSION, "status": STAGES[PROBE_STAGE]["success_status"],
-              "blockers": [], "source_commit": descriptor["code"]["source_commit"], "environment": record,
-              "result_digest": ""}
-    return {**result, "result_digest": canonical_digest(result, digest_field="result_digest")}
-
-
-def _from_release(release: str | Path) -> bool:
-    import blueprint_pipeline
-
-    return Path(blueprint_pipeline.__file__).resolve().is_relative_to(Path(release).resolve())
-
-
-def _stage_main() -> int:
-    """The stage child: refuse unless this code is the release's, audit release reads, run one handler."""
-    request = json.loads(sys.stdin.buffer.read(MAX_HANDOFF_BYTES + 1))
-    report: dict[str, Any] = {"result": None, "release_path_misses": [], "failures": []}
-    if not _from_release(request["release_root"]):
-        report["failures"] = ["remote_cpu_worker_source_shadowed"]
-    else:
-        misses = install_release_audit(request["release_root"])
-        try:
-            module, _, name = str(request["handler"]).partition(":")
-            handler = getattr(importlib.import_module(module), name)
-            roots = StageRoots(Path(request["filesystem_root"]), Path(request["release_root"]))
-            report["result"] = json.loads(json.dumps(handler(request["descriptor"], roots)))
-        except Exception as exc:  # noqa: BLE001 - a stage's own failures are in its result; this is infrastructure
-            report["failures"] = [f"stage_raised:{type(exc).__name__}"]
-        report["release_path_misses"] = list(misses)
-    Path(request["report"]).write_text(json.dumps(report), encoding="utf-8")
-    return 0
 
 
 def _run_stage_child(*, runtime: WorkerRuntime, descriptor: Mapping[str, Any], release: Path, handler: str,
@@ -834,8 +780,8 @@ def _seal(attempt: _Attempt, runtime: WorkerRuntime, deadline: _Deadline) -> dic
         raise WorkerFailure(f"seal_failed:{safe_label(str(exc))}") from None
     if index["paths_total"] > limits["max_output_paths"] or index["bytes_total"] > limits["max_output_bytes"]:
         raise WorkerFailure("output_exceeds_limits")
-    if attempt.receipt_exists(strict=False):
-        raise _Duplicate("duplicate_execution")
+    if attempt.receipt_exists():  # another execution committed: its blobs and index are the ones it names
+        raise _Committed("receipt_already_committed")
     written: dict[str, Any] = {}
     attempt.put("blobs.tar", lambda sink: written.update(write_blobs_tar(root, index, sink)), size=size,
                 content_type="application/x-tar", timeout=deadline.timeout())
@@ -852,7 +798,7 @@ def _stage_outcome(attempt: _Attempt, runtime: WorkerRuntime, release: Path) -> 
     """Fetch, run the stage child, check it, and seal a success: ``(status, result, output, codes, misses)``."""
     descriptor = attempt.descriptor
     with _phase(attempt, "fetch") as deadline:
-        _materialize_inputs(attempt, runtime, deadline)
+        deadline.run(lambda: _materialize_inputs(attempt, runtime, deadline))
     handler = runtime.handlers.get(descriptor["stage"])
     if handler is None:
         raise WorkerFailure(f"stage_not_registered:{descriptor['stage']}")
@@ -875,7 +821,7 @@ def _stage_outcome(attempt: _Attempt, runtime: WorkerRuntime, release: Path) -> 
     if status != STAGES[descriptor["stage"]]["success_status"]:
         raise WorkerFailure("stage_result_invalid")
     with _phase(attempt, "seal_upload") as deadline:
-        return "succeeded", result, _seal(attempt, runtime, deadline), [], []
+        return "succeeded", result, deadline.run(lambda: _seal(attempt, runtime, deadline)), [], []
 
 
 def execute_attempt(handoff: Mapping[str, Any], runtime: WorkerRuntime, *, shadowed: bool = False) -> int:
@@ -901,8 +847,8 @@ def execute_attempt(handoff: Mapping[str, Any], runtime: WorkerRuntime, *, shado
             if shadowed:
                 raise WorkerFailure("remote_cpu_worker_source_shadowed")
             status, result, output, codes, misses = _stage_outcome(attempt, runtime, release)
-    except _Duplicate:
-        runtime.log(_line("execute", "duplicate_execution"))
+    except _Committed:
+        runtime.log(_line("execute", "receipt_already_committed"))
         return 0
     except WorkerFailure as exc:
         return attempt.fail(exc.code, mode="execute")
@@ -917,7 +863,7 @@ def _execute_main() -> int:
     try:
         handoff = json.loads(sys.stdin.buffer.read(MAX_HANDOFF_BYTES + 1))
         runtime.filesystem_root = Path(handoff["filesystem_root"])
-        shadowed = not _from_release(handoff["release_root"])
+        shadowed = not from_release(handoff["release_root"])
     except (ValueError, KeyError, TypeError):
         return _refuse(runtime, "execute", "remote_cpu_worker_handoff_invalid")
     return execute_attempt(handoff, runtime, shadowed=shadowed)
@@ -976,7 +922,7 @@ def _main(arguments: list[str]) -> int:
     if arguments == ["execute"]:
         return _execute_main()
     if arguments == ["stage"]:
-        return _stage_main()
+        return stage_main()
     if arguments == ["environment"]:  # the host census's record, measured here (plan 14 §5)
         print(json.dumps(environment_record(), sort_keys=True))
         return 0

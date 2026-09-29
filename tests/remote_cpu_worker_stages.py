@@ -240,3 +240,27 @@ def compiles_episode(descriptor: dict[str, Any], roots: Any) -> dict[str, Any]:
     from blueprint_pipeline.task_evaluation_episode_compilation_remote import run_episode_compilation_in_worker
 
     return run_episode_compilation_in_worker(descriptor, roots, episode_compiler=install_compile_stand_ins())
+
+
+def reads_relative(descriptor: dict[str, Any], roots: Any) -> dict[str, Any]:
+    """Read repo-root paths relative to the working directory, as a compile run from its checkout may."""
+
+    directory = os.open("docs", os.O_RDONLY)
+    reads = (lambda: open("./docs/schemas/missing-dot.json"), lambda: open("assets/missing.json"),
+             lambda: Path("configs/missing.json").read_text(),
+             lambda: os.open("schemas/missing-fd.json", os.O_RDONLY, dir_fd=directory))
+    for read in reads:
+        try:
+            read()
+        except OSError:
+            pass
+    os.close(directory)
+    return sealed_result(descriptor, blockers=["episode_compilation_envelope_invalid"])
+
+
+def leaves_a_straggler(descriptor: dict[str, Any], roots: Any) -> dict[str, Any]:
+    """Start a process in this session that outlives the stage, then return at once."""
+
+    straggler = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    Path(os.environ["REMOTE_CPU_TEST_PIDS"]).write_text(f"{straggler.pid}\n", encoding="utf-8")
+    return sealed_result(descriptor, blockers=["episode_compilation_envelope_invalid"])
