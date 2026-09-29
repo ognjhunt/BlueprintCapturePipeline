@@ -28,7 +28,8 @@ def operation(tmp_path,monkeypatch):
     value={'schema_version':'scene_lifecycle_retirement_receipt.v1','status':'pending',
            'intent_id':consent['intent_id'],'journal_initial_raw_ref':journal.initial_ref}
     raw=json.dumps(value,sort_keys=True).encode()
-    pending=tmp_path/'pending.json';pending.write_bytes(raw)
+    pending=tmp_path/'pending.json'
+    pending.write_bytes(raw)
     reference={'path':str(pending),'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(),'size_bytes':len(raw)}
     return policy,consent,rows,journal,reference
 
@@ -42,7 +43,8 @@ def test_real_pin_release_and_restore_preserve_original_bytes_owner_mode_and_cha
     from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
     policy,consent,rows,journal,pending=operation(tmp_path,monkeypatch)
     path=Path(rows[0]['original_raw_ref']['path'])
-    original=path.read_bytes();before=path.stat()
+    original=path.read_bytes()
+    before=path.stat()
     outcomes=api().release_terminal_pins(policy,consent,rows,journal=journal,pending_raw_ref=pending)
     assert json.loads(path.read_bytes())==dict(json.loads(original),released_at_epoch=30000)
     assert [e['event'] for e in journal.events]==['pin_release_planned','pin_released']
@@ -89,12 +91,15 @@ def test_unproven_pin_versions_never_replace_current_bytes(tmp_path,monkeypatch,
     if change=='pending_missing':
         Path(pending['path']).unlink()
     elif change=='initial_changed':
-        rows=copy.deepcopy(rows);rows[0]['original_value']['owner_id']='foreign'
+        rows=copy.deepcopy(rows)
+        rows[0]['original_value']['owner_id']='foreign'
     elif change=='pin_changed':
         path.write_bytes(b'foreign')
     elif change=='pin_symlink':
-        other=tmp_path/'foreign';other.write_bytes(b'foreign')
-        path.unlink();path.symlink_to(other)
+        other=tmp_path/'foreign'
+        other.write_bytes(b'foreign')
+        path.unlink()
+        path.symlink_to(other)
     else:
         from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
         outcomes=api().release_terminal_pins(policy,consent,rows,journal=journal,pending_raw_ref=pending)
@@ -110,3 +115,20 @@ def test_unproven_pin_versions_never_replace_current_bytes(tmp_path,monkeypatch,
     with pytest.raises((ValueError,OSError)):
         api().release_terminal_pins(policy,consent,rows,journal=journal,pending_raw_ref=pending)
     assert path.read_bytes()==before and not journal.events
+
+
+def test_real_partial_release_reobserves_exact_journal_version_without_ignoring_other_pin(tmp_path,monkeypatch):
+    from dataclasses import asdict
+    from blueprint_pipeline.control_plane_storage_pin_observation import observe_storage_pins
+    from blueprint_pipeline.task_evaluation_scene_retirement_pins import covers
+    policy,consent,rows,journal,pending=operation(tmp_path,monkeypatch)
+    api().release_terminal_pins(policy,consent,rows,journal=journal,pending_raw_ref=pending)
+    history=api().pin_history(policy,consent,journal)
+    observed=observe_storage_pins(policy['reference_context']['pins_root'],observed_at_epoch=30000,monotonic=lambda:0)
+    protection={'kind':'pin_observation','observation':json.loads(json.dumps(asdict(observed.rows[0]))),'action':'KEEP'}
+    assert covers(protection,history.values())
+    # This exact row mapping does not cover a later foreign owner/version.
+    foreign=copy.deepcopy(protection)
+    foreign['observation']['raw_sha256']='sha256:'+'f'*64
+    assert not covers(foreign,history.values())
+    assert len(history)==1 and journal.sequence==2
