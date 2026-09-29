@@ -720,3 +720,34 @@ def test_v1_interpreter_reads_only_its_selected_frames_by_range(tmp_path: Path, 
     assert (tmp_path / "stream-interpretation.json").read_bytes() == (
         tmp_path / "download-interpretation.json").read_bytes()
     assert not any(path.suffix in {".png", ".mp4"} for path in streamed.evidence.rglob("*"))
+
+
+def test_a_transient_frame_read_failure_is_retried_and_the_episode_still_interprets(
+        tmp_path: Path, monkeypatch) -> None:
+    """The closeout writes its attempt marker before frames are read, so one transient B2 error
+    must not become a permanent abstention: the frame reader retries transient refusals."""
+    from blueprint_pipeline import episode_interpretation as interpretation
+
+    data = _episode_root(tmp_path, no_drop=False, deterministic_success=True)
+    streamed = _streamed(data, tmp_path, monkeypatch)
+    monkeypatch.setattr(interpretation, "FRAME_READ_RETRY_SECONDS", 0.0)
+    failures = []
+
+    def cut_short_once(entry):
+        if entry["range"] not in (None, (0, 0)) and not failures:
+            failures.append(entry["range"])
+            return True
+        return False
+
+    streamed.store.truncate_when = cut_short_once
+    request = _streamed_request(data, streamed)
+
+    assert request.frame_reader(0) == (data["root"] / "media/frame-0.png").read_bytes()
+    assert len(failures) == 1 and streamed.data_ranges().count(failures[0]) == 2
+    # A refusal that is not transient is not retried: one attempt, refused at its probe.
+    streamed.store.truncate_when = None
+    streamed.store.range_fault = "content_range"
+    before = len(streamed.store.requests)
+    with pytest.raises(EpisodeInterpretationError, match="^episode_interpretation_frame_read_failed:1$"):
+        request.frame_reader(1)
+    assert len(streamed.store.requests) == before + 1

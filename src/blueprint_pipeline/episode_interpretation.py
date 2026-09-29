@@ -38,6 +38,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +78,11 @@ _PROMPT = (
     "policy, authorize promotion, or claim physical-world truth."
 )
 PROMPT_DIGEST = canonical_digest({"prompt": _PROMPT, "version": PROMPT_CONTRACT_VERSION})
+# A streamed frame read that failed in transfer is tried again: the closeout's
+# attempt marker precedes the read, so one transient B2 error must not become a
+# permanent abstention.
+FRAME_READ_ATTEMPTS = 3
+FRAME_READ_RETRY_SECONDS = 1.0
 
 
 class EpisodeInterpretationError(ValueError):
@@ -500,17 +506,22 @@ def build_episode_interpretation_request(
                 return path.read_bytes()
             from .provider_output_member_view import ProviderOutputMemberViewError
 
-            from .provider_output_member_view import CONTENT_MISMATCH_CODES
+            from .provider_output_member_view import CONTENT_MISMATCH_CODES, TRANSIENT_READ_CODES
 
-            try:
-                return view.read_member(
-                    view.relative(path), maximum_bytes=frame_bindings[index]["size_bytes"]
-                )
-            except ProviderOutputMemberViewError as exc:
-                changed = str(exc) in CONTENT_MISMATCH_CODES
-                raise EpisodeInterpretationError(
-                    f"episode_interpretation_frame_{'changed' if changed else 'read_failed'}:{index}"
-                ) from exc
+            for attempt in range(1, FRAME_READ_ATTEMPTS + 1):
+                try:
+                    return view.read_member(
+                        view.relative(path), maximum_bytes=frame_bindings[index]["size_bytes"]
+                    )
+                except ProviderOutputMemberViewError as exc:
+                    if str(exc) in TRANSIENT_READ_CODES and attempt < FRAME_READ_ATTEMPTS:
+                        time.sleep(FRAME_READ_RETRY_SECONDS * attempt)
+                        continue
+                    changed = str(exc) in CONTENT_MISMATCH_CODES
+                    raise EpisodeInterpretationError(
+                        f"episode_interpretation_frame_{'changed' if changed else 'read_failed'}:{index}"
+                    ) from exc
+            raise AssertionError("unreachable")
 
     return EpisodeInterpretationRequest(
         episode_id=episode_id,

@@ -90,6 +90,15 @@ DESCRIPTOR_SUFFIX = ".member_view.v1.json"
 MAXIMUM_ANCESTORS = 8
 PRESIGN_EXPIRATION_SECONDS = 3600
 POLICY_CANARY_CONTRACT = "policy_canary_output_member_contract.v1"
+# Refusals worth another attempt: the transfer, not the bytes, failed.
+TRANSIENT_READ_CODES = frozenset({
+    "provider_output_http_failed",
+    "provider_output_transport_failed",
+    "provider_output_range_truncated",
+    "provider_output_archive_truncated",
+    "provider_output_cas_presign_invalid",
+    "provider_output_transfer_deadline_exceeded",
+})
 # Refusals meaning the durable copy's bytes are not the indexed member's -- a
 # digest refusal to readers, never a transient transport failure.
 CONTENT_MISMATCH_CODES = frozenset({
