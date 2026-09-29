@@ -190,8 +190,9 @@ def test_other_arena_callers_never_stream():
                 streaming_calls.append((path.name, function))
     assert lane_calls >= 10
     assert streaming_calls == [("native_task_arena_vast.py", "run_native_task_arena_policy_canary_session_vast")]
-    # Only the contract module reads the flag.
-    readers = sorted(path.name for path, source in sources.items() if members.DELIVERY_ENV in source)
+    # Only the contract module reads the flag: no other module holds its name as a value.
+    readers = sorted(path.name for path, source in sources.items() if members.DELIVERY_ENV in source and any(
+        isinstance(node, ast.Constant) and node.value == members.DELIVERY_ENV for node in ast.walk(ast.parse(source))))
     assert readers == ["policy_canary_output_members.py"]
 
 

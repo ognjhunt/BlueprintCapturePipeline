@@ -592,83 +592,101 @@ def run_native_task_arena_policy_canary_session_vast(
         delivery = output_members.resolve_output_delivery()
     except output_members.PolicyCanaryOutputDeliveryError as exc:
         return _unconsumed_policy_canary_refusal([str(exc)])
-    member_contract = None
+    member_contract = output_hold = None
     if delivery == output_members.STREAM:
         if not output_members.artifact_store_configured():
             return _unconsumed_policy_canary_refusal([output_members.ARTIFACT_STORE_NOT_CONFIGURED])
-        # Until the lane's stream path is wired (plan 15.C3), streaming allocates nothing.
-        return _unconsumed_policy_canary_refusal(["policy_canary_output_stream_not_available"])
-    consumption = (
-        consume_session_authority_once(
-            authority,
-            consumption_path=Path(job_dir) / "policy_canary_session_consumption.json",
+        member_contract = output_members.POLICY_CANARY_OUTPUT_CONTRACT
+        if execute:
+            # The needed members' forecast hold, taken before any spend (review I3).
+            from .arena_provider_output_streaming import reserve_forecast_hold
+            from .control_plane_disk_budget import ControlPlaneDiskBudgetError
+            try:
+                output_hold = reserve_forecast_hold(job_dir=job_dir)
+            except ControlPlaneDiskBudgetError as exc:
+                refusal = _unconsumed_policy_canary_refusal(["policy_canary_output_disk_admission_refused"])
+                return {**refusal, "provider_output_admission": {"status": "refused", "reason": str(exc)}}
+    outcome = "failed"
+    try:
+        consumption = (
+            consume_session_authority_once(
+                authority,
+                consumption_path=Path(job_dir) / "policy_canary_session_consumption.json",
+            )
+            if execute
+            else None
         )
-        if execute
-        else None
-    )
-    if consumption is not None and consumption.get("status") != "consumed":
-        return {
-            "schema_version": POLICY_CANARY_RESULT_SCHEMA_VERSION,
-            "status": "blocked",
-            "provider_mutations_performed": 0,
-            "provider_allocations_observed": 0,
-            "retry_cap": 0,
-            "authorization_consumption": consumption,
-            "blockers": list(consumption.get("blockers") or []),
-        }
-    owner = authority.get("scene_execution_owner")
-    def owner_pre_create() -> dict[str, Any]:
-        from .task_evaluation_scene_execution_authority import require_scene_execution_authority
-        if not isinstance(owner, Mapping):
-            raise ValueError("policy_canary_scene_execution_owner_invalid")
-        require_scene_execution_authority(owner, maximum_spend_usd=hard_cap_usd, provider="vast")
-        return {"status": "consumed", "authority_digest": authority["authority_digest"],
-                "scene_attempt_id": owner["scene_attempt_id"]}
+        if consumption is not None and consumption.get("status") != "consumed":
+            outcome = "blocked"
+            return {
+                "schema_version": POLICY_CANARY_RESULT_SCHEMA_VERSION,
+                "status": "blocked",
+                "provider_mutations_performed": 0,
+                "provider_allocations_observed": 0,
+                "retry_cap": 0,
+                "authorization_consumption": consumption,
+                "blockers": list(consumption.get("blockers") or []),
+            }
+        owner = authority.get("scene_execution_owner")
+        def owner_pre_create() -> dict[str, Any]:
+            from .task_evaluation_scene_execution_authority import require_scene_execution_authority
+            if not isinstance(owner, Mapping):
+                raise ValueError("policy_canary_scene_execution_owner_invalid")
+            require_scene_execution_authority(owner, maximum_spend_usd=hard_cap_usd, provider="vast")
+            return {"status": "consumed", "authority_digest": authority["authority_digest"],
+                    "scene_attempt_id": owner["scene_attempt_id"]}
 
-    pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
-    groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
-    return run_arena_native_control_vast(
-        pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
-        approval_path=".",
-        job_dir=job_dir,
-        paid_resource_admission_grant=paid_resource_admission_grant,
-        execute=execute,
-        prepared_bundle=prepared_bundle,
-        machine_avoidlist_path=machine_avoidlist_path,
-        max_hourly_rate_usd=max_hourly_rate_usd,
-        hard_cap_usd=hard_cap_usd,
-        hard_ttl_seconds=hard_ttl_seconds,
-        expected_output_filename=POLICY_CANARY_RESULT_FILENAME,
-        container_image=str(prepared_bundle["container_image"]),
-        provider_bundle_kind="native_task_arena_policy_canary_session",
-        result_schema_version=POLICY_CANARY_RESULT_SCHEMA_VERSION,
-        object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/policy-canary-session",
-        instance_label_prefix="blueprint-native-task-policy-canary-",
-        instance_label_exact=str(authority["resource_name"]),
-        blocker_prefix="native_task_arena_policy_canary_session",
-        min_gpu_ram_mb=46_000,
-        min_compute_cap=POLICY_MIN_COMPUTE_CAP,
-        allowed_active_instance_ids=tuple(
-            sorted({int(value) for value in allowed_active_instance_ids})
-        ),
-        vast_launch_lock_file=None,
-        candidate_policy_query_expected=True,
-        forward_hf_token=True,
-        preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
-        minimum_driver_version=MINIMUM_DRIVER_VERSION,
-        require_independent_watchdog=True,
-        allowed_geolocation_country_codes=(
-            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
-        ),
-        authorization_consumption=consumption,
-        stale_offer_create_retry_limit=0,
-        expected_provider_download_bytes=pi_download + groot_download + witness_capacity,
-        expected_provider_upload_bytes=8_000_000_000 + witness_capacity,
-        provider_runtime_environment=validated_environment,
-        paired_witness_binding=witness_binding,
-        provider_output_delivery=delivery,
-        provider_output_member_contract=member_contract,
-    )
+        pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
+        groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
+        result = run_arena_native_control_vast(
+            pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
+            approval_path=".",
+            job_dir=job_dir,
+            paid_resource_admission_grant=paid_resource_admission_grant,
+            execute=execute,
+            prepared_bundle=prepared_bundle,
+            machine_avoidlist_path=machine_avoidlist_path,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+            expected_output_filename=POLICY_CANARY_RESULT_FILENAME,
+            container_image=str(prepared_bundle["container_image"]),
+            provider_bundle_kind="native_task_arena_policy_canary_session",
+            result_schema_version=POLICY_CANARY_RESULT_SCHEMA_VERSION,
+            object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/policy-canary-session",
+            instance_label_prefix="blueprint-native-task-policy-canary-",
+            instance_label_exact=str(authority["resource_name"]),
+            blocker_prefix="native_task_arena_policy_canary_session",
+            min_gpu_ram_mb=46_000,
+            min_compute_cap=POLICY_MIN_COMPUTE_CAP,
+            allowed_active_instance_ids=tuple(
+                sorted({int(value) for value in allowed_active_instance_ids})
+            ),
+            vast_launch_lock_file=None,
+            candidate_policy_query_expected=True,
+            forward_hf_token=True,
+            preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
+            minimum_driver_version=MINIMUM_DRIVER_VERSION,
+            require_independent_watchdog=True,
+            allowed_geolocation_country_codes=(
+                NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+            ),
+            authorization_consumption=consumption,
+            stale_offer_create_retry_limit=0,
+            expected_provider_download_bytes=pi_download + groot_download + witness_capacity,
+            expected_provider_upload_bytes=8_000_000_000 + witness_capacity,
+            provider_runtime_environment=validated_environment,
+            paired_witness_binding=witness_binding,
+            provider_output_delivery=delivery,
+            provider_output_member_contract=member_contract,
+            provider_output_reservation=output_hold,
+        )
+        outcome = "completed" if result.get("status") == "completed" else "blocked"
+        return result
+    finally:
+        if output_hold is not None:
+            # Released with the lane's outcome; its sample is the materialized needed set.
+            output_hold.release(outcome=outcome)
 
 
 def _unconsumed_policy_canary_refusal(blockers: list[str]) -> dict[str, Any]:

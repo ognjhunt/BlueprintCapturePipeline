@@ -525,6 +525,31 @@ class VirtualCasClient:
         self.objects[key] = (obj, dict(metadata), f'"b2-{digest[7:23]}"')
         self.uploads += 1
 
+    # Presigned GETs served over the real range transport (``opener``), as B2's S3 endpoint would.
+    def generate_presigned_url(self, operation, *, Params, ExpiresIn, HttpMethod):
+        assert (operation, HttpMethod, Params["Bucket"]) == ("get_object", "GET", self.bucket)
+        return f"https://b2.example.invalid/{self.bucket}/{Params['Key']}?X-Amz-Signature={SECRET}"
+
+    def opener(self, request, timeout, policy):
+        from urllib.parse import urlparse
+
+        key = urlparse(request.full_url).path.split("/", 2)[2]
+        if key not in self.objects:
+            raise urllib.error.HTTPError("redacted", 404, "Not Found", {}, None)
+        obj, _, etag = self.objects[key]
+        served = getattr(self, "served", None)
+        if served is None:
+            served = self.served = {}
+        if key not in served or served[key].object is not obj:
+            served[key] = RangeStore(obj, etag=etag, url=self.generate_presigned_url(
+                "get_object", Params={"Bucket": self.bucket, "Key": key}, ExpiresIn=1, HttpMethod="GET"))
+        return served[key].opener(request, timeout, policy)
+
+    def ranged_requests(self) -> list[tuple[str, tuple[int, int]]]:
+        """Every presigned range request served, as (key, (first, last)), less ETag probes."""
+        return [(key, row["range"]) for key, store in (getattr(self, "served", None) or {}).items()
+                for row in store.requests if row["range"] not in (None, (0, 0))]
+
     def get_object(self, *, Bucket, Key, Range=None, IfMatch=None):
         self._log("get_object", Key, Range)
         obj, _, etag = self.objects[Key]

@@ -436,12 +436,15 @@ def run_arena_native_control_vast(
     allowed_geolocation_country_codes: Sequence[str] = (),
     provider_output_delivery: str = "download",
     provider_output_member_contract: Any | None = None,
+    provider_output_reservation: Any | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog.
 
     ``provider_output_delivery`` is ``download`` (every caller but one: the
     provider archive is downloaded and extracted, as always) or ``stream``,
-    which only the Quick-10 session passes, with its member contract.
+    which only the Quick-10 session passes, with its member contract and the
+    ``policy_canary_output`` forecast hold it took before consuming its
+    authority (``arena_provider_output_streaming``).
     """
 
     if retain_warm_instance and not require_independent_watchdog:
@@ -452,7 +455,7 @@ def run_arena_native_control_vast(
         if (provider_output_member_contract is None
                 or provider_bundle_kind != "native_task_arena_policy_canary_session"):
             raise ValueError("adp_arena_provider_output_stream_contract_missing")
-        raise ValueError("adp_arena_provider_output_stream_not_available")
+    streaming = provider_output_delivery == "stream"
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
@@ -485,6 +488,8 @@ def run_arena_native_control_vast(
         return result
     if paid_resource_admission_grant is None:
         raise ValueError("adp_arena_paid_resource_admission_grant_missing")
+    if streaming and provider_output_reservation is None:
+        raise ValueError("adp_arena_provider_output_stream_reservation_missing")
 
     attempt_number, attempt_root = _next_attempt_root(job)
     ensure_dir(attempt_root)
@@ -617,6 +622,8 @@ def run_arena_native_control_vast(
         expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
         generated_at=generated,
         **({"paired_witness_binding": paired_witness_binding} if paired_witness_binding is not None else {}),
+        # A streamed output may only be deleted once it is durable in B2.
+        **({"output_promotion_required": True} if streaming else {}),
     )
     if staging.get("status") != "completed":
         result = {
@@ -687,6 +694,10 @@ def run_arena_native_control_vast(
     output_get_url = (staging_dir / "provider_output_get_url.txt").read_text().strip()
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     local_avoidlist = _stage_machine_avoidlist(job, machine_avoidlist_path)
+    if streaming:
+        from . import arena_provider_output_streaming as streamed
+    output_collector = streamed.collector() if streaming else None
+    promotion: dict[str, Any] = {}
     adapter: dict[str, Any] = {}
     watchdog_handoff: dict[str, Any] = {"status": "not_required"}
     watchdog_close: dict[str, Any] = {"status": "not_required"}
@@ -798,6 +809,7 @@ def run_arena_native_control_vast(
                 allowed_geolocation_country_codes=(
                     allowed_geolocation_country_codes
                 ),
+                **({"provider_output_collector": output_collector} if output_collector is not None else {}),
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
@@ -833,7 +845,14 @@ def run_arena_native_control_vast(
                     ),
                 )
         finally:
-            cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+            if streaming:
+                # Promote before the gated cleanup may delete anything, whatever the spend state.
+                promotion, cleanup = streamed.promote(
+                    staging_dir=staging_dir, attempt_root=attempt_root,
+                    observation=output_collector.observation, local_archive=output_zip,
+                    cleanup=lambda: cleanup_staged_wam_provider_objects(staging_dir))
+            else:
+                cleanup = cleanup_staged_wam_provider_objects(staging_dir)
             runtime_dependency_closeout = (
                 close_cached_runtime_dependency_staging(
                     runtime_dependency_dir
@@ -841,7 +860,11 @@ def run_arena_native_control_vast(
                 if runtime_dependency.get("status") == "completed"
                 else {"status": "not_required"}
             )
-    extracted = _extract_provider_output(
+    extracted = streamed.ingest_needed_members(
+        attempt_root=attempt_root, promotion=promotion, contract=provider_output_member_contract,
+        reservation=provider_output_reservation, blocker_prefix=blocker_prefix,
+        result_name=expected_output_filename, read_json=_read_json,
+    ) if streaming else _extract_provider_output(
         output_zip,
         attempt_root / "immutable_execution",
         result_name=expected_output_filename,
@@ -966,6 +989,8 @@ def run_arena_native_control_vast(
         ).hexdigest()
         write_json(warm_session_path, warm_session)
     artifact_manifest_path = attempt_root / "artifact_manifest.json"
+    stream_roles, stream_required, archive_members = (
+        streamed.stream_manifest_roles(attempt_root, extracted) if streaming else ({}, [], None))
     try:
         artifact_manifest = build_task_evaluation_artifact_manifest(
             attempt_root=attempt_root,
@@ -975,11 +1000,13 @@ def run_arena_native_control_vast(
                     provider_run / "vast_provider_adapter_result.json"
                 ),
                 "teardown_manifest": provider_run / "vast_teardown_manifest.json",
+                **stream_roles,
             },
             required_roles=(
                 "provider_runtime_evidence",
                 "allocator_adapter_result",
                 "teardown_manifest",
+                *stream_required,
             ),
             binding={
                 "allocator_lane": provider_bundle_kind,
@@ -991,6 +1018,7 @@ def run_arena_native_control_vast(
                 "retry_cap": 0,
             },
             output_path=artifact_manifest_path,
+            **({"archive_members": archive_members} if archive_members is not None else {}),
         )
         blockers.extend(artifact_manifest.get("blockers") or [])
     except (OSError, TaskEvaluationArtifactManifestError) as exc:
@@ -1066,6 +1094,10 @@ def run_arena_native_control_vast(
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
+    if streaming:
+        result.update(streamed.stream_result_fields(
+            attempt_root=attempt_root, promotion=promotion, outcome=extracted,
+            reservation=provider_output_reservation, contract=provider_output_member_contract))
     _write_run_result(job, attempt_root, result)
     return result
 
