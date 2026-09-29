@@ -341,6 +341,45 @@ def test_expiry_crossing_before_packet_or_approval_publication_is_refused(instal
     assert payload.read_bytes() == b"old, preserved"
 
 
+def test_later_head_scan_cannot_leave_an_earlier_expired_owner_label(installed, monkeypatch):
+    target, payload, _, legacy = installed
+    other = target.parent / "old-2"
+    other.mkdir()
+    census = _survey(str(target))
+    census["rows"].extend(_survey(str(other))["rows"])
+    monkeypatch.setattr(legacy, "_fresh_census", lambda *args, **kwargs: census)
+    packet, _ = _issue_and_approve(installed)
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+
+    class Clock:
+        value = 0.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+    original_heads = legacy.LegacyOwnerStore.committed_heads
+    original_read = legacy.LegacyOwnerStore.read
+
+    def two_heads(store):
+        return original_heads(store) + [dict(path=str(other), packet_id="b" * 32)]
+
+    def late_invalid_head(store, packet_id, kind):
+        if packet_id == "b" * 32:
+            clock.value += 100.0
+        return original_read(store, packet_id, kind)
+
+    monkeypatch.setattr(legacy.LegacyOwnerStore, "committed_heads", two_heads)
+    monkeypatch.setattr(legacy.LegacyOwnerStore, "read", late_invalid_head)
+    observed = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                           monotonic=clock, max_seconds=240)
+    first = next(row for row in observed["rows"] if row["path"] == str(target))
+    assert observed["observed_owner_count"] == 0 and "owner" not in first
+    assert payload.read_bytes() == b"old, preserved"
+
+
 def test_crash_before_head_is_recoverable_without_promoting_torn_record(installed, monkeypatch):
     target, payload, registry, legacy = installed
     packet, _ = _issue_and_approve(installed)
