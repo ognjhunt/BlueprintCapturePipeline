@@ -114,6 +114,10 @@ def test_capture_birth_retains_original_proofs_before_empty_target(tmp_path, mon
         assert Path(ref["path"]).parent == Path(policy["generation_store"])
         assert ref == {"path": ref["path"], "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
                        "size_bytes": len(raw)}
+    birth_delivery = json.loads(Path(born['birth_delivery_raw_ref']['path']).read_bytes())
+    member_ref = birth_delivery['source_membership_raw_ref']
+    assert Path(member_ref['path']).read_bytes() == membership_raw
+    assert Path(member_ref['path']).parent == Path(policy['generation_store'])
     assert birth_capture_member(target, observation=owner, membership_selector=selector,
                                 membership_raw=membership_raw) == born
 

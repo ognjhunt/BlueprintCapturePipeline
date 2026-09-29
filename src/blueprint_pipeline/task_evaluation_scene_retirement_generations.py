@@ -84,8 +84,10 @@ def _birth_gate(parent, key, *, parent_identity):
             incoming.add_note('scene_retirement_descriptor_cleanup_failed')
 
 
-def _write(parent, name, value, *, parent_identity, replace=False):
-    raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+def _write(parent, name, value, *, parent_identity, replace=False, raw_bytes=None):
+    raw = (raw_bytes if raw_bytes is not None else
+           json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode())
+    _require(type(raw) is bytes)
     _require(len(raw) <= 65536)
     _guard(parent,parent_identity)
     store_info=os.fstat(parent)
@@ -303,14 +305,20 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
             membership_raw, selector=membership_selector, observation=owner)
         marker = owner['completion_marker']
         delivery = owner['producer_delivery']
+        store = Path(policy['generation_store'])
+        membership_digest = hashlib.sha256(membership_raw).hexdigest()
+        membership_name = 'capture-membership-' + membership_digest + '.json'
+        membership_ref = {'path': str(store / membership_name),
+                          'sha256': 'sha256:' + membership_digest,
+                          'size_bytes': len(membership_raw)}
         birth_delivery = {
             'schema_version': 'capture_birth_delivery.v1',
             'delivery_key': membership['delivery_key'],
             'source_finalize': membership['source_finalize'],
             'source_membership_selector': membership_selector,
+            'source_membership_raw_ref': membership_ref,
             'producer_delivery': delivery,
         }
-        store = Path(policy['generation_store'])
         key = hashlib.sha256(str(path).encode()).hexdigest()
         with _opened(store, directory=True) as (parent, store_info):
             store_identity = _identity(store_info)
@@ -336,6 +344,7 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                                      'scene_capture_generation_changed')
                         _require(prior_owner['source_projection_digest'] == owner['source_projection_digest']
                                  and prior_delivery == birth_delivery
+                                 and _raw_reference(membership_ref) == membership
                                  and prior['capture_owner_user_id'] == owner['capture_owner']['user_id']
                                  and prior['pinned_marker'] == marker,
                                  'scene_capture_active_delivery_conflict')
@@ -354,6 +363,14 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                 with _opened(path.parent, directory=True) as (target_parent, info):
                     _require(any(row['device'] == info.st_dev for row in rows),
                              'scene_capture_parent_device_invalid')
+                    try:
+                        _write(parent, membership_name, None,
+                               raw_bytes=membership_raw, parent_identity=store_identity)
+                    except FileExistsError:
+                        _require(_bytes(_canonical(membership_ref['path'])) == membership_raw,
+                                 'scene_capture_membership_changed')
+                    _require(_bytes(_canonical(membership_ref['path'])) == membership_raw,
+                             'scene_capture_membership_changed')
                     owner_ref = _retain_capture_proof(
                         parent, store, owner, label='owner', parent_identity=store_identity)
                     delivery_ref = _retain_capture_proof(
