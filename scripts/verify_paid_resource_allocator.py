@@ -116,6 +116,29 @@ APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {
         "execute_remote_packet",
     ),
 }
+S3_TRANSPORT_CAPABILITIES = frozenset(
+    {"_issue_transport_execution_capability", "_upload_and_verify_model_cache_impl"}
+)
+# Plan 14: B2 write authority for remote CPU staging.  The presigned PUT and the sentinel also
+# require the attempt's grant; the copy and the version delete run in later processes without
+# one (the collector, a resumed teardown), so only these functions may call any of them.
+REMOTE_CPU_OBJECT_STORE_WRITERS = frozenset(
+    {
+        "presign_remote_cpu_put",
+        "copy_remote_cpu_staging_to_cas",
+        "delete_remote_cpu_staging_versions",
+        "remote_cpu_object_store_sentinel",
+    }
+)
+APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS = {
+    ("src/blueprint_pipeline/remote_cpu_job_allocator.py", "mint_transport"),
+    ("src/blueprint_pipeline/remote_cpu_job_allocator.py", "_probe_checks"),
+    ("src/blueprint_pipeline/remote_cpu_job_allocator.py", "prove_provider_zero"),
+    (
+        "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py",
+        "remote_cpu_object_store_sentinel",
+    ),
+}
 SURFACE_CLASSIFICATIONS = {
     "canonical_allocator",
     "canonical_adapter",
@@ -191,18 +214,32 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         signals.add("gcp_instance_create")
     if any(
         call in source
-        for call in (".upload_file(", ".delete_object(", ".copy_object(", ".upload_part_copy(")
+        for call in (
+            ".upload_file(",
+            ".delete_object(",
+            ".delete_objects(",
+            ".copy_object(",
+            ".upload_part_copy(",
+        )
     ):
         signals.add("s3_object_write_or_delete")
-    # A presigned PUT, part upload or delete is write authority held by whoever has the URL.
-    if "generate_presigned_url(" in source and re.search(
-        r"[\"'](?:put_object|upload_part|delete_object)[\"']", source
+    # A presigned PUT, POST, part upload or delete is write authority held by whoever has the URL.
+    if "generate_presigned_post(" in source or (
+        "generate_presigned_url(" in source
+        and re.search(r"[\"'](?:put_object|upload_part|delete_object)[\"']", source)
     ):
         signals.add("s3_presigned_write_authority")
+    # Starting, creating-and-starting or cancelling a Cloud Run job execution, by any client.
     if (
-        re.search(r"run\.googleapis\.com", source) and re.search(r":(?:run|cancel)[\"']", source)
+        re.search(r"run\.googleapis\.com", source)
+        and re.search(r":(?:run|cancel)(?![A-Za-z0-9_])", source)
     ) or re.search(
-        r"\bgoogle\.cloud(?:\.|\s+import\s+)run_v2\b|\b(?:JobsClient|ExecutionsClient|RunJobRequest)\b",
+        r"\bgoogle\.cloud(?:\.|\s+import\s+)run_v2\b"
+        r"|\b(?:JobsClient|ExecutionsClient|RunJobRequest)\b"
+        r"|discovery\.build\(\s*[\"']run[\"']"
+        r"|\b(?:start|run)(?:ExecutionToken|_execution_token)\b"
+        r"|gcloud\W+(?:(?:alpha|beta)\W+)?run\W+jobs\W+"
+        r"(?:execute|create|deploy|replace|update|executions\W+cancel)\b",
         source,
     ):
         signals.add("gcp_cloud_run_job_mutation")
@@ -284,13 +321,14 @@ def _unclassified_direct_mutators(
 
 def _s3_transport_capability_callers(
     source_by_path: dict[str, str],
+    protected: frozenset[str] = S3_TRANSPORT_CAPABILITIES,
 ) -> set[tuple[str, str]]:
+    """Every (module, function) whose body names a protected capability, directly or by alias."""
+
     observed: set[tuple[str, str]] = set()
-    protected = {
-        "_issue_transport_execution_capability",
-        "_upload_and_verify_model_cache_impl",
-    }
     for relative, source in source_by_path.items():
+        if not any(name in source for name in protected):
+            continue  # a reference, an alias or a string naming one always contains its text
         tree = ast.parse(source, filename=relative)
         aliases: dict[str, str] = {}
         for node in ast.walk(tree):
@@ -450,6 +488,10 @@ def _verify_mutation_surface_contract() -> list[str]:
     observed_s3_capability_callers = _s3_transport_capability_callers(source_by_path)
     if observed_s3_capability_callers != APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS:
         blockers.append("runpod_s3_transport_capability_caller_set_mismatch")
+    if _s3_transport_capability_callers(
+        source_by_path, REMOTE_CPU_OBJECT_STORE_WRITERS
+    ) != APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS:
+        blockers.append("remote_cpu_object_store_writer_caller_set_mismatch")
     transport_module = "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py"
     for relative, source in source_by_path.items():
         if relative != transport_module and (

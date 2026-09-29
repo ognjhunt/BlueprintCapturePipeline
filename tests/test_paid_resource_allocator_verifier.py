@@ -363,3 +363,61 @@ def test_canonical_allocator_requires_the_remote_cpu_job_subcommand() -> None:
     assert verifier._canonical_subcommand_blockers(
         canonical, _source("AGENTS.md").replace("paid_resource_allocator remote-cpu-job", "remote_cpu_job")
     ) == ["agents_md_paid_allocator_command_missing:remote-cpu-job"]
+
+
+# Shapes a new Cloud Run launcher or object-store writer could take (plan 14 PR 2 review).
+REVIEW_PROBES = {
+    "gcloud_argv": ('import subprocess\nsubprocess.run(["gcloud", "run", "jobs", "execute", job, "--region", "us-central1"])\n',
+                    "gcp_cloud_run_job_mutation"),
+    "gcloud_text": ('os.system(f"gcloud beta run jobs execute {job} --wait")\n', "gcp_cloud_run_job_mutation"),
+    "discovery": ('from googleapiclient import discovery\n'
+                  'discovery.build("run", "v2").projects().locations().jobs().run(name=job, body={}).execute()\n',
+                  "gcp_cloud_run_job_mutation"),
+    "rest_query": ('API = "https://run.googleapis.com"\nurl = f"{API}/v2/{job}:run?alt=json"\n',
+                   "gcp_cloud_run_job_mutation"),
+    "start_token": ('body = json.dumps({"template": template, "startExecutionToken": "t1"})\n',
+                    "gcp_cloud_run_job_mutation"),
+    "delete_objects": ('client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": key, "VersionId": v}]})\n',
+                       "s3_object_write_or_delete"),
+    "presigned_post": ("client.generate_presigned_post(Bucket=bucket, Key=key, ExpiresIn=600)\n",
+                       "s3_presigned_write_authority"),
+}
+
+
+def test_review_probe_shapes_are_discovered_and_unclassified() -> None:
+    for name, (source, signal) in REVIEW_PROBES.items():
+        path = f"src/blueprint_pipeline/probe_{name}.py"
+        assert signal in verifier._direct_paid_mutation_signals(source), name
+        assert verifier._unclassified_direct_mutators({path: source}, set()) == {path}, name
+    for source in (
+        'subprocess.run(["gcloud", "run", "jobs", "describe", job])\n',
+        'subprocess.run(["gcloud", "run", "jobs", "executions", "list", "--job", job])\n',
+        'discovery.build("storage", "v1")\n',
+        "client.generate_presigned_url('get_object', Params=params)\n",
+    ):
+        assert verifier._direct_paid_mutation_signals(source) == set(), source
+
+
+def test_remote_cpu_object_store_writers_have_only_approved_callers() -> None:
+    production = {
+        path.relative_to(verifier.ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in verifier._production_python_paths()
+    }
+    writers = verifier.REMOTE_CPU_OBJECT_STORE_WRITERS
+    assert writers == {"presign_remote_cpu_put", "copy_remote_cpu_staging_to_cas",
+                       "delete_remote_cpu_staging_versions", "remote_cpu_object_store_sentinel"}
+    approved = verifier.APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS
+    assert verifier._s3_transport_capability_callers(production, writers) == approved
+    assert {path for path, _ in approved} == {REMOTE_CPU_ALLOCATOR, CONFIGURED_SCENE_OBJECT_STORE}
+    wrapper = (
+        "from .task_evaluation_configured_scene_object_store import (\n"
+        "    copy_remote_cpu_staging_to_cas, delete_remote_cpu_staging_versions as purge,\n"
+        "    presign_remote_cpu_put, remote_cpu_object_store_sentinel,\n"
+        ")\n\n\n"
+        "def ungated(client, bucket, staging, prefix):\n"
+        "    purge(staging_prefix=prefix, client=client, bucket=bucket)\n"
+        "    return copy_remote_cpu_staging_to_cas\n"
+    )
+    observed = verifier._s3_transport_capability_callers(
+        {**production, "src/blueprint_pipeline/new_writer.py": wrapper}, writers)
+    assert observed - approved == {("src/blueprint_pipeline/new_writer.py", "ungated")}
