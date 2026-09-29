@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_registered_experiment_issuer import installation, encoded  # noqa: F401
+from tests.test_registered_experiment_issuer import installation, encoded, issue  # noqa: F401
+from tests.test_registered_experiment_birth import birth
 from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
 from tests.test_registered_experiment_producer import _registered_fixture
 from tests.test_registered_experiment_retirement_flow import _gc, _current_entry, _payload_snapshot
@@ -158,17 +159,43 @@ def test_restored_active_entry_does_not_abort_later_gc_actions(expired_completed
     assert root.restore_registered_experiment(grant['action_id'], expected_restore_intent=grant['restore_intent'],
         installed_config_path=value[0], now=lambda: 2902,
         _pins_root=value[0].parent / 'pins')['decision'] == 'restored'
+    arena_parent = Path(value[1]['lane_scratch_inputs_root']) / 'arena'
+    arena_parent.mkdir(mode=0o750)
+    with monkeypatch.context() as ids:
+        original_token_hex = root.secrets.token_hex
+        values = iter(('f' * 32, 'e' * 32))
+        def next_token(size):
+            if size == 16:
+                return next(values, None) or original_token_hex(size)
+            return original_token_hex(size)
+        ids.setattr(root.secrets, 'token_hex', next_token)
+        arena_grant = issue(value, root='inputs', reference_value='arena-launch-r33',
+                            participant_profile='arena_owner_review.v1')
+    assert intent_id < arena_grant['intent_id']
+    arena_born = birth(value, arena_grant)
+    arena_target = Path(arena_born['path'])
+    arena_before = _payload_snapshot(arena_target)
+    arena_action = root.issue_experiment_action_intent(arena_grant['intent_id'], principal='operator',
+        owner='owner', action='owner_review', expires_at_epoch=3500,
+        installed_config_path=value[0], now=lambda: 2902)
+    provider_calls = list(cloud.calls)
     report = _gc(value, at=2903)
-    assert report['registered_experiments'] == {'enabled': True, 'outcomes': []}
+    assert report['registered_experiments']['outcomes'] == [{
+        'action_id': arena_action['action_id'], 'intent_id': arena_grant['intent_id'],
+        'decision': 'kept', 'reason': 'owner_review', 'receipt': None,
+        'removed_logical_bytes': 0, 'removed_allocated_bytes': 0,
+    }]
+    assert _payload_snapshot(arena_target) == arena_before
+    assert cloud.calls == provider_calls
     later = root.issue_experiment_action_intent(intent_id, principal='operator', owner='owner',
         action='owner_review', expires_at_epoch=3900, installed_config_path=value[0],
         now=lambda: 3502)
     later_report = _gc(value, at=3503)
-    assert later_report['registered_experiments']['outcomes'] == [{
+    assert {
         'action_id': later['action_id'], 'intent_id': intent_id, 'decision': 'kept',
         'reason': 'owner_review', 'receipt': None, 'removed_logical_bytes': 0,
         'removed_allocated_bytes': 0,
-    }]
+    } in later_report['registered_experiments']['outcomes']
 
 
 @pytest.mark.parametrize('boundary', ['first', 'second', 'directory', 'foreign', 'extra', 'readback', 'event'])
