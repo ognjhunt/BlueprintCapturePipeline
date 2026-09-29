@@ -206,9 +206,12 @@ def ingest_needed_members(
 
     Returns ``{status, result_path, execution, blockers}`` as the lane's
     ``_extract_provider_output`` does, plus ``archive_durable``,
-    ``needed_set``, ``ingestion`` and ``member_view_path``. ``result_path`` is
-    set only once ingestion is materialized and its view descriptor written;
-    without ``result_name`` (a resume) no result is read.
+    ``needed_set``, ``ingestion``, ``member_view_path`` and the stream blocker
+    as ``reason``. ``result_path`` is set only once ingestion is materialized
+    and its view descriptor written; without ``result_name`` (a resume) no
+    result is read. Never raises: the paid run is over, so any other failure
+    is ``<prefix>_provider_output_ingestion_failed:<Type>`` with
+    ``archive_durable`` kept (review minor 7).
     """
     from .provider_output_member_view import ProviderOutputMemberViewError, write_member_view_descriptor
     from .provider_output_promotion import INDEX_FILENAME
@@ -228,71 +231,77 @@ def ingest_needed_members(
         outcome["reason"] = codes[0]  # the stream blocker, before the codes it carries
         return outcome
 
-    if promotion.get("status") == "absent_confirmed":
-        return blocked(f"{blocker_prefix}_provider_output_zip_missing")
-    if promotion.get("status") != "promoted":
-        return blocked(f"{blocker_prefix}_provider_output_promotion_failed", *promotion.get("blockers") or [])
-    index = _sealed_index(attempt_root, promotion) if promotion.get("member_index") else None
-    if index is None:
-        return blocked(f"{blocker_prefix}_provider_output_not_indexed", *promotion.get("blockers") or [])
-    selection = contract.selection(index)
-    index_path = attempt_root / INDEX_FILENAME
-    needed = contract.needed_bytes(index)
-    hold = contract.hold_bytes(needed_bytes=needed, member_count=len(index["members"]),
-                               index_file_bytes=index_path.stat().st_size)
-    outcome["needed_set"] = {"contract": contract.version, "member_count": len(selection["members"]),
-                             "bytes": needed, "budget_bytes": contract.needed_set_budget_bytes,
-                             "hold_bytes": hold,
-                             "forecast_bytes": reservation.expected_bytes if reservation is not None else None}
-    if needed > contract.needed_set_budget_bytes:
-        return blocked(f"{blocker_prefix}_provider_output_needed_set_over_budget")
-    receipt_path = attempt_root / INGESTION_DIRNAME / INGESTION_RECEIPT_NAME
-    receipt = _materialized_receipt(attempt_root, index)
-    if receipt is None:
-        if reservation is None:
-            return blocked(f"{blocker_prefix}_provider_output_disk_reservation_missing")
-        try:
-            # Shrink only: growth would be admitted against space the live dispatch hold reduced.
-            reservation.resize(hold)
-        except ControlPlaneDiskBudgetError as exc:
-            return blocked(f"{blocker_prefix}_provider_output_disk_budget_exceeded_after_run", str(exc))
+    def run() -> dict[str, Any]:
+        if promotion.get("status") == "absent_confirmed":
+            return blocked(f"{blocker_prefix}_provider_output_zip_missing")
+        if promotion.get("status") != "promoted":
+            return blocked(f"{blocker_prefix}_provider_output_promotion_failed", *promotion.get("blockers") or [])
+        index = _sealed_index(attempt_root, promotion) if promotion.get("member_index") else None
+        if index is None:
+            return blocked(f"{blocker_prefix}_provider_output_not_indexed", *promotion.get("blockers") or [])
+        selection = contract.selection(index)
+        index_path = attempt_root / INDEX_FILENAME
+        needed = contract.needed_bytes(index)
+        hold = contract.hold_bytes(needed_bytes=needed, member_count=len(index["members"]),
+                                   index_file_bytes=index_path.stat().st_size)
+        outcome["needed_set"] = {"contract": contract.version, "member_count": len(selection["members"]),
+                                 "bytes": needed, "budget_bytes": contract.needed_set_budget_bytes,
+                                 "hold_bytes": hold,
+                                 "forecast_bytes": reservation.expected_bytes if reservation is not None else None}
+        if needed > contract.needed_set_budget_bytes:
+            return blocked(f"{blocker_prefix}_provider_output_needed_set_over_budget")
+        receipt_path = attempt_root / INGESTION_DIRNAME / INGESTION_RECEIPT_NAME
+        receipt = _materialized_receipt(attempt_root, index)
+        if receipt is None:
+            if reservation is None:
+                return blocked(f"{blocker_prefix}_provider_output_disk_reservation_missing")
+            try:
+                # Shrink only: growth would be admitted against space the live dispatch hold reduced.
+                reservation.resize(hold)
+            except ControlPlaneDiskBudgetError as exc:
+                return blocked(f"{blocker_prefix}_provider_output_disk_budget_exceeded_after_run", str(exc))
 
-        def reserve(outstanding: int) -> None:
-            if outstanding > reservation.expected_bytes:
-                raise ControlPlaneDiskBudgetError("control_plane_disk_budget_resize_growth_refused")
+            def reserve(outstanding: int) -> None:
+                if outstanding > reservation.expected_bytes:
+                    raise ControlPlaneDiskBudgetError("control_plane_disk_budget_resize_growth_refused")
 
-        reference = index["archive"]["durable_reference"]
-        source = CasArchiveSource(reference, presign=lambda: presign_configured_scene_artifact(
-            reference=reference, expiration_seconds=PRESIGN_EXPIRATION_SECONDS))
+            reference = index["archive"]["durable_reference"]
+            source = CasArchiveSource(reference, presign=lambda: presign_configured_scene_artifact(
+                reference=reference, expiration_seconds=PRESIGN_EXPIRATION_SECONDS))
+            try:
+                receipt = ingest_selected_members(
+                    source=source, index=index, selection=selection, members_root=attempt_root / EVIDENCE_DIRNAME,
+                    metadata_root=attempt_root / INGESTION_DIRNAME, reserve=reserve,
+                    disk_usage_provider=lambda path: disk_usage_provider(path),
+                    native_inventory_binding=inventory_binding)
+            except ProviderOutputIngestionError as exc:
+                return blocked(f"{blocker_prefix}_provider_output_ingestion_blocked", str(exc))
+        outcome["ingestion"] = _ingestion_summary(receipt, receipt_path)
+        if receipt.get("status") != "materialized":
+            return blocked(f"{blocker_prefix}_provider_output_ingestion_blocked", *receipt.get("blockers") or [])
+        if reservation is not None:
+            reservation.observe(int(receipt["materialized_bytes"]))
         try:
-            receipt = ingest_selected_members(
-                source=source, index=index, selection=selection, members_root=attempt_root / EVIDENCE_DIRNAME,
-                metadata_root=attempt_root / INGESTION_DIRNAME, reserve=reserve,
-                disk_usage_provider=lambda path: disk_usage_provider(path),
-                native_inventory_binding=inventory_binding)
-        except ProviderOutputIngestionError as exc:
-            return blocked(f"{blocker_prefix}_provider_output_ingestion_blocked", str(exc))
-    outcome["ingestion"] = _ingestion_summary(receipt, receipt_path)
-    if receipt.get("status") != "materialized":
-        return blocked(f"{blocker_prefix}_provider_output_ingestion_blocked", *receipt.get("blockers") or [])
-    if reservation is not None:
-        reservation.observe(int(receipt["materialized_bytes"]))
-    try:
-        write_member_view_descriptor(evidence_root=attempt_root / EVIDENCE_DIRNAME, index_path=index_path,
-                                     ingestion_receipt_path=receipt_path)
-    except ProviderOutputMemberViewError as exc:
-        return blocked(f"{blocker_prefix}_provider_output_member_view_unbound", str(exc))
-    outcome["member_view_path"] = str(attempt_root / DESCRIPTOR_NAME)
-    if result_name is None or read_json is None:
+            write_member_view_descriptor(evidence_root=attempt_root / EVIDENCE_DIRNAME, index_path=index_path,
+                                         ingestion_receipt_path=receipt_path)
+        except ProviderOutputMemberViewError as exc:
+            return blocked(f"{blocker_prefix}_provider_output_member_view_unbound", str(exc))
+        outcome["member_view_path"] = str(attempt_root / DESCRIPTOR_NAME)
+        if result_name is None or read_json is None:
+            outcome.update(status="completed", blockers=[])
+            return outcome
+        result_path = attempt_root / EVIDENCE_DIRNAME / result_name
+        execution = read_json(result_path)
+        outcome.update(result_path=str(result_path), execution=execution)
+        if not execution:
+            return blocked(f"{blocker_prefix}_runtime_result_missing")
         outcome.update(status="completed", blockers=[])
         return outcome
-    result_path = attempt_root / EVIDENCE_DIRNAME / result_name
-    execution = read_json(result_path)
-    outcome.update(result_path=str(result_path), execution=execution)
-    if not execution:
-        return blocked(f"{blocker_prefix}_runtime_result_missing")
-    outcome.update(status="completed", blockers=[])
-    return outcome
+
+    try:
+        return run()
+    except Exception as exc:  # noqa: BLE001 - after the paid run every failure is sealed evidence (review minor 7)
+        return blocked(f"{blocker_prefix}_provider_output_ingestion_failed:{type(exc).__name__}")
 
 
 def not_ingested_gap(outcome: Mapping[str, Any], *, observation: Mapping[str, Any] | None,

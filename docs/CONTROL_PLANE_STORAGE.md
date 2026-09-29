@@ -1323,6 +1323,7 @@ or move to a selection v2 before flipping.
 | `…_provider_output_needed_set_over_budget` | yes | raise the budget, then door resume with `ingest` |
 | `…_provider_output_disk_budget_exceeded_after_run` (plus the ledger's code) | yes | door resume with `ingest` |
 | `…_provider_output_ingestion_blocked` (plus the ingester's code) | yes | door resume with `ingest` |
+| `…_provider_output_ingestion_failed:<Type>` (any other failure after the run, such as an `OSError` from the hold or the view descriptor) | as promotion left it | door resume with `ingest` |
 
 None of these is "before first observation" once the output arrived (observed
 in the paid window, promoted, or recovered over SSH) but was not ingested: the

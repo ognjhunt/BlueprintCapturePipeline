@@ -417,6 +417,36 @@ def test_ingestion_records_the_native_inventory_outcome_and_never_blocks_on_it(l
     assert sorted(_members(attempt / "immutable_execution")) == sorted([IDENTITY, RESULT])
 
 
+@pytest.mark.parametrize("step", ["hold_resize", "view_descriptor"])
+def test_an_untyped_failure_after_the_paid_run_still_seals_a_blocked_lane_result(lane, step):
+    """Review minor 7: once the paid run is over every failure is evidence. An OSError from the hold's
+    resize or the view descriptor's write -- neither a typed refusal -- seals the lane result
+    blocked with ``…_provider_output_ingestion_failed:<Type>`` and the archive still durable."""
+    from blueprint_pipeline import control_plane_disk_budget as budget
+    from blueprint_pipeline import provider_output_member_view as view
+
+    def failed(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    if step == "hold_resize":
+        lane.monkeypatch.setattr(budget.DiskReservation, "resize", failed)
+    else:
+        lane.monkeypatch.setattr(view, "write_member_view_descriptor", failed)
+    archive, _ = _small_archive()
+
+    result = lane.run_session(lane.adapter(archive))
+
+    assert result["status"] == "blocked"
+    assert f"{PREFIX}_provider_output_ingestion_failed:PermissionError" in result["blockers"]
+    assert result["archive_durable"] is True and result["provider_output_promotion"]["status"] == "promoted"
+    assert result["native_control_result_path"] is None and result["all_staged_objects_absent"] is True
+    sealed = json.loads((Path(result["attempt_root"]) / "adp_arena_vast_result.json").read_text())
+    assert sealed["blockers"] == result["blockers"]
+    assert sealed["visual_evidence"]["media_gap"] == {
+        "type": "provider_output_not_ingested", "reason": f"{PREFIX}_provider_output_ingestion_failed:PermissionError"}
+    assert list(lane.ledger.glob("*.json")) == []  # the hold was released
+
+
 def test_ssh_fallback_in_stream_mode_publishes_then_ingests_by_range(lane, tmp_path):
     archive, payloads = _small_archive()
 
