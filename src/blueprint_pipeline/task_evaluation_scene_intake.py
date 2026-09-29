@@ -177,7 +177,13 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
                        authenticated_client: str, trusted_clients: set[str],
                        now: float | None = None) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(value, queue_root)
+    from .control_plane_lane_experiment_errors import OwnerTargetVersionError
+    try:
+        refuse_registered_references(value, queue_root)
+    except OwnerTargetVersionError as exc:
+        # Preserve the public intake refusal type before any native mutation.
+        # Codes are fixed/screened; no rejected destination is used for a receipt.
+        raise SceneIntakeError(exc.code) from None
     _require(bool(authenticated_client) and authenticated_client in trusted_clients,
              "issuer_not_authorized")
     moment = datetime.now(timezone.utc).timestamp() if now is None else now
