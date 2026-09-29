@@ -678,3 +678,59 @@ def apply_owner_review(*, packet_id: str, installed_config_path: str,
                     expires_at_epoch=registration["expires_at_epoch"],
                     gc_eligible=False, references_clear=False, target_mutations=0,
                     candidate_bytes=None, eta_seconds=None)
+
+
+def observe_owner_review(*, installed_config_path: str, now: float,
+                         monotonic=time.monotonic) -> dict:
+    """Fresh owner census with authenticated legacy labels, never GC authority."""
+    with _installed_session(installed_config_path, monotonic) as (files, _, config, store):
+        try:
+            census = _fresh_census(files, config, now=now)
+            heads = store.committed_heads()
+        except LegacyOwnerError as error:
+            return dict(schema_version="control_plane_lane_legacy_owner_survey.v1",
+                        status="incomplete", rows=[], scan_errors=[str(error)],
+                        observed_owner_count=0, gc_eligible=False,
+                        references_clear=False, candidate_bytes=None,
+                        eta_seconds=None, mutations=0)
+        rows = [dict(row) for row in census["rows"]]
+        by_path = {row["path"]: row for row in rows}
+        possible: dict[str, list[dict]] = {}
+        blockers = []
+        current_policy = _policy_bytes(files, config)
+        for head in heads:
+            path, packet_id = head["path"], head["packet_id"]
+            if path not in by_path:
+                continue
+            try:
+                packet = store.read(packet_id, "packet")
+                approval = store.read(packet_id, "approval")
+                recorded = store.read(packet_id, "registration")
+                current = _snapshot_for(config, path)
+                checked = validate_registration(packet, approval, current_generation=current,
+                                                fresh_census=census,
+                                                current_policy_bytes=current_policy, now=now)
+                _require(recorded == checked, "legacy_owner_record_invalid")
+                possible.setdefault(path, []).append(checked)
+            except LegacyOwnerError as error:
+                blockers.append(str(error))
+        applied = 0
+        for path, candidates in possible.items():
+            if len(candidates) != 1:
+                blockers.append("legacy_owner_active_conflict")
+                continue
+            record, row = candidates[0], by_path[path]
+            row.update(owner=record["owner"], owner_decision="owner_review",
+                       approved_expiry=record["expires_at_epoch"],
+                       classification="legacy_owner_review",
+                       owner_source="protected_second_generation_approval",
+                       gc_eligible=False, references_clear=False,
+                       candidate_bytes=None, eta_seconds=None)
+            applied += 1
+        report = dict(census)
+        report.update(schema_version="control_plane_lane_legacy_owner_survey.v1",
+                      rows=rows, observed_owner_count=applied,
+                      legacy_owner_blockers=sorted(set(blockers)),
+                      gc_eligible=False, references_clear=False,
+                      candidate_bytes=None, eta_seconds=None, mutations=0)
+        return report
