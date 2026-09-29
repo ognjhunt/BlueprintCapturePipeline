@@ -28,9 +28,11 @@ def _fixture(tmp_path, monkeypatch, *, prepare_parent=True):
         "schema_version": "capture_delivery_membership.v1", "delivery_key": delivery_key,
         "source_finalize": {"bucket": owner["bucket"], "object_name": marker["object_name"],
                             "generation": marker["generation"]},
-        "producer_delivery": {"kind": owner["producer_delivery"]["kind"],
+        "producer_delivery": {"kind": "browser",
                               "receipt_object_name": owner["producer_delivery"]["server_record"]["object_name"],
-                              "receipt_generation": owner["producer_delivery"]["server_record"]["generation"]},
+                              "receipt_generation": owner["producer_delivery"]["server_record"]["generation"],
+                              "receipt_size_bytes": owner["producer_delivery"]["server_record"]["size_bytes"],
+                              "receipt_sha256": owner["producer_delivery"]["server_record"]["sha256"]},
         "raw": [
             {"object_name": marker["object_name"], "relative_path": "raw/capture_upload_complete.json",
              "generation": marker["generation"], "size_bytes": marker["size_bytes"],
@@ -79,6 +81,8 @@ def _next_delivery(owner, membership_raw, *, new_video):
         separators=(',', ':')).encode()).hexdigest()
     member['producer_delivery']['receipt_object_name'] = owner['producer_delivery']['server_record']['object_name']
     member['producer_delivery']['receipt_generation'] = owner['producer_delivery']['server_record']['generation']
+    member['producer_delivery']['receipt_size_bytes'] = owner['producer_delivery']['server_record']['size_bytes']
+    member['producer_delivery']['receipt_sha256'] = owner['producer_delivery']['server_record']['sha256']
     for row in member['raw']:
         if row['relative_path'] == 'raw/capture_upload_complete.json':
             row['generation'] = marker['generation']
@@ -157,6 +161,41 @@ def test_active_capture_refuses_another_valid_delivery_on_occupied_target(tmp_pa
                              membership_raw=next_raw)
     key = hashlib.sha256(str(target).encode()).hexdigest() + '.json'
     assert json.loads((Path(policy['generation_store']) / key).read_bytes()) == born
+
+
+def test_app_bundle_member_requires_exact_server_completion_receipt(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
+
+    _, _, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch)
+    member = json.loads(membership_raw)
+    producer = owner['producer_delivery']
+    producer['kind'] = 'website_capture_link_bundle'
+    producer['server_record']['object_name'] = (
+        f"scenes/{owner['scene_id']}/captures/{owner['capture_id']}/upload/bundle_completion.json")
+    member['producer_delivery']['kind'] = producer['kind']
+    member['producer_delivery']['receipt_object_name'] = producer['server_record']['object_name']
+    source_fields = ('request_id', 'scene_id', 'capture_id', 'bucket', 'raw_prefix_uri',
+                     'capture_owner', 'ownership_record', 'consent_attestation',
+                     'capture_rights', 'completion_marker', 'producer_delivery')
+    owner['source_projection_digest'] = cross_runtime_canonical_digest({
+        key: owner[key] for key in source_fields})
+    owner['observation_digest'] = cross_runtime_canonical_digest(
+        owner, digest_field='observation_digest')
+    raw = json.dumps(member, sort_keys=True, separators=(',', ':')).encode()
+    selector['size_bytes'] = len(raw)
+    selector['sha256'] = 'sha256:' + hashlib.sha256(raw).hexdigest()
+    bad = json.loads(raw)
+    bad['producer_delivery']['receipt_sha256'] = 'sha256:' + '0' * 64
+    bad_raw = json.dumps(bad, sort_keys=True, separators=(',', ':')).encode()
+    bad_selector = dict(selector, size_bytes=len(bad_raw),
+                        sha256='sha256:' + hashlib.sha256(bad_raw).hexdigest())
+    with pytest.raises(ValueError, match='capture_membership_receipt_mismatch'):
+        birth_capture_member(target, observation=owner,
+                             membership_selector=bad_selector, membership_raw=bad_raw)
+    assert not target.exists()
+    born = birth_capture_member(target, observation=owner,
+                                membership_selector=selector, membership_raw=raw)
+    assert born['schema_version'] == 'scene_capture_generation.v1'
 
 
 def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypatch):

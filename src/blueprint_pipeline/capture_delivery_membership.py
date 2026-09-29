@@ -60,10 +60,14 @@ def validate_capture_delivery_membership(
     _require(record["source_finalize"] == source and record["delivery_key"] == key
              and selector["object_name"] == delivery_prefix + "capture_delivery_membership.json",
              "capture_membership_delivery_mismatch")
+    member_kind = ('browser' if producer['kind'] == 'website_browser_capture_delivery'
+                   else producer['kind'])
     _require(record["producer_delivery"] == {
-        "kind": producer["kind"],
+        "kind": member_kind,
         "receipt_object_name": producer["server_record"]["object_name"],
         "receipt_generation": producer["server_record"]["generation"],
+        "receipt_size_bytes": producer["server_record"]["size_bytes"],
+        "receipt_sha256": producer["server_record"]["sha256"],
     }, "capture_membership_receipt_mismatch")
     raw_rows, derived_rows = record["raw"], record["derived"]
     _require(type(raw_rows) is list and type(derived_rows) is list
