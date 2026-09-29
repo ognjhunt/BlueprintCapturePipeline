@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 def _stage_handoff_capture_body(_listener, /, handoff, *, storage_root, storage_client):
+    if handoff.source_finalize is not None:
+        # Selected deliveries require the native generation and finite source
+        # membership gate before a direct staging caller can mkdir or list.
+        raise _listener.PipelineError('capture_original_birth_unavailable')
     client = storage_client or _listener.storage.Client()
     resolved_storage_root = storage_root.resolve()
     bucket_root = _listener.contained_path(resolved_storage_root, handoff.bucket, field='Pub/Sub staging bucket path')
@@ -88,6 +92,34 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
+    if handoff.source_finalize is not None:
+        from .capture_original_owner_observer import load_original_owner_observation
+
+        try:
+            observation = load_original_owner_observation(
+                bucket=handoff.bucket, scene_id=handoff.scene_id,
+                capture_id=handoff.capture_id,
+                marker_generation=handoff.source_finalize['generation'],
+            )
+        except Exception:
+            _listener.logger.warning('pubsub_handoff.capture_owner_observation_unavailable',
+                                     extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id})
+            return {'schema_version': 'v1', 'status': 'capture_owner_observation_unavailable_retryable',
+                    'queue_disposition': 'retryable', 'bucket': handoff.bucket,
+                    'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                    'capture_root': str(capture_root),
+                    'blockers': ['capture_owner_observation_unavailable']}
+        # A signed observation is retained only in memory until the native
+        # capture-generation birth and exact source-membership gate exists.
+        # It cannot flow through legacy lease mkdir/prefix staging.
+        _listener.logger.info('pubsub_handoff.capture_owner_observed',
+                              extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                                     'observation_digest': observation['observation_digest']})
+        return {'schema_version': 'v1', 'status': 'capture_original_birth_unavailable_retryable',
+                'queue_disposition': 'retryable', 'bucket': handoff.bucket,
+                'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                'capture_root': str(capture_root),
+                'blockers': ['capture_original_birth_unavailable']}
     prior_retired: dict[str, Any] | None = None
 
     def retired_terminal() -> dict[str, Any] | None:
