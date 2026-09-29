@@ -179,6 +179,10 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-episode-compilations/completed" \
   "${STATE_DIR}/task-evaluation-episode-compilations/blocked" \
   "${STATE_DIR}/task-evaluation-episode-compilations/results" \
+  "${STATE_DIR}/remote-cpu-jobs" \
+  "${STATE_DIR}/remote-cpu-jobs/handoffs/episode_compilation" \
+  "${STATE_DIR}/remote-cpu-jobs/shadow/episode_compilation" \
+  "${STATE_DIR}/remote-cpu-jobs/fallback/episode_compilation" \
   "${STATE_DIR}/task-evaluation-launch-activations" \
   "${STATE_DIR}/task-evaluation-launch-activations/pending" \
   "${STATE_DIR}/task-evaluation-launch-activations/processing" \
@@ -341,6 +345,15 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation-remote.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation-remote.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation-remote.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation-remote.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation-remote.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation-remote.path"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.service"
@@ -530,6 +543,9 @@ else
   # The consumption check refuses a group- or world-accessible tree, because a
   # second writer could forge or delete a record and re-fund an allocation.
   run chmod 0700 "${SPEND_AUTHORITY_ROOT}"
+  # Plan 14 §1: the remote episode-compilation unit writes only these two ledgers, so they exist up front.
+  run install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+    "${SPEND_AUTHORITY_ROOT}/consumed" "${SPEND_AUTHORITY_ROOT}/remote-cpu-settled"
   sed -i '/^BLUEPRINT_SPEND_AUTHORITY_ROOT=/d' "${ENV_FILE}"
   printf 'BLUEPRINT_SPEND_AUTHORITY_ROOT=%s\n' "${SPEND_AUTHORITY_ROOT}" >> "${ENV_FILE}"
   echo "bound spend-authority ledger to ${SPEND_AUTHORITY_ROOT}"
@@ -602,6 +618,8 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-preparation.timer
   systemctl enable --now blueprint-scene-object-discovery.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.path
+  systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.timer
+  systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path
   systemctl enable --now blueprint-native-g1-team-campaign-dispatcher.timer

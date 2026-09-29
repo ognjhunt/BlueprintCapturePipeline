@@ -521,6 +521,15 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/episode-compilations/pending/*.json\n",
         encoding="utf-8",
     )
+    remote_units = []
+    for suffix, body in (
+        (".service", "[Service]\nExecStart=/usr/bin/blueprint-collect-remote-episodes\n"),
+        (".timer", "[Timer]\nOnUnitInactiveSec=60s\n"),
+        (".path", "[Path]\nPathChanged=/remote-cpu-jobs/handoffs/episode_compilation\n"),
+    ):
+        remote_unit = unit_dir / f"blueprint-task-evaluation-episode-compilation-remote{suffix}"
+        remote_unit.write_text(body, encoding="utf-8")
+        remote_units.append(remote_unit)
     activation_service = (
         unit_dir / "blueprint-task-evaluation-launch-activation.service"
     )
@@ -679,6 +688,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         sam31_timer,
         compilation_service,
         compilation_path,
+        *remote_units,
         activation_service,
         activation_path,
         canary_service,
@@ -744,6 +754,10 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-episode-compilation.service",
         "blueprint-task-evaluation-episode-compilation.path",
+        # Plan 14 §1: the paid remote-compilation unit, woken by its timer and by hand-offs.
+        "blueprint-task-evaluation-episode-compilation-remote.service",
+        "blueprint-task-evaluation-episode-compilation-remote.timer",
+        "blueprint-task-evaluation-episode-compilation-remote.path",
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-policy-canary-dispatcher.service",
@@ -795,6 +809,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
+        "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
@@ -805,6 +820,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
         "blueprint-task-evaluation-sam31-preparation-execution.path",
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
+        "blueprint-task-evaluation-episode-compilation-remote.path",
     )
 
 

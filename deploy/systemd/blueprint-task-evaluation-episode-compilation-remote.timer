@@ -1,0 +1,14 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-episode-compilation-remote.timer.json
+Description=Follow, collect and tear down remote episode compilations
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=60s
+AccuracySec=10s
+Unit=blueprint-task-evaluation-episode-compilation-remote.service
+
+[Install]
+WantedBy=timers.target

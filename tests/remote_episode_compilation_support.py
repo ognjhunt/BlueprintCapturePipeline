@@ -44,9 +44,10 @@ def nurec_usdz(size_bytes: int = 4096) -> bytes:
     """A USDZ-shaped zip holding a ``.nurec`` payload: what a NuRec appearance looks like from outside."""
 
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
-        archive.writestr("default.usda", b"#usda 1.0\n")
-        archive.writestr("aura_appearance.nurec", (b"nurec" * (size_bytes // 5 + 1))[:size_bytes])
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:  # fixed member times: stable bytes
+        archive.writestr(zipfile.ZipInfo("default.usda", (1980, 1, 1, 0, 0, 0)), b"#usda 1.0\n")
+        archive.writestr(zipfile.ZipInfo("aura_appearance.nurec", (1980, 1, 1, 0, 0, 0)),
+                         (b"nurec" * (size_bytes // 5 + 1))[:size_bytes])
     return buffer.getvalue()
 
 

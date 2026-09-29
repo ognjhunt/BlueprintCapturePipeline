@@ -478,6 +478,39 @@ def compile_claimed_envelope(
     return terminal_state, result
 
 
+def claim_pending_row(queue: Path, source: Path) -> Path | None:
+    """Claim ``pending/<name>`` as ``processing/<name>``: an exclusive placeholder, then an atomic replace."""
+
+    claimed = queue / "processing" / source.name
+    try:
+        descriptor = os.open(
+            claimed, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+        )
+    except FileExistsError:
+        return None
+    else:
+        os.close(descriptor)
+    try:
+        os.replace(source, claimed)
+    except FileNotFoundError:
+        claimed.unlink(missing_ok=True)
+        return None
+    return claimed
+
+
+def record_compilation(
+    queue: Path, name: str, claimed: Path, terminal_state: str, result: Mapping[str, Any]
+) -> str:
+    """Write ``results/<name>`` once, then move the row to its terminal state."""
+
+    try:
+        write_launch_preparation_record_exclusive(queue / "results" / name, result)
+    except FileExistsError:
+        terminal_state = "blocked"
+    os.replace(claimed, queue / terminal_state / name)
+    return terminal_state
+
+
 def process_episode_compilation_queue(
     *,
     queue_root: str | Path,
@@ -512,19 +545,8 @@ def process_episode_compilation_queue(
     results_root.mkdir(mode=0o750, exist_ok=True)
     processed: list[dict[str, Any]] = []
     for source in sorted((queue / "pending").glob("*.json"))[:max_messages]:
-        claimed = queue / "processing" / source.name
-        try:
-            descriptor = os.open(
-                claimed, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-            )
-        except FileExistsError:
-            continue
-        else:
-            os.close(descriptor)
-        try:
-            os.replace(source, claimed)
-        except FileNotFoundError:
-            claimed.unlink(missing_ok=True)
+        claimed = claim_pending_row(queue, source)
+        if claimed is None:
             continue
         terminal_state, result = compile_claimed_envelope(
             claimed,
@@ -536,13 +558,7 @@ def process_episode_compilation_queue(
             disk_reservation_root=disk_reservation_root,
             storage_pins_root=storage_pins_root,
         )
-        try:
-            write_launch_preparation_record_exclusive(
-                results_root / source.name, result
-            )
-        except FileExistsError:
-            terminal_state = "blocked"
-        os.replace(claimed, queue / terminal_state / source.name)
+        record_compilation(queue, source.name, claimed, terminal_state, result)
         processed.append(result)
     return {
         "schema_version": "task_evaluation_episode_compilation_queue_run.v1",
@@ -571,7 +587,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if not args.queue_root or not args.input_root or not args.output_root:
         raise SystemExit("episode compilation roots are required")
-    result = process_episode_compilation_queue(
+    # The no-spend unit (plan 14 §1): in ``host`` mode, the default, exactly this queue run.
+    from . import task_evaluation_episode_compilation_remote as remote
+
+    result = remote.run_no_spend_unit(
         queue_root=args.queue_root,
         input_root=args.input_root,
         output_root=args.output_root,
@@ -581,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
             "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
         ),
         storage_pins_root=os.getenv(PINS_ROOT_ENV),
+        jobs_root=os.getenv(remote.JOBS_ROOT_ENV) or remote.DEFAULT_JOBS_ROOT,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
@@ -590,9 +610,11 @@ __all__ = [
     "COMPILER_OUTPUT_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION",
     "TaskEvaluationEpisodeCompilationWorkerError",
+    "claim_pending_row",
     "compile_claimed_envelope",
     "main",
     "process_episode_compilation_queue",
+    "record_compilation",
 ]
 
 

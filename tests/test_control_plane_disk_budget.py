@@ -677,7 +677,8 @@ def test_workload_names_are_always_valid_labels():
 ROLE_WORKER_UNITS = {
     "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
                            "blueprint-task-evaluation-scene-progression.service"),
-    "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",),
+    "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",
+                            "blueprint-task-evaluation-episode-compilation-remote.service"),
     "launch_activation": ("blueprint-task-evaluation-launch-activation.service",),
     "launch_dispatch": ("blueprint-task-evaluation-launch-dispatcher.service",),
     "policy_canary_dispatch": ("blueprint-task-evaluation-policy-canary-dispatcher.service",),

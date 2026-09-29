@@ -1248,3 +1248,59 @@ Two stream-mode records look alarming and are not:
   `mp4_validation.blockers` means no MP4 was copied out for ffprobe, by design.
   The Quick-10 bundle kind expects no inspection video smoke, so the run is
   not blocked by it; video smoke is simply not proven by the inspection.
+
+## Remote episode compilation (plan 14, 2026-09-29)
+
+`BLUEPRINT_EPISODE_COMPILATION_EXECUTION` picks where an episode compiles: `host`
+(the default, today's path), `cloud_run_shadow` or `cloud_run`. An unset or
+invalid value runs as `host`, and the chain preflight warns
+`episode_compilation_execution_mode_invalid`.
+
+**Who owns what.** The no-spend unit (`blueprint-task-evaluation-episode-compilation`)
+owns `pending/` in every mode and empties it each run: it compiles every row
+the paid unit handed back, then claims pending rows.
+An eligible row in `cloud_run` gets a hand-off and stays in `processing/`; any
+other row compiles on the host. In `cloud_run_shadow` every row compiles on the
+host and an eligible one also gets a shadow marker. Rows never leave the four
+queue states. The paid unit (`blueprint-task-evaluation-episode-compilation-remote`)
+never compiles: it dispatches through `paid_resource_allocator remote-cpu-job`,
+follows, collects and tears down.
+
+**What lands on the host.** A remote compile writes its whole tree in the
+worker. The host gains only what later stages read by path, the consumer
+subset `<id>/native-arena-adapter/**` and, for a destination qualification,
+`<id>/rigid_destination_native_probe_request.v1.json`, plus a little metadata.
+Nothing of `configured-scene/`, `native-task-packet/`, `native-appearance/` or
+the packet zip lands. The subset is assembled in `.<id>.landing-<nonce>/` and
+renamed to `<id>` only when complete, so a crash never leaves a partial `<id>`
+that would break a later host compile; the paid unit removes a partial landing
+when it hands a row back. The landing holds an `episode_compilation`
+reservation, workload `compiled_episode_landing`, sized as the bytes it must
+copy plus 16 MiB.
+
+**The output pointer.** `compiled-episodes/<id>.remote-output.v1.json`
+(`remote_cpu_output_pointer.v1`, mode 0440) names the CAS archive and index of
+the whole output, the attempt, the execution and its spend consumption, the
+code identity and the landed subset. It is resealed, never trimmed, when its
+teardown is proven. The compilation pin covers both `<id>` and the pointer.
+Storage GC's derived phase keeps every file child of a derived root (it counts
+them as `unsafe`), so it never deletes a pointer, the evidence for the bytes
+that stayed remote; nor does it see the dot-prefixed landing directories.
+
+**The remote job records** live under
+`/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/`, outside the queue:
+
+| Path | Written by | What |
+|---|---|---|
+| `handoffs/episode_compilation/<row>`, `shadow/episode_compilation/<row>` | no-spend unit | a row's plan, created once |
+| `fallback/episode_compilation/<row>` | paid unit | a row handed back; the no-spend unit compiles it and removes the marker |
+| `descriptors/`, `leases/`, `live/`, `teardowns/` | paid unit, allocator | plan 14 §3, §7, §11 |
+| `receipts/<attempt>.json` | paid unit | the fenced receipt, kept because provider-zero deletes staging early |
+| `rows/episode_compilation/<row>` | paid unit | promotion and landing retries, and a row given up |
+| `parity/episode_compilation/<attempt>.json` | paid unit | one shadow comparison, per closure class |
+| `environment/`, `drift/episode_compilation.json` | allocator, paid unit | the probed worker environment and the job template's image |
+| `summary.json` (0644) | paid unit | door-readable counts: drift, unproven teardowns, orphans cancelled, parity |
+
+**Rollback.** Unset the flag. The no-spend unit compiles everything; the paid
+unit's ExecCondition keeps it running only to drain live leases and to hand
+undispatched rows back.

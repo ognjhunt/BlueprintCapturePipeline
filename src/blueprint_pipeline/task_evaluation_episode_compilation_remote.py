@@ -46,7 +46,10 @@ from .task_evaluation_episode_compilation_worker import (
     TaskEvaluationEpisodeCompilationWorkerError,
     _load_envelope,
     _verified_references,
+    claim_pending_row,
     compile_claimed_envelope,
+    process_episode_compilation_queue,
+    record_compilation,
 )
 from .task_evaluation_native_arena_episode_compiler import (
     MAXIMUM_INLINE_NUREC_CONVERSION_BYTES,
@@ -58,6 +61,10 @@ EXECUTION_ENV = "BLUEPRINT_EPISODE_COMPILATION_EXECUTION"
 MODES = ("host", "cloud_run_shadow", "cloud_run")
 JOBS_ROOT_ENV = "BLUEPRINT_REMOTE_CPU_JOBS_ROOT"
 DEFAULT_JOBS_ROOT = "/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs"
+# The allocator reads the same file (``remote_cpu_job_allocator.CONFIG_ENV``); the no-spend unit reads it to decide.
+CONFIG_ENV = "BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG"
+DEFAULT_CONFIG_PATH = "/etc/blueprint/remote-cpu-workers.json"
+RUN_SCHEMA_VERSION = "task_evaluation_episode_compilation_queue_run.v1"
 STAGE = "episode_compilation"
 QUEUE = STAGES[STAGE]["queue"]
 # The unit's input root as the worker sees it: the host verifies every reference under it, and so does the worker.
@@ -507,6 +514,108 @@ def input_sources(plan: RemotePlan, queue_root: str | Path) -> list[dict[str, An
     return rows
 
 
+def load_config(path: str | Path | None = None, environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
+    """The host's ``remote_cpu_workers_config.v1`` (0640, no other access), or ``None`` when absent or unusable."""
+
+    location = path or (os.environ if environ is None else environ).get(CONFIG_ENV) or DEFAULT_CONFIG_PATH
+    config = _read_record(Path(location), forbidden_mode=0o027)
+    return config if config is not None and not config_blockers(config) else None
+
+
+def _compile_on_host(queue: Path, name: str, claimed: Path, *, inputs: Path, outputs: Path, source_commit: str,
+                     compiler: Any, disk_reservation_root: Any, storage_pins_root: Any) -> dict[str, Any]:
+    state, result = compile_claimed_envelope(
+        claimed, source_name=name, inputs=inputs, outputs=outputs, source_commit=source_commit,
+        episode_compiler=compiler, disk_reservation_root=disk_reservation_root, storage_pins_root=storage_pins_root)
+    record_compilation(queue, name, claimed, state, result)
+    return result
+
+
+def _compile_fallbacks(queue: Path, jobs_root: Path, **host: Any) -> list[dict[str, Any]]:
+    """Host-compile every row the paid unit handed back (plan 14 §10); each is already in ``processing/``."""
+
+    compiled = []
+    for path, marker in markers(jobs_root, "fallback"):
+        if marker is None:
+            continue
+        name = marker["queue_row"]["name"]
+        claimed = queue / "processing" / name
+        if claimed.is_file():
+            compiled.append(_compile_on_host(queue, name, claimed, **host))
+        path.unlink(missing_ok=True)
+    return compiled
+
+
+def run_no_spend_unit(
+    *, queue_root: str | Path, input_root: str | Path, output_root: str | Path, source_commit: str,
+    max_messages: int = 1, disk_reservation_root: str | Path | None = None,
+    storage_pins_root: str | Path | None = None, jobs_root: str | Path = DEFAULT_JOBS_ROOT,
+    environ: Mapping[str, str] | None = None, episode_compiler: Any = None, filesystem_root: str | Path = "/",
+    cache_root: str | Path | None = None, config: Mapping[str, Any] | None = None,
+    host_environment: Mapping[str, Any] | None = None, now: Any = None,
+) -> dict[str, Any]:
+    """One run of the no-spend unit, which owns ``pending/`` in every mode (plan 14 §1).
+
+    It first compiles the rows the paid unit handed back; then it claims pending rows as today.  In ``host``
+    mode that is exactly today's queue run.  In ``cloud_run`` an eligible row gets a hand-off and stays in
+    ``processing/``, and any other compiles here; in ``cloud_run_shadow`` every row compiles here and an
+    eligible one also gets a shadow marker.  Every run empties ``pending/``, so its ``PathExistsGlob`` cannot
+    loop, and no row ever leaves the four queue states.
+    """
+
+    import time
+
+    mode, findings = execution_mode(environ)
+    compiler = episode_compiler or compile_native_arena_episode
+    jobs = Path(jobs_root)
+    host = {"inputs": Path(input_root).resolve(strict=True), "source_commit": source_commit, "compiler": compiler,
+            "disk_reservation_root": disk_reservation_root, "storage_pins_root": storage_pins_root}
+    outputs = Path(output_root)
+    outputs.mkdir(parents=True, exist_ok=True, mode=0o750)
+    host["outputs"] = outputs.resolve(strict=True)
+    queue = Path(queue_root)
+    fallbacks = _compile_fallbacks(queue, jobs, **host) if queue.is_dir() else []
+    if mode == "host":
+        run = process_episode_compilation_queue(
+            queue_root=queue_root, input_root=input_root, output_root=output_root, source_commit=source_commit,
+            episode_compiler=compiler, max_messages=max_messages, disk_reservation_root=disk_reservation_root,
+            storage_pins_root=storage_pins_root)
+        return {**run, "fallback_results": fallbacks} if fallbacks else run
+    from .task_evaluation_scene_construction_queue import ensure_scene_construction_queue_root
+
+    queue = ensure_scene_construction_queue_root(queue_root)
+    (queue / "results").mkdir(mode=0o750, exist_ok=True)
+    config = load_config(environ=environ) if config is None else dict(config)
+    clock = now or time.time
+    measured: dict[str, Any] = {}
+    processed, handed, decisions = [], [], {}
+    for source in sorted((queue / "pending").glob("*.json"))[:max_messages]:
+        claimed = claim_pending_row(queue, source)
+        if claimed is None:
+            continue
+        if host_environment is None and "record" not in measured:
+            measured["record"] = environment_record()
+        plan = plan_remote_compilation(
+            claimed, inputs=host["inputs"], outputs=host["outputs"], source_commit=source_commit,
+            config=config or {}, jobs_root=jobs, filesystem_root=filesystem_root, cache_root=cache_root,
+            host_environment=host_environment or measured["record"], require_shadow_gate=mode == "cloud_run")
+        if isinstance(plan, HostDecision):
+            decisions[source.name] = plan.reason
+        elif mode == "cloud_run":
+            write_handoff(jobs, plan, mode="authoritative", now=clock())
+            handed.append(source.name)
+            continue
+        processed.append(_compile_on_host(queue, source.name, claimed, **host))
+        if isinstance(plan, RemotePlan):
+            write_handoff(jobs, plan, mode="shadow", now=clock())
+            handed.append(source.name)
+    return {"schema_version": RUN_SCHEMA_VERSION, "status": "processed" if processed or handed else "idle",
+            "processed_count": len(processed), "results": processed, "mode": mode, "findings": findings,
+            "handoffs" if mode == "cloud_run" else "shadowed": handed, "host_decisions": decisions,
+            "fallback_results": fallbacks, "provider_mutation_performed": False, "paid_execution_requested": False,
+            "automatic_retry_performed": False}
+
+
 def run_episode_compilation_in_worker(descriptor: Mapping[str, Any], roots: Any, *,
                                       episode_compiler: Any = None) -> dict[str, Any]:
     """The worker's ``episode_compilation`` stage: the host's ``compile_claimed_envelope`` at the host's paths,
@@ -540,8 +649,10 @@ __all__ = [
     "read_marker",
     "plan_remote_compilation",
     "record_job_image",
+    "load_config",
     "record_shadow_parity",
     "run_episode_compilation_in_worker",
+    "run_no_spend_unit",
     "shadow_passes",
     "worker_environment",
     "write_fallback",
