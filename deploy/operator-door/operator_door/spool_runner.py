@@ -144,7 +144,8 @@ def _owner_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str
 def _legacy_owner_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
     """Fixed read-only inputs; the only writable location is this door's results."""
     registry = Path(config.owner_consent_store).parent / "legacy-owner-registrations"
-    # This transient has /proc metadata capability, so it must also inherit
+    # CAP_PERFMON admits read-only foreign /proc metadata but cannot open
+    # foreign /proc/PID/mem. This transient must also inherit
     # the door's secret hides. The config/policy files under the door root are
     # required; hide its token and deploy key individually instead.
     hidden = [path for path in config.hidden_paths if path != "/etc/blueprint-operator-door"]
@@ -154,8 +155,8 @@ def _legacy_owner_properties(config: DoorConfig, _request: dict[str, Any]) -> tu
             "SystemCallFilter=@system-service",
             "SystemCallFilter=~ptrace process_vm_readv process_vm_writev",
             "SystemCallErrorNumber=EPERM",
-            "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE",
-            "AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE",
+            "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_PERFMON",
+            "AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_PERFMON",
             "InaccessiblePaths=" + " ".join("-" + path for path in hidden),
             f"ReadOnlyPaths={registry} {config.lane_owner_policy_file} "
             f"{config.experiment_gc_environment_file} "

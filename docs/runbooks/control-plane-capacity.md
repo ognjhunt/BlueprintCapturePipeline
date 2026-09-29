@@ -243,6 +243,10 @@ python3 scripts/operator_door.py pull "$REPORT_PATH" "$LOCAL_REPORT" \
 
 The existing client's `request --wait` success set does not include
 `owner_consent_observed`; it can return1 despite this successful report outcome.
+Use `request <id>` and inspect the bounded outcome's exit_code0/status instead;
+that outcome proves report observation only. Public report/outcome files are regular root0644 under root0755 results
+ancestry; protected consent remains0600 under0700 and is never made readable
+through the door. Public reports omit policy bytes, tokens and private documents.
 
 ### Current historical owner review
 
@@ -258,10 +262,6 @@ Unregistered, changed, expired and active folders remain visible without an
 owner label. An incomplete or oversized scan publishes zero owner labels.
 Every row remains `gc_eligible=false`: this request does not authorize
 deletion, offload or reclaim credit.
-Use `request <id>` and inspect the bounded outcome's exit_code0/status instead;
-that outcome proves report observation only. Public report/outcome files are regular root0644 under root0755 results
-ancestry; protected consent remains0600 under0700 and is never made readable
-through the door. Public reports omit policy bytes, tokens and private documents.
 
 Leaf CLI refusal is bounded typed JSON; detailed fixed refusal is retained in
 the request log when safely available. Wrapper invocation failure has the fixed
