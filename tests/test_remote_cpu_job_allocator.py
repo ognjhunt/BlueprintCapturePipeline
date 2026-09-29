@@ -317,8 +317,10 @@ def test_presigned_puts_exist_only_after_admission_and_expire_at_the_hard_deadli
     binding = "sha256:" + "b" * 64
     for grant in (None, allocator.admit_remote_cpu_job(blockers=[], binding={"x": 1}, execute=True)[1]):
         with pytest.raises(PaidResourceAdmissionBlocked):
-            allocator.mint_transport(grant=grant, binding_digest=binding, descriptor=descriptor,
-                                     bucket=world.bucket, object_store=world.runtime.object_store, clock=world.clock)
+            allocator.mint_transport(
+                grant=grant, binding_digest=binding, descriptor=descriptor, bucket=world.bucket,
+                object_store=world.runtime.object_store, clock=world.clock,
+                object_uri=f"gs://{TRANSPORT_BUCKET}/transport/{descriptor['job_id']}/{descriptor['attempt_id']}-{'a' * 32}.json")
     world.assert_untouched()
 
     world.write_authority(standing_authority())
@@ -921,3 +923,41 @@ def test_teardown_resumes_from_its_sealed_record_after_a_failed_transition(tmp_p
     assert len(list((world.spend / "remote-cpu-settled").glob("*.json"))) == 2
     assert leases.slots_in_use(world.root) == 0
     assert world.run("reconcile", descriptor=locked)["status"] == "nothing_to_reconcile"
+
+
+def test_mint_failure_after_consumption_discards_the_transport_and_settles_at_zero(tmp_path: Path,
+                                                                                   monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    world.record_environment()
+    create, delete = world.bucket.create, world.bucket.delete
+
+    def written_then_lost(name, data, *, if_generation_match):
+        create(name, data, if_generation_match=if_generation_match)
+        raise TimeoutError("the response was lost after the object was written")
+
+    world.bucket.create = written_then_lost
+    first = world.descriptor(label="prep-mint")
+    result = world.run("dispatch", descriptor=first)
+    assert result["status"] == "blocked" and "remote_cpu_transport_mint_failed:TimeoutError" in result["blockers"]
+    assert world.bucket._objects == {} and world.rest.runs() == []  # its live PUT URLs went with it
+    lease = world.lease(first)
+    assert (lease["state"], lease["dispatch_started"], lease["transport_object"]) == ("fallback_host", False, None)
+    assert [(row["attempt_id"], row["usd"]) for row in allocator.spend_ledger()] == [(first["attempt_id"], 0.0)]
+    assert world.run("dispatch", descriptor=first)["status"] == "already_dispatched"
+
+    # When even the discard fails, the transport was named with the consumption before it was created,
+    # so reconcile deletes it, verifies it is gone and settles once the bucket answers again.
+    def unavailable(name, *, generation=None):
+        raise ConnectionError("the bucket did not answer")
+
+    world.bucket.delete = unavailable
+    second = world.descriptor(label="prep-stranded")
+    stranded = world.run("dispatch", descriptor=second)
+    assert "remote_cpu_transport_discard_unproven" in stranded["blockers"]
+    assert world.lease(second)["state"] == "claimed" and len(world.bucket._objects) == 1
+    assert sorted(row["usd"] for row in allocator.spend_ledger()) == [0.0, WORST_CASE_USD]
+    world.bucket.create, world.bucket.delete = create, delete
+    recovered = world.run("reconcile", descriptor=second)
+    assert (recovered["status"], recovered["success"]) == ("fallback_host", True)
+    assert world.bucket._objects == {} and world.lease(second)["state"] == "fallback_host"
+    assert sorted(row["usd"] for row in allocator.spend_ledger()) == [0.0, 0.0]

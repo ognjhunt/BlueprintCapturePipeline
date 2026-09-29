@@ -377,6 +377,20 @@ def delete_transport_object(bucket: Any, object_uri: str, generation: int) -> bo
     return not bucket.exists(name, generation=generation)
 
 
+def discard_transport_object(bucket: Any, object_uri: str) -> bool:
+    """Delete whatever generation of a transport object exists, until a delete finds nothing (404)."""
+
+    name = object_uri.split("/", 3)[3]
+    for _ in range(3):
+        try:
+            bucket.delete(name, generation=None)
+        except Exception as exc:  # noqa: BLE001 - only a 404 proves the object is gone
+            if getattr(exc, "code", None) == 404:
+                return True
+            raise
+    return False
+
+
 def transport_bucket_sentinel(bucket: Any, name: str) -> dict[str, Any]:
     """Prove the transport bucket creates only if absent, reads at a generation and deletes (plan 14 §4)."""
 

@@ -22,7 +22,7 @@ import secrets
 import stat
 import time
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -31,7 +31,8 @@ from . import remote_cpu_job_lease as leases
 from .cloud_run_jobs_client import (
     ATTEMPT_VARIABLE, CLOUD_RUN_CPU_JOB_RESOURCE_CLASS, DESCRIPTOR_VARIABLE, TRANSPORT_GENERATION_VARIABLE,
     TRANSPORT_OBJECT_VARIABLE, CloudRunAmbiguousResponse, CloudRunJobsClient, CloudRunJobsError, GcsTransportBucket,
-    allocation_binding, attempt_executions, delete_transport_object, env_value, execution_resource_name,
+    allocation_binding, attempt_executions, delete_transport_object, discard_transport_object, env_value,
+    execution_resource_name,
     execution_seconds, job_definition_blockers,
     job_resource_name, load_dispatcher_credentials, run_target, transport_bucket_sentinel,
 )
@@ -223,15 +224,23 @@ def _settled_root() -> Path:
     return root
 
 
+_LEDGER_HELD = [False]
+
+
 @contextmanager
 def spend_ledger_lock() -> Iterator[None]:
-    """Serialize admission, consumption and settlement under ``remote-cpu.lock``."""
+    """Serialize admission, consumption and settlement under ``remote-cpu.lock``; re-entrant in this process."""
+    if _LEDGER_HELD[0]:
+        yield
+        return
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(_settled_root() / LEDGER_LOCK, flags, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
+        _LEDGER_HELD[0] = True
         yield
     finally:
+        _LEDGER_HELD[0] = False
         os.close(descriptor)
 
 
@@ -278,14 +287,16 @@ def spend_ledger_blockers(*, authority: Mapping[str, Any], worst_case_usd: float
 
 
 def consume_remote_cpu_authority_once(*, descriptor: Mapping[str, Any], authority: Mapping[str, Any],
-                                      worst_case_usd: float, binding_digest: str, now: float) -> dict[str, Any]:
-    """Consume the standing authority for one attempt, exactly once, recording its worst case."""
+                                      worst_case_usd: float, binding_digest: str, now: float,
+                                      transport_object: str | None = None) -> dict[str, Any]:
+    """Consume the standing authority for one attempt, exactly once, recording its worst case and the transport
+    object it will create, so a transport whose creation went unrecorded can still be found and deleted."""
     record: dict[str, Any] = {
         "schema_version": CONSUMPTION_SCHEMA_VERSION, "attempt_id": descriptor["attempt_id"],
         "job_id": descriptor["job_id"], "stage": descriptor["stage"], "descriptor_digest": descriptor["descriptor_digest"],
         "standing_authority_digest": authority["authorization_digest"], "allocation_binding_digest": binding_digest,
         "worst_case_usd": float(worst_case_usd), "consumed_at_epoch": float(now), "maximum_executions": 1,
-        "consumption_digest": "",
+        "transport_object": transport_object, "consumption_digest": "",
     }
     record["consumption_digest"] = canonical_digest(record, digest_field="consumption_digest")
     try:
@@ -297,7 +308,7 @@ def consume_remote_cpu_authority_once(*, descriptor: Mapping[str, Any], authorit
     return {"status": "consumed", "consumption_digest": record["consumption_digest"]}
 
 
-def settle_remote_cpu_attempt(*, descriptor: Mapping[str, Any], teardown_digest: str, settled_usd: float,
+def settle_remote_cpu_attempt(*, descriptor: Mapping[str, Any], teardown_digest: str | None, settled_usd: float,
                               basis: str, now: float) -> dict[str, Any]:
     """Replace an attempt's worst case in the ledger with its estimate once its teardown is sealed."""
     key = _attempt_key(descriptor["attempt_id"])
@@ -343,7 +354,8 @@ def admit_remote_cpu_job(*, blockers: list[str], binding: Mapping[str, Any],
 
 
 def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: str, descriptor: Mapping[str, Any],
-                   bucket: Any, object_store: tuple[Any, str, str], clock: Callable[[], float]) -> dict[str, Any]:
+                   bucket: Any, object_store: tuple[Any, str, str], clock: Callable[[], float],
+                   object_uri: str) -> dict[str, Any]:
     """Presign an admitted attempt's transport and write it create-if-absent (plan 14 §4).  GETs live through the
     start allowance, fetch and grace; PUTs to the hard deadline.  botocore signs at the real clock, so each recorded
     expiry is the clock read after signing, plus the lifetime and a margin.  The transport exists only in memory
@@ -369,10 +381,11 @@ def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: 
                 "write_urls_expire_at_epoch": signed_by + writes + URL_EXPIRY_MARGIN_SECONDS}
     transport = {"schema_version": TRANSPORT_SCHEMA_VERSION, "descriptor": dict(descriptor), "inputs": inputs,
                  "source_archive": source, "receipt_url": receipt, "outputs": outputs, **expiries}
-    name = f"transport/{descriptor['job_id']}/{descriptor['attempt_id']}-{secrets.token_hex(16)}.json"
+    if not object_uri.startswith(f"gs://{bucket.name}/transport/{descriptor['job_id']}/{descriptor['attempt_id']}-"):
+        raise RemoteCpuAllocatorError("remote_cpu_transport_object_unbound")
     payload = json.dumps(transport, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    generation = bucket.create(name, payload, if_generation_match=0)
-    return {"transport_object": f"gs://{bucket.name}/{name}", "transport_generation": int(generation), **expiries}
+    generation = bucket.create(object_uri.split("/", 3)[3], payload, if_generation_match=0)
+    return {"transport_object": object_uri, "transport_generation": int(generation), **expiries}
 
 
 @dataclass
@@ -502,25 +515,21 @@ def _dispatch(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         if grant is None:
             return {**result, "status": "blocked" if admission["blockers"] else "dry_run_ready"}
         leases.claim_handoff(action.root, descriptor=descriptor, config=action.config, now=runtime.clock())
+        name = f"gs://{runtime.transport_bucket.name}/transport/{job_id}/{attempt_id}-{secrets.token_hex(16)}.json"
         consumption = consume_remote_cpu_authority_once(
             descriptor=descriptor, authority=action.authority, worst_case_usd=worst,
-            binding_digest=admission["allocation_binding_digest"], now=runtime.clock())
+            binding_digest=admission["allocation_binding_digest"], now=runtime.clock(), transport_object=name)
         if consumption["status"] != "consumed":
             return {**result, "status": "blocked", "blockers": consumption["blockers"]}
         try:
             transport = mint_transport(grant=grant, binding_digest=admission["allocation_binding_digest"],
                                        descriptor=descriptor, bucket=runtime.transport_bucket,
-                                       object_store=runtime.object_store, clock=runtime.clock)
-        except Exception as exc:  # noqa: BLE001 - nothing ran; the consumed attempt now falls back
-            return {**result, "status": "blocked", "blockers": [f"remote_cpu_transport_mint_failed:{type(exc).__name__}"]}
-        try:
+                                       object_store=runtime.object_store, clock=runtime.clock, object_uri=name)
             leases.transition(action.root, job_id, attempt_id=attempt_id, to_state=None, now=runtime.clock(),
                               updates=transport)
-        except RemoteCpuContractError:
-            with suppress(Exception):  # a transport that never reached its lease; lifecycle is the backstop
-                delete_transport_object(runtime.transport_bucket, transport["transport_object"],
-                                        transport["transport_generation"])
-            raise
+        except Exception as exc:  # noqa: BLE001 - nothing ran: the transport goes and the attempt settles at zero
+            abandoned = _abandon_undispatched(action, descriptor, f"remote_cpu_transport_mint_failed:{type(exc).__name__}")
+            return {**result, **abandoned, "status": "blocked"}
         result.update(transport_object=transport["transport_object"], transport_generation=transport["transport_generation"])
         overrides = {ATTEMPT_VARIABLE: attempt_id, DESCRIPTOR_VARIABLE: descriptor["descriptor_digest"],
                      TRANSPORT_OBJECT_VARIABLE: transport["transport_object"],
@@ -530,6 +539,26 @@ def _dispatch(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         # The dispatch clock (start allowance, hard deadline, reconcile's in-flight window) starts here.
         leases.transition(action.root, job_id, attempt_id=attempt_id, to_state="dispatching", now=runtime.clock())
     return _start(action, descriptor, grant=grant, etag=etag, overrides=overrides, refusal=refusal, result=result)
+
+
+def _abandon_undispatched(action: _Action, descriptor: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    """A consumed attempt that never dispatched: delete the transport its consumption named and prove it gone, settle
+    the attempt at zero, and close its lease as ``fallback_host``.  Every step is safe to repeat."""
+    runtime, job_id, attempt_id = action.runtime, descriptor["job_id"], descriptor["attempt_id"]
+    consumption = _sealed(_consumption_path(attempt_id), CONSUMPTION_SCHEMA_VERSION, "consumption_digest")
+    try:
+        gone = not consumption["transport_object"] or discard_transport_object(runtime.transport_bucket,
+                                                                               consumption["transport_object"])
+    except Exception:  # noqa: BLE001 - its live URLs keep the worst case on the ledger until it is proven gone
+        gone = False
+    if not gone:
+        return {"status": "blocked", "blockers": sorted({reason, "remote_cpu_transport_discard_unproven"})}
+    settle_remote_cpu_attempt(descriptor=descriptor, teardown_digest=None, settled_usd=0.0, basis="never_dispatched",
+                              now=float(runtime.clock()))
+    if _lease(action.root, job_id)["state"] not in leases.TERMINAL_STATES:
+        leases.transition(action.root, job_id, attempt_id=attempt_id, to_state="fallback_host",
+                          now=float(runtime.clock()), updates={"outcome": reason})
+    return {"status": "fallback_host", "blockers": [reason]}
 
 
 def _probe_checks(action: _Action, descriptor: Mapping[str, Any], *, grant: PaidResourceAdmissionGrant, etag: str,
@@ -841,6 +870,12 @@ def _reconcile(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]
     lease = _lease(action.root, descriptor["job_id"])
     if lease is None or lease["attempt_id"] != descriptor["attempt_id"]:
         return {"status": "nothing_to_reconcile", "blockers": []}
+    if lease["state"] in ("claimed", "awaiting_capacity") and _consumption_path(descriptor["attempt_id"]).exists():
+        if not action.execute:
+            return {"status": "dry_run_ready", "blockers": [], "lease_state": lease["state"]}
+        with spend_ledger_lock():  # while it is held no dispatch is between consumption and dispatching
+            if _lease(action.root, descriptor["job_id"])["state"] in ("claimed", "awaiting_capacity"):
+                return _abandon_undispatched(action, descriptor, lease["outcome"] or "remote_cpu_dispatch_never_started")
     settled = (_settled_root() / f"{_attempt_key(descriptor['attempt_id'])}.json").exists()
     if (action.root / "teardowns" / f"{descriptor['attempt_id']}.json").exists() and not (
             lease["state"] in leases.TERMINAL_STATES and settled):  # a sealed teardown left unfinished resumes
