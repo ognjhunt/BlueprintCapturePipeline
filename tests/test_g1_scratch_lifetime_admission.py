@@ -53,7 +53,8 @@ def test_invalid_worker_authority_never_reaches_output_writer(tmp_path, monkeypa
         else:
             path.rename(path.with_name("moved"))
             path.mkdir()
-        with pytest.raises(Exception, match="lane_scratch"):
+        refusal = "experiment_consumer_path_unsafe" if fault == "escape" else "lane_scratch"
+        with pytest.raises(Exception, match=refusal):
             worker.run_g1_development_worker(request={}, output_dir=output, scratch_lifetime=use)
         assert not output.exists()
 
