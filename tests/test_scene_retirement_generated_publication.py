@@ -15,7 +15,7 @@ from tests.test_task_evaluation_launch_preparation_contract import request
 from tests.test_task_evaluation_launch_preparation_worker import request_with_fetchable_bytes
 
 
-def generated_fixture(tmp_path, monkeypatch, *, external=False):
+def generated_fixture(tmp_path, monkeypatch, *, external=False, legacy_layer=False):
     from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
     from blueprint_pipeline.task_evaluation_launch_preparation_queue import stage_launch_preparation_request
     from blueprint_pipeline.task_evaluation_scene_retirement_producer_births import enroll_preparation_child
@@ -67,6 +67,11 @@ def generated_fixture(tmp_path, monkeypatch, *, external=False):
             service_account=SERVICE_ACCOUNT, source_commit=value['expected_production_commit'], fetcher=fetcher(payloads))
         runtime_row = next(row for row in materialized['references']
                            if row['contract_path'] == 'execution_adapter.runtime_source_bundle')
+        if legacy_layer:
+            for row in runtime_build['external_layers']:
+                old = native_store/row['sha256'][7:]
+                old.write_bytes(payloads[row['uri']])
+                old.chmod(0o440)
         layers = worker._materialize_runtime_source_external_layers(request=value, runtime_source=runtime_row,
             input_root=prep, content_store_root=native_store,
             allowed_uri_prefixes=['s3://blueprint-production-inputs/'], fetcher=fetcher(payloads),
@@ -341,3 +346,17 @@ def test_generated_first_fd_named_mismatch_never_writes_or_closes_unknown_token(
             else:
                 if (current.st_dev, current.st_ino) == selected['identity']:
                     native_close(selected['fd'])
+
+
+def test_actual_existing_legacy_external_layer_runs_without_claiming_new_ownership(tmp_path, monkeypatch):
+    fixture = generated_fixture(tmp_path, monkeypatch, external=True, legacy_layer=True)
+    original = next(iter(fixture['external_layers'].values()))
+    manifest, destination = extract(fixture)
+    leaf = fixture['store']/manifest['entries'][0]['sha256'][7:]
+    assert leaf.stat().st_ino == original.stat().st_ino == (destination/'runtime.py').stat().st_ino
+    ledger = Path(fixture['policy']['generation_store'])/_key_for_test(leaf)
+    assert not ledger.exists(), 'legacy or shared external bytes are not a fresh owned birth'
+
+
+def _key_for_test(path):
+    return hashlib.sha256(str(path).encode()).hexdigest()+'.json'
