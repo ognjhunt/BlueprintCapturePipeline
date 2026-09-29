@@ -24,6 +24,7 @@ def observed(*, status="complete", references=None):
                            owner=None if active else "owner",
                            approved_expiry=None if active else 2000,
                            classification=None if active else "legacy_owner_review",
+                           process_fd_references="complete",
                            gc_eligible=False, references_clear=False,
                            references=[] if references is None else references,
                            unreadable=0, private_process_cmdline="secret", raw_env="secret")])

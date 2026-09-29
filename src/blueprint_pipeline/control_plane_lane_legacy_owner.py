@@ -542,11 +542,8 @@ class LegacyOwnerStore:
             named = os.stat(name, dir_fd=self.parent, follow_symlinks=False)
             _require(owners._metadata(before) == owners._metadata(named)
                      and 0 < before.st_size <= self._CAP
-                     and before.st_nlink in (1, 2), "legacy_owner_record_invalid")
-            if before.st_nlink == 1:
-                owners._protected(before, mode=0o600)
-            else:
-                _require(_root_owned_publication(before), "legacy_owner_record_invalid")
+                     and before.st_nlink == 1, "legacy_owner_record_invalid")
+            owners._protected(before, mode=0o600)
             raw = self.files.read_bytes(descriptor, self._CAP)
             _require(len(raw) == before.st_size
                      and owners._metadata(os.fstat(descriptor)) == owners._metadata(before)
