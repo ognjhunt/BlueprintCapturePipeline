@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
-from .company_policy_proxy import validate_action_response
+from .controlled_policy_actions import validate_action_response
 from .controlled_policy_observations import project_controlled_observation
 from .core.security_controls import fetch_bounded_https
 

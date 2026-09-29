@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **38 dispatched, 20 website-reachable, 18 named
+Current executable inventory: **39 dispatched, 20 website-reachable, 19 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
@@ -75,7 +75,7 @@ campaign cap. The import cannot be authorized first.
 
 ## Named non-reachable probe kinds
 
-These seventeen allocator branches are deliberate decisions, not builder debt.
+These nineteen allocator branches are deliberate decisions, not builder debt.
 
 ### Retired appearance/reference approaches (7)
 
@@ -129,6 +129,16 @@ public clip rights.
   runtimes, exact website deployment and live end-to-end qualification before
   the existing configurator can fulfill this choice. This inventory decision
   neither claims that product flow works nor removes those required gates.
+
+### Controlled native policy signed queue (1)
+
+- `native-task-arena-controlled-policy` — `not_a_website_lane`. The private
+  team offer and signed execution plan feed `controlled_native_queue.py`, which
+  binds the checkpoint, task, immutable inputs, approved policy origin, and
+  paid authority through an operator-owned registry. This is a separate queue
+  bridge rather than a generic scene profile builder. Its installed-command,
+  bundle, and queue contracts cover reachability; a fresh completed native run
+  and private result delivery are still required to prove live fulfillment.
 
 ## Terminal and production rules
 

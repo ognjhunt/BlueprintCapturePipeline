@@ -14,8 +14,11 @@ import builtins
 from contextlib import contextmanager
 from dataclasses import dataclass
 import functools
+import hashlib
 import io
+import json
 import os
+from pathlib import PurePosixPath
 import re
 import struct
 import urllib.error
@@ -176,7 +179,8 @@ class RangeStore:
     ``(object, etag)`` just before the next whole-object GET. ``max_read``
     makes every response return at most that many bytes per read, and
     ``range_fault`` ("content_length", "content_range" or "overlong") breaks
-    every ranged response in that way.
+    every ranged response in that way. ``absent`` answers every request 404,
+    as a store does for an object that was never written or was deleted.
     """
 
     def __init__(self, data, *, etag='"version1"', generation=None, url=URL):
@@ -190,6 +194,7 @@ class RangeStore:
         self.range_fault = None
         self.ignore_if_match = False
         self.next_version = None
+        self.absent = False
 
     def opener(self, request, timeout, policy):
         headers = {key.lower(): value for key, value in request.header_items()}
@@ -202,6 +207,8 @@ class RangeStore:
             first, last = map(int, re.fullmatch(r"bytes=(\d+)-(\d+)", requested).groups())
             entry["range"] = (first, last)
         self.requests.append(entry)
+        if self.absent:
+            raise urllib.error.HTTPError("redacted", 404, "Not Found", {}, None)
         if not self.ignore_if_match and entry["if_match"] not in (None, self.etag):
             # The URL is deliberately not the signed one: errors must stay secret-free.
             raise urllib.error.HTTPError("redacted", 412, "Precondition Failed", {}, None)
@@ -342,6 +349,199 @@ def build_zip(entries, *, zip64_end=False, prepend=b"", shift_offsets=True, comm
                                 capped(count, 0xFFFF), capped(len(directory), 0xFFFFFFFF),
                                 capped(directory_offset, 0xFFFFFFFF), len(comment)) + comment)
     return VirtualObject(segments)
+
+
+QUICK10_RESULT = "native_task_arena_policy_canary_session_result.v1.json"
+QUICK10_CAMERAS = ("external", "wrist", "overview")
+QUICK10_CANDIDATES = ("pi05_droid", "groot_n17_droid")
+
+
+@dataclass(frozen=True)
+class Quick10Archive:
+    """A Quick-10-shaped output: the archive plus which members are which."""
+
+    archive: VirtualObject
+    result: dict
+    json_members: tuple[str, ...]
+    bulk_members: tuple[str, ...]
+    payloads: dict
+
+
+def _json_bytes(value) -> bytes:
+    return json.dumps(value, sort_keys=True).encode()
+
+
+def quick10_shaped_archive(*, cells: int = 10, frames_per_camera: int = 4, png_bytes: int = 48 * 1024,
+                           mp4_bytes: int = 256 * 1024, policy_requests_per_episode: int = 2,
+                           policy_request_bytes: int = 64 * 1024,
+                           result_status: str = "runtime_completed_unqualified_pending_closeout",
+                           extra_members: dict | None = None) -> Quick10Archive:
+    """A Quick-10-shaped provider output whose bulk members are zero runs.
+
+    Members follow the provider packer's order (``sorted(rglob)``): every cell's
+    tree, then the top-level JSON. The JSON members (the aggregate result, the
+    ten child results, per-episode receipts and frame manifests, the telemetry
+    index) are real and deflated. PNG frames, the three-camera MP4 reviews and
+    the policy requests are stored ``Zeros``. ``mp4_bytes`` scales the archive:
+    at 72 MiB the top-level result starts past 4 GiB, so its offsets are ZIP64.
+    """
+    payloads: dict = {}
+    episodes = []
+    for cell in range(cells):
+        root = f"cell_runs/{cell:02d}"
+        payloads[f"{root}/{QUICK10_RESULT}"] = _json_bytes({
+            "schema_version": QUICK10_RESULT.removesuffix(".json"), "cell_index": cell,
+            "status": "runtime_selected_cell_completed_pending_aggregation", "blockers": []})
+        for candidate in QUICK10_CANDIDATES:
+            episode = f"cell{cell:02d}-{candidate}"
+            episodes.append({"episode_id": episode, "candidate_id": candidate, "cell_index": cell})
+            payloads[f"{root}/episodes/{episode}.score_receipt.json"] = _json_bytes(
+                {"episode_id": episode, "task_success": cell % 2 == 0})
+            payloads[f"{root}/episodes/{episode}.state_trace.json"] = _json_bytes(
+                {"episode_id": episode, "steps": list(range(40))})
+            media = f"{root}/episodes/media/{episode}"
+            payloads[f"{media}/frame_manifest.json"] = _json_bytes(
+                {"episode_id": episode, "frames": frames_per_camera * len(QUICK10_CAMERAS)})
+            for camera in QUICK10_CAMERAS:
+                payloads[f"{media}/{camera}.mp4"] = Zeros(mp4_bytes)
+                for frame in range(frames_per_camera):
+                    payloads[f"{media}/frames/{camera}/{frame:06d}.png"] = Zeros(png_bytes)
+            for request in range(policy_requests_per_episode):
+                payloads[f"{media}/policy-requests/{request:04d}.json"] = Zeros(policy_request_bytes)
+    result = {"schema_version": QUICK10_RESULT.removesuffix(".json"), "status": result_status,
+              "blockers": [], "run_kind": "internal_policy_canary", "episodes": episodes}
+    payloads[QUICK10_RESULT] = _json_bytes(result)
+    payloads["policy_canary_telemetry_index.json"] = _json_bytes({"episodes": len(episodes)})
+    payloads.update(extra_members or {})
+    ordered = dict(sorted(payloads.items(), key=lambda item: PurePosixPath(item[0]).parts))
+    archive = build_zip([Entry(name, data, method=STORED if isinstance(data, Zeros) else DEFLATED)
+                         for name, data in ordered.items()])
+    bulk = tuple(name for name, data in ordered.items() if isinstance(data, Zeros))
+    small = tuple(name for name, data in ordered.items() if not isinstance(data, Zeros))
+    return Quick10Archive(archive=archive, result=result, json_members=small, bulk_members=bulk,
+                          payloads=ordered)
+
+
+class _CasNotFound(KeyError):
+    """A missing key, shaped as an S3-compatible client reports it."""
+
+    response = {"ResponseMetadata": {"HTTPStatusCode": 404}, "Error": {"Code": "NoSuchKey"}}
+
+
+class _CasPreconditionFailed(RuntimeError):
+    response = {"ResponseMetadata": {"HTTPStatusCode": 412}, "Error": {"Code": "PreconditionFailed"}}
+
+
+class _CasBody:
+    def __init__(self, obj: VirtualObject, start: int, stop: int):
+        self._obj, self._position, self._stop = obj, start, stop
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            size = self._stop - self._position
+        end = min(self._stop, self._position + size)
+        chunk = bytes(self._obj.read(self._position, end)) if end > self._position else b""
+        self._position = end
+        return chunk
+
+    def close(self):
+        pass
+
+
+def virtual_sha256(obj: VirtualObject, step: int = 8 * 1024**2) -> str:
+    digest = hashlib.sha256()
+    for start in range(0, obj.size, step):
+        digest.update(obj.read(start, start + step))
+    return "sha256:" + digest.hexdigest()
+
+
+class VirtualCasClient:
+    """A B2 double: multipart and file uploads, HEAD, and whole or ranged GETs.
+
+    Streamed parts are hashed in order and never kept. On completion the key
+    serves the ``VirtualObject`` registered (``register``) for the streamed
+    digest, so a multi-GB archive costs no memory; completing an unregistered
+    digest is a test-setup error. ``upload_file`` keeps the small file's
+    bytes. ``uploads``, ``aborted``, ``readback_bytes`` and ``calls`` record
+    what happened; reads are thread-safe (ranged readback runs in parallel).
+    """
+
+    def __init__(self, *, bucket: str = "blueprint-artifacts"):
+        import threading
+
+        self.bucket = bucket
+        self.sources: dict[str, VirtualObject] = {}
+        self.objects: dict[str, tuple[VirtualObject, dict, str]] = {}
+        self.pending: dict[str, dict] = {}
+        self.calls: list[tuple] = []
+        self.uploads = self.aborted = self.readback_bytes = 0
+        self._lock = threading.Lock()
+
+    def register(self, obj: VirtualObject) -> str:
+        digest = virtual_sha256(obj)
+        self.sources[digest] = obj
+        return digest
+
+    def _log(self, *call):
+        with self._lock:
+            self.calls.append(call)
+
+    def head_object(self, *, Bucket, Key):
+        self._log("head", Key)
+        if Key not in self.objects:
+            raise _CasNotFound(Key)
+        obj, metadata, etag = self.objects[Key]
+        return {"ContentLength": obj.size, "Metadata": dict(metadata), "ETag": etag}
+
+    def create_multipart_upload(self, *, Bucket, Key, Metadata, ContentType):
+        upload = f"upload-{len(self.pending) + len(self.calls)}"
+        self._log("create_multipart_upload", Key)
+        self.pending[upload] = {"metadata": dict(Metadata), "digest": hashlib.sha256(), "size": 0}
+        return {"UploadId": upload}
+
+    def upload_part(self, *, Bucket, Key, UploadId, PartNumber, Body):
+        row = self.pending[UploadId]
+        row["digest"].update(Body)
+        row["size"] += len(Body)
+        return {"ETag": f'"part-{PartNumber}"'}
+
+    def complete_multipart_upload(self, *, Bucket, Key, UploadId, MultipartUpload):
+        row = self.pending.pop(UploadId)
+        digest = "sha256:" + row["digest"].hexdigest()
+        self._store(Key, self.sources[digest], row["metadata"], digest)
+
+    def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+        self.pending.pop(UploadId, None)
+        self.aborted += 1
+
+    def upload_file(self, source, bucket, key, ExtraArgs=None):
+        with open(source, "rb") as stream:
+            data = stream.read()
+        self._log("upload_file", key)
+        self._store(key, VirtualObject([data]), (ExtraArgs or {}).get("Metadata") or {},
+                    "sha256:" + hashlib.sha256(data).hexdigest())
+
+    def _store(self, key, obj, metadata, digest):
+        self.objects[key] = (obj, dict(metadata), f'"b2-{digest[7:23]}"')
+        self.uploads += 1
+
+    def get_object(self, *, Bucket, Key, Range=None, IfMatch=None):
+        self._log("get_object", Key, Range)
+        obj, _, etag = self.objects[Key]
+        if IfMatch is not None and IfMatch != etag:
+            raise _CasPreconditionFailed(Key)
+        if Range is None:
+            with self._lock:
+                self.readback_bytes += obj.size
+            return {"Body": _CasBody(obj, 0, obj.size), "ETag": etag, "ContentLength": obj.size,
+                    "ResponseMetadata": {"HTTPStatusCode": 200}}
+        first, last = map(int, re.fullmatch(r"bytes=(\d+)-(\d+)", Range).groups())
+        stop = min(last, obj.size - 1) + 1
+        with self._lock:
+            self.readback_bytes += stop - first
+        return {"Body": _CasBody(obj, first, stop), "ETag": etag, "ContentLength": stop - first,
+                "ContentRange": f"bytes {first}-{stop - 1}/{obj.size}",
+                "ResponseMetadata": {"HTTPStatusCode": 206}}
 
 
 class _Unseekable(io.RawIOBase):
