@@ -389,11 +389,17 @@ def test_undeclared_write_or_changed_input_is_an_infrastructure_failure(tmp_path
 
 
 def _gone(pid: int) -> bool:
+    """Killed: no such process, or (on Linux) a zombie its new parent has yet to reap."""
     for _ in range(200):
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             return True
+        try:
+            if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                return True
+        except OSError:
+            pass  # no /proc here, or the process has just gone: the next signal says which
         time.sleep(0.05)
     return False
 
@@ -740,7 +746,11 @@ def test_an_unexpected_error_is_typed_never_printed(tmp_path: Path, monkeypatch,
         raise ValueError(url)
 
     monkeypatch.setattr(worker, "bootstrap", explode)
-    assert worker.main(["bootstrap"]) == worker.EXIT_REFUSED
+    umask = os.umask(0o022)
+    try:
+        assert worker.main(["bootstrap"]) == worker.EXIT_REFUSED
+    finally:
+        os.umask(umask)  # bootstrap mode sets the worker's umask on its process: this one is pytest's
     out, err = capsys.readouterr()
     assert json.loads(err) == {"mode": "worker", "status": "failed", "code": "ValueError"} and out == ""
     assert "X-Amz-" not in "\n".join(world.logs)
