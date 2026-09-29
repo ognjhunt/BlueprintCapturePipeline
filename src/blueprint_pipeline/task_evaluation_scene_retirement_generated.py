@@ -13,7 +13,7 @@ import secrets
 import stat
 import sys
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
@@ -24,6 +24,10 @@ from .task_evaluation_scene_retirement_generations import _guard, _new_file, _na
 
 SCHEMA = 'scene_generated_content_publication.v1'
 _ERROR = 'scene_retirement_generated_source_unproven'
+
+
+class _UnregisteredExternal(Exception):
+    """A native readable source supplies no generation/owner publication."""
 _FIELDS = {'schema_version', 'intent_raw_ref', 'storage_authority_raw_ref',
     'producer_generation_raw_ref', 'producer_root', 'request_digest', 'bundle_raw_ref',
     'expected_reference', 'role', 'manifest_raw_ref', 'manifest_digest', 'entry',
@@ -106,6 +110,76 @@ class _ArchiveReader(io.RawIOBase):
 
     def tell(self):
         return self.seek(0, os.SEEK_CUR)
+
+
+class _TemporaryWriter:
+    """One NEW native member token, retained through its cache publication."""
+    def __init__(self, use, path, maximum):
+        self.use, self.path = use, _canonical(str(path))
+        self.maximum, self.written, self.unlinked = maximum, 0, False
+        self.stack = ExitStack()
+        try:
+            self.parent, info = self.stack.enter_context(_opened(self.path.parent, directory=True))
+            self.parent_identity = _identity(info)
+            use.guard()
+            _guard(self.parent, self.parent_identity)
+            fd = os.open(self.path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o440, dir_fd=self.parent)
+            # No token ownership exists until independent named expectation
+            # AND the first fstat match. A failure cannot authorize close.
+            _guard(self.parent, self.parent_identity)
+            expected = os.stat(self.path.name, dir_fd=self.parent, follow_symlinks=False)
+            observed = os.fstat(fd)
+            _require(stat.S_ISREG(expected.st_mode) and expected.st_nlink == 1
+                     and expected.st_size == 0 and _identity(expected) == _identity(observed), _ERROR)
+            self.fd, self.identity = fd, _identity(observed)
+            self.guard()
+        except BaseException:
+            if hasattr(self, 'identity'):
+                access._close_owned(self.fd, self.identity)
+            self.stack.close()
+            raise
+
+    def guard(self):
+        self.use.guard()
+        _named(self.parent, self.parent_identity, self.path.name, self.fd, self.identity)
+        info = os.fstat(self.fd)
+        _require(info.st_size == self.written and stat.S_IMODE(info.st_mode) == 0o440, _ERROR)
+
+    def write(self, raw):
+        self.guard()
+        _require(0 < len(raw) <= 1024*1024 and self.written+len(raw) <= self.maximum, _ERROR)
+        count = os.write(self.fd, raw)
+        _require(type(count) is int and 0 < count <= len(raw), _ERROR)
+        self.written += count
+        self.guard()
+        return count
+
+    def fsync(self):
+        self.guard()
+        _require(self.written == self.maximum, _ERROR)
+        os.fsync(self.fd)
+        self.guard()
+
+    def unlink(self):
+        if self.unlinked:
+            return
+        self.guard()
+        os.unlink(self.path.name, dir_fd=self.parent)
+        self.unlinked = True
+        _guard(self.parent, self.parent_identity)
+        os.fsync(self.parent)
+
+    def close(self):
+        incoming = sys.exc_info()[1]
+        failure = access._close_owned(self.fd, self.identity)
+        try:
+            self.stack.close()
+        finally:
+            if failure and incoming is None:
+                raise access.SceneRetirementAccessError(failure)
+            if failure and incoming is not None:
+                incoming.add_note(failure)
 
 
 class _BundleUse:
@@ -208,12 +282,53 @@ class _BundleUse:
         return raw
 
 
+    @contextmanager
+    def temporary(self, path, maximum):
+        _require(type(maximum) is int and 0 <= maximum <= 200*1024**3, _ERROR)
+        writer = _TemporaryWriter(self, path, maximum)
+        try:
+            yield writer
+        finally:
+            writer.close()
+
+    def _project_unowned_external(self, source, cached, target, entry):
+        """Preserve verified native reuse, with no generation/owner grant."""
+        from . import task_evaluation_scene_retirement_cache as cache
+        source, cached = _canonical(str(source)), _canonical(str(cached))
+        with access.scene_access(source), _opened(source.parent, directory=True) as (original_parent, original_info), \
+                _opened(source) as (fd, info), _opened(cached.parent, directory=True) as (parent, parent_info):
+            identity, snapshot = _identity(info), _snapshot(info)
+            _require(info.st_size == entry['size_bytes'] and stat.S_IMODE(info.st_mode) & 0o222 == 0, _ERROR)
+            digest, remaining = hashlib.sha256(), info.st_size
+            while remaining:
+                self.guard()
+                _named(original_parent, _identity(original_info), source.name, fd, identity)
+                chunk = os.read(fd, min(1024*1024, remaining))
+                _named(original_parent, _identity(original_info), source.name, fd, identity)
+                _require(chunk, _ERROR)
+                digest.update(chunk)
+                remaining -= len(chunk)
+            _require(_snapshot(os.fstat(fd)) == snapshot and 'sha256:'+digest.hexdigest() == entry['sha256'], _ERROR)
+            self.guard()
+            _named(original_parent, _identity(original_info), source.name, fd, identity)
+            _guard(parent, _identity(parent_info))
+            os.link(source.name, cached.name, src_dir_fd=original_parent, dst_dir_fd=parent, follow_symlinks=False)
+            _named(parent, _identity(parent_info), cached.name, fd, identity)
+            os.fsync(parent)
+            self.guard()
+        cache.project_content(cached, target, authority=self.producer[1]['source_storage_authority_raw_ref'])
+        return True
+
     def publish_external_member(self, *, source, cached, target, manifest_bytes, manifest, entry):
         if self.producer is None:
             return False
         from . import task_evaluation_scene_retirement_cache as cache
-        authority = self.publish(manifest_bytes=manifest_bytes, manifest=manifest, entry=entry,
-                                 external_source=source)
+        with access.scene_access(source):
+            try:
+                authority = self.publish(manifest_bytes=manifest_bytes, manifest=manifest, entry=entry,
+                                         external_source=source)
+            except _UnregisteredExternal:
+                return self._project_unowned_external(source, cached, target, entry)
         if authority is None:
             return False
         source, cached = _canonical(str(source)), _canonical(str(cached))
@@ -300,23 +415,33 @@ def _external_source(policy, path, entry, authority_ref):
         # Actual native preparation projection and its fixed default CAS:
         # select the authenticated preparation, never scan for matching bytes.
         producer = _producer(policy, path.parent)
-        _require(producer is not None, _ERROR)
+        if producer is None:
+            raise _UnregisteredExternal()
         prep, current, _ = producer
         _require(prep.name == request['preparation_id']
                  and current['source_storage_authority_raw_ref'] == authority_ref
                  and path.name == entry['sha256'][7:], _ERROR)
         native_cache = prep.parent/'content-addressed'/'sha256'/entry['sha256'][7:]
-        generation, reference = _generation(policy, native_cache, directory=False)
+        try:
+            generation, reference = _generation(policy, native_cache, directory=False)
+        except FileNotFoundError as error:
+            raise _UnregisteredExternal() from error
         with _opened(native_cache) as (_, cached), _opened(path) as (_, projected):
             _require(_identity(cached) == _identity(projected), _ERROR)
     selected = selected_document(generation['source_publication_raw_ref'], maximum=65536)
     if selected.get('schema_version') == SCHEMA:
+        _require(set(selected) == _FIELDS
+                 and selected['publication_digest'] == canonical_digest(selected, digest_field='publication_digest'), _ERROR)
+        if selected['storage_authority_raw_ref'] != authority_ref:
+            raise _UnregisteredExternal()
         verified = _validate_current_publication(selected, policy)
         _require(selected['storage_authority_raw_ref'] == authority_ref
                  and verified['digest'] == entry['sha256'] and verified['size_bytes'] == entry['size_bytes'], _ERROR)
     else:
-        _require(source.get('schema_version') == 'scene_preparation_storage_authority.v1'
-                 and generation['source_publication_raw_ref'] == authority_ref, _ERROR)
+        _require(selected.get('schema_version') == 'scene_preparation_storage_authority.v1'
+                 and selected.get('authority_digest') == canonical_digest(selected, digest_field='authority_digest'), _ERROR)
+        if generation['source_publication_raw_ref'] != authority_ref:
+            raise _UnregisteredExternal()
     _require(generation['digest'] == entry['sha256'] and generation['size_bytes'] == entry['size_bytes'], _ERROR)
     with _opened(path.parent, directory=True) as (parent, parent_info), _opened(path) as (fd, info):
         digest = hashlib.sha256()

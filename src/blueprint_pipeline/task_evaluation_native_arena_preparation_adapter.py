@@ -21,6 +21,7 @@ import tempfile
 import uuid
 import zipfile
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
@@ -633,63 +634,69 @@ def _extract_verified_bundle_unfenced(
                     if cached != target
                     else target
                 )
-                descriptor = os.open(
-                    temporary,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                    0o440,
-                )
-                try:
-                    digest = hashlib.sha256()
-                    size = 0
-                    with _member_stream(archive, relative, layer_source) as source:
-                        while True:
-                            chunk = source.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            view = memoryview(chunk)
-                            while view:
-                                written = os.write(descriptor, view)
-                                if written <= 0:
-                                    raise OSError("short adapter bundle write")
-                                view = view[written:]
-                            digest.update(chunk)
-                            size += len(chunk)
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-                if (
-                    size != row["size_bytes"]
-                    or "sha256:" + digest.hexdigest() != row["sha256"]
-                ):
-                    temporary.unlink(missing_ok=True)
-                    raise TaskEvaluationNativeArenaAdapterError(
-                        "task_evaluation_adapter_bundle_member_readback_mismatch"
+                scope = (_generated_use.temporary(temporary, row['size_bytes'])
+                         if _generated_use is not None else nullcontext(None))
+                with scope as writer:
+                    descriptor = writer.fd if writer is not None else os.open(
+                        temporary,
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
+                        0o440,
                     )
-                if cached != target:
                     try:
-                        authority = None if _generated_use is None else _generated_use.publish(
-                            manifest_bytes=manifest_bytes, manifest=manifest, entry=row)
-                        if authority is None:
-                            os.link(temporary, cached, follow_symlinks=False)
-                        else:
-                            from . import task_evaluation_scene_retirement_cache as scene_cache
-                            scene_cache.publish_content_generation(cached, temporary,
-                                digest=row['sha256'], size_bytes=row['size_bytes'], authority=authority)
-                    except FileExistsError:
-                        if (
-                            cached.stat().st_size != row["size_bytes"]
-                            or _sha256_file(cached) != row["sha256"]
-                        ):
-                            raise TaskEvaluationNativeArenaAdapterError(
-                                "task_evaluation_adapter_content_store_identity_mismatch"
-                            )
+                        digest = hashlib.sha256()
+                        size = 0
+                        with _member_stream(archive, relative, layer_source) as source:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                view = memoryview(chunk)
+                                while view:
+                                    written = writer.write(view) if writer is not None else os.write(descriptor, view)
+                                    if written <= 0:
+                                        raise OSError("short adapter bundle write")
+                                    view = view[written:]
+                                digest.update(chunk)
+                                size += len(chunk)
+                        writer.fsync() if writer is not None else os.fsync(descriptor)
                     finally:
-                        temporary.unlink(missing_ok=True)
-                    _project_generated(cached, target, _generated_use)
+                        if writer is None:
+                            os.close(descriptor)
+                    if (
+                        size != row["size_bytes"]
+                        or "sha256:" + digest.hexdigest() != row["sha256"]
+                    ):
+                        writer.unlink() if writer is not None else temporary.unlink(missing_ok=True)
+                        raise TaskEvaluationNativeArenaAdapterError(
+                            "task_evaluation_adapter_bundle_member_readback_mismatch"
+                        )
+                    if cached != target:
+                        try:
+                            if writer is not None:
+                                writer.guard()
+                            authority = None if _generated_use is None else _generated_use.publish(
+                                manifest_bytes=manifest_bytes, manifest=manifest, entry=row)
+                            if authority is None:
+                                os.link(temporary, cached, follow_symlinks=False)
+                            else:
+                                from . import task_evaluation_scene_retirement_cache as scene_cache
+                                scene_cache.publish_content_generation(cached, temporary,
+                                    digest=row['sha256'], size_bytes=row['size_bytes'], authority=authority)
+                        except FileExistsError:
+                            if (
+                                cached.stat().st_size != row["size_bytes"]
+                                or _sha256_file(cached) != row["sha256"]
+                            ):
+                                raise TaskEvaluationNativeArenaAdapterError(
+                                    "task_evaluation_adapter_content_store_identity_mismatch"
+                                )
+                        finally:
+                            writer.unlink() if writer is not None else temporary.unlink(missing_ok=True)
+                        _project_generated(cached, target, _generated_use)
         except Exception:
             shutil.rmtree(destination, ignore_errors=True)
             raise
