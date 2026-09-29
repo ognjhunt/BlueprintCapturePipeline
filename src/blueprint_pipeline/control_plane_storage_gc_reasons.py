@@ -456,7 +456,7 @@ def _registered_action_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
         if decision == "kept":
             kept[reason] = {"count": kept.get(reason, {"count": 0})["count"] + 1, "bytes": None}
         amounts = (_integer(row.get("removed_logical_bytes")), _integer(row.get("removed_allocated_bytes")))
-        if any(amount is None for amount in amounts) or decision not in ("kept", "retired"):
+        if any(amount is None or not 0 <= amount <= 2**63 - 1 for amount in amounts) or decision not in ("kept", "retired"):
             valid = False
         elif decision == "kept" and any(amounts):
             valid = False
