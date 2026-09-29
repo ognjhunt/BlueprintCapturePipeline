@@ -537,6 +537,10 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
         cache_generations=[value for _,value in caches],preserved=preserved,metadata_closure_raw_ref=None)
     journal=SceneJournal.create(store,token='4'*32,initial=initial,allowance=allowance)
     pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
+    public_pending=json.loads(Path(pending['path']).read_bytes())
+    assert [row['canonical_path'] for row in public_pending['cache_members']]==[
+        row['canonical_path'] for row in consent['cache_objects']]
+    assert all(row['action']=='pending' and row['size_bytes']>0 for row in public_pending['cache_members'])
     with access.exclusive_scene_access():
         event=journal.append('retiring',member_key='0',evidence={
             'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][0]['inventory_sha256']})
@@ -556,6 +560,12 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
             return
         receipt=engine._finish_retirement(policy,consent,initial,journal,pending,[generation],[],allowance)
     assert receipt['status']=='retired' and not root.exists()
+    public_retired=json.loads(Path(receipt['intent_receipt_path']).read_bytes())
+    assert [row['event_raw_ref'] for row in public_retired['cache_members']]==[
+        row['event_raw_ref'] for row in receipt['cache_outcomes']]
+    assert sum(row['removed_allocated_bytes'] for row in public_retired['cache_members'])==sum(
+        row['removed_allocated_bytes'] for row in receipt['cache_outcomes'])
+    assert all(row['action']=='offloaded' for row in public_retired['cache_members'])
     assert all(not Path(row['canonical_path']).exists() for row in consent['cache_objects'])
     assert receipt['removed_allocated_bytes']==preserved['unique_allocated_bytes']
     assert len(receipt['cache_outcomes'])==len(caches)
@@ -613,6 +623,10 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
         result=engine._finish_restore(policy,restore_consent,snapshot,receipt['retired_journal_raw_ref'],
             restore,pending,context,[restoring],[],allowance,transport)
     assert result['status']=='restored' and root.is_dir()
+    public_restored=json.loads(Path(result['intent_receipt_path']).read_bytes())
+    assert all(row['action']=='restored' for row in public_restored['cache_members'])
+    assert [row['restore_identity'] for row in public_restored['cache_members']]==[
+        row['restore_identity'] for row in result['cache_outcomes']]
     for file,original in caches:
         value=json.loads(file.read_bytes())
         alias=Path(original['canonical_path'])
