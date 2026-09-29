@@ -16,6 +16,7 @@ import stat
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import nullcontext
 from typing import Any, Mapping
 
 from blueprint_pipeline.company_policy_sandbox_executor import (
@@ -122,6 +123,8 @@ def main() -> int:
     parser.add_argument("--broker-base-url")
     parser.add_argument("--broker-token-file", type=Path)
     parser.add_argument("--blueprint-owned-vm-identity", action="store_true")
+    parser.add_argument("--private-model-bucket")
+    parser.add_argument("--approved-model-runner-image")
     parser.add_argument("--broker-client-id", default="blueprint-policy-sandbox-worker")
     parser.add_argument("--ack", choices=["authorized-controlled-policy-session"], required=True)
     args = parser.parse_args()
@@ -143,8 +146,19 @@ def main() -> int:
         if payload.get("runner_profile") != "onnx_state_mlp_cpu_v1":
             raise ValueError("controlled_policy_bridge_runner_profile_invalid")
         validate_model_task_binding(artifact, contract)
+        if (not args.private_model_bucket or plan.get("model_artifact") != artifact
+                or not isinstance(plan.get("model_stage_directory"), str)):
+            raise ValueError("controlled_policy_bridge_model_bytes_unbound")
+        if (not args.approved_model_runner_image
+                or re.search(r"@sha256:[0-9a-f]{64}\Z", args.approved_model_runner_image) is None
+                or contract["container"]["image"] != args.approved_model_runner_image
+                or contract["container"]["serve_command"] !=
+                ["python", "-m", "blueprint_pipeline.policy_model_server"]):
+            raise ValueError("controlled_policy_bridge_model_runner_not_approved")
     elif payload.get("image_ref") != contract["container"]["image"]:
         raise ValueError("controlled_policy_bridge_image_binding_invalid")
+    elif plan.get("model_artifact") is not None:
+        raise ValueError("controlled_policy_bridge_unexpected_model_mount")
     if modalities[0] == "sim_controller_plugin":
         if (payload.get("execution_profile") != "controlled_observation_v1"
                 or payload.get("transport") != "isolated_container_http_json_v1"):
@@ -181,15 +195,32 @@ def main() -> int:
         tls_certificate=args.tls_certificate, tls_private_key=args.tls_private_key,
         tls_certificate_pem=args.tls_certificate.read_text(),
         maximum_seconds=args.maximum_seconds, max_policy_calls=authority["max_policy_calls"])
-    result = bridge.run(lambda session: execute_company_policy_sandbox_preobservation(
-        plan=plan, contract=contract, broker=broker, runner=SubprocessCommandRunner(),
-        attestation_key=key, attestation_key_id=args.attestation_key_id,
-        worker_boot_receipt=boot, output_path=args.output,
-        qualified_session=session,
-        authorize_scene_access=lambda qualified_plan, qualification: (
-            qualified_plan["plan_digest"] == authority["plan_digest"]
-            and qualification.get("status") == "qualified_before_first_observation"),
-    ))
+    if artifact is not None:
+        from blueprint_pipeline.policy_model_materialization import staged_policy_model
+        model_context = staged_policy_model(
+            artifact, bucket=args.private_model_bucket,
+            team_id=str(request["customer"]["id"]),
+            directory=Path(plan["model_stage_directory"]),
+        )
+    else:
+        model_context = nullcontext()
+    with model_context as model_receipt:
+        if model_receipt is not None:
+            receipt_path = args.manifest_out.with_name("model-stage-receipt.json")
+            with receipt_path.open("x") as output:
+                os.fchmod(output.fileno(), 0o600)
+                json.dump(model_receipt, output, sort_keys=True)
+                output.flush()
+                os.fsync(output.fileno())
+        result = bridge.run(lambda session: execute_company_policy_sandbox_preobservation(
+            plan=plan, contract=contract, broker=broker, runner=SubprocessCommandRunner(),
+            attestation_key=key, attestation_key_id=args.attestation_key_id,
+            worker_boot_receipt=boot, output_path=args.output,
+            qualified_session=session,
+            authorize_scene_access=lambda qualified_plan, qualification: (
+                qualified_plan["plan_digest"] == authority["plan_digest"]
+                and qualification.get("status") == "qualified_before_first_observation"),
+        ))
     print(json.dumps({"status": result["status"],
         "terminal_receipt_digest": result.get("terminal_receipt", {}).get("receipt_digest"),
         "cleanup_complete": result.get("terminal_receipt", {}).get("cleanup_complete") is True,

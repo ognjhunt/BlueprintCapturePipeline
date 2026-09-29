@@ -137,6 +137,7 @@ def build_company_policy_sandbox_plan(
     apparmor_profile_digest: str,
     registry_addresses: Sequence[str],
     allowed_registry_hosts: Sequence[str],
+    model_artifact: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an immutable command plan; do not execute any command."""
 
@@ -209,6 +210,7 @@ def build_company_policy_sandbox_plan(
     proxy_name = f"blueprint-policy-proxy-{suffix}"
     policy_name = f"company-policy-{suffix}"
     ipc_host_dir = f"/run/blueprint/company-policy/{suffix}"
+    model_host_dir = f"/run/blueprint/company-policy-model/{suffix}"
     docker_config_dir = f"/run/blueprint/company-policy-registry/{suffix}"
     resources = normalized_contract["container"]["resources"]
     policy_run_argv = [
@@ -236,8 +238,15 @@ def build_company_policy_sandbox_plan(
         f'/tmp:rw,noexec,nosuid,nodev,size={resources["tmpfs_mib"]}m',
         "--user",
         f'{normalized_contract["container"]["run_as_uid"]}:{normalized_contract["container"]["run_as_gid"]}',
-        "--log-driver=none",
     ]
+    if model_artifact is not None:
+        from .policy_model_onnx import validate_model_task_binding
+
+        validate_model_task_binding(model_artifact, normalized_contract)
+        policy_run_argv.extend([
+            "--mount", f"type=bind,src={model_host_dir},dst=/opt/policy-model,readonly",
+        ])
+    policy_run_argv.append("--log-driver=none")
     if normalized_contract["container"]["gpu_required"]:
         policy_run_argv.extend(["--gpus", "all"])
     policy_run_argv.extend(
@@ -328,7 +337,8 @@ def build_company_policy_sandbox_plan(
         },
         "security": {
             "network_namespace": "proxy_sidecar_network_none_shared_by_policy",
-            "policy_mounts": [],
+            "policy_mounts": ([f"{model_host_dir}:/opt/policy-model:readonly"]
+                              if model_artifact is not None else []),
             "policy_environment_credentials": [],
             "docker_socket_mounted": False,
             "root_filesystem_read_only": True,
@@ -349,6 +359,8 @@ def build_company_policy_sandbox_plan(
             "blueprint_proxy": blueprint_proxy_image,
             "blueprint_proxy_contract_digest": blueprint_proxy_contract_digest,
         },
+        **({"model_artifact": dict(model_artifact), "model_stage_directory": model_host_dir}
+           if model_artifact is not None else {}),
         "phase_order": [
             "credential_redeemed_for_exact_pull",
             "policy_image_pulled_and_digest_verified",
