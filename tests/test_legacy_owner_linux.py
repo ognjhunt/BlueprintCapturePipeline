@@ -137,9 +137,11 @@ def _root_fixture() -> dict:
             "try: Path(hidden,'secret').read_bytes()\n"
             "except OSError: pass\n"
             "else: raise AssertionError('hidden provider secret readable')\n"
-            "stage='foreign_proc_metadata'\n"
+            "stage='foreign_proc_cmdline'\n"
             "assert Path('/proc/%d/cmdline'%pid).read_bytes()\n"
+            "stage='foreign_proc_environ'\n"
             "Path('/proc/%d/environ'%pid).read_bytes()\n"
+            "stage='foreign_proc_fd'\n"
             "links=[os.readlink('/proc/%d/fd/%s'%(pid,n)) for n in os.listdir('/proc/%d/fd'%pid)]\n"
             "assert payload in links\n"
             "stage='exact_process_scanner'\n"
@@ -186,7 +188,8 @@ def _root_fixture() -> dict:
             detail = json.loads(receipt.read_bytes()) if receipt.exists() else {}
             code = detail.get("code", "unit_before_report")
             assert code in {"start", "foreign_payload", "fixed_environment", "hidden_secret",
-                            "foreign_proc_metadata", "exact_process_scanner", "foreign_memory",
+                            "foreign_proc_cmdline", "foreign_proc_environ", "foreign_proc_fd",
+                            "exact_process_scanner", "foreign_memory",
                             "ptrace", "lock", "read_only", "unit_before_report"}
             raise AssertionError(f"disposable unit failed at {code}; exit={run.returncode}")
         result = json.loads(receipt.read_bytes())
