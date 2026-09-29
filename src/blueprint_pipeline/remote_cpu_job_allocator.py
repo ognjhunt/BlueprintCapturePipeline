@@ -374,8 +374,9 @@ def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: 
                "url": get(item["uri"])} for item in descriptor["inputs"]]
     source, receipt = {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])}, get(
         staging + "receipt.json")
-    outputs = {name: presign_remote_cpu_put(staging_uri=staging + name, expires_in_seconds=writes, client=client,
-                                            bucket=b2_bucket) for name in STAGING_OBJECTS}
+    outputs = {name: presign_remote_cpu_put(grant=grant, binding_digest=binding_digest, staging_uri=staging + name,
+                                            expires_in_seconds=writes, client=client, bucket=b2_bucket)
+               for name in STAGING_OBJECTS}
     signed_by = float(clock())
     expiries = {"read_urls_expire_at_epoch": signed_by + reads + URL_EXPIRY_MARGIN_SECONDS,
                 "write_urls_expire_at_epoch": signed_by + writes + URL_EXPIRY_MARGIN_SECONDS}
@@ -570,6 +571,7 @@ def _probe_checks(action: _Action, descriptor: Mapping[str, Any], *, grant: Paid
         "transport": transport_bucket_sentinel(
             runtime.transport_bucket, f"transport/{descriptor['job_id']}/{attempt_id}-sentinel.json"),
         "object_store": remote_cpu_object_store_sentinel(
+            grant=grant, binding_digest=result["admission"]["allocation_binding_digest"],
             staging_prefix=descriptor["outputs"]["staging_prefix"], attempt_id=attempt_id, client=store[0],
             bucket=store[1], put=runtime.presigned_put)}
     try:

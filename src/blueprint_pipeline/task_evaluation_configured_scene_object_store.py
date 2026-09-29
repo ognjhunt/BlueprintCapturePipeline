@@ -17,6 +17,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
+
 
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/configured-scenes"
 LARGE_ARTIFACT_KEY_PREFIX = f"{DEFAULT_KEY_PREFIX}/artifacts"
@@ -963,6 +965,9 @@ REMOTE_CPU_ARTIFACT_KINDS = frozenset(
     {"remote-cpu-input", "remote-cpu-output", "remote-cpu-source", "remote-cpu-sentinel"}
 )
 _REMOTE_CPU_ATTEMPT = re.compile(r"(rcj-[a-z]{2}-[0-9a-f]{24})/\1-a[1-9][0-9]{0,2}-[0-9a-f]{32}")
+# The longest remote-CPU attempt the contract allows: start allowance, a one-hour task and the grace.
+MAX_REMOTE_CPU_PUT_SECONDS = 4 * 3600
+REMOTE_CPU_RESOURCE_CLASS = "cloud_run_cpu_job"
 _MAX_SINGLE_COPY_BYTES = 5 * 1024**3
 _COPY_PART_BYTES = 512 * 1024**2
 
@@ -1004,10 +1009,20 @@ def _remote_cpu_presign(client: Any, method: str, *, key: str, bucket: str, expi
         raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_presign_failed") from None
 
 
-def presign_remote_cpu_put(*, staging_uri: str, expires_in_seconds: int, client: Any, bucket: str) -> str:
-    """A PUT URL for one object of one attempt's staging prefix, and nothing else."""
+def presign_remote_cpu_put(*, grant: PaidResourceAdmissionGrant | None, binding_digest: str, staging_uri: str,
+                           expires_in_seconds: int, client: Any, bucket: str) -> str:
+    """A PUT URL for one object of one attempt's staging prefix, and nothing else.
 
+    A presigned PUT is write authority held by whoever has the URL, so it exists only under the
+    ``cloud_run_cpu_job`` grant bound to the admitted attempt, and never outlives the longest
+    attempt the contract allows.
+    """
+
+    require_paid_resource_admission_grant(grant, resource_class=REMOTE_CPU_RESOURCE_CLASS,
+                                          allocation_binding_digest=binding_digest, require_allocation_binding=True)
     key = _remote_cpu_key(staging_uri, bucket=bucket)
+    if not isinstance(expires_in_seconds, int) or expires_in_seconds > MAX_REMOTE_CPU_PUT_SECONDS:
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_presign_expiration_invalid")
     return _remote_cpu_presign(client, "put_object", key=key, bucket=bucket, expires_in_seconds=expires_in_seconds)
 
 
@@ -1180,7 +1195,8 @@ def _presigned_put(url: str, data: bytes) -> int:
         return exc.code
 
 
-def remote_cpu_object_store_sentinel(*, staging_prefix: str, attempt_id: str, client: Any, bucket: str,
+def remote_cpu_object_store_sentinel(*, grant: PaidResourceAdmissionGrant | None, binding_digest: str,
+                                     staging_prefix: str, attempt_id: str, client: Any, bucket: str,
                                      put: Callable[[str, bytes], int] | None = None) -> dict[str, Any]:
     """Prove on B2, inside one attempt's staging prefix, what remote-CPU teardown relies on.
 
@@ -1189,6 +1205,8 @@ def remote_cpu_object_store_sentinel(*, staging_prefix: str, attempt_id: str, cl
     prefix's ``ListObjectVersions`` empty.  The staging versions are deleted even when a step fails.
     """
 
+    require_paid_resource_admission_grant(grant, resource_class=REMOTE_CPU_RESOURCE_CLASS,
+                                          allocation_binding_digest=binding_digest, require_allocation_binding=True)
     _remote_cpu_key(staging_prefix, bucket=bucket, prefix=True)
     uri = staging_prefix + "object-store-sentinel.json"
     key = _remote_cpu_key(uri, bucket=bucket)
@@ -1197,7 +1215,8 @@ def remote_cpu_object_store_sentinel(*, staging_prefix: str, attempt_id: str, cl
     checks = dict.fromkeys(("presigned_put", "copy_object", "delete_hides", "version_delete"), False)
     failures: list[str] = []
     try:
-        url = presign_remote_cpu_put(staging_uri=uri, expires_in_seconds=300, client=client, bucket=bucket)
+        url = presign_remote_cpu_put(grant=grant, binding_digest=binding_digest, staging_uri=uri,
+                                     expires_in_seconds=300, client=client, bucket=bucket)
         checks["presigned_put"] = 200 <= int((put or _presigned_put)(url, data)) < 300
         etag = str(client.head_object(Bucket=bucket, Key=key).get("ETag") or "")
         promoted = copy_remote_cpu_staging_to_cas(

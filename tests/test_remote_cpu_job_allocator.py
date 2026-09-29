@@ -454,6 +454,8 @@ def test_no_url_reaches_host_disk_or_logs(tmp_path: Path, monkeypatch, caplog, c
 
 def test_object_store_writes_name_only_attempt_staging_and_promote_server_side(tmp_path: Path, monkeypatch) -> None:
     store = RecordingArtifactStore(clock=FakeClock(T0), bucket=B2_BUCKET, max_copy_bytes=1024, min_part_bytes=256)
+    binding = {"schema_version": "remote_cpu_job_allocation_binding.v1"}
+    grant = allocator.admit_remote_cpu_job(blockers=[], binding=binding, execute=True)[1]
     job_id = "rcj-ec-" + "a" * 24
     staging = f"{OBJECT_PREFIX}/remote-cpu/staging/{job_id}/{job_id}-a1-{'b' * 32}/"
     key = staging.removeprefix(f"s3://{B2_BUCKET}/")
@@ -461,7 +463,8 @@ def test_object_store_writes_name_only_attempt_staging_and_promote_server_side(t
                 staging.replace("/staging/", "/stage/") + "x", staging + "nested/x", staging + "..", staging + "x?versionId=1",
                 staging.replace(f"{job_id}-a1", "rcj-ec-" + "f" * 24 + "-a1") + "x"):
         with pytest.raises(ObjectStoreError) as refused:
-            object_store.presign_remote_cpu_put(staging_uri=uri, expires_in_seconds=60, client=store, bucket=B2_BUCKET)
+            object_store.presign_remote_cpu_put(grant=grant, binding_digest=canonical_digest(binding), staging_uri=uri,
+                                                expires_in_seconds=60, client=store, bucket=B2_BUCKET)
         assert str(refused.value) == "remote_cpu_object_name_invalid"
         with pytest.raises(ObjectStoreError):
             object_store.copy_remote_cpu_staging_to_cas(
@@ -971,3 +974,30 @@ def test_dispatch_refuses_a_job_whose_cpu_or_memory_differs_from_the_descriptor(
     assert {"remote_cpu_job_definition_invalid:cpu", "remote_cpu_job_definition_invalid:memory"} <= set(
         result["admission"]["blockers"])
     world.assert_untouched()
+
+
+def test_remote_cpu_put_presigns_require_the_attempts_grant(tmp_path: Path, monkeypatch) -> None:
+    store = RecordingArtifactStore(clock=FakeClock(T0), bucket=B2_BUCKET)
+    job_id = "rcj-ec-" + "a" * 24
+    staging = f"{OBJECT_PREFIX}/remote-cpu/staging/{job_id}/{job_id}-a1-{'b' * 32}/"
+    binding = {"schema_version": "remote_cpu_job_allocation_binding.v1", "attempt_id": f"{job_id}-a1-{'b' * 32}"}
+    digest = canonical_digest(binding)
+    grant = allocator.admit_remote_cpu_job(blockers=[], binding=binding, execute=True)[1]
+    other = allocator.admit_remote_cpu_job(blockers=[], binding={**binding, "attempt_id": "other"}, execute=True)[1]
+
+    def put(**changes):
+        arguments = {"grant": grant, "binding_digest": digest, "staging_uri": staging + "receipt.json",
+                     "expires_in_seconds": 2520, "client": store, "bucket": B2_BUCKET, **changes}
+        return object_store.presign_remote_cpu_put(**arguments)
+
+    for refused in ({"grant": None}, {"grant": other}, {"binding_digest": "sha256:" + "0" * 64}):
+        with pytest.raises(PaidResourceAdmissionBlocked):
+            put(**refused)
+    with pytest.raises(PaidResourceAdmissionBlocked):
+        object_store.remote_cpu_object_store_sentinel(grant=None, binding_digest=digest, staging_prefix=staging,
+                                                      attempt_id=binding["attempt_id"], client=store, bucket=B2_BUCKET)
+    assert store.presigned == [] and store.operations == []
+    with pytest.raises(ObjectStoreError) as too_long:
+        put(expires_in_seconds=4 * 3600 + 1)  # a PUT never outlives the longest attempt the contract allows
+    assert str(too_long.value) == "remote_cpu_presign_expiration_invalid"
+    assert "X-Amz-Expires=2520" in put() and [method for method, _, _ in store.presigned] == ["put_object"]
