@@ -1383,9 +1383,11 @@ evidence binds for the manifest and the lane result;
 stream-only lane-result fields (`provider_output_*`, `archive_durable`,
 `provider_output_host_bytes` = M1); `provider_runtime_output_zip_path` naming no
 file; and host bytes. The native result and its digest, the joined terminal
-result, the registry rows, the public delivery and projection, the
-interpretation receipts, the billing verdict, teardown, provider-zero and the
-cleanup rows are the same (`tests/test_policy_canary_output_streaming.py`).
+result, the registry rows, the public delivery and projection, the strict
+controls' cell archives (`result_delivery/controls/cell-NN.zip`, whose frames
+and videos a streamed run reads through the member view), the interpretation
+receipts, the billing verdict, teardown, provider-zero and the cleanup rows are
+the same (`tests/test_policy_canary_output_streaming.py`).
 
 **Rollback.** Unset the flag or set `download`. Never revert the readers of
 the section above while a streamed run is retained.

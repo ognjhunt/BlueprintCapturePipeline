@@ -522,9 +522,12 @@ def _inventory_row(path: Path, root: Path, role: str) -> dict:
             "size_bytes": path.stat().st_size, "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
-def _parity_evidence(root: Path) -> tuple[dict, dict]:
+def _parity_evidence(root: Path, *, controls_monkeypatch=None) -> tuple[dict, dict]:
     """A Quick-10 provider tree every consumer can read: twenty interpretable, projection-complete
-    episodes, per-cell child results, policy requests and telemetry (download mode's bytes)."""
+    episodes, per-cell child results, policy requests and telemetry (download mode's bytes). With
+    ``controls_monkeypatch``, also twenty sealed strict controls under ``control_runs/NN/``: their
+    receipts, lossless PNG frames and review videos (review important 3)."""
+    from tests.test_policy_canary_control_result_delivery import write_native_controls
     from tests.test_policy_canary_episode_interpretation_closeout import _session as interpretable_session
 
     root.mkdir(parents=True)
@@ -558,6 +561,10 @@ def _parity_evidence(root: Path) -> tuple[dict, dict]:
                        candidate_policy_queried=True, actions_reached_robot=True, arm_moved=True,
                        policy_outcome_interpretable=True)
     result["artifact_inventory"].extend(rows)
+    if controls_monkeypatch is not None:
+        fields, control_rows = write_native_controls(evidence, controls_monkeypatch)
+        result.update(fields)
+        result["artifact_inventory"].extend(control_rows)
     result.update(schema_version="native_task_arena_policy_canary_session_result.v1",
                   status="runtime_completed_unqualified_pending_closeout", learned_policy_rollout_count=20,
                   candidate_policy_queried=True, scene_promotion_performed=False, official_ranking_performed=False,
@@ -653,7 +660,7 @@ def test_streamed_and_downloaded_quick10_seal_identical_evidence(tmp_path, monke
     from tests.test_episode_interpretation import _output
     from tests.test_policy_canary_episode_interpretation_closeout import _rights_for_all
 
-    data, result = _parity_evidence(tmp_path / "source")
+    data, result = _parity_evidence(tmp_path / "source", controls_monkeypatch=monkeypatch)
     archive = zip_tree(data["root"])
     rights = tmp_path / "rights"
     _rights_for_all(data, result, rights, DeterministicFixtureInterpreter(_output(data)))
@@ -736,6 +743,24 @@ def test_streamed_and_downloaded_quick10_seal_identical_evidence(tmp_path, monke
     assert zeros[0] == zeros[1]
     teardowns = [Path(value["lane"]["teardown_manifest_path"]).read_bytes() for value in sealed.values()]
     assert teardowns[0] == teardowns[1]
+    # Strict controls (review important 3): every cell's control archive -- which stream mode builds
+    # by streaming the frames and videos it never held through the member view -- is download
+    # mode's, byte for byte, and all twenty controls verify in both.
+    cells = {mode: sorted((value["root"] / "artifacts/result_delivery/controls").glob("cell-*.zip"))
+             for mode, value in sealed.items()}
+    assert [path.name for path in cells["stream"]] == [path.name for path in cells["download"]] == [
+        f"cell-{index:02d}.zip" for index in range(10)]
+    for downloaded, streamed in zip(cells["download"], cells["stream"]):
+        assert downloaded.read_bytes() == streamed.read_bytes(), streamed.name
+    delivered = json.loads((stream["root"] / "artifacts/result_delivery/delivery.json").read_text())
+    assert delivered["controls_summary"] == {"expected_count": 20, "recorded_count": 20, "completed_count": 20,
+                                             "passed_count": 20, "verified_cell_count": 10}
+    control_media = [path for path in (Path(stream["lane"]["attempt_root"]) / "immutable_execution/control_runs")
+                     .rglob("*") if path.suffix in {".png", ".mp4"}]
+    referenced = json.loads((stream["root"] / "artifacts/result_delivery/archive_member_references.v1.json")
+                            .read_text())["members"]
+    assert control_media == [] and {PurePosixPath(path).suffix for path in referenced
+                                    if "/immutable_execution/control_runs/" in path} >= {".png", ".mp4"}
     # Streamed delivery registered the members it did not hold by archive reference (download: none).
     references = "artifacts/result_delivery/archive_member_references.v1.json"
     assert not (download["root"] / references).exists()
