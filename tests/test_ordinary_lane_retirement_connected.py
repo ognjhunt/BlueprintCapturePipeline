@@ -17,6 +17,23 @@ from tests.test_registered_experiment_issuer import installation  # noqa: F401
 from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
 
 
+def test_generic_registered_name_is_reserved_for_authentic_reader_and_lease_protocol(tmp_path):
+    from blueprint_pipeline import control_plane_lane_scratch as scratch
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+
+    root = tmp_path / "lanes"
+    lane = root / "diagnostics"
+    lane.mkdir(parents=True)
+    name = "registered-" + "a" * 32
+    target = lane / name
+    assert consumer.registered_target(target / "payload", (root,)) == target
+    with pytest.raises(scratch.LaneScratchError, match="registered_authority_required"):
+        scratch.create_lane_scratch("diagnostics", name, root=root, owner="owner", reason="fixture",
+                                    class_intent="scratch", cleanup="delete", ttl_seconds=100,
+                                    run_ref="run-1", now=lambda: 10)
+    assert not target.exists()
+
+
 def test_ordinary_lane_new_owned_delete_requires_birth_and_separate_owner_action(retirement_installation):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
     from blueprint_pipeline import control_plane_lane_experiment_birth as birth
