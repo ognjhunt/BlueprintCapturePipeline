@@ -72,6 +72,72 @@ def fixture(*, phase='source_selections', result_status='completed', parent_id='
     return args
 
 
+def mounted_plan_result_fixture():
+    args = fixture()
+    rows, roots = args['source_records'], args['roots']
+    parent = json.loads(rows['sam_parent_envelopes'][0][1])
+    request = parent['request']
+    plan_ref = ref(rows['sam_plans'][0])
+    source = request['runtime']['mounts'][0]['source']
+    reference = {'contract_path': 'runtime.mounts.0.source', **source,
+        'materialized_path': roots['preparation_input_root'] + '/' + request['preparation_id'] + '/' + plan_ref['sha256'][7:],
+        'content_addressed_reuse': False, 'full_byte_service_account_readback_passed': True}
+    result = seal({'schema_version': 'task_evaluation_launch_preparation_result.v1',
+        'status': 'queued_for_production_scene_configuration',
+        'preparation_id': request['preparation_id'], 'run_id': request['run_id'],
+        'team_namespace': request['team_namespace'], 'source_commit': request['expected_production_commit'],
+        'references': [reference], 'reference_count': 1, 'unique_object_count': 1,
+        'full_byte_service_account_readback_passed': True,
+        'provider_mutation_performed': False, 'paid_execution_requested': False}, 'result_digest')
+    stem = request['preparation_id'] + '-' + parent['request_digest'][7:] + '.json'
+    rows['sam_parent_results'] = [pair(roots['preparation_queue_root'] + '/results/' + stem, result)]
+    return args
+
+
+def test_exact_selected_sam_parent_plan_mount_readback_is_measured_cache_candidate():
+    args = mounted_plan_result_fixture()
+    result = api().join_retained_scene_source_family_inventory(**args)
+    plan = ref(args['source_records']['sam_plans'][0])
+    alias = args['roots']['content_store_root'] + '/' + plan['sha256'][7:]
+    candidates = [row for row in result['lexical_members']
+                  if row['path'] == alias and row['kind'] == 'prepared_cache_object']
+    assert len(candidates) == 1
+    assert candidates[0]['exclusive_ownership_proven'] is False
+
+
+@pytest.mark.parametrize('change', ['uri', 'digest', 'size_bytes', 'materialized_path',
+                                    'row_readback', 'global_readback', 'duplicate'])
+def test_sam_plan_cache_candidate_requires_exact_unique_worker_readback(change):
+    args = mounted_plan_result_fixture()
+    path, raw = args['source_records']['sam_parent_results'][0]
+    result = json.loads(raw)
+    row = result['references'][0]
+    if change == 'uri':
+        row['uri'] += '.other'
+    elif change == 'digest':
+        row['digest'] = 'sha256:' + '0' * 64
+    elif change == 'size_bytes':
+        row['size_bytes'] += 1
+    elif change == 'materialized_path':
+        row['materialized_path'] += '.other'
+    elif change == 'row_readback':
+        row['full_byte_service_account_readback_passed'] = False
+    elif change == 'global_readback':
+        result['full_byte_service_account_readback_passed'] = False
+    else:
+        result['references'].append(dict(row))
+    result['result_digest'] = canonical_digest(result, digest_field='result_digest')
+    args['source_records']['sam_parent_results'] = [pair(path, result)]
+    if change in {'digest', 'size_bytes'}:
+        # The general URI/content identity fence rejects these conflicting
+        # retained records before any source-family candidate can be emitted.
+        with pytest.raises(ValueError, match='scene_source_family_'):
+            api().join_retained_scene_source_family_inventory(**args)
+        return
+    observed = api().join_retained_scene_source_family_inventory(**args)
+    assert not any(row['kind'] == 'prepared_cache_object' for row in observed['lexical_members'])
+
+
 @pytest.mark.parametrize('phase', PHASES)
 def test_every_supported_phase_retains_exact_job_result_receipt_without_live_claim(phase):
     result = api().join_retained_scene_source_family_inventory(**fixture(phase=phase))
@@ -85,6 +151,34 @@ def test_every_supported_phase_retains_exact_job_result_receipt_without_live_cla
 def test_parent_actual_192_bound_preserves_original_parent_identity(parent_id):
     result = api().join_retained_scene_source_family_inventory(**fixture(parent_id=parent_id))
     assert any(r.get('preparation_id') == parent_id for r in result['sam_observations'])
+
+
+def test_retained_sam_parent_result_binds_exact_selected_parent_and_success_status():
+    args = fixture()
+    parent = json.loads(args['source_records']['sam_parent_envelopes'][0][1])
+    request = parent['request']
+    stem = request['preparation_id'] + '-' + parent['request_digest'][7:]
+    path = args['roots']['preparation_queue_root'] + '/results/' + stem + '.json'
+    result = seal({'schema_version': 'task_evaluation_launch_preparation_result.v1',
+        'status': 'queued_for_production_scene_configuration',
+        'preparation_id': request['preparation_id'], 'run_id': request['run_id'],
+        'team_namespace': request['team_namespace'], 'source_commit': request['expected_production_commit'],
+        'references': [], 'reference_count': 0, 'unique_object_count': 0,
+        'content_addressed_reuse_count': 0, 'provider_mutation_performed': False,
+        'paid_execution_requested': False, 'catalog_mutation_performed': False}, 'result_digest')
+    args['source_records']['sam_parent_results'] = [pair(path, result)]
+    observed = api().join_retained_scene_source_family_inventory(**args)
+    assert any(row['role'] == 'sam_parent_result' and row['parent_binding_verified']
+               for row in observed['sam_observations'])
+    result['source_commit'] = 'b' * 40
+    args['source_records']['sam_parent_results'] = [pair(path, seal(result, 'result_digest'))]
+    refuses(args)
+    result['source_commit'] = request['expected_production_commit']
+    result['status'] = 'inputs_materialized_awaiting_construction_adapter'
+    args['source_records']['sam_parent_results'] = [pair(path, seal(result, 'result_digest'))]
+    observed = api().join_retained_scene_source_family_inventory(**args)
+    assert any(row['role'] == 'sam_parent_result' and row['parent_binding_verified'] is False
+               for row in observed['sam_observations'])
 
 
 @pytest.mark.parametrize('identical', [False, True])

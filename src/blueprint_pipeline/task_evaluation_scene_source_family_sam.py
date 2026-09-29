@@ -22,6 +22,7 @@ SCHEMAS = {
     'sam_stage_configurations': ('observed_appearance_object_removal_configuration.v1', None),
     'sam_host_tasks': ('task_evaluation_minimal_task_request.v1', None),
     'sam_parent_envelopes': ('task_evaluation_launch_preparation_envelope.v1', 'envelope_digest'),
+    'sam_parent_results': ('task_evaluation_launch_preparation_result.v1', 'result_digest'),
     'sam_jobs': ('task_evaluation_sam31_preparation_execution_job.v1', 'job_digest'),
     'sam_results': ('task_evaluation_sam31_preparation_execution_result.v1', 'result_digest'),
     'sam_execution_progress': ('task_evaluation_sam31_preparation_execution_progress.v1', 'progress_digest'),
@@ -78,6 +79,92 @@ def _parent(context, row, *, work_budget=None):
     c.require(all(isinstance(request.get(role), dict) and isinstance(request[role].get('identity'), dict)
         and bool(request[role]['identity']) for role in (_work_items(('scene', 'task'), work_budget) if work_budget is not None else ('scene', 'task'))), 'sam_parent_identity_invalid', **_work_kwargs(work_budget))
     return row
+
+
+def _parent_result(context, row, parents, *, work_budget=None):
+    """A retained SAM result needs one exact selected parent and worker status."""
+    if work_budget is None:
+        work_budget = getattr(context, 'work_budget', None)
+    if work_budget is not None:
+        _work(work_budget)
+    value, proof = row
+    matches = []
+    for parent in (_work_items(parents, work_budget) if work_budget is not None else parents):
+        selected = parent[1]['path']
+        route = next((r for r in (_work_items(context.routes, work_budget) if work_budget is not None else context.routes)
+                      if c.under(selected, r['queue_root'], **_work_kwargs(work_budget))), None)
+        if route is not None and proof['path'] == c.child(route['queue_root'], 'results',
+                                                          selected.rsplit('/', 1)[1], **_work_kwargs(work_budget)):
+            matches.append(parent)
+    c.require(len({(parent[1]['sha256'], parent[1]['size_bytes']) for parent in matches}) == 1,
+              'sam_parent_result_parent_invalid', **_work_kwargs(work_budget))
+    parent = matches[0]
+    request = parent[0]['request']
+    c.require(all(value.get(result_key) == request[request_key] for result_key, request_key in (
+        ('preparation_id', 'preparation_id'), ('run_id', 'run_id'),
+        ('team_namespace', 'team_namespace'), ('source_commit', 'expected_production_commit')))
+        and value.get('provider_mutation_performed') is False
+        and value.get('paid_execution_requested') is False,
+        'sam_parent_result_identity_invalid', **_work_kwargs(work_budget))
+    successful = value.get('status') == 'queued_for_production_scene_configuration'
+    if not successful:
+        context.missing('sam_parent_result', 'unsupported_retained_status', [proof, parent[1]])
+    return (c.observation(row, role='sam_parent_result', parent_binding_verified=successful,
+                          preparation_id=request['preparation_id'], request_digest=parent[0]['request_digest'],
+                          **_work_kwargs(work_budget)),
+            parent if successful and len(matches) == 1 else None)
+
+
+def _mounted_plan_cache_member(context, result, parent, plans, *, work_budget=None):
+    """Name one readback plan CAS candidate; action still proves its generation."""
+    if parent is None:
+        return
+    if work_budget is None:
+        work_budget = getattr(context, 'work_budget', None)
+    if work_budget is not None:
+        _work(work_budget)
+    value, proof = result
+    request = parent[0]['request']
+    mounts = request.get('runtime', {}).get('mounts', [])
+    references = value.get('references')
+    if (type(references) is not list or len(references) > 256
+            or value.get('full_byte_service_account_readback_passed') is not True):
+        return
+    candidates = []
+    for index, mount in enumerate(_work_items(mounts, work_budget) if work_budget is not None else mounts):
+        source = mount.get('source') if isinstance(mount, dict) else None
+        if not isinstance(source, dict) or set(source) != {'uri', 'digest', 'size_bytes'}:
+            continue
+        selected = [plan for plan in (_work_items(plans, work_budget) if work_budget is not None else plans)
+                    if plan[1]['sha256'] == source['digest'] and plan[1]['size_bytes'] == source['size_bytes']]
+        if len(selected) == 1:
+            candidates.append((index, source, selected[0]))
+    if len(candidates) != 1:
+        return
+    index, source, plan = candidates[0]
+    _plan_parent(context, plan, parent, **_work_kwargs(work_budget))
+    task = context.selected(plan[0]['host_inputs']['task_request'], plan[1], {'sam_host_tasks'})
+    if task is None or task[0].get('schema_version') != SCHEMAS['sam_host_tasks'][0]:
+        return
+    contract_path = f'runtime.mounts.{index}.source'
+    matching = [row for row in (_work_items(references, work_budget) if work_budget is not None else references)
+                if isinstance(row, dict) and row.get('contract_path') == contract_path]
+    if len(matching) != 1:
+        return
+    row = matching[0]
+    digest = source['digest']
+    projected = c.child(context.roots['preparation_input_root'], request['preparation_id'], digest[7:],
+                        **_work_kwargs(work_budget))
+    if (any(row.get(key) != source[key] for key in ('uri', 'digest', 'size_bytes'))
+            or row.get('materialized_path') != projected
+            or row.get('full_byte_service_account_readback_passed') is not True):
+        return
+    cache = c.child(context.roots['content_store_root'], digest[7:], **_work_kwargs(work_budget))
+    context.member(cache, 'prepared_cache_object',
+                   {'binding_strength': 'sam_parent_plan_exact_readback',
+                    'preparation_id': request['preparation_id'],
+                    'request_digest': parent[0]['request_digest'], 'plan_digest': digest},
+                   [task[1], plan[1], parent[1], proof])
 
 
 def _plan(context, row, *, work_budget=None):
@@ -210,7 +297,7 @@ def inventory(context, old, *, work_budget=None):
     tables = {}
     for role, (schema, field) in (_work_items(SCHEMAS.items(), work_budget) if work_budget is not None else SCHEMAS.items()):
         tables[role] = context.known(role, schema, field)
-        if role not in {'sam_parent_envelopes', 'source_progress', 'source_resume_signals'}:
+        if role not in {'sam_parent_envelopes', 'sam_parent_results', 'source_progress', 'source_resume_signals'}:
             for row in (_work_items(tables[role], work_budget) if work_budget is not None else tables[role]):
                 _allowed(context, row, **_work_kwargs(work_budget))
     context.sam_tables = tables
@@ -279,6 +366,10 @@ def inventory(context, old, *, work_budget=None):
     for parent in (_work_items(parents, work_budget) if work_budget is not None else parents):
         observations.append(c.observation(parent, role='sam_parent', preparation_id=parent[0]['request']['preparation_id'],
                                           request_digest=parent[0]['request_digest'], **_work_kwargs(work_budget)))
+    for row in (_work_items(tables['sam_parent_results'], work_budget) if work_budget is not None else tables['sam_parent_results']):
+        observation, parent = _parent_result(context, row, tables['sam_parent_envelopes'], **_work_kwargs(work_budget))
+        observations.append(observation)
+        _mounted_plan_cache_member(context, row, parent, tables['sam_plans'], **_work_kwargs(work_budget))
     for row in (_work_items(tables['sam_jobs'], work_budget) if work_budget is not None else tables['sam_jobs']):
         _job(context, row, **_work_kwargs(work_budget))
         job_index.setdefault((row[0]['child_id'], row[0]['job_digest']), []).append(row)
