@@ -91,10 +91,17 @@ def test_primary_contract_accepts_actual_activation_and_sam_states(tmp_path):
 
 
 @pytest.mark.parametrize(('field', 'family'), [
-    ('auxiliary_queue_contracts', 'activation'), ('reference_family_contracts', 'sam')])
+    ('auxiliary_queue_contracts', 'canary'), ('reference_family_contracts', 'sam')])
 def test_contract_family_rejects_before_calling_incompatible_child(tmp_path, field, family):
     from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import _context
     context, _ = context_fixture(tmp_path)
     context[field][0]['family'] = family
     with pytest.raises(ValueError, match='context_contracts_invalid'):
         _context(context, ReferenceCollectionBudget(monotonic=lambda: 0))
+
+
+def test_auxiliary_contract_accepts_actual_activation_family(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import _context
+    context, _ = context_fixture(tmp_path)
+    context['auxiliary_queue_contracts'][0]['family'] = 'activation'
+    assert _context(context, ReferenceCollectionBudget(monotonic=lambda: 0)) is context

@@ -60,10 +60,18 @@ def test_selected_finished_compilation_bytes_transfer_with_native_binding_and_or
 def test_verified_native_handoff_selects_revision_and_intake_raw_targets(tmp_path):
     from blueprint_pipeline.task_evaluation_scene_retirement_reference_transfer import _sources
     fresh,_,allowance=fixture(tmp_path)
+    # Isolate the handoff selection route. The full native owner measurement
+    # also selects these bytes independently and must not be negated here.
+    for member in fresh['measured_members']:
+        member['source_provenance']=[proof for proof in member['source_provenance']
+            if proof['role'] not in {'configured_revisions','compilation_intake_receipts'}]
     selected=_sources(fresh,allowance)
     roles={proof['role'] for rows in selected.values() for proof in rows}
     assert {'configured_revisions','compilation_intake_receipts'}<=roles
-    fresh['historical_lineage']['preparation_handoff_observations'][0]['pre_handoff_binding_verified']=False
+    lineage=fresh['historical_lineage']
+    native=lineage.get('compilation_native_owner_inventory',lineage)
+    for observation in native['preparation_handoff_observations']:
+        observation['pre_handoff_binding_verified']=False
     selected=_sources(fresh,allowance)
     roles={proof['role'] for rows in selected.values() for proof in rows}
     assert not {'configured_revisions','compilation_intake_receipts'} & roles
