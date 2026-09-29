@@ -56,6 +56,10 @@ def _sources(fresh,allowance):
             occurrences+=1
             _require(occurrences<=10000,'scene_retirement_reference_limit')
             _require(type(proof) is dict and type(proof.get('role')) is str,_REASON)
+            if proof['role'] in {'preparation_identity','activation_identity','queue_identities'}:
+                # Identity rows only establish an exact envelope pair below;
+                # their seals cannot satisfy generic selector obligations.
+                continue
             identity=_selector(proof)
             # Native measurement provenance is selected membership evidence.
             # Raw_versions/unselected observations are deliberately not indexed.
@@ -122,6 +126,46 @@ def _current_record(record,selected,allowance):
     _require(type(seal) is str and any(proof.get('seal_digest')==seal for proof in selected[identity]),_REASON)
     return (dict(source=dict(source),canonical_digest=seal,
                  disposition='exact_selected_closed_metadata_retained',action='KEEP'),value)
+
+
+def _retained_identity(record,envelopes,fresh,consent,allowance):
+    """A queue identity is inert retained metadata, never selected member proof."""
+    allowance.tick()
+    _require(type(record) is dict and record.get('disposition')=='supported',_REASON)
+    source=record.get('source')
+    _require(type(source) is dict and set(source)=={'family','queue_root','role','row_path',
+        'raw_sha256','raw_size_bytes','observed_identity'} and source['role']=='identity',_REASON)
+    family=source['family']
+    roots=fresh.get('planner_context',{}).get('roots',{})
+    root=roots.get(family+'_queue_root')
+    _require(family in {'preparation','activation'} and type(root) is str
+        and source['queue_root']==root,_REASON)
+    identity=_selector(source,'row_path','raw_sha256','raw_size_bytes')
+    path=Path(identity[0])
+    _require(0<identity[2]<=65536 and path.parent==Path(root)/'identities',_REASON)
+    if consent is not None:
+        _require(all(not path.is_relative_to(Path(member['canonical_path']))
+            for member in consent['members']),_REASON)
+    reference=dict(zip(('path','sha256','size_bytes'),identity))
+    allowance.charge('local_bytes',identity[2])
+    try:
+        value=selected_document(reference,maximum=65536)
+    except (OSError,ValueError,TypeError,UnicodeError):
+        raise SceneRetirementAccessError('scene_retirement_reference_changed') from None
+    id_field=family+'_id'
+    _require(set(value)=={'schema_version',id_field,'request_digest','identity_digest'}
+        and value.get('schema_version')=='task_evaluation_launch_'+family+'_identity.v1'
+        and type(value.get(id_field)) is str
+        and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,191}',value[id_field])
+        and path.name==value[id_field]+'.json'
+        and type(value.get('request_digest')) is str
+        and re.fullmatch(r'sha256:[0-9a-f]{64}',value['request_digest'])
+        and value.get('identity_digest')==canonical_digest(value,digest_field='identity_digest')
+        and record.get('canonical_digest')==value['identity_digest'],_REASON)
+    key=(family,root,value[id_field],value['request_digest'])
+    _require(len(envelopes.get(key,[]))==1,_REASON)
+    return (dict(source=dict(source),canonical_digest=value['identity_digest'],
+        disposition='exact_observed_identity_retained_only',action='KEEP'),value)
 
 
 def _sam_value(identity,proofs,fresh,allowance):
@@ -395,6 +439,66 @@ def _selected_sam(protection,selected,fresh,allowance,bound,progress):
     return result
 
 
+def _sam_marker_pairs(selected, fresh, jobs, allowance):
+    """Index only exact selected completed jobs and their completed results."""
+    pairs={}
+    for identity,proofs in selected.items():
+        allowance.tick()
+        roles={proof.get('role') for proof in proofs}
+        if len(roles)!=1 or not roles<=set(_SAM_KEYS):
+            continue
+        value,role,_,_=_sam_value(identity,proofs,fresh,allowance)
+        key=(value['child_id'],value['job_digest'])
+        if key not in jobs or (role=='sam_jobs' and value!=jobs[key]):
+            continue
+        pairs.setdefault(key,{'sam_jobs':[],'sam_results':[]})[role].append(value)
+    return pairs
+
+
+def _selected_sam_marker(protection,fresh,allowance,pairs,parents):
+    """Retain exact worker markers without promoting their metadata to authority."""
+    allowance.tick()
+    _require(set(protection)=={'kind','path','raw_sha256','raw_size_bytes','scope','action'}
+        and protection['kind']=='unsupported_queue_observation'
+        and protection['scope']=='preparation_sam_auxiliary_layouts_only'
+        and protection['action']=='KEEP',_REASON)
+    identity=_selector(protection,'path','raw_sha256','raw_size_bytes')
+    roots=fresh.get('planner_context',{}).get('roots',{})
+    _require(type(roots) is dict and type(roots.get('sam_queue_root')) is str
+        and 0<identity[2]<=4096,_REASON)
+    root=_canonical(roots['sam_queue_root'])
+    path=Path(identity[0])
+    _require(path.is_relative_to(root) and len(path.relative_to(root).parts)==2
+        and path.parent.name in {'started','wake-completed'}
+        and re.fullmatch(r'sam31-[0-9a-f]{64}\.json',path.name),_REASON)
+    allowance.charge('local_bytes',identity[2])
+    try:
+        value=selected_document(dict(zip(('path','sha256','size_bytes'),identity)),maximum=4096)
+    except (OSError,ValueError,TypeError,UnicodeError):
+        raise SceneRetirementAccessError('scene_retirement_reference_changed') from None
+    child=path.stem
+    _require(type(value) is dict and type(value.get('job_digest')) is str
+        and re.fullmatch(r'sha256:[0-9a-f]{64}',value['job_digest']),_REASON)
+    key=(child,value['job_digest'])
+    pair=pairs.get(key,{})
+    _require(len(pair.get('sam_jobs',[]))==1 and len(pair.get('sam_results',[]))==1,_REASON)
+    job=pair['sam_jobs'][0]
+    result=pair['sam_results'][0]
+    _require(result['status']=='completed' and result['job_digest']==job['job_digest']
+        and result['child_id']==job['child_id']
+        and result['parent_request_digest']==job['parent_request_digest']
+        and result['source_commit']==job['expected_source_commit'],_REASON)
+    if path.parent.name=='started':
+        _require(set(value)=={'job_digest','child_id'} and value['child_id']==child,_REASON)
+    else:
+        _require(set(value)=={'status','job_digest'} and value['status']=='parent_terminal',_REASON)
+        parent=(job['parent_preparation_id'],job['parent_request_digest'],job['expected_source_commit'])
+        _require(parents.get(parent)==1,_REASON)
+    return {'source':{'row_path':identity[0],'raw_sha256':identity[1],
+                      'raw_size_bytes':identity[2],'role':path.parent.name,'queue_root':str(root)},
+            'disposition':'exact_sam_marker_retained_only','action':'KEEP'}
+
+
 def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=None,consent=None,pin_journal=None):
     observation=fresh.get('reference_observation')
     _require(type(observation) is dict,'scene_retirement_reference_scope_unproven')
@@ -410,11 +514,33 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
     jobs=_current_sam_results(selected,fresh,allowance)
     progress=_current_sam_progress(selected,fresh,jobs,allowance)
     compilations=_bound_compilations(fresh,selected,allowance)
+    envelope_bindings={}
+    for row in _rows(observation.get('record_dispositions')):
+        allowance.tick()
+        source=row.get('source') if type(row) is dict else None
+        if type(source) is not dict or source.get('role')!='envelope':
+            continue
+        current,value=_current_record(row,selected,allowance)
+        family=current['source']['family']
+        request=value.get('request')
+        _require(type(request) is dict and value.get('request_digest')==canonical_digest(request),_REASON)
+        key=(family,current['source']['queue_root'],request.get(family+'_id'),value['request_digest'])
+        envelope_bindings.setdefault(key,[]).append((current,value))
     records=[]
+    selected_records=[]
     read_records=[]
     emitted=0
+    identity_sources=set()
     for row in _rows(observation.get('record_dispositions')):
-        current,value=_current_record(row,selected,allowance)
+        source=row.get('source') if type(row) is dict else None
+        if type(source) is dict and source.get('role')=='identity':
+            key=(source.get('family'),source.get('queue_root'),source.get('row_path'))
+            _require(key not in identity_sources,_REASON)
+            identity_sources.add(key)
+            current,value=_retained_identity(row,envelope_bindings,fresh,consent,allowance)
+        else:
+            current,value=_current_record(row,selected,allowance)
+            selected_records.append(current)
         # Fixed finite source shape; bound retained duplicate framing before
         # adding it. Original full observer evidence remains in the plan.
         emitted+=1024+sum(len(current['source'][key].encode('utf-8')) for key in ('row_path','queue_root'))
@@ -436,8 +562,33 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
         key=(source['family'],source['queue_root'],identity_value[source['family']+'_id'],
              identity_value['request_digest'])
         _require(len(envelopes.get(key,[]))==1,_REASON)
+    parent_results={}
+    parent_root=fresh.get('planner_context',{}).get('roots',{}).get('preparation_queue_root')
+    for current,value in read_records:
+        allowance.tick()
+        source=current['source']
+        if (source['family']=='preparation' and source['role']=='result'
+                and source['queue_root']==parent_root):
+            parent_results.setdefault(Path(source['row_path']).name,[]).append(value)
+    terminal_parents={}
+    for current,value in read_records:
+        allowance.tick()
+        source=current['source']
+        if (source['family']!='preparation' or source['role']!='envelope'
+                or source['queue_root']!=parent_root
+                or Path(source['row_path']).parent.name not in {'completed','materialized'}):
+            continue
+        request=value['request']
+        matches=[result for result in parent_results.get(Path(source['row_path']).name,[])
+            if result.get('preparation_id')==request.get('preparation_id')
+            and result.get('source_commit')==request.get('expected_production_commit')
+            and result.get('team_namespace')==request.get('team_namespace')]
+        if len(matches)!=1:
+            continue
+        key=(request['preparation_id'],value['request_digest'],request['expected_production_commit'])
+        terminal_parents[key]=terminal_parents.get(key,0)+1
     from .task_evaluation_scene_retirement_reference_proofs import TerminalProofs
-    facts=TerminalProofs(fresh,selected,records,allowance,preserved)
+    facts=TerminalProofs(fresh,selected,selected_records,allowance,preserved)
     from .task_evaluation_scene_retirement_pins import select_terminal_pins, covers
     pin_documents=dict(facts.documents)
     if consent is not None and consent.get('terminal_pin_refs'):
@@ -455,13 +606,24 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
     released=0
     auxiliaries=[]
     deferred=[]
+    marker_pairs=None
+    marker_sources=set()
     for protection in _rows(observation.get('protections')):
         allowance.tick()
         _require(type(protection) is dict,_REASON)
         if protection.get('kind') in {'positive_pin_path','pin_observation'} and covers(protection,terminal_pins):
             continue
         if protection.get('kind')=='unsupported_queue_observation':
-            current=_selected_sam(protection,selected,fresh,allowance,compilations,progress)
+            path=Path(protection.get('path',''))
+            if path.parent.name in {'started','wake-completed'}:
+                identity=_selector(protection,'path','raw_sha256','raw_size_bytes')
+                _require(identity not in marker_sources,_REASON)
+                marker_sources.add(identity)
+                if marker_pairs is None:
+                    marker_pairs=_sam_marker_pairs(selected,fresh,jobs,allowance)
+                current=_selected_sam_marker(protection,fresh,allowance,marker_pairs,terminal_parents)
+            else:
+                current=_selected_sam(protection,selected,fresh,allowance,compilations,progress)
             emitted+=1024+len(current['source']['row_path'].encode('utf-8'))
             _require(emitted<=1024*1024,'scene_retirement_reference_limit')
             auxiliaries.append(current)
@@ -480,7 +642,11 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
                 else:
                     facts.transfer_native_downstream(protection)
             elif reason=='deferred_parent_reference_proof':
-                facts.transfer_native_bundle(protection)
+                if re.fullmatch(r'construction\.recipe\.stage_sequence\.[0-9]+\.configuration',
+                                protection.get('observation',{}).get('contract_path','')):
+                    facts.transfer_recipe_stage(protection,fresh.get('recipe_stage_authority',[]))
+                else:
+                    facts.transfer_native_bundle(protection)
             else:
                 _require(False,_REASON)
             deferred.append(reason)
@@ -496,9 +662,15 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
     _require(set(deferred)==set(blockers),_REASON)
     _require(all(parts=={'deferred_downstream_document','deferred_parent_reference_proof'}
                  for parts in facts.bundle_parts.values()),_REASON)
+    recipe_authorities=fresh.get('recipe_stage_authority',[])
+    _require(type(recipe_authorities) is list and len(recipe_authorities)<=16,_REASON)
+    for authority in recipe_authorities:
+        _require(all(((_selector(authority['result_raw_ref'])),stage['contract_path']) in facts.recipe_stage_seen
+                     for stage in authority['stages']),_REASON)
     return dict(scope='selected_closed_metadata_transfer_only',
         transferred_records=records,transferred_record_count=len(records),
         transferred_auxiliary_records=auxiliaries,
         retained_released_pin_count=released,transferred_obligations=facts.transferred,
         archive_inventory_verified=facts.has_inventory,covered_reference_keeps=facts.covered_keeps(terminal_pins),terminal_pin_release_rows=terminal_pins,references_clear=False,consumer_fence_checked=False,
+        recipe_stage_authority=recipe_authorities,
         mutations=0,unknown_scopes_cleared=False)

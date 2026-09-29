@@ -49,6 +49,32 @@ def check(fresh,allowance):
     return validate_current_reference_transfer(fresh,allowance)
 
 
+def test_post_journal_reference_resume_constructs_bounded_sink(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement as retirement
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_plan as planner
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_references as references
+
+    context={'roots': {'preparation_queue_root': str(tmp_path)}}
+    policy={'reference_context': context}
+    consent={'intent_id': 'owner'}
+    retained={'schema_version': 'task_evaluation_scene_lifecycle_plan.v1',
+              'intent_id': 'owner', 'planner_context': context}
+    observed={'child_scopes': []}
+    seen=[]
+    monkeypatch.setattr(retirement, '_installed_cohort', lambda *_: None)
+    monkeypatch.setattr(planner, '_context', lambda *_: None)
+    monkeypatch.setattr(references, 'observe', lambda *args: observed)
+    monkeypatch.setattr(retirement, 'validate_current_reference_transfer',
+                        lambda fresh, allowance, **kwargs: seen.append((fresh, kwargs)))
+    monkeypatch.setattr(retirement, '_current_readers', lambda *_: None)
+    retirement._resume_current_references(policy, consent, retained,
+        ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0),
+        lambda:200,lambda:0,preserved={'files': []})
+    assert seen == [(dict(retained, reference_observation=observed),
+                     {'preserved': {'files': []}, 'policy': policy,
+                      'consent': consent, 'pin_journal': None})]
+
+
 def test_exact_closed_selected_preparation_record_is_transferred_not_discarded(tmp_path):
     fresh,record,_,allowance=setup(tmp_path)
     result=check(fresh,allowance)
@@ -58,7 +84,7 @@ def test_exact_closed_selected_preparation_record_is_transferred_not_discarded(t
     assert fresh['reference_observation']['record_dispositions']==[record]
 
 
-def test_exact_selected_queue_identity_is_transferred_with_original_raw(tmp_path):
+def test_exact_observed_queue_identity_is_retained_only_with_selected_envelope(tmp_path):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.task_evaluation_scene_retirement_authority import selected_document
     fresh,record,proof,allowance=setup(tmp_path)
@@ -75,7 +101,7 @@ def test_exact_selected_queue_identity_is_transferred_with_original_raw(tmp_path
     selected={'path':str(path),'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(),
               'size_bytes':len(raw),'role':'preparation_identity','seal_field':'identity_digest',
               'seal_digest':identity['identity_digest']}
-    fresh['measured_members'].append({'source_provenance':[selected]})
+    fresh['planner_context']={'roots':{'preparation_queue_root':str(root)}}
     source=dict(record['source'],role='identity',row_path=str(path),
                 raw_sha256=selected['sha256'],raw_size_bytes=selected['size_bytes'])
     fresh['reference_observation']['record_dispositions'].append({
@@ -84,6 +110,8 @@ def test_exact_selected_queue_identity_is_transferred_with_original_raw(tmp_path
     result=check(fresh,allowance)
     assert result['transferred_record_count']==2
     assert result['transferred_records'][1]['source']==source
+    assert result['transferred_records'][1]['disposition']=='exact_observed_identity_retained_only'
+    assert result['transferred_obligations']==[] and result['references_clear'] is False
     identity['request_digest']='sha256:'+'f'*64
     identity['identity_digest']=canonical_digest(identity,digest_field='identity_digest')
     path.write_text(json.dumps(identity))
@@ -92,6 +120,36 @@ def test_exact_selected_queue_identity_is_transferred_with_original_raw(tmp_path
                     seal_digest=identity['identity_digest'])
     source.update(raw_sha256=selected['sha256'],raw_size_bytes=selected['size_bytes'])
     fresh['reference_observation']['record_dispositions'][1]['canonical_digest']=identity['identity_digest']
+    with pytest.raises(ValueError,match='scene_retirement_reference_closure_unproven'):
+        check(fresh,allowance)
+
+
+@pytest.mark.parametrize('change',['wrong_root','duplicate','unpaired'])
+def test_observed_identity_cannot_borrow_foreign_or_missing_envelope(tmp_path,change):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    fresh,record,proof,allowance=setup(tmp_path)
+    root=Path(record['source']['queue_root'])
+    envelope=json.loads(Path(proof['path']).read_bytes())
+    request=envelope['request']
+    value={'schema_version':'task_evaluation_launch_preparation_identity.v1',
+           'preparation_id':request['preparation_id'],'request_digest':envelope['request_digest']}
+    if change=='unpaired':
+        value['request_digest']='sha256:'+'f'*64
+    value['identity_digest']=canonical_digest(value,digest_field='identity_digest')
+    path=root/'identities'/(request['preparation_id']+'.json')
+    if change=='wrong_root':
+        path=tmp_path/'foreign'/'identities'/path.name
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps(value))
+    raw=path.read_bytes()
+    source=dict(record['source'],role='identity',row_path=str(path),
+                raw_sha256='sha256:'+hashlib.sha256(raw).hexdigest(),raw_size_bytes=len(raw))
+    identity={'source':source,'disposition':'supported','reason':'supplied_integrity_only',
+              'canonical_digest':value['identity_digest']}
+    fresh['planner_context']={'roots':{'preparation_queue_root':str(root)}}
+    fresh['reference_observation']['record_dispositions'].append(identity)
+    if change=='duplicate':
+        fresh['reference_observation']['record_dispositions'].append(copy.deepcopy(identity))
     with pytest.raises(ValueError,match='scene_retirement_reference_closure_unproven'):
         check(fresh,allowance)
 
@@ -181,6 +239,74 @@ def test_exact_original_sam_result_selected_by_verified_prefix_transfers_with_al
     result=check(fresh,allowance)
     assert result['transferred_auxiliary_records'][0]['source']['row_path']==proof['path']
     assert result['references_clear'] is False and fresh==before
+
+
+def test_completed_sam_started_marker_is_retained_only_with_exact_selected_job_and_result(tmp_path):
+    fresh, proof, allowance = original_sam_transfer(tmp_path)
+    result = json.loads(Path(proof['path']).read_bytes())
+    root = Path(fresh['planner_context']['roots']['sam_queue_root'])
+    path = root / 'started' / (result['child_id'] + '.json')
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps({'job_digest': result['job_digest'], 'child_id': result['child_id']}))
+    raw = path.read_bytes()
+    fresh['reference_observation']['protections'].append({
+        'kind': 'unsupported_queue_observation', 'path': str(path),
+        'raw_sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(),
+        'raw_size_bytes': len(raw), 'scope': 'preparation_sam_auxiliary_layouts_only',
+        'action': 'KEEP'})
+    transferred = check(fresh, allowance)
+    marker = transferred['transferred_auxiliary_records'][-1]
+    assert marker['source']['row_path'] == str(path)
+    assert marker['disposition'] == 'exact_sam_marker_retained_only'
+    assert marker['action'] == 'KEEP' and transferred['references_clear'] is False
+
+
+@pytest.mark.parametrize('change', ['foreign_root', 'raw_drift', 'wrong_job', 'extra_field', 'duplicate'])
+def test_sam_started_marker_needs_exact_owned_raw_identity(tmp_path, change):
+    fresh, proof, allowance = original_sam_transfer(tmp_path)
+    result = json.loads(Path(proof['path']).read_bytes())
+    root = Path(fresh['planner_context']['roots']['sam_queue_root'])
+    path = (tmp_path / 'foreign' if change == 'foreign_root' else root) / 'started' / (result['child_id'] + '.json')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    marker = {'job_digest': result['job_digest'], 'child_id': result['child_id']}
+    if change == 'wrong_job':
+        marker['job_digest'] = 'sha256:' + 'f' * 64
+    if change == 'extra_field':
+        marker['future'] = True
+    path.write_text(json.dumps(marker))
+    raw = path.read_bytes()
+    protection = {'kind': 'unsupported_queue_observation', 'path': str(path),
+        'raw_sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(), 'raw_size_bytes': len(raw),
+        'scope': 'preparation_sam_auxiliary_layouts_only', 'action': 'KEEP'}
+    fresh['reference_observation']['protections'].append(protection)
+    if change == 'raw_drift':
+        path.write_bytes(b'{}')
+    if change == 'duplicate':
+        fresh['reference_observation']['protections'].append(copy.deepcopy(protection))
+    with pytest.raises(ValueError, match='scene_retirement_reference_'):
+        check(fresh, allowance)
+
+
+@pytest.mark.parametrize('status', ['parent_terminal', 'signaled', 'failed', 'wake_pending'])
+def test_sam_wake_marker_without_terminal_parent_or_supported_status_keeps(tmp_path, status):
+    fresh, proof, allowance = original_sam_transfer(tmp_path)
+    result = json.loads(Path(proof['path']).read_bytes())
+    root = Path(fresh['planner_context']['roots']['sam_queue_root'])
+    state = 'wake-pending' if status == 'wake_pending' else 'wake-completed'
+    path = root / state / (result['child_id'] + '.json')
+    path.parent.mkdir(exist_ok=True)
+    marker = {'status': status, 'job_digest': result['job_digest']}
+    if status == 'signaled':
+        marker['signal_digest'] = 'sha256:' + 'a' * 64
+    path.write_text(json.dumps(marker))
+    raw = path.read_bytes()
+    fresh['reference_observation']['protections'].append({
+        'kind': 'unsupported_queue_observation', 'path': str(path),
+        'raw_sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(),
+        'raw_size_bytes': len(raw), 'scope': 'preparation_sam_auxiliary_layouts_only',
+        'action': 'KEEP'})
+    with pytest.raises(ValueError, match='scene_retirement_reference_'):
+        check(fresh, allowance)
 
 
 @pytest.mark.parametrize('change',['raw_drift','unselected_copy','failed','future_schema','active_job'])

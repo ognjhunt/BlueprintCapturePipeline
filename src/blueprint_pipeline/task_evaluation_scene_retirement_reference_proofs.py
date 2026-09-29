@@ -1,4 +1,5 @@
 """Selected terminal obligations, never global reader or ownership clearance."""
+import re
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -64,6 +65,7 @@ class TerminalProofs:
         self.locals={}
         self.covered={}
         self.bundle_parts={}
+        self.recipe_stage_seen=set()
         for row in records:
             allowance.tick()
             identity=_source(row['source'])
@@ -216,6 +218,10 @@ class TerminalProofs:
                     and fact['binding_status']=='receipt_only'):
                 self.transfer_native_bundle(protection,counted=True)
                 return
+            if (re.fullmatch(r'construction\.recipe\.stage_sequence\.[0-5]\.configuration',
+                             fact['contract_path']) and fact['binding_status']=='receipt_only'):
+                self.transfer_recipe_stage(protection,self.fresh.get('recipe_stage_authority',[]),counted=True)
+                return
             proof=self._local(fact,source,value)
         elif kind=='remote_raw_references':
             _require(fact['binding_status']=='declared_remote_raw' and fact['digest_meaning']=='remote_raw_bytes'
@@ -315,6 +321,68 @@ class TerminalProofs:
         self.emitted+=size
         self.transferred.append({'original_obligation':protection,'preservation_proof':proof,'action':'KEEP'})
 
+    def transfer_recipe_stage(self,protection,authorities,*,counted=False):
+        """Retain a deferred stage only through its selected parent recipe proof."""
+        self.allowance.tick()
+        if not counted:
+            self.count+=1
+        _require(self.count<=MAX_OCCURRENCES and type(authorities) is list and len(authorities)<=16,_REASON)
+        fact,source,value=self._fact(protection)
+        missing=protection['kind']=='missing_edge_obligations'
+        local=protection['kind']=='local_path_protections'
+        _require((missing or local) and fact['reason']=='deferred_parent_reference_proof'
+            and not fact['related_sources']
+            and fact['source']['family']=='preparation' and fact['source']['role']=='result'
+            and (not missing or (fact['binding_status']=='unresolved'
+                and fact['digest_meaning']=='no_inferred_raw_identity'
+                and all(fact[key] is None for key in ('digest','path','uri','size_bytes'))))
+            and (not local or (fact['binding_status']=='receipt_only'
+                and fact['digest_meaning']=='declared_materialized_raw_bytes'
+                and fact['uri'] is None and type(fact['path']) is str
+                and type(fact['digest']) is str and type(fact['size_bytes']) is int
+                and fact['size_bytes']>0)),_REASON)
+        matches=[]
+        for authority in authorities:
+            self.allowance.tick()
+            _require(type(authority) is dict and authority.get('kind')=='selected_recipe_stage_authority.v1'
+                and type(authority.get('stages')) is list and len(authority['stages'])==6,_REASON)
+            result=authority.get('result_raw_ref')
+            _require(type(result) is dict and set(result)=={'path','sha256','size_bytes'},_REASON)
+            if _selector(result)==source:
+                matches.extend((authority,stage) for stage in authority['stages']
+                    if type(stage) is dict and stage.get('contract_path')==fact['contract_path'])
+        _require(len(matches)==1,_REASON)
+        authority,stage=matches[0]
+        reference=stage.get('reference')
+        _require(type(reference) is dict and set(reference)=={'uri','digest','size_bytes'},_REASON)
+        row=[row for row in value.get('references',[]) if type(row) is dict
+             and row.get('contract_path')==fact['contract_path']]
+        _require(len(row)==1 and all(row[0].get(key)==reference[key] for key in reference)
+            and row[0].get('materialized_path')==stage.get('projected_path')
+            and row[0].get('full_byte_service_account_readback_passed') is True,_REASON)
+        recipe=authority.get('recipe_raw_ref')
+        _require(type(recipe) is dict and set(recipe)=={'path','sha256','size_bytes'},_REASON)
+        projection=_selector(dict(path=stage['projected_path'],sha256=reference['digest'],
+                                  size_bytes=reference['size_bytes']))
+        alias=_selector(dict(path=stage['cache_path'],sha256=reference['digest'],
+                             size_bytes=reference['size_bytes']))
+        _require(not local or _selector(fact,'path','digest','size_bytes')==projection,_REASON)
+        if self.has_inventory:
+            _require(self.physical.get(recipe['path'])==_selector(recipe)
+                and self.physical.get(projection[0])==projection
+                and self.physical.get(alias[0])==alias,_REASON)
+        self.recipe_stage_seen.add((source,fact['contract_path']))
+        proof={'kind':'selected_recipe_stage_with_original_raw_and_archive',
+               'recipe_raw_ref':recipe,'result_raw_ref':authority['result_raw_ref'],
+               'indexed_contract_path':fact['contract_path'],'stage_index':stage['index'],
+               'projected_raw_ref':dict(zip(('path','sha256','size_bytes'),projection)),
+               'cache_raw_ref':dict(zip(('path','sha256','size_bytes'),alias)),
+               'archive_inventory_verified':self.has_inventory}
+        size=_measure(protection,MAX_BYTES-self.emitted)+_measure(proof,MAX_BYTES-self.emitted)
+        _require(size<=MAX_BYTES-self.emitted,'scene_retirement_reference_limit')
+        self.emitted+=size
+        self.transferred.append({'original_obligation':protection,'preservation_proof':proof,'action':'KEEP'})
+
     def transfer_native_downstream(self,protection):
         """Retain one native handoff's exact selected sealed downstream target."""
         self.allowance.tick()
@@ -407,7 +475,6 @@ class TerminalProofs:
                 and fact['reason']=='deferred_parent_reference_proof'
                 and fact['digest_meaning']=='declared_materialized_raw_bytes'
                 and fact['uri'] is None
-                and self.has_inventory
                 and sum(proof.get('role')=='native_preparation_results'
                     and proof.get('seal_field')=='result_digest'
                     and proof.get('seal_digest')==value.get('result_digest')
@@ -474,8 +541,6 @@ class TerminalProofs:
                 bound.append(observation)
         _require(len(bound)==1,_REASON)
         inside=any(Path(path).is_relative_to(root) for root in self.member_roots)
-        if local:
-            _require(inside and self.physical.get(path)==(path,digest,size),_REASON)
         if self.has_inventory:
             _require(inside and self.physical.get(path)==(path,digest,size),_REASON)
         if not local:
