@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import stat
 import urllib.request
@@ -30,7 +31,7 @@ class BlueprintArtifactRegistryBroker:
     """One-use VM identity for a Blueprint-owned private policy image only."""
 
     def __init__(self, *, lease_id: str, registry_host: str, image_ref: str) -> None:
-        if (not lease_id.startswith("blueprint-worker-token-")
+        if (re.fullmatch(r"policy-registry-lease-[0-9a-f]{47}", lease_id) is None
                 or registry_host != "us-central1-docker.pkg.dev"
                 or not image_ref.startswith("us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/")
                 or "@sha256:" not in image_ref):
