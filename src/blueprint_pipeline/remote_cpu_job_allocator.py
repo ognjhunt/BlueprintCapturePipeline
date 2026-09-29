@@ -42,8 +42,8 @@ from .paid_resource_admission import (
 )
 from .remote_cpu_environment import DIGESTED_FIELDS, environment_record
 from .remote_cpu_job_contract import (
-    CONFIG_SCHEMA_VERSION, MAX_ATTEMPTS_CAP, MAX_HEARTBEAT_BYTES, MAX_RECEIPT_BYTES, STAGES, TRANSPORT_SCHEMA_VERSION,
-    RemoteCpuContractError, _is_count, _text, build_descriptor, execution_name_of, record_bytes, validate_descriptor,
+    MAX_HEARTBEAT_BYTES, MAX_RECEIPT_BYTES, PROBE_STAGE, STAGES, TRANSPORT_SCHEMA_VERSION, RemoteCpuContractError,
+    _is_count, _text, build_descriptor, config_blockers, execution_name_of, record_bytes, validate_descriptor,
     validate_receipt, worker_identity_for,
 )
 from .remote_cpu_job_records import compute_zero_proven, fsync_directory, teardown_record, write_remote_cpu_record
@@ -58,7 +58,6 @@ from .task_evaluation_configured_scene_object_store import (
 
 RESOURCE_CLASS = CLOUD_RUN_CPU_JOB_RESOURCE_CLASS
 ACTIONS = ("dispatch", "reconcile", "cancel", "sweep", "preflight")
-PROBE_STAGE = "environment_probe"
 CONFIG_ENV = "BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG"
 DEFAULT_CONFIG_PATH = "/etc/blueprint/remote-cpu-workers.json"
 AUTHORITY_FILENAME = "remote-cpu-standing-authorization.v1.json"
@@ -84,17 +83,9 @@ STAGE_LIMITS: Mapping[str, Any] = {
     "heartbeat_interval_seconds": 30, "heartbeat_stale_seconds": 180, "max_input_bytes": 6 * GIB,
     "max_output_bytes": 4 * GIB, "max_output_paths": 20000, "allowed_path_roots": ["/var/lib/blueprint/"],
 }
-_CONFIG_KEYS = frozenset({"schema_version", "project", "region", "transport_bucket", "stages", "rate_table",
-                          "max_live_executions", "max_attempts", "config_digest"})
-_STAGE_KEYS = frozenset({"job", "image", "vcpu", "memory_bytes", "ephemeral_bytes", "task_timeout_seconds"})
-_RATES = ("usd_per_vcpu_second", "usd_per_gib_second", "usd_per_egress_gib")
 _AUTHORITY_KEYS = frozenset({"schema_version", "stages", "max_executions", "max_attempt_usd", "max_daily_usd",
                              "max_total_usd", "expires_at_epoch", "authorized_by", "authorized_on",
                              "authorization_reference", "authorization_digest"})
-_IMAGE = re.compile(r"[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}")
-_PROJECT = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
-_BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]")
-_JOB = re.compile(r"blueprint-remote-cpu-[a-z0-9-]{0,40}[a-z0-9]")
 _TYPED = re.compile(r"[a-z0-9_]+(?::[A-Za-z0-9_.-]+)*")
 _MAX_RECORD_BYTES = 256 * 1024
 
@@ -120,10 +111,8 @@ def _read_private_json(path: str | Path, *, forbidden_mode: int) -> dict[str, An
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
-    except FileNotFoundError:
-        raise RemoteCpuAllocatorError("missing") from None
-    except OSError:
-        raise RemoteCpuAllocatorError("unsafe") from None
+    except OSError as exc:
+        raise RemoteCpuAllocatorError("missing" if isinstance(exc, FileNotFoundError) else "unsafe") from None
     with os.fdopen(descriptor, "rb") as stream:
         status = os.fstat(stream.fileno())
         if not stat.S_ISREG(status.st_mode) or status.st_mode & forbidden_mode:
@@ -171,39 +160,6 @@ def _create_once(path: Path, value: Mapping[str, Any]) -> bool:
 def _write_result(path: Path, result: Mapping[str, Any]) -> None:
     """Atomically replace a door-readable record; the record guard refuses URL- or credential-shaped content."""
     _write_file(path, record_bytes(result), mode=0o640, exclusive=False)
-
-
-def _stage_entry_valid(stage: str, entry: Any) -> bool:
-    return (stage in STAGES and stage != PROBE_STAGE and isinstance(entry, Mapping) and set(entry) == _STAGE_KEYS
-            and isinstance(entry["job"], str) and _JOB.fullmatch(entry["job"]) is not None
-            and isinstance(entry["image"], str) and _IMAGE.fullmatch(entry["image"]) is not None
-            and all(_is_count(entry[name], 1) for name in ("vcpu", "memory_bytes", "ephemeral_bytes",
-                                                         "task_timeout_seconds"))
-            and entry["task_timeout_seconds"] <= 3600 and entry["memory_bytes"] <= 32 * GIB)
-
-
-def config_blockers(config: Mapping[str, Any]) -> list[str]:
-    """Every way a ``remote_cpu_workers_config.v1`` is unusable; its region must be a US one."""
-    stages = config.get("stages") if isinstance(config.get("stages"), Mapping) else {}
-    rates = config.get("rate_table") if isinstance(config.get("rate_table"), Mapping) else {}
-    region = str(config.get("region") or "")
-    failed = {
-        "keys": set(config) != _CONFIG_KEYS,
-        "schema_version": config.get("schema_version") != CONFIG_SCHEMA_VERSION,
-        "config_digest": config.get("config_digest") != canonical_digest(config, digest_field="config_digest"),
-        "project": not isinstance(config.get("project"), str) or _PROJECT.fullmatch(config["project"]) is None,
-        "region": region.startswith("us-") and re.fullmatch(r"us-[a-z]+[0-9]+", region) is None,
-        "transport_bucket": _BUCKET.fullmatch(str(config.get("transport_bucket") or "")) is None,
-        "stages": not stages or not all(_stage_entry_valid(stage, entry) for stage, entry in stages.items()),
-        "rate_table": set(rates) != {"source", "observed_on", *_RATES} or not all(_amount(rates[n]) for n in _RATES)
-        or not _text(rates["source"]) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", str(rates["observed_on"])),
-        "max_live_executions": not _is_count(config.get("max_live_executions"), 1),
-        "max_attempts": not _is_count(config.get("max_attempts"), 1) or config["max_attempts"] > MAX_ATTEMPTS_CAP,
-    }
-    blockers = [f"remote_cpu_config_invalid:{name}" for name, failure in failed.items() if failure]
-    if not region.startswith("us-"):
-        blockers.append("remote_cpu_config_region_not_us")
-    return sorted(blockers)
 
 
 def load_remote_cpu_config(path: str | Path | None = None) -> tuple[dict[str, Any], list[str]]:
@@ -472,10 +428,8 @@ def _connect(runtime: RemoteCpuRuntime, config: Mapping[str, Any]) -> list[str]:
                                                               project=config["project"])
         if runtime.object_store is None:
             runtime.object_store = remote_cpu_object_store()
-    except CloudRunJobsError as exc:
-        return [exc.code]
-    except TaskEvaluationConfiguredSceneObjectStoreError as exc:
-        code = str(exc)
+    except (CloudRunJobsError, TaskEvaluationConfiguredSceneObjectStoreError) as exc:
+        code = str(getattr(exc, "code", None) or exc)
         return [code if _TYPED.fullmatch(code) else "remote_cpu_object_store_unavailable"]
     except Exception as exc:  # noqa: BLE001 - client construction is outside this seam; its cause stays typed
         return [f"remote_cpu_dispatcher_unavailable:{type(exc).__name__}"]
@@ -743,28 +697,24 @@ def _probe_descriptor(action: _Action, stage: str, *, source: Mapping[str, Any],
 
 
 def _await_execution(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
-    """Poll the probe to a terminal state, renewing its lease on each advancing heartbeat and cancelling it
+    """Poll the probe to a terminal state, renewing its lease on each advancing heartbeat, and cancel it
     (termination only) once its hard deadline passes."""
     runtime, store, lease = action.runtime, action.runtime.object_store, _lease(action.root, descriptor["job_id"])
-    name = execution_resource_name(run_target(descriptor)["job"], execution_name_of(lease["worker_identity"]))
-    hard, cancelled = lease["deadlines"]["hard_deadline_epoch"], False
-    while True:
-        execution, now = runtime.cloud_run.get_execution(name), float(runtime.clock())
-        if execution.get("completionTime"):
-            return execution
-        try:
+
+    def renew(execution: Mapping[str, Any], now: float) -> None:
+        try:  # no heartbeat yet, an unreadable one, or a fenced or stale one: none of them renews the lease
             raw = read_remote_cpu_staging_object(staging_uri=descriptor["outputs"]["staging_prefix"] + "heartbeat.json",
                                                  maximum_size_bytes=MAX_HEARTBEAT_BYTES, client=store[0], bucket=store[1])
             leases.observe_heartbeat(action.root, descriptor["job_id"], json.loads(raw or b"null"),
                                      execution_running=bool(execution.get("runningCount")), now=now)
-        except (ValueError, TaskEvaluationConfiguredSceneObjectStoreError):  # none of these renews the lease
+        except (ValueError, TaskEvaluationConfiguredSceneObjectStoreError):
             pass
-        if now >= hard and not cancelled:
-            runtime.cloud_run.cancel_execution(name)
-            cancelled = True
-        elif now >= hard + CANCEL_GRACE_SECONDS:
-            raise RemoteCpuAllocatorError("remote_cpu_execution_not_terminal")
-        runtime.sleep(runtime.poll_seconds)
+
+    hard = lease["deadlines"]["hard_deadline_epoch"]
+    return runtime.cloud_run.await_execution(
+        execution_resource_name(run_target(descriptor)["job"], execution_name_of(lease["worker_identity"])),
+        clock=runtime.clock, sleep=runtime.sleep, poll_seconds=runtime.poll_seconds, cancel_at=hard,
+        give_up_at=hard + CANCEL_GRACE_SECONDS, on_poll=renew)
 
 
 def _collect_probe(action: _Action, descriptor: Mapping[str, Any], execution: Mapping[str, Any], *, stage: str,
@@ -965,12 +915,9 @@ def run_remote_cpu_job(args: argparse.Namespace, *, runtime: RemoteCpuRuntime | 
                               "blockers": []}
     try:
         result.update(_run_action(args, runtime, now))
-    except RemoteCpuContractError as exc:
-        result.update(status="blocked", blockers=list(exc.reasons))
-    except (CloudRunJobsError, RemoteCpuAllocatorError) as exc:
-        result.update(status="blocked", blockers=[exc.code])
-    except PaidResourceAdmissionBlocked as exc:
-        result.update(status="blocked", blockers=list(exc.blockers))
+    except (RemoteCpuContractError, CloudRunJobsError, RemoteCpuAllocatorError, PaidResourceAdmissionBlocked) as exc:
+        typed = getattr(exc, "reasons", None) or getattr(exc, "blockers", None) or [getattr(exc, "code", "")]
+        result.update(status="blocked", blockers=sorted(set(typed)))
     except Exception as exc:  # noqa: BLE001 - fail closed with a typed record; the cause may name a URL
         result.update(status="blocked", blockers=[f"remote_cpu_{args.action}_failed:{type(exc).__name__}"])
     result["success"] = result["status"] in _SUCCESS.get(args.action, ())

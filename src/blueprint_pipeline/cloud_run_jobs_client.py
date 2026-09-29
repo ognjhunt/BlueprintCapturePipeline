@@ -330,6 +330,25 @@ class CloudRunJobsClient:
         return self._call("POST", f"{_named(name, _EXECUTION_NAME)}:cancel", {"etag": etag} if etag else {},
                           mutation=True)
 
+    def await_execution(self, name: str, *, clock: Callable[[], float], sleep: Callable[[float], None],
+                        poll_seconds: float, cancel_at: float, give_up_at: float,
+                        on_poll: Callable[[Mapping[str, Any], float], None]) -> dict[str, Any]:
+        """Poll one execution until it completes, calling ``on_poll`` each time; cancel it once ``cancel_at``
+        passes (termination only), and give up at ``give_up_at`` if it still has not completed."""
+
+        cancelled = False
+        while True:
+            execution, now = self.get_execution(name), float(clock())
+            if execution.get("completionTime"):
+                return execution
+            on_poll(execution, now)
+            if now >= cancel_at and not cancelled:
+                self.cancel_execution(name)
+                cancelled = True
+            elif now >= give_up_at:
+                raise CloudRunJobsError(None, "remote_cpu_execution_not_terminal")
+            sleep(poll_seconds)
+
     def cancel_executions(self, names: Iterable[str]) -> dict[str, Any]:
         """Terminate each execution; one that finished meanwhile is left as it is (termination only)."""
 

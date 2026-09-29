@@ -44,6 +44,7 @@ MAX_HEARTBEAT_BYTES = 16 * 1024
 INFRASTRUCTURE_FAILED = "infrastructure_failed:"
 RELEASE_PATH_MISSING = INFRASTRUCTURE_FAILED + "release_path_missing:"
 
+PROBE_STAGE = "environment_probe"
 # Stages the host may describe; an unregistered stage is refused everywhere.
 STAGES: Mapping[str, Mapping[str, Any]] = {
     "episode_compilation": {
@@ -54,7 +55,7 @@ STAGES: Mapping[str, Mapping[str, Any]] = {
     },
     # The allocator's preflight (plan 14 §8): one leased, granted, torn-down attempt on a stage's own
     # job that only reports the worker environment.  Its queue row is the probe request.
-    "environment_probe": {
+    PROBE_STAGE: {
         "abbreviation": "ep", "stage_contract": "environment_probe_remote.v1",
         "queue": "remote-cpu-environment-probes", "success_status": "environment_recorded",
         "retryable_blocker_prefixes": (),
@@ -345,6 +346,49 @@ def _config_stage(config: Mapping[str, Any], stage: str, reasons: list[str]) -> 
         reasons.append(f"remote_cpu_config_invalid:stage_missing:{stage}")
         return {}
     return entry
+
+
+_CONFIG_KEYS = frozenset({"schema_version", "project", "region", "transport_bucket", "stages", "rate_table",
+                          "max_live_executions", "max_attempts", "config_digest"})
+_RATES = ("usd_per_vcpu_second", "usd_per_gib_second", "usd_per_egress_gib")
+_PROJECT = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
+_JOB = re.compile(r"blueprint-remote-cpu-[a-z0-9-]{0,40}[a-z0-9]")
+
+
+def config_blockers(config: Mapping[str, Any]) -> list[str]:
+    """Every way a host's ``remote_cpu_workers_config.v1`` is unusable (plan 14 §15); its region must be a US one.
+
+    Each stage names its ``blueprint-remote-cpu-*`` job, digest-pinned image and resources; the probe stage has no
+    entry of its own, because a probe runs on the job of the stage it probes.
+    """
+    stages = config.get("stages") if isinstance(config.get("stages"), Mapping) else {}
+    rates = config.get("rate_table") if isinstance(config.get("rate_table"), Mapping) else {}
+    region = str(config.get("region") or "")
+
+    def stage_valid(stage: str, entry: Any) -> bool:
+        return (stage in STAGES and stage != PROBE_STAGE and isinstance(entry, Mapping)
+                and set(entry) == {"job", "image", *_JOB_LIMITS} and _matches(_JOB)(entry["job"])
+                and _matches(_IMAGE)(entry["image"]) and all(_positive(entry[name]) for name in _JOB_LIMITS)
+                and entry["task_timeout_seconds"] <= MAX_TASK_TIMEOUT_SECONDS and entry["memory_bytes"] <= MAX_MEMORY_BYTES)
+
+    failed = {
+        "keys": set(config) != _CONFIG_KEYS,
+        "schema_version": config.get("schema_version") != CONFIG_SCHEMA_VERSION,
+        "config_digest": config.get("config_digest") != canonical_digest(config, digest_field="config_digest"),
+        "project": not _matches(_PROJECT)(config.get("project")),
+        "region": region.startswith("us-") and re.fullmatch(r"us-[a-z]+[0-9]+", region) is None,
+        "transport_bucket": not _matches(_BUCKET)(config.get("transport_bucket")),
+        "stages": not stages or not all(stage_valid(stage, entry) for stage, entry in stages.items()),
+        "rate_table": set(rates) != {"source", "observed_on", *_RATES}
+        or not all(_is_amount(rates[name]) and rates[name] > 0 for name in _RATES) or not _text(rates["source"])
+        or not _matches(re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}"))(rates["observed_on"]),
+        "max_live_executions": not _positive(config.get("max_live_executions")),
+        "max_attempts": not _positive(config.get("max_attempts")) or config["max_attempts"] > MAX_ATTEMPTS_CAP,
+    }
+    blockers = [f"remote_cpu_config_invalid:{name}" for name, failure in failed.items() if failure]
+    if not region.startswith("us-"):
+        blockers.append("remote_cpu_config_region_not_us")
+    return sorted(blockers)
 
 
 def _descriptor_path_reasons(descriptor: Mapping[str, Any], reasons: list[str]) -> list[str]:
