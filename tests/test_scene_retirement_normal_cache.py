@@ -565,3 +565,26 @@ def test_cache_action_selects_exact_native_generated_publication_without_request
     with pytest.raises(ValueError):
         cache.validate_cache_objects(fixture['policy'],consent,
             ActionAllowance(expires_at=1000,now=lambda:101,monotonic=lambda:0))
+
+
+def test_normal_runtime_layer_cas_has_actual_wrapper_proof_before_derived_action(tmp_path,monkeypatch):
+    from tests.test_scene_retirement_generated_publication import generated_fixture
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline import task_evaluation_scene_retirement_generated as generated
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    fixture=generated_fixture(tmp_path,monkeypatch,external=True)
+    projection=next(iter(fixture['external_layers'].values()))
+    source_root=projection.parent.parent/'content-addressed'/'sha256'
+    leaf=source_root/projection.name
+    key=hashlib.sha256(str(leaf).encode()).hexdigest()+'.json'
+    ledger=Path(fixture['policy']['generation_store'])/key
+    current=json.loads(ledger.read_bytes())
+    publication=json.loads(Path(current['source_publication_raw_ref']['path']).read_bytes())
+    assert publication['schema_version']==generated.SCHEMA, 'normal dynamic layer lacks native wrapper publication'
+    assert publication['role']=='runtime_source' and publication['entry']['sha256']==current['digest']
+    row=dict(canonical_path=str(leaf),digest=current['digest'],size_bytes=current['size_bytes'],
+        generation_id=current['generation_id'],generation_raw_ref=_raw(ledger),
+        source_raw_ref=current['source_publication_raw_ref'])
+    assert cache.validate_cache_objects(fixture['policy'],dict(
+        intent_raw_ref=fixture['proofs']['intent_raw_ref'],cache_objects=[row]),
+        ActionAllowance(expires_at=1000,now=lambda:101,monotonic=lambda:0))==[row]
