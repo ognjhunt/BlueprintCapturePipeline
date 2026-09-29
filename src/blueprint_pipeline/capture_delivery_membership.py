@@ -107,3 +107,38 @@ def validate_capture_delivery_membership(
         _require(any(row["relative_path"] == "raw/manifest.json" for row in raw_rows)
                  and len(raw_rows) == 3, "capture_membership_browser_inputs_invalid")
     return record
+
+
+def load_selected_capture_membership(*, storage_client, handoff, observation):
+    """Read one historical GCS record and preflight only its declared members."""
+    from .common import PipelineError
+
+    selector = handoff.source_membership_selector
+    if selector is None:
+        raise PipelineError('capture_membership_selector_unavailable')
+    try:
+        bucket = storage_client.bucket(handoff.bucket)
+        member_blob = bucket.blob(selector['object_name'], generation=int(selector['generation']))
+        member_blob.reload(if_generation_match=int(selector['generation']), timeout=60, retry=None)
+        _require(str(member_blob.generation) == selector['generation']
+                 and type(member_blob.size) is int
+                 and member_blob.size == selector['size_bytes'],
+                 'capture_membership_metadata_mismatch')
+        raw = member_blob.download_as_bytes(
+            if_generation_match=int(selector['generation']), timeout=60, retry=None)
+        record = validate_capture_delivery_membership(raw, selector=selector,
+                                                       observation=observation)
+        selected = []
+        for row in (*record['raw'], *record['derived']):
+            blob = bucket.blob(row['object_name'], generation=int(row['generation']))
+            blob.reload(if_generation_match=int(row['generation']), timeout=60, retry=None)
+            _require(str(blob.generation) == row['generation']
+                     and type(blob.size) is int and blob.size == row['size_bytes']
+                     and blob.crc32c == row['crc32c'],
+                     'capture_membership_source_metadata_mismatch')
+            selected.append((row, blob))
+        return raw, record, selected
+    except Exception as exc:
+        if isinstance(exc, PipelineError):
+            raise
+        raise PipelineError('capture_membership_source_unavailable') from exc

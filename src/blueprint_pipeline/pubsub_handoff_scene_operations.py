@@ -11,9 +11,9 @@ from typing import Any, Iterator
 
 def _stage_handoff_capture_body(_listener, /, handoff, *, storage_root, storage_client):
     if handoff.source_finalize is not None:
-        # Selected deliveries require the native generation and finite source
-        # membership gate before a direct staging caller can mkdir or list.
-        raise _listener.PipelineError('capture_original_birth_unavailable')
+        from .capture_delivery_staging import stage_selected_capture
+        return stage_selected_capture(_listener, handoff, storage_root=storage_root,
+                                      storage_client=storage_client)
     client = storage_client or _listener.storage.Client()
     resolved_storage_root = storage_root.resolve()
     bucket_root = _listener.contained_path(resolved_storage_root, handoff.bucket, field='Pub/Sub staging bucket path')

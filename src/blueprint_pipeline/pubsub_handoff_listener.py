@@ -59,6 +59,7 @@ class HandoffMessage:
     robot_eval_evaluation_substrate: str | None = None
     robot_eval_budget_usd: float | None = None
     source_finalize: Mapping[str, str] | None = None
+    source_membership_selector: Mapping[str, Any] | None = None
 
     @property
     def capture_prefix(self) -> str:
@@ -127,6 +128,27 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
                 or "\x00" in source_finalize["event_source"]):
             raise PipelineError("Pub/Sub handoff source finalize identity invalid.")
 
+    source_membership_selector = data.get("source_membership_selector")
+    if source_membership_selector is not None:
+        if source_finalize is None or type(source_membership_selector) is not dict or set(source_membership_selector) != {
+            "object_name", "generation", "size_bytes", "sha256"
+        }:
+            raise PipelineError("Pub/Sub handoff source membership selector invalid.")
+        import hashlib
+        delivery_key = hashlib.sha256(json.dumps([
+            bucket, source_finalize["object_name"], source_finalize["generation"]
+        ], separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        expected_member = (f"scenes/{scene_id}/captures/{capture_id}/deliveries/"
+                           f"{delivery_key}/capture_delivery_membership.json")
+        if (source_membership_selector["object_name"] != expected_member
+                or type(source_membership_selector["generation"]) is not str
+                or re.fullmatch(r"[1-9][0-9]{0,19}", source_membership_selector["generation"]) is None
+                or type(source_membership_selector["size_bytes"]) is not int
+                or not 0 < source_membership_selector["size_bytes"] <= 65536
+                or type(source_membership_selector["sha256"]) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", source_membership_selector["sha256"]) is None):
+            raise PipelineError("Pub/Sub handoff source membership selector invalid.")
+
     robot_eval_job_request_uri = _optional_string(
         data,
         "robot_eval_job_request_uri",
@@ -156,6 +178,7 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
         ),
         robot_eval_budget_usd=robot_eval_budget_usd,
         source_finalize=source_finalize,
+        source_membership_selector=source_membership_selector,
     )
 
 

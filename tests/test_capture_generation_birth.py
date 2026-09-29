@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
 from tests.test_capture_original_owner_observer import observation
 from tests.test_scene_retirement_connected_acceptance import _sealed_file
 from tests.test_scene_retirement_real_participants import access_fixture
@@ -117,3 +118,92 @@ def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypa
         birth_capture_member(target, observation=owner, membership_selector=selector,
                              membership_raw=membership_raw)
     assert not target.exists()
+
+
+def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(tmp_path, monkeypatch):
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    _, policy, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch,
+                                                                    prepare_parent=False)
+    membership = json.loads(membership_raw)
+    contents = {
+        owner['completion_marker']['object_name']: b'{"done":true}',
+        owner['producer_delivery']['raw_video']['object_name']: b'video0000',
+        next(row['object_name'] for row in membership['raw']
+             if row['relative_path'] == 'raw/manifest.json'): b'{}',
+    }
+    marker = owner['completion_marker']
+    marker['size_bytes'] = len(contents[marker['object_name']])
+    marker['sha256'] = 'sha256:' + hashlib.sha256(contents[marker['object_name']]).hexdigest()
+    for row in membership['raw']:
+        body = contents[row['object_name']]
+        row['size_bytes'] = len(body)
+        row['sha256'] = 'sha256:' + hashlib.sha256(body).hexdigest()
+    source_fields = ('request_id', 'scene_id', 'capture_id', 'bucket', 'raw_prefix_uri',
+                     'capture_owner', 'ownership_record', 'consent_attestation',
+                     'capture_rights', 'completion_marker', 'producer_delivery')
+    owner['source_projection_digest'] = cross_runtime_canonical_digest({
+        key: owner[key] for key in source_fields})
+    owner['observation_digest'] = cross_runtime_canonical_digest(
+        owner, digest_field='observation_digest')
+    membership_raw = json.dumps(membership, sort_keys=True, separators=(',', ':')).encode()
+    selector['size_bytes'] = len(membership_raw)
+    selector['sha256'] = 'sha256:' + hashlib.sha256(membership_raw).hexdigest()
+    contents[selector['object_name']] = membership_raw
+    rows = {row['object_name']: row for row in membership['raw']}
+
+    class Blob:
+        def __init__(self, name, generation):
+            self.name = name
+            self.generation = generation
+            self.size = len(contents[name])
+            self.crc32c = rows[name]['crc32c'] if name in rows else 'AAAAAA=='
+
+        def reload(self, **kwargs):
+            assert kwargs['if_generation_match'] == self.generation
+            assert kwargs['retry'] is None
+
+        def download_as_bytes(self, **kwargs):
+            assert kwargs['if_generation_match'] == self.generation
+            return contents[self.name]
+
+    class Bucket:
+        def blob(self, name, generation):
+            assert name in contents
+            expected = rows[name]['generation'] if name in rows else selector['generation']
+            assert str(generation) == expected
+            return Blob(name, generation)
+
+    class Client:
+        def bucket(self, name):
+            assert name == owner['bucket']
+            return Bucket()
+
+        def list_blobs(self, *_args, **_kwargs):
+            pytest.fail('selected source cannot list current prefix')
+
+    def download(*, downloads, manifest_rows, selected_generations, **_kwargs):
+        assert set(selected_generations) == set(rows)
+        assert {row['name'] for row in manifest_rows} == set(rows)
+        for blob, destination in downloads:
+            destination.write_bytes(contents[blob.name])
+
+    monkeypatch.setattr(observer, 'load_original_owner_observation', lambda **_: owner)
+    monkeypatch.setattr(listener, 'download_with_reservation', download)
+    payload = {
+        'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
+        'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
+        'source_finalize': {**membership['source_finalize'], 'event_id': 'evt-1',
+                            'event_source': 'storage'},
+        'source_membership_selector': selector,
+    }
+    staged = listener.stage_handoff_capture(listener.parse_handoff_payload(payload),
+                                             storage_root=target.parents[4], storage_client=Client())
+    assert staged == target
+    assert (target / 'raw' / 'manifest.json').read_bytes() == b'{}'
+    staged_manifest = json.loads((target / listener.STAGING_MANIFEST_FILENAME).read_bytes())
+    assert staged_manifest['delivery_key'] == membership['delivery_key']
+    assert staged_manifest['source_membership_selector'] == selector
+    assert staged_manifest['local_generation_id']
+    assert not (target / 'derived').exists()
