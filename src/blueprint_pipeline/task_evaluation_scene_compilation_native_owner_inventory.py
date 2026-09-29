@@ -56,7 +56,8 @@ def _join(intent_id, seed, downstream, source, bridge, roots, routes, metadata, 
         'MAX_RECORDS', 'MAX_REFERENCES', 'MAX_ROWS', 'MAX_NODES', 'MAX_DEPTH'), work_budget) if work_budget is not None else ('MAX_RECORD_BYTES', 'MAX_TOTAL_BYTES', 'MAX_OUTPUT_BYTES',
         'MAX_RECORDS', 'MAX_REFERENCES', 'MAX_ROWS', 'MAX_NODES', 'MAX_DEPTH'))}
     decoded = c.retained.decode(groups, limits, **_work_kwargs(work_budget))  # ALL decoded bounds before hashes/any child.
-    if emission_budget is None:
+    public_join = emission_budget is None
+    if public_join:
         sink = RetainedEmissionBudget(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS,
                                      max_references=MAX_REFERENCES, **_work_kwargs(work_budget))
     else:
@@ -79,7 +80,9 @@ def _join(intent_id, seed, downstream, source, bridge, roots, routes, metadata, 
         'remote_reference_obligations': context.remote, 'structural_join_obligations': context.structural,
         'mutations': 0, **{flag: False for flag in (_work_items(prior.FALSE_FLAGS, work_budget) if work_budget is not None else prior.FALSE_FLAGS)}}
     sink.check_document(result)
-    c.retained.c.bounded_size(result, MAX_OUTPUT_BYTES, **_work_kwargs(work_budget))
+    # A supplied private sink has already bounded the exact complete document.
+    if public_join:
+        c.retained.c.bounded_size(result, MAX_OUTPUT_BYTES)
     for key, rows in (_work_items(result.items(), work_budget) if work_budget is not None else result.items()):
         if isinstance(rows, list):
             result[key] = c.retained.c.unique(rows, MAX_OUTPUT_BYTES, **_work_kwargs(work_budget))

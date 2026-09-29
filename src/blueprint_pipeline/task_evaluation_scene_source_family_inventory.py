@@ -107,7 +107,10 @@ def _join(intent_id, seed_records, downstream_records, source_records, roots, pa
         'structural_join_obligations': context.structural, 'lexical_members': context.members,
         'mutations': 0, **{flag: False for flag in (_work_items(FALSE_FLAGS, work_budget) if work_budget is not None else FALSE_FLAGS)}}
     emission_budget.check_document(result)
-    contracts.c.bounded_size(result, MAX_OUTPUT_BYTES, **_work_kwargs(work_budget))
+    # The private sink already checked the complete compact document. Preserve
+    # the legacy public native check without traversing it twice in a plan.
+    if work_budget is None:
+        contracts.c.bounded_size(result, MAX_OUTPUT_BYTES)
     for key, rows in (_work_items(result.items(), work_budget) if work_budget is not None else result.items()):
         if isinstance(rows, list):
             result[key] = contracts.c.unique(rows, MAX_OUTPUT_BYTES, **_work_kwargs(work_budget))

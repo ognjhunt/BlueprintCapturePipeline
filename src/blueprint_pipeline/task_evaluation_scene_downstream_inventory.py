@@ -81,8 +81,10 @@ def _join(intent_id, seed_records, downstream_records, roots, *, emission_budget
     rows += sum(len(value) for value in (_work_items(seed.values(), work_budget) if work_budget is not None else seed.values()) if isinstance(value, list))
     c.require(rows <= MAX_ROWS, 'rows_limit', **_work_kwargs(work_budget))
     if emission_budget is not None:
+        # Shared private sink streams the same exact compact UTF8 document cap.
         emission_budget.check_document(result)
-    c.bounded_size(result, MAX_OUTPUT_BYTES, **_work_kwargs(work_budget))  # Refuse BEFORE bulk row-key/document serialization.
+    else:
+        c.bounded_size(result, MAX_OUTPUT_BYTES, **_work_kwargs(work_budget))
     for key, value in (_work_items(result.items(), work_budget) if work_budget is not None else result.items()):
         if isinstance(value, list):
             result[key] = c.unique(value, MAX_OUTPUT_BYTES, **_work_kwargs(work_budget))
