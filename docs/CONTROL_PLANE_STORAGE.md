@@ -1222,7 +1222,12 @@ path it reads; without one (download mode) it runs exactly its old code.
   for a run that has none; otherwise it seals the run blocked with
   `policy_canary_provider_output_not_durable`. While the staging dir's current
   promotion receipt is a checkpoint (witness `pending`), neither accepts the
-  proof (`policy_canary_provider_output_promotion_not_final`).
+  proof (`policy_canary_provider_output_promotion_not_final`). A proof answers
+  only for the promotion receipt it was sealed with: once a later promotion has
+  written the staging dir's receipt, neither accepts it
+  (`staged_object_absence_proof_receipt_not_current`) until the next cleanup
+  that proves absence seals a fresh one; the stale proof is renamed aside
+  (`.superseded-<uuid>`), never deleted.
 - **The existing-run continuation** promotes a gated staging's output under the
   per-staging lock (10 s wait) before its gated cleanup. Without the dedicated
   B2 store it refuses first and the tick names

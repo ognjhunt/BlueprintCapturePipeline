@@ -767,8 +767,9 @@ def serve_member_views(monkeypatch, store: RangeStore) -> None:
 def write_staged_absence_proof(attempt, *, promotion_status: str = "promoted", gated: bool = True):
     """A staging dir under ``attempt`` whose objects a completed cleanup proved absent, plus its sealed proof.
 
-    Returns the proof path. ``gated=False`` writes a manifest without
-    ``output_promotion_required`` (download mode's).
+    A gated staging dir also gets the final promotion receipt the proof is
+    sealed with. Returns the proof path. ``gated=False`` writes a manifest
+    without ``output_promotion_required`` (download mode's).
     """
     from pathlib import Path
 
@@ -784,13 +785,21 @@ def write_staged_absence_proof(attempt, *, promotion_status: str = "promoted", g
                 **({"output_promotion_required": True} if gated else {})}
     (staging / records.STAGING_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     keys = records.staged_object_keys(manifest)
+    promotion = None
+    if gated:  # the staging dir's current, final promotion receipt, which the proof is sealed with
+        output = records.key_sha256(manifest["output_key"])
+        promotion = records.write_promotion_receipt(staging, {
+            "schema_version": records.RECEIPT_SCHEMA, "status": promotion_status,
+            "staging_manifest_sha256": records.staging_manifest_sha256(staging), "output_key_sha256": output,
+            "staged_objects": {"output": {"key_sha256": output, "state": promotion_status, "versions": []}},
+            "witness": {"disposition": "not_staged", "reference": None, "redundancy": None},
+            "blockers": [], "private_url_recorded": False, "raw_secret_values_recorded": False})
     cleanup = {"schema_version": records.CLEANUP_SCHEMA,
                "staging_manifest_sha256": records.staging_manifest_sha256(staging), "status": "completed",
                "blockers": [], "all_objects_absent": True, "all_ephemeral_objects_absent": True,
                "exact_object_count": len(keys),
                "objects": [{"key_sha256": records.key_sha256(key), "absence": {"absence_confirmed": True}}
                            for _, key in keys]}
-    promotion = {"receipt_digest": "sha256:" + "1" * 64, "status": promotion_status} if gated else None
     records.write_staged_object_absence_proof(staging_dir=staging, cleanup=cleanup, promotion=promotion)
     return staging / records.ABSENCE_PROOF_FILENAME
 

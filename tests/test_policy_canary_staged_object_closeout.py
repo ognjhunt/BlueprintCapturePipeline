@@ -26,6 +26,7 @@ from blueprint_pipeline.policy_canary_staged_object_absence import (
     NOT_DURABLE,
     NOT_FINAL,
     billing_staged_objects_absent,
+    closeout_staged_objects,
 )
 from blueprint_pipeline.task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError,
@@ -42,6 +43,7 @@ INSTANCE = 49_247_792
 DISPATCHER = "blueprint_pipeline.task_evaluation_policy_canary_dispatcher"
 ZERO = {"schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1", "provider_zero_verified": True,
         "live_instance_count": 0, "blockers": []}
+NOT_CURRENT = "policy_canary_staged_object_absence_proof_invalid:staged_object_absence_proof_receipt_not_current"
 
 
 def _write(path: Path, value: object) -> Path:
@@ -136,14 +138,76 @@ def test_a_promotion_checkpoint_with_its_witness_pending_is_not_final(tmp_path):
     assert NOT_FINAL in waiting["blockers"]
     assert billing_staged_objects_absent(lane) == (False, None)
 
-    _receipt(proof.parent, witness="absent_confirmed")  # the promotion ran to the end
+    final = _receipt(proof.parent, witness="absent_confirmed")  # the promotion ran to the end
+    # The proof was sealed with the earlier receipt; until the cleanup after this promotion
+    # proves absence again, it answers for nothing (review critical 1).
+    assert closeout_staged_objects(lane)["blockers"] == [NOT_CURRENT]
+    cleanup = json.loads(proof.read_text())["cleanup"]
+    records.write_staged_object_absence_proof(staging_dir=proof.parent, cleanup=cleanup, promotion=final)
     closed = _join_session_closeout(inner=_completed_inner(), adapter=lane, provider_zero=ZERO)
     assert closed["session_closeout"]["teardown_completed"] is True and NOT_FINAL not in closed["blockers"]
     assert billing_staged_objects_absent(lane) == (True, proof)
+    assert len(list(proof.parent.glob(records.ABSENCE_PROOF_FILENAME + ".superseded-*"))) == 1
 
 
 def _failing_publisher(**_kwargs):
     raise TaskEvaluationConfiguredSceneObjectStoreError("configured_scene_artifact_publication_failed")
+
+
+def test_a_proof_bound_to_an_earlier_promotion_receipt_proves_nothing(tmp_path):
+    """Review critical 1: a proof answers only for the promotion receipt it was sealed with. Once
+    another promotion has written the staging dir's receipt, the proof no longer says anything
+    about what that promotion found staged, so neither closeout nor billing accepts it."""
+    attempt = tmp_path / "attempt_001"
+    proof = write_staged_absence_proof(attempt, promotion_status="absent_confirmed")
+    lane = _lane(attempt, sealed_absent=False)
+    assert closeout_staged_objects(lane) == {"absent": True, "blockers": []}
+    assert billing_staged_objects_absent(lane) == (True, proof)
+
+    _receipt(proof.parent, witness="absent_confirmed")  # a later promotion, final, found an output
+
+    assert closeout_staged_objects(lane) == {"absent": False, "blockers": [NOT_CURRENT]}
+    assert billing_staged_objects_absent(lane) == (False, None)
+    joined = _join_session_closeout(inner=_completed_inner(), adapter=lane, provider_zero=ZERO)
+    assert joined["session_closeout"]["teardown_completed"] is False and NOT_CURRENT in joined["blockers"]
+    (proof.parent / records.RECEIPT_FILENAME).unlink()  # no current receipt at all
+    assert closeout_staged_objects(lane) == {"absent": False, "blockers": [NOT_CURRENT]}
+
+
+def test_a_proof_sealed_before_a_late_output_never_answers_for_it(tmp_path, monkeypatch):
+    """Review critical 1, the probe's chain. A promotion that found nothing staged confirms the
+    output absent, its cleanup deletes the bundle and seals the proof. An output staged after
+    that, whose promotion then fails (B2 down), stays staged: the old proof must not tell
+    closeout or billing that everything is gone. The next cleanup that does prove absence seals
+    a fresh proof for its own receipt; the stale one is set aside and kept."""
+    world = World(tmp_path, monkeypatch, witness=False)
+    first, cleaned = world.promote()
+    assert first["status"] == "absent_confirmed" and cleaned["all_objects_absent"] is True
+    stale = records.load_staged_object_absence_proof(world.staging)
+    assert stale["promotion_receipt_digest"] == first["receipt_digest"]
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    observation = {"size_bytes": archive.size, "etag": '"spaces-1"'}
+    lane = {"attempt_root": str(world.attempt), "native_control_result_path": None,
+            "provider_closeout": {"all_staged_objects_absent": False}}
+
+    failed, deferred = world.promote(observation=observation, publisher=_failing_publisher)
+
+    assert failed["status"] == "failed" and deferred["all_objects_absent"] is False
+    assert world.keys["output"] in world.spaces.stores
+    assert closeout_staged_objects(lane) == {"absent": False, "blockers": [NOT_CURRENT]}
+    assert billing_staged_objects_absent(lane) == (False, None)
+
+    resumed = world.resume()
+
+    assert resumed["status"] == "completed" and resumed["promotion"]["status"] == "promoted"
+    assert world.keys["output"] not in world.spaces.stores
+    fresh = records.load_staged_object_absence_proof(world.staging)
+    assert fresh["promotion_receipt_digest"] == resumed["promotion"]["receipt_digest"] != first["receipt_digest"]
+    [aside] = world.staging.glob(records.ABSENCE_PROOF_FILENAME + ".superseded-*")
+    assert json.loads(aside.read_text()) == stale
+    assert closeout_staged_objects(lane) == {"absent": True, "blockers": []}
+    assert billing_staged_objects_absent(lane) == (True, world.staging / records.ABSENCE_PROOF_FILENAME)
 
 
 @pytest.fixture

@@ -358,16 +358,21 @@ def load_staged_object_absence_proof(staging_dir: str | Path) -> dict | None:
 
 def write_staged_object_absence_proof(*, staging_dir: str | Path, cleanup: Mapping,
                                       promotion: Mapping | None) -> dict:
-    """Write the absence proof once; an existing valid proof stands and is returned.
+    """Write the absence proof once per promotion receipt; an existing valid proof for it stands.
 
     The file is published by hard link from a fully written temporary, so a
-    proof is never replaced and never seen half-written. An existing file that
-    does not validate is refused, not overwritten.
+    proof is never overwritten in place and never seen half-written. An
+    existing file that does not validate is refused, not overwritten. A valid
+    proof sealed with another promotion receipt than ``promotion`` answers only
+    for that earlier receipt (review critical 1): it is renamed aside
+    (``.superseded-<uuid>``), never deleted, and this proof is written.
     """
     staging = Path(staging_dir)
     existing = load_staged_object_absence_proof(staging)
     if existing is not None:
-        return existing
+        if existing.get("promotion_receipt_digest") == ((promotion or {}).get("receipt_digest") if promotion else None):
+            return existing
+        os.rename(staging / ABSENCE_PROOF_FILENAME, staging / f"{ABSENCE_PROOF_FILENAME}.superseded-{uuid.uuid4().hex}")
     proof = build_staged_object_absence_proof(staging_dir=staging, cleanup=cleanup, promotion=promotion)
     path = staging / ABSENCE_PROOF_FILENAME
     temporary = staging / f".{ABSENCE_PROOF_FILENAME}.{uuid.uuid4().hex}.tmp"
