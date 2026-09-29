@@ -1226,7 +1226,11 @@ def _signed_release(source, commit, deadline):
         _require(name not in paths)
         paths.add(name)
         size = _sdk_git_command(source, ['cat-file', '-s', digest], deadline, cap=32, raw_checkout=True)
-        _require(size.strip().isdigit() and int(size) <= 1024 * 1024)
+        # The pinned lock is data, not executable source. Its real Git blob is
+        # larger than 1 MiB; keep a separate finite cap consistent with the
+        # immutable-record writer while source modules retain the tighter cap.
+        blob_cap = 16 * 1024**2 if name == 'uv.lock' else 1024 * 1024
+        _require(size.strip().isdigit() and int(size) <= blob_cap)
         total += int(size)
         _require(total <= _MAX_BYTES)
         body = _sdk_git_command(source, ['cat-file', 'blob', digest], deadline, cap=int(size), raw_checkout=True)

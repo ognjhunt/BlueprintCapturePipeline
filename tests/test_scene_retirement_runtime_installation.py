@@ -402,6 +402,26 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/_sam_parser_js/__init__.py').read_bytes() == b''
 
 
+def test_signed_release_copies_real_lockfile_size_with_exact_git_bytes(tmp_path, monkeypatch):
+    import subprocess
+    import time
+
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    # The checked-in uv.lock is 1,165,102 bytes at this gate. Keep the test
+    # tiny relative to the runtime budget while crossing the old 1 MiB cap.
+    lock = b'lock\n' + b'x' * (1_165_102 - len(b'lock\n'))
+    (source / 'uv.lock').write_bytes(lock)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture',
+        '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'bounded signed lock'], check=True)
+    commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
+
+    copied = module._signed_release(source, commit, time.monotonic() + 30)
+    assert (copied / 'uv.lock').read_bytes() == lock
+    assert module._signed_release(source, commit, time.monotonic() + 30) == copied
+
+
 def test_live_installer_prepares_immutable_runtime_before_service_ownership_and_units():
     value = (SCRIPT.parent / 'install_live_pipeline_control_plane.sh').read_text()
     selected = value.index('install_scene_retirement_runtime.py')
