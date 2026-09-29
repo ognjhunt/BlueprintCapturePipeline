@@ -33,6 +33,18 @@ _METADATA = frozenset({scratch.LEASE_FILE, ".registered-experiment.v1.json"})
 _ISSUE_SELECTION_SCHEMA = 'control_plane_lane_experiment_issue_selection.v1'
 
 
+def _require_restore_metadata(uid, gid, mode):
+    """Preservation may detach only metadata the strict restorer supports."""
+    _require(type(uid) is int and type(gid) is int and type(mode) is int and 0 <= mode <= 0o777
+             and not mode & 0o022, 'experiment_restore_member_mode')
+
+
+def _require_restorable_rows(rows):
+    for row in rows:
+        mode, uid, gid = map(int, row[3].split(':')[:3])
+        _require_restore_metadata(uid, gid, mode)
+
+
 def _issue_selection(files, config, entry, authority, store, *, principal, owner, action, expiry):
     """ONE protected current-authority operation, selected before any new UUID."""
     intent_raw, intent_record = files.read(Path(config.experiment_record_store) / (entry['intent_id'] + '.json'),
@@ -407,6 +419,8 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
             from . import control_plane_lane_experiment_acquisition as acquisition
             acquisition.begin(files, config, store, action_id, entry, role='issue')
             manifest = _manifest(files, target, target_fd, binding=entry, hash_payload=False)
+            if action == 'offload':
+                _require_restorable_rows(manifest['members'])
             files.budget.measure(manifest, cap=1048576 - 100)
             _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
             files.phase('finalize')
@@ -711,6 +725,8 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         _require(manifest["schema_version"] == MANIFEST_SCHEMA and manifest["manifest_digest"]
                  == canonical_digest(manifest, digest_field="manifest_digest"), "experiment_manifest_invalid")
         _require(len(manifest["members"]) <= 4096, "experiment_manifest_limit")
+        if action['action'] == 'offload':
+            _require_restorable_rows(manifest['members'])
         from . import control_plane_lane_experiment_recovery as recovery
         rows = sorted(manifest["members"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         files._store_path = config.experiment_record_store

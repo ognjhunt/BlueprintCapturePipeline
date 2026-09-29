@@ -145,8 +145,7 @@ def _restore_intent(files, config, action_id, expected, issued):
 
 
 def _owner_mode(files, fd, uid, gid, mode):
-    _require(type(uid) is int and type(gid) is int and type(mode) is int and 0 <= mode <= 0o777
-             and not mode & 0o022, 'experiment_restore_member_mode')
+    actions._require_restore_metadata(uid, gid, mode)
     files.location(fd)
     original = files.proof(fd)
     os.fchown(fd, uid, gid)
