@@ -24,7 +24,6 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +31,8 @@ from . import remote_cpu_job_lease as leases
 from .cloud_run_jobs_client import (
     ATTEMPT_VARIABLE, CLOUD_RUN_CPU_JOB_RESOURCE_CLASS, DESCRIPTOR_VARIABLE, TRANSPORT_GENERATION_VARIABLE,
     TRANSPORT_OBJECT_VARIABLE, CloudRunAmbiguousResponse, CloudRunJobsClient, CloudRunJobsError, GcsTransportBucket,
-    allocation_binding, delete_transport_object, env_value, execution_resource_name, job_definition_blockers,
+    allocation_binding, attempt_executions, delete_transport_object, env_value, execution_resource_name,
+    execution_seconds, job_definition_blockers,
     job_resource_name, load_dispatcher_credentials, run_target, transport_bucket_sentinel,
 )
 from .decision_evidence_contracts import canonical_digest
@@ -71,6 +71,7 @@ PROBE_REQUEST_SCHEMA_VERSION = "remote_cpu_environment_probe_request.v1"
 PROBE_ROOT = "/var/lib/blueprint/remote-cpu-probes"
 RECONCILE_AFTER_SECONDS = 120  # past a :run request's own timeout, so reconcile never races a dispatch
 CANCEL_GRACE_SECONDS = 300
+URL_EXPIRY_MARGIN_SECONDS = 300  # recorded URL expiries outlast the real ones by at least this much
 SETTLED_DIRECTORY = "remote-cpu-settled"
 LEDGER_LOCK = "remote-cpu.lock"
 DAY_SECONDS = 86400
@@ -398,37 +399,36 @@ def admit_remote_cpu_job(*, blockers: list[str], binding: Mapping[str, Any],
 
 
 def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: str, descriptor: Mapping[str, Any],
-                   bucket: Any, object_store: tuple[Any, str, str], now: float) -> dict[str, Any]:
-    """Presign an admitted attempt's transport and write it create-if-absent (plan 14 §4): GETs expire when
-    the fetch window closes, PUTs at the hard deadline.  It exists only in memory and in its GCS object;
-    the caller gets its name, generation and both expiries, for the lease, before the attempt dispatches."""
+                   bucket: Any, object_store: tuple[Any, str, str], clock: Callable[[], float]) -> dict[str, Any]:
+    """Presign an admitted attempt's transport and write it create-if-absent (plan 14 §4).  GETs live through the
+    start allowance, fetch and grace; PUTs to the hard deadline.  botocore signs at the real clock, so each recorded
+    expiry is the clock read after signing, plus the lifetime and a margin.  The transport exists only in memory
+    and in its GCS object; the caller records its name, generation and both expiries on the lease."""
     require_paid_resource_admission_grant(grant, resource_class=RESOURCE_CLASS, allocation_binding_digest=binding_digest,
                                           require_allocation_binding=True)
     client, b2_bucket, limits = object_store[0], object_store[1], descriptor["limits"]
-    write_expiry = leases.hard_deadline_epoch(now, limits)
-    read_expiry = (float(now) + limits["start_allowance_seconds"] + limits["phase_seconds"]["fetch"]
-                   + leases.HARD_DEADLINE_GRACE_SECONDS)
-    reads, writes = math.floor(read_expiry - float(now)), math.floor(write_expiry - float(now))
+    grace, start = leases.HARD_DEADLINE_GRACE_SECONDS, limits["start_allowance_seconds"]
+    reads, writes = start + limits["phase_seconds"]["fetch"] + grace, start + limits["task_timeout_seconds"] + grace
     staging, archive = descriptor["outputs"]["staging_prefix"], descriptor["code"]["source_archive"]
 
     def get(uri: str) -> str:
         return presign_remote_cpu_get(uri=uri, expires_in_seconds=reads, client=client, bucket=b2_bucket)
 
-    transport = {
-        "schema_version": TRANSPORT_SCHEMA_VERSION, "descriptor": dict(descriptor),
-        "inputs": [{"materialize_at": item["materialize_at"], "digest": item["digest"],
-                    "size_bytes": item["size_bytes"], "url": get(item["uri"])} for item in descriptor["inputs"]],
-        "source_archive": {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])},
-        "receipt_url": get(staging + "receipt.json"),
-        "outputs": {name: presign_remote_cpu_put(staging_uri=staging + name, expires_in_seconds=writes, client=client,
-                                                 bucket=b2_bucket) for name in STAGING_OBJECTS},
-        "read_urls_expire_at_epoch": read_expiry, "write_urls_expire_at_epoch": write_expiry,
-    }
+    inputs = [{"materialize_at": item["materialize_at"], "digest": item["digest"], "size_bytes": item["size_bytes"],
+               "url": get(item["uri"])} for item in descriptor["inputs"]]
+    source, receipt = {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])}, get(
+        staging + "receipt.json")
+    outputs = {name: presign_remote_cpu_put(staging_uri=staging + name, expires_in_seconds=writes, client=client,
+                                            bucket=b2_bucket) for name in STAGING_OBJECTS}
+    signed_by = float(clock())
+    expiries = {"read_urls_expire_at_epoch": signed_by + reads + URL_EXPIRY_MARGIN_SECONDS,
+                "write_urls_expire_at_epoch": signed_by + writes + URL_EXPIRY_MARGIN_SECONDS}
+    transport = {"schema_version": TRANSPORT_SCHEMA_VERSION, "descriptor": dict(descriptor), "inputs": inputs,
+                 "source_archive": source, "receipt_url": receipt, "outputs": outputs, **expiries}
     name = f"transport/{descriptor['job_id']}/{descriptor['attempt_id']}-{secrets.token_hex(16)}.json"
     payload = json.dumps(transport, sort_keys=True, separators=(",", ":")).encode("utf-8")
     generation = bucket.create(name, payload, if_generation_match=0)
-    return {"transport_object": f"gs://{bucket.name}/{name}", "transport_generation": int(generation),
-            "write_urls_expire_at_epoch": write_expiry, "read_urls_expire_at_epoch": read_expiry}
+    return {"transport_object": f"gs://{bucket.name}/{name}", "transport_generation": int(generation), **expiries}
 
 
 @dataclass
@@ -513,7 +513,8 @@ def _config_for(config: Mapping[str, Any], raw: Mapping[str, Any]) -> tuple[dict
 
 
 def _dispatch(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
-    """Admit, lease, consume and mint for one attempt under ``remote-cpu.lock``; then start it once."""
+    """Admit, lease, consume, mint and (for a probe) check the sentinels of one attempt under ``remote-cpu.lock``,
+    where it enters ``dispatching`` stamped just before its one run."""
     job_id, attempt_id = descriptor["job_id"], descriptor["attempt_id"]
     lease = _lease(action.root, job_id)
     if lease is not None and lease["attempt_id"] == attempt_id and lease["state"] not in ("claimed", "awaiting_capacity"):
@@ -558,54 +559,61 @@ def _dispatch(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
             return {**result, "status": "awaiting_capacity"}
         if grant is None:
             return {**result, "status": "blocked" if admission["blockers"] else "dry_run_ready"}
-        leases.claim_handoff(action.root, descriptor=descriptor, config=action.config, now=action.now)
+        leases.claim_handoff(action.root, descriptor=descriptor, config=action.config, now=runtime.clock())
         consumption = consume_remote_cpu_authority_once(
             descriptor=descriptor, authority=action.authority, worst_case_usd=worst,
-            binding_digest=admission["allocation_binding_digest"], now=action.now)
+            binding_digest=admission["allocation_binding_digest"], now=runtime.clock())
         if consumption["status"] != "consumed":
             return {**result, "status": "blocked", "blockers": consumption["blockers"]}
         try:
             transport = mint_transport(grant=grant, binding_digest=admission["allocation_binding_digest"],
                                        descriptor=descriptor, bucket=runtime.transport_bucket,
-                                       object_store=runtime.object_store, now=action.now)
+                                       object_store=runtime.object_store, clock=runtime.clock)
         except Exception as exc:  # noqa: BLE001 - nothing ran; the consumed attempt now falls back
             return {**result, "status": "blocked", "blockers": [f"remote_cpu_transport_mint_failed:{type(exc).__name__}"]}
         try:
-            leases.transition(action.root, job_id, attempt_id=attempt_id, to_state="dispatching", now=action.now,
+            leases.transition(action.root, job_id, attempt_id=attempt_id, to_state=None, now=runtime.clock(),
                               updates=transport)
         except RemoteCpuContractError:
             with suppress(Exception):  # a transport that never reached its lease; lifecycle is the backstop
                 delete_transport_object(runtime.transport_bucket, transport["transport_object"],
                                         transport["transport_generation"])
             raise
-    result.update(transport_object=transport["transport_object"], transport_generation=transport["transport_generation"])
-    return _start(action, descriptor, grant=grant, etag=etag, result=result)
+        result.update(transport_object=transport["transport_object"], transport_generation=transport["transport_generation"])
+        overrides = {ATTEMPT_VARIABLE: attempt_id, DESCRIPTOR_VARIABLE: descriptor["descriptor_digest"],
+                     TRANSPORT_OBJECT_VARIABLE: transport["transport_object"],
+                     TRANSPORT_GENERATION_VARIABLE: str(transport["transport_generation"])}
+        refusal = _probe_checks(action, descriptor, grant=grant, etag=etag, overrides=overrides, result=result) if (
+            descriptor["stage"] == PROBE_STAGE) else None
+        # The dispatch clock (start allowance, hard deadline, reconcile's in-flight window) starts here.
+        leases.transition(action.root, job_id, attempt_id=attempt_id, to_state="dispatching", now=runtime.clock())
+    return _start(action, descriptor, grant=grant, etag=etag, overrides=overrides, refusal=refusal, result=result)
+
+
+def _probe_checks(action: _Action, descriptor: Mapping[str, Any], *, grant: PaidResourceAdmissionGrant, etag: str,
+                  overrides: Mapping[str, str], result: dict[str, Any]) -> str | None:
+    """A probe proves the transport bucket, the B2 sentinel and ``validate_only`` before its one run."""
+    runtime, store, attempt_id = action.runtime, action.runtime.object_store, descriptor["attempt_id"]
+    sentinels = result["sentinels"] = {
+        "transport": transport_bucket_sentinel(
+            runtime.transport_bucket, f"transport/{descriptor['job_id']}/{attempt_id}-sentinel.json"),
+        "object_store": remote_cpu_object_store_sentinel(
+            staging_prefix=descriptor["outputs"]["staging_prefix"], attempt_id=attempt_id, client=store[0],
+            bucket=store[1], put=runtime.presigned_put)}
+    try:
+        runtime.cloud_run.run_job(grant=grant, target=run_target(descriptor), etag=etag, overrides=overrides,
+                                  validate_only=True)
+        sentinels["validate_only"] = {"status": "passed", "blockers": []}
+    except CloudRunJobsError as exc:
+        sentinels["validate_only"] = {"status": "blocked", "blockers": [exc.code]}
+    failed = sorted(name for name, sentinel in sentinels.items() if sentinel["status"] != "passed")
+    return f"remote_cpu_preflight_sentinel_failed:{'.'.join(failed)}" if failed else None
 
 
 def _start(action: _Action, descriptor: Mapping[str, Any], *, grant: PaidResourceAdmissionGrant, etag: str,
-           result: dict[str, Any]) -> dict[str, Any]:
-    """Run the admitted attempt once.  A probe first proves its sentinels and ``validate_only``; an
-    ambiguous response is reconciled from a complete listing and never re-issued."""
-    runtime, target, attempt_id = action.runtime, run_target(descriptor), descriptor["attempt_id"]
-    overrides = {ATTEMPT_VARIABLE: attempt_id, DESCRIPTOR_VARIABLE: descriptor["descriptor_digest"],
-                 TRANSPORT_OBJECT_VARIABLE: result["transport_object"],
-                 TRANSPORT_GENERATION_VARIABLE: str(result["transport_generation"])}
-    refusal, names = None, []
-    if descriptor["stage"] == PROBE_STAGE:
-        store = runtime.object_store
-        sentinels = result["sentinels"] = {
-            "transport": transport_bucket_sentinel(
-                runtime.transport_bucket, f"transport/{descriptor['job_id']}/{attempt_id}-sentinel.json"),
-            "object_store": remote_cpu_object_store_sentinel(
-                staging_prefix=descriptor["outputs"]["staging_prefix"], attempt_id=attempt_id, client=store[0],
-                bucket=store[1], put=runtime.presigned_put)}
-        try:
-            runtime.cloud_run.run_job(grant=grant, target=target, etag=etag, overrides=overrides, validate_only=True)
-            sentinels["validate_only"] = {"status": "passed", "blockers": []}
-        except CloudRunJobsError as exc:
-            sentinels["validate_only"] = {"status": "blocked", "blockers": [exc.code]}
-        failed = sorted(name for name, sentinel in sentinels.items() if sentinel["status"] != "passed")
-        refusal = f"remote_cpu_preflight_sentinel_failed:{'.'.join(failed)}" if failed else None
+           overrides: Mapping[str, str], refusal: str | None, result: dict[str, Any]) -> dict[str, Any]:
+    """Run the admitted attempt once; an ambiguous response is reconciled from a complete listing, never re-issued."""
+    runtime, target, names = action.runtime, run_target(descriptor), []
     if refusal is None:
         try:
             operation = runtime.cloud_run.run_job(grant=grant, target=target, etag=etag, overrides=overrides)
@@ -638,8 +646,7 @@ def reconcile_ambiguous_dispatch(action: _Action, descriptor: Mapping[str, Any])
     except CloudRunJobsError as exc:
         return {"status": "unresolved", "executions": [],
                 "blockers": sorted({"remote_cpu_ambiguous_dispatch_unresolved", exc.code})}
-    mine = sorted((row for row in rows if env_value(row, ATTEMPT_VARIABLE) == descriptor["attempt_id"]),
-                  key=lambda row: str(row.get("createTime") or ""))
+    mine = attempt_executions(rows, descriptor["attempt_id"])
     return {"status": "found" if mine else "absent", "executions": [str(row.get("name") or "") for row in mine],
             "listing_pages": pages, "blockers": []}
 
@@ -650,7 +657,7 @@ def prove_compute_zero(action: _Action, lease: Mapping[str, Any], descriptor: Ma
     cloud_run, job, identity = action.runtime.cloud_run, run_target(descriptor)["job"], lease["worker_identity"]
     execution = cloud_run.get_execution(execution_resource_name(job, execution_name_of(identity))) if identity else {}
     rows, pages = cloud_run.list_all_executions(job)
-    mine = [row for row in rows if env_value(row, ATTEMPT_VARIABLE) == descriptor["attempt_id"]]
+    mine = attempt_executions(rows, descriptor["attempt_id"])
     unfinished = sum(1 for row in mine if not row.get("completionTime"))
     completed = bool(execution.get("completionTime")) and not execution.get("runningCount")
     absent = unfinished == 0 and (completed or not identity) and delete_transport_object(
@@ -671,13 +678,6 @@ def prove_provider_zero(action: _Action, lease: Mapping[str, Any], descriptor: M
             "staging_versions_remaining": deleted["versions_remaining"],
             "staging_listing_complete": deleted["listing_complete"],
             **{name: lease[name] for name in ("write_urls_expire_at_epoch", "read_urls_expire_at_epoch")}}
-
-
-def _epoch(text: Any) -> float | None:
-    try:
-        return datetime.fromisoformat(re.sub(r"(\.[0-9]{6})[0-9]+", r"\1", str(text)).replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
 
 
 def _teardown(action: _Action, descriptor: Mapping[str, Any], *, outcome: str, terminal: str, wait: bool,
@@ -788,9 +788,8 @@ def _collect_probe(action: _Action, descriptor: Mapping[str, Any], execution: Ma
     if lease["state"] in ("dispatched", "running"):
         leases.transition(action.root, descriptor["job_id"], attempt_id=descriptor["attempt_id"], to_state="collecting",
                           now=float(action.runtime.clock()), updates={"outcome": outcome})
-    created, completed = _epoch(execution.get("createTime")), _epoch(execution.get("completionTime"))
     timeout = float(descriptor["limits"]["task_timeout_seconds"])
-    seconds = min(timeout, max(0.0, completed - created)) if created and completed else timeout
+    seconds = min(timeout, execution_seconds(execution) or timeout)
     uploaded = receipt["bytes_uploaded"] if receipt else descriptor["limits"]["max_output_bytes"]
     return {"outcome": outcome, "environment": environment, "usage": (seconds, uploaded),
             "terminal": "fallback_host" if lease["state"] == "expired" else "completed" if environment else "blocked"}
@@ -836,29 +835,17 @@ def preflight_remote_cpu_stage(action: _Action, stage: str) -> dict[str, Any]:
 
 
 def _terminate(action: _Action, executions: list[Mapping[str, Any]], status: str) -> dict[str, Any]:
-    """Cancel each execution; one that finished in the meantime is left as it is."""
     names = [str(row.get("name") or "") for row in executions]
     if not action.execute:
         return {"status": "dry_run_ready", "would_cancel": [name.rsplit("/", 1)[-1] for name in names], "blockers": []}
-    cancelled, finished, blockers = [], [], []
-    for name in names:
-        try:
-            action.runtime.cloud_run.cancel_execution(name)
-            cancelled.append(name.rsplit("/", 1)[-1])
-        except CloudRunJobsError as exc:
-            if exc.code == "FAILED_PRECONDITION":
-                finished.append(name.rsplit("/", 1)[-1])
-            else:
-                blockers.append(f"remote_cpu_cancel_failed:{exc.code}")
-    return {"status": "blocked" if blockers else status, "cancelled": cancelled, "already_finished": finished,
-            "blockers": sorted(set(blockers))}
+    done = action.runtime.cloud_run.cancel_executions(names)
+    return {**done, "status": "blocked" if done["blockers"] else status}
 
 
 def cancel_remote_cpu_attempt(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
     """Terminate every unfinished execution carrying this attempt; this action never starts anything."""
     rows, pages = action.runtime.cloud_run.list_all_executions(run_target(descriptor)["job"])
-    running = [row for row in rows
-               if env_value(row, ATTEMPT_VARIABLE) == descriptor["attempt_id"] and not row.get("completionTime")]
+    running = [row for row in attempt_executions(rows, descriptor["attempt_id"]) if not row.get("completionTime")]
     return {**_terminate(action, running, "cancelled"), "listing_pages": pages}
 
 

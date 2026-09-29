@@ -14,6 +14,7 @@ import json
 import logging
 import stat
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -310,14 +311,15 @@ def test_presigned_puts_exist_only_after_admission_and_expire_at_the_hard_deadli
     for grant in (None, allocator.admit_remote_cpu_job(blockers=[], binding={"x": 1}, execute=True)[1]):
         with pytest.raises(PaidResourceAdmissionBlocked):
             allocator.mint_transport(grant=grant, binding_digest=binding, descriptor=descriptor,
-                                     bucket=world.bucket, object_store=world.runtime.object_store, now=T0)
+                                     bucket=world.bucket, object_store=world.runtime.object_store, clock=world.clock)
     world.assert_untouched()
 
     world.write_authority(standing_authority())
     assert world.run("dispatch", descriptor=descriptor)["admission"]["status"] == "admitted"
     lease = world.lease(descriptor)
     hard, fetch_end = T0 + 600 + 1800 + 120, T0 + 600 + 300 + 120
-    assert (lease["write_urls_expire_at_epoch"], lease["read_urls_expire_at_epoch"]) == (hard, fetch_end)
+    # The URLs stop at the hard deadline and the fetch window; the recorded bounds add a 300 s margin.
+    assert (lease["write_urls_expire_at_epoch"], lease["read_urls_expire_at_epoch"]) == (hard + 300, fetch_end + 300)
     assert lease["deadlines"]["hard_deadline_epoch"] == hard
     staging = descriptor["outputs"]["staging_prefix"].removeprefix(f"s3://{B2_BUCKET}/")
     puts = [(key, seconds) for method, key, seconds in world.store.presigned if method == "put_object"]
@@ -813,3 +815,60 @@ def test_allocator_and_remote_cpu_modules_stay_within_their_line_budgets() -> No
                "src/blueprint_pipeline/cloud_run_jobs_client.py": 500}
     for relative, budget in budgets.items():
         assert len((root / relative).read_text(encoding="utf-8").splitlines()) <= budget, relative
+
+
+def _signed_until(url: str) -> float:
+    """When a presigned URL stops working: its signing time plus its lifetime."""
+
+    query = parse_qs(urlsplit(url).query)
+    return float(query["X-Amz-Date"][0]) + float(query["X-Amz-Expires"][0])
+
+
+def _refusing_runs(world: RemoteCpuWorld, *, get_job_seconds: float = 0.0, runs: list | None = None):
+    """A Cloud Run that refuses every :run (403) after a ``jobs.get`` that takes ``get_job_seconds``."""
+
+    def transport(method: str, url: str, *, body, headers):
+        if method == "GET" and url.endswith(JOB):
+            world.clock.advance(get_job_seconds)  # a token refresh, a lock wait or a slow jobs.get
+        if url.endswith(":run"):
+            if runs is not None:
+                runs.append(world.clock.now)
+            return 403, b'{"error": {"code": 403, "status": "PERMISSION_DENIED"}}'
+        return world.rest(method, url, body=body, headers=headers)
+
+    return transport
+
+
+def test_recorded_url_expiry_outlasts_every_minted_url_and_dispatch_is_stamped_at_run(tmp_path: Path,
+                                                                                      monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    world.record_environment()
+    runs: list[float] = []
+    minted: dict = {}
+    world.runtime.cloud_run._transport = _refusing_runs(world, get_job_seconds=90, runs=runs)
+    create = world.bucket.create
+
+    def slow_upload(name, data, *, if_generation_match):
+        world.clock.advance(30)
+        minted.update(json.loads(data))
+        return create(name, data, if_generation_match=if_generation_match)
+
+    world.bucket.create = slow_upload
+    descriptor = world.descriptor()
+    assert world.run("dispatch", descriptor=descriptor)["status"] == "teardown_pending"
+    lease = world.lease(descriptor)
+    puts = list(minted["outputs"].values())
+    gets = [minted["receipt_url"], minted["source_archive"]["url"], *(row["url"] for row in minted["inputs"])]
+    # botocore signs at the real clock: the recorded bounds come from after signing, plus a margin.
+    assert lease["write_urls_expire_at_epoch"] >= max(map(_signed_until, puts)) + 300
+    assert lease["read_urls_expire_at_epoch"] >= max(map(_signed_until, gets)) + 300
+    # The dispatch clock starts when :run is sent, not when the action began.
+    assert runs == [lease["deadlines"]["dispatch_started_at_epoch"]] and runs[0] >= T0 + 120
+
+    world.clock.now = lease["write_urls_expire_at_epoch"] - 1
+    assert world.run("reconcile", descriptor=descriptor)["status"] == "teardown_pending"
+    world.clock.now = lease["write_urls_expire_at_epoch"]
+    closed = world.run("reconcile", descriptor=descriptor)
+    assert closed["status"] == "abandoned_dispatch" and closed["teardown"]["provider_zero_proven"] is True
+    # Provider zero is sealed only once no minted write URL still works.
+    assert {world.store.request("PUT", url, body=b"late").status for url in puts} == {403}

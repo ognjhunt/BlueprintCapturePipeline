@@ -20,7 +20,8 @@ import os
 import re
 import stat
 import urllib.error
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -105,6 +106,26 @@ def env_value(resource: Mapping[str, Any], name: str) -> str | None:
             if isinstance(variable, Mapping) and variable.get("name") == name:
                 return variable.get("value")
     return None
+
+
+def attempt_executions(rows: Iterable[Mapping[str, Any]], attempt_id: str) -> list[Mapping[str, Any]]:
+    """The executions whose template carries this attempt id, oldest first."""
+
+    return sorted((row for row in rows if env_value(row, ATTEMPT_VARIABLE) == attempt_id),
+                  key=lambda row: str(row.get("createTime") or ""))
+
+
+def execution_seconds(execution: Mapping[str, Any]) -> float | None:
+    """Creation to completion: an upper bound on an execution's billed time, or ``None`` while unknown."""
+
+    def epoch(text: Any) -> float | None:
+        try:  # RFC 3339 with up to nanoseconds, as Cloud Run reports it
+            return datetime.fromisoformat(re.sub(r"(\.[0-9]{6})[0-9]+", r"\1", str(text)).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+    created, completed = epoch(execution.get("createTime")), epoch(execution.get("completionTime"))
+    return max(0.0, completed - created) if created is not None and completed is not None else None
 
 
 def job_definition_blockers(job: Mapping[str, Any], *, image: str, timeout_seconds: int) -> list[str]:
@@ -308,6 +329,21 @@ class CloudRunJobsClient:
 
         return self._call("POST", f"{_named(name, _EXECUTION_NAME)}:cancel", {"etag": etag} if etag else {},
                           mutation=True)
+
+    def cancel_executions(self, names: Iterable[str]) -> dict[str, Any]:
+        """Terminate each execution; one that finished meanwhile is left as it is (termination only)."""
+
+        cancelled, finished, blockers = [], [], []
+        for name in names:
+            try:
+                self.cancel_execution(name)
+                cancelled.append(name.rsplit("/", 1)[-1])
+            except CloudRunJobsError as exc:
+                if exc.code == "FAILED_PRECONDITION":
+                    finished.append(name.rsplit("/", 1)[-1])
+                else:
+                    blockers.append(f"remote_cpu_cancel_failed:{exc.code}")
+        return {"cancelled": cancelled, "already_finished": finished, "blockers": sorted(set(blockers))}
 
 
 def delete_transport_object(bucket: Any, object_uri: str, generation: int) -> bool:
