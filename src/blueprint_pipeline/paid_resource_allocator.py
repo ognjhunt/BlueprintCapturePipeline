@@ -1952,6 +1952,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
     gpu.add_argument("--adp-machine-avoidlist")
     gpu.add_argument(
+        "--adp-allowed-vast-machine-id", action="append", type=int, default=[],
+        help="Operator-selected machine IDs for a controlled native policy run.",
+    )
+    gpu.add_argument(
         "--adp-excluded-vast-machine-id",
         action="append",
         type=int,
@@ -5724,6 +5728,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         print(json.dumps({"success": False}, sort_keys=True))
                         return 2
                     run_kwargs["retain_warm_instance"] = True
+                if controlled_requested:
+                    allowed_machines = tuple(sorted(set(args.adp_allowed_vast_machine_id)))
+                    if any(machine_id <= 0 for machine_id in allowed_machines):
+                        raise ValueError("controlled_native_allowed_vast_machine_id_invalid")
+                    run_kwargs["allowed_machine_ids"] = allowed_machines
                 result = run_native(**run_kwargs)
                 result = continue_retained_feedback_if_requested(
                     execute=args.execute,

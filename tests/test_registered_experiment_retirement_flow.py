@@ -1,9 +1,9 @@
-"""ADP-009D/day28: authenticated expired experiments reach actual storage GC.
+"""ADP-009D/day28: retirement engine mechanics after test-only eligibility.
 
 Tiny development-only Mac fixtures exercise the real issuer, native birth and
-existing timer entrypoint. Root metadata is the existing hermetic fixture; it
-does not satisfy the separate real foreign-UID/Linux acceptance gate. No G1
-completion, descendant closure or archive proof is fabricated here.
+existing timer entrypoint. Removal tests explicitly bypass the unavailable
+producer-completion gate and are not proof of product cleanup eligibility.
+Root metadata is hermetic; no foreign-UID/Linux or G1 completion proof exists.
 """
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_lane_experiment_retirement.py
@@ -77,6 +77,13 @@ def retirement_installation(installation, monkeypatch):  # noqa: F811
     return installation
 
 
+@pytest.fixture
+def removal_engine_only(monkeypatch):
+    """Exercise old journal mechanics past eligibility, never product cleanup proof."""
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    monkeypatch.setattr(actions, '_require_disposable_producer_completion', lambda: None)
+
+
 def _born_scratch(installation):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_scratch as native
     grant = issue(installation)
@@ -90,7 +97,7 @@ def _born_scratch(installation):  # noqa: F811
     assert lease['expires_at_epoch'] == 2800
     entry = _current_entry(installation, grant['intent_id'])
     assert entry['generation'] == born['generation'] and entry['state'] == 'active'
-    assert entry['completion'] is None  # Authentic disposable profile needs no G1 proof.
+    assert entry['completion'] is None  # This birth does not prove writer completion.
     return grant, born, target
 
 
@@ -118,8 +125,8 @@ def _no_archive(monkeypatch):
         lambda *args, **kwargs: pytest.fail('scratch/unknown/owner_review attempted archive upload'))
 
 
-def test_authentic_expired_scratch_reaches_existing_gc_and_durable_retired_receipt(
-        retirement_installation, monkeypatch):
+def test_removal_engine_reaches_existing_gc_and_durable_retired_receipt(
+        retirement_installation, monkeypatch, removal_engine_only):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     from blueprint_pipeline import control_plane_lane_scratch as native
     installation = retirement_installation  # noqa: F811
@@ -162,7 +169,7 @@ def test_authentic_expired_scratch_reaches_existing_gc_and_durable_retired_recei
 
 
 def test_pin_publisher_cannot_enter_between_observation_and_retirement(
-        retirement_installation, monkeypatch):
+        retirement_installation, monkeypatch, removal_engine_only):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     from blueprint_pipeline import control_plane_storage_pin_observation as observation
     from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
@@ -205,7 +212,7 @@ def test_pin_publisher_cannot_enter_between_observation_and_retirement(
 
 @pytest.mark.parametrize('disabled', ['gc_opt_in', 'installed_retirement'])
 def test_existing_gc_never_applies_when_either_enablement_is_off(
-        retirement_installation, monkeypatch, disabled):
+        retirement_installation, monkeypatch, disabled, removal_engine_only):
     installation = retirement_installation  # noqa: F811
     grant, _, target = _born_scratch(installation)
     _issue_action(installation, grant)
@@ -270,7 +277,7 @@ def test_owner_review_has_no_payload_or_provider_mutation(
 
 
 @pytest.mark.parametrize('review_expiry', [3000, 3900])
-def test_owner_review_actions_do_not_starve_later_valid_delete(retirement_installation, review_expiry):
+def test_owner_review_actions_do_not_starve_removal_engine(retirement_installation, review_expiry, removal_engine_only):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
 
     installation = retirement_installation  # noqa: F811
@@ -298,7 +305,7 @@ def test_owner_review_actions_do_not_starve_later_valid_delete(retirement_instal
 
 
 @pytest.mark.parametrize('bad_index', [1, 2])
-def test_malformed_unrelated_action_does_not_hide_valid_cleanup(retirement_installation, bad_index):
+def test_malformed_unrelated_action_does_not_hide_removal_engine(retirement_installation, bad_index, removal_engine_only):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
 
     installation = retirement_installation  # noqa: F811
@@ -325,7 +332,7 @@ def test_malformed_unrelated_action_does_not_hide_valid_cleanup(retirement_insta
     assert _payload_snapshot(invalid_target) == before
 
 
-def test_malformed_current_authority_still_aborts_all_registered_actions(retirement_installation):
+def test_malformed_current_authority_still_aborts_all_registered_actions(retirement_installation, removal_engine_only):
     installation = retirement_installation  # noqa: F811
     grant, _, target = _born_scratch(installation)
     _issue_action(installation, grant)
@@ -339,7 +346,7 @@ def test_malformed_current_authority_still_aborts_all_registered_actions(retirem
 
 
 @pytest.mark.parametrize('bad_field', ['manifest', 'issuer_uid', 'issued_at_epoch', 'policy', 'controller', 'principal'])
-def test_parseable_invalid_actions_do_not_starve_valid_cleanup(retirement_installation, bad_field):
+def test_parseable_invalid_actions_do_not_starve_removal_engine(retirement_installation, bad_field, removal_engine_only):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -377,7 +384,7 @@ def test_parseable_invalid_actions_do_not_starve_valid_cleanup(retirement_instal
     assert all((target / 'intermediate.bin').exists() for _, _, target in candidates[:2])
 
 
-def test_valid_multi_principal_policy_does_not_exhaust_gc_selection_budget(retirement_installation):
+def test_valid_multi_principal_policy_does_not_exhaust_gc_selection_budget(retirement_installation, removal_engine_only):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
 
     installation = retirement_installation  # noqa: F811
@@ -397,7 +404,7 @@ def test_valid_multi_principal_policy_does_not_exhaust_gc_selection_budget(retir
     assert {row['action_id'] for row in outcomes} <= {action['action_id'] for action in issued}
 
 
-def test_valid_maximum_owner_policy_still_allows_actual_retirement(retirement_installation):
+def test_valid_maximum_owner_policy_still_allows_removal_engine(retirement_installation, removal_engine_only):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
 
     installation = retirement_installation  # noqa: F811
@@ -418,7 +425,7 @@ def test_valid_maximum_owner_policy_still_allows_actual_retirement(retirement_in
 
 @pytest.mark.parametrize('fault', ['alternate_empty_root', 'duplicate', 'relative'])
 def test_actual_action_refuses_wrong_or_ambiguous_installed_reference_authority(
-        retirement_installation, monkeypatch, fault):
+        retirement_installation, monkeypatch, fault, removal_engine_only):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     installation = retirement_installation  # noqa: F811
     grant, _, target = _born_scratch(installation)
