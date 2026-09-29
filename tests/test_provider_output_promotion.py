@@ -108,7 +108,7 @@ class StagedSpaces:
 class World:
     """One Quick-10 attempt: a gated staging dir, Spaces, B2 and the lane's layout."""
 
-    def __init__(self, tmp_path: Path, monkeypatch, *, witness: bool = True):
+    def __init__(self, tmp_path: Path, monkeypatch, *, witness: bool = True, torn_down: bool = True):
         self.tmp_path = tmp_path
         tmp_path.mkdir(parents=True, exist_ok=True)
         # The dedicated B2 store is explicitly configured (review I4).
@@ -144,6 +144,13 @@ class World:
                                           "authority": {"maximum_archive_bytes": MAXIMUM}}
         (self.staging / STAGING_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         self.spaces.put(self.keys["bundle"], b"provider bundle bytes", '"bundle"')
+        if torn_down:  # the paid window is over: the provider can no longer read or upload
+            self.tear_down()
+
+    def tear_down(self, *, continuing_spend=False):
+        (self.run / promotion.TEARDOWN_MANIFEST_NAME).write_text(json.dumps(
+            {"schema_version": "vast_teardown_manifest.v1", "status": "completed", "vast_instance_ids": [7],
+             "continuing_spend_from_this_run": continuing_spend}), encoding="utf-8")
 
     def stage(self, role, archive, etag='"spaces-1"'):
         self.cas.register(archive)
@@ -653,6 +660,40 @@ def test_promotion_and_resume_refuse_an_attempt_that_did_not_require_promotion(w
     assert local.is_file() and world.cas.uploads == 0 and world.spaces.deleted == []
     assert world.spaces.requests(world.keys["output"]) == []
     assert sorted(path.name for path in world.staging.iterdir()) == before
+
+
+@pytest.mark.parametrize("teardown", ["missing", "continuing_spend", "unreadable", "symlinked"])
+def test_resume_refuses_an_attempt_whose_paid_window_may_be_open(tmp_path, monkeypatch, teardown):
+    """Review critical 1: resume runs the gated cleanup, which deletes the staged bundle and seals a
+    write-once absence proof. While the paid window may be open the provider can still read the
+    bundle or upload its output, so until the teardown manifest records no continuing spend
+    nothing is read, published, removed or proven -- ingestion included."""
+    world = World(tmp_path, monkeypatch, witness=True, torn_down=False)
+    teardown_path = world.run / promotion.TEARDOWN_MANIFEST_NAME
+    if teardown == "continuing_spend":
+        world.tear_down(continuing_spend=True)
+    elif teardown == "unreadable":
+        teardown_path.write_text("{not json", encoding="utf-8")
+    elif teardown == "symlinked":
+        elsewhere = tmp_path / "teardown-elsewhere.json"
+        elsewhere.write_text('{"continuing_spend_from_this_run": false}', encoding="utf-8")
+        teardown_path.symlink_to(elsewhere)
+    before = world.files()
+
+    resumed = world.resume(ingest=True)
+
+    assert (resumed["status"], resumed["blockers"]) == ("blocked", ["provider_output_resume_attempt_not_torn_down"])
+    assert resumed["cleanup"] is None and resumed["absence_proof"] is None and "ingestion" not in resumed
+    assert world.keys["bundle"] in world.spaces.stores and world.spaces.deleted == []
+    assert world.cas.uploads == 0 and world.spaces.requests(world.keys["output"]) == []
+    assert _proof(world) is None and not (world.staging / records.RECEIPT_FILENAME).exists()
+    assert sorted(set(world.files()) - set(before)) == [world.attempt / promotion.RESUME_FILENAME]
+    assert promotion.main(["resume", "--attempt-root", str(world.attempt)]) == 1
+
+    teardown_path.unlink(missing_ok=True)
+    world.tear_down()  # the adapter's own teardown manifest now records no continuing spend
+    assert world.resume()["status"] == "completed"
+    assert world.keys["bundle"] not in world.spaces.stores and _proof(world) is not None
 
 
 @pytest.mark.parametrize("fault", ["symlinked_lock_file", "flock_unavailable"])

@@ -1319,7 +1319,13 @@ gone. Redelivering such a run is out of scope.
 **Door resume.** `python3 scripts/operator_door.py provider-output-resume <run>
 <attempt> [--ingest] --wait` runs the active release's
 `provider_output_promotion resume` as `blueprint` with umask 0077, never as root
-(the attempt tree is the service user's). `--ingest` takes an exact
+(the attempt tree is the service user's). It refuses, touching nothing, until
+the attempt's `vast_provider_run/vast_teardown_manifest.json` records
+`continuing_spend_from_this_run: false`
+(`provider_output_resume_attempt_not_torn_down`): while the paid window may be
+open the provider can still read the bundle or upload its output, and the gated
+cleanup and the write-once absence proof must not run before it closes.
+`--ingest` takes an exact
 `policy_canary_output` hold and ingests once: an ingestion already materialized
 for the index short-circuits, because readers (partial recovery,
 interpretation) write into the evidence root afterwards and a second pass would
@@ -1340,7 +1346,9 @@ and ingest one retained Quick-10 into the dev bucket on the host:
    `<scratch>/attempt_001/object_store_staging/wam_provider_object_store_staging_manifest.json`
    with `schema_version` `wam_provider_object_store_staging.v1`, `status`
    `completed`, an `object_store` prefix, a `bundle_key` and an `output_key`
-   that name no object, and `"output_promotion_required": true`.
+   that name no object, and `"output_promotion_required": true`, plus
+   `<scratch>/attempt_001/vast_provider_run/vast_teardown_manifest.json` with
+   `"continuing_spend_from_this_run": false` (resume refuses without it).
 2. Point the five `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE` settings and
    `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET` at the dev bucket.
 3. Run `python -m blueprint_pipeline.provider_output_promotion resume

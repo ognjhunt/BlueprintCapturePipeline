@@ -151,6 +151,7 @@ WITNESS_MANIFEST_MEMBER = "paired_witness_manifest.v1.json"
 STAGING_DIRNAME = "object_store_staging"
 PROVIDER_RUN_DIRNAME = "vast_provider_run"
 COMMAND_RESULT_NAME = "vast_provider_command_result.json"
+TEARDOWN_MANIFEST_NAME = "vast_teardown_manifest.json"
 MAXIMUM_MANIFEST_BYTES = 64 * 1024**2
 DEFAULT_MAXIMUM_ARCHIVE_BYTES = 64 * 1024**3
 # Fixed, so the index a lane writes and the one a resume rebuilds are the same
@@ -917,6 +918,24 @@ def _promotion_refusal(staging: Path) -> str | None:
     return None
 
 
+def _teardown_refusal(run: Path) -> str | None:
+    """Why the attempt's paid window may still be open, or None once its teardown records no spend.
+
+    Resume deletes staged objects and seals a write-once absence proof. Until
+    the adapter's teardown manifest records ``continuing_spend_from_this_run:
+    false`` the provider may still read the bundle or upload its output, so
+    resume must neither delete nor prove anything (review critical 1).
+    """
+    path = run / TEARDOWN_MANIFEST_NAME
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
+    except (OSError, UnicodeError, ValueError):
+        value = None
+    if not isinstance(value, dict) or value.get("continuing_spend_from_this_run") is not False:
+        return "provider_output_resume_attempt_not_torn_down"
+    return None
+
+
 def _quarantine_invalid_proof(staging: Path) -> dict | None:
     """Move aside an absence proof that no longer validates, so a fresh one can be written.
 
@@ -957,13 +976,17 @@ def resume_provider_output_promotion(
     still in ``vast_provider_run/``. Writes ``provider_output_resume.v1.json``
     beside them and never rewrites the sealed lane result. An attempt whose
     staging manifest did not require promotion is refused before anything is
-    read, published, removed or cleaned up.
+    read, published, removed or cleaned up; so is one whose
+    ``vast_teardown_manifest.json`` does not record
+    ``continuing_spend_from_this_run: false``
+    (``provider_output_resume_attempt_not_torn_down``), whose provider may
+    still read the bundle or upload its output.
     """
     attempt = Path(attempt_root).expanduser().resolve()
     staging = attempt / STAGING_DIRNAME
     run = attempt / PROVIDER_RUN_DIRNAME
     local = run / OUTPUT_FILENAME
-    refusal = _promotion_refusal(staging)
+    refusal = _promotion_refusal(staging) or _teardown_refusal(run)
     quarantined = None
     if refusal is not None:
         receipt, cleaned = _unwritten_failure(staging, artifact_kind, refusal), None
