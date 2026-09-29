@@ -109,7 +109,7 @@ class TransferError(WorkerFailure):
 
 
 class _Committed(WorkerFailure):
-    """This attempt's receipt is already up; it is never overwritten (plan 14 §6)."""
+    """This attempt's receipt is already up, so this execution writes nothing more (plan 14 §6)."""
 
 
 def _code(exc: BaseException) -> str:
@@ -421,9 +421,10 @@ class _Attempt:
 
     def commit(self, status: str, *, result: Any = None, output: Any = None, failures: Sequence[str] = (),
                misses: Sequence[str] = ()) -> dict[str, Any]:
-        """Upload the receipt, the commit marker, last, and only while none is up: a committed receipt is never
-        overwritten, and when that cannot be read nothing is written.  One the host would refuse keeps its
-        failures but not its result, and failing that says only why it was refused."""
+        """Upload the receipt, the commit marker, last, and only while none is up; when that cannot be read
+        nothing is written.  A duplicate that commits between this check and the PUT can still be replaced
+        (presigned PUTs are unconditional); the host's execution-name fence keeps that fail-closed.  One the
+        host would refuse keeps its failures but not its result, and failing that says only why it was refused."""
         receipt = self._receipt(status, result, output, failures, misses)
         refusal = self._refusal(receipt)
         if refusal is not None:
