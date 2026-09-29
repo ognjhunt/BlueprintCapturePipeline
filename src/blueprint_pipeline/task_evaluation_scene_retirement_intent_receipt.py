@@ -191,6 +191,101 @@ def _members(consent, preserved, allowance):
     return result
 
 
+def _cache_members(objects,preserved,allowance):
+    aliases=preserved.get('cache_aliases',[])
+    _require(type(objects) is list and type(aliases) is list and len(objects)==len(aliases)<=256,
+             'scene_retirement_receipt_members_invalid')
+    result=[]
+    for target,alias in zip(objects,aliases):
+        allowance.tick()
+        _require(type(target) is dict and target['canonical_path']==alias['path']
+            and target['digest']==alias['digest'] and target['size_bytes']==alias['size_bytes']
+            and type(target['generation_id']) is str and TOKEN.fullmatch(target['generation_id']),
+            'scene_retirement_receipt_members_invalid')
+        row={key:target[key] for key in ('canonical_path','digest','size_bytes','generation_id')}
+        row.update(action='pending',**{'class':'cache'})
+        _require(sum(len(_encode(item)) for item in result)+len(_encode(row))<=MAX_BYTES,
+                 'scene_retirement_receipt_limit')
+        result.append(row)
+    return result
+
+
+def _measured_cache(policy,pending,journal,allowance,*,snapshot=None,outcomes=None,restoring=False,status=None):
+    """Project only exact protected native cache events, never caller counters."""
+    reference=pending['journal_initial_raw_ref']
+    allowance.charge('local_bytes',reference['size_bytes'])
+    initial=selected_document(reference,maximum=16*1024*1024,protected=True)
+    objects=initial.get('cache_objects',[])
+    result=_cache_members(objects,initial['preserved'],allowance)
+    _require(result==pending.get('cache_members',[]),'scene_retirement_receipt_members_invalid')
+    aliases=initial['preserved'].get('cache_aliases',[])
+    events=[event for event in journal.events if event['event']==('cache_alias_restored' if restoring else 'cache_unlinked')]
+    _require(len(events)<=len(result),'scene_retirement_receipt_members_invalid')
+    recorded=[]
+    for index,event in enumerate(events):
+        allowance.tick()
+        evidence=event['evidence']
+        _require(event['member_key']=='cache-'+str(index) and evidence['canonical_path']==result[index]['canonical_path']
+            and evidence['digest']==result[index]['digest'],'scene_retirement_receipt_event_invalid')
+        if restoring:
+            _require(type(evidence['restore_identity']) is list and len(evidence['restore_identity'])==3,
+                     'scene_retirement_receipt_event_invalid')
+            activated=any(row['event']=='restored-active' and row['member_key']==event['member_key']
+                and row['evidence']==evidence for row in journal.events)
+            if not activated:
+                continue
+            key=hashlib.sha256(result[index]['canonical_path'].encode()).hexdigest()+'.json'
+            allowance.charge('local_bytes',MAX_BYTES)
+            generation,_,info=_read(Path(policy['generation_store'])/key,allowance)
+            service=access._service_identity()
+            _require(stat.S_IMODE(info.st_mode)==0o600 and (info.st_uid,info.st_gid)==service
+                and generation.get('schema_version')=='scene_content_generation.v1'
+                and generation.get('state_digest')==canonical_digest(generation,digest_field='state_digest')
+                and generation.get('state')=='restored-active'
+                and generation.get('retirement_token')==pending['retiring_token']
+                and all(generation.get(field)==result[index][field] for field in
+                    ('canonical_path','digest','size_bytes','generation_id')),
+                'scene_retirement_receipt_members_invalid')
+            with _opened(result[index]['canonical_path']) as (_,observed):
+                _require(list(_identity(observed))==evidence['restore_identity']
+                    ==[generation['dev'],generation['ino'],generation['mode']]
+                    and observed.st_size==result[index]['size_bytes']
+                    and (observed.st_uid,observed.st_gid)==(aliases[index]['uid'],aliases[index]['gid'])
+                    and stat.S_IMODE(observed.st_mode)==aliases[index]['mode'],
+                    'scene_retirement_receipt_members_invalid')
+            result[index].update(action='restored',restore_identity=evidence['restore_identity'],
+                                 restore_event_raw_ref=event['raw_ref'])
+        else:
+            original=next(row for row in initial['preserved']['files'] if
+                row['member_index']==aliases[index]['member_index'] and row['relative_path']==aliases[index]['relative_path'])
+            _require(evidence.get('outcome')=='removed' and evidence.get('size_bytes')==result[index]['size_bytes']
+                and type(evidence.get('removed_allocated_bytes')) is int
+                and 0<=evidence['removed_allocated_bytes']<=original['allocated_bytes']
+                and evidence.get('allocation_method')=='observed_file_st_blocks_512_last_union_link_unlinked',
+                'scene_retirement_receipt_members_invalid')
+            recorded.append(dict(evidence,event_raw_ref=event['raw_ref']))
+            result[index].update(action='offloaded',outcome='removed',
+                removed_allocated_bytes=evidence['removed_allocated_bytes'],
+                allocation_method=evidence['allocation_method'],event_raw_ref=event['raw_ref'])
+    if not restoring:
+        _require(outcomes is None or outcomes==recorded,'scene_retirement_receipt_members_invalid')
+        if snapshot is not None:
+            _require(snapshot.get('cache_outcomes',[])==recorded and len(recorded)==len(result),
+                     'scene_retirement_receipt_members_invalid')
+            generations=snapshot.get('cache_generations',[])
+            _require(len(generations)==len(result) and all(generation.get('state')=='retired'
+                and all(generation.get(field)==row[field] for field in
+                    ('canonical_path','digest','size_bytes','generation_id'))
+                for generation,row in zip(generations,result)),'scene_retirement_receipt_members_invalid')
+    else:
+        for row in result:
+            if row['action']!='restored':
+                row['action']='restoring'
+        _require(status!='restored' or all(row['action']=='restored' for row in result),
+                 'scene_retirement_receipt_members_invalid')
+    return result
+
+
 def publish_pending_receipt(policy, consent, journal, preserved, allowance):
     """Publish/read back the intent receipt before any retirement transition."""
     directory = _location(policy, consent, allowance)
@@ -221,6 +316,10 @@ def publish_pending_receipt(policy, consent, journal, preserved, allowance):
              'plan_raw_ref': consent['plan_raw_ref'], 'retiring_token': journal.token,
              'journal_initial_raw_ref': journal.initial_ref, 'members': members, 'archive': archive,
              'planned_unique_allocated_bytes': preserved['unique_allocated_bytes']}
+    _require(initial.get('cache_objects',[])==consent.get('cache_objects',[]),'scene_retirement_receipt_members_invalid')
+    cache_members=_cache_members(initial.get('cache_objects',[]),preserved,allowance)
+    if cache_members:
+        value['cache_members']=cache_members
     value['receipt_digest'] = canonical_digest(value, digest_field='receipt_digest')
     raw = _encode(value)  # Refuse oversize before history or projection mutation.
     _publish(directory, 'scene-retired.' + journal.token + '.pending.json', raw, allowance)
@@ -381,6 +480,8 @@ def _restore_progress(policy, consent, current_raw_ref, progress, allowance):
              'scene_retirement_restore_snapshot_invalid')
     allowance.tick()
     snapshot = selected_document(snapshot_ref, maximum=16*1024*1024, protected=True)
+    _require(bool(snapshot.get('cache_objects'))==bool(pending.get('cache_members')),
+             'scene_retirement_receipt_members_invalid')
     _require(snapshot.get('schema_version') == 'scene_retirement_journal.v1' and snapshot.get('status') == 'retired'
              and snapshot.get('journal_digest') == canonical_digest(snapshot, digest_field='journal_digest')
              and snapshot.get('token') == pending['retiring_token']
@@ -404,6 +505,7 @@ def _restore_progress(policy, consent, current_raw_ref, progress, allowance):
              and (progress['status'] != 'restored' or len(outcomes) == len(consent['members'])),
              'scene_retirement_receipt_members_invalid')
     members = _measured_members(policy, pending, snapshot, snapshot['outcomes'], allowance)
+    cache_members=_measured_cache(policy,pending,journal,allowance,restoring=True,status=progress['status']) if pending.get('cache_members') else []
     for index, (selected, outcome) in enumerate(zip(consent['members'], outcomes)):
         event = recorded[index]
         _require(type(outcome) is dict and outcome.get('outcome') == 'restored'
@@ -415,14 +517,16 @@ def _restore_progress(policy, consent, current_raw_ref, progress, allowance):
                               restore_event_raw_ref=event['raw_ref'])
     for member in members[len(outcomes):]:
         member.update(action='restoring')
-    if (current.get('status'), current.get('journal_sequence'), current.get('last_event_raw_ref'), current['members']) == (
-            progress['status'], journal.sequence, journal.prior_ref, members):
+    if (current.get('status'), current.get('journal_sequence'), current.get('last_event_raw_ref'), current['members'],current.get('cache_members',[])) == (
+            progress['status'], journal.sequence, journal.prior_ref, members,cache_members):
         return raw_reference(current_raw_ref)
     value = {key: item for key, item in pending.items() if key != 'receipt_digest'}
     value.update(status=progress['status'], members=members, journal_sequence=journal.sequence,
                  last_event_raw_ref=journal.prior_ref, pending_receipt_raw_ref=pending_ref,
                  prior_receipt_raw_ref=history_ref, retired_journal_raw_ref=snapshot_ref,
                  restore_token=token, restore_journal_initial_raw_ref=initial_ref)
+    if cache_members:
+        value['cache_members']=cache_members
     value['receipt_digest'] = canonical_digest(value, digest_field='receipt_digest')
     raw = _encode(value)
     name = ('scene-retired.' + pending['retiring_token'] + '.restore.' + token + '.' + str(journal.sequence) + '.'
@@ -453,16 +557,19 @@ def publish_progress_receipt(policy, consent, current_raw_ref, progress, allowan
              and all(event['raw_ref'] == row.get('event_raw_ref') for event, row in zip(recorded, outcomes)),
              'scene_retirement_receipt_members_invalid')
     members = _measured_members(policy, pending, None, outcomes, allowance, partial=True)
+    cache_members=_measured_cache(policy,pending,journal,allowance) if pending.get('cache_members') else []
     for index, selected in enumerate(pending['members'][len(members):], start=len(members)):
         started = any(event['member_key'] == str(index) and event['event'] != 'kept' for event in journal.events)
         members.append(dict(selected, action='retiring' if started else 'pending'))
     # A replay of the exact recorded progress needs no new version or mutation.
-    if (current.get('status'), current.get('journal_sequence'), current.get('last_event_raw_ref'), current['members']) == (
-            progress['status'], journal.sequence, last, members):
+    if (current.get('status'), current.get('journal_sequence'), current.get('last_event_raw_ref'), current['members'],current.get('cache_members',[])) == (
+            progress['status'], journal.sequence, last, members,cache_members):
         return raw_reference(current_raw_ref)
     value = {key: item for key, item in pending.items() if key != 'receipt_digest'}
     value.update(status=progress['status'], members=members, journal_sequence=journal.sequence,
                  last_event_raw_ref=last, pending_receipt_raw_ref=pending_ref, prior_receipt_raw_ref=history_ref)
+    if cache_members:
+        value['cache_members']=cache_members
     value['receipt_digest'] = canonical_digest(value, digest_field='receipt_digest')
     raw = _encode(value)
     name = ('scene-retired.' + pending['retiring_token'] + '.' + str(journal.sequence) + '.'
@@ -486,6 +593,8 @@ def publish_terminal_receipt(policy, consent, pending_raw_ref, receipt, allowanc
              'scene_retirement_restore_snapshot_invalid')
     allowance.tick()
     snapshot = selected_document(snapshot_ref, maximum=16*1024*1024, protected=True)
+    _require(bool(snapshot.get('cache_objects'))==bool(pending.get('cache_members')),
+             'scene_retirement_receipt_members_invalid')
     _require(snapshot.get('status') == 'retired' and snapshot.get('token') == receipt['token']
              and snapshot.get('journal_digest') == canonical_digest(snapshot, digest_field='journal_digest')
              and snapshot.get('intent_id') == consent['intent_id'] and snapshot.get('members') == consent['members'],
@@ -495,10 +604,14 @@ def publish_terminal_receipt(policy, consent, pending_raw_ref, receipt, allowanc
              and snapshot.get('prior_event_sha256') == journal.prior_ref['sha256'],
              'scene_retirement_receipt_event_invalid')
     members = _measured_members(policy, pending, snapshot, receipt['members'], allowance)
+    cache_members=_measured_cache(policy,pending,journal,allowance,snapshot=snapshot,
+        outcomes=receipt.get('cache_outcomes',[])) if pending.get('cache_members') else []
     value = {key: item for key, item in pending.items() if key != 'receipt_digest'}
     value.update(status='retired', pending_receipt_raw_ref=pending_ref, prior_receipt_raw_ref=history_ref,
                  retired_journal_raw_ref=snapshot_ref, members=members,
                  journal_sequence=journal.sequence, last_event_raw_ref=journal.prior_ref)
+    if cache_members:
+        value['cache_members']=cache_members
     value['receipt_digest'] = canonical_digest(value, digest_field='receipt_digest')
     raw = _encode(value)
     with _opened(directory / NAME) as (prior_fd, current):
