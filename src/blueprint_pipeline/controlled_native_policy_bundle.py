@@ -88,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--policy-credential", type=Path)
+    parser.add_argument("--qualified-sandbox-bridge", type=Path)
     args = parser.parse_args(argv)
     try:
         credential = None
@@ -95,13 +96,19 @@ def main(argv: list[str] | None = None) -> int:
             if args.policy_credential.is_symlink() or args.policy_credential.stat().st_mode & 0o077:
                 raise ValueError("controlled_native_policy_credential_not_private")
             credential = json.loads(args.policy_credential.read_text())
+        bridge = None
+        if args.qualified_sandbox_bridge:
+            if args.qualified_sandbox_bridge.is_symlink() or args.qualified_sandbox_bridge.stat().st_mode & 0o077:
+                raise ValueError("controlled_native_qualified_sandbox_bridge_not_private")
+            bridge = json.loads(args.qualified_sandbox_bridge.read_text())
         receipt = build_controlled_native_policy_bundle(
             job_dir=args.job_dir, packet_dir=args.packet_dir,
             runtime_source_packet_receipt=args.runtime_source_packet_receipt,
             implementation_commit=args.implementation_commit,
             configuration=json.loads(args.configuration.read_text()),
             job_request=json.loads(args.job_request.read_text()),
-            observations=json.loads(args.observations.read_text()), policy_credential=credential)
+            observations=json.loads(args.observations.read_text()), policy_credential=credential,
+            qualified_sandbox_bridge=bridge)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps({"status": "blocked", "error_class": type(exc).__name__,
                           "provider_mutation_performed": False}))

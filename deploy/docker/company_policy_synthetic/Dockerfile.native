@@ -1,2 +1,2 @@
 FROM us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/company-policy-synthetic@sha256:909e782a917bf2a959bf9eb0ee0bf6da7463d156c27cb589a60626a18495ded4
-COPY deploy/docker/controlled_policy_synthetic/policy.py /opt/policy.py
+COPY deploy/docker/company_policy_synthetic/native_policy.py /opt/policy.py
