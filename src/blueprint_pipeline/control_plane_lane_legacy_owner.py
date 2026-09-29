@@ -24,6 +24,7 @@ _DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 MAX_ENTRIES = 200_000
 MAX_DEPTH = 64
 MAX_SECONDS = 240.0
+MAX_GENERATION_BYTES = 8 * 1024 * 1024
 
 
 class LegacyOwnerError(ValueError):
@@ -113,28 +114,53 @@ def snapshot_generation(
     _require(len(candidates) == 1, "legacy_target_unsafe")
     root = candidates[0]
     deadline = time.monotonic() + max_seconds
-    entries: list[tuple[str, tuple[int, ...]]] = []
+    digest = hashlib.sha256()
+    digest.update(b"[")
+    entry_count = 0
+    encoded_bytes = 2  # Opening and closing JSON array brackets.
+    name_bytes = 0
     bytes_allocated = 0
 
     def tick() -> None:
         _require(time.monotonic() < deadline, "legacy_target_measurement_incomplete")
 
+    def add_entry(relative: str, version: tuple[int, ...]) -> None:
+        nonlocal entry_count, encoded_bytes
+        fragment = json.dumps((relative, version), separators=(",", ":")).encode()
+        additional = len(fragment) + (1 if entry_count else 0)
+        _require(entry_count < max_entries
+                 and encoded_bytes + additional <= MAX_GENERATION_BYTES,
+                 "legacy_target_measurement_incomplete")
+        if entry_count:
+            digest.update(b",")
+        digest.update(fragment)
+        entry_count += 1
+        encoded_bytes += additional
+
     def walk(descriptor: int, relative: str, depth: int, device: int) -> None:
-        nonlocal bytes_allocated
+        nonlocal bytes_allocated, name_bytes
         tick()
-        _require(depth <= MAX_DEPTH and len(entries) < max_entries,
+        _require(depth <= MAX_DEPTH and entry_count < max_entries,
                  "legacy_target_measurement_incomplete")
         start = os.fstat(descriptor)
         _require(stat.S_ISDIR(start.st_mode) and start.st_dev == device,
                  "legacy_target_measurement_incomplete")
-        entries.append((relative, _version(start)))
+        add_entry(relative, _version(start))
         bytes_allocated += allocated_bytes(start)
         try:
             with os.scandir(descriptor) as iterator:
-                names = sorted(entry.name for entry in iterator)
+                names = []
+                for entry in iterator:
+                    tick()
+                    name_bytes += len(os.fsencode(entry.name))
+                    _require(name_bytes <= MAX_GENERATION_BYTES
+                             and len(names) + entry_count < max_entries,
+                             "legacy_target_measurement_incomplete")
+                    names.append(entry.name)
+                names.sort()
         except OSError:
             raise LegacyOwnerError("legacy_target_measurement_incomplete") from None
-        _require(len(names) + len(entries) <= max_entries and len(names) == len(set(names)),
+        _require(len(names) + entry_count <= max_entries and len(names) == len(set(names)),
                  "legacy_target_measurement_incomplete")
         versions = {}
         for name in names:
@@ -164,8 +190,7 @@ def snapshot_generation(
                         os.close(child)
                         del child
             else:
-                _require(len(entries) < max_entries, "legacy_target_measurement_incomplete")
-                entries.append((child_relative, versions[name]))
+                add_entry(child_relative, versions[name])
                 bytes_allocated += allocated_bytes(info)
         try:
             with os.scandir(descriptor) as iterator:
@@ -187,7 +212,7 @@ def snapshot_generation(
         walk(target_entry[2], "", 0, target_entry[3][0])
         _verify_chain(chain)
         tick()
-        encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+        digest.update(b"]")
         relative = target.relative_to(root).parts
         # Bind every named ancestor as well as the target. A directory moved
         # between lanes must not inherit the previous owner's packet.
@@ -202,8 +227,8 @@ def snapshot_generation(
                     root_identity=_directory_identity(os.fstat(root_entry[2])),
                     ancestors=ancestors, lane_root=lane_root, lane=lane,
                     target=_directory_identity(os.fstat(target_entry[2])),
-                    tree=dict(digest="sha256:" + hashlib.sha256(encoded).hexdigest(),
-                              entries=len(entries), allocated_bytes=bytes_allocated))
+                    tree=dict(digest="sha256:" + digest.hexdigest(),
+                              entries=entry_count, allocated_bytes=bytes_allocated))
 
 
 def build_version_packet(consent: dict, *, selected_path: str, generation: dict,
@@ -483,9 +508,30 @@ class LegacyOwnerStore:
         from . import control_plane_lane_owner_consents as owners
         from . import control_plane_lane_scratch_decisions as retained
 
+        _require(self._ENTRY.fullmatch(name) is not None, "legacy_owner_record_invalid")
+        descriptor = None
         try:
-            raw, _ = self.files.read(self._record_path(name), cap=self._CAP,
-                                     protected=True, mode=0o600)
+            # The protected parent chain is already pinned in this session.
+            # Reopening the whole chain for every head exhausts the 16-root
+            # descriptor budget before even a handful of committed labels.
+            self.files.verify()
+            descriptor = self.files.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                         parent=self.parent)
+            before = os.fstat(descriptor)
+            named = os.stat(name, dir_fd=self.parent, follow_symlinks=False)
+            _require(owners._metadata(before) == owners._metadata(named)
+                     and 0 < before.st_size <= self._CAP
+                     and before.st_nlink in (1, 2), "legacy_owner_record_invalid")
+            if before.st_nlink == 1:
+                owners._protected(before, mode=0o600)
+            else:
+                _require(_root_owned_publication(before), "legacy_owner_record_invalid")
+            raw = self.files.read_bytes(descriptor, self._CAP)
+            _require(len(raw) == before.st_size
+                     and owners._metadata(os.fstat(descriptor)) == owners._metadata(before)
+                     and owners._metadata(os.stat(name, dir_fd=self.parent, follow_symlinks=False))
+                     == owners._metadata(before), "legacy_owner_record_invalid")
+            self.files.budget.charge("entries")
             value = retained._document(raw, self._CAP, _work_budget=self.files.budget)
             _require(type(value) is dict and raw == self._payload(value),
                      "legacy_owner_record_invalid")
@@ -493,6 +539,9 @@ class LegacyOwnerStore:
             return value
         except (OSError, owners.OwnerCensusConsentError, retained.CensusDecisionError) as error:
             raise LegacyOwnerError("legacy_owner_record_invalid") from error
+        finally:
+            if descriptor is not None:
+                self.files.close(descriptor)
 
     def read(self, packet_id: str, kind: str) -> dict:
         _require(isinstance(packet_id, str) and self._ID.fullmatch(packet_id) is not None
