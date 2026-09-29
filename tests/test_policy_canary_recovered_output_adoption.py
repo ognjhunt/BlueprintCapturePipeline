@@ -232,3 +232,28 @@ def test_download_adoption_links_bulk_and_policy_requests_and_fails_closed_on_a_
         _adopt(download_root, download_attempt, inputs)
     monkeypatch.setattr(os, "link", real_link)
     assert not (download_root / "recovered_provider_output_adoption.json").exists()
+
+
+def test_reference_adoption_fails_closed_on_a_view_it_cannot_bind_or_trust(tmp_path, monkeypatch):
+    """A streamed evidence root whose index lies outside the dispatcher's run root cannot give the
+    adoption root a descriptor; a descriptor that no longer binds its index is never read as
+    download mode. Both refuse with a typed code and write nothing."""
+    from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import TaskEvaluationPolicyCanaryDispatchError
+
+    inputs, archive_bytes, _, (stream_root, streamed) = _cases(tmp_path, monkeypatch)
+    _command(streamed.attempt, archive_bytes, local_archive=False)
+
+    elsewhere = tmp_path / "another-run"  # the attempt is not under this run root
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError,
+                       match="^policy_canary_recovered_output_adoption_view_unbound$"):
+        _adopt(elsewhere, streamed.attempt, inputs)
+    assert not (elsewhere / "recovered_provider_output_adoption.json").exists()
+
+    descriptor = streamed.attempt / "immutable_execution.member_view.v1.json"
+    value = json.loads(descriptor.read_text())
+    value["archive_sha256"] = "sha256:" + "0" * 64  # altered after it was sealed
+    descriptor.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError,
+                       match="^policy_canary_recovered_output_member_view_invalid$"):
+        _adopt(stream_root, streamed.attempt, inputs)
+    assert not (stream_root / "recovered_provider_output_adoption").exists()
