@@ -16,6 +16,8 @@ import sys
 import tarfile
 import tempfile
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -221,6 +223,43 @@ def test_staging_writes_nothing_to_host_disk(tmp_path: Path, monkeypatch) -> Non
                                              archive=archive)
         assert refused.value.code == "remote_cpu_release_commit_invalid"
     assert len(streamed) == 3
+
+
+def test_a_git_archive_that_hangs_is_killed_at_its_timeout(monkeypatch) -> None:
+    """Review M7: git archive is bounded, as every other git call here is."""
+
+    killed = threading.Event()
+
+    class Output:
+        def __enter__(self) -> "Output":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        @staticmethod
+        def read(size: int) -> bytes:
+            killed.wait(30)  # a git that never writes, until it is killed
+            return b""
+
+    class Git:
+        def __init__(self, args: list[str], **_: object) -> None:
+            self.args, self.stdout = args, Output()
+
+        @staticmethod
+        def kill() -> None:
+            killed.set()
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            return -9 if killed.is_set() else 0
+
+    monkeypatch.setattr(transport.subprocess, "Popen", Git)
+    started = time.monotonic()
+    with pytest.raises(transport.RemoteCpuTransportError) as hung:
+        transport.stream_git_archive(Path("/release"), COMMIT, io.BytesIO(), timeout=0.5)
+    assert hung.value.code == "remote_cpu_release_archive_timeout"
+    assert killed.is_set() and time.monotonic() - started < 10
 
 
 def test_the_allocator_preflight_stages_the_release_it_runs_from(monkeypatch) -> None:
