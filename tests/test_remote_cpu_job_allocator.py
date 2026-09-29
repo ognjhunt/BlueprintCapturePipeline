@@ -198,6 +198,11 @@ def test_caps_count_unsettled_attempts_at_worst_case(tmp_path: Path, monkeypatch
     first, _second = consume("prep-a", T0), consume("prep-b", T0 + 1)
     # Two unsettled attempts count at their worst case: a third would pass $1.5 in a day and $2 in total.
     assert blockers(T0 + 2) == ["remote_cpu_daily_cap_exceeded", "remote_cpu_total_cap_exceeded"]
+    # Re-issuing the authority (here only its date changes) never resets what earlier attempts spent.
+    reissued = standing_authority(max_attempt_usd=1.0, max_daily_usd=1.5, max_total_usd=2.0, max_executions=4,
+                                  authorized_on="2026-09-29")
+    assert allocator.spend_ledger_blockers(authority=reissued, worst_case_usd=worst, now=T0 + 2) == [
+        "remote_cpu_daily_cap_exceeded", "remote_cpu_total_cap_exceeded"]
     refused = world.run("dispatch", descriptor=world.descriptor(label="prep-c"))
     assert {"remote_cpu_daily_cap_exceeded", "remote_cpu_total_cap_exceeded"} <= set(refused["blockers"])
     assert world.rest.mutations == [] and world.store.presigned == []

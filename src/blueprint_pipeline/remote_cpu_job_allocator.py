@@ -256,13 +256,12 @@ def _sealed(path: Path, schema_version: str, digest_field: str) -> dict[str, Any
     return record
 
 
-def spend_ledger(authority_digest: str) -> list[dict[str, Any]]:
-    """Every attempt consumed under this authority, at its settled estimate or, until settled, its worst case."""
+def spend_ledger() -> list[dict[str, Any]]:
+    """Every remote CPU attempt ever consumed, under any authority, at its settled estimate or, until settled,
+    its worst case: re-issuing an authority never resets what earlier attempts spent."""
     settled, rows = _settled_root(), []
     for path in sorted(prepare_consumption_root().glob("remote-cpu-*.json")):
         consumption = _sealed(path, CONSUMPTION_SCHEMA_VERSION, "consumption_digest")
-        if consumption.get("standing_authority_digest") != authority_digest:
-            continue
         settlement = settled / f"{_attempt_key(consumption['attempt_id'])}.json"
         usd = consumption["worst_case_usd"]
         if settlement.exists():
@@ -277,7 +276,7 @@ def spend_ledger(authority_digest: str) -> list[dict[str, Any]]:
 def spend_ledger_blockers(*, authority: Mapping[str, Any], worst_case_usd: float, now: float) -> list[str]:
     """The standing authority's caps against the ledger plus this attempt's worst case (plan 14 §8)."""
     try:
-        rows = spend_ledger(authority["authorization_digest"])
+        rows = spend_ledger()
     except (RemoteCpuAllocatorError, OSError, SpendAuthorityRootError, KeyError, TypeError, ValueError):
         return ["remote_cpu_spend_ledger_unreadable"]
     day = sum(row["usd"] for row in rows if row["consumed_at_epoch"] > float(now) - DAY_SECONDS)
