@@ -352,7 +352,7 @@ def test_native_cache_action_preserves_original_idle_grace(tmp_path,monkeypatch,
     assert (current.st_dev,current.st_ino,current.st_mtime_ns)==(original.st_dev,original.st_ino,original.st_mtime_ns)
 
 
-@pytest.mark.parametrize('closed',['exclusive_action','retired_generation','active_generation'])
+@pytest.mark.parametrize('closed',['exclusive_action','retired_generation','held_reader','active_generation'])
 def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_path,monkeypatch,closed):
     from blueprint_pipeline import control_plane_storage_gc as gc
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
@@ -377,6 +377,9 @@ def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_p
         result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
     elif closed=='exclusive_action':
         with access.exclusive_scene_access():
+            result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
+    elif closed=='held_reader':
+        with access.scene_access(leaf):
             result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
     else:
         from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
