@@ -388,7 +388,15 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
     from .task_evaluation_scene_retirement_reference_proofs import TerminalProofs
     facts=TerminalProofs(fresh,selected,records,allowance,preserved)
     from .task_evaluation_scene_retirement_pins import select_terminal_pins, covers
-    terminal_pins=select_terminal_pins(fresh,policy,consent,facts.documents,allowance) if consent is not None else []
+    pin_documents=dict(facts.documents)
+    if consent is not None and consent.get('terminal_pin_refs'):
+        for identity in compilations:
+            allowance.tick()
+            allowance.charge('local_bytes',identity[2])
+            value,role,_,_=_compilation_value(identity,selected[identity],fresh,compilations,allowance)
+            if role=='compilation_results':
+                pin_documents[identity]=value
+    terminal_pins=select_terminal_pins(fresh,policy,consent,pin_documents,allowance) if consent is not None else []
     released=0
     auxiliaries=[]
     for protection in _rows(observation.get('protections')):
