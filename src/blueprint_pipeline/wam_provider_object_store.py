@@ -1902,6 +1902,8 @@ def _stage_registered_runtime_dependency(*, job_dir, dependency_path, expected_s
                 use.check()
     except Exception as exc:
         blockers.append("runtime_dependency_cache_failed:"+type(exc).__name__)
+        if isinstance(exc, NeededCheckpointCacheError) and str(exc) == "needed_cache_upload_cleanup_unresolved":
+            blockers.append("runtime_dependency_upload_cleanup_unresolved")
     finally:
         if client is not None:
             try:
