@@ -45,6 +45,15 @@ def test_shipped_gc_path_substitution_does_not_rewrite_inserted_fixture_root():
         + str(root / 'sandbox-blueprint/storage-gc'))
 
 
+def test_native_gc_result_uses_shipped_writable_report_directory():
+    root = Path('/var/lib/blueprint-adp-contained-static-fixture')
+    report_root = _gc_sandbox_report_root(root, 'a' * 32)
+    assert report_root == root / 'sandbox-control-plane/storage-gc' / ('a' * 32)
+    unit = (Path(__file__).parents[1] / 'deploy/systemd/blueprint-control-plane-storage-gc.service').read_text()
+    assert '/var/lib/blueprint/pipeline-control-plane/storage-gc' in next(
+        line for line in unit.splitlines() if line.startswith('ReadWritePaths='))
+
+
 def install_protected_feature(root):
     """Exact real protected installation reusable by the experiment roundtrip."""
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
@@ -944,11 +953,18 @@ def _linux_completed_gc_restore(
     )
 
 
+def _gc_sandbox_report_root(root, action_id):
+    """Keep per-action native evidence inside the shipped GC write allowlist."""
+    assert isinstance(action_id, str) and len(action_id) == 32
+    assert all(char in '0123456789abcdef' for char in action_id)
+    return root / 'sandbox-control-plane/storage-gc' / action_id
+
+
 def _run_shipped_gc_sandbox(value, action, clock, pins):
     """Run actual GC under the shipped unit's protections and finite RW roots."""
     root = value['config'].parent
     installed = root / 'installed'
-    report_root = root / ('sandbox-control-plane/storage-gc-' + action['action_id'])
+    report_root = _gc_sandbox_report_root(root, action['action_id'])
     report_root.mkdir(parents=True, mode=0o700)
     selected = report_root / 'selected.json'
     selected.write_bytes(encoded(dict(config=str(value['config']), pins=str(pins), now=clock,
@@ -1024,7 +1040,7 @@ def _gc_sandbox_main(selected):
 
     selected = Path(selected)
     assert os.geteuid() == 0 and selected.name == 'selected.json'
-    root = selected.parents[2]
+    root = selected.parents[3]
     assert root.parent == Path('/var/lib') and root.name.startswith('blueprint-adp-contained-')
     selection = json.loads(selected.read_bytes())
     assert set(selection) == {'config', 'pins', 'now', 'action_id'}
