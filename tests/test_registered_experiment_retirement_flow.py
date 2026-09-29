@@ -295,7 +295,7 @@ def test_malformed_current_authority_still_aborts_all_registered_actions(retirem
     assert _payload_snapshot(target) == before
 
 
-@pytest.mark.parametrize('bad_field', ['manifest', 'issuer_uid', 'issued_at_epoch', 'policy', 'controller'])
+@pytest.mark.parametrize('bad_field', ['manifest', 'issuer_uid', 'issued_at_epoch', 'policy', 'controller', 'principal'])
 def test_parseable_invalid_actions_do_not_starve_valid_cleanup(retirement_installation, bad_field):
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -319,6 +319,8 @@ def test_parseable_invalid_actions_do_not_starve_valid_cleanup(retirement_instal
             document['issued_at_epoch'] = 3300
         elif bad_field == 'policy':
             document['policy']['sha256'] = 'sha256:' + '0' * 64
+        elif bad_field == 'principal':
+            document['principal'] = 'unmapped-operator'
         else:
             document['controller']['boot_id'] = '00000000-0000-0000-0000-000000000000'
         document['action_digest'] = canonical_digest(document, digest_field='action_digest')
