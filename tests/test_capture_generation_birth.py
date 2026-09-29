@@ -53,6 +53,45 @@ def _fixture(tmp_path, monkeypatch, *, prepare_parent=True):
     return access, policy, target, owner, selector, encoded
 
 
+def _next_delivery(owner, membership_raw, *, new_video):
+    owner = json.loads(json.dumps(owner))
+    member = json.loads(membership_raw)
+    marker = owner['completion_marker']
+    marker['generation'] = '17000000000000000011'
+    if new_video:
+        video = owner['producer_delivery']['raw_video']
+        video['generation'] = '17000000000000000010'
+        receipt = owner['producer_delivery']['server_record']
+        receipt['object_name'] = receipt['object_name'].replace(
+            '17000000000000000000', video['generation'])
+        receipt['generation'] = '17000000000000000012'
+        owner['producer_delivery']['delivery_key'] = 'sha256:' + '9' * 64
+    source_fields = ('request_id', 'scene_id', 'capture_id', 'bucket', 'raw_prefix_uri',
+                     'capture_owner', 'ownership_record', 'consent_attestation',
+                     'capture_rights', 'completion_marker', 'producer_delivery')
+    owner['source_projection_digest'] = cross_runtime_canonical_digest({
+        key: owner[key] for key in source_fields})
+    owner['observation_digest'] = cross_runtime_canonical_digest(
+        owner, digest_field='observation_digest')
+    member['source_finalize']['generation'] = marker['generation']
+    member['delivery_key'] = hashlib.sha256(json.dumps([
+        owner['bucket'], marker['object_name'], marker['generation']],
+        separators=(',', ':')).encode()).hexdigest()
+    member['producer_delivery']['receipt_object_name'] = owner['producer_delivery']['server_record']['object_name']
+    member['producer_delivery']['receipt_generation'] = owner['producer_delivery']['server_record']['generation']
+    for row in member['raw']:
+        if row['relative_path'] == 'raw/capture_upload_complete.json':
+            row['generation'] = marker['generation']
+        elif row['relative_path'] == 'raw/walkthrough.mov':
+            row['generation'] = owner['producer_delivery']['raw_video']['generation']
+    encoded = json.dumps(member, sort_keys=True, separators=(',', ':')).encode()
+    prefix = f"scenes/{owner['scene_id']}/captures/{owner['capture_id']}"
+    selector = {'object_name': f"{prefix}/deliveries/{member['delivery_key']}/capture_delivery_membership.json",
+                'generation': '17000000000000000013', 'size_bytes': len(encoded),
+                'sha256': 'sha256:' + hashlib.sha256(encoded).hexdigest()}
+    return owner, selector, encoded
+
+
 def test_capture_birth_retains_original_proofs_before_empty_target(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 
@@ -104,6 +143,22 @@ def test_capture_birth_rejects_missing_member_or_changed_delivery_without_target
     assert not target.exists()
 
 
+def test_active_capture_refuses_another_valid_delivery_on_occupied_target(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
+
+    _, policy, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch)
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+                                membership_raw=membership_raw)
+    next_owner, next_selector, next_raw = _next_delivery(owner, membership_raw,
+                                                          new_video=True)
+    with pytest.raises(ValueError, match='scene_capture_active_delivery_conflict'):
+        birth_capture_member(target, observation=next_owner,
+                             membership_selector=next_selector,
+                             membership_raw=next_raw)
+    key = hashlib.sha256(str(target).encode()).hexdigest() + '.json'
+    assert json.loads((Path(policy['generation_store']) / key).read_bytes()) == born
+
+
 def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 
@@ -118,6 +173,23 @@ def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypa
         birth_capture_member(target, observation=owner, membership_selector=selector,
                              membership_raw=membership_raw)
     assert not target.exists()
+    rewrite, rewrite_selector, rewrite_raw = _next_delivery(owner, membership_raw,
+                                                              new_video=False)
+    with pytest.raises(ValueError):
+        birth_capture_member(target, observation=rewrite,
+                             membership_selector=rewrite_selector,
+                             membership_raw=rewrite_raw)
+    assert not target.exists()
+    next_owner, next_selector, next_raw = _next_delivery(owner, membership_raw,
+                                                          new_video=True)
+    newer = birth_capture_member(target, observation=next_owner,
+                                 membership_selector=next_selector,
+                                 membership_raw=next_raw)
+    assert newer['state'] == 'active' and newer['generation_id'] != born['generation_id']
+    assert newer['previous_generation_id'] == born['generation_id']
+    assert newer['ino'] == target.stat().st_ino
+    assert Path(born['owner_observation_raw_ref']['path']).is_file()
+    assert Path(born['birth_delivery_raw_ref']['path']).is_file()
 
 
 def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(tmp_path, monkeypatch):
