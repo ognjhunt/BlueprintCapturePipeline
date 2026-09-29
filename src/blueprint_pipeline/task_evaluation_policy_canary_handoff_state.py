@@ -12,6 +12,7 @@ import stat
 import tempfile
 from typing import Any, Callable, Mapping
 
+from .control_plane_registered_reference_gate import _publisher_observation
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -52,6 +53,7 @@ def _atomic_write(path: Path, value: Mapping[str, Any], *, replace: bool) -> Non
             temporary.unlink(missing_ok=True)
 
 
+@_publisher_observation
 def write_immutable(path: Path, value: Mapping[str, Any]) -> Path:
     from .control_plane_registered_reference_gate import refuse_registered_references
     refuse_registered_references(value, path)
@@ -59,6 +61,7 @@ def write_immutable(path: Path, value: Mapping[str, Any]) -> Path:
     return path
 
 
+@_publisher_observation
 def seal_state(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
     refuse_registered_references(value, path)
@@ -109,6 +112,7 @@ def _validate_ack(receipt: Mapping[str, Any], *, run_id: str) -> None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_webapp_ack_mismatch")
 
 
+@_publisher_observation
 def submit_or_adopt(*, root: Path, endpoint: str, selection: Mapping[str, Any],
         source_commit: str, headers: Callable[[], Mapping[str, str]], poster: Callable) -> tuple[dict[str, Any], str]:
     from .control_plane_registered_reference_gate import refuse_registered_references

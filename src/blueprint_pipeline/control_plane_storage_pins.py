@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 
+from .control_plane_registered_reference_gate import _publisher_observation
+
 SCHEMA_VERSION = "control_plane_storage_pin.v1"
 DEFAULT_PINS_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/storage-pins")
 PINS_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT"
@@ -101,6 +103,7 @@ def storage_pin_guard(pins_root: str | Path, *, exclusive: bool):
         yield
 
 
+@_publisher_observation
 def write_storage_pin(
     *,
     pins_root: str | Path,
@@ -232,6 +235,7 @@ def live_pinned_paths(pins_root: str | Path, *, now: Any = time.time) -> set[str
     }
 
 
+@_publisher_observation
 def release_storage_pin(
     *, pins_root: str | Path, kind: str, owner_id: str, now: Any = time.time
 ) -> dict[str, Any]:

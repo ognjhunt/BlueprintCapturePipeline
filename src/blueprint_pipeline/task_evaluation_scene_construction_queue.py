@@ -18,6 +18,8 @@ from .task_evaluation_scene_configuration_disclosure import (
 from .task_evaluation_release_reference_lock import release_reference_lock
 
 
+from .control_plane_registered_reference_gate import _publisher_observation
+
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_scene_construction_envelope.v1"
 FINALIZATION_SCHEMA_VERSION = "task_evaluation_scene_construction_finalization.v1"
 REVISION_LINEAGE_SCHEMA_VERSION = (
@@ -111,6 +113,7 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         _write_exclusive_locked(path, value)
 
 
+@_publisher_observation
 def stage_scene_construction(
     *,
     request: Mapping[str, Any],
@@ -250,6 +253,7 @@ def stage_scene_construction(
     return receipt
 
 
+@_publisher_observation
 def stage_scene_configuration_revision(
     *,
     queue_root: str | Path,

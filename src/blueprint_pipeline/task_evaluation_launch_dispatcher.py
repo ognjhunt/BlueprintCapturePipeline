@@ -77,6 +77,8 @@ from .launch_immutable_input_writer import (
 )
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
 
+from .control_plane_registered_reference_gate import _publisher_observation
+
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
@@ -1010,6 +1012,7 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
             return False
 
 
+@_publisher_observation
 def stage_launch_request(*, value: Mapping[str, Any], queue_root: str | Path) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
     refuse_registered_references(value, queue_root)
@@ -1466,6 +1469,7 @@ def _native_policy_terminal_visual_evidence(
     return None
 
 
+@_publisher_observation
 def dispatch_launch_request(
     *,
     request_path: str | Path,

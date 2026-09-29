@@ -19,6 +19,8 @@ from .task_evaluation_launch_preparation_queue import (
 )
 
 
+from .control_plane_registered_reference_gate import _publisher_observation
+
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_activation_envelope.v1"
 IDENTITY_SCHEMA_VERSION = "task_evaluation_launch_activation_identity.v1"
 INTAKE_RECEIPT_SCHEMA_VERSION = (
@@ -99,6 +101,7 @@ def _load_sealed(path: Path, *, schema_version: str, digest_field: str) -> dict[
     return dict(value)
 
 
+@_publisher_observation
 def stage_launch_activation_request(
     *, value: Mapping[str, Any], queue_root: str | Path, submitted_by: str
 ) -> dict[str, Any]:

@@ -21,6 +21,8 @@ from .task_evaluation_launch_preparation_contract import (
 from .task_evaluation_release_reference_lock import release_reference_lock
 
 
+from .control_plane_registered_reference_gate import _publisher_observation
+
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_preparation_envelope.v1"
 IDENTITY_SCHEMA_VERSION = "task_evaluation_launch_preparation_identity.v1"
 INTAKE_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_preparation_intake_receipt.v1"
@@ -123,6 +125,7 @@ def _write_launch_preparation_record_exclusive_locked(
         temporary_path.unlink(missing_ok=True)
 
 
+@_publisher_observation
 def write_launch_preparation_record_exclusive(
     path: Path, value: Mapping[str, Any]
 ) -> None:
@@ -132,6 +135,7 @@ def write_launch_preparation_record_exclusive(
         _write_launch_preparation_record_exclusive_locked(path, value)
 
 
+@_publisher_observation
 def stage_launch_preparation_request(
     *,
     value: Mapping[str, Any],

@@ -20,6 +20,8 @@ from urllib.parse import urlsplit
 
 from .decision_evidence_contracts import canonical_digest
 
+from .control_plane_registered_reference_gate import _publisher_observation
+
 BINDINGS_ENV = "BLUEPRINT_TASK_EVALUATION_INSTALLED_SOURCE_BINDINGS_JSON"
 DEFAULT_SOURCE_ROOTS = (Path("/var/lib/blueprint/task-evaluation-inputs"),)
 _SHA = re.compile(r"sha256:[0-9a-f]{64}")
@@ -92,6 +94,7 @@ class InstalledSource:
     publisher_intake_sha256: str
     installed_by_commit: str = ""
 
+    @_publisher_observation
     def verify(self) -> None:
         # The authenticated URI lookup may select a different local pathname.
         # Observe that actual native argument before resident/hash/copy access.

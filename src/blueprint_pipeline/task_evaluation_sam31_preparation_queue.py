@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .control_plane_registered_reference_gate import _publisher_observation
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
 
@@ -183,6 +184,7 @@ def _validate_signal(root: Path, signal: dict, roots: Sequence[Path]) -> tuple[P
     return waiting, signal
 
 
+@_publisher_observation
 def stage_resume_signal(
     *, queue_root: str | Path, preparation_id: str, request_digest: str,
     progress_digest: str, source_commit: str, kind: str, evidence_ref: Mapping[str, Any],
@@ -261,6 +263,7 @@ def _resume_context(root: Path, prior: dict | None) -> dict | None:
     return matches[0] if matches else None
 
 
+@_publisher_observation
 def advance_sam31_for_preparation(
     *, queue_root: Path, envelope_context: dict, approved_roots: Sequence[Path], advancer=None,
 ) -> dict:

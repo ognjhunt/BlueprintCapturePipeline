@@ -16,6 +16,8 @@ from .task_evaluation_scene_construction_queue import (
 )
 
 
+from .control_plane_registered_reference_gate import _publisher_observation
+
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_episode_compilation_envelope.v1"
 
 
@@ -23,6 +25,7 @@ class TaskEvaluationEpisodeCompilationQueueError(ValueError):
     """A configured-scene evaluation could not be handed off immutably."""
 
 
+@_publisher_observation
 def stage_episode_compilation(
     *,
     request: Mapping[str, Any],

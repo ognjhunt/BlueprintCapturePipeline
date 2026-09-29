@@ -29,6 +29,8 @@ from .task_evaluation_launch_preparation_queue import (
     _write_launch_preparation_record_exclusive_locked as write_exclusive,
 )
 
+from .control_plane_registered_reference_gate import _publisher_observation
+
 TASK_STRATEGIES = ("pick_and_place", "articulated_open_close")
 ARTICULATION_JOINT_TYPES = ("prismatic", "revolute")
 REQUEST_SCHEMA = "task_evaluation_scene_intake_request.v1"
@@ -170,6 +172,7 @@ def _read(path: Path, field: str) -> dict[str, Any]:
     return value
 
 
+@_publisher_observation
 def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
                        authenticated_client: str, trusted_clients: set[str],
                        now: float | None = None) -> dict[str, Any]:

@@ -8,6 +8,8 @@ import re
 import stat
 import sys
 from collections.abc import Mapping
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -16,6 +18,36 @@ from .control_plane_reference_budget import ReferenceCollectionBudget, Reference
 
 _RESERVED = re.compile(r'(?:^|/) (?:g1|arena)/registered-', re.X)
 _RAW_LIMIT = 65536
+_PUBLISHER_BUDGET = ContextVar("registered_publisher_observation_budget", default=None)
+
+
+def _publisher_observation(function):
+    """Share finite observation accounting across existing nested publishers.
+
+    This private resource scope carries no permission or reference clearance.
+    It never changes native limits or restarts an exhausted/closed allowance.
+    Context-local state prevents independent synchronous/thread calls sharing
+    counters. Only the outer existing publisher closes its own original budget.
+    """
+    @wraps(function)
+    def observed(*args, **kwargs):
+        budget = _PUBLISHER_BUDGET.get()
+        owned = budget is None
+        if owned:
+            budget = ReferenceCollectionBudget(values_limit=10000)
+            token = _PUBLISHER_BUDGET.set(budget)
+        try:
+            budget.tick()
+            return function(*args, **kwargs)
+        except ReferenceCollectionBudgetError:
+            raise OwnerTargetVersionError("experiment_publisher_input_limit") from None
+        finally:
+            if owned:
+                try:
+                    budget.close()
+                finally:
+                    _PUBLISHER_BUDGET.reset(token)
+    return observed
 
 
 def _reference(text, budget):
@@ -70,13 +102,16 @@ def refuse_registered_references(*values):
     Relative paths use the calling process's actual current directory. URI
     paths use their scheme; no supplied base or regex creates ownership.
     """
-    budget = ReferenceCollectionBudget(values_limit=10000)
-    raw = 0
+    budget = _PUBLISHER_BUDGET.get()
+    owned = budget is None
+    if owned:
+        budget = ReferenceCollectionBudget(values_limit=10000)
+    raw = budget.counts["raw_bytes"]
 
     def charge_raw(amount):
         nonlocal raw
         if amount > _RAW_LIMIT - raw:
-            raise OwnerTargetVersionError('experiment_publisher_input_limit')
+            budget.fail("reference_publisher_raw_limit")
         budget.charge('raw_bytes', amount)
         raw += amount
 
@@ -132,4 +167,5 @@ def refuse_registered_references(*values):
             raise
         raise OwnerTargetVersionError('experiment_publisher_input_limit') from None
     finally:
-        budget.close()
+        if owned:
+            budget.close()
