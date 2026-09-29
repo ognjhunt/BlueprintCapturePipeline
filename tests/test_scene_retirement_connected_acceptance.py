@@ -577,7 +577,11 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
     sam_execution_root.mkdir(parents=True, exist_ok=True)
     authority_root = base / 'preparation-authority'
     authority_root.mkdir(mode=0o700)
+    # The source configuration producer already enrolled its factory output.
+    # Its preparation storage authority still names that exact factory file.
     policy['roots'] = [{'root': str(input_root), 'storage_class': 'cache', 'device': input_root.stat().st_dev},
+                       {'root': str(source['progression_output']), 'storage_class': 'host',
+                        'device': source['progression_output'].stat().st_dev},
                        {'root': str(authority_root), 'storage_class': 'host', 'device': authority_root.stat().st_dev},
                        {'root': str(sam_execution_root), 'storage_class': 'host', 'device': sam_execution_root.stat().st_dev}]
     _sealed_file(base / 'policy.json', policy, 'policy_digest', mode=0o644)
@@ -887,7 +891,7 @@ def _select_source_owned_lineage(args, source, base, original_graph):
     args['roots']['factory_output_root'] = str(source['progression_output'])
 
 
-def _authentic_connected_graph(base, monkeypatch, policy):
+def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True):
     from tests.test_scene_lifecycle_connected_acquisition import full_connected_finished_scene, installed
     from tests.test_task_evaluation_scene_intake import request, stage, attempt
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -999,6 +1003,17 @@ def _authentic_connected_graph(base, monkeypatch, policy):
     args = _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth, current_birth, source)
     _link_current_parent(args, current_birth)
     _select_source_owned_lineage(args, source, base, original_graph)
+    assert Path(args['roots']['preparation_queue_root']) == source['queue']
+    assert Path(args['roots']['preparation_input_root']) == source['input_root']
+    source_identity = source['queue'] / 'identities' / (source['request']['preparation_id'] + '.json')
+    assert source_identity.is_file()
+    args['seed_records']['preparation_envelopes'].append(source['envelope'])
+    args['seed_records']['preparation_results'].append(source['result'])
+    args['source_records']['queue_identities'].append((str(source_identity), source_identity.read_bytes()))
+    source_links = [path for path in (source['intake'] / source['intent_id'] / 'preparations').glob('*.json')
+                    if json.loads(path.read_bytes())['preparation_id'] == source['request']['preparation_id']]
+    assert len(source_links) == 1
+    args['seed_records']['preparation_links'].append((str(source_links[0]), source_links[0].read_bytes()))
     assert args['source_records']['sam_host_tasks']==task_bytes_before_worker, [
         (old[0],hashlib.sha256(old[1]).hexdigest(),new[0],hashlib.sha256(new[1]).hexdigest())
         for old,new in zip(task_bytes_before_worker,args['source_records']['sam_host_tasks']) if old!=new]
@@ -1109,7 +1124,154 @@ def _authentic_connected_graph(base, monkeypatch, policy):
         for path, _ in args['source_records'].get(role, []):
             assert any(Path(path).is_relative_to(root) for root in allowed_roots), (role, path, allowed_roots)
     _join(**source_args)
+    if activation:
+        _produce_current_activation(args, context, base, monkeypatch, policy, source)
     return args, context, (accepted['intent_id'], owner, birth), (prior['intent_id'], prior_owner, prior_birth)
+
+
+def _produce_current_activation(args, context, base, monkeypatch, policy, source):
+    """Run the no-provider activation producer for the owned preparation."""
+    from datetime import datetime, timedelta, timezone
+    import grp
+    import pwd
+    import socket
+    import types
+    import zipfile
+    from blueprint_pipeline import task_evaluation_scene_configuration_activation_automation as activation
+    from blueprint_pipeline.task_evaluation_launch_activation_worker import process_launch_activation_queue
+    from blueprint_pipeline.project_spend_reconciliation import materialize_project_spend_reconciliation
+    from scripts.prepare_paid_lane_launch import (
+        _load_scene_configuration_context, validate_paid_lane_launch, prepare_paid_lane_launch)
+    from tests.astra_toolchain_fixture import astra_toolchain_fixture
+    from tests.test_completed_scene_consumer_rehearsal import _preparation_runner
+    from tests.test_project_spend_reconciliation import _human_baseline
+    from tests.test_task_evaluation_scene_configuration_activation_automation import _provider_zero, _publisher
+
+    queue = source['queue']
+    result_path = Path(source['result'][0])
+    result = json.loads(result_path.read_bytes())
+    assert result['status'] == 'queued_for_production_scene_configuration'
+    envelope_path = queue / 'materialized' / result_path.name
+    request = json.loads(envelope_path.read_bytes())['request']
+    # The composed lineage originally supplied a fixture-only activation-1
+    # result. Preserve those exact bytes outside this scene's selected queue so
+    # the real intake and worker can own the same pending identity and result.
+    old_activation = 'activation-1'
+    old_history = base / 'unselected-queue-history' / old_activation
+    old_history.mkdir(parents=True)
+    parked = set()
+    for group, role in (('seed_records', 'activation_envelopes'),
+                        ('downstream_records', 'activation_results'),
+                        ('seed_records', 'configuration_progressions'),
+                        ('downstream_records', 'launch_progressions')):
+        if role.endswith('progressions'):
+            matches = list(args[group][role])
+        else:
+            matches = [row for row in args[group][role] if json.loads(row[1]).get(
+                'activation_id', json.loads(row[1]).get('request', {}).get('activation_id')) == old_activation]
+        assert len(matches) == 1
+        path, raw = matches[0]
+        target = old_history / (role + '.json')
+        Path(path).rename(target)
+        assert target.read_bytes() == raw
+        parked.add(path)
+        args[group][role].remove(matches[0])
+        args['source_records']['opaque_evidence'].append((str(target), raw))
+    old_identity = Path(args['roots']['activation_queue_root']) / 'identities' / (old_activation + '.json')
+    old_identity_target = old_history / 'identity.json'
+    old_identity.rename(old_identity_target)
+    parked.add(str(old_identity))
+    args['source_records']['queue_identities'] = [row for row in args['source_records']['queue_identities']
+        if row[0] != str(old_identity)]
+    args['source_records']['opaque_evidence'].append((str(old_identity_target), old_identity_target.read_bytes()))
+    context['retained_metadata_files'] = [row for row in context['retained_metadata_files']
+        if row['path'] not in parked]
+    baseline, _ = _human_baseline(base / 'activation-baseline.json')
+    spend = base / 'activation-project-spend.json'
+    materialize_project_spend_reconciliation(
+        baseline_authority_path=baseline, posted_reconciliation_paths=[], expected_coverage_ids=[],
+        completeness_reference=str(baseline), authorized_by='fixture-owner',
+        authorized_on=datetime.now(timezone.utc).isoformat(), output_path=spend)
+    registry = base / 'activation-intents'
+    activation.provision_scene_configuration_activation_intent(
+        expected_production_commit=request['expected_production_commit'],
+        team_namespace=request['team_namespace'], scene_id=request['scene']['identity']['id'],
+        task_id=request['task']['identity']['id'], authorization_reference='scene-intent:' + request['scene_intent_digest'],
+        authorized_by=pwd.getpwuid(os.geteuid()).pw_name, profile_revision='fixture', valid_for_seconds=3600,
+        project_spend_reconciliation_path=spend, rights_scope='internal_noncommercial_research_only',
+        maximum_hard_cap_usd=request['spend']['hard_cap_usd'], release_reference='development-fixture',
+        intent_root=registry, materialization_root=base / 'activation-intent-inputs', release_scoped=True)
+    lineage = _publisher('scene-configuration-activation-lineage')
+    window = _publisher('coordinator-release-windows')
+    now = datetime.now(timezone.utc)
+    activation_queue = Path(args['roots']['activation_queue_root'])
+    staged = activation.advance_scene_configuration_activation(
+        preparation_result_path=result_path, preparation_queue_root=queue,
+        activation_queue_root=activation_queue, progression_root=args['roots']['configuration_progression_root'],
+        intent_root=registry, provider_zero_collector=lambda: _provider_zero(now - timedelta(seconds=1)),
+        lineage_publisher_factory=lambda: lineage, release_window_publisher_factory=lambda: window,
+        now=now, running_commit=request['expected_production_commit'])
+    assert staged['status'] == 'scene_configuration_activation_queued', staged.get('blockers', staged)
+    payloads = {**lineage.published, **window.published}
+    def fetch(uri, destination, maximum_bytes):
+        data = payloads[uri]
+        assert len(data) == maximum_bytes
+        destination.write_bytes(data)
+    monkeypatch.setattr(socket.socket, 'connect', lambda *_: pytest.fail('activation attempted network access'))
+    activation_root = Path(args['roots']['activation_output_root'])
+    activation_id = staged['activation_id']
+    owned = activation_root / activation_id
+    policy['roots'].append({'root': str(activation_root), 'storage_class': 'host',
+                            'device': activation_root.stat().st_dev})
+    _sealed_file(base / 'policy.json', policy, 'policy_digest', mode=0o644)
+    plans = []
+    def prepare(*, lane, context_path, **_):
+        preparation_context = _load_scene_configuration_context(context_path, expected_lane=lane)
+        plans.append(validate_paid_lane_launch(lane, preparation_context))
+        return prepare_paid_lane_launch(lane, preparation_context,
+            runner=_preparation_runner(base, monkeypatch,
+                construction_queue_root=source['base'] / 'construction'))
+    controls = base / 'controls-intents'
+    controls.mkdir()
+    # The source clock predates the retirement observation; Python ZIP needs
+    # the real wall-clock timestamp for its tiny local toolchain bytes.
+    monkeypatch.setattr(zipfile, 'time', types.SimpleNamespace(
+        time=lambda: time.time_ns() / 1_000_000_000, localtime=time.localtime))
+    toolchain = astra_toolchain_fixture(base / 'toolchain', request['expected_production_commit'], monkeypatch)
+    assert list((activation_queue / 'pending').glob('*.json')), {
+        state: [path.name for path in (activation_queue / state).glob('*.json')]
+        for state in ('pending', 'processing', 'prepared', 'blocked', 'results')}
+    run = process_launch_activation_queue(
+        queue_root=activation_queue, preparation_queue_root=queue,
+        preparation_input_root=args['roots']['preparation_input_root'], activation_root=activation_root,
+        allowed_uri_prefixes=['s3://blueprint/task-evaluation/production-inputs/'],
+        service_account=pwd.getpwuid(os.geteuid()).pw_name,
+        service_group=grp.getgrgid(os.getegid()).gr_name,
+        repository_root=Path(__file__).resolve().parents[1],
+        destination_prefix='s3://blueprint/task-evaluation/production-inputs/fixture',
+        release_window_prefix='s3://blueprint/task-evaluation/production-inputs/coordinator-release-windows/',
+        profile_dir=owned / 'profiles', webapp_catalog=owned / 'catalog.json',
+        standing_authorization_dir=owned / 'standing-authorizations',
+        scene_construction_queue_root=source['base'] / 'construction',
+        scene_configuration_toolchain_root=toolchain,
+        configured_controls_autostart_intent_root=controls,
+        source_commit=request['expected_production_commit'], fetcher=fetch, preparer=prepare)
+    assert plans and plans[0]['status'] == 'validated_no_commands_run', run
+    assert run['results'][0]['status'] == 'profile_authority_materialized_no_execution', run
+    assert run['results'][0]['provider_mutation_performed'] is False
+    assert run['results'][0]['paid_execution_requested'] is False
+    receipt = owned / 'launch-set' / 'profile_publication_receipt.v1.json'
+    authorization = next((owned / 'standing-authorizations').glob('*.json'))
+    assert run['results'][0]['profile_publication_receipt_digest'] == _raw(receipt)['sha256']
+    assert run['results'][0]['standing_authorization_digest'] == _raw(authorization)['sha256']
+    actual_name = next((activation_queue / 'prepared').glob(activation_id + '-*.json')).name
+    args['seed_records']['activation_envelopes'].append((str(activation_queue / 'prepared' / actual_name),
+        (activation_queue / 'prepared' / actual_name).read_bytes()))
+    args['downstream_records']['activation_results'].append((str(activation_queue / 'results' / actual_name),
+        (activation_queue / 'results' / actual_name).read_bytes()))
+    actual_identity = activation_queue / 'identities' / (activation_id + '.json')
+    args['source_records']['queue_identities'].append((str(actual_identity), actual_identity.read_bytes()))
+    return run['results'][0], receipt, authorization
 
 
 def _produce_current_sam_phase(args, context, base, monkeypatch):
@@ -1380,7 +1542,7 @@ def test_current_sam_worker_and_parent_link_use_real_selected_owner(short_scene_
     journals.mkdir(mode=0o700)
     (journals / 'retired').mkdir(mode=0o700)
     monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
-    args, _, main_owner, original_owner = _authentic_connected_graph(base, monkeypatch, policy)
+    args, _, main_owner, original_owner = _authentic_connected_graph(base, monkeypatch, policy, activation=False)
     history_index = json.loads((base / 'unselected-queue-history' / 'source-history-index.json').read_bytes())['records']
     assert history_index and all(row['disposition'] == 'KEEP' for row in history_index)
     for row in history_index:
@@ -1413,6 +1575,26 @@ def test_current_sam_worker_and_parent_link_use_real_selected_owner(short_scene_
     receipt = next(path for path, _ in args['source_records']['sam_execution_receipts']
                    if job['child_id'] in Path(path).parts)
     assert Path(receipt).is_file()
+
+
+@pytest.mark.slow
+def test_source_produced_preparation_reaches_local_activation_receipt(short_scene_directory, monkeypatch):
+    from tests.test_scene_retirement_real_participants import access_fixture
+
+    base = short_scene_directory.resolve()
+    _, policy, placeholder = access_fixture(base, monkeypatch)
+    placeholder.rmdir()
+    journals = Path(policy['journal_store'])
+    journals.mkdir(mode=0o700)
+    (journals / 'retired').mkdir(mode=0o700)
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
+    args, _, _, _ = _authentic_connected_graph(base, monkeypatch, policy)
+    results = [json.loads(raw) for _, raw in args['downstream_records']['activation_results']]
+    assert len(results) == 1
+    result = results[0]
+    assert result['status'] == 'profile_authority_materialized_no_execution'
+    receipt = Path(args['roots']['activation_output_root']) / result['activation_id'] / 'launch-set' / 'profile_publication_receipt.v1.json'
+    assert receipt.is_file() and result['profile_publication_receipt_digest'] == _raw(receipt)['sha256']
 
 
 @pytest.mark.slow
