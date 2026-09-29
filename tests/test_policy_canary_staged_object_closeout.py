@@ -261,3 +261,36 @@ def test_a_resumed_run_whose_staged_output_was_lost_seals_not_durable(stranded):
     terminal = json.loads((output / "policy_canary_terminal_result.json").read_text())
     assert terminal["session_closeout"]["teardown_completed"] is True
     assert NOT_DURABLE in terminal["blockers"]
+
+
+def test_a_proof_a_manifest_rewrite_invalidated_is_named_and_resume_sets_it_aside(stranded):
+    """A later manifest rewrite (--refresh-output-get-url) invalidates a write-once proof. The
+    pending receipt names why billing waits, and resume moves the stale proof aside, keeps it,
+    and writes a fresh one, so the run can leave the queue head."""
+    world, output, dispatch = stranded
+    assert world.resume()["status"] == "completed"
+    manifest_path = world.staging / "wam_provider_object_store_staging_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["provider_output_get_url_refreshed_at"] = "2026-09-28T20:00:00Z"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    waiting = dispatch(lambda _argv: pytest.fail("allocator invoked on resume"))
+
+    assert waiting["status"] == "awaiting_official_billing"
+    code = "policy_canary_staged_object_absence_proof_invalid:staged_object_absence_proof_manifest_changed"
+    assert waiting["blockers"] == ["policy_canary_official_billing_receipt_missing", code]
+    stale = (world.staging / "staged_object_absence_proof.v1.json").read_bytes()
+
+    resumed = world.resume()
+
+    aside = sorted(world.staging.glob("staged_object_absence_proof.v1.json.invalid-*"))
+    assert len(aside) == 1 and aside[0].read_bytes() == stale
+    assert resumed["quarantined_absence_proof"] == {
+        "path": aside[0].name, "reason": "staged_object_absence_proof_manifest_changed"}
+    assert records.load_staged_object_absence_proof(world.staging) is not None
+    closed = dispatch(lambda _argv: pytest.fail("allocator invoked on resume"))
+    assert closed["status"] != "awaiting_official_billing" and (output / "dispatch_receipt.json").is_file()
+    terminal = json.loads((output / "policy_canary_terminal_result.json").read_text())
+    assert terminal["session_closeout"]["teardown_completed"] is True
+    assert not any(blocker.startswith("policy_canary_staged_object_absence_proof_invalid")
+                   for blocker in terminal["blockers"])

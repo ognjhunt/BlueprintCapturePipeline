@@ -1935,7 +1935,9 @@ def dispatch_policy_canary_activation(
             "run_id": activation["run_id"],
             "allocator_invoked": allocator_invoked,
             "automatic_retry_performed": False,
-            "blockers": ["policy_canary_official_billing_receipt_missing"],
+            # Why billing may be waiting on the staged objects (an invalid or unfinished proof).
+            "blockers": ["policy_canary_official_billing_receipt_missing",
+                         *closeout_staged_objects(adapter)["blockers"]],
             "website_progress_sync": progress_sync,
         }
         write_json(root / "dispatch_pending.json", pending)

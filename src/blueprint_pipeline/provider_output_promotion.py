@@ -875,6 +875,25 @@ def _promotion_refusal(staging: Path) -> str | None:
     return None
 
 
+def _quarantine_invalid_proof(staging: Path) -> dict | None:
+    """Move aside an absence proof that no longer validates, so a fresh one can be written.
+
+    A proof is written once, so one a later manifest rewrite invalidated (for
+    example ``--refresh-output-get-url``) would otherwise block every new proof
+    and keep closeout and billing waiting forever. It is renamed, never deleted.
+    """
+    try:
+        load_staged_object_absence_proof(staging)
+        return None
+    except ProviderOutputPromotionRecordError as exc:
+        aside = staging / f"{ABSENCE_PROOF_FILENAME}.invalid-{uuid.uuid4().hex}"
+        try:
+            os.rename(staging / ABSENCE_PROOF_FILENAME, aside)
+        except OSError:
+            return None
+        return {"path": aside.name, "reason": str(exc)}
+
+
 def resume_provider_output_promotion(
     attempt_root: str | Path,
     *,
@@ -898,9 +917,11 @@ def resume_provider_output_promotion(
     run = attempt / PROVIDER_RUN_DIRNAME
     local = run / OUTPUT_FILENAME
     refusal = _promotion_refusal(staging)
+    quarantined = None
     if refusal is not None:
         receipt, cleaned = _unwritten_failure(staging, artifact_kind, refusal), None
     else:
+        quarantined = _quarantine_invalid_proof(staging)
         receipt, cleaned = promote_then_cleanup(
             cleanup=cleanup or (lambda: cleanup_staged_wam_provider_objects(staging)),
             lock_timeout_seconds=lock_timeout_seconds, staging_dir=staging, attempt_root=attempt,
@@ -927,6 +948,7 @@ def resume_provider_output_promotion(
         "absence_proof": ({"path": ABSENCE_PROOF_FILENAME, "proof_digest": proof["proof_digest"]}
                           if proof is not None else None),
         "lane_result_rewritten": False,
+        **({"quarantined_absence_proof": quarantined} if quarantined is not None else {}),
         "blockers": sorted(set(blockers)),
         "private_url_recorded": False,
         "raw_secret_values_recorded": False,
