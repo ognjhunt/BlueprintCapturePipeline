@@ -11,6 +11,7 @@ from .control_plane_preparation_activation_references import (
     ReferenceFamilyContract, RetainedReferenceRecord, interpret_preparation_activation_references,
 )
 from .task_evaluation_scene_lineage_budget import _work_items
+from .task_evaluation_scene_lifecycle_acquisition import require
 
 
 def _copy(value, budget):
@@ -153,7 +154,7 @@ def observe(context, now, budget, sink):
 
 
 
-def intersect(members, observation, budget, sink):
+def intersect(members, observation, budget, sink, *, measured_by_path=None):
     """Componentwise positive historical matches; absence never clears a member."""
     indexed, selected, seen = {}, sink.rows(), set()
     for row in _work_items(observation['protections'], budget):
@@ -166,10 +167,20 @@ def intersect(members, observation, budget, sink):
         if isinstance(protected, str):
             budget.charge('facts')
             indexed.setdefault(protected, []).append(row)
-    member_paths = {}
-    for member in _work_items(members, budget):
-        budget.charge('facts')
-        member_paths[member['path']] = member
+    if measured_by_path is None:
+        member_paths = {}
+        for member in _work_items(members, budget):
+            budget.charge('facts')
+            member_paths[member['path']] = member
+    else:
+        # Measurement already charged and built this exact index. Verify it
+        # still names every emitted row before reusing it for the private join.
+        require(type(measured_by_path) is dict and len(measured_by_path) == len(members),
+                'measured_member_index_invalid')
+        for member in _work_items(members, budget):
+            require(measured_by_path.get(member['path']) is member,
+                    'measured_member_index_invalid')
+        member_paths = measured_by_path
     def keep(member, protected, source):
         key = member, protected, id(source)
         if key in seen:

@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
 from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
 from tests.test_scene_lifecycle_plan import context_fixture
@@ -87,3 +89,23 @@ def test_pin_positive_path_is_kept_and_intersects_componentwise_measured_member(
     assert len(keeps) == 1 and keeps[0]['member_path'] == member
     assert keeps[0]['reason'] == 'positive_historical_reference'
     assert keeps[0]['protected_path'] == member+'/payload.bin' and keeps[0]['action'] == 'KEEP'
+
+
+def test_intersect_reuses_exact_measured_index_without_losing_keep_or_double_charging():
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_references import intersect
+    members = [{'path': '/scene/owned'}, {'path': '/scene/other'}]
+    observed = {'protections': [{'kind': 'positive_pin_path', 'path': '/scene/owned/file'}]}
+
+    def run(index=None):
+        budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+        sink = RetainedEmissionBudget(max_bytes=16*1024*1024, max_rows=10_000,
+                                      max_references=10_000, work_budget=budget)
+        result = intersect(members, observed, budget, sink, measured_by_path=index)
+        return result, budget.counts['facts']
+
+    original, original_facts = run()
+    reused, reused_facts = run({row['path']: row for row in members})
+    assert reused == original
+    assert original_facts - reused_facts == len(members)
+    with pytest.raises(ValueError):
+        run({'/scene/owned': members[1], '/scene/other': members[0]})

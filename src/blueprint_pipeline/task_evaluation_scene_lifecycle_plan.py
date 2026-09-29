@@ -141,7 +141,7 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
             or len(state['_limits']) != 8 or state['_limits'].keys() != state['_counts'].keys()):
         return fallback('scene_lifecycle_budget_invalid')
     reader = None
-    result, reference_result, sink = None, None, None
+    result, reference_result, sink, measured_by_path = None, None, None, None
     try:
         budget.tick()
         acquisition.require(type(budget) is ReferenceCollectionBudget and isinstance(intent_id, str)
@@ -199,7 +199,7 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
                       'mutations': 0, **{flag: False for flag in FALSE_FLAGS}}
             sink.reserve_row(config_observation)
             from .task_evaluation_scene_lifecycle_measurement import measure
-            result['measured_members'], result['sharing'], result['unique_observed_allocated_bytes'], _ = measure(
+            result['measured_members'], result['sharing'], result['unique_observed_allocated_bytes'], _, measured_by_path = measure(
                 reader, historical, sink, result['family_obligations'], context['roots'])
             result['family_obligations'] = sink.rows(result['family_obligations'])
         # Target evidence only: action admission additionally binds the exact
@@ -215,7 +215,8 @@ def _build_scene_lifecycle_plan(*, intent_id, context, observed_at_epoch, budget
         reference_result['protections'].extend(other_keeps)
         result['other_owner_capture_keeps'] = other_keeps
         result['reference_observation'] = reference_result
-        result['reference_keeps'] = intersect(result['measured_members'], reference_result, budget, sink)
+        result['reference_keeps'] = intersect(result['measured_members'], reference_result, budget, sink,
+                                              measured_by_path=measured_by_path)
         result['planner_acquired_raw_bytes'] = reader.physical_read_bytes
         reader.verify()
         _screen_output(result, budget)

@@ -245,6 +245,7 @@ def measure(reader, historical, sink, families, roots=None):
     for row in _work_items(rows, budget):
         budget.charge('facts')
         by_path[row['path']] = row
+    require(len(by_path) == len(rows), 'measured_member_index_invalid')
     for family in _work_items(families, budget):
         selected = [path for path in _work_items(declared, budget)
                     if any(KINDS.get(row['kind']) == family['family'] for row in declared[path])]
@@ -255,4 +256,4 @@ def measure(reader, historical, sink, families, roots=None):
             family['measured_allocated_bytes'] = sum(own) if all(value is not None for value in own) else None
     total = sum(row['allocated_bytes'] for row in inode_index.values()) if inode_index else None
     require(total is None or type(total) is int and total >= 0, 'allocated_metadata_invalid')
-    return rows, sharing, total, complete_all
+    return rows, sharing, total, complete_all, by_path
