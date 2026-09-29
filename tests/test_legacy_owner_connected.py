@@ -139,3 +139,79 @@ def test_survey_ignores_fake_in_folder_lease_and_keeps_target(installed):
                                          monotonic=lambda: 0)
     assert all("owner" not in row for row in report["rows"])
     assert payload.exists()
+
+
+def test_active_or_incomplete_reference_inventory_keeps_legacy_target(installed, monkeypatch):
+    target, payload, registry, legacy = installed
+    packet, _ = _issue_and_approve(installed)
+    active = _survey(str(target))
+    active["rows"][0]["references"] = ["queue"]
+    monkeypatch.setattr(legacy, "_fresh_census", lambda *a, **k: active)
+    with pytest.raises(legacy.LegacyOwnerError, match="legacy_owner_references_incomplete"):
+        legacy.apply_owner_review(packet_id=packet["packet_id"],
+                                  installed_config_path="/fixture/door.json", now=1021,
+                                  monotonic=lambda: 0)
+    assert not list(registry.glob("*.registration.json"))
+    assert payload.exists()
+    monkeypatch.setattr(legacy, "_fresh_census", lambda *a, **k: (_ for _ in ()).throw(
+        legacy.LegacyOwnerError("legacy_owner_references_incomplete")))
+    report = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                         monotonic=lambda: 0)
+    assert report["status"] == "incomplete" and report["observed_owner_count"] == 0
+
+
+def test_unregistered_top_level_folder_is_reported_not_deleted(installed, monkeypatch):
+    target, _, _, legacy = installed
+    top = target.parents[2] / "old-drawer-experiment"
+    top.mkdir()
+    payload = top / "evidence.bin"
+    payload.write_bytes(b"keep old evidence")
+    consent = _consent(str(top))
+    consent["decisions"][0]["decision"].update(lane="diagnostics", name="old-drawer-experiment")
+    policy = target.parents[3] / "policy.json"
+    consent["policy_sha256"] = "sha256:" + hashlib.sha256(policy.read_bytes()).hexdigest()
+    monkeypatch.setattr(legacy, "_load_old_consent", lambda *a, **k: consent)
+    monkeypatch.setattr(legacy, "_fresh_census", lambda *a, **k: _survey(str(top)))
+    packet = legacy.issue_version_packet(consent_id="a" * 32,
+                                         consent_sha256="sha256:" + "b" * 64,
+                                         consent_size_bytes=1, selected_path=str(top),
+                                         installed_config_path="/fixture/door.json", now=1010,
+                                         monotonic=lambda: 0)
+    legacy.issue_generation_approval(packet_id=packet["packet_id"],
+                                     ack_packet_digest=packet["packet_digest"],
+                                     principal="operator", owner="owner",
+                                     installed_config_path="/fixture/door.json", now=1020,
+                                     monotonic=lambda: 0)
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+    report = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                         monotonic=lambda: 0)
+    [row] = report["rows"]
+    assert row["path"] == str(top) and row["owner"] == "owner"
+    assert row["gc_eligible"] is False and row["candidate_bytes"] is None
+    assert payload.read_bytes() == b"keep old evidence" and top.is_dir()
+
+
+def test_revoked_owner_policy_or_replaced_target_drops_label(installed):
+    target, payload, _, legacy = installed
+    packet, _ = _issue_and_approve(installed)
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+    policy = target.parents[3] / "policy.json"
+    original = policy.read_bytes()
+    policy.write_bytes(original.replace(b'"enabled":true', b'"enabled":false'))
+    revoked = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                          monotonic=lambda: 0)
+    assert all("owner" not in row for row in revoked["rows"])
+    policy.write_bytes(original)
+    replacement = target.parent / "replacement"
+    replacement.mkdir()
+    (replacement / "one.log").write_bytes(payload.read_bytes())
+    target.rename(target.parent / "saved-original")
+    replacement.rename(target)
+    changed = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                          monotonic=lambda: 0)
+    assert all("owner" not in row for row in changed["rows"])
+    assert (target / "one.log").exists()
