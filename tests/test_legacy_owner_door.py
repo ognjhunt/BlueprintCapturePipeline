@@ -58,7 +58,10 @@ def test_legacy_report_runner_is_read_only_and_finite(tmp_path):
     hidden = next(item for item in argv if item.startswith("--property=InaccessiblePaths="))
     assert "/etc/blueprint/provider-secrets" in hidden
     assert "/var/lib/blueprint/spend-authority" in hidden
-    assert "/etc/blueprint-operator-door" not in hidden
+    hidden_paths = {part.lstrip("-") for part in hidden.split("=", 2)[2].split()}
+    assert "/etc/blueprint-operator-door" not in hidden_paths
+    assert "/etc/blueprint-operator-door/deploy-key" in hidden_paths
+    assert DoorConfig().token_file in hidden_paths
     writable = [part for part in argv if part.startswith("--property=ReadWritePaths=")]
     assert writable == ["--property=ReadWritePaths=" + str(Path(config.spool_root) / "results")]
     assert not any("APPLY" in part or "OWNER=" in part or "PACKET" in part for part in argv)

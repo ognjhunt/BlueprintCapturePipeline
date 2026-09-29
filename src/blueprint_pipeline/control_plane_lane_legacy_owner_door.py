@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import signal
 import time
@@ -34,27 +35,48 @@ def _public_report(observed: dict) -> dict:
                     candidate_bytes=None, eta_seconds=None, mutations=0)
     source = observed.get("rows")
     _require(isinstance(source, list) and observed.get("scan_errors") == [])
-    selected = [row for row in source if isinstance(row, dict)
-                and row.get("classification") == "legacy_owner_review"]
-    if len(source) > 200_000 or len(selected) > _MAX_ROWS:
+    if len(source) > _MAX_ROWS:
         return dict(schema_version="control_plane_lane_legacy_owner_public.v1",
                     status="incomplete", rows=[], observed_owner_count=0,
                     gc_eligible=False, references_clear=False,
                     candidate_bytes=None, eta_seconds=None, mutations=0)
     rows = []
-    for row in selected:
-        _require(isinstance(row.get("path"), str) and isinstance(row.get("owner"), str)
-                 and type(row.get("approved_expiry")) in (int, float)
-                 and row.get("gc_eligible") is False and row.get("references_clear") is False
-                 and row.get("references") == [] and row.get("unreadable") == 0)
-        rows.append(dict(path=row["path"], owner=row["owner"],
-                         approved_expiry=row["approved_expiry"],
-                         classification="legacy_owner_review", gc_eligible=False,
-                         references_clear=False, candidate_bytes=None,
-                         eta_seconds=None))
-    _require(len(rows) == observed.get("observed_owner_count"))
+    verified = 0
+    for row in source:
+        _require(isinstance(row, dict) and isinstance(row.get("path"), str)
+                 and len(row["path"].encode("utf-8")) <= 4096
+                 and isinstance(row.get("references"), list)
+                 and all(isinstance(item, str) and item in
+                         {"process", "queue", "pin", "live_release", "active_run"}
+                         for item in row["references"])
+                 and type(row.get("unreadable")) is int and row["unreadable"] >= 0
+                 and type(row.get("allocated_bytes")) is int and row["allocated_bytes"] >= 0
+                 and isinstance(row.get("family"), str) and len(row["family"]) <= 40
+                 and (row.get("age_seconds") is None or
+                      (type(row["age_seconds"]) in (int, float)
+                       and math.isfinite(row["age_seconds"]) and row["age_seconds"] >= 0)))
+        labeled = row.get("classification") == "legacy_owner_review"
+        if labeled:
+            _require(isinstance(row.get("owner"), str) and row["owner"]
+                     and type(row.get("approved_expiry")) in (int, float)
+                     and row.get("gc_eligible") is False and row.get("references_clear") is False
+                     and row["references"] == [] and row["unreadable"] == 0)
+            verified += 1
+        rows.append(dict(path=row["path"], family=row["family"],
+                         allocated_bytes=row["allocated_bytes"], age_seconds=row["age_seconds"],
+                         owner=row["owner"] if labeled else None,
+                         approved_expiry=row["approved_expiry"] if labeled else None,
+                         classification="legacy_owner_review" if labeled else "unclassified",
+                         references=row["references"], unreadable=row["unreadable"],
+                         keep_reason="owner_review_only" if labeled else
+                                     "active_reference" if row["references"] else
+                                     "measurement_incomplete" if row["unreadable"] else
+                                     "owner_review_required_or_stale",
+                         gc_eligible=False, references_clear=False,
+                         candidate_bytes=None, eta_seconds=None))
+    _require(verified == observed.get("observed_owner_count"))
     return dict(schema_version="control_plane_lane_legacy_owner_public.v1",
-                status="complete", rows=rows, observed_owner_count=len(rows),
+                status="complete", rows=rows, observed_owner_count=verified,
                 gc_eligible=False, references_clear=False,
                 candidate_bytes=None, eta_seconds=None, mutations=0)
 

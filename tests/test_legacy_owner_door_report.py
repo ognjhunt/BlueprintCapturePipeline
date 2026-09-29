@@ -17,9 +17,13 @@ from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectio
 
 
 def observed(*, status="complete", references=None):
-    return dict(status=status, scan_errors=[], observed_owner_count=1,
-                rows=[dict(path="/mnt/blueprint-work/lanes/old", owner="owner",
-                           approved_expiry=2000, classification="legacy_owner_review",
+    active = bool(references)
+    return dict(status=status, scan_errors=[], observed_owner_count=0 if active else 1,
+                rows=[dict(path="/mnt/blueprint-work/lanes/old", family="other",
+                           allocated_bytes=4096, age_seconds=1000,
+                           owner=None if active else "owner",
+                           approved_expiry=None if active else 2000,
+                           classification=None if active else "legacy_owner_review",
                            gc_eligible=False, references_clear=False,
                            references=[] if references is None else references,
                            unreadable=0, private_process_cmdline="secret", raw_env="secret")])

@@ -52,6 +52,9 @@ def _root_fixture() -> dict:
         environment.write_bytes(b"SECRET_CANARY_ENV")
         policy.chmod(0o600)
         environment.chmod(0o600)
+        hidden = private / "hidden-provider-secrets"
+        hidden.mkdir(mode=0o700)
+        (hidden / "secret").write_bytes(b"SECRET_CANARY_HIDDEN")
         state = root / "state"
         registry = state / "requests" / "legacy-owner-registrations"
         registry.mkdir(parents=True, mode=0o700)
@@ -84,7 +87,8 @@ def _root_fixture() -> dict:
         results.mkdir(mode=0o755)
         config = DoorConfig(state_root=str(state), lane_owner_policy_file=str(policy),
                             experiment_gc_environment_file=str(environment),
-                            lane_scratch_work_root=str(work), lane_scratch_inputs_root=str(inputs))
+                            lane_scratch_work_root=str(work), lane_scratch_inputs_root=str(inputs),
+                            hidden_paths=DoorConfig().hidden_paths + (str(hidden),))
         first = snapshot_generation(target, allowed_roots=(root / "work",))
 
         child = subprocess.Popen(
@@ -103,14 +107,21 @@ def _root_fixture() -> dict:
         assert ready.exists() and child.poll() is None
         probe = root / "probe.py"
         probe.write_text(
-            "import fcntl,json,os,sys\n"
+            "import ctypes,errno,fcntl,json,os,sys\n"
             "from pathlib import Path\n"
-            "payload,registry,lock,environment,results,pid=sys.argv[1:]\n"
+            "payload,registry,lock,environment,hidden,results,pid=sys.argv[1:]\n"
             "pid=int(pid)\n"
             "assert Path(payload).read_bytes()==b'foreign writer bytes'\n"
             "assert b'SECRET_CANARY' in Path(environment).read_bytes()\n"
+            "try: Path(hidden,'secret').read_bytes()\n"
+            "except OSError: pass\n"
+            "else: raise AssertionError('hidden provider secret readable')\n"
             "links=[os.readlink('/proc/%d/fd/%s'%(pid,n)) for n in os.listdir('/proc/%d/fd'%pid)]\n"
             "assert payload in links\n"
+            "libc=ctypes.CDLL(None,use_errno=True)\n"
+            "assert libc.ptrace(0x7fffffff,pid,0,0)==-1 and ctypes.get_errno()==errno.EPERM\n"
+            "assert libc.process_vm_readv(pid,None,0,None,0,0)==-1 and ctypes.get_errno()==errno.EPERM\n"
+            "assert libc.process_vm_writev(pid,None,0,None,0,0)==-1 and ctypes.get_errno()==errno.EPERM\n"
             "locked=False\n"
             "with open(lock,'rb') as handle:\n"
             " try: fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
@@ -121,7 +132,7 @@ def _root_fixture() -> dict:
             " try: open(path,'wb').write(b'wrong')\n"
             " except OSError: denied.append(True)\n"
             "assert len(denied)==2\n"
-            "Path(results).write_text(json.dumps({'status':'passed','lock_blocked':locked,'cross_uid_process_seen':True,'read_only':True}))\n"
+            "Path(results).write_text(json.dumps({'status':'passed','lock_blocked':locked,'cross_uid_process_seen':True,'read_only':True,'ptrace_denied':True,'hidden_secret_denied':True}))\n"
         )
         probe.chmod(0o644)
         receipt = results / "probe.json"
@@ -130,7 +141,7 @@ def _root_fixture() -> dict:
                 "--wait", "--collect", "--service-type=exec", "--property=RuntimeMaxSec=60s",
                 *("--property=" + item for item in properties), "--",
                 "/usr/bin/python3", str(probe), str(payload), str(registry), str(lock_path),
-                str(environment), str(receipt), str(child.pid)]
+                str(environment), str(hidden), str(receipt), str(child.pid)]
         run = subprocess.run(argv, capture_output=True, text=True, timeout=75)
         assert run.returncode == 0, run.stdout + run.stderr
         result = json.loads(receipt.read_bytes())
@@ -176,6 +187,7 @@ def test_actual_legacy_owner_door_privilege_and_revocation():
     assert result == dict(status="passed", foreign_uid=result["foreign_uid"],
                           private_denials=3, lock_blocked=True,
                           cross_uid_process_seen=True, read_only=True,
+                          ptrace_denied=True, hidden_secret_denied=True,
                           target_generation_revoked=True)
     assert result["foreign_uid"] != 0
 
