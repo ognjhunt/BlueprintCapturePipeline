@@ -23,6 +23,10 @@ CACHE_KEYS={'canonical_path','digest','size_bytes','generation_id','generation_r
 OPTIONAL_CONSENT_KEYS={'cache_objects','terminal_pin_refs'}
 MEMBER_KEYS = {'canonical_path','class','owner_intent_id','owner_raw_ref','generation_id',
                'dev','ino','mode','inventory_sha256'}
+CAPTURE_MEMBER_KEYS = {'canonical_path','class','generation_id','dev','ino','mode',
+    'inventory_sha256','capture_owner_user_id','request_id','sponsoring_intent_id',
+    'owner_observation_raw_ref','birth_delivery_raw_ref','source_membership_raw_ref',
+    'association_raw_ref','scene_intent_raw_ref'}
 
 
 def raw_digest(raw):
@@ -171,13 +175,30 @@ def load_authority(consent_path, *, action, now):
     _require(type(members) is list and len(members)<=256)
     paths=set()
     for member in members:
-        _require(type(member) is dict and set(member)==MEMBER_KEYS)
+        _require(type(member) is dict and set(member) in (MEMBER_KEYS,CAPTURE_MEMBER_KEYS),
+                 'scene_retirement_member_shape_invalid')
         path=_canonical(member['canonical_path'])
-        _require(str(path) not in paths and member['owner_intent_id'] in scope['owners'])
+        _require(str(path) not in paths)
         paths.add(str(path))
         _require(type(member['class']) is str and ID.fullmatch(member['class'])
                  and type(member['generation_id']) is str and TOKEN.fullmatch(member['generation_id']))
-        raw_reference(member['owner_raw_ref'])
+        if set(member)==MEMBER_KEYS:
+            _require(member['owner_intent_id'] in scope['owners'],
+                     'scene_retirement_owner_scope_denied')
+            raw_reference(member['owner_raw_ref'])
+        else:
+            _require(type(member['capture_owner_user_id']) is str
+                     and ID.fullmatch(member['capture_owner_user_id'])
+                     and type(member['request_id']) is str and ID.fullmatch(member['request_id'])
+                     and (member['capture_owner_user_id'],member['request_id']) in scope['captures'],
+                     'scene_retirement_capture_owner_scope_denied')
+            _require(member['sponsoring_intent_id']==consent['intent_id'],
+                     'scene_retirement_capture_association_invalid')
+            _require(member['sponsoring_intent_id'] in scope['owners'],
+                     'scene_retirement_owner_scope_denied')
+            for key in ('owner_observation_raw_ref','birth_delivery_raw_ref',
+                        'source_membership_raw_ref','association_raw_ref','scene_intent_raw_ref'):
+                raw_reference(member[key])
         _require(all(type(member[key]) is int and member[key]>=0 for key in ('dev','ino','mode'))
                  and type(member['inventory_sha256']) is str and SHA.fullmatch(member['inventory_sha256']))
         _require(any(path.is_relative_to(Path(row['root'])) and member['dev']==row['device'] for row in policy['roots']))
