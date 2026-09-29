@@ -38,8 +38,30 @@ def test_public_projection_never_leaks_private_scan_inputs_or_action_authority()
 def test_incomplete_or_active_snapshot_publishes_no_owner_label():
     assert door._public_report(observed(status="incomplete"))["rows"] == []
     assert door._public_report(observed(status="incomplete"))["status"] == "incomplete"
-    with pytest.raises(legacy.LegacyOwnerError, match="legacy_owner_census_incomplete"):
-        door._public_report(observed(references=["active_run"]))
+    active = door._public_report(observed(references=["active_run"]))
+    assert len(active["rows"]) == 1
+    assert active["rows"][0]["path"] == "/mnt/blueprint-work/lanes/old"
+    assert active["rows"][0]["owner"] is None
+    assert active["rows"][0]["classification"] == "unclassified"
+    assert active["rows"][0]["gc_eligible"] is False
+
+
+def test_unregistered_top_level_and_revoked_label_remain_visible_keep_rows():
+    source = observed()
+    source["rows"][0].update(owner=None, approved_expiry=None, classification=None)
+    source["rows"].append(dict(path="/mnt/blueprint-work/old-experiment",
+                               family="other", allocated_bytes=4096, age_seconds=1000,
+                               references=[], unreadable=0, owner=None,
+                               approved_expiry=None, classification=None))
+    source["observed_owner_count"] = 0
+    report = door._public_report(source)
+    assert report["status"] == "complete" and len(report["rows"]) == 2
+    assert report["observed_owner_count"] == 0
+    assert {row["path"] for row in report["rows"]} == {
+        "/mnt/blueprint-work/lanes/old", "/mnt/blueprint-work/old-experiment"}
+    assert all(row["classification"] == "unclassified" and row["owner"] is None
+               and row["gc_eligible"] is False and row["references_clear"] is False
+               for row in report["rows"])
 
 
 def test_public_projection_is_bounded_even_with_many_reviewed_rows():

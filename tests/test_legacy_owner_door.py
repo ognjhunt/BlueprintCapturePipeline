@@ -54,6 +54,11 @@ def test_legacy_report_runner_is_read_only_and_finite(tmp_path):
     assert "--property=RuntimeMaxSec=5min" in argv
     assert "--property=ProtectSystem=strict" in argv
     assert "--property=PrivateNetwork=yes" in argv
+    assert "--property=SystemCallFilter=~ptrace process_vm_readv process_vm_writev" in argv
+    hidden = next(item for item in argv if item.startswith("--property=InaccessiblePaths="))
+    assert "/etc/blueprint/provider-secrets" in hidden
+    assert "/var/lib/blueprint/spend-authority" in hidden
+    assert "/etc/blueprint-operator-door" not in hidden
     writable = [part for part in argv if part.startswith("--property=ReadWritePaths=")]
     assert writable == ["--property=ReadWritePaths=" + str(Path(config.spool_root) / "results")]
     assert not any("APPLY" in part or "OWNER=" in part or "PACKET" in part for part in argv)
