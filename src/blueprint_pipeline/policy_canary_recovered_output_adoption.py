@@ -15,10 +15,12 @@ hash to its index member. No member byte is read.
 
 Adoption copies (review I8). The evidence tree is copied into
 ``recovered_provider_output_adoption/``: every file the aggregator could
-rewrite -- anything that is not bulk media or binary -- as a fresh, writable
-copy, never a hard link, which would write through to the evidence and fails on
-ingested ``0440`` members; bulk files by hard link (a streamed tree has none on
-disk). By reference, the aggregator inventories the archive's remaining members
+rewrite -- anything that is not bulk -- as a fresh, writable copy, never a hard
+link, which would write through to the evidence and fails on ingested ``0440``
+members. Bulk files -- media and binaries, and the policy requests the GC
+treats as bulk -- are hard links, which the aggregator never rewrites; a link
+that fails is the adoption's copy failure, never a silent full copy (a
+streamed tree has no bulk file on disk). By reference, the aggregator inventories the archive's remaining members
 from the index, so the aggregate is download mode's, and a sibling view
 descriptor lets later readers of the adoption root reach those members.
 """
@@ -47,16 +49,17 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _adoption_copy(source: str, destination: str) -> str:
-    """Hard-link bulk media and binaries; copy everything else, writable."""
-    if Path(source).suffix.lower() in BULK_EXTENSIONS:
-        try:
-            os.link(source, destination)
+def _adoption_copier(evidence_root: Path) -> Callable[[str, str], str]:
+    """Hard-link bulk evidence; copy what the aggregator could rewrite, writable."""
+
+    def copy(source: str, destination: str) -> str:
+        relative = Path(source).relative_to(evidence_root)
+        if relative.suffix.lower() in BULK_EXTENSIONS or "policy-requests" in relative.parts:
+            os.link(source, destination)  # a failure fails the adoption, as it always did
             return destination
-        except OSError:
-            pass
-    shutil.copyfile(source, destination)
-    return destination
+        shutil.copyfile(source, destination)
+        return destination
+    return copy
 
 
 def _local_members_match(archive: Path, expected_members: Mapping[str, Path]) -> bool:
@@ -234,7 +237,7 @@ def adopt_recovered_complete_result(
                 )
     else:
         try:
-            shutil.copytree(evidence_root, adoption_root, copy_function=_adoption_copy)
+            shutil.copytree(evidence_root, adoption_root, copy_function=_adoption_copier(evidence_root))
         except OSError as exc:
             raise error_factory(
                 "policy_canary_recovered_output_adoption_copy_failed"

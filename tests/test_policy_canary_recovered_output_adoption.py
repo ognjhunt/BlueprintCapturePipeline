@@ -197,3 +197,38 @@ def test_reference_adoption_refuses_a_mismatched_archive_or_mp4_count(tmp_path, 
     assert _adopt(stream_root, streamed.attempt, inputs) is None
     assert not (stream_root / "recovered_provider_output_adoption").exists()
     assert not (stream_root / "recovered_provider_output_adoption.json").exists()
+
+
+def test_download_adoption_links_bulk_and_policy_requests_and_fails_closed_on_a_failed_link(
+        tmp_path, monkeypatch):
+    """Adoption copies only what the aggregator could rewrite. Bulk media and the policy
+    requests (bulk to the GC, possibly hundreds of MB) stay hard links, and a link that fails
+    is the adoption's copy failure, never a silent full copy."""
+    from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import TaskEvaluationPolicyCanaryDispatchError
+
+    inputs, _, (download_root, download_attempt), _ = _cases(tmp_path, monkeypatch)
+    evidence = download_attempt / "immutable_execution"
+    request = next(evidence.glob("cell_runs/00/episodes/media/*/policy-requests/0000.json"))
+    video = next(evidence.glob("cell_runs/00/episodes/media/*/external.mp4"))
+    child = evidence / "cell_runs/00" / PROVIDER_RESULT_FILENAME
+
+    assert _adopt(download_root, download_attempt, inputs) is not None
+
+    adopted = download_root / "recovered_provider_output_adoption"
+    for original in (request, video):
+        assert os.stat(adopted / original.relative_to(evidence)).st_ino == os.stat(original).st_ino
+    assert os.stat(adopted / child.relative_to(evidence)).st_ino != os.stat(child).st_ino
+
+    shutil.rmtree(adopted)
+    (download_root / "recovered_provider_output_adoption.json").unlink()
+    real_link = os.link
+
+    def refuse(source, destination, **kwargs):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "link", refuse)
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError,
+                       match="^policy_canary_recovered_output_adoption_copy_failed$"):
+        _adopt(download_root, download_attempt, inputs)
+    monkeypatch.setattr(os, "link", real_link)
+    assert not (download_root / "recovered_provider_output_adoption.json").exists()
