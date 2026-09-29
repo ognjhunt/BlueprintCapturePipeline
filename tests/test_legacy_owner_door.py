@@ -55,6 +55,19 @@ def test_door_reports_all_candidates_and_keeps_unknown_fd_owner_label():
     assert _public_report(unsafe)["rows"] == []
 
 
+def test_door_row_limit_returns_explicit_incomplete_without_partial_labels():
+    from blueprint_pipeline.control_plane_lane_legacy_owner_door import _public_report
+
+    row = dict(path="/work/lanes/diagnostics/old", family="other", references=[],
+               unreadable=0, allocated_bytes=1, age_seconds=1)
+    observed = dict(status="complete", scan_errors=[],
+                    rows=[row | {"path": f"{row['path']}-{index}"} for index in range(1025)],
+                    observed_owner_count=0)
+    report = _public_report(observed)
+    assert report["status"] == "incomplete" and report["rows"] == []
+    assert report["observed_owner_count"] == 0 and report["gc_eligible"] is False
+
+
 def test_legacy_report_door_requires_operate_scope_and_uses_existing_spool(door):
     assert _call(door, "/requests", token=READER,
                  body={"kind": "legacy-owner-census"})[0] == 403

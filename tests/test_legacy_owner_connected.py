@@ -229,6 +229,35 @@ def test_revoked_old_consent_blocks_head_and_drops_existing_label(installed, mon
     assert payload.read_bytes() == b"old, preserved"
 
 
+def test_slow_multi_head_store_reports_incomplete_without_partial_owner_labels(installed, monkeypatch):
+    target, payload, _, legacy = installed
+    packet, _ = _issue_and_approve(installed)
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+
+    class Clock:
+        value = 0.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+    original = legacy.LegacyOwnerStore.committed_heads
+
+    def slow_heads(store):
+        result = original(store)
+        clock.value += 6.0
+        return result
+
+    monkeypatch.setattr(legacy.LegacyOwnerStore, "committed_heads", slow_heads)
+    report = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                         monotonic=clock, max_seconds=30)
+    assert report["status"] == "incomplete" and report["rows"] == []
+    assert report["observed_owner_count"] == 0 and report["gc_eligible"] is False
+    assert payload.read_bytes() == b"old, preserved"
+
+
 def test_crash_before_head_is_recoverable_without_promoting_torn_record(installed, monkeypatch):
     target, payload, registry, legacy = installed
     packet, _ = _issue_and_approve(installed)
