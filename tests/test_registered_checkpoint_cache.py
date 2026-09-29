@@ -769,6 +769,41 @@ def test_known_owned_wam_upload_is_aborted_even_when_stream_close_raises(cache_i
         assert events == ['create', 'part', 'abort']
 
 
+@pytest.mark.parametrize('abort_fails', [False, True])
+def test_known_wam_create_response_is_aborted_on_current_revoke(cache_installation, monkeypatch, abort_fails):
+    from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
+    from blueprint_pipeline import wam_provider_object_store as wam
+    value = cache_installation
+    grant, result, _, _, _ = fill_cache(value, monkeypatch)
+    events = []
+
+    class Client:
+        def create_multipart_upload(self, **kwargs):
+            events.append('create')
+            cache.update_needed_checkpoint_cache_authority(operation='revoke', intent_id=grant['intent_id'],
+                installed_config_path=value['config'], now=lambda: 1200)
+            return {'UploadId': 'fixture-owned-create-response'}
+        def upload_part(self, **kwargs):
+            pytest.fail('payload after revoke')
+        def complete_multipart_upload(self, **kwargs):
+            pytest.fail('completion after revoke')
+        def abort_multipart_upload(self, **kwargs):
+            assert kwargs == dict(Bucket='fixture', Key='fixture-object', UploadId='fixture-owned-create-response')
+            events.append('abort')
+            if abort_fails:
+                raise OSError('fixture abort unresolved')
+
+    with cache.NeededCheckpointCacheUse.open_registered(Path(result['path']), installed_config_path=value['config'],
+                                                       now=lambda: 1200) as use:
+        row = use._rows[0]
+        with pytest.raises(cache.NeededCheckpointCacheError):
+            wam._upload_registered_checkpoint_file(Client(), bucket='fixture', key='fixture-object',
+                expected=row['sha256'].removeprefix('sha256:'), row=row, use=use)
+        assert events == ['create', 'abort']
+        if abort_fails:
+            assert use._failure == 'needed_cache_upload_cleanup_unresolved'
+
+
 @pytest.mark.parametrize('phase', ['issue', 'fill'])
 def test_uninstalled_root_refuses_before_intent_ledger_or_payload(cache_installation, monkeypatch, phase):
     from blueprint_pipeline import control_plane_registered_checkpoint_cache as cache
