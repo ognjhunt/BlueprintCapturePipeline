@@ -107,6 +107,7 @@ def _build_handoff_payload(
     bucket: str,
     scene_id: str,
     capture_id: str,
+    source_finalize: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
     """Canonical capture-bridge handoff payload (XR-04).
 
@@ -117,7 +118,7 @@ def _build_handoff_payload(
     """
 
     capture_prefix = f"scenes/{scene_id}/captures/{capture_id}"
-    return {
+    payload = {
         "schema_version": "capture_bridge_handoff.v1",
         "bucket": bucket,
         "scene_id": scene_id,
@@ -127,6 +128,25 @@ def _build_handoff_payload(
         "triggered_at": _utc_now_iso(),
         "source": "storage_finalize_raw_complete",
     }
+    if source_finalize is not None:
+        payload["source_finalize"] = source_finalize
+    return payload
+
+
+def _finalize_source(event: Dict[str, Any], context: Any, *, bucket: str, object_name: str) -> Dict[str, str] | None:
+    """Retain the original object version as an input selector, never an owner grant."""
+    generation = event.get("generation")
+    if generation is None:
+        return None  # Older producer events remain legacy and unqualified.
+    event_id = getattr(context, "event_id", None)
+    event_source = getattr(context, "event_type", None)
+    if (type(generation) is not str or not re.fullmatch(r"[1-9][0-9]{0,19}", generation)
+            or type(event_id) is not str or not 0 < len(event_id.encode("utf-8")) <= 256
+            or type(event_source) is not str or not 0 < len(event_source.encode("utf-8")) <= 1024
+            or "\x00" in event_id or "\x00" in event_source):
+        raise ValueError("capture_finalize_source_invalid")
+    return {"bucket": bucket, "object_name": object_name, "generation": generation,
+            "event_id": event_id, "event_source": event_source}
 
 
 def _handoff_topic_name() -> str:
@@ -466,6 +486,7 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
             bucket=bucket,
             scene_id=raw_complete["scene_id"],
             capture_id=raw_complete["capture_id"],
+            source_finalize=_finalize_source(event,context,bucket=bucket,object_name=object_name),
         )
         logger.info(
             "Publishing capture bridge handoff for scene=%s capture=%s raw_prefix=%s",

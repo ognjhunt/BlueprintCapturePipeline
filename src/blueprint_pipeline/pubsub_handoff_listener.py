@@ -58,6 +58,7 @@ class HandoffMessage:
     robot_eval_simulator: str | None = None
     robot_eval_evaluation_substrate: str | None = None
     robot_eval_budget_usd: float | None = None
+    source_finalize: Mapping[str, str] | None = None
 
     @property
     def capture_prefix(self) -> str:
@@ -111,6 +112,21 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
             "Pub/Sub handoff pipeline_handoff_uri does not match bucket/scene/capture identity."
         )
 
+    source_finalize = data.get("source_finalize")
+    if source_finalize is not None:
+        expected_marker = f"scenes/{scene_id}/captures/{capture_id}/raw/capture_upload_complete.json"
+        if (type(source_finalize) is not dict
+                or set(source_finalize) != {"bucket", "object_name", "generation", "event_id", "event_source"}
+                or any(type(value) is not str for value in source_finalize.values())
+                or source_finalize["bucket"] != bucket
+                or source_finalize["object_name"] != expected_marker
+                or re.fullmatch(r"[1-9][0-9]{0,19}", source_finalize["generation"]) is None
+                or not 0 < len(source_finalize["event_id"].encode("utf-8")) <= 256
+                or not 0 < len(source_finalize["event_source"].encode("utf-8")) <= 1024
+                or "\x00" in source_finalize["event_id"]
+                or "\x00" in source_finalize["event_source"]):
+            raise PipelineError("Pub/Sub handoff source finalize identity invalid.")
+
     robot_eval_job_request_uri = _optional_string(
         data,
         "robot_eval_job_request_uri",
@@ -139,6 +155,7 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
             "robot_eval_evaluation_substrate",
         ),
         robot_eval_budget_usd=robot_eval_budget_usd,
+        source_finalize=source_finalize,
     )
 
 
