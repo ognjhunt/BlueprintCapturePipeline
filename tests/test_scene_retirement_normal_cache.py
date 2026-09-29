@@ -588,6 +588,7 @@ def test_cache_action_selects_exact_native_generated_publication_without_request
     fixture=generated_fixture(tmp_path,monkeypatch)
     manifest,_=extract(fixture)
     leaf,current=generation(fixture,manifest['entries'][0]['sha256'])
+    os.utime(leaf,(101-24*60*60,101-24*60*60))
     ledger=Path(fixture['policy']['generation_store'])/(hashlib.sha256(str(leaf).encode()).hexdigest()+'.json')
     row=dict(canonical_path=str(leaf),digest=current['digest'],size_bytes=current['size_bytes'],
         generation_id=current['generation_id'],generation_raw_ref=_raw(ledger),
@@ -618,6 +619,7 @@ def test_normal_runtime_layer_cas_has_actual_wrapper_proof_before_derived_action
     projection=next(iter(fixture['external_layers'].values()))
     source_root=projection.parent.parent/'content-addressed'/'sha256'
     leaf=source_root/projection.name
+    os.utime(leaf,(101-24*60*60,101-24*60*60))
     key=hashlib.sha256(str(leaf).encode()).hexdigest()+'.json'
     ledger=Path(fixture['policy']['generation_store'])/key
     current=json.loads(ledger.read_bytes())

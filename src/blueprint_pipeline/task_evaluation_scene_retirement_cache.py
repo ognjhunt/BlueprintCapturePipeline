@@ -440,6 +440,7 @@ def restore_preserved_cache_aliases(preserved,roots,file_identities,journal):
 
 def validate_cache_objects(policy,consent,allowance):
     """Exact target/publication proof only; native current-reference closure is separate."""
+    from .control_plane_storage_gc import DEFAULT_MINIMUM_AGE_SECONDS
     from .task_evaluation_launch_preparation_worker import collect_preparation_references
     objects=consent.get('cache_objects',[])
     _require(type(objects) is list and len(objects)<=256,'scene_retirement_inventory_limit')
@@ -472,8 +473,11 @@ def validate_cache_objects(policy,consent,allowance):
             _require(any(ref['digest']==row['digest'] and ref['size_bytes']==row['size_bytes'] for ref in refs),_ERROR)
         path=_canonical(row['canonical_path'])
         with _opened(path) as (_,info):
+            allowance.tick()
             _require(_identity(info)==(generation['dev'],generation['ino'],generation['mode'])
                      and info.st_size==row['size_bytes'] and info.st_uid==generation['uid']
                      and info.st_gid==generation['gid'],_ERROR)
+            _require(allowance.last_wall-info.st_mtime>=DEFAULT_MINIMUM_AGE_SECONDS,
+                     'scene_retirement_cache_idle_grace_unproven')
         selected.append(dict(row))
     return selected
