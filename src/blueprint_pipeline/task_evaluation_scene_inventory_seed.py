@@ -423,7 +423,7 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
     _require(budget["result"] <= MAX_REFERENCES, "references_limit", **_work_kwargs(work_budget))
     request_refs = context["typed"]
     workspace = retained._child(roots["preparation_input_root"], context["link"]["preparation_id"], **_work_kwargs(work_budget))
-    observed, projected = set(), {}
+    observed, projected, recipe_parent, recipe_stages = set(), {}, False, []
     for row in (_work_items(references, work_budget) if work_budget is not None else references):
         _require(isinstance(row, dict) and isinstance(row.get("contract_path"), str)
                  and 0 < len(row["contract_path"].encode("utf-8")) <= retained.MAX_PATH_BYTES
@@ -441,6 +441,16 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
         if contract is not None:
             _require(all(row[field] == contract[field] for field in (_work_items(("uri", "digest", "size_bytes"), work_budget) if work_budget is not None else ("uri", "digest", "size_bytes"))), "request_reference_rebound", **_work_kwargs(work_budget))
             observed.add(row["contract_path"])
+            if (row['contract_path'] == 'construction.recipe'
+                    and row['full_byte_service_account_readback_passed'] is True
+                    and path == retained._child(workspace, row['digest'][7:], **_work_kwargs(work_budget))):
+                recipe_parent = True
+        stage_index = re.fullmatch(r'construction\.recipe\.stage_sequence\.([0-9]+)\.configuration', row['contract_path'])
+        if (stage_index is not None and int(stage_index.group(1)) < 32
+                and row['full_byte_service_account_readback_passed'] is True
+                and path == retained._child(workspace, 'construction-stage-configurations',
+                                            row['digest'][7:], **_work_kwargs(work_budget))):
+            recipe_stages.append((int(stage_index.group(1)), row))
         if contract is None or not promote:
             deferred.append({**row, "preparation_id": context["link"]["preparation_id"], "source_provenance": _proofs(emission_budget, (provenance,), **_work_kwargs(work_budget)),
                              "binding_strength": "result_receipt_only", "reason": "deferred_parent_reference_proof"})
@@ -467,6 +477,46 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
             if emission_budget is not None:
                 emission_budget.reserve_reference(cache_row)
             shared[row["digest"]] = cache_row
+    # The selected result can name recipe children for bounded measurement,
+    # but the parent recipe bytes have not been reopened here. Keep each child
+    # deferred; action admission must authenticate that parent before removal.
+    if promote and recipe_parent and len({index for index, _ in recipe_stages}) == len(recipe_stages):
+        for _, row in (_work_items(recipe_stages, work_budget) if work_budget is not None else recipe_stages):
+            path = row['materialized_path']
+            existing = budget['members'].get(path)
+            if existing is None:
+                existing = _member(path, 'preparation_projected_file',
+                    {'preparation_id': context['link']['preparation_id'],
+                     'request_digest': context['link']['request_digest']},
+                    _proofs(emission_budget, context['sources'], (provenance,), **_work_kwargs(work_budget)),
+                    emission_budget=emission_budget, **_work_kwargs(work_budget))
+                existing.update(binding_strength='recipe_parent_pending', receipt_digest=row['digest'],
+                                receipt_size_bytes=row['size_bytes'], contract_paths=[row['contract_path']])
+                members.append(existing)
+                budget['members'][path] = existing
+                if emission_budget is not None:
+                    emission_budget.reserve_reference({'contract_path': row['contract_path']})
+                budget['edges'][path] = {row['contract_path']}
+                budget['provenances'][path] = {(proof['path'], proof['sha256'], proof['size_bytes'])
+                    for proof in (_work_items(existing['source_provenance'], work_budget)
+                                  if work_budget is not None else existing['source_provenance'])}
+            else:
+                _require((existing['receipt_digest'], existing['receipt_size_bytes']) ==
+                         (row['digest'], row['size_bytes']), 'materialized_identity_conflict',
+                         **_work_kwargs(work_budget))
+                if emission_budget is not None:
+                    emission_budget.reserve_reference({'contract_path': row['contract_path']})
+                budget['edges'][path].add(row['contract_path'])
+            prior = shared.get(row['digest'])
+            _require(prior is None or prior['size_bytes'] == row['size_bytes'],
+                     'cache_identity_conflict', **_work_kwargs(work_budget))
+            if prior is None:
+                candidate = {'digest': row['digest'], 'size_bytes': row['size_bytes'],
+                             'path': retained._child(roots['content_store_root'], row['digest'][7:], **_work_kwargs(work_budget)),
+                             'exclusive_scene_membership': False}
+                if emission_budget is not None:
+                    emission_budget.reserve_reference(candidate)
+                shared[row['digest']] = candidate
     if promote and (_work_collect(work_budget, set, request_refs) if work_budget is not None else set(request_refs)) - observed:
         reasons.add("request_projection_missing")
         for contract_path in (_work_items((_work_order(work_budget, sorted, (_work_collect(work_budget, set, request_refs) if work_budget is not None else set(request_refs)) - observed) if work_budget is not None else sorted(set(request_refs) - observed)), work_budget) if work_budget is not None else sorted(set(request_refs) - observed)):
