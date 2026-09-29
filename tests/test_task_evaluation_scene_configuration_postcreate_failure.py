@@ -23,6 +23,12 @@ from tests.test_task_evaluation_scene_configuration_bundle import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _ceiling_output_admission(monkeypatch):
+    """These lane runs pin today's ceiling admission, whatever the shell exports."""
+    monkeypatch.delenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION", raising=False)
+
+
 @pytest.mark.parametrize("preparation_rejected", [False, True])
 @pytest.mark.parametrize("website_prefix", [False, True])
 def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(

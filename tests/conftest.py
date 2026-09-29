@@ -53,6 +53,16 @@ def _website_object_spec_agent_off(monkeypatch):
 
 
 @pytest.fixture
+def _single_threaded_verdict_persistence(monkeypatch):
+    """Validator verdicts persist only while no other thread runs. A thread another
+    test file leaves alive must not decide whether a persistence test persists;
+    refusal under other threads keeps its own test in test_validation_verdict_reuse."""
+    from blueprint_pipeline import validation_verdict_store
+
+    monkeypatch.setattr(validation_verdict_store.threading, "active_count", lambda: 1)
+
+
+@pytest.fixture
 def _materialize_generated_manifest_publication_fixture(
     monkeypatch, tmp_path_factory
 ):

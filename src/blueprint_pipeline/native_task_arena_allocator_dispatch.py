@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from .controlled_native_policy_bundle import (
+    PROBE_KIND as CONTROLLED_POLICY_PROBE_KIND, load_verified_controlled_native_policy_bundle)
 from .native_task_arena_construction_bundle import (
     PROBE_KIND as CONSTRUCTION_PROBE_KIND,
     load_verified_native_task_arena_construction_bundle,
@@ -31,7 +33,7 @@ from .native_task_arena_runtime_preflight_bundle import (
 )
 from .native_task_arena_vast import (
     POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES,
-    run_native_task_arena_controls_vast,
+    run_native_task_arena_controls_vast, run_controlled_native_policy_vast,
     run_native_task_arena_destination_qualification_vast,
     run_native_task_arena_policy_diagnostic_vast,
     run_native_task_arena_policy_vast,
@@ -41,6 +43,7 @@ from .native_task_arena_vast import (
 
 
 _MODE_BY_PROBE_KIND = {
+    CONTROLLED_POLICY_PROBE_KIND: "controlled_policy",
     RUNTIME_PREFLIGHT_PROBE_KIND: "runtime_preflight",
     DESTINATION_QUALIFICATION_PROBE_KIND: "destination_qualification",
     CONSTRUCTION_PROBE_KIND: "construction_canary",
@@ -50,6 +53,7 @@ _MODE_BY_PROBE_KIND = {
 }
 NATIVE_TASK_ARENA_PROBE_KINDS = tuple(_MODE_BY_PROBE_KIND)
 _LOADER_BY_PROBE_KIND: dict[str, Callable[..., dict[str, Any]]] = {
+    CONTROLLED_POLICY_PROBE_KIND: load_verified_controlled_native_policy_bundle,
     RUNTIME_PREFLIGHT_PROBE_KIND: load_verified_native_task_arena_runtime_preflight_bundle,
     DESTINATION_QUALIFICATION_PROBE_KIND: load_verified_native_task_arena_destination_qualification_bundle,
     CONSTRUCTION_PROBE_KIND: load_verified_native_task_arena_construction_bundle,
@@ -58,6 +62,7 @@ _LOADER_BY_PROBE_KIND: dict[str, Callable[..., dict[str, Any]]] = {
     POLICY_DIAGNOSTIC_PROBE_KIND: load_verified_native_task_arena_policy_diagnostic_bundle,
 }
 _RUNNER_BY_PROBE_KIND: dict[str, Callable[..., dict[str, Any]]] = {
+    CONTROLLED_POLICY_PROBE_KIND: run_controlled_native_policy_vast,
     RUNTIME_PREFLIGHT_PROBE_KIND: run_native_task_arena_runtime_preflight_vast,
     DESTINATION_QUALIFICATION_PROBE_KIND: run_native_task_arena_destination_qualification_vast,
     CONSTRUCTION_PROBE_KIND: run_native_task_arena_vast,

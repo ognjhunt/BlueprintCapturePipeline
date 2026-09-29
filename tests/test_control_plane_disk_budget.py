@@ -237,6 +237,7 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         "stage_replay",
         "semantic_pretraining",
         "cpu_prestage",
+        "scene_configuration_output",
     }
     assert next(row for row in report["targets"] if row["role"] == "control_plane_deploy")["refused"] is False
     assert str(tmp_path) not in json.dumps(report)
@@ -683,6 +684,9 @@ ROLE_WORKER_UNITS = {
     "semantic_pretraining": ("blueprint-task-evaluation-launch-dispatcher.service",
                              "blueprint-task-evaluation-launch-activation.service"),
     "cpu_prestage": ("blueprint-task-evaluation-launch-dispatcher.service",),
+    # Held from before the paid scene-configuration allocation until its
+    # result is sealed, inside the dispatcher's allocator child.
+    "scene_configuration_output": ("blueprint-task-evaluation-launch-dispatcher.service",),
 }
 
 

@@ -244,6 +244,14 @@ POLICY_RUNTIME_MODULE_NAMES = tuple(
 )
 
 
+CONTROLLED_POLICY_RUNTIME_MODULE_NAMES = tuple(sorted({*CONTROLS_RUNTIME_MODULE_NAMES,
+    "native_task_arena_construction_worker.py", "controlled_native_isaac.py", "controlled_policy_dispatch.py",
+    "controlled_policy_session.py", "controlled_policy_observations.py", "controlled_policy_actions.py",
+    "controlled_policy_outcome.py", "controlled_simulator_adapter.py", "company_policy_container_contract_v2.py",
+    "policy_model_onnx.py", "native_rigid_episode_telemetry.py", "controlled_policy_configuration.py",
+    "adp009d_groot_worker_identity.py", "groot_n17_wire_client.py", "policy_request_evidence.py",
+    "native_g1_navigation_goal.py"}))
+
 @dataclass(frozen=True)
 class NativeTaskArenaExecutionContract:
     expected_output_filename: str
@@ -252,6 +260,9 @@ class NativeTaskArenaExecutionContract:
 
 
 EXECUTION_MODE_CONTRACTS = {
+    "controlled_policy": NativeTaskArenaExecutionContract(
+        expected_output_filename="controlled_native_policy_result.v1.json",
+        runtime_module_names=CONTROLLED_POLICY_RUNTIME_MODULE_NAMES),
     "destination_qualification": NativeTaskArenaExecutionContract(
         expected_output_filename=(
             "task_evaluation_rigid_destination_native_observation.v1.json"
