@@ -41,6 +41,9 @@ ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     # Measured admission holds the exact upload ceiling plus 512 MiB; this
     # declared value only shapes projections until the history is measured.
     "scene_configuration_output": 2 * GIB,
+    # A streamed Quick-10's needed members (plan 15): a forecast hold taken before
+    # the session authority is consumed, shrunk to the needed set once indexed.
+    "policy_canary_output": GIB,
 }
 ROLE_NAME_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 

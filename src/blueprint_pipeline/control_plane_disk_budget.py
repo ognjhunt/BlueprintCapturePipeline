@@ -75,6 +75,7 @@ ROLE_TTL_SECONDS: Mapping[str, int] = {
     "policy_canary_dispatch": 6 * 3600,
     "launch_dispatch": 6 * 3600,
     "scene_configuration_output": 6 * 3600,
+    "policy_canary_output": 6 * 3600,
     "control_plane_deploy": 4 * 3600,
     "evidence_offload": 4 * 3600,
 }  # every other role keeps DEFAULT_TTL_SECONDS
@@ -285,44 +286,77 @@ class DiskReservation:
 
         if self.released or self.reservation_root is None:
             raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_released")
-        ledger = self.reservation_root
-        with os.fdopen(open_ledger_lock(ledger, require_mode=True), "a+b") as lock:
+        with os.fdopen(open_ledger_lock(self.reservation_root, require_mode=True), "a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                descriptor = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                with os.fdopen(descriptor, "rb") as stream:
-                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                        raise ValueError("reservation is not a regular file")
-                    payload = json.loads(stream.read(16 * 1024 + 1))
-                if (
-                    not isinstance(payload, dict)
-                    or payload.get("token") != self.token
-                    or payload.get("role") != self.role
-                    or payload.get("pid") != os.getpid()
-                    or payload.get("device") != self.device
-                    or payload.get("expected_bytes") != self.expected_bytes
-                ):
-                    raise ValueError("reservation identity changed")
-            except (OSError, ValueError, TypeError) as exc:
-                raise ControlPlaneDiskBudgetError(
-                    "control_plane_disk_budget_reservation_renewal_invalid"
-                ) from exc
             moment = self.clock()
-            if float(payload.get("expires_at_epoch", 0)) <= moment:
-                raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_expired")
+            payload = self._owned_entry(moment)
             payload["expires_at_epoch"] = moment + self.ttl_seconds
-            descriptor, temporary_name = tempfile.mkstemp(prefix=".reservation-", dir=ledger)
-            temporary = Path(temporary_name)
-            try:
-                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                    json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                temporary.chmod(0o640)
-                os.replace(temporary, self.path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            self._replace_entry(payload)
+
+    def resize(self, expected_bytes: int) -> None:
+        """Shrink a live reservation in place under the admission lock.
+
+        A shrink returns bytes to the ledger and needs no admission. Growth is
+        refused (``control_plane_disk_budget_resize_growth_refused``): it would
+        be admitted against space other live holds already reduced, and a caller
+        that forecast too little must stop rather than overcommit.
+        """
+
+        if self.released or self.reservation_root is None:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_released")
+        if type(expected_bytes) is not int or expected_bytes <= 0:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_invalid")
+        if expected_bytes > self.expected_bytes:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_resize_growth_refused")
+        with os.fdopen(open_ledger_lock(self.reservation_root, require_mode=True), "a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            payload = self._owned_entry(self.clock())
+            payload["expected_bytes"] = expected_bytes
+            self._replace_entry(payload)
+            self.expected_bytes = expected_bytes
+
+    def _owned_entry(self, moment: float) -> dict[str, Any]:
+        """This live reservation's ledger entry, read without following a symlink."""
+
+        try:
+            descriptor = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("reservation is not a regular file")
+                payload = json.loads(stream.read(16 * 1024 + 1))
+            if (
+                not isinstance(payload, dict)
+                or payload.get("token") != self.token
+                or payload.get("role") != self.role
+                or payload.get("pid") != os.getpid()
+                or payload.get("device") != self.device
+                or payload.get("expected_bytes") != self.expected_bytes
+            ):
+                raise ValueError("reservation identity changed")
+        except (OSError, ValueError, TypeError) as exc:
+            raise ControlPlaneDiskBudgetError(
+                "control_plane_disk_budget_reservation_renewal_invalid"
+            ) from exc
+        if float(payload.get("expires_at_epoch", 0)) <= moment:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_expired")
+        return payload
+
+    def _replace_entry(self, payload: Mapping[str, Any]) -> None:
+        """Atomically replace this reservation's ledger entry (the admission lock is held)."""
+
+        assert self.reservation_root is not None
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".reservation-", dir=self.reservation_root)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(dict(payload), stream, sort_keys=True, separators=(",", ":"))
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.chmod(0o640)
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def bind_workspace(self, path: str | Path, *, fresh: bool | None = None) -> None:
         """Measure growth of ``path`` from now on (a workspace created after admission).

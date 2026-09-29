@@ -2028,6 +2028,52 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
     assert sample["observed_bytes"] >= 50_000
 
 
+@pytest.mark.parametrize(("delivery", "workload"), [
+    (None, "policy_canary"), ("download", "policy_canary"), ("stream", "policy_canary_streamed"),
+    # An invalid mode is refused by the session before any spend; the run is labelled as download.
+    ("Stream", "policy_canary"),
+])
+def test_streamed_canary_reservation_uses_its_own_workload_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delivery: str | None, workload: str
+) -> None:
+    """A streamed run directory is about 1.1 GB against download mode's 7.75 GB: its samples
+    form their own measured group instead of hiding under download mode's."""
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import task_evaluation_policy_canary_disk as canary_disk
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+    from blueprint_pipeline.policy_canary_output_members import DELIVERY_ENV
+
+    if delivery is None:
+        monkeypatch.delenv(DELIVERY_ENV, raising=False)
+    else:
+        monkeypatch.setenv(DELIVERY_ENV, delivery)
+    queue, setups = _pending_canary(tmp_path)
+    calls: list[dict[str, object]] = []
+    real = canary_disk.reserve_control_plane_disk
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs, disk_usage=lambda _path: SimpleNamespace(
+            total=100 * 1024**3, used=0, free=90 * 1024**3))
+
+    monkeypatch.setattr(canary_disk, "reserve_control_plane_disk", recording)
+    monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation",
+                        lambda **_kwargs: {"status": "awaiting_official_billing", "allocator_invoked": True})
+    process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue, execution_setup_root=setups, dispatch_root=tmp_path / "dispatches",
+        implementation_commit=COMMIT, execute=True,
+        blocked_sync_runner=lambda **_kwargs: pytest.fail("no preprovider block expected"),
+        provider_zero_collector=lambda: pytest.fail("no provider zero expected"),
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    assert [(call["workload"], call["workspace"].name) for call in calls] == [(workload, "activation-1")]
+    history = tmp_path / "reservations" / "history" / "policy_canary_dispatch.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample["workload"] == workload
+
+
 def test_resumed_canary_passes_never_move_the_measured_footprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
