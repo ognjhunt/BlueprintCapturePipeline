@@ -1510,6 +1510,7 @@ def _finish_terminal_authority_ending(
     attempt_started_at: str,
     previous_history: Sequence[Mapping[str, Any]],
     payload_digest: str,
+    producer_delivery_key: str | None = None,
 ) -> dict[str, Any]:
     """End the job for good: the website ended this scene's authority.
 
@@ -1533,6 +1534,8 @@ def _finish_terminal_authority_ending(
             "terminal_at": ended_at,
             "updated_at": ended_at,
             "terminal_payload_sha256": payload_digest,
+            **({'terminal_producer_delivery_key': producer_delivery_key}
+               if producer_delivery_key is not None else {}),
             "last_error_type": type(error).__name__,
             "last_error": str(error)[:500],
             "queue_disposition": TERMINAL_AUTHORITY_STATUS,
@@ -1547,6 +1550,8 @@ def _finish_terminal_authority_ending(
                     "code": code,
                     "operation": operation,
                     "payload_sha256": payload_digest,
+                    **({'producer_delivery_key': producer_delivery_key}
+                       if producer_delivery_key is not None else {}),
                 },
             ],
         },

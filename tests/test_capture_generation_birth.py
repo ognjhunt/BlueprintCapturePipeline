@@ -231,7 +231,9 @@ def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypa
     assert Path(born['birth_delivery_raw_ref']['path']).is_file()
 
 
-def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(tmp_path, monkeypatch):
+@pytest.mark.parametrize('terminal', [False, True])
+def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
+        tmp_path, monkeypatch, terminal):
     from blueprint_pipeline import capture_original_owner_observer as observer
     from blueprint_pipeline import pubsub_handoff_listener as listener
 
@@ -318,15 +320,35 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(tmp
     assert staged_manifest['source_membership_selector'] == selector
     assert staged_manifest['local_generation_id']
     assert not (target / 'derived').exists()
-    for _ in range(2):
-        result = listener.process_handoff_payload(
-            payload, storage_root=target.parents[4], storage_client=Client(),
-            provider='openai', run_e2e=lambda **_: pytest.fail('provider or consumer ran'))
-        assert result['status'] == 'capture_source_staged_retryable'
-        assert result['queue_disposition'] == 'retryable'
-        current = json.loads((target / listener.STAGING_MANIFEST_FILENAME).read_bytes())
-        assert current['local_generation_id'] == staged_manifest['local_generation_id']
-        assert not (target / listener.JOB_LEDGER_FILENAME).exists()
+    runs = []
+
+    def consume(**kwargs):
+        runs.append(kwargs)
+        assert kwargs['capture_root'] == str(target)
+        assert json.loads((target / listener.STAGING_MANIFEST_FILENAME).read_bytes())[
+            'local_generation_id'] == staged_manifest['local_generation_id']
+        if terminal:
+            raise ValueError('website_control_scene-sponsorship_http_409:consent_expired')
+        return {'status': 'completed'}
+
+    first = listener.process_handoff_payload(
+        payload, storage_root=target.parents[4], storage_client=Client(),
+        provider='local', run_e2e=consume)
+    assert first['status'] == ('terminal_authority_ended' if terminal else 'processed')
+    ledger = json.loads((target / listener.JOB_LEDGER_FILENAME).read_bytes())
+    assert ledger['producer_delivery_key'] == owner['producer_delivery']['delivery_key']
+    assert ledger['source_payload_sha256'] == listener.payload_sha256(payload)
+    if terminal:
+        assert ledger['terminal_producer_delivery_key'] == owner['producer_delivery']['delivery_key']
+        assert ledger['attempt_history'][-1]['producer_delivery_key'] == owner['producer_delivery']['delivery_key']
+    assert len(runs) == 1
+    replay = {**payload, 'source_finalize': {**payload['source_finalize'], 'event_id': 'evt-2'}}
+    second = listener.process_handoff_payload(
+        replay, storage_root=target.parents[4], storage_client=Client(),
+        provider='local', run_e2e=consume)
+    assert second['status'] == ('skipped_terminal_authority_ended' if terminal
+                                else 'skipped_already_processed')
+    assert len(runs) == 1
 
 
 def test_capture_lease_binds_semantic_delivery_across_changed_payload_bytes(tmp_path):

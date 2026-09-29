@@ -92,6 +92,9 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
+    selected_staged = None
+    producer_delivery_key = None
+    prior_retired = None
     if handoff.source_finalize is not None:
         from .capture_original_owner_observer import load_original_owner_observation
 
@@ -113,6 +116,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                               extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                                      'observation_digest': observation['observation_digest']})
         if handoff.source_membership_selector is not None:
+            producer_delivery_key = observation['producer_delivery']['delivery_key']
             try:
                 from .website_scene_workspace_retention import retired_capture_status
                 retired = retired_capture_status(
@@ -125,7 +129,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                         'capture_root': str(capture_root),
                         'blockers': ['retirement_lookup_failed']}
             if retired is not None:
-                semantic_key = observation['producer_delivery']['delivery_key']
+                prior_retired = retired
                 ended_keys = retired['producer_delivery_keys']
                 if not ended_keys:
                     return {'schema_version': 'v1',
@@ -134,14 +138,14 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                             'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                             'capture_root': str(capture_root),
                             'blockers': ['retired_delivery_identity_unproven']}
-                if semantic_key in ended_keys:
+                if producer_delivery_key in ended_keys:
                     return {'schema_version': 'v1', 'status': 'skipped_retired_terminal',
                             'queue_disposition': retired['queue_disposition'],
                             'bucket': handoff.bucket, 'scene_id': handoff.scene_id,
                             'capture_id': handoff.capture_id, 'capture_root': str(capture_root),
                             'retirement_receipt': retired['receipt']}
             try:
-                staged = _listener.stage_handoff_capture(
+                selected_staged = _listener.stage_handoff_capture(
                     handoff, storage_root=storage_root, storage_client=storage_client)
             except Exception:
                 _listener.logger.warning('pubsub_handoff.capture_source_membership_unavailable',
@@ -152,21 +156,12 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                         'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                         'capture_root': str(capture_root),
                         'blockers': ['capture_source_membership_unavailable']}
-            # The selected source is now born and staged. Existing lease state
-            # still keys terminal endings by payload bytes, so execution waits
-            # for the semantic delivery-key association rather than reentering
-            # that older mutable-digest path.
-            return {'schema_version': 'v1', 'status': 'capture_source_staged_retryable',
+        else:
+            return {'schema_version': 'v1', 'status': 'capture_original_birth_unavailable_retryable',
                     'queue_disposition': 'retryable', 'bucket': handoff.bucket,
                     'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
-                    'capture_root': str(staged),
-                    'blockers': ['capture_delivery_lease_binding_unavailable']}
-        return {'schema_version': 'v1', 'status': 'capture_original_birth_unavailable_retryable',
-                'queue_disposition': 'retryable', 'bucket': handoff.bucket,
-                'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
-                'capture_root': str(capture_root),
-                'blockers': ['capture_original_birth_unavailable']}
-    prior_retired: dict[str, Any] | None = None
+                    'capture_root': str(capture_root),
+                    'blockers': ['capture_original_birth_unavailable']}
 
     def retired_terminal() -> dict[str, Any] | None:
         nonlocal prior_retired
@@ -182,11 +177,20 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         _listener.logger.info('pubsub_handoff.skipped_retired_terminal', extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id})
         return {'schema_version': 'v1', 'status': 'skipped_retired_terminal', 'queue_disposition': retired['queue_disposition'], 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'retirement_receipt': retired['receipt']}
     capture_present = capture_root.exists()
-    if not capture_present and (skipped := retired_terminal()) is not None:
+    if selected_staged is None and not capture_present and (skipped := retired_terminal()) is not None:
         return skipped
     owner = lease_owner or _listener._lease_owner()
     try:
-        claim_status, ledger = _listener._claim_job_lease(capture_root, scene_id=handoff.scene_id, capture_id=handoff.capture_id, owner=owner, lease_seconds=lease_seconds, payload_sha256=digest, create_capture_root=not capture_present, retired_ended_payload_sha256s=prior_retired['payload_sha256s'] if prior_retired is not None and prior_retired['status'] == _listener.TERMINAL_AUTHORITY_STATUS else ())
+        claim_status, ledger = _listener._claim_job_lease(
+            capture_root, scene_id=handoff.scene_id, capture_id=handoff.capture_id,
+            owner=owner, lease_seconds=lease_seconds, payload_sha256=digest,
+            producer_delivery_key=producer_delivery_key,
+            create_capture_root=not capture_present and selected_staged is None,
+            retired_ended_payload_sha256s=(prior_retired['payload_sha256s']
+                if producer_delivery_key is None and prior_retired is not None
+                and prior_retired['status'] == _listener.TERMINAL_AUTHORITY_STATUS else ()),
+            retired_ended_producer_delivery_keys=(prior_retired['producer_delivery_keys']
+                if producer_delivery_key is not None and prior_retired is not None else ()))
     except _listener.HandoffCaptureRetired:
         return retired_terminal() or {'schema_version': 'v1', 'status': 'capture_retired_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'blockers': ['handoff_capture_retired_while_claiming']}
     if claim_status == 'terminal':
@@ -203,6 +207,12 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         return {'schema_version': 'v1', 'status': 'lease_active_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'job_ledger': ledger, 'blockers': ['handoff_job_active_lease']}
     if claim_status == 'corrupt':
         return {'schema_version': 'v1', 'status': 'job_ledger_corrupt_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'job_ledger': ledger, 'blockers': ['handoff_job_ledger_corrupt']}
+    if claim_status == 'source_conflict':
+        return {'schema_version': 'v1', 'status': 'capture_delivery_conflict_retryable',
+                'queue_disposition': 'retryable', 'bucket': handoff.bucket,
+                'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                'capture_root': str(capture_root), 'job_ledger': ledger,
+                'blockers': ['capture_delivery_conflict']}
     attempt_count = int(ledger.get('attempt_count') or 0)
     previous_history = _listener._attempt_history(ledger)
     job_started_at = _listener._string(ledger.get('started_at')) or _listener.utc_now_iso()
@@ -219,7 +229,9 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     failure_stage = 'stage_handoff_capture'
     try:
         with _listener._JobLeaseHeartbeat(capture_root=capture_root, owner=owner, token=token, lease_seconds=lease_seconds):
-            staged_capture_root = _listener.stage_handoff_capture(handoff=handoff, storage_root=storage_root, storage_client=storage_client)
+            staged_capture_root = (selected_staged if selected_staged is not None else
+                _listener.stage_handoff_capture(handoff=handoff, storage_root=storage_root,
+                                                storage_client=storage_client))
             raw_manifest = _listener._read_optional_json_object(staged_capture_root / 'raw' / 'manifest.json')
             website_capture = _listener.is_website_capture_manifest(raw_manifest)
             run_kwargs: dict[str, Any] = {'capture_root': str(staged_capture_root), 'provider': provider, 'run_evaluation_prep': run_evaluation_prep, 'resume_completed_stages': True}
@@ -248,7 +260,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         ending = _listener.authority_ending(exc)
         if ending is not None:
             operation, code = ending
-            return _listener._finish_terminal_authority_ending(capture_root, handoff=handoff, owner=owner, token=token, operation=operation, code=code, error=exc, stage=failure_stage, attempt_count=attempt_count, attempt_started_at=attempt_started_at, previous_history=previous_history, payload_digest=digest)
+            return _listener._finish_terminal_authority_ending(capture_root, handoff=handoff, owner=owner, token=token, operation=operation, code=code, error=exc, stage=failure_stage, attempt_count=attempt_count, attempt_started_at=attempt_started_at, previous_history=previous_history, payload_digest=digest, producer_delivery_key=producer_delivery_key)
         failed_at = _listener.utc_now_iso()
         failure_record = {'attempt_number': attempt_count, 'status': 'failed_retryable', 'stage': failure_stage, 'started_at': attempt_started_at, 'failed_at': failed_at, 'error_type': type(exc).__name__, 'error': str(exc)}
         _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record]})
