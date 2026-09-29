@@ -89,6 +89,41 @@ def test_connected_owner_review_preserves_payload_and_never_mints_cleanup_lease(
     assert row["candidate_bytes"] is None and row["eta_seconds"] is None
 
 
+def test_connected_unknown_fd_label_requires_distinct_ack_and_stays_keep(installed, monkeypatch):
+    target, payload, _, legacy = installed
+    unknown = _survey(str(target))
+    unknown.update(status="incomplete", scan_errors=["process_inventory_unreadable"],
+                   candidate_count=1)
+    monkeypatch.setattr(legacy, "_fresh_census", lambda *args, **kwargs: unknown)
+    packet = legacy.issue_version_packet(consent_id="a" * 32,
+                                         consent_sha256="sha256:" + "b" * 64,
+                                         consent_size_bytes=1, selected_path=str(target),
+                                         installed_config_path="/fixture/door.json", now=1010,
+                                         monotonic=lambda: 0)
+    with pytest.raises(legacy.LegacyOwnerError, match="legacy_owner_approval_ack_mismatch"):
+        legacy.issue_generation_approval(packet_id=packet["packet_id"],
+                                         ack_packet_digest=packet["packet_digest"],
+                                         principal="operator", owner="owner",
+                                         installed_config_path="/fixture/door.json", now=1020,
+                                         monotonic=lambda: 0)
+    legacy.issue_generation_approval(packet_id=packet["packet_id"],
+                                     ack_packet_digest=packet["packet_digest"],
+                                     ack_process_fd_unknown=True, principal="operator", owner="owner",
+                                     installed_config_path="/fixture/door.json", now=1020,
+                                     monotonic=lambda: 0)
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+    observed = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                           monotonic=lambda: 0)
+    row = next(item for item in observed["rows"] if item["path"] == str(target))
+    assert observed["status"] == "incomplete"
+    assert row["classification"] == "owner_review_reference_unknown"
+    assert row["gc_eligible"] is False and row["references_clear"] is False
+    assert payload.read_bytes() == b"old, preserved"
+    assert not (target / ".lane-scratch.v1.json").exists()
+
+
 def test_crash_before_head_is_recoverable_without_promoting_torn_record(installed, monkeypatch):
     target, payload, registry, legacy = installed
     packet, _ = _issue_and_approve(installed)

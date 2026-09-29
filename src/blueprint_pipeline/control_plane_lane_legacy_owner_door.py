@@ -28,13 +28,19 @@ def _require(value: bool) -> None:
 def _public_report(observed: dict) -> dict:
     """Copy only current owner labels, never full process, env, or census evidence."""
     _require(isinstance(observed, dict))
-    if observed.get("status") != "complete":
+    complete = observed.get("status") == "complete" and observed.get("scan_errors") == []
+    unknown = (observed.get("status") == "incomplete"
+               and observed.get("scan_errors") == ["process_inventory_unreadable"]
+               and type(observed.get("candidate_count")) is int
+               and isinstance(observed.get("rows"), list)
+               and observed["candidate_count"] == len(observed["rows"]))
+    if not (complete or unknown):
         return dict(schema_version="control_plane_lane_legacy_owner_public.v1",
                     status="incomplete", rows=[], observed_owner_count=0,
                     gc_eligible=False, references_clear=False,
                     candidate_bytes=None, eta_seconds=None, mutations=0)
     source = observed.get("rows")
-    _require(isinstance(source, list) and observed.get("scan_errors") == [])
+    _require(isinstance(source, list))
     if len(source) > _MAX_ROWS:
         return dict(schema_version="control_plane_lane_legacy_owner_public.v1",
                     status="incomplete", rows=[], observed_owner_count=0,
@@ -55,28 +61,34 @@ def _public_report(observed: dict) -> dict:
                  and (row.get("age_seconds") is None or
                       (type(row["age_seconds"]) in (int, float)
                        and math.isfinite(row["age_seconds"]) and row["age_seconds"] >= 0)))
-        labeled = row.get("classification") == "legacy_owner_review"
+        classification = row.get("classification")
+        labeled = (complete and classification == "legacy_owner_review"
+                   or unknown and classification == "owner_review_reference_unknown")
         if labeled:
             _require(isinstance(row.get("owner"), str) and row["owner"]
                      and type(row.get("approved_expiry")) in (int, float)
                      and row.get("gc_eligible") is False and row.get("references_clear") is False
                      and row["references"] == [] and row["unreadable"] == 0)
+            _require(row.get("process_fd_references") == ("complete" if complete else "unknown"))
             verified += 1
         rows.append(dict(path=row["path"], family=row["family"],
                          allocated_bytes=row["allocated_bytes"], age_seconds=row["age_seconds"],
                          owner=row["owner"] if labeled else None,
                          approved_expiry=row["approved_expiry"] if labeled else None,
-                         classification="legacy_owner_review" if labeled else "unclassified",
+                         classification=classification if labeled else "unclassified",
                          references=row["references"], unreadable=row["unreadable"],
-                         keep_reason="owner_review_only" if labeled else
+                         keep_reason=("process_fd_references_unknown" if unknown else
+                                      "owner_review_only") if labeled else
                                      "active_reference" if row["references"] else
+                                     "process_fd_references_unknown" if unknown else
                                      "measurement_incomplete" if row["unreadable"] else
                                      "owner_review_required_or_stale",
                          gc_eligible=False, references_clear=False,
                          candidate_bytes=None, eta_seconds=None))
     _require(verified == observed.get("observed_owner_count"))
     return dict(schema_version="control_plane_lane_legacy_owner_public.v1",
-                status="complete", rows=rows, observed_owner_count=verified,
+                status="complete" if complete else "reference_incomplete",
+                rows=rows, observed_owner_count=verified,
                 gc_eligible=False, references_clear=False,
                 candidate_bytes=None, eta_seconds=None, mutations=0)
 
@@ -99,8 +111,12 @@ def publish_current(*, installed_config_path: str, results_dir: str,
         parent, name = owners._public_parent(files, config, result_path)
         owners._publish(files, parent, name, payload, mode=0o644, immutable=False)
         summary = dict(schema="blueprint_operator_door_outcome.v1",
-                       status="legacy_owner_census_observed" if result["status"] == "complete" else "incomplete",
-                       code=None if result["status"] == "complete" else "legacy_owner_census_incomplete",
+                       status=("legacy_owner_census_observed" if result["status"] == "complete" else
+                               "legacy_owner_census_reference_incomplete" if result["status"] == "reference_incomplete"
+                               else "incomplete"),
+                       code=(None if result["status"] == "complete" else
+                             "process_fd_references_unknown" if result["status"] == "reference_incomplete"
+                             else "legacy_owner_census_incomplete"),
                        exit_code=0, result=str(result_path),
                        result_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
                        result_size_bytes=len(payload),

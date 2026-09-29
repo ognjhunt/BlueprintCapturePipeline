@@ -231,6 +231,25 @@ def snapshot_generation(
                               entries=entry_count, allocated_bytes=bytes_allocated))
 
 
+def _reference_status(census: dict, selected_path: str, code: str) -> tuple[str, dict]:
+    _require(isinstance(census, dict) and isinstance(census.get("rows"), list), code)
+    errors = census.get("scan_errors")
+    if census.get("status") == "complete" and errors == []:
+        mode = "complete"
+    elif (census.get("status") == "incomplete"
+          and errors == ["process_inventory_unreadable"]
+          and type(census.get("candidate_count")) is int
+          and census["candidate_count"] == len(census["rows"])):
+        mode = "unknown"
+    else:
+        raise LegacyOwnerError(code)
+    rows = [row for row in census["rows"] if isinstance(row, dict)
+            and row.get("path") == selected_path]
+    _require(len(rows) == 1 and rows[0].get("references") == []
+             and rows[0].get("unreadable") == 0, code)
+    return mode, rows[0]
+
+
 def build_version_packet(consent: dict, *, selected_path: str, generation: dict,
                          fresh_census: dict, now: float) -> dict:
     """Project a protected old consent and fresh survey into a reviewable packet.
@@ -256,12 +275,7 @@ def build_version_packet(consent: dict, *, selected_path: str, generation: dict,
              and isinstance(decision.get("owner"), str) and decision["owner"]
              and type(decision.get("ttl_seconds")) is int and 0 < decision["ttl_seconds"] <= 1209600
              and row.get("references") == [] and row.get("unreadable") == 0, code)
-    _require(isinstance(fresh_census, dict) and fresh_census.get("status") == "complete"
-             and fresh_census.get("scan_errors") == [] and isinstance(fresh_census.get("rows"), list), code)
-    fresh = [row for row in fresh_census["rows"]
-             if isinstance(row, dict) and row.get("path") == selected_path]
-    _require(len(fresh) == 1 and fresh[0].get("references") == []
-             and fresh[0].get("unreadable") == 0, code)
+    process_mode, fresh = _reference_status(fresh_census, selected_path, code)
     _require(isinstance(generation, dict) and generation.get("path") == selected_path
              and isinstance(generation.get("tree"), dict)
              and isinstance(generation["tree"].get("digest"), str)
@@ -283,8 +297,10 @@ def build_version_packet(consent: dict, *, selected_path: str, generation: dict,
                   policy_sha256=consent["policy_sha256"],
                   target_generation=generation,
                   fresh_census_digest=canonical_digest(fresh_census),
-                  fresh_selected_row=dict(fresh[0]),
-                  fresh_reference_status="complete_no_observed_references",
+                  fresh_selected_row=dict(fresh),
+                  fresh_reference_status=("complete_no_observed_references" if process_mode == "complete"
+                                          else "process_fd_references_unknown"),
+                  process_fd_references=process_mode,
                   observed_at_epoch=now,
                   expires_at_epoch=min(consent["expires_at_epoch"], now + decision["ttl_seconds"]),
                   cleanup="owner_review", execution_authorized=False, approval_required=True,
@@ -321,7 +337,7 @@ def _approved_policy(packet: dict, policy_bytes: bytes, principal: str, owner: s
 
 def approve_version_packet(packet: dict, *, ack_packet_digest: str,
                            current_policy_bytes: bytes, principal: str, owner: str,
-                           now: float) -> dict:
+                           now: float, ack_process_fd_unknown: bool = False) -> dict:
     """Separate explicit owner decision after the generation packet is reviewable."""
     _require(isinstance(packet, dict)
              and packet.get("schema_version") == "control_plane_lane_legacy_owner_packet.v1"
@@ -329,6 +345,10 @@ def approve_version_packet(packet: dict, *, ack_packet_digest: str,
              and packet.get("approval_required") is True
              and packet.get("execution_authorized") is False, "legacy_owner_packet_invalid")
     _require(ack_packet_digest == packet["packet_digest"], "legacy_owner_approval_ack_mismatch")
+    _require(type(ack_process_fd_unknown) is bool
+             and packet.get("process_fd_references") in ("complete", "unknown")
+             and ack_process_fd_unknown == (packet["process_fd_references"] == "unknown"),
+             "legacy_owner_approval_ack_mismatch")
     _require(type(now) in (int, float) and packet["observed_at_epoch"] <= now < packet["expires_at_epoch"],
              "legacy_owner_approval_expired")
     policy = _approved_policy(packet, current_policy_bytes, principal, owner, now=now)
@@ -338,7 +358,8 @@ def approve_version_packet(packet: dict, *, ack_packet_digest: str,
                     expires_at_epoch=min(packet["expires_at_epoch"],
                                          now + policy["max_consent_seconds"]),
                     policy_sha256=packet["policy_sha256"], execution_authorized=False,
-                    gc_eligible=False, mutations=0)
+                    gc_eligible=False, process_fd_references=packet["process_fd_references"],
+                    mutations=0)
     decision["approval_digest"] = canonical_digest(decision, digest_field="approval_digest")
     return decision
 
@@ -352,6 +373,7 @@ def validate_registration(packet: dict, approval: dict, *, current_generation: d
              and approval.get("schema_version") == "control_plane_lane_legacy_owner_approval.v1"
              and approval.get("approval_digest") == canonical_digest(approval, digest_field="approval_digest")
              and approval.get("packet_digest") == packet["packet_digest"]
+             and approval.get("process_fd_references") == packet.get("process_fd_references")
              and approval.get("approved_action") == "register_owner_review"
              and approval.get("execution_authorized") is False and approval.get("gc_eligible") is False,
              "legacy_owner_approval_invalid")
@@ -360,12 +382,9 @@ def validate_registration(packet: dict, approval: dict, *, current_generation: d
              "legacy_owner_approval_expired")
     _approved_policy(packet, current_policy_bytes, approval["principal"], approval["owner"], now=now)
     _require(current_generation == packet.get("target_generation"), "legacy_target_changed")
-    _require(isinstance(fresh_census, dict) and fresh_census.get("status") == "complete"
-             and fresh_census.get("scan_errors") == []
-             and isinstance(fresh_census.get("rows"), list), "legacy_owner_references_incomplete")
-    rows = [row for row in fresh_census["rows"] if isinstance(row, dict)
-            and row.get("path") == packet.get("selected_path")]
-    _require(len(rows) == 1 and rows[0].get("references") == [] and rows[0].get("unreadable") == 0,
+    process_mode, _ = _reference_status(fresh_census, packet.get("selected_path"),
+                                        "legacy_owner_references_incomplete")
+    _require(process_mode == packet.get("process_fd_references"),
              "legacy_owner_references_incomplete")
     result = dict(schema_version="control_plane_lane_legacy_owner_registration.v1",
                   path=packet["selected_path"], owner=approval["owner"],
@@ -373,7 +392,9 @@ def validate_registration(packet: dict, approval: dict, *, current_generation: d
                   approval_digest=approval["approval_digest"],
                   target_generation=packet["target_generation"],
                   expires_at_epoch=approval["expires_at_epoch"], cleanup="owner_review",
-                  classification="legacy_owner_review", gc_eligible=False,
+                  classification=("legacy_owner_review" if process_mode == "complete"
+                                  else "owner_review_reference_unknown"),
+                  process_fd_references=process_mode, gc_eligible=False,
                   references_clear=False, candidate_bytes=None, eta_seconds=None,
                   mutations=0)
     result["registration_digest"] = canonical_digest(result, digest_field="registration_digest")
@@ -723,7 +744,12 @@ def _fresh_census(files, config, *, now: float, max_seconds: float = 120) -> dic
                           queue_roots=selected["queue_roots"],
                           active_run_roots=selected["active_run_roots"],
                           release_link=Path(config.active_release_link), now=now, max_seconds=max_seconds)
-    _require(report.get("status") == "complete" and report.get("scan_errors") == [],
+    _require((report.get("status") == "complete" and report.get("scan_errors") == [])
+             or (report.get("status") == "incomplete"
+                 and report.get("scan_errors") == ["process_inventory_unreadable"]
+                 and type(report.get("candidate_count")) is int
+                 and isinstance(report.get("rows"), list)
+                 and report["candidate_count"] == len(report["rows"])),
              "legacy_owner_references_incomplete")
     return report
 
@@ -757,13 +783,15 @@ def issue_version_packet(*, consent_id: str, consent_sha256: str, consent_size_b
 
 def issue_generation_approval(*, packet_id: str, ack_packet_digest: str,
                               principal: str, owner: str, installed_config_path: str,
-                              now: float, monotonic=time.monotonic) -> dict:
+                              now: float, monotonic=time.monotonic,
+                              ack_process_fd_unknown: bool = False) -> dict:
     """Distinct root/owner action requiring the exact packet digest as input."""
     with _installed_session(installed_config_path, monotonic, write=True) as (files, _, config, store):
         packet = store.read(packet_id, "packet")
         approval = approve_version_packet(packet, ack_packet_digest=ack_packet_digest,
                                           current_policy_bytes=_policy_bytes(files, config),
-                                          principal=principal, owner=owner, now=now)
+                                          principal=principal, owner=owner, now=now,
+                                          ack_process_fd_unknown=ack_process_fd_unknown)
         _require(_snapshot_for(config, packet["selected_path"]) == packet["target_generation"],
                  "legacy_target_changed")
         store.publish(packet_id, "approval", approval)
@@ -872,7 +900,8 @@ def observe_owner_review(*, installed_config_path: str, now: float,
             record, row = candidates[0], by_path[path]
             row.update(owner=record["owner"], owner_decision="owner_review",
                        approved_expiry=record["expires_at_epoch"],
-                       classification="legacy_owner_review",
+                       classification=record["classification"],
+                       process_fd_references=record["process_fd_references"],
                        owner_source="protected_second_generation_approval",
                        gc_eligible=False, references_clear=False,
                        candidate_bytes=None, eta_seconds=None)
@@ -902,6 +931,7 @@ def main(argv=None) -> int:
     parser.add_argument("--selected-path")
     parser.add_argument("--packet-id")
     parser.add_argument("--ack-packet-digest")
+    parser.add_argument("--ack-process-fd-unknown", action="store_true")
     parser.add_argument("--principal")
     parser.add_argument("--owner")
     parser.add_argument("--door-config", default="/etc/blueprint-operator-door/door.json")
@@ -914,6 +944,8 @@ def main(argv=None) -> int:
                     "approve": {"packet_id", "ack_packet_digest", "principal", "owner"},
                     "apply": {"packet_id"}, "report": set()}
         _require(options == expected[args.mode], "legacy_owner_options_invalid")
+        _require(args.mode == "approve" or not args.ack_process_fd_unknown,
+                 "legacy_owner_options_invalid")
         selected = dict(installed_config_path=args.door_config, now=time.time(),
                         monotonic=time.monotonic)
         if args.mode == "packet":
@@ -925,6 +957,7 @@ def main(argv=None) -> int:
             result = issue_generation_approval(packet_id=args.packet_id,
                                                ack_packet_digest=args.ack_packet_digest,
                                                principal=args.principal, owner=args.owner,
+                                               ack_process_fd_unknown=args.ack_process_fd_unknown,
                                                **selected)
         elif args.mode == "apply":
             result = apply_owner_review(packet_id=args.packet_id, **selected)

@@ -36,7 +36,7 @@ def _root_fixture() -> dict:
     lock = None
     try:
         work = root / "work" / "lanes"
-        target = work / "old"
+        target = work / "diagnostics" / "old"
         target.mkdir(parents=True)
         target.chmod(0o700)
         os.chown(target, foreign.pw_uid, foreign.pw_gid)
@@ -46,6 +46,10 @@ def _root_fixture() -> dict:
         os.chown(payload, foreign.pw_uid, foreign.pw_gid)
         inputs = root / "inputs" / "lanes"
         inputs.mkdir(parents=True)
+        pins = root / "pins"
+        pins.mkdir()
+        release = root / "release"
+        release.mkdir()
         private = root / "private"
         private.mkdir(mode=0o700)
         policy, environment = private / "policy.json", private / "environment"
@@ -114,7 +118,9 @@ def _root_fixture() -> dict:
         for name in ("__init__", "control_plane_lane_scratch_census",
                      "control_plane_disk_usage", "control_plane_lane_scratch",
                      "control_plane_storage_pins", "control_plane_storage_roots",
-                     "decision_evidence_contracts"):
+                     "decision_evidence_contracts", "control_plane_lane_legacy_owner",
+                     "control_plane_lane_legacy_owner_door", "control_plane_lane_owner_consents",
+                     "control_plane_lane_scratch_decisions"):
             shutil.copyfile(sources / f"{name}.py", package / f"{name}.py")
         process_root = root / "fixture-proc"
         process_root.mkdir()
@@ -123,7 +129,7 @@ def _root_fixture() -> dict:
         probe.write_text(
             "import ctypes,errno,fcntl,json,os,sys,time\n"
             "from pathlib import Path\n"
-            "payload,registry,lock,environment,hidden,results,pid,installed,process_root=sys.argv[1:]\n"
+            "payload,registry,lock,environment,hidden,results,pid,installed,process_root,pins,release=sys.argv[1:]\n"
             "pid=int(pid)\n"
             "stage='start'\n"
             "def failed(cls,value,tb):\n"
@@ -142,14 +148,25 @@ def _root_fixture() -> dict:
             "stage='foreign_proc_environ'\n"
             "Path('/proc/%d/environ'%pid).read_bytes()\n"
             "stage='foreign_proc_fd'\n"
-            "links=[os.readlink('/proc/%d/fd/%s'%(pid,n)) for n in os.listdir('/proc/%d/fd'%pid)]\n"
-            "assert payload in links\n"
+            "fd_denied=False\n"
+            "try: [os.readlink('/proc/%d/fd/%s'%(pid,n)) for n in os.listdir('/proc/%d/fd'%pid)]\n"
+            "except OSError: fd_denied=True\n"
+            "assert fd_denied\n"
             "stage='exact_process_scanner'\n"
             "sys.path.insert(0,installed)\n"
-            "from blueprint_pipeline.control_plane_lane_scratch_census import _process_references\n"
+            "from blueprint_pipeline.control_plane_lane_scratch_census import _process_references,build_census\n"
             "errors=[]\n"
             "found=_process_references([Path(payload).parent],Path(process_root),errors,time.monotonic()+10)\n"
-            "assert not errors and Path(payload).parent in found\n"
+            "assert errors==['process_inventory_unreadable'] and Path(payload).parent in found\n"
+            "stage='bounded_unknown_census'\n"
+            "census=build_census(work_root=Path(payload).parents[3],inputs_root=Path(payload).parents[4]/'inputs',process_root=Path(process_root),pins_root=Path(pins),queue_roots=[],release_link=Path(release),active_run_roots=[],max_seconds=10)\n"
+            "assert census['status']=='incomplete' and census['scan_errors']==['process_inventory_unreadable']\n"
+            "assert census['candidate_count']==len(census['rows'])==1 and census['rows'][0]['references']==['process']\n"
+            "stage='bounded_unknown_public_report'\n"
+            "from blueprint_pipeline.control_plane_lane_legacy_owner_door import _public_report\n"
+            "public=_public_report(census|{'observed_owner_count':0})\n"
+            "assert public['status']=='reference_incomplete' and len(public['rows'])==1\n"
+            "assert public['rows'][0]['classification']=='unclassified' and public['rows'][0]['gc_eligible'] is False\n"
             "stage='foreign_memory'\n"
             "for mode in ('rb','r+b'):\n"
             " try: open('/proc/%d/mem'%pid,mode).close()\n"
@@ -172,7 +189,7 @@ def _root_fixture() -> dict:
             " try: open(path,'wb').write(b'wrong')\n"
             " except OSError: denied.append(True)\n"
             "assert len(denied)==2\n"
-            "Path(results).write_text(json.dumps({'status':'passed','lock_blocked':locked,'cross_uid_process_seen':True,'process_scan_complete':True,'read_only':True,'ptrace_denied':True,'hidden_secret_denied':True,'foreign_memory_denied':True}))\n"
+            "Path(results).write_text(json.dumps({'status':'passed','lock_blocked':locked,'cross_uid_process_seen':True,'process_fd_unknown_kept':True,'bounded_report_seen':True,'read_only':True,'ptrace_denied':True,'hidden_secret_denied':True,'foreign_memory_denied':True}))\n"
         )
         probe.chmod(0o644)
         receipt = results / "probe.json"
@@ -182,14 +199,15 @@ def _root_fixture() -> dict:
                 *("--property=" + item for item in properties), "--",
                 "/usr/bin/python3", str(probe), str(payload), str(registry), str(lock_path),
                 str(environment), str(hidden), str(receipt), str(child.pid),
-                str(package.parent), str(process_root)]
+                str(package.parent), str(process_root), str(pins), str(release)]
         run = subprocess.run(argv, capture_output=True, text=True, timeout=75)
         if run.returncode:
             detail = json.loads(receipt.read_bytes()) if receipt.exists() else {}
             code = detail.get("code", "unit_before_report")
             assert code in {"start", "foreign_payload", "fixed_environment", "hidden_secret",
                             "foreign_proc_cmdline", "foreign_proc_environ", "foreign_proc_fd",
-                            "exact_process_scanner", "foreign_memory",
+                            "exact_process_scanner", "bounded_unknown_census",
+                            "bounded_unknown_public_report", "foreign_memory",
                             "ptrace", "lock", "read_only", "unit_before_report"}
             raise AssertionError(f"disposable unit failed at {code}; exit={run.returncode}")
         result = json.loads(receipt.read_bytes())
@@ -235,7 +253,7 @@ def test_actual_legacy_owner_door_privilege_and_revocation():
     assert result == dict(status="passed", foreign_uid=result["foreign_uid"],
                           private_denials=3, lock_blocked=True,
                           cross_uid_process_seen=True, read_only=True,
-                          process_scan_complete=True,
+                          process_fd_unknown_kept=True, bounded_report_seen=True,
                           ptrace_denied=True, hidden_secret_denied=True,
                           foreign_memory_denied=True,
                           target_generation_revoked=True)
