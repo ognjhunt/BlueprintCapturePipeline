@@ -3,6 +3,7 @@
 """A path-only owner consent never silently becomes target authority."""
 
 import pytest
+import json
 
 
 def _consent(path):
@@ -66,3 +67,70 @@ def test_packet_refuses_destructive_or_incomplete_old_and_current_evidence(tmp_p
         build_version_packet(consent, selected_path=str(target),
                              generation=snapshot_generation(target, allowed_roots=(root,)),
                              fresh_census=survey, now=1010)
+
+
+def test_second_owner_approval_requires_exact_ack_and_policy(tmp_path):
+    from blueprint_pipeline.control_plane_lane_legacy_owner import (
+        LegacyOwnerError, approve_version_packet, build_version_packet, snapshot_generation,
+    )
+
+    root = tmp_path / "work"
+    target = root / "lanes" / "diagnostics" / "old-1"
+    target.mkdir(parents=True)
+    policy = dict(schema_version="control_plane_lane_owner_policy.v1", enabled=True,
+                  principals=[dict(principal="operator", owners=["owner"],
+                                   allowed_actions=["register"], max_consent_seconds=500)])
+    raw = (json.dumps(policy, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    import hashlib
+    consent = _consent(str(target))
+    consent["policy_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+    packet = build_version_packet(consent, selected_path=str(target),
+                                  generation=snapshot_generation(target, allowed_roots=(root,)),
+                                  fresh_census=_survey(str(target)), now=1010)
+    with pytest.raises(LegacyOwnerError, match="legacy_owner_approval_ack_mismatch"):
+        approve_version_packet(packet, ack_packet_digest="sha256:" + "0" * 64,
+                               current_policy_bytes=raw, principal="operator", owner="owner", now=1020)
+    approval = approve_version_packet(packet, ack_packet_digest=packet["packet_digest"],
+                                      current_policy_bytes=raw, principal="operator", owner="owner", now=1020)
+    assert approval["approved_action"] == "register_owner_review"
+    assert approval["packet_digest"] == packet["packet_digest"]
+    assert approval["execution_authorized"] is False
+    changed = raw.replace(b'"enabled":true', b'"enabled":false')
+    with pytest.raises(LegacyOwnerError, match="legacy_owner_policy_changed"):
+        approve_version_packet(packet, ack_packet_digest=packet["packet_digest"],
+                               current_policy_bytes=changed, principal="operator", owner="owner", now=1020)
+
+
+def test_apply_validation_drops_attribution_on_mutation_or_expiry(tmp_path):
+    from blueprint_pipeline.control_plane_lane_legacy_owner import (
+        LegacyOwnerError, approve_version_packet, build_version_packet,
+        validate_registration, snapshot_generation,
+    )
+    import hashlib
+
+    root = tmp_path / "work"
+    target = root / "lanes" / "diagnostics" / "old-1"
+    target.mkdir(parents=True)
+    payload = target / "one.log"
+    payload.write_bytes(b"alpha")
+    raw = b'{"enabled":true,"principals":[{"allowed_actions":["register"],"max_consent_seconds":500,"owners":["owner"],"principal":"operator"}],"schema_version":"control_plane_lane_owner_policy.v1"}\n'
+    consent = _consent(str(target))
+    consent["policy_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+    packet = build_version_packet(consent, selected_path=str(target),
+                                  generation=snapshot_generation(target, allowed_roots=(root,)),
+                                  fresh_census=_survey(str(target)), now=1010)
+    approval = approve_version_packet(packet, ack_packet_digest=packet["packet_digest"],
+                                      current_policy_bytes=raw, principal="operator", owner="owner", now=1020)
+    result = validate_registration(packet, approval,
+                                   current_generation=snapshot_generation(target, allowed_roots=(root,)),
+                                   fresh_census=_survey(str(target)), current_policy_bytes=raw, now=1021)
+    assert result["owner"] == "owner" and result["gc_eligible"] is False
+    assert result["references_clear"] is False and result["candidate_bytes"] is None
+    payload.write_bytes(b"bravo")
+    with pytest.raises(LegacyOwnerError, match="legacy_target_changed"):
+        validate_registration(packet, approval,
+                              current_generation=snapshot_generation(target, allowed_roots=(root,)),
+                              fresh_census=_survey(str(target)), current_policy_bytes=raw, now=1021)
+    with pytest.raises(LegacyOwnerError, match="legacy_owner_approval_expired"):
+        validate_registration(packet, approval, current_generation=packet["target_generation"],
+                              fresh_census=_survey(str(target)), current_policy_bytes=raw, now=packet["expires_at_epoch"])
