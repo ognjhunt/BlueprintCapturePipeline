@@ -356,6 +356,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
         hard_ttl_seconds=3600,
         require_independent_watchdog=True,
         max_compute_cap=0,
+        allowed_machine_ids=(41950, 56722),
         provider_runtime_environment={
             "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
         },
@@ -378,6 +379,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
     )
     assert observed_adapter["retention_watchdog_handoff"]["status"] == "armed"
     assert observed_adapter["max_compute_cap"] == 0
+    assert observed_adapter["allowed_machine_ids"] == (41950, 56722)
     assert observed_adapter["provider_runtime_environment"] == {
         "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
     }
