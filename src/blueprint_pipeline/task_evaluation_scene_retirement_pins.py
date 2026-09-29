@@ -42,7 +42,7 @@ def identity(observation):
     return _selector(observation,'row_path','raw_sha256','raw_size_bytes')
 
 
-def select_terminal_pins(fresh,policy,consent,documents,allowance):
+def select_terminal_pins(fresh,policy,consent,documents,allowance,*,history=None):
     """Read the already bounded native observation; never scan another ledger.
 
     Current reader admission and authenticated member generations remain engine
@@ -85,9 +85,13 @@ def select_terminal_pins(fresh,policy,consent,documents,allowance):
         _require(path.is_relative_to(root) and len(path.relative_to(root).parts)==2
             and path.parent.name in _SUCCESS and path.suffix=='.json' and raw[2]<=16384,_REASON)
         key=(path.parent.name,path.stem)
-        _require(key in values and key not in pending and values[key][1]==raw,_REASON)
+        prior=None if history is None else history.get(raw)
+        _require(key in values and key not in pending and (values[key][1]==raw or
+            prior is not None and _selector(prior['observed_raw_ref'])==values[key][1]),_REASON)
         observed=values[key][0]
-        _require(observed['status'] in {'live','expired'} and observed['released_at_epoch'] is None
+        current_ref=reference if prior is None else prior['observed_raw_ref']
+        _require((observed['status'] in {'live','expired'} and observed['released_at_epoch'] is None
+                or prior is not None and observed['status']=='released')
             and all(_finite(observed[field]) for field in ('created_at_epoch','expires_at_epoch'))
             and 0<=observed['created_at_epoch']<observed['expires_at_epoch']
             and allowance.last_wall-observed['created_at_epoch']>=6*60*60,_REASON)
@@ -103,7 +107,7 @@ def select_terminal_pins(fresh,policy,consent,documents,allowance):
             _require(any(target.is_relative_to(_canonical(member['canonical_path'])) for member in members),_REASON)
         _require(emitted+2*raw[2]+8192<=512*1024,_REASON)
         allowance.charge('local_bytes',raw[2])
-        value=selected_document(reference,maximum=16384)
+        value=selected_document(current_ref,maximum=16384)
         _require(type(value) is dict and set(value)==_FIELDS and value['schema_version']=='control_plane_storage_pin.v1'
             and all(value[field]==observed[field] for field in _FIELDS-{'schema_version'}),_REASON)
         dependencies=_rows(value['depends_on'],256)
@@ -118,10 +122,13 @@ def select_terminal_pins(fresh,policy,consent,documents,allowance):
             contents=os.read(fd,info.st_size)
             after=os.fstat(fd)
             _require((after.st_size,after.st_mtime_ns,after.st_ctime_ns,_identity(after))==before
-                and len(contents)==raw[2] and 'sha256:'+hashlib.sha256(contents).hexdigest()==raw[1],_REASON)
+                and len(contents)==current_ref['size_bytes'] and 'sha256:'+hashlib.sha256(contents).hexdigest()==current_ref['sha256'],_REASON)
             row=dict(original_raw_ref=reference,original_value=value,original_raw_hex=contents.hex(),physical_identity=list(_identity(info)),
                 snapshot=[info.st_dev,info.st_ino,info.st_mode,info.st_size,info.st_uid,info.st_gid,
                           info.st_mtime_ns,info.st_ctime_ns,info.st_nlink])
+        if prior is not None:
+            _require(row['snapshot']==prior['observed_snapshot'],_REASON)
+            row=dict(prior)
         emitted+=bounded_size(row,512*1024-emitted)
         _require(emitted<=512*1024,_REASON)
         result.append(row)
@@ -149,12 +156,12 @@ def covers(protection,rows):
     if protection.get('kind')=='pin_observation':
         observed=protection.get('observation')
         raw=identity(observed)
-        return any(_selector(row['original_raw_ref'])==raw for row in rows)
+        return any(_selector(row.get('observed_raw_ref',row['original_raw_ref']))==raw for row in rows)
     if protection.get('kind')!='positive_pin_path' or set(protection)!={'kind','path','source','binding_status','action'}:
         return False
     source=protection['source']
     _require(type(source) is dict and set(source)=={'row_path','raw_sha256','raw_size_bytes','row_identity'},_REASON)
     raw=_selector(source,'row_path','raw_sha256','raw_size_bytes')
     return protection['action']=='KEEP' and protection['binding_status']=='historical_positive_only' and any(
-        _selector(row['original_raw_ref'])==raw and protection['path'] in row['original_value']['paths']
-        and tuple(source['row_identity'])==tuple(row['snapshot'][index] for index in (0,1,3,6,7)) for row in rows)
+        _selector(row.get('observed_raw_ref',row['original_raw_ref']))==raw and protection['path'] in row['original_value']['paths']
+        and tuple(source['row_identity'])==tuple(row.get('observed_snapshot',row['snapshot'])[index] for index in (0,1,3,6,7)) for row in rows)

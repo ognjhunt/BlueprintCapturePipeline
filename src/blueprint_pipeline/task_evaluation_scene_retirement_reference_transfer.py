@@ -365,7 +365,7 @@ def _selected_sam(protection,selected,fresh,allowance,bound,progress):
     return result
 
 
-def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=None,consent=None):
+def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=None,consent=None,pin_journal=None):
     observation=fresh.get('reference_observation')
     _require(type(observation) is dict,'scene_retirement_reference_scope_unproven')
     scopes=_rows(observation.get('child_scopes'))
@@ -396,7 +396,11 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
             value,role,_,_=_compilation_value(identity,selected[identity],fresh,compilations,allowance)
             if role=='compilation_results':
                 pin_documents[identity]=value
-    terminal_pins=select_terminal_pins(fresh,policy,consent,pin_documents,allowance) if consent is not None else []
+    history=None
+    if pin_journal is not None:
+        from .task_evaluation_scene_retirement_pin_mutation import pin_history
+        history=pin_history(policy,consent,pin_journal)
+    terminal_pins=select_terminal_pins(fresh,policy,consent,pin_documents,allowance,history=history) if consent is not None else []
     released=0
     auxiliaries=[]
     for protection in _rows(observation.get('protections')):

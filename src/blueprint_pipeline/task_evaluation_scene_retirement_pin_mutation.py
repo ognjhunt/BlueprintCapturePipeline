@@ -196,6 +196,7 @@ def _operation(policy,rows,journal,*,restoring,outcomes=()):
             before_snapshot=row['snapshot']
             after=(json.dumps(dict(row['original_value'],released_at_epoch=journal.allowance.last_wall),
                 sort_keys=True,separators=(',',':'))+'\n').encode()
+        _require(len(after)<=16384,_REASON)
         if key in done:
             value=done[key]
             raw,current=_read(path,journal.allowance)
@@ -231,9 +232,11 @@ def _operation(policy,rows,journal,*,restoring,outcomes=()):
 
 
 def release_terminal_pins(policy,consent,rows,*,journal,pending_raw_ref):
+    journal.allowance.charge('local_bytes',journal.initial_ref['size_bytes'])
     initial=selected_document(journal.initial_ref,maximum=16*1024*1024,protected=True)
     _require(initial.get('terminal_pin_release_rows')==rows and initial.get('intent_id')==consent['intent_id']
         and initial.get('intent_raw_ref')==consent['intent_raw_ref'],_REASON)
+    journal.allowance.charge('local_bytes',pending_raw_ref['size_bytes'])
     pending=selected_document(pending_raw_ref,maximum=16*1024*1024)
     _require(pending.get('schema_version')=='scene_lifecycle_retirement_receipt.v1'
         and pending.get('status') in {'pending','retiring','incomplete'}
@@ -242,7 +245,52 @@ def release_terminal_pins(policy,consent,rows,*,journal,pending_raw_ref):
 
 
 def restore_terminal_pins(policy,rows,outcomes,*,journal):
+    journal.allowance.charge('local_bytes',journal.initial_ref['size_bytes'])
     initial=selected_document(journal.initial_ref,maximum=16*1024*1024,protected=True)
     _require(initial.get('terminal_pin_release_rows')==rows and initial.get('terminal_pin_outcomes')==outcomes
         and initial.get('schema_version')=='scene_restore_journal.v1',_REASON)
     return _operation(policy,rows,journal,restoring=True,outcomes=outcomes)
+
+
+def pin_history(policy,consent,journal):
+    """Rebind only exact private original/CAS versions; no mutation or new pin."""
+    from .task_evaluation_scene_retirement_journal import SceneJournal
+    _require(type(journal) is SceneJournal,_REASON)
+    reference=journal.initial_ref
+    journal.allowance.charge('local_bytes',reference['size_bytes'])
+    initial=selected_document(reference,maximum=16*1024*1024,protected=True)
+    rows=initial.get('terminal_pin_release_rows',[])
+    _require(type(rows) is list and len(rows)<=256 and initial.get('intent_id')==consent['intent_id']
+        and initial.get('intent_raw_ref')==consent['intent_raw_ref']
+        and [row['original_raw_ref'] for row in rows]==consent.get('terminal_pin_refs',[]),_REASON)
+    plans={}
+    completed={}
+    for event in journal.events:
+        journal.allowance.tick()
+        if event['event'] in {'pin_release_planned','pin_released'}:
+            table=plans if event['event']=='pin_release_planned' else completed
+            _require(event['member_key'] not in table,_REASON)
+            table[event['member_key']]=event['evidence']
+    result={}
+    for index,row in enumerate(rows):
+        _row(row)
+        path=_canonical(row['original_raw_ref']['path'])
+        _require(path.is_relative_to(_canonical(policy['reference_context']['pins_root'])),_REASON)
+        raw,snapshot=_read(path,journal.allowance)
+        current=_reference(path,raw)
+        key='pin-'+str(index)
+        plan=plans.get(key)
+        if current==row['original_raw_ref']:
+            _require(snapshot==row['snapshot'] and key not in completed,_REASON)
+        else:
+            _require(plan is not None and plan['pin_index']==index
+                and plan['original_raw_ref']==row['original_raw_ref']
+                and plan['before_raw_ref']==row['original_raw_ref'] and plan['before_snapshot']==row['snapshot']
+                and plan['after_raw_ref']==current and plan['temporary_identity']==snapshot[:3],_REASON)
+            if key in completed:
+                done=completed[key]
+                _require(done['released_raw_ref']==current and done['snapshot']==snapshot
+                    and done['original_raw_ref']==row['original_raw_ref'] and done['pin_index']==index,_REASON)
+        result[tuple(row['original_raw_ref'][key] for key in ('path','sha256','size_bytes'))]=dict(row,
+            observed_raw_ref=current,observed_snapshot=snapshot)
+    return result

@@ -13,7 +13,7 @@ import pytest
 from tests.test_scene_retirement_terminal_pins import fixture,selected
 
 
-def operation(tmp_path,monkeypatch):
+def operation(tmp_path,monkeypatch,*,include_fresh=False):
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
     from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
     fresh,policy,consent,allowance=fixture(tmp_path,monkeypatch)
@@ -31,7 +31,8 @@ def operation(tmp_path,monkeypatch):
     pending=tmp_path/'pending.json'
     pending.write_bytes(raw)
     reference={'path':str(pending),'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(),'size_bytes':len(raw)}
-    return policy,consent,rows,journal,reference
+    result=(policy,consent,rows,journal,reference)
+    return result+(fresh,) if include_fresh else result
 
 
 def api():
@@ -121,12 +122,19 @@ def test_real_partial_release_reobserves_exact_journal_version_without_ignoring_
     from dataclasses import asdict
     from blueprint_pipeline.control_plane_storage_pin_observation import observe_storage_pins
     from blueprint_pipeline.task_evaluation_scene_retirement_pins import covers
-    policy,consent,rows,journal,pending=operation(tmp_path,monkeypatch)
+    from blueprint_pipeline.task_evaluation_scene_retirement_reference_transfer import validate_current_reference_transfer
+    policy,consent,rows,journal,pending,fresh=operation(tmp_path,monkeypatch,include_fresh=True)
     api().release_terminal_pins(policy,consent,rows,journal=journal,pending_raw_ref=pending)
     history=api().pin_history(policy,consent,journal)
     observed=observe_storage_pins(policy['reference_context']['pins_root'],observed_at_epoch=30000,monotonic=lambda:0)
     protection={'kind':'pin_observation','observation':json.loads(json.dumps(asdict(observed.rows[0]))),'action':'KEEP'}
     assert covers(protection,history.values())
+    fresh['reference_observation']['protections']=[row for row in fresh['reference_observation']['protections']
+        if row.get('kind') not in {'pin_observation','positive_pin_path'}]+[protection]
+    replay=validate_current_reference_transfer(fresh,journal.allowance,policy=policy,consent=consent,pin_journal=journal)
+    assert replay['terminal_pin_release_rows'][0]['original_raw_ref']==rows[0]['original_raw_ref']
+    assert replay['terminal_pin_release_rows'][0]['observed_raw_ref']==history[tuple(
+        rows[0]['original_raw_ref'][key] for key in ('path','sha256','size_bytes'))]['observed_raw_ref']
     # This exact row mapping does not cover a later foreign owner/version.
     foreign=copy.deepcopy(protection)
     foreign['observation']['raw_sha256']='sha256:'+'f'*64
