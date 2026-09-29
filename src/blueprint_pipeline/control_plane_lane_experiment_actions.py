@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import control_plane_lane_experiment_birth as birth_code
 from . import control_plane_lane_experiment_retirement as issuance
+from . import control_plane_lane_experiment_work as work
 from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch as scratch
 from . import control_plane_lane_scratch_decisions as retained
@@ -870,6 +871,8 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
         current = _current(files, public, gid)
         actions = []
         expired = []
+        current_boot = None
+        current_monotonic = None
         if current is not None:
             for entry in current[1]["enrollments"]:
                 if entry["state"] in ("active", "retiring") and entry["operation_id"] is not None:
@@ -884,10 +887,23 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                                  and candidate['action_digest'] == canonical_digest(candidate, digest_field='action_digest')
                                  and candidate['action_id'] == entry['operation_id']
                                  and candidate['intent_id'] == entry['intent_id']
+                                 and type(candidate['issuer_uid']) is int and candidate['issuer_uid'] == 0
                                  and all(candidate[key] == entry[key] for key in
                                          ('generation', 'birth', 'target_identity', 'lease', 'completion', 'owner'))
                                  and candidate['action'] in ('delete', 'offload', 'owner_review')
-                                 and _epoch(candidate['issued_at_epoch']) and _epoch(candidate['expires_at_epoch']),
+                                 and (candidate['manifest'] is None if candidate['action'] == 'owner_review'
+                                      else type(candidate['manifest']) is dict
+                                      and set(candidate['manifest']) == {'sha256', 'size_bytes'}
+                                      and _valid_digest(candidate['manifest']['sha256'])
+                                      and type(candidate['manifest']['size_bytes']) is int
+                                      and 0 < candidate['manifest']['size_bytes'] <= _MANIFEST_LIMIT)
+                                 and candidate['policy'] == current[1]['policy']
+                                 and type(candidate['metadata_aggregate']) is dict
+                                 and set(candidate['metadata_aggregate']) == {'raw_bytes', 'output_bytes'}
+                                 and all(type(amount) is int and 0 <= amount <= work._AGGREGATE
+                                         for amount in candidate['metadata_aggregate'].values())
+                                 and _epoch(candidate['issued_at_epoch']) and _epoch(candidate['expires_at_epoch'])
+                                 and candidate['issued_at_epoch'] <= issued,
                                  'experiment_action_invalid')
                     except (retained.CensusDecisionError, OwnerTargetVersionError):
                         expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
@@ -897,6 +913,26 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                     if issued >= candidate['expires_at_epoch']:
                         expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
                                             decision='kept', reason='experiment_action_expired', receipt=None,
+                                            removed_logical_bytes=0, removed_allocated_bytes=0))
+                        continue
+                    if current_boot is None:
+                        current_boot = work._controller_boot_id(files)
+                        current_monotonic = time.monotonic()
+                    controller = candidate['controller']
+                    try:
+                        _require(type(controller) is dict and set(controller) == work._CONTROLLER_FIELDS
+                                 and all(_epoch(controller[key]) for key in work._CONTROLLER_FIELDS - {'boot_id'})
+                                 and controller['boot_id'] == current_boot
+                                 and controller['origin_monotonic'] <= controller['last_monotonic']
+                                 <= current_monotonic < controller['deadline_monotonic']
+                                 <= controller['origin_monotonic'] + 14400
+                                 and controller['origin_epoch'] <= controller['last_epoch']
+                                 <= issued < controller['deadline_epoch']
+                                 <= controller['origin_epoch'] + 14400,
+                                 'experiment_work_clock_invalid')
+                    except OwnerTargetVersionError:
+                        expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
+                                            decision='kept', reason='experiment_work_clock_invalid', receipt=None,
                                             removed_logical_bytes=0, removed_allocated_bytes=0))
                         continue
                     actions.append((candidate['action'] == 'owner_review', candidate['expires_at_epoch'],
