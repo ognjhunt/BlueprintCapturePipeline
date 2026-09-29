@@ -167,105 +167,107 @@ def _read(path: Path) -> dict[str, Any]:
 
 def verify_g1_paid_output(result: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
     """Verify all four scored episodes and review videos after provider zero."""
+    from .control_plane_lane_experiment_consumer import registered_reader
+    with registered_reader(Path(str(result.get("attempt_root") or ""))):
 
-    if result.get("status") != "completed" or result.get("continuing_spend_from_this_run") is not False:
-        raise ValueError("g1_paid_campaign_transport_or_provider_zero_incomplete")
-    attempt_root = Path(str(result.get("attempt_root") or ""))
-    root = attempt_root / "immutable_execution"
-    terminal = _read(root / RESULT_FILENAME)
-    if (
-        terminal.get("schema_version") != "native_g1_provider_campaign_result.v1"
-        or terminal.get("result_digest") != canonical_digest(terminal, digest_field="result_digest")
-        or terminal.get("status") != "completed"
-        or terminal.get("claim_ceiling") != "development_only"
-        or terminal.get("campaign_plan_digest") != bundle.get("campaign_plan_digest")
-        or terminal.get("publisher_source_receipt_digest")
-        != bundle.get("publisher_source_receipt_digest")
-        or terminal.get("runtime_source_packet_sha256")
-        != (bundle.get("runtime_source_packet") or {}).get("packet_sha256")
-        or terminal.get("ranking_eligible") is not False
-        or terminal.get("physical_outcome_claimed") is not False
-        or list(terminal.get("policy_query_counts") or {}) != list(PAIR_ORDER)
-        or any(
-            not isinstance(value, int) or value < 1
-            for value in (terminal.get("policy_query_counts") or {}).values()
-        )
-    ):
-        raise ValueError("g1_paid_campaign_terminal_result_invalid")
-    pairs = terminal.get("pairs")
-    if not isinstance(pairs, list) or len(pairs) != 2:
-        raise ValueError("g1_paid_campaign_pairs_missing")
-    verified: list[dict[str, Any]] = []
-    for index, (packet_name, objective, candidates) in enumerate(
-        (
-            ("manipulation", "task_success", PAIR_ORDER[:2]),
-            ("movement", "g1_navigation_goal", PAIR_ORDER[2:]),
-        )
-    ):
-        pair_root = root / (packet_name + "_pair")
-        pair = _read(pair_root / "native_g1_development_pair.v1.json")
-        row = pairs[index]
+        if result.get("status") != "completed" or result.get("continuing_spend_from_this_run") is not False:
+            raise ValueError("g1_paid_campaign_transport_or_provider_zero_incomplete")
+        attempt_root = Path(str(result.get("attempt_root") or ""))
+        root = attempt_root / "immutable_execution"
+        terminal = _read(root / RESULT_FILENAME)
         if (
-            not isinstance(row, dict)
-            or row.get("objective_id") != objective
-            or row.get("pair_relative_path")
-            != packet_name + "_pair/native_g1_development_pair.v1.json"
-            or row.get("pair_result_digest") != pair.get("result_digest")
-            or pair.get("result_digest") != canonical_digest(pair, digest_field="result_digest")
-            or pair.get("status") != "completed_development_only"
-            or pair.get("candidate_ids") != list(candidates)
-            or pair.get("objective_id") != objective
-            or pair.get("ranking_eligible") is not False
-            or pair.get("physical_outcome_claimed") is not False
+            terminal.get("schema_version") != "native_g1_provider_campaign_result.v1"
+            or terminal.get("result_digest") != canonical_digest(terminal, digest_field="result_digest")
+            or terminal.get("status") != "completed"
+            or terminal.get("claim_ceiling") != "development_only"
+            or terminal.get("campaign_plan_digest") != bundle.get("campaign_plan_digest")
+            or terminal.get("publisher_source_receipt_digest")
+            != bundle.get("publisher_source_receipt_digest")
+            or terminal.get("runtime_source_packet_sha256")
+            != (bundle.get("runtime_source_packet") or {}).get("packet_sha256")
+            or terminal.get("ranking_eligible") is not False
+            or terminal.get("physical_outcome_claimed") is not False
+            or list(terminal.get("policy_query_counts") or {}) != list(PAIR_ORDER)
+            or any(
+                not isinstance(value, int) or value < 1
+                for value in (terminal.get("policy_query_counts") or {}).values()
+            )
         ):
-            raise ValueError("g1_paid_campaign_pair_invalid:" + packet_name)
-        attempts = pair.get("attempts")
-        if not isinstance(attempts, list) or len(attempts) != 2:
-            raise ValueError("g1_paid_campaign_attempts_incomplete:" + packet_name)
-        for candidate, attempt in zip(candidates, attempts, strict=True):
-            candidate_root = pair_root / candidate / "episode"
-            worker = _read(pair_root / candidate / "native_g1_development_worker_result.v1.json")
-            episode_path = candidate_root / EPISODE_FILENAME
-            episode = _read(episode_path)
-            trace = _read(candidate_root / TRACE_FILENAME)
+            raise ValueError("g1_paid_campaign_terminal_result_invalid")
+        pairs = terminal.get("pairs")
+        if not isinstance(pairs, list) or len(pairs) != 2:
+            raise ValueError("g1_paid_campaign_pairs_missing")
+        verified: list[dict[str, Any]] = []
+        for index, (packet_name, objective, candidates) in enumerate(
+            (
+                ("manipulation", "task_success", PAIR_ORDER[:2]),
+                ("movement", "g1_navigation_goal", PAIR_ORDER[2:]),
+            )
+        ):
+            pair_root = root / (packet_name + "_pair")
+            pair = _read(pair_root / "native_g1_development_pair.v1.json")
+            row = pairs[index]
             if (
-                attempt.get("candidate_id") != candidate
-                or attempt.get("status") != "completed_development_only"
-                or attempt.get("worker_result_digest") != worker.get("result_digest")
-                or worker.get("result_digest") != canonical_digest(worker, digest_field="result_digest")
-                or trace.get("policy_query_count")
-                != terminal["policy_query_counts"][candidate]
+                not isinstance(row, dict)
+                or row.get("objective_id") != objective
+                or row.get("pair_relative_path")
+                != packet_name + "_pair/native_g1_development_pair.v1.json"
+                or row.get("pair_result_digest") != pair.get("result_digest")
+                or pair.get("result_digest") != canonical_digest(pair, digest_field="result_digest")
+                or pair.get("status") != "completed_development_only"
+                or pair.get("candidate_ids") != list(candidates)
+                or pair.get("objective_id") != objective
+                or pair.get("ranking_eligible") is not False
+                or pair.get("physical_outcome_claimed") is not False
             ):
-                raise ValueError("g1_paid_campaign_candidate_invalid:" + candidate)
-            score = _score_from_episode(episode_path, worker=worker, objective_id=objective)
-            media = _verified_review_media(
-                episode_path, episode=episode, pair_root=pair_root
-            )
-            validate_multicamera_frame_manifest(
-                _read(pair_root / media["frame_manifest"]["relative_path"]),
-                output_dir=candidate_root,
-                verify_files=True,
-            )
-            if attempt.get("score") != score or attempt.get("review_media") != media:
-                raise ValueError("g1_paid_campaign_score_or_media_invalid:" + candidate)
-            verified.append({
-                "candidate_id": candidate,
-                "objective_id": objective,
-                "policy_query_count": trace["policy_query_count"],
-                "score": score,
-                "frame_manifest": media["frame_manifest"],
-                "review_videos": media["review_videos"],
-                "frame_manifest_digest": media["frame_manifest_digest"],
-            })
-    return {
-        "schema_version": "native_g1_paid_output_verification.v1",
-        "status": "verified_development_only",
-        "campaign_plan_digest": bundle["campaign_plan_digest"],
-        "terminal_result_digest": terminal["result_digest"],
-        "episodes": verified,
-        "public_redistribution_authorized": False,
-        "physical_outcome_claimed": False,
-    }
+                raise ValueError("g1_paid_campaign_pair_invalid:" + packet_name)
+            attempts = pair.get("attempts")
+            if not isinstance(attempts, list) or len(attempts) != 2:
+                raise ValueError("g1_paid_campaign_attempts_incomplete:" + packet_name)
+            for candidate, attempt in zip(candidates, attempts, strict=True):
+                candidate_root = pair_root / candidate / "episode"
+                worker = _read(pair_root / candidate / "native_g1_development_worker_result.v1.json")
+                episode_path = candidate_root / EPISODE_FILENAME
+                episode = _read(episode_path)
+                trace = _read(candidate_root / TRACE_FILENAME)
+                if (
+                    attempt.get("candidate_id") != candidate
+                    or attempt.get("status") != "completed_development_only"
+                    or attempt.get("worker_result_digest") != worker.get("result_digest")
+                    or worker.get("result_digest") != canonical_digest(worker, digest_field="result_digest")
+                    or trace.get("policy_query_count")
+                    != terminal["policy_query_counts"][candidate]
+                ):
+                    raise ValueError("g1_paid_campaign_candidate_invalid:" + candidate)
+                score = _score_from_episode(episode_path, worker=worker, objective_id=objective)
+                media = _verified_review_media(
+                    episode_path, episode=episode, pair_root=pair_root
+                )
+                validate_multicamera_frame_manifest(
+                    _read(pair_root / media["frame_manifest"]["relative_path"]),
+                    output_dir=candidate_root,
+                    verify_files=True,
+                )
+                if attempt.get("score") != score or attempt.get("review_media") != media:
+                    raise ValueError("g1_paid_campaign_score_or_media_invalid:" + candidate)
+                verified.append({
+                    "candidate_id": candidate,
+                    "objective_id": objective,
+                    "policy_query_count": trace["policy_query_count"],
+                    "score": score,
+                    "frame_manifest": media["frame_manifest"],
+                    "review_videos": media["review_videos"],
+                    "frame_manifest_digest": media["frame_manifest_digest"],
+                })
+        return {
+            "schema_version": "native_g1_paid_output_verification.v1",
+            "status": "verified_development_only",
+            "campaign_plan_digest": bundle["campaign_plan_digest"],
+            "terminal_result_digest": terminal["result_digest"],
+            "episodes": verified,
+            "public_redistribution_authorized": False,
+            "physical_outcome_claimed": False,
+        }
 
 
 def dispatch_g1_paid_campaign(

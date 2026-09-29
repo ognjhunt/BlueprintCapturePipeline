@@ -176,6 +176,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint-operator-door", "container", "blueprint", "operator door state"),
     StorageRoot("/var/lib/blueprint-operator-door/requests", "work", "blueprint", "operator door request spool, results and logs"),
     StorageRoot("/var/lib/blueprint-operator-door/audit", "evidence_hot", "blueprint", "operator door access audit log"),
+    StorageRoot("/var/lib/blueprint-operator-door/experiment-authority", "evidence_hot", "root", "authenticated current experiment authority and immutable reader projections; never reclaimed"),
     StorageRoot("/opt/blueprint/operator-door", "release", "root", "operator door code"),
     StorageRoot("/opt/blueprint/control-plane-config-tools/operator-door-source", "release", "root", "operator door deploy source clone"),
     StorageRoot(f"{_CONTROL_PLANE}/release-retention", "evidence_hot", "root", "release retirement plans and receipts"),

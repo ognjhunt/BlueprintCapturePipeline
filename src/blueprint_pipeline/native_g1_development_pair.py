@@ -182,20 +182,22 @@ def validate_g1_development_pair(request_paths: Sequence[Path]) -> dict[str, Any
 def _read_result(
     path: Path, *, candidate_id: str, scene_plan_digest: str, request_digest: str
 ) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if (
-        value.get("candidate_id") != candidate_id
-        or value.get("request_digest") != request_digest
-        or value.get("status") not in {"completed_development_only", "blocked"}
-        or value.get("scene_plan_digest") not in {scene_plan_digest, None}
-        or (value.get("status") == "completed_development_only"
-            and value.get("scene_plan_digest") != scene_plan_digest)
-        or value.get("ranking_eligible") is not False
-        or value.get("physical_outcome_claimed") is not False
-        or value.get("result_digest") != canonical_digest(value, digest_field="result_digest")
-    ):
-        raise ValueError("g1_pair_worker_receipt_invalid")
-    return value
+    from .control_plane_lane_experiment_consumer import registered_reader
+    with registered_reader(path):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            value.get("candidate_id") != candidate_id
+            or value.get("request_digest") != request_digest
+            or value.get("status") not in {"completed_development_only", "blocked"}
+            or value.get("scene_plan_digest") not in {scene_plan_digest, None}
+            or (value.get("status") == "completed_development_only"
+                and value.get("scene_plan_digest") != scene_plan_digest)
+            or value.get("ranking_eligible") is not False
+            or value.get("physical_outcome_claimed") is not False
+            or value.get("result_digest") != canonical_digest(value, digest_field="result_digest")
+        ):
+            raise ValueError("g1_pair_worker_receipt_invalid")
+        return value
 
 
 def _recover_worker_result_from_preclose(
@@ -264,146 +266,150 @@ def _recover_worker_result_from_preclose(
 def _score_from_episode(
     path: Path, *, worker: Mapping[str, Any], objective_id: str
 ) -> dict[str, Any]:
-    episode = json.loads(path.read_text(encoding="utf-8"))
-    score = episode.get("score")
-    score_schema = (
-        "native_g1_navigation_goal_score.v1"
-        if objective_id == "g1_navigation_goal"
-        else "adp_rigid_task_scoring.v2"
-    )
-    score_digest_field = (
-        "score_digest" if objective_id == "g1_navigation_goal" else "report_digest"
-    )
-    if (
-        episode.get("result_digest") != canonical_digest(episode, digest_field="result_digest")
-        or episode.get("result_digest") != (worker.get("supervised_episode") or {}).get("episode_result_digest")
-        or episode.get("candidate_id") != worker.get("candidate_id")
-        or episode.get("scene_plan_digest") != worker.get("scene_plan_digest")
-        or episode.get("status") != "development_only_scored_episode"
-        or episode.get("evaluation_task_kind") != (
-            "g1_navigation_goal" if objective_id == "g1_navigation_goal" else "rigid_pick_place"
+    from .control_plane_lane_experiment_consumer import registered_reader
+    with registered_reader(path):
+        episode = json.loads(path.read_text(encoding="utf-8"))
+        score = episode.get("score")
+        score_schema = (
+            "native_g1_navigation_goal_score.v1"
+            if objective_id == "g1_navigation_goal"
+            else "adp_rigid_task_scoring.v2"
         )
-        or episode.get("ranking_eligible") is not False
-        or episode.get("physical_outcome_claimed") is not False
-        or not isinstance(score, Mapping)
-        or score.get("status") != "scored"
-        or score.get("schema_version") != score_schema
-        or not isinstance(score.get("outcome"), str)
-        or not score["outcome"]
-        or score.get(score_digest_field) != canonical_digest(
-            score, digest_field=score_digest_field
+        score_digest_field = (
+            "score_digest" if objective_id == "g1_navigation_goal" else "report_digest"
         )
-    ):
-        raise ValueError("g1_pair_episode_or_score_receipt_invalid")
-    return {
-        "episode_result_digest": episode["result_digest"],
-        "score_digest": score[score_digest_field],
-        "outcome": score.get("outcome"),
-    }
+        if (
+            episode.get("result_digest") != canonical_digest(episode, digest_field="result_digest")
+            or episode.get("result_digest") != (worker.get("supervised_episode") or {}).get("episode_result_digest")
+            or episode.get("candidate_id") != worker.get("candidate_id")
+            or episode.get("scene_plan_digest") != worker.get("scene_plan_digest")
+            or episode.get("status") != "development_only_scored_episode"
+            or episode.get("evaluation_task_kind") != (
+                "g1_navigation_goal" if objective_id == "g1_navigation_goal" else "rigid_pick_place"
+            )
+            or episode.get("ranking_eligible") is not False
+            or episode.get("physical_outcome_claimed") is not False
+            or not isinstance(score, Mapping)
+            or score.get("status") != "scored"
+            or score.get("schema_version") != score_schema
+            or not isinstance(score.get("outcome"), str)
+            or not score["outcome"]
+            or score.get(score_digest_field) != canonical_digest(
+                score, digest_field=score_digest_field
+            )
+        ):
+            raise ValueError("g1_pair_episode_or_score_receipt_invalid")
+        return {
+            "episode_result_digest": episode["result_digest"],
+            "score_digest": score[score_digest_field],
+            "outcome": score.get("outcome"),
+        }
 
 
 def _verified_review_media(
     episode_path: Path, *, episode: Mapping[str, Any], pair_root: Path
 ) -> dict[str, Any]:
     """Index exact derived videos for review, without promoting their claim."""
+    from .control_plane_lane_experiment_consumer import registered_reader
+    with registered_reader(episode_path):
 
-    episode_root = episode_path.parent
-    if episode.get("trace_relative_path") != TRACE_FILENAME:
-        raise ValueError("g1_pair_trace_path_invalid")
-    trace_path = episode_root / TRACE_FILENAME
-    if trace_path.is_symlink() or not trace_path.is_file():
-        raise ValueError("g1_pair_trace_missing")
-    trace = json.loads(trace_path.read_text(encoding="utf-8"))
-    visual = trace.get("visual_evidence")
-    artifacts = trace.get("media_artifacts")
-    if (
-        trace.get("trace_digest") != episode.get("trace_digest")
-        or trace.get("trace_digest") != canonical_digest(trace, digest_field="trace_digest")
-        or trace.get("status") != "development_trace_recorded"
-        or trace.get("candidate_id") != episode.get("candidate_id")
-        or trace.get("scene_plan_digest") != episode.get("scene_plan_digest")
-        or trace.get("claim_ceiling") != "simulator_only_unscored"
-        or not isinstance(visual, Mapping)
-        or visual.get("status") != "complete"
-        or set(visual.get("videos") or {}) != {"head", "overview"}
-        or set(visual.get("required_camera_ids") or []) != {"head", "overview"}
-        or not isinstance(artifacts, list)
-    ):
-        raise ValueError("g1_pair_trace_or_media_invalid")
+        episode_root = episode_path.parent
+        if episode.get("trace_relative_path") != TRACE_FILENAME:
+            raise ValueError("g1_pair_trace_path_invalid")
+        trace_path = episode_root / TRACE_FILENAME
+        if trace_path.is_symlink() or not trace_path.is_file():
+            raise ValueError("g1_pair_trace_missing")
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        visual = trace.get("visual_evidence")
+        artifacts = trace.get("media_artifacts")
+        if (
+            trace.get("trace_digest") != episode.get("trace_digest")
+            or trace.get("trace_digest") != canonical_digest(trace, digest_field="trace_digest")
+            or trace.get("status") != "development_trace_recorded"
+            or trace.get("candidate_id") != episode.get("candidate_id")
+            or trace.get("scene_plan_digest") != episode.get("scene_plan_digest")
+            or trace.get("claim_ceiling") != "simulator_only_unscored"
+            or not isinstance(visual, Mapping)
+            or visual.get("status") != "complete"
+            or set(visual.get("videos") or {}) != {"head", "overview"}
+            or set(visual.get("required_camera_ids") or []) != {"head", "overview"}
+            or not isinstance(artifacts, list)
+        ):
+            raise ValueError("g1_pair_trace_or_media_invalid")
 
-    def artifact_file(row: Mapping[str, Any]) -> dict[str, Any]:
-        relative = row.get("relative_path")
-        if not isinstance(relative, str):
-            raise ValueError("g1_pair_media_path_invalid")
-        path_part = PurePosixPath(relative)
+        def artifact_file(row: Mapping[str, Any]) -> dict[str, Any]:
+            relative = row.get("relative_path")
+            if not isinstance(relative, str):
+                raise ValueError("g1_pair_media_path_invalid")
+            path_part = PurePosixPath(relative)
+            if (
+                path_part.is_absolute() or ".." in path_part.parts
+                or not path_part.parts or path_part.parts[0] != "media"
+            ):
+                raise ValueError("g1_pair_media_path_invalid")
+            path = episode_root.joinpath(*path_part.parts)
+            if (
+                path.is_symlink() or path.resolve() != path or not path.is_file()
+                or isinstance(row.get("size_bytes"), bool)
+                or not isinstance(row.get("size_bytes"), int)
+                or row["size_bytes"] <= 0
+                or path.stat().st_size != row.get("size_bytes")
+            ):
+                raise ValueError("g1_pair_media_file_invalid")
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            if row.get("sha256") != "sha256:" + digest.hexdigest():
+                raise ValueError("g1_pair_media_digest_mismatch")
+            return {
+                "relative_path": path.relative_to(pair_root).as_posix(),
+                "sha256": row["sha256"],
+                "size_bytes": row["size_bytes"],
+            }
+
+        manifests = [row for row in artifacts if isinstance(row, Mapping)
+                     and row.get("role") == "multicamera_observation_frame_manifest"]
+        videos = [row for row in artifacts if isinstance(row, Mapping)
+                  and row.get("role") == "camera_review_video"]
+        if len(manifests) != 1 or len(videos) != 2:
+            raise ValueError("g1_pair_media_artifacts_incomplete")
+        manifest_ref = artifact_file(manifests[0])
+        manifest = json.loads((pair_root / manifest_ref["relative_path"]).read_text(encoding="utf-8"))
+        identity = manifest.get("identity")
         if (
-            path_part.is_absolute() or ".." in path_part.parts
-            or not path_part.parts or path_part.parts[0] != "media"
+            manifest.get("frame_manifest_digest") != visual.get("frame_manifest_digest")
+            or manifest.get("frame_manifest_digest")
+            != canonical_digest(manifest, digest_field="frame_manifest_digest")
+            or not isinstance(identity, Mapping)
+            or identity.get("candidate_id") != episode.get("candidate_id")
+            or identity.get("scene_plan_digest") != episode.get("scene_plan_digest")
         ):
-            raise ValueError("g1_pair_media_path_invalid")
-        path = episode_root.joinpath(*path_part.parts)
-        if (
-            path.is_symlink() or path.resolve() != path or not path.is_file()
-            or isinstance(row.get("size_bytes"), bool)
-            or not isinstance(row.get("size_bytes"), int)
-            or row["size_bytes"] <= 0
-            or path.stat().st_size != row.get("size_bytes")
-        ):
-            raise ValueError("g1_pair_media_file_invalid")
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(block)
-        if row.get("sha256") != "sha256:" + digest.hexdigest():
-            raise ValueError("g1_pair_media_digest_mismatch")
+            raise ValueError("g1_pair_frame_manifest_invalid")
+        by_camera = {row.get("camera_id"): row for row in videos}
+        if set(by_camera) != {"head", "overview"}:
+            raise ValueError("g1_pair_review_cameras_invalid")
+        review_videos = {}
+        for camera_id in ("head", "overview"):
+            row = by_camera[camera_id]
+            video = visual["videos"][camera_id]
+            if (
+                row.get("media_type") != "video/mp4"
+                or row.get("relative_path") != video.get("relative_path")
+                or row.get("sha256") != video.get("sha256")
+                or row.get("size_bytes") != video.get("size_bytes")
+                or video.get("derived_from_frame_manifest_digest") != manifest["frame_manifest_digest"]
+            ):
+                raise ValueError("g1_pair_review_video_binding_invalid")
+            review_videos[camera_id] = artifact_file(row)
         return {
-            "relative_path": path.relative_to(pair_root).as_posix(),
-            "sha256": row["sha256"],
-            "size_bytes": row["size_bytes"],
+            "trace_digest": trace["trace_digest"],
+            "frame_manifest_digest": manifest["frame_manifest_digest"],
+            "frame_manifest": manifest_ref,
+            "review_videos": review_videos,
+            "derived_videos_are_human_review_convenience": True,
+            "public_redistribution_authorized": False,
         }
-
-    manifests = [row for row in artifacts if isinstance(row, Mapping)
-                 and row.get("role") == "multicamera_observation_frame_manifest"]
-    videos = [row for row in artifacts if isinstance(row, Mapping)
-              and row.get("role") == "camera_review_video"]
-    if len(manifests) != 1 or len(videos) != 2:
-        raise ValueError("g1_pair_media_artifacts_incomplete")
-    manifest_ref = artifact_file(manifests[0])
-    manifest = json.loads((pair_root / manifest_ref["relative_path"]).read_text(encoding="utf-8"))
-    identity = manifest.get("identity")
-    if (
-        manifest.get("frame_manifest_digest") != visual.get("frame_manifest_digest")
-        or manifest.get("frame_manifest_digest")
-        != canonical_digest(manifest, digest_field="frame_manifest_digest")
-        or not isinstance(identity, Mapping)
-        or identity.get("candidate_id") != episode.get("candidate_id")
-        or identity.get("scene_plan_digest") != episode.get("scene_plan_digest")
-    ):
-        raise ValueError("g1_pair_frame_manifest_invalid")
-    by_camera = {row.get("camera_id"): row for row in videos}
-    if set(by_camera) != {"head", "overview"}:
-        raise ValueError("g1_pair_review_cameras_invalid")
-    review_videos = {}
-    for camera_id in ("head", "overview"):
-        row = by_camera[camera_id]
-        video = visual["videos"][camera_id]
-        if (
-            row.get("media_type") != "video/mp4"
-            or row.get("relative_path") != video.get("relative_path")
-            or row.get("sha256") != video.get("sha256")
-            or row.get("size_bytes") != video.get("size_bytes")
-            or video.get("derived_from_frame_manifest_digest") != manifest["frame_manifest_digest"]
-        ):
-            raise ValueError("g1_pair_review_video_binding_invalid")
-        review_videos[camera_id] = artifact_file(row)
-    return {
-        "trace_digest": trace["trace_digest"],
-        "frame_manifest_digest": manifest["frame_manifest_digest"],
-        "frame_manifest": manifest_ref,
-        "review_videos": review_videos,
-        "derived_videos_are_human_review_convenience": True,
-        "public_redistribution_authorized": False,
-    }
 
 
 def _run_g1_development_pair(
@@ -422,6 +428,7 @@ def _run_g1_development_pair(
     provider_run_root: Path | None = None,
     cooperating_lifetime: bool = False,
     lifetime_stack: ExitStack,
+    _registered_use: Any = None,
 ) -> dict[str, Any]:
     """Execute in catalog order; stop on an infrastructure block to limit spend."""
 
@@ -447,7 +454,7 @@ def _run_g1_development_pair(
         *(Path(request[field]).expanduser() for request in requests for field in PATH_FIELDS),
     ]
     if (
-        not output.is_absolute() or output.exists() or output.is_symlink()
+        not output.is_absolute() or (output.exists() and _registered_use is None) or output.is_symlink()
         or output.resolve() != output
         or any(
             output.resolve().is_relative_to(path.resolve())
@@ -463,7 +470,11 @@ def _run_g1_development_pair(
     lane_root = next((root for root in LANE_SCRATCH_ROOTS if output.is_relative_to(root)), None)
     scratch_metadata = (scratch_owner, scratch_run_ref, scratch_ttl_seconds)
     lifetime = None
-    if lane_root is not None:
+    if _registered_use is not None:
+        if mode != "local" or local_runner is not run_g1_development_worker or _registered_use.path != output:
+            raise ValueError("experiment_consumer_participation_unproven")
+        lifetime = lifetime_stack.enter_context(_registered_use)
+    elif lane_root is not None:
         relative = output.relative_to(lane_root)
         if len(relative.parts) != 2 or relative.parts[0] != "g1":
             raise ValueError("g1_pair_lane_scratch_output_invalid")
@@ -516,7 +527,8 @@ def _run_g1_development_pair(
         try:
             if mode == "local":
                 worker = local_runner(request=request, output_dir=attempt_root,
-                                      **({"scratch_lifetime": lifetime} if lifetime is not None else {}))
+                                      **({"scratch_lifetime": lifetime} if lifetime is not None else {}),
+                                      **({"_registered_use": _registered_use} if _registered_use is not None else {}))
                 result_path = attempt_root / RESULT_FILENAME
                 episode_path = attempt_root / "episode" / EPISODE_FILENAME
             elif mode == "subprocess":
@@ -684,15 +696,26 @@ def run_g1_development_pair(
     scratch_owner: str | None = None, scratch_run_ref: str | None = None,
     scratch_ttl_seconds: int | None = None, provider_run_root: Path | None = None,
     cooperating_lifetime: bool = False,
+    _registered_use: Any = None,
 ) -> dict[str, Any]:
     """Hold an explicitly enrolled target through every coordinator output access."""
+    from .control_plane_lane_experiment_consumer import require_registered_use
+    require_registered_use(output_dir, _registered_use, LANE_SCRATCH_ROOTS)
+    if _registered_use is not None:
+        _registered_use.authorize_g1_pair(request_paths)
     with ExitStack() as lifetime_stack:
-        return _run_g1_development_pair(
+        result = _run_g1_development_pair(
             request_paths=request_paths, output_dir=output_dir, mode=mode, source_receipt_path=source_receipt_path,
             source_packet_path=source_packet_path, policy_runtime_root=policy_runtime_root,
             worker_launcher=worker_launcher, local_runner=local_runner, scratch_owner=scratch_owner,
             scratch_run_ref=scratch_run_ref, scratch_ttl_seconds=scratch_ttl_seconds,
-            provider_run_root=provider_run_root, cooperating_lifetime=cooperating_lifetime, lifetime_stack=lifetime_stack)
+            provider_run_root=provider_run_root, cooperating_lifetime=cooperating_lifetime, lifetime_stack=lifetime_stack,
+            _registered_use=_registered_use)
+
+    if _registered_use is not None:
+        from .control_plane_lane_experiment_completion import complete_native_pair
+        complete_native_pair(_registered_use, result)
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

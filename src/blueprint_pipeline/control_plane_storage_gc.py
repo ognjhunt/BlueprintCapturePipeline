@@ -1282,6 +1282,7 @@ def run_storage_gc(
     lane_scratch_enabled: bool = False,
     lane_scratch_alert: str | None = None,
     lane_reference_target: str | Path | None = None,
+    _experiment_config_path: str | Path = "/etc/blueprint-operator-door/door.json",
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
@@ -1581,6 +1582,17 @@ def run_storage_gc(
         return phase
 
     _isolated(report, "lane_scratch", lane_phase)
+    def registered_experiment_phase() -> Any:
+        from .control_plane_lane_experiment_actions import gc_actions
+        try:
+            return gc_actions(installed_config_path=_experiment_config_path,
+                enabled=lane_scratch_enabled, apply=apply, pins_root=pins_root, now=clock)
+        except (OSError, ValueError):
+            # A missing/default-disabled installation is local KEEP evidence,
+            # never a reason to discard unrelated phases' reclaim forecasts.
+            return {"enabled": False, "outcomes": [], "blockers": ["experiment_configuration_unavailable"]}
+
+    _isolated(report, "registered_experiments", registered_experiment_phase)
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 

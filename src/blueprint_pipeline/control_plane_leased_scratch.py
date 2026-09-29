@@ -17,7 +17,7 @@ from typing import Any
 
 from .control_plane_lane_scratch import (
     DEFAULT_ROOT, LaneScratchError, _DIR_FLAGS, _creation_lease, _id, _locked_root_descriptor,
-    _now, _publish_scratch_folder, _read_lease,
+    _now, _publish_scratch_folder, _read_lease, _refuse_registered_legacy_mutation,
 )
 
 
@@ -60,6 +60,7 @@ class LeasedScratchDirectory:
         scene_ref: str | None = None, root: str | Path = DEFAULT_ROOT,
         now: Callable[[], float] = time.time,
     ) -> LeasedScratchDirectory:
+        _refuse_registered_legacy_mutation(lane, name)
         lane, name, owner = _id(lane, "lane"), _id(name, "name"), _id(owner, "owner")
         if (run_ref is None) == (scene_ref is None):
             raise LaneScratchError("lane_scratch_reference_invalid")
@@ -168,6 +169,7 @@ def create_leased_lane_scratch(
 ) -> LeasedScratchDirectory:
     """Validate the full root before mutation and publish through its retained fd."""
 
+    _refuse_registered_legacy_mutation(lane, name)
     lease = _creation_lease(lane, name, owner=owner, run_ref=run_ref,
                             scene_ref=scene_ref, now=now, **lease_options)
     root = Path(root)

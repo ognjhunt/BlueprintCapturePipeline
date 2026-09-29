@@ -212,7 +212,8 @@ def _build_scene(
     return built, binding
 
 
-def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
+                               _registered_use: Any = None) -> dict[str, Any]:
     """Run one attempt and retain its own terminal receipt on every failure."""
 
     sealed = _request(request)
@@ -341,6 +342,7 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) 
             output_dir=output_dir / "episode",
             to_tensor=_to_tensor,
             make_action_tensor=torch.tensor,
+            **({"_registered_use": _registered_use} if _registered_use is not None else {}),
         )
         if episode.get("status") != "completed_development_only":
             raise ValueError("g1_worker_supervised_episode_incomplete")
@@ -459,11 +461,18 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) 
 
 
 def run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
-                              scratch_lifetime: Any = None) -> dict[str, Any]:
+                              scratch_lifetime: Any = None, _registered_use: Any = None) -> dict[str, Any]:
     """Admit optional cooperating ownership before the worker's first path access."""
-    from .control_plane_scratch_lifetime import worker_output_lifetime
+    from .control_plane_scratch_lifetime import worker_output_lifetime, LANE_ROOTS
+    from .control_plane_lane_experiment_consumer import require_registered_use
+    require_registered_use(output_dir, _registered_use, LANE_ROOTS)
+    if _registered_use is not None and scratch_lifetime is not _registered_use:
+        raise ValueError("experiment_consumer_authority_required")
+    if _registered_use is not None:
+        _registered_use.authorize_worker(request, output_dir)
     with worker_output_lifetime(output_dir, scratch_lifetime):
-        return _run_g1_development_worker(request=request, output_dir=output_dir)
+        return _run_g1_development_worker(request=request, output_dir=output_dir,
+            **({"_registered_use": _registered_use} if _registered_use is not None else {}))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

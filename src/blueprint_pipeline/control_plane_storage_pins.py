@@ -22,9 +22,29 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
+
+def _publisher_observation(function):
+    """Load the opt-in publisher gate only when a pin publisher is called."""
+    observed = None
+
+    @wraps(function)
+    def invoke(*args, **kwargs):
+        nonlocal observed
+        if observed is None:
+            from .control_plane_registered_reference_gate import _publisher_observation as gate
+            observed = gate(function)
+        return observed(*args, **kwargs)
+
+    return invoke
+
+
+def _publisher_checkpoint():
+    from .control_plane_registered_reference_gate import _publisher_checkpoint as checkpoint
+    checkpoint()
 
 SCHEMA_VERSION = "control_plane_storage_pin.v1"
 DEFAULT_PINS_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/storage-pins")
@@ -57,22 +77,32 @@ def pin_path(pins_root: str | Path, kind: str, owner_id: str) -> Path:
 
 
 def _write_atomic(path: Path, payload: Mapping[str, Any], *, exclusive: bool) -> bool:
+    # Encoding may consume the remaining original admission time. Finish it
+    # before checking that SAME allowance and making any native write.
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    _publisher_checkpoint()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    _publisher_checkpoint()
     descriptor, temporary_name = tempfile.mkstemp(prefix=".pin-", dir=path.parent)
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
-            stream.write("\n")
+            _publisher_checkpoint()
+            stream.write(encoded)
+            _publisher_checkpoint()
             stream.flush()
+            _publisher_checkpoint()
             os.fsync(stream.fileno())
+        _publisher_checkpoint()
         temporary.chmod(0o640)
         if exclusive:
             try:
+                _publisher_checkpoint()
                 os.link(temporary, path)
             except FileExistsError:
                 return False
         else:
+            _publisher_checkpoint()
             os.replace(temporary, path)
         return True
     finally:
@@ -96,11 +126,13 @@ def storage_pin_guard(pins_root: str | Path, *, exclusive: bool):
     """Publish pins and retire cache targets under the same stable directory lock."""
     from .task_evaluation_release_reference_lock import release_reference_lock
     root = Path(pins_root).expanduser()
+    _publisher_checkpoint()
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     with release_reference_lock(root, exclusive=exclusive):
         yield
 
 
+@_publisher_observation
 def write_storage_pin(
     *,
     pins_root: str | Path,
@@ -113,6 +145,9 @@ def write_storage_pin(
     on_created: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Pin ``paths`` for ``owner_id``; an existing pin is returned unchanged."""
+
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(paths, pins_root, depends_on)
 
     kind, owner_id = _validated_owner(kind, owner_id)
     if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or ttl_seconds <= 0:
@@ -229,10 +264,14 @@ def live_pinned_paths(pins_root: str | Path, *, now: Any = time.time) -> set[str
     }
 
 
+@_publisher_observation
 def release_storage_pin(
     *, pins_root: str | Path, kind: str, owner_id: str, now: Any = time.time
 ) -> dict[str, Any]:
     """Release one pin and every dependency no other live pin still needs."""
+
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(pins_root)
 
     kind, owner_id = _validated_owner(kind, owner_id)
     observed_at = float(now())

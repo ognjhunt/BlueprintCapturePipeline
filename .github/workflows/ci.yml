@@ -20,6 +20,7 @@ jobs:
     outputs:
       requires_full_suite: ${{ steps.plan.outputs.requires_full_suite }}
       selected_test_count: ${{ steps.plan.outputs.selected_test_count }}
+      native_feature_required: ${{ steps.native-plan.outputs.required }}
     steps:
       - name: Checkout with comparison history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -38,6 +39,24 @@ jobs:
             --plan-only \
             --plan-output "${{ runner.temp }}/blueprint-ci/impacted-test-plan.json" \
             --github-output "${GITHUB_OUTPUT}"
+
+      - name: Require native Linux proof when its acceptance test is selected
+        id: native-plan
+        env:
+          IMPACT_PLAN: ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path(os.environ["IMPACT_PLAN"]).read_text())
+          selected = plan["selected_tests"]
+          assert isinstance(selected, list) and all(isinstance(row, str) for row in selected)
+          changed = plan["changed_files"]
+          assert isinstance(changed, list) and all(isinstance(row, str) for row in changed)
+          required = "tests/test_registered_feature_linux.py" in changed or any(row.split("::", 1)[0] == "tests/test_registered_feature_linux.py" for row in selected)
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write("required=" + str(required).lower() + "\n")
+          PYTHON
 
       - name: Upload impact plan
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -171,6 +190,126 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  native-feature-linux:
+    name: Real registered scratch and cache on Linux
+    needs: impact
+    if: needs.impact.outputs.native_feature_required == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
+      UV_PROJECT_ENVIRONMENT: /opt/blueprint-native-test-venv
+    steps:
+      - name: Checkout exact feature sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Checkout pinned BlueprintContracts
+        env:
+          CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          git init BlueprintContracts
+          git -C BlueprintContracts remote add origin "https://x-access-token:${CONTRACTS_TOKEN}@github.com/ognjhunt/BlueprintContracts.git"
+          git -C BlueprintContracts fetch --depth=1 origin 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+          git -C BlueprintContracts checkout --detach FETCH_HEAD
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+
+      - name: Install portable review-video toolchain
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          # The review-video tests need ffmpeg/ffprobe on PATH -- nothing more.
+          # These runners do not ship them, and Ubuntu's apt mirrors have now
+          # cost this repository three distinct outages in one night: a hung
+          # connection, a drip-feeding package fetch, and an index download
+          # that stalled for eleven minutes. No timeout or retry policy fixes
+          # a mirror that is slow rather than broken, so the mirror is no
+          # longer on this path at all.
+          #
+          # Use versioned GitHub release assets rather than an expiring daily
+          # build or a mirror that serves inconsistent bytes to Actions runners.
+          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+            echo "media toolchain already present: $(ffmpeg -version | head -n1)"
+            exit 0
+          fi
+          FFMPEG_RELEASE="https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1"
+          download_verified() {
+            local name="$1" expected="$2" destination="${RUNNER_TEMP}/$1"
+            for attempt in 1 2 3; do
+              rm -f "${destination}"
+              if curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 420 \
+                -o "${destination}" "${FFMPEG_RELEASE}/${name}" \
+                && echo "${expected}  ${destination}" | sha256sum -c -; then
+                return 0
+              fi
+              echo "${name} attempt ${attempt} failed byte verification"
+            done
+            return 1
+          }
+          download_verified ffmpeg-linux-x64.gz bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa
+          download_verified ffprobe-linux-x64.gz 25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067
+          gzip -dc "${RUNNER_TEMP}/ffmpeg-linux-x64.gz" > "${RUNNER_TEMP}/ffmpeg"
+          gzip -dc "${RUNNER_TEMP}/ffprobe-linux-x64.gz" > "${RUNNER_TEMP}/ffprobe"
+          sudo install -m 0755 "${RUNNER_TEMP}/ffmpeg" /usr/local/bin/ffmpeg
+          sudo install -m 0755 "${RUNNER_TEMP}/ffprobe" /usr/local/bin/ffprobe
+          ffmpeg -version | head -n1
+
+      - name: Install and protect real system-Python dependencies
+        run: |
+          set -euo pipefail
+          sudo -n true
+          manager="$(sudo -n readlink -f /proc/1/exe)"
+          printf 'PID 1 executable: %s\n' "$manager"
+          test "$manager" = /usr/lib/systemd/systemd
+          test -f /sys/fs/cgroup/cgroup.controllers
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-native-test-venv
+          uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv
+          uv lock --check
+          uv sync --frozen --extra dev --python /usr/bin/python3
+          uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts
+          uv pip install --python /opt/blueprint-native-test-venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
+          # ProtectHome hides /home/runner from the actual different-UID child.
+          # Seal only this new disposable interpreter, with a root-owned base.
+          sudo chown -hR root:root /opt/blueprint-native-test-venv
+
+      - name: Prove actual root and ordinary-UID lifecycle
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          evidence="${RUNNER_TEMP}/blueprint-native-evidence"
+          mkdir -p "$evidence"
+          test_temp="$(mktemp -d "${RUNNER_TEMP}/blueprint-native-tests.XXXXXX")"
+          trap 'rm -rf -- "$test_temp"' EXIT
+          /opt/blueprint-native-test-venv/bin/python -m pytest \
+            tests/test_registered_feature_linux.py::test_actual_root_blueprint_uid_cache_lifetime_and_revoke \
+            tests/test_registered_feature_linux.py::test_actual_contained_blueprint_native_pair_child_and_kernel_completion \
+            -m 'slow or not slow' --basetemp="$test_temp" \
+            --junitxml="$evidence/native-junit.xml" -q
+          /opt/blueprint-native-test-venv/bin/python - "$evidence/native-junit.xml" <<'PYTHON'
+          import sys, xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          assert len(cases) == 2, "both exact native selectors must execute"
+          assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "native skips and refusals do not prove acceptance"
+          PYTHON
+
+      - name: Retain native execution evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-feature-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/blueprint-native-evidence/native-junit.xml
+          if-no-files-found: error
+          retention-days: 7
+
   cross-cutting-full-suite:
     name: Cross-cutting full suite
     needs: impact
@@ -182,7 +321,7 @@ jobs:
 
   impacted-gate:
     name: Impacted test and sentinel gate
-    needs: [impact, impacted-tests, cross-cutting-full-suite]
+    needs: [impact, impacted-tests, native-feature-linux, cross-cutting-full-suite]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -192,9 +331,16 @@ jobs:
           IMPACT_RESULT: ${{ needs.impact.result }}
           IMPACTED_RESULT: ${{ needs.impacted-tests.result }}
           FULL_RESULT: ${{ needs.cross-cutting-full-suite.result }}
+          NATIVE_REQUIRED: ${{ needs.impact.outputs.native_feature_required }}
+          NATIVE_RESULT: ${{ needs.native-feature-linux.result }}
         run: |
           test "${IMPACT_RESULT}" = "success"
           test "${IMPACTED_RESULT}" = "success"
+          if test "${NATIVE_REQUIRED}" = "true"; then
+            test "${NATIVE_RESULT}" = "success"
+          else
+            test "${NATIVE_RESULT}" = "skipped"
+          fi
           test "${FULL_RESULT}" = "success" || test "${FULL_RESULT}" = "skipped"
 
   lint:
