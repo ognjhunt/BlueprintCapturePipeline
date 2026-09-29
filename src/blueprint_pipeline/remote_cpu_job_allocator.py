@@ -51,7 +51,7 @@ from .remote_cpu_job_contract import (
 from .remote_cpu_job_records import (
     compute_zero_proven, fsync_directory, teardown_record, validate_teardown, write_remote_cpu_record,
 )
-from .remote_cpu_transport import publish_running_release
+from .remote_cpu_transport import RemoteCpuTransportError, publish_running_release
 from .spend_authority_consumption_root import (
     SpendAuthorityRootError, authorizations_root, prepare_consumption_root, spend_authority_root,
 )
@@ -981,7 +981,8 @@ def run_remote_cpu_job(args: argparse.Namespace, *, runtime: RemoteCpuRuntime | 
                               "blockers": []}
     try:
         result.update(_run_action(args, runtime, now))
-    except (RemoteCpuContractError, CloudRunJobsError, RemoteCpuAllocatorError, PaidResourceAdmissionBlocked) as exc:
+    except (RemoteCpuContractError, CloudRunJobsError, RemoteCpuAllocatorError, RemoteCpuTransportError,
+            PaidResourceAdmissionBlocked) as exc:
         typed = getattr(exc, "reasons", None) or getattr(exc, "blockers", None) or [getattr(exc, "code", "")]
         result.update(status="blocked", blockers=sorted(set(typed)))
     except Exception as exc:  # noqa: BLE001 - fail closed with a typed record; the cause may name a URL

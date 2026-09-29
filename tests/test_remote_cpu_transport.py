@@ -236,6 +236,23 @@ def test_the_allocator_preflight_stages_the_release_it_runs_from(monkeypatch) ->
                                                     "bucket": B2})]
 
 
+def test_a_release_that_cannot_be_staged_refuses_the_preflight_by_its_own_code(tmp_path: Path, monkeypatch) -> None:
+    """Review M6: a dirty checkout is ``remote_cpu_release_checkout_dirty``, before anything is created."""
+
+    from tests.remote_cpu_allocator_fakes import RemoteCpuWorld
+
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+
+    def dirty(object_store: tuple) -> dict:
+        raise transport.RemoteCpuTransportError("remote_cpu_release_checkout_dirty")
+
+    world.runtime.stage_release_source = dirty
+    result = world.run("preflight")
+    assert (result["status"], result["blockers"], result["success"]) == (
+        "blocked", ["remote_cpu_release_checkout_dirty"], False)
+    world.assert_untouched()
+
+
 def _git(repository: Path, *arguments: str) -> str:
     return subprocess.run(["git", *GIT_IDENTITY, "-C", str(repository), *arguments], check=True, capture_output=True,
                           text=True, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).stdout.strip()
