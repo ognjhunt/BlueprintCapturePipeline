@@ -111,7 +111,7 @@ def test_crash_before_head_is_recoverable_without_promoting_torn_record(installe
     assert Path(target / "one.log").read_bytes() == b"old, preserved"
 
 
-def test_survey_drops_owner_label_when_payload_changes_or_approval_expires(installed):
+def test_lane_scratch_is_attributed_and_expires(installed):
     target, payload, _, legacy = installed
     packet, _ = _issue_and_approve(installed)
     legacy.apply_owner_review(packet_id=packet["packet_id"],
