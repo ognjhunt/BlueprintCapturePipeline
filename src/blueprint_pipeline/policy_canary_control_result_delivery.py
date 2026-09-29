@@ -9,6 +9,13 @@ manifest is verified against the index's digest and size instead of being
 rehashed from disk. A frame on disk keeps the full check. The cell archives
 stay on the host (``control_cell_archive`` is not an offloadable role), so a
 streamed run keeps those bytes locally too.
+
+Parity difference (review M4). Download mode also decodes every retained
+control frame and checks its PNG mode, shape and raw RGB digest
+(``raw_rgb_sha256``). A frame kept in the archive is checked by its index
+digest and size only: an altered PNG still fails, because the index digest is
+Blueprint's own hash of the exact bytes, but that those bytes decode to the
+recorded RGB image is not re-proven at delivery.
 """
 from __future__ import annotations
 
@@ -119,8 +126,10 @@ def verify_retained_frames(manifest: Mapping[str, Any], *, output_dir: Path, vie
 
     A frame on disk is rehashed and decoded exactly as ``verify_files=True``
     does. A frame that is not must be an archive member whose index digest and
-    size are the manifest's. Every frame's calibration is validated. Raises
-    ``ValueError`` with a ``multicamera_frame_manifest_*`` code.
+    size are the manifest's; it is not decoded, so its mode, shape and
+    ``raw_rgb_sha256`` are not re-checked (a documented parity difference).
+    Every frame's calibration is validated. Raises ``ValueError`` with a
+    ``multicamera_frame_manifest_*`` code.
     """
     from .episode_visual_evidence import _validate_camera_calibration, _verified_retained_rgb_frame
 

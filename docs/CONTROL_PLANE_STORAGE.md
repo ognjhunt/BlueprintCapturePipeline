@@ -1190,8 +1190,11 @@ path it reads; without one (download mode) it runs exactly its old code.
 - **Control cell archives** (`result_delivery/controls/cell-NN.zip`) stream the
   control MP4s and PNGs through the view into the same deterministic ZIP
   writer, byte-identical to download mode, and control frames are verified by
-  index digest. These archives are not an offloadable role, so they stay on the
-  host. **M3** (the whole run directory, sampled under
+  index digest and size. That is weaker than download mode in one respect: a
+  frame on disk is also decoded (PNG mode, shape, `raw_rgb_sha256`), and a frame
+  kept in the archive is not, so an altered PNG still fails its digest but that
+  its bytes decode to the recorded image is not re-proven at delivery. These
+  archives are not an offloadable role, so they stay on the host. **M3** (the whole run directory, sampled under
   `workload="policy_canary_streamed"`) is therefore the earlier ~1.1 GB estimate
   *plus* the deflated control media (60 control MP4s and their frames). Measure
   it on a retained Quick-10 with
