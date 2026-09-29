@@ -8882,6 +8882,18 @@ def run_vast_provider_adapter(
             )
             raise RuntimeError(f"vast_instance_not_running:{status}")
 
+        if provider_bundle_kind == "native_task_arena_policy_canary_session":
+            from .company_policy_network_lease import allow_policy_network  # noqa: PLC0415
+            liveness = _instance_liveness_from_payload(instance_payload, instance_id=instance_id)
+            network_receipt = allow_policy_network(
+                instance_id=instance_id,
+                connection={"ssh_host": liveness.get("ssh_host"),
+                            "ssh_port": liveness.get("ssh_port")},
+                attempt_dir=resolved_job_dir,
+            )
+            if network_receipt is not None:
+                write_json(resolved_job_dir / "policy_network_lease.json", network_receipt)
+
         _append_phase(
             resolved_job_dir, "vast_heartbeat_started", "running", instance_id=instance_id
         )
@@ -9782,6 +9794,16 @@ def run_vast_provider_adapter(
             provider_reason=exception_blockers[0],
         )
     finally:
+        if provider_bundle_kind == "native_task_arena_policy_canary_session":
+            try:
+                from .company_policy_network_lease import close_policy_network  # noqa: PLC0415
+                network_close = close_policy_network()
+                if network_close is not None:
+                    write_json(resolved_job_dir / "policy_network_close.json", network_close)
+            except Exception as exc:  # noqa: BLE001 - a network lease must fail closed
+                base_result.update({"status": "blocked",
+                    "reason": "policy_network_close_unverified",
+                    "blockers": ["policy_network_close_unverified", type(exc).__name__]})
         startup_probe = _read_mapping_json(resolved_job_dir / "vast_startup_probe_manifest.json")
         gpu_sanity = _read_mapping_json(resolved_job_dir / "vast_gpu_sanity_report.json")
         isaac_smoke = _read_mapping_json(

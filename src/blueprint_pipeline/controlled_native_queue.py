@@ -56,7 +56,10 @@ def configured_profile(request: Mapping[str, Any]) -> dict[str, Any] | None:
         and row.get("task_id") == tasks[0].get("task_id")
         and row.get("scenario_id") == tasks[0]["scenario_ids"][0]
         and request.get("customer", {}).get("id") in row.get("allowed_team_ids", [])
-        and request.get("robot_profile", {}).get("robot_profile_id") in row.get("allowed_checkpoint_ids", [])]
+        and (request.get("robot_profile", {}).get("robot_profile_id") in row.get("allowed_checkpoint_ids", [])
+             or (row.get("allowed_checkpoint_ids") == ["*"]
+                 and isinstance(row.get("sandbox_manager"), Mapping)
+                 and len(row.get("allowed_team_ids", [])) == 1))]
     if len(matches) > 1:
         raise ValueError("controlled_native_profile_ambiguous")
     return matches[0] if matches else None
@@ -123,21 +126,46 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
                 raise ValueError("controlled_native_policy_credential_not_private")
             credential = {**_read(credential_file), "job_id": request["job_id"]}
         bridge = None
+        runtime_config = config
         bridge_path = profile.get("qualified_sandbox_bridge_path")
         if modalities[0] != "policy_api_endpoint":
-            if not bridge_path:
-                raise ValueError("controlled_native_qualified_sandbox_not_configured")
-            bridge_file = Path(bridge_path)
-            if (not bridge_file.is_absolute() or bridge_file.is_symlink()
-                    or bridge_file.stat().st_mode & 0o077):
-                raise ValueError("controlled_native_qualified_sandbox_bridge_not_private")
             from .controlled_policy_remote_sandbox import RemoteQualifiedSandboxFactory, validate_remote_sandbox_bridge
             from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
-            bridge = validate_remote_sandbox_bridge(_read(bridge_file))
+            manager_profile = profile.get("sandbox_manager")
+            if isinstance(manager_profile, Mapping):
+                from .company_policy_sandbox_manager_client import SandboxManagerClient
+                from .company_policy_session_admission import (
+                    materialize_company_policy_contract, stage_company_policy_session_admission,
+                )
+                contract = materialize_company_policy_contract(job_request=request,
+                    template=config["contract"],
+                    approved_model_runner_image=str(manager_profile["approved_model_runner_image"]))
+                admission = stage_company_policy_session_admission(job_request=request,
+                    contract=contract, tenant_id=str(manager_profile["tenant_id"]),
+                    root=job_dir / "sandbox_admissions",
+                    allowed_registry_hosts=list(manager_profile["allowed_registry_hosts"]),
+                    registry_credential_lease_id=(request["policy_package"][modalities[0]]
+                        .get("registry_credential_lease_id")))
+                manager = SandboxManagerClient(endpoint_url=str(manager_profile["endpoint_url"]),
+                    token_file=Path(str(manager_profile["token_file"])),
+                    certificate_file=Path(str(manager_profile["certificate_file"])))
+                bridge = manager.prepare(job_request=request, contract=contract,
+                    admission_receipt=admission)
+                bridge_file = job_dir / "qualified_sandbox_bridge.json"
+                _write(bridge_file, bridge)
+                runtime_config = {**config, "contract": contract}
+            else:
+                if not bridge_path:
+                    raise ValueError("controlled_native_qualified_sandbox_not_configured")
+                bridge_file = Path(bridge_path)
+                if (not bridge_file.is_absolute() or bridge_file.is_symlink()
+                        or bridge_file.stat().st_mode & 0o077):
+                    raise ValueError("controlled_native_qualified_sandbox_bridge_not_private")
+                bridge = validate_remote_sandbox_bridge(_read(bridge_file))
             if (bridge["job_id"] != request["job_id"]
                     or bridge["canonical_request_digest"] != canonical_request_digest(request)):
                 raise ValueError("controlled_native_bridge_request_binding_mismatch")
-            offered_contract = dict(config["contract"])
+            offered_contract = dict(runtime_config["contract"])
             offered_contract.pop("contract_digest", None)
             container = dict(offered_contract["container"])
             container["image"] = bridge["image_ref"]
@@ -151,7 +179,7 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
             RemoteQualifiedSandboxFactory(bridge).preflight(contract=expected_contract, job_request=request)
         bundle = build_controlled_native_policy_bundle(job_dir=job_dir / "native_bundle",
             packet_dir=Path(profile["packet_dir"]), runtime_source_packet_receipt=Path(profile["runtime_source_packet_receipt"]),
-            implementation_commit=commit, configuration=config, job_request=request, observations=[observation],
+            implementation_commit=commit, configuration=runtime_config, job_request=request, observations=[observation],
             policy_credential=credential, qualified_sandbox_bridge=bridge)
         zero = collect_vast_provider_zero_receipt()
         zero_path = job_dir / "initial_provider_zero.json"
@@ -183,10 +211,23 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
             raise ValueError("controlled_native_machine_allowlist_invalid")
         for machine_id in sorted(set(machine_ids)):
             argv.extend(["--adp-allowed-vast-machine-id", str(machine_id)])
+        allocator_environment = os.environ.copy()
+        if bridge is not None and isinstance(profile.get("sandbox_manager"), Mapping):
+            from .company_policy_network_lease import CONTEXT_ENV
+            manager_profile = profile["sandbox_manager"]
+            context_path = job_dir / "sandbox_network_context.json"
+            _write(context_path, {
+                "job_id": request["job_id"],
+                "endpoint_url": manager_profile["endpoint_url"],
+                "token_file": manager_profile["token_file"],
+                "certificate_file": manager_profile["certificate_file"],
+            })
+            allocator_environment[CONTEXT_ENV] = str(context_path)
         with (job_dir / "native_allocator.log").open("x") as stream:
             stream_path = job_dir / "native_allocator.log"
             stream_path.chmod(0o600)
-            subprocess.run(argv, cwd=code_root, stdout=stream, stderr=subprocess.STDOUT,
+            subprocess.run(argv, cwd=code_root, env=allocator_environment,
+                stdout=stream, stderr=subprocess.STDOUT,
                 timeout=profile["hard_ttl_seconds"] + 900, check=False)
         seal_native_terminal(request=request, job_dir=job_dir, source_commit=commit)
 
