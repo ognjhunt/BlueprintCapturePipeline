@@ -413,11 +413,11 @@ def prepare(source, dependencies, *, _deadline=None):
 
 
 
-def _record_bytes(path, deadline, cap=16 * 1024**2):
+def _record_bytes(path, deadline, cap=16 * 1024**2, *, allow_empty=False):
     fd = _open(path, directory=False)
     try:
         before = os.fstat(fd)
-        _require(0 < before.st_size <= cap)
+        _require((allow_empty or before.st_size > 0) and before.st_size <= cap)
         raw = bytearray()
         while len(raw) < before.st_size:
             _require(time.monotonic() <= deadline)
@@ -441,12 +441,12 @@ def _encoded(value):
     return raw
 
 
-def _record(path, raw, deadline, *, previous=None):
+def _record(path, raw, deadline, *, previous=None, allow_empty=False):
     """Publish one owned immutable record or exact current CAS under installer EX."""
-    _require(0 < len(raw) <= 16 * 1024**2)
+    _require((allow_empty or len(raw) > 0) and len(raw) <= 16 * 1024**2)
     _mkdir(path.parent)
     if path.exists() or path.is_symlink():
-        observed, info = _record_bytes(path, deadline)
+        observed, info = _record_bytes(path, deadline, allow_empty=allow_empty)
         if previous is None:
             _require(observed == raw)
             return
@@ -493,7 +493,7 @@ def _record(path, raw, deadline, *, previous=None):
             os.close(parent)
     finally:
         os.close(fd)
-    _require(_record_bytes(path, deadline)[0] == raw)
+    _require(_record_bytes(path, deadline, allow_empty=allow_empty)[0] == raw)
 
 
 def _refresh_inputs(source, dependencies, deadline):
@@ -1233,7 +1233,7 @@ def _signed_release(source, commit, deadline):
         _require(len(body) == int(size) and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
         target = root / name
         _mkdir(target.parent)
-        _record(target, body, deadline)
+        _record(target, body, deadline, allow_empty=True)
         if mode == '100755':
             # Root-authenticated scripts are copied as data; no SDK package or
             # checkout hook is executed by preparation.

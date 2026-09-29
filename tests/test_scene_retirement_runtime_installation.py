@@ -378,6 +378,10 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     import subprocess
     module, source, _ = fixture(tmp_path, monkeypatch)
     wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    # The real source tree contains an empty package marker. It is still an
+    # authenticated Git blob and must survive the protected release copy.
+    (source / 'src/blueprint_pipeline/_sam_parser_js').mkdir()
+    (source / 'src/blueprint_pipeline/_sam_parser_js/__init__.py').write_bytes(b'')
     subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'signed source-shaped fixture'], check=True)
@@ -389,6 +393,7 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     assert result['status'] == 'prepared'
     assert result['source_commit'] == commit
     assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py').read_bytes() == b'# trusted package\n'
+    assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/_sam_parser_js/__init__.py').read_bytes() == b''
     assert (module._RUNTIME_ROOT / 'dependencies/fixture_sdk/__init__.py').read_bytes() == b'value = 1\n'
     assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
     assert result['authority_issued'] is False and result['cleanup_enabled'] is False
