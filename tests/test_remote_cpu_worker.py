@@ -554,6 +554,24 @@ def test_the_stage_session_is_killed_whether_the_child_exits_or_hangs(monkeypatc
     assert killed == [(4321, signal.SIGKILL), (4322, signal.SIGKILL)]
 
 
+def test_release_path_misses_override_a_blocked_result(tmp_path: Path) -> None:
+    """The stage child's report as execute handles it (the real audit runs in the slow test below)."""
+
+    blocked = ["rigid_task_success_contract_schema_unavailable"]
+    missing = WorkerWorld(tmp_path / "missing")
+    assert missing.run(lambda *, descriptor, **_: report(sealed_result(descriptor, blockers=blocked),
+                                                         misses=(SUCCESS_SCHEMA,))) == 0
+    receipt = missing.receipt()
+    assert (receipt["status"], receipt["release_path_misses"], receipt["result"]["blockers"]) == (
+        "infrastructure_failed", [SUCCESS_SCHEMA], blocked)
+    assert receipt["infrastructure_failures"] == [f"infrastructure_failed:release_path_missing:{SUCCESS_SCHEMA}"]
+    assert _verdict(missing) == ("infrastructure_failed", False) and missing.staged("blobs.tar") is None
+    # Without a miss the same blocked result is deterministic, and terminal.
+    present = WorkerWorld(tmp_path / "present")
+    assert present.run(lambda *, descriptor, **_: report(sealed_result(descriptor, blockers=blocked))) == 0
+    assert (present.receipt()["status"], _verdict(present)) == ("blocked", ("blocked", True))
+
+
 @pytest.mark.slow
 def test_missing_release_path_is_an_infrastructure_failure_not_a_blocked_result(tmp_path: Path) -> None:
     entries = ("blueprint_pipeline.remote_cpu_worker", "blueprint_pipeline.rigid_task_success_contract_schema")
@@ -588,6 +606,82 @@ def test_missing_release_path_is_an_infrastructure_failure_not_a_blocked_result(
     assert _verdict(relative) == ("infrastructure_failed", False)
 
 
+def test_the_stage_child_is_spawned_from_the_release_never_forked(tmp_path: Path, monkeypatch) -> None:
+    """The parent's side of the stage child, with a process double (the real child runs in the slow test)."""
+
+    world = WorkerWorld(tmp_path)
+    release = world.fs / "tmp" / "blueprint-release" / COMMIT
+    release.mkdir(parents=True)
+    spawned: list[dict] = []
+
+    class Child:
+        pid = 4324
+
+        def __init__(self, args: list[str], **kwargs: object) -> None:
+            self.stdin = io.BytesIO()
+            self.stdin.close = lambda: None
+            spawned.append({"args": args, **kwargs, "stdin": self.stdin})
+
+        def wait(self, timeout: float | None = None) -> int:
+            request = json.loads(self.stdin.getvalue())
+            Path(request["report"]).write_text(json.dumps(report(misses=("docs/x.json",))), encoding="utf-8")
+            return 0
+
+    def forbidden(*_: object) -> None:
+        raise AssertionError("the worker forked a Python process")
+
+    killed: list[int] = []
+    monkeypatch.setattr(worker.subprocess, "Popen", Child)
+    monkeypatch.setattr(os, "fork", forbidden)
+    monkeypatch.setattr(os, "killpg", lambda group, number: killed.append(group))
+    handler = "remote_cpu_worker_stages:compiled"
+    assert worker._run_stage_child(runtime=world.runtime(), descriptor=world.descriptor, release=release,
+                                   handler=handler, seconds=5) == report(misses=("docs/x.json",))
+    [child] = spawned
+    # A fresh interpreter, from the release, in its own session, told only the descriptor and where things are.
+    assert child["args"] == [sys.executable, "-P", "-m", "blueprint_pipeline.remote_cpu_worker", "stage"]
+    assert (child["cwd"], child["start_new_session"], child["stdin"] is not None) == (release, True, True)
+    environ = child["env"]
+    assert (environ["PYTHONPATH"], environ["PYTHONDONTWRITEBYTECODE"]) == (str(release / "src"), "1")
+    assert not {worker.TRANSPORT_OBJECT_VARIABLE, worker.TRANSPORT_GENERATION_VARIABLE} & set(environ)
+    request = json.loads(child["stdin"].getvalue())
+    assert {name: request[name] for name in ("handler", "descriptor", "filesystem_root", "release_root")} == {
+        "handler": handler, "descriptor": world.descriptor, "filesystem_root": str(world.fs),
+        "release_root": str(release)}
+    assert "X-Amz-" not in child["stdin"].getvalue().decode() and killed == [Child.pid]
+    assert not Path(request["report"]).parent.exists()  # the child's scratch is gone with it
+
+    class Crashed(Child):
+        def wait(self, timeout: float | None = None) -> int:
+            return 1
+
+    monkeypatch.setattr(worker.subprocess, "Popen", Crashed)
+    with pytest.raises(worker.WorkerFailure) as crashed:
+        worker._run_stage_child(runtime=world.runtime(), descriptor=world.descriptor, release=release, handler=handler,
+                                seconds=5)
+    assert crashed.value.code == "stage_child_failed:exit_1"
+
+
+def test_heartbeats_advance_through_the_phases_and_stop_before_the_receipt(tmp_path: Path) -> None:
+    world = WorkerWorld(tmp_path, limits={"heartbeat_interval_seconds": 1})
+
+    def stage(*, descriptor: dict, **_: object) -> dict:
+        deadline = time.monotonic() + 20
+        while [beat["phase"] for beat in world.heartbeats()].count("stage") < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return _outputs(world, descriptor)
+
+    assert world.run(stage) == 0 and world.receipt()["status"] == "succeeded"
+    heartbeats = world.heartbeats()
+    for heartbeat in heartbeats:
+        contract.validate_heartbeat(heartbeat, attempt_id=world.descriptor["attempt_id"], execution_name=EXECUTION)
+    assert [heartbeat["sequence"] for heartbeat in heartbeats] == list(range(1, len(heartbeats) + 1))
+    phases = [heartbeat["phase"] for heartbeat in heartbeats]
+    assert phases[:2] == ["bootstrap", "fetch"] and phases.count("stage") >= 2, phases
+    assert phases == sorted(phases, key=list(contract.PHASES).index)
+    assert _puts(world)[-1] == "receipt.json" and "heartbeat.json" not in _puts(world)[-3:]
+
+
 @pytest.mark.slow
 def test_stage_child_is_spawned_not_forked_and_heartbeats_advance(tmp_path: Path, monkeypatch) -> None:
     world = WorkerWorld(tmp_path, archive=worker_release_archive(), limits={"heartbeat_interval_seconds": 1})
@@ -619,16 +713,8 @@ def test_stage_child_is_spawned_not_forked_and_heartbeats_advance(tmp_path: Path
     assert Path(identity["working_directory"]).resolve() == release.resolve()
     assert not {"BLUEPRINT_REMOTE_CPU_TRANSPORT_OBJECT", "BLUEPRINT_REMOTE_CPU_TRANSPORT_GENERATION"} & set(
         identity["environment_names"])
-
-    # Heartbeats: bootstrap's, execute's at once, then one per interval while the child runs, all before the receipt.
-    heartbeats = world.heartbeats()
-    for heartbeat in heartbeats:
-        contract.validate_heartbeat(heartbeat, attempt_id=world.descriptor["attempt_id"], execution_name=EXECUTION)
-    assert [heartbeat["sequence"] for heartbeat in heartbeats] == list(range(1, len(heartbeats) + 1))
-    phases = [heartbeat["phase"] for heartbeat in heartbeats]
+    phases = [heartbeat["phase"] for heartbeat in world.heartbeats()]
     assert phases[:2] == ["bootstrap", "fetch"] and phases.count("stage") >= 2, phases
-    assert phases == sorted(phases, key=list(contract.PHASES).index)
-    assert _puts(world)[-1] == "receipt.json" and "heartbeat.json" not in _puts(world)[-3:]
 
     # A process the stage leaves behind in its session is killed when the stage returns (review M5).
     straggling = WorkerWorld(tmp_path / "straggler", archive=worker_release_archive())
@@ -638,8 +724,7 @@ def test_stage_child_is_spawned_not_forked_and_heartbeats_advance(tmp_path: Path
     assert _gone(int(pids.read_text(encoding="utf-8")))
 
 
-@pytest.mark.slow
-def test_phase_deadlines_still_upload_a_timeout_receipt(tmp_path: Path) -> None:
+def test_fetch_and_seal_deadlines_still_upload_a_timeout_receipt(tmp_path: Path) -> None:
     # Fetch: the budget runs out while inputs arrive; the rest are never fetched, and the stage never runs.
     fetch = WorkerWorld(tmp_path / "fetch")
     first, second = (_key(item["uri"]) for item in fetch.descriptor["inputs"][:2])
@@ -651,6 +736,18 @@ def test_phase_deadlines_still_upload_a_timeout_receipt(tmp_path: Path) -> None:
     assert receipt["phases"]["fetch"] >= 300 and receipt["phases"]["stage"] is None
     assert first in _gets(fetch) and second not in _gets(fetch)
 
+    # Seal and upload: the budget runs out during the archive; the index never goes, the receipt still does.
+    seal = WorkerWorld(tmp_path / "seal")
+    seal.http.before = lambda method, key: seal.clock.advance(500) if key == seal.key("blobs.tar") else None
+    assert seal.run(lambda *, descriptor, **_: _outputs(seal, descriptor)) == 0
+    receipt = seal.receipt()
+    assert receipt["infrastructure_failures"] == ["infrastructure_failed:phase_deadline:seal_upload"]
+    assert (receipt["output"], seal.staged("index.json")) == (None, None) and receipt["phases"]["seal_upload"] >= 420
+    assert _puts(seal)[-2:] == ["blobs.tar", "receipt.json"]
+
+
+@pytest.mark.slow
+def test_phase_deadlines_still_upload_a_timeout_receipt(tmp_path: Path) -> None:
     # Stage: the child and everything in its session are killed at the deadline; the receipt still uploads.
     stage = WorkerWorld(tmp_path / "stage", archive=worker_release_archive(),
                         limits={"phase_seconds": {"fetch": 300, "stage": 6, "seal_upload": 420}})
@@ -665,26 +762,29 @@ def test_phase_deadlines_still_upload_a_timeout_receipt(tmp_path: Path) -> None:
     assert all(_gone(int(pid)) for pid in pids.read_text(encoding="utf-8").split())
     assert _verdict(stage) == ("infrastructure_failed", False)
 
-    # Seal and upload: the budget runs out during the archive; the index never goes, the receipt still does.
-    seal = WorkerWorld(tmp_path / "seal")
-    seal.http.before = lambda method, key: seal.clock.advance(500) if key == seal.key("blobs.tar") else None
-    assert seal.run(lambda *, descriptor, **_: _outputs(seal, descriptor)) == 0
-    receipt = seal.receipt()
-    assert receipt["infrastructure_failures"] == ["infrastructure_failed:phase_deadline:seal_upload"]
-    assert (receipt["output"], seal.staged("index.json")) == (None, None) and receipt["phases"]["seal_upload"] >= 420
-    assert _puts(seal)[-2:] == ["blobs.tar", "receipt.json"]
-
 
 class _Response:
     def __init__(self, body: bytes = b"") -> None:
         self.body = body
 
 
-@pytest.mark.slow
-def test_worker_never_logs_or_persists_a_presigned_url(tmp_path: Path, monkeypatch, capfd, caplog) -> None:
-    caplog.set_level(logging.DEBUG)
-    succeeded = WorkerWorld(tmp_path / "succeeded", archive=worker_release_archive())
-    assert succeeded.run() == 0 and succeeded.receipt()["status"] == "succeeded"
+def _presigned_texts(tmp_path: Path, worlds: list[WorkerWorld]) -> dict[str, str]:
+    """Every file under ``tmp_path``, every worker log line, and every staging object the worlds hold."""
+
+    texts = {"logs": "\n".join(line for world in worlds for line in world.logs)}
+    texts.update({str(path): path.read_bytes().decode("utf-8", "replace")
+                  for path in tmp_path.rglob("*") if path.is_file() and not path.is_symlink()})
+    for world in worlds:
+        for name in ("heartbeat.json", "receipt.json", "index.json", "blobs.tar"):
+            texts.update({f"{world.tmp_path.name}:{name}:{index}": data.decode("utf-8", "replace")
+                          for index, data in enumerate(world.versions(name))})
+    return texts
+
+
+def test_presigned_urls_never_reach_a_log_a_file_or_argv(tmp_path: Path, monkeypatch) -> None:
+    succeeded = WorkerWorld(tmp_path / "succeeded")
+    assert succeeded.run(lambda *, descriptor, **_: _outputs(succeeded, descriptor)) == 0
+    assert succeeded.receipt()["status"] == "succeeded"
     # An authority that expires mid-upload: every later request is refused, and the refusals are typed.
     expired = WorkerWorld(tmp_path / "expired")
     expired.http.before = lambda method, key: expired.clock.advance(3000) if key == expired.key("blobs.tar") else None
@@ -749,18 +849,57 @@ def test_worker_never_logs_or_persists_a_presigned_url(tmp_path: Path, monkeypat
     assert streamed == [b"b" * 70_000]
 
     # Nothing written, logged or uploaded by the worker carries a presigned URL or its host.
-    out, err = capfd.readouterr()
-    texts = {"stdout": out, "stderr": err, "caplog": caplog.text,
-             "logs": "\n".join(succeeded.logs + expired.logs)}
-    texts.update({str(path): path.read_bytes().decode("utf-8", "replace")
-                  for path in tmp_path.rglob("*") if path.is_file() and not path.is_symlink()})
-    for world in (succeeded, expired):
-        for name in ("heartbeat.json", "receipt.json", "index.json", "blobs.tar"):
-            texts.update({f"{world.tmp_path.name}:{name}:{index}": data.decode("utf-8", "replace")
-                          for index, data in enumerate(world.versions(name))})
+    texts = _presigned_texts(tmp_path, [succeeded, expired])
     assert any(name.endswith("receipt.json:0") for name in texts)
     for name, text in texts.items():
         assert "X-Amz-Signature" not in text and "backblazeb2" not in text, name
+
+
+@pytest.mark.slow
+def test_worker_never_logs_or_persists_a_presigned_url(tmp_path: Path, capfd, caplog) -> None:
+    """The same, with a real stage child: its output and everything it and execute wrote."""
+
+    caplog.set_level(logging.DEBUG)
+    succeeded = WorkerWorld(tmp_path / "succeeded", archive=worker_release_archive())
+    assert succeeded.run() == 0 and succeeded.receipt()["status"] == "succeeded"
+    out, err = capfd.readouterr()
+    texts = {"stdout": out, "stderr": err, "caplog": caplog.text, **_presigned_texts(tmp_path, [succeeded])}
+    assert any(name.endswith("receipt.json:0") for name in texts)
+    for name, text in texts.items():
+        assert "X-Amz-Signature" not in text and "backblazeb2" not in text, name
+
+
+def test_execute_and_the_stage_child_refuse_a_shadowed_source(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Review M2: each refuses unless ``blueprint_pipeline`` is the extracted release's; this process's is not."""
+
+    world = WorkerWorld(tmp_path / "execute")
+    handoffs: list[dict] = []
+    assert worker.bootstrap(["bootstrap"], world.runtime(launch=lambda handoff: handoffs.append(handoff) or 0)) == 0
+    for name, value in world.environ.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(worker, "PresignedTransfers", lambda: world.http)
+
+    def stdin(data: bytes) -> None:
+        monkeypatch.setattr(sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(data)})())
+
+    stdin(json.dumps(handoffs[0]).encode("utf-8"))
+    assert worker._main(["execute"]) == 0
+    assert world.receipt()["infrastructure_failures"] == ["infrastructure_failed:remote_cpu_worker_source_shadowed"]
+    assert _verdict(world) == ("infrastructure_failed", False)
+    stdin(b"not a handoff")
+    assert worker._main(["execute"]) == worker.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().err.splitlines()[-1]) == {
+        "mode": "execute", "status": "refused", "code": "remote_cpu_worker_handoff_invalid"}
+
+    # The stage child reports the same refusal, and never installs its audit for code that is not the release's.
+    monkeypatch.setattr(stage_child, "install_release_audit", lambda release: pytest.fail("audit installed"))
+    report_path = tmp_path / "report.json"
+    stdin(json.dumps({"handler": "remote_cpu_worker_stages:compiled", "descriptor": world.descriptor,
+                      "filesystem_root": str(world.fs), "release_root": str(tmp_path / "release"),
+                      "report": str(report_path)}).encode("utf-8"))
+    assert worker._main(["stage"]) == 0
+    assert json.loads(report_path.read_text(encoding="utf-8")) == report(
+        failures=("remote_cpu_worker_source_shadowed",))
 
 
 def _registered(*, runtime, descriptor: dict, release: Path, handler: str, seconds: float) -> dict:
