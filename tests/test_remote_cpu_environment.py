@@ -27,6 +27,10 @@ GOLDEN_SIMD_INPUT_DIGEST = "sha256:ddbf088d1ba962388096bd276db57d40aff5f2b77fdfe
 FACTS_DISTRIBUTIONS = {
     "numpy", "usd-core", "msgpack", "jsonschema", "referencing", "rpds-py", "attrs", "webcolors", "pydantic",
     "pydantic-core", "pillow", "defusedxml", "packaging",
+    # Re-derived from real fixture compiles in a fresh interpreter (plan 14 task 4.2,
+    # test_parity_set_covers_every_distribution_a_fixture_compile_loads).
+    "annotated-types", "idna", "jsonschema-specifications", "typing-extensions", "typing-inspection",
+    "usd-convert-gsplat",
 }
 
 
