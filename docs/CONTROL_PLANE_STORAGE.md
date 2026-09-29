@@ -1314,7 +1314,10 @@ or move to a selection v2 before flipping.
 
 Resume never rewrites the sealed lane result, so a run that blocked after the
 run stays blocked; its members become readable, its staged objects provably
-gone. Redelivering such a run is out of scope.
+gone. Redelivering such a run is out of scope. A resume that changes nothing
+(the door run again on a completed attempt) leaves the promotion receipt byte
+for byte as it was: the sealed artifact manifest binds it by sha256 and the
+absence proof by digest.
 
 **Door resume.** `python3 scripts/operator_door.py provider-output-resume <run>
 <attempt> [--ingest] --wait` runs the active release's

@@ -536,9 +536,12 @@ def test_promotion_resume_is_idempotent_and_records_no_url(paired_world):
     written = json.loads((world.attempt / promotion.RESUME_FILENAME).read_text())
     assert written == resumed and written["receipt_digest"] == canonical_digest(written, digest_field="receipt_digest")
 
-    # With everything already gone, another resume is the same answer.
+    # With everything already gone, another resume is the same answer, and it rewrites nothing
+    # the proof and the sealed artifact manifest bind (review minor 4).
+    sealed = (world.staging / records.RECEIPT_FILENAME).read_bytes()
     again = world.resume()
     assert again["status"] == "completed" and _proof(world) == proof
+    assert (world.staging / records.RECEIPT_FILENAME).read_bytes() == sealed
     assert world.spaces.whole_object_gets(world.keys["output"]) == reads and world.cas.uploads == uploads
     for path in world.files():
         data = path.read_bytes()
@@ -890,14 +893,18 @@ def test_a_transient_head_failure_on_resume_keeps_the_durable_receipt(world):
     assert _receipt_now(world)["durable_reference"] == first["durable_reference"]
 
 
-def test_a_resume_killed_during_the_witness_step_keeps_the_promoted_witness(tmp_path, monkeypatch):
+@pytest.mark.parametrize("late_output", [False, True])
+def test_a_resume_killed_during_the_witness_step_keeps_the_promoted_witness(tmp_path, monkeypatch, late_output):
     world = World(tmp_path, monkeypatch)
-    _, witness, _ = _paired()
+    output, witness, _ = _paired()
     world.stage("paired_witness", witness, etag='"witness-1"')
     first, _ = world.promote(cleanup=lambda: {"status": "blocked"})
     assert (first["status"], first["witness"]["disposition"]) == ("absent_confirmed", "promoted")
     world.cleanup()  # the witness, the only paid evidence, leaves staging behind its receipt
     assert world.keys["paired_witness"] not in world.spaces.stores
+    sealed = (world.staging / records.RECEIPT_FILENAME).read_bytes()
+    if late_output:
+        world.stage("output", output)  # this resume changes the record: it promotes an output
 
     with monkeypatch.context() as patch:
         patch.setattr(promotion._Promotion, "_witness", _kill)
@@ -905,9 +912,13 @@ def test_a_resume_killed_during_the_witness_step_keeps_the_promoted_witness(tmp_
             world.resume()
 
     mid = _receipt_now(world)
-    # Still a checkpoint (closeout waits on ``pending``), yet it names the promoted witness.
     section = mid["staged_objects"]["paired_witness"]
-    assert section["state"] == "pending"
+    if late_output:
+        # A checkpoint (closeout waits on ``pending``), yet it names the promoted witness.
+        assert section["state"] == "pending" and mid["status"] == "promoted"
+    else:
+        # Nothing changed before the witness step: the final receipt stands, untouched (review minor 4).
+        assert (world.staging / records.RECEIPT_FILENAME).read_bytes() == sealed
     assert section["versions"] == first["staged_objects"]["paired_witness"]["versions"]
     assert mid["witness"]["reference"] == first["witness"]["reference"]
     assert world.resume()["status"] == "completed"

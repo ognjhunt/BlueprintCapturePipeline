@@ -735,6 +735,29 @@ def test_streamed_and_downloaded_quick10_seal_identical_evidence(tmp_path, monke
     assert any(path.suffix == ".mp4" for path in Path(download["lane"]["attempt_root"]).rglob("*"))
 
 
+def test_resume_of_a_completed_attempt_keeps_the_manifest_bound_receipt(lane):
+    """Review minor 4: the sealed artifact manifest binds the promotion receipt by sha256 as a
+    required role, and the absence proof binds it by digest. The door run again on a completed
+    attempt reuses the receipt unchanged, so it must not rewrite it."""
+    from blueprint_pipeline import provider_output_promotion as promotion
+
+    archive, _ = _small_archive()
+    result = lane.run_session(lane.adapter(archive))
+    assert result["status"] == "completed", result["blockers"]
+    attempt = Path(result["attempt_root"])
+    manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
+    [row] = [row for row in manifest["files"] if "provider_output_promotion" in row.get("roles", [])]
+    receipt = attempt / row["relative_path"]
+    before = receipt.read_bytes()
+    assert row["sha256"] == "sha256:" + hashlib.sha256(before).hexdigest()
+
+    resumed = promotion.resume_provider_output_promotion(attempt, ingest=True)
+
+    assert resumed["status"] == "completed" and resumed["ingestion"]["short_circuited"] is True
+    assert receipt.read_bytes() == before
+    assert resumed["promotion"]["receipt_digest"] == json.loads(before)["receipt_digest"]
+
+
 def test_resume_ingests_a_durable_archive_once_and_short_circuits_after_readers_write(lane, capsys):
     """The door's --ingest materializes a run blocked after promotion; once readers have written
     into the evidence root (partial recovery, interpretation), a later resume short-circuits on

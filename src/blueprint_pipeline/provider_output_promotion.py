@@ -242,6 +242,30 @@ def _observation(value: Any) -> dict[str, Any] | None:
     return {"size_bytes": value["size_bytes"], "etag": value["etag"]}
 
 
+# A run's own facts, not the output's: every run records its own.
+_RUN_FIELDS = frozenset({"generated_at", "attempts", "maximum_archive_bytes", "receipt_digest"})
+
+
+def _restates(receipt: Mapping[str, Any], prior: Mapping[str, Any] | None) -> bool:
+    """Whether ``receipt`` says nothing the bound ``prior`` receipt does not.
+
+    A checkpoint's witness is ``pending`` but carries the witness versions that
+    stand; with the same versions it restates a prior whose witness step decided.
+    """
+    if prior is None:
+        return False
+    value = dict(receipt)
+    section = (value.get("staged_objects") or {}).get("paired_witness")
+    if isinstance(section, Mapping) and section.get("state") == "pending":
+        recorded = (prior.get("staged_objects") or {}).get("paired_witness")
+        if not isinstance(recorded, Mapping) or recorded.get("versions") != section.get("versions"):
+            return False
+        value["staged_objects"] = {**value["staged_objects"], "paired_witness": recorded}
+        value["witness"] = prior.get("witness")
+    return ({key: item for key, item in value.items() if key not in _RUN_FIELDS}
+            == {key: item for key, item in prior.items() if key not in _RUN_FIELDS})
+
+
 def _json_or_none(data: bytes) -> Any:
     try:
         return json.loads(data)
@@ -283,6 +307,8 @@ class _Promotion:
         self.carried_versions: list[dict] = []
         self.rebound_from: str | None = None
         self.superseded: dict | None = None
+        self.prior_bound: dict | None = None
+        self.written = False
         self.witness_carried: list[dict] = []
         self.local_verified: Path | None = None
         self.local_removed_before = False
@@ -697,6 +723,10 @@ class _Promotion:
         """
         prior = load_promotion_receipt(self.staging, staging_manifest_sha256=manifest_sha256)
         if prior is not None:
+            # Bound here already: its lineage stands, and a run that changes nothing keeps it.
+            self.prior_bound = prior
+            self.rebound_from = prior.get("rebound_from_staging_manifest_sha256")
+            self.superseded = prior.get("superseded_receipt")
             return prior
         prior = rebindable_promotion_receipt(
             self.staging, staging_manifest_sha256=manifest_sha256, output_key=self.output_key,
@@ -710,6 +740,19 @@ class _Promotion:
     def _checkpoint(self) -> None:
         """Write the receipt as it stands, the witness still pending, before any later step."""
         self._receipt(final=False)
+
+    def _write(self, receipt: dict) -> dict:
+        """Write ``receipt`` unless it only restates the receipt bound here (review minor 4).
+
+        The sealed artifact manifest binds the receipt file by sha256 and the
+        absence proof binds it by digest, so a run that changes nothing -- the
+        door's resume of a completed attempt -- keeps the file as it is and
+        returns it. Once this run has written, every later write goes through.
+        """
+        if not self.written and _restates(receipt, self.prior_bound):
+            return dict(self.prior_bound)
+        self.written = True
+        return write_promotion_receipt(self.staging, receipt)
 
     def _receipt(self, *, final: bool) -> dict:
         staged = {}
@@ -763,15 +806,15 @@ class _Promotion:
             # The receipt names the durable copy before the local one goes, so a
             # crash in between leaves a pointer and a ZIP a resume can verify.
             receipt["local_copy_removed_after_verified_promotion"] = True
-            written = write_promotion_receipt(self.staging, receipt)
+            written = self._write(receipt)
             try:
                 self.local_verified.unlink()
             except OSError:
                 receipt["local_copy_removed_after_verified_promotion"] = False
                 receipt["blockers"] = sorted({*receipt["blockers"], "provider_output_local_copy_removal_failed"})
-                written = write_promotion_receipt(self.staging, receipt)
+                written = self._write(receipt)
             return written
-        return write_promotion_receipt(self.staging, receipt)
+        return self._write(receipt)
 
 
 def _witness_state(versions: list[dict]) -> str | None:
