@@ -1,5 +1,6 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_evaluation_policy_canary_disk.py
+#   src/blueprint_pipeline/policy_canary_partial_recovery.py
 from __future__ import annotations
 
 import functools
