@@ -10,8 +10,14 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
+import stat
+import subprocess
+import sys
 import tarfile
+import time
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -19,10 +25,23 @@ import pytest
 from blueprint_pipeline import cloud_run_jobs_client
 from blueprint_pipeline import remote_cpu_job_allocator as allocator
 from blueprint_pipeline import remote_cpu_job_contract as contract
+from blueprint_pipeline import remote_cpu_output_archive as archive
 from blueprint_pipeline import remote_cpu_worker as worker
-from tests.remote_cpu_worker_support import COMMIT, EXECUTION, WorkerWorld, digest_of, release_archive
+from tests.remote_cpu_allocator_fakes import B2_BUCKET
+from tests.remote_cpu_worker_stages import NEW_BYTES, sealed_result
+from tests.remote_cpu_worker_support import (
+    BUNDLE_MEMBERS,
+    COMMIT,
+    EXECUTION,
+    REFERENCES,
+    WorkerWorld,
+    digest_of,
+    release_archive,
+    report,
+    worker_release_archive,
+)
 
-SOURCE = "remote-cpu-source/"
+SUCCESS_SCHEMA = "docs/schemas/rigid_task_success_contract.v1.schema.json"
 
 
 def _refused(world: WorkerWorld, argv: list[str], environ: dict[str, str]) -> int:
@@ -195,3 +214,368 @@ def test_unwritable_path_root_refuses_before_fetching(tmp_path: Path) -> None:
                                    ("PUT", world.key("receipt.json"))]
     assert list(root.iterdir()) == [] and not (world.fs / "tmp" / "blueprint-release" / COMMIT).exists()
     assert world.descriptor["code"]["source_archive"]["digest"] == digest_of(world.archive)
+
+
+def _key(uri: str) -> str:
+    return uri.split("/", 3)[3]
+
+
+def _gets(world: WorkerWorld) -> list[str]:
+    return [key for method, key in world.http.requests if method == "GET"]
+
+
+def _puts(world: WorkerWorld) -> list[str]:
+    return [key.rsplit("/", 1)[1] for method, key in world.http.requests if method == "PUT"]
+
+
+def _verdict(world: WorkerWorld) -> tuple[str, bool]:
+    verdict = contract.validate_receipt(world.receipt(), descriptor=world.descriptor, execution_name=EXECUTION)
+    return verdict["outcome"], verdict["terminal"]
+
+
+def _outputs(world: WorkerWorld, descriptor: dict) -> dict:
+    """A clean stage: new bytes, an input's bytes and a bundle member's bytes, and a declared-scratch member."""
+
+    output = world.local(descriptor["outputs"]["output_root"])
+    (output / "native-arena-adapter").mkdir(parents=True)
+    (output / "native-arena-adapter" / "result.json").write_bytes(NEW_BYTES)
+    (output / "native-arena-adapter" / "model.bin").write_bytes(BUNDLE_MEMBERS["runtime/model.bin"])
+    (output / "robot.json").write_bytes(world.local(f"{REFERENCES}/prep-1/robot.json").read_bytes())
+    scratch = world.local(descriptor["outputs"]["declared_scratch"][0]) / "adapter-members"
+    scratch.mkdir(parents=True)
+    (scratch / "model.bin").write_bytes(BUNDLE_MEMBERS["runtime/model.bin"])
+    return report(sealed_result(descriptor, blockers=[]))
+
+
+def test_inputs_materialize_at_declared_paths_with_digest_checks(tmp_path: Path) -> None:
+    world = WorkerWorld(tmp_path / "fetched")
+    seen: list[tuple[str, bytes, int]] = []
+
+    def stage(*, descriptor: dict, **_: object) -> dict:
+        for item in descriptor["inputs"]:
+            local = world.local(item["materialize_at"])
+            seen.append((item["materialize_at"], local.read_bytes(), stat.S_IMODE(local.stat().st_mode)))
+        return report(sealed_result(descriptor, blockers=["episode_compilation_envelope_invalid"]))
+
+    assert world.run(stage) == 0
+    # Every input at its declared path with its declared bytes and mode, fetched once, and no partial left.
+    assert seen == [(path, data, 0o440) for path, (data, _, _) in world.inputs.items()]
+    assert _gets(world) == [world.key("receipt.json"), _key(world.descriptor["code"]["source_archive"]["uri"]),
+                            *(_key(item["uri"]) for item in world.descriptor["inputs"])]
+    assert not [path for path in world.fs.rglob("*") if path.name.endswith(".partial")]
+    receipt = world.receipt()
+    assert receipt["status"] == "blocked" and _verdict(world) == ("blocked", True)
+    assert receipt["bytes_fetched"] == len(world.archive) + sum(len(data) for data, _, _ in world.inputs.values())
+
+    # Bytes that are not the declared digest never reach the declared path, and the stage never runs.
+    tampered = WorkerWorld(tmp_path / "tampered")
+    path, (data, _, _) = list(tampered.inputs.items())[1]
+    tampered.store.put_object(Bucket=B2_BUCKET, Key=_key(tampered.descriptor["inputs"][1]["uri"]), Body=data[:-1] + b"X")
+    ran: list[int] = []
+    assert tampered.run(lambda **_: ran.append(1) or report()) == 0
+    assert ran == [] and not tampered.local(path).exists()
+    assert not [item for item in tampered.fs.rglob("*") if item.name.endswith(".partial")]
+    assert tampered.receipt()["infrastructure_failures"] == [f"infrastructure_failed:input_digest_mismatch:{path}"]
+    assert _verdict(tampered) == ("infrastructure_failed", False)
+
+    # Only a same-machine run finds an input already in place: an identical one is kept without a fetch,
+    # and any other is refused.
+    present = WorkerWorld(tmp_path / "present")
+    first, second = list(present.inputs)[:2]
+    for path, data in ((first, present.inputs[first][0]), (second, b"another file")):
+        present.local(path).parent.mkdir(parents=True, exist_ok=True)
+        present.local(path).write_bytes(data)
+        present.local(path).chmod(0o440)
+    assert present.run(lambda **_: ran.append(1) or report()) == 0
+    assert ran == [] and present.receipt()["infrastructure_failures"] == [
+        f"infrastructure_failed:input_conflict:{second}"]
+    assert _key(present.descriptor["inputs"][0]["uri"]) not in _gets(present)
+
+
+def test_duplicate_execution_with_an_existing_receipt_is_a_noop(tmp_path: Path) -> None:
+    earlier = b'{"receipt": "an earlier execution committed this attempt"}\n'
+    world = WorkerWorld(tmp_path / "earlier")
+    world.store.put_object(Bucket=B2_BUCKET, Key=world.key("receipt.json"), Body=earlier)
+    ran: list[int] = []
+    assert world.run(lambda **_: ran.append(1) or report()) == 0
+    assert world.http.requests == [("GET", world.key("receipt.json"))] and ran == []
+    assert not world.fs.exists() and world.staged("receipt.json") == earlier
+    assert json.loads(world.logs[-1]) == {"mode": "bootstrap", "status": "duplicate_execution"}
+
+    # A duplicate that commits while this one runs wins: this one then uploads no output and no receipt.
+    racing = WorkerWorld(tmp_path / "racing")
+
+    def stage(*, descriptor: dict, **_: object) -> dict:
+        outputs = _outputs(racing, descriptor)
+        racing.store.put_object(Bucket=B2_BUCKET, Key=racing.key("receipt.json"), Body=earlier)
+        return outputs
+
+    assert racing.run(stage) == 0
+    assert set(_puts(racing)) == {"heartbeat.json"} and racing.staged("receipt.json") == earlier
+    assert racing.staged("blobs.tar") is None and racing.staged("index.json") is None
+    assert json.loads(racing.logs[-1]) == {"mode": "execute", "status": "duplicate_execution"}
+
+
+def test_undeclared_write_or_changed_input_is_an_infrastructure_failure(tmp_path: Path) -> None:
+    clean = WorkerWorld(tmp_path / "clean")
+    assert clean.run(lambda *, descriptor, **_: _outputs(clean, descriptor)) == 0
+    receipt = clean.receipt()
+    assert (receipt["status"], receipt["infrastructure_failures"]) == ("succeeded", [])
+    assert _verdict(clean) == ("succeeded", True)
+    # Sealed: host-known bytes are indexed by origin, only new bytes are archived, and the receipt goes last.
+    runtime_zip, robot = (clean.descriptor["inputs"][index]["digest"] for index in (1, 2))
+    index = json.loads(clean.staged("index.json"))
+    assert {entry["path"]: entry["origin"] for entry in index["entries"]} == {
+        "native-arena-adapter/model.bin": {"input_member": {"input": runtime_zip, "member": "runtime/model.bin"}},
+        "native-arena-adapter/result.json": "archive", "robot.json": {"input": robot}}
+    blobs = clean.staged("blobs.tar")
+    output = receipt["output"]
+    assert archive.verify_blobs_stream(io.BytesIO(blobs), index, expected_digest=output["archive"]["digest"]) == {
+        "digest": digest_of(blobs), "size_bytes": len(blobs), "blob_count": 1}
+    assert output == {"format": "remote_cpu_output.v1", "paths_total": 3, "bytes_total": index["bytes_total"],
+                      "index": {"digest": digest_of(clean.staged("index.json")),
+                                "size_bytes": len(clean.staged("index.json"))},
+                      "archive": {"digest": digest_of(blobs), "size_bytes": len(blobs)},
+                      "host_known": {"count": 2, "bytes": index["bytes_total"] - len(NEW_BYTES)}}
+    assert _puts(clean)[-3:] == ["blobs.tar", "index.json", "receipt.json"]
+    assert receipt["bytes_uploaded"] == sum(
+        len(data) for name in ("blobs.tar", "index.json", "heartbeat.json") for data in clean.versions(name))
+
+    compiled = "/var/lib/blueprint/task-evaluation-inputs/compiled-episodes"
+    envelope, runtime_path, robot_path = list(clean.inputs)
+
+    def write(path: str, data: bytes = b"{}") -> None:
+        clean_path = world.local(path)
+        clean_path.parent.mkdir(parents=True, exist_ok=True)
+        clean_path.write_bytes(data)
+
+    def rewrite(path: str) -> None:
+        world.local(path).chmod(0o640)
+        world.local(path).write_bytes(b"x" * len(world.inputs[path][0]))
+        world.local(path).chmod(0o440)
+
+    cases = {
+        "stray": (lambda: write("/var/lib/blueprint/stray/leftover.json"),
+                  ["undeclared_write:/var/lib/blueprint/stray",
+                   "undeclared_write:/var/lib/blueprint/stray/leftover.json"]),
+        "beside-the-output": (lambda: write(f"{compiled}/leftover.json"), [f"undeclared_write:{compiled}/leftover.json"]),
+        "link": (lambda: os.symlink("/etc", world.local("/var/lib/blueprint/link")),
+                 ["undeclared_write:/var/lib/blueprint/link"]),
+        "rewritten": (lambda: rewrite(envelope), [f"input_changed:{envelope}"]),
+        "chmod": (lambda: world.local(robot_path).chmod(0o640), [f"input_changed:{robot_path}"]),
+        "removed": (lambda: world.local(runtime_path).unlink(), [f"input_changed:{runtime_path}"]),
+    }
+    for label, (act, expected) in cases.items():
+        world = WorkerWorld(tmp_path / label)
+
+        def stage(*, descriptor: dict, **_: object) -> dict:
+            outputs = _outputs(world, descriptor)
+            act()
+            return outputs
+
+        assert world.run(stage) == 0, label
+        receipt = world.receipt()
+        assert receipt["status"] == "infrastructure_failed", label
+        assert receipt["infrastructure_failures"] == sorted(f"infrastructure_failed:{code}" for code in expected), label
+        assert _verdict(world) == ("infrastructure_failed", False)
+        assert world.staged("blobs.tar") is None and world.staged("index.json") is None, label
+
+
+def _gone(pid: int) -> bool:
+    for _ in range(200):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.slow
+def test_missing_release_path_is_an_infrastructure_failure_not_a_blocked_result(tmp_path: Path) -> None:
+    entries = ("blueprint_pipeline.remote_cpu_worker", "blueprint_pipeline.rigid_task_success_contract_schema")
+    missing = WorkerWorld(tmp_path / "missing", archive=worker_release_archive(entries=entries, omit=(SUCCESS_SCHEMA,)))
+    assert missing.run(stage="reads_success_schema") == 0
+    receipt = missing.receipt()
+    # The stage turned the missing schema into a blocked result, as the host would; the audit hook saw the miss.
+    assert receipt["result"]["status"] == "blocked"
+    assert receipt["result"]["blockers"] == ["rigid_task_success_contract_schema_unavailable"]
+    assert (receipt["status"], receipt["release_path_misses"]) == ("infrastructure_failed", [SUCCESS_SCHEMA])
+    assert receipt["infrastructure_failures"] == [f"infrastructure_failed:release_path_missing:{SUCCESS_SCHEMA}"]
+    assert _verdict(missing) == ("infrastructure_failed", False)
+    assert missing.staged("blobs.tar") is None
+
+    # With the schema in the release, the same stage's blocked result is deterministic, and terminal.
+    present = WorkerWorld(tmp_path / "present", archive=worker_release_archive(entries=entries))
+    assert present.run(stage="reads_success_schema") == 0
+    receipt = present.receipt()
+    assert (receipt["status"], receipt["release_path_misses"], receipt["infrastructure_failures"]) == (
+        "blocked", [], [])
+    assert receipt["result"]["blockers"] == ["episode_compilation_envelope_invalid"]
+    assert _verdict(present) == ("blocked", True)
+
+
+@pytest.mark.slow
+def test_stage_child_is_spawned_not_forked_and_heartbeats_advance(tmp_path: Path, monkeypatch) -> None:
+    world = WorkerWorld(tmp_path, archive=worker_release_archive(), limits={"heartbeat_interval_seconds": 1})
+    spawned: list[tuple[list[str], object, dict]] = []
+    popen = subprocess.Popen
+
+    def recording(args, **kwargs):
+        spawned.append((list(args), kwargs.get("cwd"), dict(kwargs.get("env") or {})))
+        return popen(args, **kwargs)
+
+    def forbidden(*_: object) -> None:
+        raise AssertionError("the worker forked a Python process")
+
+    monkeypatch.setattr(worker.subprocess, "Popen", recording)
+    monkeypatch.setattr(os, "fork", forbidden)
+    assert world.run(stage="slow_compiled") == 0
+    receipt = world.receipt()
+    assert receipt["status"] == "succeeded", receipt["infrastructure_failures"]
+
+    # One fresh interpreter from the extracted release: not a copy of this process, and no transport in sight.
+    release = world.fs / "tmp" / "blueprint-release" / COMMIT
+    [(args, cwd, env)] = spawned
+    assert args == [sys.executable, "-P", "-m", "blueprint_pipeline.remote_cpu_worker", "stage"]
+    assert (Path(cwd), env["PYTHONPATH"]) == (release, str(release / "src"))
+    identity = receipt["result"]["identity"]
+    assert identity["ppid"] == os.getpid() and identity["pid"] != os.getpid()
+    assert (identity["argv"], identity["pytest_loaded"], identity["presigned_in_environment"]) == (["stage"], False, False)
+    assert Path(identity["package_file"]).resolve().is_relative_to(release.resolve())
+    assert Path(identity["working_directory"]).resolve() == release.resolve()
+    assert not {"BLUEPRINT_REMOTE_CPU_TRANSPORT_OBJECT", "BLUEPRINT_REMOTE_CPU_TRANSPORT_GENERATION"} & set(
+        identity["environment_names"])
+
+    # Heartbeats: bootstrap's, execute's at once, then one per interval while the child runs, all before the receipt.
+    heartbeats = world.heartbeats()
+    for heartbeat in heartbeats:
+        contract.validate_heartbeat(heartbeat, attempt_id=world.descriptor["attempt_id"], execution_name=EXECUTION)
+    assert [heartbeat["sequence"] for heartbeat in heartbeats] == list(range(1, len(heartbeats) + 1))
+    phases = [heartbeat["phase"] for heartbeat in heartbeats]
+    assert phases[:2] == ["bootstrap", "fetch"] and phases.count("stage") >= 2, phases
+    assert phases == sorted(phases, key=list(contract.PHASES).index)
+    assert _puts(world)[-1] == "receipt.json" and "heartbeat.json" not in _puts(world)[-3:]
+
+
+@pytest.mark.slow
+def test_phase_deadlines_still_upload_a_timeout_receipt(tmp_path: Path) -> None:
+    # Fetch: the budget runs out while inputs arrive; the rest are never fetched, and the stage never runs.
+    fetch = WorkerWorld(tmp_path / "fetch")
+    first, second = (_key(item["uri"]) for item in fetch.descriptor["inputs"][:2])
+    fetch.http.before = lambda method, key: fetch.clock.advance(400) if key == first else None
+    ran: list[int] = []
+    assert fetch.run(lambda **_: ran.append(1) or report()) == 0
+    receipt = fetch.receipt()
+    assert receipt["infrastructure_failures"] == ["infrastructure_failed:phase_deadline:fetch"] and ran == []
+    assert receipt["phases"]["fetch"] >= 300 and receipt["phases"]["stage"] is None
+    assert first in _gets(fetch) and second not in _gets(fetch)
+
+    # Stage: the child and everything in its session are killed at the deadline; the receipt still uploads.
+    stage = WorkerWorld(tmp_path / "stage", archive=worker_release_archive(),
+                        limits={"phase_seconds": {"fetch": 300, "stage": 6, "seal_upload": 420}})
+    pids = tmp_path / "pids"
+    stage.environ["REMOTE_CPU_TEST_PIDS"] = str(pids)
+    started = time.monotonic()
+    assert stage.run(stage="hangs", clock=time.monotonic) == 0
+    assert time.monotonic() - started < 60
+    receipt = stage.receipt()
+    assert receipt["infrastructure_failures"] == ["infrastructure_failed:phase_deadline:stage"]
+    assert 6 <= receipt["phases"]["stage"] < 30 and receipt["phases"]["seal_upload"] is None
+    assert all(_gone(int(pid)) for pid in pids.read_text(encoding="utf-8").split())
+    assert _verdict(stage) == ("infrastructure_failed", False)
+
+    # Seal and upload: the budget runs out during the archive; the index never goes, the receipt still does.
+    seal = WorkerWorld(tmp_path / "seal")
+    seal.http.before = lambda method, key: seal.clock.advance(500) if key == seal.key("blobs.tar") else None
+    assert seal.run(lambda *, descriptor, **_: _outputs(seal, descriptor)) == 0
+    receipt = seal.receipt()
+    assert receipt["infrastructure_failures"] == ["infrastructure_failed:phase_deadline:seal_upload"]
+    assert (receipt["output"], seal.staged("index.json")) == (None, None) and receipt["phases"]["seal_upload"] >= 420
+    assert _puts(seal)[-2:] == ["blobs.tar", "receipt.json"]
+
+
+class _Response:
+    def __init__(self, body: bytes = b"") -> None:
+        self.body = body
+
+
+@pytest.mark.slow
+def test_worker_never_logs_or_persists_a_presigned_url(tmp_path: Path, monkeypatch, capfd, caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    succeeded = WorkerWorld(tmp_path / "succeeded", archive=worker_release_archive())
+    assert succeeded.run() == 0 and succeeded.receipt()["status"] == "succeeded"
+    # A write authority that expires mid-upload: every later PUT, the receipt's too, is refused, typed.
+    expired = WorkerWorld(tmp_path / "expired")
+    expired.http.before = lambda method, key: expired.clock.advance(3000) if key == expired.key("blobs.tar") else None
+    assert expired.run(lambda *, descriptor, **_: _outputs(expired, descriptor)) == worker.EXIT_REFUSED
+    assert [json.loads(line) for line in expired.logs[-2:]] == [
+        {"mode": mode, "status": "refused", "code": "remote_cpu_worker_upload_failed:receipt.json:http_403"}
+        for mode in ("execute", "bootstrap")]
+
+    # The launcher hands execute the transport on its stdin: never in argv, the environment or a file.
+    handoffs: list[dict] = []
+    assert worker.bootstrap(["bootstrap"], WorkerWorld(tmp_path / "launch").runtime(
+        launch=lambda handoff: handoffs.append(handoff) or 0)) == 0
+    written = io.BytesIO()
+
+    class Process:
+        pid, stdin = 0, written
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            return 0
+
+    launched: list[tuple[list[str], dict]] = []
+    monkeypatch.setattr(written, "close", lambda: None)
+    monkeypatch.setattr(worker.subprocess, "Popen", lambda args, **kwargs: launched.append((args, kwargs)) or Process())
+    assert worker._launch_execute(succeeded.runtime(), handoffs[0]) == 0
+    [(args, kwargs)] = launched
+    assert "X-Amz-Signature=" in written.getvalue().decode()
+    assert not any("X-Amz-" in text for text in [*args, *kwargs["env"].values()])
+    # The pinned prefix is configuration, not authority, and the transport's name is gone.
+    assert [name for name, value in kwargs["env"].items() if "backblazeb2" in value] == [worker.PREFIX_VARIABLE]
+    assert not {worker.TRANSPORT_OBJECT_VARIABLE, worker.TRANSPORT_GENERATION_VARIABLE} & set(kwargs["env"])
+
+    # The production transfers type every failure by status or type; the URL is in no message.
+    from blueprint_pipeline import safe_outbound_http
+
+    url = handoffs[0]["transport"]["outputs"]["heartbeat.json"]
+    for error in (urllib.error.HTTPError(url, 403, f"denied {url}", {}, io.BytesIO(b"")),
+                  urllib.error.URLError(f"unreachable {url}"), safe_outbound_http.SafeOutboundHttpError(url)):
+        def refuse(*_: object, error=error, **__: object) -> None:
+            raise error
+
+        monkeypatch.setattr(safe_outbound_http, "open_request", refuse)
+        monkeypatch.setattr(safe_outbound_http, "download_file_observed", refuse)
+        for call in (lambda: worker.PresignedTransfers().upload(url, size=2, body=b"{}", content_type="x", timeout=1),
+                     lambda: worker.PresignedTransfers().read(url, max_bytes=10, timeout=1),
+                     lambda: worker.PresignedTransfers().download(url, tmp_path / "d", max_bytes=10, timeout=1)):
+            with pytest.raises(worker.TransferError) as failure:
+                call()
+            assert "X-Amz-" not in str(failure.value) and failure.value.__cause__ is None
+    streamed: list[bytes] = []
+
+    def accept(request, **_: object) -> _Response:
+        assert request.get_header("Content-length") == "70000" and request.get_method() == "PUT"
+        streamed.append(request.data.read())
+        return _Response()
+
+    monkeypatch.setattr(safe_outbound_http, "open_request", accept)
+    worker.PresignedTransfers().upload(url, size=70_000, body=lambda sink: sink.write(b"b" * 70_000),
+                                       content_type="application/x-tar", timeout=1)
+    assert streamed == [b"b" * 70_000]
+
+    # Nothing written, logged or uploaded by the worker carries a presigned URL or its host.
+    out, err = capfd.readouterr()
+    texts = {"stdout": out, "stderr": err, "caplog": caplog.text,
+             "logs": "\n".join(succeeded.logs + expired.logs)}
+    texts.update({str(path): path.read_bytes().decode("utf-8", "replace")
+                  for path in tmp_path.rglob("*") if path.is_file() and not path.is_symlink()})
+    for world in (succeeded, expired):
+        for name in ("heartbeat.json", "receipt.json", "index.json", "blobs.tar"):
+            texts.update({f"{world.tmp_path.name}:{name}:{index}": data.decode("utf-8", "replace")
+                          for index, data in enumerate(world.versions(name))})
+    assert any(name.endswith("receipt.json:0") for name in texts)
+    for name, text in texts.items():
+        assert "X-Amz-Signature" not in text and "backblazeb2" not in text, name

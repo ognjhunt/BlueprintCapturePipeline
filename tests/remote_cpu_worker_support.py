@@ -9,6 +9,7 @@ never stores a URL itself.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 import json
@@ -40,6 +41,8 @@ from tests.remote_cpu_allocator_fakes import (
 )
 from tests.remote_cpu_fakes import FakeArtifactStore, FakeClock, FakeTransportBucket
 
+ROOT = Path(__file__).resolve().parents[1]
+STAGES_MODULE = "remote_cpu_worker_stages"
 COMMIT = "a" * 40
 EXECUTION = f"{JOB_SHORT}-x7k2p"
 ROWS = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/processing"
@@ -80,6 +83,32 @@ def release_archive(commit: str = COMMIT, files: dict[str, bytes] | None = None,
         if extra is not None:
             extra(tar)
     return buffer.getvalue()
+
+
+@functools.lru_cache(maxsize=8)
+def worker_release_archive(commit: str = COMMIT, *, entries: tuple[str, ...] = ("blueprint_pipeline.remote_cpu_worker",),
+                           omit: tuple[str, ...] = ()) -> bytes:
+    """A recipe-v2 archive of this checkout's working tree for a real stage child: the import closure of
+    ``entries``, every schema but ``omit``, ``pyproject.toml``, and the test stages as ``src/remote_cpu_worker_stages.py``."""
+
+    from blueprint_pipeline.task_evaluation_production_chain_preflight import import_closure
+
+    modules: dict[str, Path] = {}
+    for entry in entries:
+        modules.update(import_closure(ROOT / "src", entry))
+    files = {str(path.relative_to(ROOT)): path.read_bytes() for path in modules.values()}
+    files.update({str(path.relative_to(ROOT)): path.read_bytes() for path in (ROOT / "docs" / "schemas").rglob("*")
+                  if path.is_file() and str(path.relative_to(ROOT)) not in omit})
+    files["pyproject.toml"] = (ROOT / "pyproject.toml").read_bytes()
+    files[f"src/{STAGES_MODULE}.py"] = (ROOT / "tests" / f"{STAGES_MODULE}.py").read_bytes()
+    return release_archive(commit, files)
+
+
+def report(result: dict[str, Any] | None = None, *, misses: tuple[str, ...] = (),
+           failures: tuple[str, ...] = ()) -> dict[str, Any]:
+    """What a stage child reports: its result, the release paths it missed, and its own failures."""
+
+    return {"result": result, "release_path_misses": list(misses), "failures": list(failures)}
 
 
 def runtime_bundle() -> bytes:
@@ -232,6 +261,15 @@ class WorkerWorld:
                   "clock": self.clock, "measure": lambda: WORKER_RECORD, "log": self.logs.append,
                   "launch": lambda handoff: 0, **changes}
         return worker.WorkerRuntime(**values)
+
+    def run(self, run_stage: Callable[..., dict[str, Any]] | None = None, *, stage: str = "compiled",
+            **changes: Any) -> int:
+        """Bootstrap, then execute in this process; ``run_stage`` stands in for the stage child when given."""
+
+        execute_runtime = self.runtime(run_stage=run_stage, handlers={
+            self.descriptor["stage"]: f"{STAGES_MODULE}:{stage}"}, **changes)
+        return worker.bootstrap(["bootstrap"], self.runtime(
+            launch=lambda handoff: worker.execute_attempt(handoff, execute_runtime), **changes))
 
     def key(self, name: str) -> str:
         return self.descriptor["outputs"]["staging_prefix"].removeprefix(f"s3://{B2_BUCKET}/") + name
