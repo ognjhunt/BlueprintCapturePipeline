@@ -59,7 +59,7 @@ EVIDENCE_ROOT_FILES = {
 HISTORICAL_SNAPSHOT_AS_OF = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
 RETAINED_HISTORICAL_ARTIFACTS = {
     ".github/workflows/ci.yml":
-        "8972af5ada3f42f01529bc635244aa78cef514455780bf47abb2c5529810b2db",
+        "88826e6dc2be0902caaa54e986aa84182b53e4c86247d4efa84d55db24993644",
     "src/blueprint_pipeline/pubsub_handoff_listener.py":
         "bcb22163835b0a6a5ec49342ac681143691a4fc08fd8334e90f1ed4fbcfbc95f",
     "tests/test_deploy_systemd_contract.py":
