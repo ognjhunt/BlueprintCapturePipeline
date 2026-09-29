@@ -90,3 +90,37 @@ def test_terminal_pin_selection_never_clears_unknown_live_or_unrelated_rows(tmp_
             member['source_provenance']=[p for p in member['source_provenance'] if p['role']!='preparation_results']
     with pytest.raises(ValueError,match='scene_retirement_'):
         selected(fresh,policy,consent,allowance)
+
+
+def test_native_selected_compilation_pin_uses_exact_current_result_not_primary_only_index(tmp_path,monkeypatch):
+    from tests.test_scene_retirement_compilation_reference_transfer import fixture as compilation
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
+    from blueprint_pipeline.control_plane_storage_pin_observation import observe_storage_pins
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    fresh,proofs,_=compilation(tmp_path)
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    monkeypatch.setattr(access,'_INSTALLED_POLICY',tmp_path/'absent-policy')
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',raising=False)
+    value=json.loads(Path(proofs['compilation_results']['path']).read_bytes())
+    member=Path(fresh['planner_context']['roots']['compilation_output_root'])/value['compilation_id']
+    pins=tmp_path/'pins'
+    write_storage_pin(pins_root=pins,kind='compilation',owner_id=value['compilation_id'],paths=[member],now=lambda:0)
+    observed=json.loads(json.dumps(asdict(observe_storage_pins(str(pins),observed_at_epoch=30000,monotonic=lambda:0).rows[0])))
+    # The selected owner is retained at the real native intent path.
+    import hashlib
+    intent_path=Path(fresh['planner_context']['roots']['intent_root'])/'intent-1'/'intent.json'
+    intent_bytes=intent_path.read_bytes()
+    intent={'role':'intent','path':str(intent_path),'sha256':'sha256:'+hashlib.sha256(intent_bytes).hexdigest(),
+            'size_bytes':len(intent_bytes),'seal_field':'intent_digest',
+            'seal_digest':json.loads(intent_bytes)['intent_digest']}
+    raw={key:intent[key] for key in ('path','sha256','size_bytes')}
+    fresh.update(selected_intent_provenance=intent,finished_observation={'status':'completed'})
+    fresh['planner_context']['pins_root']=str(pins)
+    fresh['reference_observation']['protections'].append({'kind':'pin_observation','observation':observed,'action':'KEEP'})
+    consent={'intent_id':'intent-1','intent_raw_ref':raw,'members':[{'canonical_path':str(member),
+             'owner_intent_id':'intent-1','owner_raw_ref':raw}],
+             'terminal_pin_refs':[{'path':observed['row_path'],'sha256':observed['raw_sha256'],
+                                  'size_bytes':observed['raw_size_bytes']}]}
+    allowance=ActionAllowance(expires_at=40000,now=lambda:30000,monotonic=lambda:0)
+    result=selected(fresh,{'reference_context':fresh['planner_context']},consent,allowance)
+    assert result['terminal_pin_release_rows'][0]['original_value']['kind']=='compilation'
