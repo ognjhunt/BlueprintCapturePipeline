@@ -23,6 +23,7 @@ from .policy_model_onnx import MAX_MODEL_BYTES, validate_model_task_binding
 SOURCE_FILES = (
     "policy_model_onnx.py", "policy_model_server.py", "company_policy_proxy.py",
     "company_policy_container_contract_v2.py", "decision_evidence_contracts.py",
+    "controlled_policy_actions.py",
 )
 
 

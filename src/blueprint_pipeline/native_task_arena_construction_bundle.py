@@ -161,6 +161,7 @@ def load_verified_native_task_arena_construction_bundle(
     expected_implementation_commit: str,
     expected_packet_receipt_digest: str | None = None,
     expected_runtime_source_packet_digest: str | None = None,
+    expected_execution_mode: str = "construction_canary",
 ) -> dict[str, Any]:
     """Reverify an already dry-run bundle without rebuilding or changing its SHA."""
 
@@ -188,7 +189,8 @@ def load_verified_native_task_arena_construction_bundle(
     if (
         receipt.get("schema_version") != "native_task_arena_provider_bundle.v1"
         or receipt.get("status") != "ready"
-        or receipt.get("execution_mode") != "construction_canary"
+        or expected_execution_mode not in {"construction_canary", "controlled_policy"}
+        or receipt.get("execution_mode") != expected_execution_mode
         or receipt.get("policy_candidate_id") is not None
         or receipt.get("candidate_policy_queried") is not False
     ):

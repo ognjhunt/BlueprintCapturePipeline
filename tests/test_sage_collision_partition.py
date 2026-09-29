@@ -162,6 +162,7 @@ def test_bulk_face_comparison_preserves_polygon_boundaries_and_order():
     assert np.array_equal(_selected_face_world(mesh, [1]), mesh["face_world"][3:7])
 
 
+@pytest.mark.usefixtures("_single_threaded_verdict_persistence")
 def test_partition_validation_is_a_persisted_verdict_until_bytes_move(tmp_path, monkeypatch):
     """2026-09-13: every attempt re-parsed the collision USD and re-ran the weld/union-find (~10 min)."""
     from blueprint_pipeline import sage_collision_partition as partition

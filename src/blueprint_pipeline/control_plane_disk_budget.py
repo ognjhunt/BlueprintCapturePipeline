@@ -74,6 +74,7 @@ ROLE_TTL_SECONDS: Mapping[str, int] = {
     "stage_replay": 6 * 3600,
     "policy_canary_dispatch": 6 * 3600,
     "launch_dispatch": 6 * 3600,
+    "scene_configuration_output": 6 * 3600,
     "control_plane_deploy": 4 * 3600,
     "evidence_offload": 4 * 3600,
 }  # every other role keeps DEFAULT_TTL_SECONDS

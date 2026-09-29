@@ -126,7 +126,7 @@ def _policy_provider_transfer_byte_budget(
 POLICY_MIN_COMPUTE_CAP = 800
 
 
-def run_native_task_arena_vast(
+def _run_native_task_arena_bounded_vast(
     *,
     job_dir: str | Path,
     prepared_bundle: Mapping[str, Any],
@@ -139,17 +139,20 @@ def run_native_task_arena_vast(
     allowed_active_instance_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
     retain_warm_instance: bool = False,
+    controlled_policy: bool = False,
 ) -> dict[str, Any]:
     """Run one zero-retry construction gate through the shared Vast transport."""
 
+    expected_mode = "controlled_policy" if controlled_policy else "construction_canary"
+    expected_output = "controlled_native_policy_result.v1.json" if controlled_policy else "native_task_arena_construction_result.v1.json"
     if (
         prepared_bundle.get("schema_version")
         != "native_task_arena_provider_bundle.v1"
-        or prepared_bundle.get("execution_mode") != "construction_canary"
+        or prepared_bundle.get("execution_mode") != expected_mode
         or prepared_bundle.get("policy_candidate_id") is not None
         or prepared_bundle.get("candidate_policy_queried") is not False
         or prepared_bundle.get("expected_output_filename")
-        != "native_task_arena_construction_result.v1.json"
+        != expected_output
     ):
         raise ValueError("native_task_arena_prepared_bundle_contract_invalid")
     job = Path(job_dir).expanduser().resolve()
@@ -189,7 +192,7 @@ def run_native_task_arena_vast(
         max_hourly_rate_usd=max_hourly_rate_usd,
         hard_cap_usd=hard_cap_usd,
         hard_ttl_seconds=hard_ttl_seconds,
-        expected_output_filename="native_task_arena_construction_result.v1.json",
+        expected_output_filename=expected_output,
         container_image=str(prepared_bundle["container_image"]),
         provider_bundle_kind=PROVIDER_BUNDLE_KIND,
         result_schema_version=RESULT_SCHEMA_VERSION,
@@ -206,7 +209,7 @@ def run_native_task_arena_vast(
         vast_launch_lock_file=(
             job / "native_task_arena_paid_launch.lock" if allowed_ids else None
         ),
-        candidate_policy_query_expected=False,
+        candidate_policy_query_expected=controlled_policy,
         preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
@@ -216,6 +219,14 @@ def run_native_task_arena_vast(
         authorization_consumption=consumption,
         retain_warm_instance=retain_warm_instance,
     )
+
+
+def run_native_task_arena_vast(**kwargs: Any) -> dict[str, Any]:
+    return _run_native_task_arena_bounded_vast(**kwargs)
+
+
+def run_controlled_native_policy_vast(**kwargs: Any) -> dict[str, Any]:
+    return _run_native_task_arena_bounded_vast(controlled_policy=True, **kwargs)
 
 
 def run_native_task_arena_destination_qualification_vast(

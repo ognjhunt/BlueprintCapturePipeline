@@ -22,7 +22,9 @@ from .native_task_arena_policy_diagnostic_bundle import (
 def native_task_arena_bundle_loader(mode: str) -> Any:
     """Return the fail-closed validator for one admitted execution mode."""
 
+    from .controlled_native_policy_bundle import load_verified_controlled_native_policy_bundle
     return {
+        "controlled_policy": load_verified_controlled_native_policy_bundle,
         "destination_qualification": (
             load_verified_native_task_arena_destination_qualification_bundle
         ),

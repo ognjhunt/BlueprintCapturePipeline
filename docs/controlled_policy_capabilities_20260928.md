@@ -6,9 +6,11 @@ had no compatible handoff to an isolated, observation-only execution path.
 Completion artifacts: the model service/image packaging, controlled executor,
 orchestrator hooks, and matching WebApp runtime/admission changes.
 
-The owner requested capability building and merge, with separate proof runs,
-new tests and unrelated debugging deferred. These source changes do not assert
-production execution, task success or physical outcomes.
+The owner requested capability building, commit, merge and deployment, then
+explicitly restored live proof runs. New test development and unrelated
+debugging remain deferred. Fixes directly needed for the live proof are in
+scope. Source integration alone does not establish production execution,
+task success or physical outcomes.
 
 ## Worker integration
 
@@ -106,3 +108,44 @@ intent through the authenticated run-owner skill-trace route. Submitted steps
 cannot provide their own outcome, motor-action evidence or spend authorization.
 The existing high-level trace normalization preserves unexecuted intent and
 excludes it from execution coverage.
+
+## Live proof boundary
+
+The sanitized production and dedicated-worker evidence is retained in WebApp
+[`docs/robot-team-policy-live-proof-20260928`](https://github.com/ognjhunt/Blueprint-WebApp/tree/2c3dafd06a86d6fa705b6fab7534d25bfbaa090e/docs/robot-team-policy-live-proof-20260928).
+The deployed Pipeline at `16d8551b413fe1a65fe70b3f77ad73ea0b42b287`
+queried a separate authenticated HTTPS policy and validated 15 rows of actions
+from synthetic approved camera/state inputs. No scene or scoring files were sent.
+The production-uploaded ONNX model was packaged into an immutable private image
+and actually inferred in a dedicated no-mount runsc VM, with policy-container
+cleanup read back. WebApp skill intent and owner checks were exercised live.
+
+A retained historical `completed_unqualified` development result was restored
+from its verified archive and downloaded through the actual WebApp ticket path
+with the expected SHA-256. It is deliberately unlisted-public and proves neither
+private result denial nor execution of this newly uploaded policy.
+
+These are component proofs, not a completed native Task Evaluation Run.
+Production model planning selected zero eligible tasks and refused execution
+preparation. A configured trusted native environment, authorized frozen task,
+qualified sandbox factory and signed execution offer are still needed before
+new-policy motor execution, independent outcome and private delivery can be
+claimed. Do not publish those profiles solely because source hooks exist.
+
+Live registry lease upload exposed an undefined KMS wrapping-field serialization
+error in WebApp. The targeted repair merged in
+[WebApp PR #750](https://github.com/ognjhunt/Blueprint-WebApp/pull/750); production
+KMS/Firestore write/read/decrypt replay and deployed route replay passed.
+The production Render worker delivered the durable outbox; Pipeline retained
+its exact admission. The canonical executor then claimed the production
+single-use lease, pulled and verified the private image, completed nine network
+denial probes and synthetic conformance, and removed containers, image bytes
+and credential ciphertext. A repeat credential claim returned 409.
+
+Use the separate Blueprint proxy Dockerfile under
+`deploy/docker/company_policy_proxy/`. Its worker bootstrap access is distinct
+from the customer image lease and is removed before that lease is claimed.
+The dedicated development proof VM and temporary HTTPS service were deleted.
+The sandbox was operator-invoked with an owner-authorized development boot key;
+a production native simulator, task authority and execution offer remain
+unconfigured. No real observation was sent by this qualification run.

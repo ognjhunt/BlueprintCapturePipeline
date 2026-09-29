@@ -274,7 +274,7 @@
   },
   "claim_literal_maximums": {
     "generated_world_rank_fidelity": 258,
-    "public_claim_upgrade_allowed": 285,
+    "public_claim_upgrade_allowed": 286,
     "rank_fidelity_result_proven": 521,
     "success_rate_difference_pp": 4,
     "task_success_proven": 50
@@ -306,7 +306,7 @@
     "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
     "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3216,
-    "src/blueprint_pipeline/live_pipeline_control_plane.py": 2313,
+    "src/blueprint_pipeline/live_pipeline_control_plane.py": 2319,
     "src/blueprint_pipeline/live_pipeline_intake_service.py": 3374,
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2200,
@@ -326,7 +326,7 @@
     "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 8183,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5872,
-    "src/blueprint_pipeline/paid_resource_allocator.py": 7453,
+    "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
     "src/blueprint_pipeline/policy_autoresearch.py": 2563,
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": 2053,
     "src/blueprint_pipeline/post_training_data_package.py": 6727,
@@ -338,7 +338,7 @@
     "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,
     "src/blueprint_pipeline/robot_eval_job_orchestrator.py": 12558,
-    "src/blueprint_pipeline/robot_eval_worker.py": 2356,
+    "src/blueprint_pipeline/robot_eval_worker.py": 2362,
     "src/blueprint_pipeline/robot_initial_observation.py": 2909,
     "src/blueprint_pipeline/runpod_wam_async_runner.py": 3682,
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
@@ -461,13 +461,22 @@
     "source_commit": "ea1088a99071348889f2a2f8da3d8ce27b860b4f",
     "unchanged_module_line_counts": {
       "src/blueprint_pipeline/materialization.py": 2200,
-      "src/blueprint_pipeline/paid_resource_allocator.py": 7453,
+      "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
       "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
       "src/blueprint_pipeline/site_package_orchestrator.py": 5697,
       "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2085,
       "src/blueprint_pipeline/vast_provider_adapter.py": 10420
     },
     "reason": "Reconcile already-merged protected-main growth (#1968, #1982, #2004 and earlier); no changes to these modules in the CPU prestage integration. Exact caps admit no further growth; decomposition remains required.",
+    "review_by_unchanged": "2026-10-12"
+  },
+  "baseline_adjustment_2026_09_28_controlled_policy": {
+    "source_commit": "16d8551b413fe1a65fe70b3f77ad73ea0b42b287",
+    "unchanged_module_line_counts": {
+      "src/blueprint_pipeline/live_pipeline_control_plane.py": 2319,
+      "src/blueprint_pipeline/robot_eval_worker.py": 2362
+    },
+    "reason": "ADP-050/day 28: reconcile the six already-merged lines per worker entry point that forward trusted controlled-policy execution arguments. Execution logic remains decomposed in controlled_policy_dispatch and controlled_policy_sandbox. Exact caps admit no further growth; decomposition remains required.",
     "review_by_unchanged": "2026-10-12"
   },
   "baseline_adjustment_2026_09_28": {

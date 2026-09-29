@@ -32,6 +32,7 @@ import stat
 import sys
 import threading
 import time
+import weakref
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .validation_file_digests import MINIMUM_BYTES, _identity, sha256_file
@@ -45,6 +46,19 @@ _DEPENDENCIES = ContextVar("validator_code_dependencies", default=())
 MISS = object()
 DEPENDENCY_VERSION = 2
 _DEFAULT_CODE = object()
+# A finished validation's tracer -> the thread hook it replaced. The hook is process-wide and
+# validations in other threads end in any order, so a saved hook may belong to one already over.
+_ENDED_TRACERS = weakref.WeakKeyDictionary()
+_HOOK_LOCK = threading.Lock()  # guards the process hook's bookkeeping; tracers never take it
+
+
+def _live_hook(hook):
+    try:
+        while hook in _ENDED_TRACERS:
+            hook = _ENDED_TRACERS[hook]
+    except TypeError:  # an unhashable hook, such as a callable dataclass, is never a tracer of ours
+        return hook
+    return hook
 
 
 def verdict_root() -> Path:
@@ -105,11 +119,16 @@ def executed_code_identity(run, *, always=()):
     token = _DEPENDENCIES.set(_DEPENDENCIES.get() + (names,))
     collectors = _DEPENDENCIES.get()
     owner_thread = threading.get_ident()
+    ended = False
     if threading.active_count() != 1:
         for collector in collectors:
             collector.add("")
 
     def tracer(frame, event, arg):
+        if ended:  # a thread started during the run outlived it: it gets the hook the run replaced
+            hook = _live_hook(previous_threads)
+            sys.settrace(hook)
+            return hook(frame, event, arg) if hook is not None else None
         if threading.get_ident() != owner_thread:
             for collector in collectors:
                 collector.add("")
@@ -122,22 +141,28 @@ def executed_code_identity(run, *, always=()):
                     dependencies = {module} | frame_dependencies(frame, module)
                     for collector in _DEPENDENCIES.get():
                         collector.update(dependencies)
-                except (OSError, ValueError, ImportError, SyntaxError):
+                except Exception:  # refuses persistence; never raises into the traced code
                     failures.append(True)
                     for collector in collectors:
                         collector.add("")
         return None
 
-    previous, previous_threads = sys.gettrace(), threading.gettrace()
-    threading.settrace(tracer)
+    previous = sys.gettrace()
+    with _HOOK_LOCK:
+        previous_threads = threading.gettrace()
+        threading.settrace(tracer)
     sys.settrace(tracer)
     try:
         result = run()
     finally:
         sys.settrace(previous)
-        threading.settrace(previous_threads)
         _DEPENDENCIES.reset(token)
         _DATA_CACHE.reset(data_token)
+        with _HOOK_LOCK:
+            ended = True
+            _ENDED_TRACERS[tracer] = previous_threads
+            if threading.gettrace() is tracer:  # otherwise a later validation still running restores it
+                threading.settrace(_live_hook(previous_threads))
     if failures or "" in names:
         return result, None
     names.update(str(name) for name in always if str(name).startswith(PACKAGE))
