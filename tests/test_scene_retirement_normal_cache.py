@@ -537,3 +537,31 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
         assert alias.read_bytes()==projection.read_bytes()
         assert (alias.stat().st_uid,alias.stat().st_gid)==(source['uid'],source['gid'])
 
+
+
+def test_cache_action_selects_exact_native_generated_publication_without_request_digest_waiver(tmp_path,monkeypatch):
+    from tests.test_scene_retirement_generated_publication import generated_fixture,extract,generation
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    fixture=generated_fixture(tmp_path,monkeypatch)
+    manifest,_=extract(fixture)
+    leaf,current=generation(fixture,manifest['entries'][0]['sha256'])
+    ledger=Path(fixture['policy']['generation_store'])/(hashlib.sha256(str(leaf).encode()).hexdigest()+'.json')
+    row=dict(canonical_path=str(leaf),digest=current['digest'],size_bytes=current['size_bytes'],
+        generation_id=current['generation_id'],generation_raw_ref=_raw(ledger),
+        source_raw_ref=current['source_publication_raw_ref'])
+    consent=dict(intent_raw_ref=fixture['proofs']['intent_raw_ref'],cache_objects=[row])
+    selected=cache.validate_cache_objects(fixture['policy'],consent,
+        ActionAllowance(expires_at=1000,now=lambda:101,monotonic=lambda:0))
+    assert selected==[row]
+    # The generated digest was never an original direct request reference.
+    source=json.loads(Path(row['source_raw_ref']['path']).read_bytes())
+    original=json.loads(Path(source['storage_authority_raw_ref']['path']).read_bytes())
+    request=json.loads(Path(original['submission_request_raw_ref']['path']).read_bytes())
+    from blueprint_pipeline.task_evaluation_launch_preparation_worker import collect_preparation_references
+    assert all(ref['digest']!=row['digest'] for ref in collect_preparation_references(request))
+    fixture['bundle'].unlink()
+    fixture['bundle'].write_bytes(b'foreign native source cannot borrow generated digest')
+    with pytest.raises(ValueError):
+        cache.validate_cache_objects(fixture['policy'],consent,
+            ActionAllowance(expires_at=1000,now=lambda:101,monotonic=lambda:0))
