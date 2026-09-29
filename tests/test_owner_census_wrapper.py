@@ -20,7 +20,11 @@ def run_wrapper(tmp_path, **extra):
     results.mkdir(exist_ok=True)
     fake = tmp_path / "fake-python"
     fake.write_text(
-        '#!/bin/bash\nprintf "%s\\n" "$@" > "$ARG_LOG"\n'
+        '#!/bin/bash\nprintf "%s\\n" "$@" >> "$ARG_LOG"\n'
+        'if [ "$2" = "blueprint_pipeline.control_plane_lane_legacy_owner" ]; then\n'
+        '  printf \'{"status":"complete","rows":[],"gc_eligible":false,"references_clear":false}\\n\' > "$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.legacy-owner-census.json"\n'
+        '  exit "${FAKE_RC:-0}"\n'
+        'fi\n'
         'printf \'{"status":"owner_consent_observed"}\\n\' > "$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.outcome.json"\n'
         'printf \'{"mutations":0}\\n\' > "$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.owner-census.json"\n'
         'exit "${FAKE_RC:-0}"\n'
@@ -50,11 +54,16 @@ def run_wrapper(tmp_path, **extra):
 
 
 @pytest.mark.slow
-def test_fixed_wrapper_only_runs_active_report_module(tmp_path):
+def test_fixed_wrapper_publishes_existing_consent_and_current_legacy_census(tmp_path):
     done, results, env = run_wrapper(tmp_path)
     assert done.returncode == 0
     argv = Path(env["ARG_LOG"]).read_text().splitlines()
-    assert argv[:3] == ["-m", "blueprint_pipeline.control_plane_lane_owner_consents", "report"]
+    assert argv[:3] == ["-m", "blueprint_pipeline.control_plane_lane_legacy_owner", "report"]
+    assert argv.count("-m") == 2
+    assert [argv[index + 1] for index, item in enumerate(argv) if item == "-m"] == [
+        "blueprint_pipeline.control_plane_lane_legacy_owner",
+        "blueprint_pipeline.control_plane_lane_owner_consents",
+    ]
     assert (
         "--door-config" in argv and argv[argv.index("--door-config") + 1] == env["DOOR_CONFIG_PATH"]
     )
@@ -64,6 +73,9 @@ def test_fixed_wrapper_only_runs_active_report_module(tmp_path):
         json.loads((results / (env["DOOR_REQUEST_ID"] + ".outcome.json")).read_bytes())["status"]
         == "owner_consent_observed"
     )
+    assert (results / (env["DOOR_REQUEST_ID"] + ".owner-census.json")).is_file()
+    legacy = json.loads((results / (env["DOOR_REQUEST_ID"] + ".legacy-owner-census.json")).read_bytes())
+    assert legacy["gc_eligible"] is False and legacy["references_clear"] is False
 
 
 @pytest.mark.slow

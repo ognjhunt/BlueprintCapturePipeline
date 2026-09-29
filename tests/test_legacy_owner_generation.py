@@ -18,6 +18,9 @@ def test_generation_snapshot_detects_same_size_payload_rewrite(tmp_path):
     first = snapshot_generation(target, allowed_roots=(root,))
     assert first["path"] == str(target)
     assert first["target"]["type"] == "directory"
+    assert first["lane_root"]["path"] == str(root / "lanes")
+    assert first["lane"]["path"] == str(root / "lanes" / "diagnostics")
+    assert first["lane"]["identity"]["ino"] == os.stat(root / "lanes" / "diagnostics").st_ino
     assert first["tree"]["entries"] == 2
     payload.write_bytes(b"bravo")
     second = snapshot_generation(target, allowed_roots=(root,))
