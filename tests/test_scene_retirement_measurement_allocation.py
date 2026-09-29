@@ -1,5 +1,7 @@
 """Same work/clock semantics without per-character keyword dictionaries."""
 import ast
+import hashlib
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -9,8 +11,11 @@ from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectio
 
 
 def original():
-    raw = subprocess.check_output(['git', 'show',
-        'b253116d6:src/blueprint_pipeline/task_evaluation_scene_downstream_contracts.py'], text=True)
+    # Exact historical function slice retained from b253116d6; shallow CI
+    # contains neither that Git object nor network authority to fetch it.
+    raw = (Path(__file__).parent / 'fixtures' /
+           'scene_retirement_original_bounded_size_b253116d6.txt').read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == '271ed2a8de62e62c1f2cf59c6db1faaae000c7d52febc74b99fce6ba1897a4ed'
     node = next(node for node in ast.parse(raw).body
                 if isinstance(node, ast.FunctionDef) and node.name == 'bounded_size')
     namespace = dict(vars(contracts))
