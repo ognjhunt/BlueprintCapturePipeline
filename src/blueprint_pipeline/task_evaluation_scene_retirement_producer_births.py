@@ -145,12 +145,51 @@ def existing_scene_directory(target):
         return False
 
 
+def current_directory_generation(target):
+    policy = access._policy()
+    if policy is None:
+        return None
+    target = _canonical(str(target))
+    key = hashlib.sha256(str(target).encode()).hexdigest() + '.json'
+    try:
+        value, _ = load_document(Path(policy['generation_store']) / key, maximum=65536)
+    except FileNotFoundError:
+        return None
+    _require(value.get('canonical_path') == str(target)
+             and value.get('schema_version') == 'scene_member_generation.v1'
+             and value.get('state') in {'active', 'restored-active'}
+             and value.get('state_digest') == canonical_digest(value, digest_field='state_digest'),
+             'scene_retirement_generation_unavailable')
+    return value
+
+
+def _existing_canary_identity(target, value):
+    generation = current_directory_generation(target)
+    if generation is None:
+        return  # No original birth is adopted by a legacy retained read.
+    code = 'scene_retirement_storage_authority_unproven'
+    _require(type(value) is dict and generation.get('source_storage_authority_raw_ref') is not None, code)
+    authority = selected_document(generation['source_storage_authority_raw_ref'], maximum=65536)
+    from .task_evaluation_scene_retirement_cache import _sidecar
+    _sidecar(authority)
+    request = selected_document(authority['submission_request_raw_ref'], maximum=65536)
+    _require(value.get('result_digest') == canonical_digest(value, digest_field='result_digest')
+        and value.get('activation_id') == Path(target).name
+        and value.get('request_digest') == authority['request_digest']
+        and value.get('preparation_id') == request['preparation_id']
+        and value.get('source_commit') == authority['source_commit']
+        and value.get('scene_intent_digest') == request['scene_intent_digest']
+        and generation.get('owner_raw_ref') == authority['intent_raw_ref']
+        and generation.get('birth_request_raw_ref') == authority['attempt_raw_ref'], code)
+
+
 def create_canary_output(target, *, activation_result):
     if access._policy() is None:
         Path(target).mkdir(parents=True, exist_ok=True)
         return
     with access.scene_access(target):
         if existing_scene_directory(target):
+            _existing_canary_identity(target, activation_result)
             return  # Retained delivery/teardown never needs a new paid reservation.
         if enroll_activation_child(target, activation_result=activation_result) is None:
             Path(target).mkdir(parents=True, exist_ok=True)

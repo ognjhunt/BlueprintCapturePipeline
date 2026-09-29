@@ -9,6 +9,7 @@ dispatcher resolves the exact profile from local Pipeline state and invokes
 from __future__ import annotations
 
 from .task_evaluation_scene_retirement_access import scene_participant
+from .task_evaluation_scene_retirement_launch_births import create_launch_output
 import argparse
 import contextlib
 import hashlib
@@ -1589,7 +1590,7 @@ def dispatch_launch_request(
         blockers.append("launch_profile_live_execution_disabled")
 
     run_root = Path(state_root).expanduser().resolve() / str(request.get("launch_id") or "invalid")
-    run_root.mkdir(parents=True, exist_ok=True)
+    create_launch_output(run_root, request=request, profile=profile)
     prior_receipt_path = run_root / "launch_receipt.json"
     if prior_receipt_path.is_file():
         prior_receipt = _read_json(prior_receipt_path)
