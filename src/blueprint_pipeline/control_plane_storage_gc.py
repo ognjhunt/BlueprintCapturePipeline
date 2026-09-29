@@ -299,7 +299,10 @@ def apply_gc_manifest(
         digest = str(row.get("digest") or "").removeprefix("sha256:")
         path = root / digest
         try:
-            removed_size = remove_unused_content_for_gc(path,digest=digest,size_bytes=row.get("size_bytes"))
+            removed_size = remove_unused_content_for_gc(
+                path,digest=digest,size_bytes=row.get("size_bytes"),
+                minimum_age_seconds=manifest["minimum_age_seconds"],
+            )
             if removed_size is None:
                 stat = path.lstat()
                 safe = (

@@ -306,8 +306,8 @@ def _current_parent(path,fd,identity):
     _guard(fd,identity)
 
 
-def remove_unused_content_for_gc(path,*,digest,size_bytes):
-    """Existing blob-GC phase: SH/current generation, original FD and name.
+def remove_unused_content_for_gc(path,*,digest,size_bytes,minimum_age_seconds=0):
+    """Existing blob-GC phase: EX/current generation, original FD and name.
 
     Missing or disabled installation returns the original native path. This
     does not supply scene ownership, a private action grant or a new birth.
@@ -319,9 +319,25 @@ def remove_unused_content_for_gc(path,*,digest,size_bytes):
     path=_canonical(str(path))
     _require(path.parent.name=='sha256' and path.name==digest and len(digest)==64
         and all(char in '0123456789abcdef' for char in digest)
-        and type(size_bytes) is int and size_bytes>=0,'scene_retirement_cache_candidate_changed')
-    with access.scene_access(path):
+        and type(size_bytes) is int and size_bytes>=0
+        and type(minimum_age_seconds) is int and minimum_age_seconds>=0,
+        'scene_retirement_cache_candidate_changed')
+    # An ordinary reader or publisher owns the shared scene lifetime.  Taking
+    # another shared lifetime here would let GC unlink its last name while that
+    # reader still uses it, so mutation needs the same coarse exclusive fence
+    # as the scene retirement engine.
+    with access.exclusive_scene_access():
         _require(access._policy()==policy,'scene_retirement_policy_binding_unproven')
+        generation_path=Path(policy['generation_store'])/(hashlib.sha256(str(path).encode()).hexdigest()+'.json')
+        generation=access._read(generation_path)
+        _require(generation.get('schema_version')=='scene_content_generation.v1'
+                 and generation.get('canonical_path')==str(path)
+                 and generation.get('digest')=='sha256:'+digest
+                 and generation.get('size_bytes')==size_bytes
+                 and generation.get('state')=='active'
+                 and generation.get('state_digest')==canonical_digest(generation,digest_field='state_digest'),
+                 'scene_retirement_cache_generation_unavailable')
+        access._admit(policy,(path,))
         with _opened(path.parent,directory=True) as (parent,parent_info),_opened(path) as (fd,info):
             expected,identity=_identity(parent_info),_identity(info)
             before=_snapshot(info)
@@ -343,6 +359,11 @@ def remove_unused_content_for_gc(path,*,digest,size_bytes):
                 remaining-=len(data)
             _require(hashed.hexdigest()==digest,'scene_retirement_cache_candidate_changed')
             prove()
+            # The manifest's age is a past observation.  A just-used leaf may
+            # still have the same digest and size, so recheck physical mtime at
+            # the destructive boundary under the exclusive reader fence.
+            _require(max(0.0,time.time()-os.fstat(fd).st_mtime)>=minimum_age_seconds,
+                     'scene_retirement_cache_candidate_changed')
             os.unlink(path.name,dir_fd=parent)
             _current_parent(path.parent,parent,expected)
             _guard(fd,identity)

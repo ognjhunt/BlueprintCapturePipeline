@@ -401,6 +401,28 @@ def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_p
     assert leaf.read_bytes()==original
 
 
+def test_existing_blob_gc_rechecks_physical_idle_age_before_unlink(tmp_path,monkeypatch):
+    import time
+    from blueprint_pipeline import control_plane_storage_gc as gc
+    _,consent=cache_action_consent(tmp_path,monkeypatch)
+    leaf=Path(consent['cache_objects'][0]['canonical_path'])
+    original=leaf.read_bytes()
+    inode=(leaf.stat().st_dev,leaf.stat().st_ino)
+    for candidate in (tmp_path/'inputs').rglob('*'):
+        if candidate.is_file() and candidate!=leaf and (candidate.stat().st_dev,candidate.stat().st_ino)==inode:
+            candidate.unlink()
+    assert leaf.stat().st_nlink==1
+    observed=time.time()
+    os.utime(leaf,(observed-200,observed-200))
+    manifest=gc.build_gc_manifest(content_store_roots=[leaf.parent],
+        minimum_age_seconds=100,now=lambda:observed)
+    assert manifest['candidate_count']==1
+    os.utime(leaf,(observed,observed))
+    result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
+    assert result['removed_count']==0 and len(result['skipped'])==1
+    assert leaf.read_bytes()==original
+
+
 def test_cache_consent_is_bound_to_actual_generation_and_same_authenticated_owner(tmp_path,monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_authority import load_authority
     path,consent=cache_action_consent(tmp_path,monkeypatch)
