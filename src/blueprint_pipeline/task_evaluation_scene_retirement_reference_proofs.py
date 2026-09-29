@@ -57,11 +57,13 @@ class TerminalProofs:
         self.raw={}
         self.physical={}
         self.has_inventory=preserved is not None
+        self.member_roots=[]
         self.emitted=0
         self.count=0
         self.transferred=[]
         self.locals={}
         self.covered={}
+        self.bundle_parts={}
         for row in records:
             allowance.tick()
             identity=_source(row['source'])
@@ -87,6 +89,7 @@ class TerminalProofs:
             _require(type(preserved) is dict and type(preserved.get('files')) is list
                 and len(preserved['files'])<=MAX_OCCURRENCES and type(preserved.get('members')) is list
                 and len(preserved['members'])<=256,_REASON)
+            self.member_roots=[Path(row['path']) for row in preserved['members']]
             for row in preserved['files']:
                 allowance.tick()
                 _require(type(row) is dict and type(row.get('member_index')) is int
@@ -306,6 +309,162 @@ class TerminalProofs:
         size=_measure(protection,MAX_BYTES-self.emitted)+_measure(proof,MAX_BYTES-self.emitted)
         _require(size<=MAX_BYTES-self.emitted,'scene_retirement_reference_limit')
         self.emitted+=size
+        self.transferred.append({'original_obligation':protection,'preservation_proof':proof,'action':'KEEP'})
+
+    def transfer_native_downstream(self,protection):
+        """Retain one native handoff's exact selected sealed downstream target."""
+        self.allowance.tick()
+        self.count+=1
+        _require(self.count<=MAX_OCCURRENCES,'scene_retirement_reference_limit')
+        fact,source,value=self._fact(protection)
+        roles={'configured_scene_revision_digest':('configured_revisions','revision_digest',
+                'task_evaluation_configured_scene_revision.v1'),
+               'episode_compilation_queue_envelope_digest':('compilation_envelopes','envelope_digest',
+                'task_evaluation_episode_compilation_envelope.v1'),
+               'episode_compilation_queue_receipt_digest':('compilation_intake_receipts','receipt_digest',
+                'task_evaluation_episode_compilation_intake_receipt.v1')}
+        _require(protection['kind']=='missing_edge_obligations'
+            and fact['binding_status']=='unresolved' and fact['reason']=='deferred_downstream_document'
+            and fact['digest_meaning']=='no_inferred_raw_identity'
+            and fact['contract_path'] in roles
+            and all(fact[key] is None for key in ('digest','path','uri','size_bytes'))
+            and not fact['related_sources']
+            and fact['source']['family']=='preparation' and fact['source']['role']=='result',_REASON)
+        digest=value.get(fact['contract_path'])
+        role,field,schema=roles[fact['contract_path']]
+        _require(type(digest) is str and digest.startswith('sha256:') and len(digest)==71,_REASON)
+        targets=[]
+        for target in self.canonical.get(digest,set()):
+            self.allowance.tick()
+            proofs=self.selected[target]
+            if any(proof.get('role')==role and proof.get('seal_field')==field
+                   and proof.get('seal_digest')==digest for proof in proofs):
+                targets.append(target)
+        _require(len(targets)==1,_REASON)
+        target=targets[0]
+        selected_value=self.raw[target]
+        _require(selected_value.get('schema_version')==schema and selected_value.get(field)==digest,_REASON)
+        if role=='configured_revisions':
+            _require(selected_value.get('status')=='configured',_REASON)
+        elif role=='compilation_intake_receipts':
+            _require(selected_value.get('status')=='queued_for_production_episode_compilation',_REASON)
+        else:
+            root=self.fresh.get('planner_context',{}).get('roots',{}).get('compilation_queue_root')
+            _require(type(root) is str and Path(target[0]).parent==Path(root)/'completed',_REASON)
+        lineage=self.fresh.get('historical_lineage',{})
+        native=lineage.get('compilation_native_owner_inventory',lineage)
+        rows=native.get('preparation_handoff_observations',[])
+        _require(type(rows) in (list,_Rows) and len(rows)<=MAX_OCCURRENCES,_REASON)
+        matches=[]
+        for row in rows:
+            self.allowance.tick()
+            if type(row) is not dict or row.get('pre_handoff_binding_verified') is not True:
+                continue
+            proofs=row.get('source_provenance',[])
+            _require(type(proofs) in (list,_Rows) and len(proofs)<=MAX_OCCURRENCES,_REASON)
+            selected_source=selected_target=False
+            for item in proofs:
+                self.allowance.tick()
+                if type(item) is dict:
+                    identity=_selector(item)
+                    selected_source|=(identity==source and item.get('role') in {
+                        'native_preparation_results','preparation_results'})
+                    selected_target|=(identity==target and item.get('role')==role
+                        and item.get('seal_field')==field and item.get('seal_digest')==digest)
+            if selected_source and selected_target:
+                matches.append(row)
+        _require(len(matches)==1,_REASON)
+        inside=any(Path(target[0]).is_relative_to(root) for root in self.member_roots)
+        _require(not inside or self.physical.get(target[0])==target,_REASON)
+        proof={'kind':'selected_native_downstream_document','canonical_digest':digest,
+               'original_target':dict(zip(('path','sha256','size_bytes'),target)),
+               'archive_inventory_verified':self.has_inventory and inside,
+               'retained_outside_removal_union':self.has_inventory and not inside}
+        size=_measure(protection,MAX_BYTES-self.emitted)+_measure(proof,MAX_BYTES-self.emitted)
+        _require(size<=MAX_BYTES-self.emitted,'scene_retirement_reference_limit')
+        self.emitted+=size
+        self.transferred.append({'original_obligation':protection,'preservation_proof':proof,'action':'KEEP'})
+
+    def transfer_native_bundle(self,protection):
+        """Keep the exact nested bundle row and its result digest together."""
+        self.allowance.tick()
+        self.count+=1
+        _require(self.count<=MAX_OCCURRENCES,'scene_retirement_reference_limit')
+        fact,source,value=self._fact(protection)
+        pair={('configured_scene_bundle_digest','deferred_downstream_document'),
+              ('scene.configured_revision.configured_scene_bundle','deferred_parent_reference_proof')}
+        _require(protection['kind']=='missing_edge_obligations'
+            and (fact['contract_path'],fact['reason']) in pair
+            and fact['binding_status']=='unresolved'
+            and fact['digest_meaning']=='no_inferred_raw_identity'
+            and all(fact[key] is None for key in ('digest','path','uri','size_bytes'))
+            and not fact['related_sources']
+            and fact['source']['family']=='preparation' and fact['source']['role']=='result',_REASON)
+        references=value.get('references')
+        _require(type(references) is list and len(references)<=MAX_OCCURRENCES,_REASON)
+        matches=[row for row in references if type(row) is dict and
+                 row.get('contract_path')=='scene.configured_revision.configured_scene_bundle']
+        _require(len(matches)==1,_REASON)
+        row=matches[0]
+        path,digest,size=_selector(row,'materialized_path','digest','size_bytes')
+        _require(value.get('configured_scene_bundle_digest')==digest
+                 and row.get('full_byte_service_account_readback_passed') is True
+                 and type(row.get('content_addressed_reuse')) is bool
+                 and type(row.get('uri')) is str and 0<len(row['uri'])<=4096,_REASON)
+        root=self.fresh.get('planner_context',{}).get('roots',{}).get('preparation_input_root')
+        prep=value.get('preparation_id')
+        _require(type(root) is str and type(prep) is str
+                 and Path(path).is_relative_to(Path(root)/prep),_REASON)
+        revision_digest=value.get('configured_scene_revision_digest')
+        _require(type(revision_digest) is str,_REASON)
+        revisions=[]
+        for identity in self.canonical.get(revision_digest,set()):
+            self.allowance.tick()
+            if any(proof.get('role')=='configured_revisions' and proof.get('seal_field')=='revision_digest'
+                   and proof.get('seal_digest')==revision_digest for proof in self.selected[identity]):
+                revisions.append(identity)
+        _require(len(revisions)==1,_REASON)
+        revision=revisions[0]
+        revision_value=self.raw[revision]
+        _require(revision_value.get('schema_version')=='task_evaluation_configured_scene_revision.v1'
+                 and revision_value.get('status')=='configured'
+                 and revision_value.get('configured_scene_bundle')=={
+                     'uri':row['uri'],'digest':digest,'size_bytes':size},_REASON)
+        lineage=self.fresh.get('historical_lineage',{})
+        native=lineage.get('compilation_native_owner_inventory',lineage)
+        observations=native.get('preparation_handoff_observations',[])
+        _require(type(observations) in (list,_Rows) and len(observations)<=MAX_OCCURRENCES,_REASON)
+        bound=[]
+        for observation in observations:
+            self.allowance.tick()
+            if type(observation) is not dict or observation.get('pre_handoff_binding_verified') is not True:
+                continue
+            proofs=observation.get('source_provenance',[])
+            _require(type(proofs) in (list,_Rows) and len(proofs)<=MAX_OCCURRENCES,_REASON)
+            source_seen=revision_seen=False
+            for item in proofs:
+                self.allowance.tick()
+                if type(item) is dict:
+                    identity=_selector(item)
+                    source_seen|=(identity==source and item.get('role') in {
+                        'native_preparation_results','preparation_results'})
+                    revision_seen|=(identity==revision and item.get('role')=='configured_revisions')
+            if source_seen and revision_seen:
+                bound.append(observation)
+        _require(len(bound)==1,_REASON)
+        inside=any(Path(path).is_relative_to(root) for root in self.member_roots)
+        if self.has_inventory:
+            _require(inside and self.physical.get(path)==(path,digest,size),_REASON)
+        parts=self.bundle_parts.setdefault(source,set())
+        _require(fact['reason'] not in parts,_REASON)
+        parts.add(fact['reason'])
+        proof={'kind':'selected_native_bundle','raw_digest':digest,
+               'materialized_path':path,'size_bytes':size,
+               'revision_target':dict(zip(('path','sha256','size_bytes'),revision)),
+               'archive_inventory_verified':self.has_inventory and inside}
+        amount=_measure(protection,MAX_BYTES-self.emitted)+_measure(proof,MAX_BYTES-self.emitted)
+        _require(amount<=MAX_BYTES-self.emitted,'scene_retirement_reference_limit')
+        self.emitted+=amount
         self.transferred.append({'original_obligation':protection,'preservation_proof':proof,'action':'KEEP'})
 
     def _targets(self,targets,protection):

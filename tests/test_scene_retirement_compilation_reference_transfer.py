@@ -57,6 +57,94 @@ def test_selected_finished_compilation_bytes_transfer_with_native_binding_and_or
     assert fresh==original and result['references_clear'] is False and result['consumer_fence_checked'] is False
 
 
+def test_verified_native_handoff_selects_revision_and_intake_raw_targets(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_retirement_reference_transfer import _sources
+    fresh,_,allowance=fixture(tmp_path)
+    selected=_sources(fresh,allowance)
+    roles={proof['role'] for rows in selected.values() for proof in rows}
+    assert {'configured_revisions','compilation_intake_receipts'}<=roles
+    fresh['historical_lineage']['preparation_handoff_observations'][0]['pre_handoff_binding_verified']=False
+    selected=_sources(fresh,allowance)
+    roles={proof['role'] for rows in selected.values() for proof in rows}
+    assert not {'configured_revisions','compilation_intake_receipts'} & roles
+
+
+@pytest.mark.parametrize('field',[
+    'configured_scene_revision_digest','episode_compilation_queue_envelope_digest',
+    'episode_compilation_queue_receipt_digest'])
+def test_verified_native_handoff_transfers_only_exact_selected_downstream_selector(tmp_path,field):
+    fresh,allowance,raw=downstream_selector_fact(tmp_path,field)
+    result=check(fresh,allowance)
+    proof=result['transferred_obligations'][-1]['preservation_proof']
+    assert proof['kind']=='selected_native_downstream_document'
+    assert proof['canonical_digest']==json.loads(raw)[field]
+
+
+def downstream_selector_fact(tmp_path,field):
+    import hashlib
+    fresh,_,allowance=fixture(tmp_path)
+    proof=next(p for row in fresh['measured_members'] for p in row['source_provenance']
+               if p.get('role')=='native_preparation_results' and p.get('seal_field')=='result_digest'
+               and field in json.loads(Path(p['path']).read_bytes()))
+    raw=Path(proof['path']).read_bytes()
+    source={'family':'preparation','queue_root':fresh['planner_context']['roots']['preparation_queue_root'],
+            'role':'result','row_path':proof['path'],'raw_sha256':'sha256:'+hashlib.sha256(raw).hexdigest(),
+            'raw_size_bytes':len(raw),'observed_identity':None}
+    fresh['reference_observation']['record_dispositions']=[{'source':source,'disposition':'supported',
+        'reason':'supplied_integrity_only','canonical_digest':proof['seal_digest']}]
+    fact={'source':source,'contract_path':field,'binding_status':'unresolved',
+          'reason':'deferred_downstream_document','digest_meaning':'no_inferred_raw_identity',
+          'digest':None,'path':None,'uri':None,'size_bytes':None,'related_sources':[]}
+    fresh['reference_observation']['protections'].append({'kind':'missing_edge_obligations',
+        'observation':fact,'action':'KEEP'})
+    fresh['reference_observation']['blockers']=['deferred_downstream_document']
+    return fresh,allowance,raw
+
+
+def test_active_compilation_envelope_cannot_transfer_downstream_selector(tmp_path):
+    fresh,allowance,_=downstream_selector_fact(tmp_path,'episode_compilation_queue_envelope_digest')
+    proof=next(p for row in fresh['measured_members'] for p in row['source_provenance']
+               if p.get('role')=='compilation_envelopes')
+    old=Path(proof['path'])
+    active=old.parent.parent/'pending'/old.name
+    active.parent.mkdir(exist_ok=True)
+    old.rename(active)
+    for row in fresh['measured_members']:
+        for item in row['source_provenance']:
+            if item.get('path')==str(old):
+                item['path']=str(active)
+    for row in fresh['historical_lineage']['preparation_handoff_observations']:
+        for item in row['source_provenance']:
+            if item.get('path')==str(old):
+                item['path']=str(active)
+    with pytest.raises(ValueError,match='scene_retirement_reference_'):
+        check(fresh,allowance)
+
+
+def test_native_bundle_digest_and_nested_materialized_row_transfer_as_one_pair(tmp_path):
+    fresh,allowance,raw=downstream_selector_fact(tmp_path,'configured_scene_bundle_digest')
+    nested=copy.deepcopy(fresh['reference_observation']['protections'][-1])
+    nested['observation'].update(contract_path='scene.configured_revision.configured_scene_bundle',
+        reason='deferred_parent_reference_proof')
+    fresh['reference_observation']['protections'].append(nested)
+    fresh['reference_observation']['blockers'].append('deferred_parent_reference_proof')
+    result=check(fresh,allowance)
+    proofs=[row['preservation_proof'] for row in result['transferred_obligations'][-2:]]
+    assert [row['kind'] for row in proofs]==['selected_native_bundle','selected_native_bundle']
+    assert all(row['raw_digest']==json.loads(raw)['configured_scene_bundle_digest'] for row in proofs)
+    from blueprint_pipeline.task_evaluation_scene_retirement_reference_transfer import validate_current_reference_transfer
+    materialized=json.loads(raw)['references'][0]['materialized_path']
+    preserved={'members':[{'path':str(Path(materialized).parent)}],'files':[]}
+    with pytest.raises(ValueError,match='scene_retirement_reference_closure_unproven'):
+        validate_current_reference_transfer(fresh,allowance,preserved=preserved)
+
+
+def test_unpaired_native_bundle_digest_remains_keep(tmp_path):
+    fresh,allowance,_=downstream_selector_fact(tmp_path,'configured_scene_bundle_digest')
+    with pytest.raises(ValueError,match='scene_retirement_reference_closure_unproven'):
+        check(fresh,allowance)
+
+
 def inline_owner_fact(tmp_path):
     import hashlib
     fresh,_,allowance=fixture(tmp_path)

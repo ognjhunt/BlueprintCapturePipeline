@@ -60,6 +60,25 @@ def _sources(fresh,allowance):
             # Native measurement provenance is selected membership evidence.
             # Raw_versions/unselected observations are deliberately not indexed.
             result.setdefault(identity,[]).append(proof)
+    lineage=fresh.get('historical_lineage',{})
+    native=lineage.get('compilation_native_owner_inventory',lineage)
+    observations=_rows(native.get('preparation_handoff_observations',[]))
+    fields={'configured_revisions':'revision_digest',
+            'compilation_intake_receipts':'receipt_digest'}
+    for row in observations:
+        allowance.tick()
+        if type(row) is not dict or row.get('pre_handoff_binding_verified') is not True:
+            continue
+        for proof in _rows(row.get('source_provenance',[])):
+            allowance.tick()
+            role=proof.get('role') if type(proof) is dict else None
+            if role not in fields:
+                continue
+            occurrences+=1
+            _require(occurrences<=10000 and proof.get('seal_field')==fields[role]
+                     and type(proof.get('seal_digest')) is str,_REASON)
+            identity=_selector(proof)
+            result.setdefault(identity,[]).append(proof)
     return result
 
 
@@ -383,7 +402,9 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
     blockers=_rows(observation.get('blockers'))
     _require(len(scopes)==3 and {row.get('child') for row in scopes if type(row) is dict}==_SCOPES
              and all(type(row) is dict and row.get('complete') is True for row in scopes)
-             and all(reason=='deferred_semantic_object' for reason in blockers),
+             and all(reason in {'deferred_semantic_object','deferred_downstream_document',
+                                'deferred_parent_reference_proof'}
+                     for reason in blockers),
              'scene_retirement_reference_scope_unproven')
     selected=_sources(fresh,allowance)
     jobs=_current_sam_results(selected,fresh,allowance)
@@ -450,8 +471,19 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
             facts.transfer(protection)
             continue
         if protection.get('kind')=='missing_edge_obligations':
-            facts.transfer_inline_owner(protection)
-            deferred.append('deferred_semantic_object')
+            reason=protection.get('observation',{}).get('reason')
+            if reason=='deferred_semantic_object':
+                facts.transfer_inline_owner(protection)
+            elif reason=='deferred_downstream_document':
+                if protection.get('observation',{}).get('contract_path')=='configured_scene_bundle_digest':
+                    facts.transfer_native_bundle(protection)
+                else:
+                    facts.transfer_native_downstream(protection)
+            elif reason=='deferred_parent_reference_proof':
+                facts.transfer_native_bundle(protection)
+            else:
+                _require(False,_REASON)
+            deferred.append(reason)
             continue
         # Released observations carry retained evidence but protect no live
         # consumer. Every positive/dependent/unreleased/unknown fact still keeps.
@@ -462,6 +494,8 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
                  and math.isfinite(pin['released_at_epoch']) and pin['released_at_epoch']>=0,_REASON)
         released+=1
     _require(set(deferred)==set(blockers),_REASON)
+    _require(all(parts=={'deferred_downstream_document','deferred_parent_reference_proof'}
+                 for parts in facts.bundle_parts.values()),_REASON)
     return dict(scope='selected_closed_metadata_transfer_only',
         transferred_records=records,transferred_record_count=len(records),
         transferred_auxiliary_records=auxiliaries,
