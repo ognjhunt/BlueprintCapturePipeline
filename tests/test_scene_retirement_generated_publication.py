@@ -255,3 +255,19 @@ def test_generated_manifest_publication_is_immutable_only_after_full_write(tmp_p
     monkeypatch.setattr(os, 'write', observed)
     extract(fixture)
     assert seen and list(ledger.glob('generated-manifest-*.json'))
+
+
+def test_actual_producer_metadata_uses_service_store_not_root_authority_mode(tmp_path, monkeypatch):
+    fixture = generated_fixture(tmp_path, monkeypatch)
+    from blueprint_pipeline import task_evaluation_scene_retirement_generated as generated
+    from contextlib import contextmanager
+    original = generated._opened
+    store = Path(fixture['policy']['generation_store'])
+    @contextmanager
+    def observed(path, *, directory=False, protected=False):
+        if Path(path) == store or Path(path).parent == store:
+            assert protected is False, 'blueprint-owned producer evidence cannot require root ownership'
+        with original(path, directory=directory, protected=protected) as selected:
+            yield selected
+    monkeypatch.setattr(generated, '_opened', observed)
+    extract(fixture)
