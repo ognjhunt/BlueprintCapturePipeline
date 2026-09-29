@@ -57,6 +57,14 @@ EVIDENCE_ROOT_FILES = {
 # Contract/mutation tests replay that snapshot at its original review window;
 # the validator itself still defaults to the real clock and refuses expiry.
 HISTORICAL_SNAPSHOT_AS_OF = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+RETAINED_HISTORICAL_ARTIFACTS = {
+    ".github/workflows/ci.yml":
+        "8972af5ada3f42f01529bc635244aa78cef514455780bf47abb2c5529810b2db",
+    "src/blueprint_pipeline/pubsub_handoff_listener.py":
+        "bcb22163835b0a6a5ec49342ac681143691a4fc08fd8334e90f1ed4fbcfbc95f",
+    "tests/test_deploy_systemd_contract.py":
+        "1be0d75d7f4db82b173a250fbf06fca0141d1dc233d17fa062bb384050bc884e",
+}
 RECORDED_COMMAND_AUTHORITIES: frozenset[str] = frozenset()
 CLAIM_BOUNDARY_TRUE_FIELDS = {
     "code_change_is_not_external_proof",
@@ -1378,6 +1386,30 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
     return sorted(set(errors))
 
 
+def _retained_historical_repository_files() -> dict[str, Path]:
+    retained = {}
+    for original_path, digest in RETAINED_HISTORICAL_ARTIFACTS.items():
+        fixture = _safe_repository_file(
+            f"tests/fixtures/quality_gap_historical_artifacts/{digest}.txt"
+        )
+        assert fixture is not None and _sha256(fixture) == f"sha256:{digest}"
+        retained[original_path] = fixture
+    return retained
+
+
+def _select_retained_historical_artifacts(monkeypatch: Any) -> None:
+    # Only the explicitly named historical replay selects original bytes.
+    # Current validation and every authority/expiry/digest mutation test use
+    # the actual worktree. No ledger hash, date or closure claim is refreshed.
+    retained = _retained_historical_repository_files()
+    current_resolver = _safe_repository_file
+    monkeypatch.setattr(
+        __import__(__name__, fromlist=["_safe_repository_file"]),
+        "_safe_repository_file",
+        lambda path: retained[path] if path in retained else current_resolver(path),
+    )
+
+
 def test_retained_historical_artifacts_match_original_ledger_bindings() -> None:
     retained = _retained_historical_repository_files()
     artifacts = [
@@ -1411,13 +1443,15 @@ def test_historical_replay_cannot_hide_current_artifact_drift(monkeypatch: Any) 
     assert ledger["command_attestation_policy"]["enabled"] is False
 
 
-def test_historical_gap_ledger_snapshot_maps_all_107_acceptance_criteria_and_derives_status() -> None:
+def test_historical_gap_ledger_snapshot_maps_all_107_acceptance_criteria_and_derives_status(monkeypatch: Any) -> None:
     ledger = _load_ledger()
     audit_rows = _audit_rows()
 
     assert len(audit_rows) == 107
     assert len({row["id"] for row in audit_rows}) == 107
-    assert _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF) == []
+    with monkeypatch.context() as historical:
+        _select_retained_historical_artifacts(historical)
+        assert _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF) == []
     assert ledger["evidence_mapping_sha256"] == (APPROVED_CRITERION_EVIDENCE_MAP_SHA256)
     assert ledger["status_counts"] == {
         "open": 13,

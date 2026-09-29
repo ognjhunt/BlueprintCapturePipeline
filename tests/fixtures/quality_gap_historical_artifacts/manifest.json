@@ -1,0 +1,38 @@
+{
+  "schema_version": "quality_gap_historical_artifact_fixture.v1",
+  "source_copy_commit": "f4c8963e9045225acb9bba9bb152d4ed4dce9319",
+  "purpose": "Exact retained bytes already bound by unchanged ledger; historical test replay only, no current release or closure attestation",
+  "ledger_modified": false,
+  "rows": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "sha256:8972af5ada3f42f01529bc635244aa78cef514455780bf47abb2c5529810b2db",
+      "size_bytes": 24462,
+      "fixture": "tests/fixtures/quality_gap_historical_artifacts/8972af5ada3f42f01529bc635244aa78cef514455780bf47abb2c5529810b2db.txt",
+      "ledger_artifact_ids": [
+        "REL-07-AC-01-EV-01"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/pubsub_handoff_listener.py",
+      "sha256": "sha256:bcb22163835b0a6a5ec49342ac681143691a4fc08fd8334e90f1ed4fbcfbc95f",
+      "size_bytes": 104321,
+      "fixture": "tests/fixtures/quality_gap_historical_artifacts/bcb22163835b0a6a5ec49342ac681143691a4fc08fd8334e90f1ed4fbcfbc95f.txt",
+      "ledger_artifact_ids": [
+        "RUN-02-AC-01-EV-01",
+        "RUN-03-AC-01-EV-01"
+      ]
+    },
+    {
+      "path": "tests/test_deploy_systemd_contract.py",
+      "sha256": "sha256:1be0d75d7f4db82b173a250fbf06fca0141d1dc233d17fa062bb384050bc884e",
+      "size_bytes": 52226,
+      "fixture": "tests/fixtures/quality_gap_historical_artifacts/1be0d75d7f4db82b173a250fbf06fca0141d1dc233d17fa062bb384050bc884e.txt",
+      "ledger_artifact_ids": [
+        "RUN-19-AC-01-EV-02",
+        "RUN-21-AC-01-EV-02",
+        "RUN-22-AC-01-EV-02"
+      ]
+    }
+  ]
+}
