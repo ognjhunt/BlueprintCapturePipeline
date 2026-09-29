@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import fcntl
 import os
+import re
 import stat
 import time
 from contextlib import ExitStack
@@ -326,3 +328,164 @@ def validate_registration(packet: dict, approval: dict, *, current_generation: d
                   mutations=0)
     result["registration_digest"] = canonical_digest(result, digest_field="registration_digest")
     return result
+
+
+class LegacyOwnerStore:
+    """Root-owned append-only packet/decision/receipt chain for owner labels."""
+
+    _ID = re.compile(r"[0-9a-f]{32}\Z")
+    _ENTRY = re.compile(r"(?:[0-9a-f]{32}\.(?:packet|approval|registration|receipt)\.json|"
+                        r"[0-9a-f]{64}\.[0-9a-f]{32}\.head\.json)\Z")
+    _KINDS = frozenset(("packet", "approval", "registration", "receipt"))
+    _CAP = 32768
+    _MAX_RECORDS = 1024
+    _MAX_BYTES = 64 * 1024 * 1024
+    _LOCK = ".legacy-owner.lock"
+
+    def __init__(self, files, root: str | Path):
+        from . import control_plane_lane_owner_consents as owners
+
+        self.files = files
+        self.root = Path(root)
+        try:
+            self.parent, _ = files.parent(self.root / ".legacy-owner.probe", protected=True)
+            owners._protected(os.fstat(self.parent), directory=True, mode=0o700)
+            lock = files.open(self._LOCK, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                              parent=self.parent)
+            info = os.fstat(lock)
+            owners._protected(info, mode=0o600)
+            _require(info.st_size == 0, "legacy_owner_store_unsafe")
+            files.records.append(owners._Acquired(lock, self.parent, self._LOCK, info))
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._scan()
+        except (OSError, owners.OwnerCensusConsentError) as error:
+            raise LegacyOwnerError("legacy_owner_store_unsafe") from error
+
+    def _scan(self) -> list[str]:
+        from . import control_plane_lane_owner_consents as owners
+
+        count, size, names = 0, 0, []
+        try:
+            owners._protected(os.fstat(self.parent), directory=True, mode=0o700)
+            with os.scandir(self.parent) as iterator:
+                for entry in iterator:
+                    self.files.budget.charge("entries")
+                    count += 1
+                    _require(count <= self._MAX_RECORDS + 1, "legacy_owner_store_full")
+                    info = os.stat(entry.name, dir_fd=self.parent, follow_symlinks=False)
+                    owners._protected(info, mode=0o600)
+                    _require(entry.name == self._LOCK or self._ENTRY.fullmatch(entry.name) is not None,
+                             "legacy_owner_store_unsafe")
+                    _require(0 <= info.st_size <= self._CAP, "legacy_owner_store_unsafe")
+                    if entry.name == self._LOCK:
+                        _require(info.st_size == 0, "legacy_owner_store_unsafe")
+                    else:
+                        names.append(entry.name)
+                    size += info.st_size
+                    _require(size <= self._MAX_BYTES, "legacy_owner_store_full")
+            self.files.verify()
+            return sorted(names)
+        except (OSError, owners.OwnerCensusConsentError) as error:
+            raise LegacyOwnerError("legacy_owner_store_unsafe") from error
+
+    @staticmethod
+    def _payload(record: dict) -> bytes:
+        _require(type(record) is dict, "legacy_owner_record_invalid")
+        try:
+            raw = (json.dumps(record, sort_keys=True, separators=(",", ":"),
+                              ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+        except (TypeError, ValueError, UnicodeError):
+            raise LegacyOwnerError("legacy_owner_record_invalid") from None
+        _require(0 < len(raw) <= LegacyOwnerStore._CAP, "legacy_owner_record_invalid")
+        return raw
+
+    def _record_path(self, name: str) -> Path:
+        _require(self._ENTRY.fullmatch(name) is not None, "legacy_owner_record_invalid")
+        return self.root / name
+
+    def _read(self, name: str) -> dict:
+        from . import control_plane_lane_owner_consents as owners
+        from . import control_plane_lane_scratch_decisions as retained
+
+        try:
+            raw, _ = self.files.read(self._record_path(name), cap=self._CAP,
+                                     protected=True, mode=0o600)
+            value = retained._document(raw, self._CAP, _work_budget=self.files.budget)
+            _require(type(value) is dict and raw == self._payload(value),
+                     "legacy_owner_record_invalid")
+            self.files.verify()
+            return value
+        except (OSError, owners.OwnerCensusConsentError, retained.CensusDecisionError) as error:
+            raise LegacyOwnerError("legacy_owner_record_invalid") from error
+
+    def read(self, packet_id: str, kind: str) -> dict:
+        _require(isinstance(packet_id, str) and self._ID.fullmatch(packet_id) is not None
+                 and kind in self._KINDS, "legacy_owner_record_invalid")
+        return self._read(f"{packet_id}.{kind}.json")
+
+    def _publish_name(self, name: str, record: dict) -> None:
+        from . import control_plane_lane_owner_consents as owners
+
+        payload = self._payload(record)
+        _require(len(self._scan()) < self._MAX_RECORDS, "legacy_owner_store_full")
+        try:
+            current = os.stat(name, dir_fd=self.parent, follow_symlinks=False)
+        except FileNotFoundError:
+            current = None
+        except OSError:
+            raise LegacyOwnerError("legacy_owner_record_conflict") from None
+        if current is not None:
+            _require(stat.S_ISREG(current.st_mode) and current.st_nlink == 1,
+                     "legacy_owner_record_conflict")
+            try:
+                existing = self._read(name)
+            except LegacyOwnerError:
+                raise LegacyOwnerError("legacy_owner_record_conflict") from None
+            _require(existing == record, "legacy_owner_record_conflict")
+            return
+        try:
+            self.files.verify()
+            owners._publish(self.files, self.parent, name, payload, mode=0o600, immutable=True)
+        except (OSError, owners.OwnerCensusConsentError) as error:
+            raise LegacyOwnerError("legacy_owner_record_conflict") from error
+        _require(self._read(name) == record, "legacy_owner_record_conflict")
+
+    def publish(self, packet_id: str, kind: str, record: dict) -> None:
+        _require(isinstance(packet_id, str) and self._ID.fullmatch(packet_id) is not None
+                 and kind in self._KINDS, "legacy_owner_record_invalid")
+        self._publish_name(f"{packet_id}.{kind}.json", record)
+
+    @staticmethod
+    def _head_name(path: str, packet_id: str) -> str:
+        _require(isinstance(path, str) and path.startswith("/") and ".." not in Path(path).parts
+                 and isinstance(packet_id, str) and LegacyOwnerStore._ID.fullmatch(packet_id) is not None,
+                 "legacy_owner_record_invalid")
+        return hashlib.sha256(path.encode("utf-8")).hexdigest() + "." + packet_id + ".head.json"
+
+    def publish_head(self, path: str, packet_id: str, registration: dict) -> None:
+        _require(registration.get("path") == path, "legacy_owner_record_invalid")
+        head = dict(schema_version="control_plane_lane_legacy_owner_head.v1",
+                    packet_id=packet_id, path=path,
+                    registration_digest=canonical_digest(registration),
+                    gc_eligible=False, references_clear=False, mutations=0)
+        self._publish_name(self._head_name(path, packet_id), head)
+
+    def committed_heads(self) -> list[dict]:
+        heads = []
+        for name in self._scan():
+            if not name.endswith(".head.json"):
+                continue
+            head = self._read(name)
+            packet_id, path = head.get("packet_id"), head.get("path")
+            _require(isinstance(packet_id, str) and isinstance(path, str)
+                     and name == self._head_name(path, packet_id)
+                     and head.get("schema_version") == "control_plane_lane_legacy_owner_head.v1"
+                     and head.get("gc_eligible") is False
+                     and head.get("references_clear") is False, "legacy_owner_record_invalid")
+            registration = self.read(packet_id, "registration")
+            receipt = self.read(packet_id, "receipt")
+            _require(registration.get("path") == path and receipt.get("registration") == registration
+                     and head.get("registration_digest") == canonical_digest(registration),
+                     "legacy_owner_record_invalid")
+            heads.append(head)
+        return heads

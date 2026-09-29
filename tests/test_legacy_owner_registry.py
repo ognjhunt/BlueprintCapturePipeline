@@ -2,8 +2,6 @@
 #   src/blueprint_pipeline/control_plane_lane_legacy_owner.py
 """Only a committed protected head can expose a historical owner label."""
 
-import os
-
 import pytest
 
 
@@ -21,8 +19,10 @@ def registry(tmp_path, monkeypatch):
 
     def fixture_protection(info, *, directory=False, mode=None):
         import stat
-        assert stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
-        assert mode is None or stat.S_IMODE(info.st_mode) == mode
+        if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+            raise owners.OwnerCensusConsentError("owner_consent_store_unsafe")
+        if mode is not None and stat.S_IMODE(info.st_mode) != mode:
+            raise owners.OwnerCensusConsentError("owner_consent_store_unsafe")
 
     monkeypatch.setattr(owners, "_protected", fixture_protection)
     budget = ReferenceCollectionBudget(monotonic=lambda: 0)
