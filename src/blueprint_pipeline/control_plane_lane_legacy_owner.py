@@ -188,8 +188,19 @@ def snapshot_generation(
         _verify_chain(chain)
         tick()
         encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+        relative = target.relative_to(root).parts
+        # Bind every named ancestor as well as the target. A directory moved
+        # between lanes must not inherit the previous owner's packet.
+        ancestors = [
+            dict(path=str(root.joinpath(*relative[:index])),
+                 identity=_directory_identity(os.fstat(chain[root_index + index][2])))
+            for index in range(1, len(relative))
+        ]
+        lane_root = ancestors[0] if relative[:1] == ("lanes",) and ancestors else None
+        lane = ancestors[1] if relative[:1] == ("lanes",) and len(ancestors) > 1 else None
         return dict(path=str(target), root=str(root),
                     root_identity=_directory_identity(os.fstat(root_entry[2])),
+                    ancestors=ancestors, lane_root=lane_root, lane=lane,
                     target=_directory_identity(os.fstat(target_entry[2])),
                     tree=dict(digest="sha256:" + hashlib.sha256(encoded).hexdigest(),
                               entries=len(entries), allocated_bytes=bytes_allocated))
