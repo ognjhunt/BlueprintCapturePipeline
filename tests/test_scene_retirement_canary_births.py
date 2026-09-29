@@ -29,6 +29,7 @@ def owned_activation(tmp_path, monkeypatch):
     runtime = activation / 'task_evaluation_policy_canary_runtime_inputs.v1.json'
     manifest = activation / original_manifest.name
     result.update(preparation_id=request['preparation_id'],
+        source_commit=request['expected_production_commit'],
         request_digest=launch_preparation_request_digest(request),
         scene_intent_digest=request['scene_intent_digest'],
         policy_canary_runtime_inputs_path=str(runtime),
@@ -39,6 +40,11 @@ def owned_activation(tmp_path, monkeypatch):
         full_byte_activation_reference_readback_passed=True)
     result['result_digest'] = canonical_digest(result, digest_field='result_digest')
     result_path.write_text(json.dumps(result))
+    setup = json.loads(setup_path.read_bytes())
+    setup['source_commit'] = request['expected_production_commit']
+    setup['request_digest'] = result['request_digest']
+    setup['setup_digest'] = canonical_digest(setup, digest_field='setup_digest')
+    setup_path.write_text(json.dumps(setup))
     output = parent.parent / 'canaries'
     output.mkdir()
     return policy, request, result, result_path, setup_path, activation, generation, output / 'activation-1'
@@ -104,7 +110,7 @@ def test_legacy_activation_does_not_enroll_existing_canary(tmp_path, monkeypatch
 
 def test_actual_dispatcher_has_current_birth_before_first_progress_write(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
-    policy, _, _, result_path, setup_path, _, parent, output = owned_activation(tmp_path, monkeypatch)
+    policy, request, _, result_path, setup_path, _, parent, output = owned_activation(tmp_path, monkeypatch)
     observed = []
     def first_write(root, **kwargs):
         key = hashlib.sha256(str(root).encode()).hexdigest() + '.json'
@@ -117,7 +123,7 @@ def test_actual_dispatcher_has_current_birth_before_first_progress_write(tmp_pat
     monkeypatch.setattr(dispatcher, '_event_and_sync', first_write)
     with pytest.raises(RuntimeError, match='fixture stops'):
         dispatcher.dispatch_policy_canary_activation(activation_result_path=result_path,
-            execution_setup_path=setup_path, output_root=output, implementation_commit='a' * 40,
+            execution_setup_path=setup_path, output_root=output, implementation_commit=request['expected_production_commit'],
             allocator_runner=lambda argv: pytest.fail('no provider execution'))
     assert len(observed) == 1
 
@@ -126,11 +132,13 @@ def test_actual_dispatcher_has_current_birth_before_first_progress_write(tmp_pat
 def test_actual_queue_births_before_wait_or_preprovider_block_receipt(tmp_path, monkeypatch, mode):
     from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
     from tests.test_task_evaluation_policy_canary_dispatcher import _pending_canary, _record
-    policy, _, _, result_path, setup_path, _, parent, output = owned_activation(tmp_path, monkeypatch)
+    policy, request, result, result_path, setup_path, _, parent, output = owned_activation(tmp_path, monkeypatch)
     queue, setups = _pending_canary(tmp_path / 'queue-native')
     pending = queue / 'pending' / 'activation-1.json'
     envelope = json.loads(pending.read_bytes())
     envelope['activation_result'] = _record(result_path)
+    envelope['source_commit'] = request['expected_production_commit']
+    envelope['request_digest'] = result['request_digest']
     envelope['envelope_digest'] = canonical_digest(envelope, digest_field='envelope_digest')
     pending.write_text(json.dumps(envelope))
     if mode == 'waiting':
@@ -141,7 +149,7 @@ def test_actual_queue_births_before_wait_or_preprovider_block_receipt(tmp_path, 
         setup['setup_digest'] = canonical_digest(setup, digest_field='setup_digest')
         (setups / 'activation-1.json').write_text(json.dumps(setup))
     run = dispatcher.process_policy_canary_dispatch_queue(dispatch_queue_root=queue,
-        execution_setup_root=setups, dispatch_root=output.parent, implementation_commit='a' * 40,
+        execution_setup_root=setups, dispatch_root=output.parent, implementation_commit=request['expected_production_commit'],
         execute=False, blocked_sync_runner=lambda **kwargs: {'status': 'succeeded'})
     key = hashlib.sha256(str(output).encode()).hexdigest() + '.json'
     current = json.loads((Path(policy['generation_store']) / key).read_bytes())
