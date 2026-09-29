@@ -42,7 +42,10 @@ def _key(path):
     return hashlib.sha256(str(path).encode()).hexdigest()+'.json'
 
 
-def _generation(policy, path, *, directory):
+def _generation(policy, path, *, directory, allowance=None):
+    if allowance is not None:
+        # Reserve the complete bounded metadata read before physical IO.
+        allowance.charge('local_bytes', 65536)
     value, reference = load_document(Path(policy['generation_store'])/_key(path), maximum=65536)
     _require(value.get('state_digest') == canonical_digest(value, digest_field='state_digest')
              and value.get('canonical_path') == str(path)
@@ -58,14 +61,14 @@ def _generation(policy, path, *, directory):
     return value, reference
 
 
-def _producer(policy, hint):
+def _producer(policy, hint, *, allowance=None):
     anchors = [Path(row['root']) for row in policy['roots']]
     path = _canonical(str(hint))
     for candidate in (path, *path.parents):
         if not any(candidate.is_relative_to(root) for root in anchors):
             break
         try:
-            value, reference = _generation(policy, candidate, directory=True)
+            value, reference = _generation(policy, candidate, directory=True, allowance=allowance)
         except FileNotFoundError:
             continue
         if value.get('source_storage_authority_raw_ref') is None:
@@ -405,16 +408,22 @@ def _publish_manifest(parent, parent_identity, name, raw, store):
             incoming.add_note(failure)
 
 
-def _external_source(policy, path, entry, authority_ref):
+def _external_source(policy, path, entry, authority_ref, *, allowance=None):
     path = _canonical(str(path))
+    if allowance is not None:
+        allowance.charge('local_bytes', 65536)
     source = selected_document(authority_ref, maximum=65536)
-    request = selected_document(source['submission_request_raw_ref'], maximum=65536)
+    if allowance is None:
+        request = selected_document(source['submission_request_raw_ref'], maximum=65536)
+    else:
+        from .task_evaluation_scene_retirement_cache import _storage_history
+        request = _storage_history(source, allowance)
     try:
-        generation, reference = _generation(policy, path, directory=False)
+        generation, reference = _generation(policy, path, directory=False, allowance=allowance)
     except FileNotFoundError:
         # Actual native preparation projection and its fixed default CAS:
         # select the authenticated preparation, never scan for matching bytes.
-        producer = _producer(policy, path.parent)
+        producer = _producer(policy, path.parent, allowance=allowance)
         if producer is None:
             raise _UnregisteredExternal()
         prep, current, _ = producer
@@ -423,18 +432,28 @@ def _external_source(policy, path, entry, authority_ref):
                  and path.name == entry['sha256'][7:], _ERROR)
         native_cache = prep.parent/'content-addressed'/'sha256'/entry['sha256'][7:]
         try:
-            generation, reference = _generation(policy, native_cache, directory=False)
+            generation, reference = _generation(policy, native_cache, directory=False, allowance=allowance)
         except FileNotFoundError as error:
             raise _UnregisteredExternal() from error
         with _opened(native_cache) as (_, cached), _opened(path) as (_, projected):
             _require(_identity(cached) == _identity(projected), _ERROR)
+    if allowance is not None:
+        allowance.charge('local_bytes', 65536)
     selected = selected_document(generation['source_publication_raw_ref'], maximum=65536)
     if selected.get('schema_version') == SCHEMA:
         _require(set(selected) == _FIELDS
                  and selected['publication_digest'] == canonical_digest(selected, digest_field='publication_digest'), _ERROR)
         if selected['storage_authority_raw_ref'] != authority_ref:
             raise _UnregisteredExternal()
-        verified = _validate_current_publication(selected, policy)
+        if allowance is None:
+            verified = _validate_current_publication(selected, policy)
+        else:
+            # Actual native source layers are born from one wrapper. A deeper
+            # supplied chain is unsupported, never a recursive action grant.
+            _require(selected['external_source_raw_ref'] is None
+                     and selected['external_generation_raw_ref'] is None, _ERROR)
+            verified = validate_publication(selected, policy=policy,
+                consent={'intent_raw_ref': source['intent_raw_ref']}, allowance=allowance)
         _require(selected['storage_authority_raw_ref'] == authority_ref
                  and verified['digest'] == entry['sha256'] and verified['size_bytes'] == entry['size_bytes'], _ERROR)
     else:
@@ -446,11 +465,15 @@ def _external_source(policy, path, entry, authority_ref):
     with _opened(path.parent, directory=True) as (parent, parent_info), _opened(path) as (fd, info):
         digest = hashlib.sha256()
         remaining = info.st_size
+        _require(remaining == entry['size_bytes'], _ERROR)
         identity = _identity(info)
         snapshot = _snapshot(info)
         while remaining:
             _named(parent, _identity(parent_info), path.name, fd, identity)
-            chunk = os.read(fd, min(1024*1024, remaining))
+            requested = min(1024*1024, remaining)
+            if allowance is not None:
+                allowance.charge('local_bytes', requested)
+            chunk = os.read(fd, requested)
             _named(parent, _identity(parent_info), path.name, fd, identity)
             _require(chunk, _ERROR)
             digest.update(chunk)
@@ -531,7 +554,19 @@ def _native_publication(record, request, retained, policy, allowance=None):
 
 def validate_publication(record, *, policy, consent, allowance):
     request, retained = _verified_record(record, policy, consent, allowance)
-    return _native_publication(record, request, retained, policy, allowance)
+    verified = _native_publication(record, request, retained, policy, allowance)
+    original = record['external_source_raw_ref']
+    original_generation = record['external_generation_raw_ref']
+    _require((original is None) == (original_generation is None), _ERROR)
+    if original is not None:
+        try:
+            observed, generation = _external_source(policy, _canonical(original['path']),
+                record['entry'], record['storage_authority_raw_ref'], allowance=allowance)
+        except _UnregisteredExternal as error:
+            raise access.SceneRetirementAccessError(_ERROR) from error
+        _require(observed == original and generation == original_generation, _ERROR)
+    allowance.tick()
+    return verified
 
 
 def _validate_current_publication(record, policy):
