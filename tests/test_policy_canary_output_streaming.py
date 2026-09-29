@@ -598,26 +598,65 @@ def _relative(value, root: Path):
     return json.loads(json.dumps(value).replace(str(root.resolve()), "<run>").replace(str(root), "<run>"))
 
 
+def _provider_zero() -> dict:
+    zero = {"schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+            "status": "provider_zero_confirmed", "api_confirmed": True, "provider_zero_verified": True,
+            "live_instance_count": 0, "blockers": [], "receipt_digest": ""}
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    return zero
+
+
+def _dispatch(root: Path, monkeypatch, *, archive, data, rights, stream: bool, post_billing) -> dict:
+    """One Quick-10 through the real dispatcher, the real session and lane underneath it."""
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+    from blueprint_pipeline.episode_interpretation import DeterministicFixtureInterpreter
+    from tests.test_episode_interpretation import _output
+    from tests.test_policy_canary_episode_interpretation_closeout import _FixtureRunner
+    from tests.test_task_evaluation_policy_canary_dispatcher import COMMIT, _echoing_website, _inputs
+
+    lane = Lane(root, monkeypatch)
+    activation_result, setup_path, _ = _inputs(root)
+    _rebind_contract(activation_result, setup_path, data["contract"])
+    monkeypatch.setattr(dispatcher, "_materialize_official_billing_if_posted", post_billing)
+    monkeypatch.setattr(dispatcher, "validate_vast_official_same_goal_reconciliation", lambda _path: {})
+    monkeypatch.setattr(dispatcher, "build_policy_canary_session_bundle", lambda **kwargs: write_json(
+        Path(kwargs["job_dir"]) / "native_task_arena_policy_canary_session_bundle_receipt.v1.json",
+        {"bundle_sha256": "sha256:" + "b" * 64}) or {"bundle_sha256": "sha256:" + "b" * 64})
+    monkeypatch.setattr(dispatcher, "validate_provider_bundle", lambda value, **_kwargs: value)
+    output = root / "dispatch"
+
+    def allocator(argv):
+        lane_result = lane.run_session(lane.adapter(archive), stream=stream,
+                                       job_dir=Path(argv[argv.index("--adp-job-dir") + 1]))
+        write_json(Path(argv[argv.index("--adapter-output") + 1]), lane_result)
+        return 0
+
+    runner = _FixtureRunner(DeterministicFixtureInterpreter(_output(data)))
+    zero = _provider_zero()
+    receipt = dispatcher.dispatch_policy_canary_activation(
+        activation_result_path=activation_result, execution_setup_path=setup_path, output_root=output,
+        implementation_commit=COMMIT, execute=True, allocator_runner=allocator,
+        provider_zero_collector=lambda: zero, sync_runner=_echoing_website(monkeypatch),
+        progress_sync_runner=lambda **_kwargs: {"status": "succeeded", "response": {"status": "recorded"}},
+        episode_interpretation_runner=runner, episode_interpretation_rights_root=rights)
+    return {"root": output, "receipt": receipt, "lane": json.loads((output / "allocator_result.json").read_text()),
+            "world": lane.world, "interpreter_calls": runner.interpreter.call_count}
+
+
 def test_streamed_and_downloaded_quick10_seal_identical_evidence(tmp_path, monkeypatch):
     """Design 7: the same provider output, downloaded or streamed, seals the same evidence through
     the real dispatcher -- native result, joined terminal result, registry, public delivery and
     projection, interpretation, billing verdict, teardown, provider-zero and cleanup rows."""
-    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
     from blueprint_pipeline import vast_official_billing_extractor as billing
     from blueprint_pipeline.episode_interpretation import DeterministicFixtureInterpreter
     from tests.provider_output_fixtures import zip_tree
     from tests.test_episode_interpretation import _output
-    from tests.test_policy_canary_episode_interpretation_closeout import _FixtureRunner, _rights_for_all
-    from tests.test_task_evaluation_policy_canary_dispatcher import COMMIT, _echoing_website, _inputs
+    from tests.test_policy_canary_episode_interpretation_closeout import _rights_for_all
 
     data, result = _parity_evidence(tmp_path / "source")
     archive = zip_tree(data["root"])
     rights = tmp_path / "rights"
     _rights_for_all(data, result, rights, DeterministicFixtureInterpreter(_output(data)))
-    zero = {"schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
-            "status": "provider_zero_confirmed", "api_confirmed": True, "provider_zero_verified": True,
-            "live_instance_count": 0, "blockers": [], "receipt_digest": ""}
-    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
 
     terminal_evidence = {}
 
@@ -636,36 +675,9 @@ def test_streamed_and_downloaded_quick10_seal_identical_evidence(tmp_path, monke
                               for key in ("provider_adapter_result", "teardown_manifest", "post_teardown_provider_zero")}})
         return True
 
-    sealed = {}
-    for mode in ("download", "stream"):
-        root = tmp_path / mode
-        lane = Lane(root, monkeypatch)
-        activation_result, setup_path, _ = _inputs(root)
-        _rebind_contract(activation_result, setup_path, data["contract"])
-        monkeypatch.setattr(dispatcher, "_materialize_official_billing_if_posted", post_billing)
-        monkeypatch.setattr(dispatcher, "validate_vast_official_same_goal_reconciliation", lambda _path: {})
-        monkeypatch.setattr(dispatcher, "build_policy_canary_session_bundle", lambda **kwargs: write_json(
-            Path(kwargs["job_dir"]) / "native_task_arena_policy_canary_session_bundle_receipt.v1.json",
-            {"bundle_sha256": "sha256:" + "b" * 64}) or {"bundle_sha256": "sha256:" + "b" * 64})
-        monkeypatch.setattr(dispatcher, "validate_provider_bundle", lambda value, **_kwargs: value)
-        output = root / "dispatch"
-
-        def allocator(argv, lane=lane, mode=mode):
-            lane_result = lane.run_session(lane.adapter(archive), stream=mode == "stream",
-                                           job_dir=Path(argv[argv.index("--adp-job-dir") + 1]))
-            write_json(Path(argv[argv.index("--adapter-output") + 1]), lane_result)
-            return 0
-
-        runner = _FixtureRunner(DeterministicFixtureInterpreter(_output(data)))
-        receipt = dispatcher.dispatch_policy_canary_activation(
-            activation_result_path=activation_result, execution_setup_path=setup_path, output_root=output,
-            implementation_commit=COMMIT, execute=True, allocator_runner=allocator,
-            provider_zero_collector=lambda: zero, sync_runner=_echoing_website(monkeypatch),
-            progress_sync_runner=lambda **_kwargs: {"status": "succeeded", "response": {"status": "recorded"}},
-            episode_interpretation_runner=runner, episode_interpretation_rights_root=rights)
-        lane_result = json.loads((output / "allocator_result.json").read_text())
-        sealed[mode] = {"root": output, "receipt": receipt, "lane": lane_result, "world": lane.world,
-                        "interpreter_calls": runner.interpreter.call_count}
+    sealed = {mode: _dispatch(tmp_path / mode, monkeypatch, archive=archive, data=data, rights=rights,
+                              stream=mode == "stream", post_billing=post_billing)
+              for mode in ("download", "stream")}
 
     download, stream = sealed["download"], sealed["stream"]
     assert download["receipt"]["status"] == stream["receipt"]["status"] == "completed_unqualified", (
@@ -733,6 +745,66 @@ def test_streamed_and_downloaded_quick10_seal_identical_evidence(tmp_path, monke
     streamed_attempt = Path(stream["lane"]["attempt_root"])
     assert not any(path.suffix in {".zip", ".mp4", ".png"} for path in streamed_attempt.rglob("*"))
     assert any(path.suffix == ".mp4" for path in Path(download["lane"]["attempt_root"]).rglob("*"))
+
+
+def test_a_streamed_run_blocked_after_its_paid_run_is_not_sealed_as_before_first_observation(tmp_path, monkeypatch):
+    """Review important 2: a streamed run whose output arrived -- observed and promoted, durable in
+    B2 -- but was never ingested (here its needed set is over budget) has no execution receipt on
+    the host. That is not "before first observation": the lane records a
+    ``provider_output_not_ingested`` gap carrying the stream blocker, claims nothing about the
+    policy, and the dispatcher's gap path seals and delivers that gap instead of twenty episodes
+    that never observed, never queried and never moved the arm."""
+    from blueprint_pipeline import policy_canary_output_members as output_members
+    from blueprint_pipeline.episode_interpretation import DeterministicFixtureInterpreter
+    from tests.provider_output_fixtures import zip_tree
+    from tests.test_episode_interpretation import _output
+    from tests.test_policy_canary_episode_interpretation_closeout import _rights_for_all
+
+    data, result = _parity_evidence(tmp_path / "source")
+    rights = tmp_path / "rights"
+    _rights_for_all(data, result, rights, DeterministicFixtureInterpreter(_output(data)))
+    monkeypatch.setattr(output_members, "POLICY_CANARY_OUTPUT_CONTRACT",
+                        output_members.PolicyCanaryOutputContract(needed_set_budget_bytes=1_000))
+
+    def post_billing(**kwargs):
+        write_json(Path(kwargs["output_path"]), {"status": "reconciled_official_posted_charges",
+                                                  "official_total_usd": 0.38, "instance_ids": [INSTANCE]})
+        return True
+
+    sealed = _dispatch(tmp_path / "stream", monkeypatch, archive=zip_tree(data["root"]), data=data, rights=rights,
+                       stream=True, post_billing=post_billing)
+
+    stream_blocker = f"{PREFIX}_provider_output_needed_set_over_budget"
+    lane = sealed["lane"]
+    assert lane["archive_durable"] is True and stream_blocker in lane["blockers"]
+    assert lane["visual_evidence"] == {"status": "provider_output_not_ingested", "media_gap": {
+        "type": "provider_output_not_ingested", "reason": stream_blocker}}
+    for claim in ("candidate_policy_queried", "first_observation_reached", "scientific_attempt_started"):
+        assert claim not in lane, claim
+    root = sealed["root"]
+    gap = json.loads((root / "preprovider_evidence/typed_media_gap.json").read_text())
+    assert gap == {"schema_version": "task_evaluation_policy_canary_media_gap.v1",
+                   "type": "provider_output_not_ingested", "reason": stream_blocker,
+                   "candidate_policy_queried": None, "archive_durable": True}
+    terminal = json.loads((root / "policy_canary_terminal_result.json").read_text())
+    assert terminal["status"] == "blocked" and terminal["candidate_policy_queried"] is None
+    assert "policy_canary_episode_failure:provider_output_not_ingested" in terminal["blockers"]
+    assert not any("before_first_observation" in blocker for blocker in terminal["blockers"])
+    assert len(terminal["episodes"]) == 20
+    for episode in terminal["episodes"]:
+        assert episode["typed_harness_failure"] == "provider_output_not_ingested"
+        assert episode["visual_evidence"]["media_gap"] == {"type": "provider_output_not_ingested",
+                                                           "reason": stream_blocker}
+        for claim in ("candidate_policy_queried", "actions_reached_robot", "arm_moved"):
+            assert episode[claim] is None, claim
+    # What the owner and the Website see names the gap, and nothing says the run never observed.
+    delivered = (root / "artifacts/result_delivery/delivery.json").read_text()
+    assert {episode["failure"]["code"] for episode in json.loads(delivered)["episodes"]} == {
+        "provider_output_not_ingested"}
+    projection = json.loads((root / "artifacts/result_delivery/policy_canary_result_projection.json").read_text())
+    assert {row["failure_taxonomy"] for row in projection["episodes"]} == {"provider_output_not_ingested"}
+    for name in ("delivery.json", "policy_canary_result_projection.json", "policy_canary_webapp_sync.json"):
+        assert "before_first_observation" not in (root / "artifacts/result_delivery" / name).read_text(), name
 
 
 def test_resume_of_a_completed_attempt_keeps_the_manifest_bound_receipt(lane):

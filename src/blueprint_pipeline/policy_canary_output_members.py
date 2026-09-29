@@ -59,6 +59,8 @@ CONTRACT_VERSION = "policy_canary_output_member_contract.v1"
 # The worker's per-cell child result name (native_task_arena_policy_canary_session.
 # PROVIDER_RESULT_FILENAME, kept equal by a test so this module imports nothing heavy).
 CHILD_RESULT_NAME = "native_task_arena_policy_canary_session_result.v1.json"
+# A streamed output that arrived but was never ingested: the lane's and the dispatcher's media gap.
+NOT_INGESTED_GAP = "provider_output_not_ingested"
 NEEDED_SET_BUDGET_BYTES = 640 * 1024**2
 # Ingestion metadata the hold covers beside the members: a journal row and a
 # receipt row per archive member, plus a fixed allowance for the receipt, the
@@ -136,6 +138,7 @@ __all__ = [
     "DELIVERY_MODES",
     "DOWNLOAD",
     "MODE_INVALID",
+    "NOT_INGESTED_GAP",
     "NEEDED_SET_BUDGET_BYTES",
     "POLICY_CANARY_OUTPUT_CONTRACT",
     "PolicyCanaryOutputContract",

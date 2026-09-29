@@ -45,6 +45,7 @@ from .control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
 )
 from .task_evaluation_policy_canary_disk import canary_disk_reservation
+from .policy_canary_output_members import NOT_INGESTED_GAP
 from .control_plane_storage_pins import (
     ControlPlaneStoragePinError,
     pins_root_from_environment,
@@ -1761,15 +1762,21 @@ def dispatch_policy_canary_activation(
                 "sha256": _sha256(prior_path),
             })
         gap_path = gap_root / "typed_media_gap.json"
+        # A streamed output that arrived but was never ingested is not a run that never observed:
+        # the lane's gap names the stream blocker, and no policy claim is made (review important 2).
+        lane_gap = (adapter.get("visual_evidence") or {}).get("media_gap") if sparse_provider_path is None else None
+        not_ingested = isinstance(lane_gap, Mapping) and lane_gap.get("type") == NOT_INGESTED_GAP
+        gap_type, observed = (NOT_INGESTED_GAP, None) if not_ingested else ("before_first_observation", False)
         gap_value = {
             "schema_version": "task_evaluation_policy_canary_media_gap.v1",
-            "type": "before_first_observation",
-            "reason": (
+            "type": gap_type,
+            "reason": (not_ingested and str(lane_gap.get("reason") or "")) or (
                 (inner.get("blockers") if sparse_provider_path is not None else None)
                 or adapter.get("blockers")
                 or ["provider_result_missing"]
             )[0],
-            "candidate_policy_queried": False,
+            "candidate_policy_queried": observed,
+            **({"archive_durable": adapter.get("archive_durable") is True} if not_ingested else {}),
         }
         write_json(gap_path, gap_value)
         inner = {
@@ -1781,30 +1788,30 @@ def dispatch_policy_canary_activation(
             "task_success_contract_digest": runtime_inputs[
                 "task_success_contract_digest"
             ],
-            "candidate_policy_queried": False,
+            "candidate_policy_queried": observed,
             "episodes": [
                 {
                     "candidate_id": candidate,
                     "cell_id": cell["cell_id"],
                     "seed": cell["seed"],
                     "status": "blocked",
-                    "candidate_policy_queried": False,
-                    "actions_reached_robot": False,
-                    "arm_moved": False,
+                    "candidate_policy_queried": observed,
+                    "actions_reached_robot": observed,
+                    "arm_moved": observed,
                     "policy_outcome_interpretable": False,
-                    "typed_harness_failure": "before_first_observation",
+                    "typed_harness_failure": gap_type,
                     "checkpoint_digest": specs[candidate]["checkpoint_digest"],
                     "runtime_identity_digest": specs[candidate]["runtime_identity_digest"],
                     "reset_state_digest": canonical_digest(
                         {
                             "resolved_scenario": cell["resolved_scenario"],
                             "seed": cell["seed"],
-                            "execution_performed": False,
+                            "execution_performed": observed,
                         }
                     ),
                     "visual_evidence": {
                         "media_gap": {
-                            "type": "before_first_observation",
+                            "type": gap_type,
                             "reason": gap_value["reason"],
                         }
                     },

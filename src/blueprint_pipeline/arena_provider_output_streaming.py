@@ -26,7 +26,11 @@ reaches this module.
 
 A failure after the paid run seals ``blocked`` like a failed download, but
 names whether the archive is durable (``archive_durable``); the door's
-``provider-output-resume`` promotes or ingests later. ``resume_ingestion`` is
+``provider-output-resume`` promotes or ingests later. When the provider's
+output did arrive -- observed in the paid window, promoted, or recovered over
+SSH -- such a run is not "before first observation": ``not_ingested_gap``
+records a ``provider_output_not_ingested`` media gap carrying the stream
+blocker and claims nothing about the policy (review important 2). ``resume_ingestion`` is
 that ingestion, and it short-circuits on a materialized receipt (review I8):
 readers such as partial recovery and interpretation write into the evidence
 root afterwards, which a second ingestion pass would refuse.
@@ -49,7 +53,7 @@ from .control_plane_disk_budget import (
 )
 from .control_plane_disk_ledger import footprint_bytes
 from .control_plane_disk_usage import tree_usage
-from .policy_canary_output_members import POLICY_CANARY_OUTPUT_CONTRACT, PolicyCanaryOutputContract
+from .policy_canary_output_members import NOT_INGESTED_GAP, POLICY_CANARY_OUTPUT_CONTRACT, PolicyCanaryOutputContract
 
 OUTPUT_ROLE = "policy_canary_output"
 WORKLOAD = "quick10_needed_members"
@@ -188,6 +192,7 @@ def ingest_needed_members(
 
     def blocked(*codes: str) -> dict[str, Any]:
         outcome["blockers"] = sorted({code for code in codes if code})
+        outcome["reason"] = codes[0]  # the stream blocker, before the codes it carries
         return outcome
 
     if promotion.get("status") == "absent_confirmed":
@@ -254,6 +259,25 @@ def ingest_needed_members(
         return blocked(f"{blocker_prefix}_runtime_result_missing")
     outcome.update(status="completed", blockers=[])
     return outcome
+
+
+def not_ingested_gap(outcome: Mapping[str, Any], *, observation: Mapping[str, Any] | None,
+                     promotion: Mapping[str, Any], local_archive: Path) -> dict[str, Any] | None:
+    """The lane's policy evidence for an output that arrived but was never ingested, else None.
+
+    With no execution receipt on the host the lane would seal "before first
+    observation". Once the provider's output was observed in the paid window,
+    promoted, or recovered over SSH, that is false; whether the candidate
+    policy was queried is unknown until the door ingests the members, so no
+    policy claim is made. An ingestion that materialized is download mode's
+    case (the members are there, the result is not) and is left to it.
+    """
+    arrived = (observation is not None or promotion.get("status") == "promoted"
+               or (local_archive.is_file() and not local_archive.is_symlink()))
+    if not arrived or outcome.get("member_view_path"):
+        return None
+    return {"visual_evidence": {"status": NOT_INGESTED_GAP, "media_gap": {
+        "type": NOT_INGESTED_GAP, "reason": outcome.get("reason") or next(iter(outcome.get("blockers") or []), None)}}}
 
 
 def resume_ingestion(attempt_root: str | Path, *, contract: PolicyCanaryOutputContract = POLICY_CANARY_OUTPUT_CONTRACT,
@@ -368,11 +392,13 @@ def stream_result_fields(*, attempt_root: Path, promotion: Mapping[str, Any], ou
 
 
 __all__ = [
+    "NOT_INGESTED_GAP",
     "OUTPUT_ARCHIVE_MAXIMUM_BYTES",
     "OUTPUT_ROLE",
     "WORKLOAD",
     "collector",
     "ingest_needed_members",
+    "not_ingested_gap",
     "promote",
     "reserve_forecast_hold",
     "resume_ingestion",

@@ -940,8 +940,14 @@ def run_arena_native_control_vast(
         # bundle starts (for example when the authoritative post-create price
         # exceeds the pre-create cap).  Creation is not an observation.  Seal
         # the same typed gap whenever the provider produced no execution
-        # receipt, regardless of whether allocation briefly occurred.
-        if not execution:
+        # receipt, regardless of whether allocation briefly occurred -- unless
+        # a streamed output arrived and was only never ingested.
+        not_ingested = streamed.not_ingested_gap(
+            extracted, observation=output_collector.observation, promotion=promotion,
+            local_archive=output_zip) if streaming and not execution else None
+        if not_ingested is not None:
+            policy_evidence.update(not_ingested)
+        elif not execution:
             adapter_blockers = [
                 str(value)
                 for value in adapter.get("blockers") or []

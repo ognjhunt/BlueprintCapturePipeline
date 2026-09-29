@@ -1317,6 +1317,16 @@ or move to a selection v2 before flipping.
 | `…_provider_output_disk_budget_exceeded_after_run` (plus the ledger's code) | yes | door resume with `ingest` |
 | `…_provider_output_ingestion_blocked` (plus the ingester's code) | yes | door resume with `ingest` |
 
+None of these is "before first observation" once the output arrived (observed
+in the paid window, promoted, or recovered over SSH) but was not ingested: the
+lane result carries a `provider_output_not_ingested` media gap whose reason is
+the stream blocker, and makes no policy claim (`candidate_policy_queried`,
+`first_observation_reached` and `scientific_attempt_started` are absent). The
+dispatcher seals that gap (`preprovider_evidence/typed_media_gap.json`, with
+`archive_durable`) and twenty episodes typed `provider_output_not_ingested`
+whose `candidate_policy_queried`, `actions_reached_robot` and `arm_moved` are
+null.
+
 Resume never rewrites the sealed lane result, so a run that blocked after the
 run stays blocked; its members become readable, its staged objects provably
 gone. Redelivering such a run is out of scope. A resume that changes nothing
