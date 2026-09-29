@@ -6,8 +6,6 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
-
 from blueprint_pipeline import task_evaluation_sam31_preparation_execution as execution
 from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
 from tests.test_scene_retirement_normal_cache import owner_submission
@@ -110,4 +108,5 @@ def test_native_sam_changed_owner_refuses_before_executor(tmp_path, monkeypatch)
         phase_executor=lambda context: called.append(context) or {'status': 'waiting_for_external_result', 'artifacts': {}})
     assert called == [], result
     assert result['results'][0]['status'] == 'failed'
-    assert not (args['execution_root'] / receipt['child_id']).exists()
+    from blueprint_pipeline.task_evaluation_launch_preparation_contract import launch_preparation_request_digest
+    assert not (args['execution_root'] / launch_preparation_request_digest(request)[7:] / receipt['child_id']).exists()

@@ -193,3 +193,28 @@ def create_canary_output(target, *, activation_result):
             return  # Retained delivery/teardown never needs a new paid reservation.
         if enroll_activation_child(target, activation_result=activation_result) is None:
             Path(target).mkdir(parents=True, exist_ok=True)
+
+
+def create_preparation_output(target, *, preparation_root, request):
+    """First-write enrollment; retained bytes keep their exact original request."""
+    if access._policy() is None:
+        Path(target).mkdir(parents=True, exist_ok=True)
+        return
+    with access.scene_access(target):
+        if existing_scene_directory(target):
+            generation = current_directory_generation(target)
+            if generation is not None:
+                reference = generation.get('source_storage_authority_raw_ref')
+                _require(reference is not None, 'scene_retirement_storage_authority_unproven')
+                authority = selected_document(reference, maximum=65536)
+                from .task_evaluation_scene_retirement_cache import _sidecar
+                _sidecar(authority)
+                original = selected_document(authority['submission_request_raw_ref'], maximum=65536)
+                _require(original == request
+                    and _canonical(str(preparation_root)).name == request.get('preparation_id')
+                    and generation.get('owner_raw_ref') == authority['intent_raw_ref']
+                    and generation.get('birth_request_raw_ref') == authority['attempt_raw_ref'],
+                    'scene_retirement_storage_authority_unproven')
+            return  # Legacy existing output is not adopted into a new generation.
+        if enroll_preparation_child(target, preparation_root=preparation_root, request=request) is None:
+            Path(target).mkdir(parents=True, exist_ok=True)
