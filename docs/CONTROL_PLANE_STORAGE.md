@@ -1227,6 +1227,13 @@ path it reads; without one (download mode) it runs exactly its old code.
 - **Offline tools** that need a scratch copy of one cell run
   `python -m blueprint_pipeline.provider_output_member_view materialize --evidence-root <attempt>/immutable_execution --prefix cell_runs/NN/ --output-root <scratch>`.
 
+**Rollback rule.** Once any streamed run exists, roll back only by setting
+`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY` back to `download`. Never revert these
+readers: a streamed run's registry, downloads, interpretation, rescoring,
+adoption, closeout and billing all depend on them for as long as the run is
+retained, and without them its members that stay in the archive read as
+missing evidence.
+
 Two stream-mode records look alarming and are not:
 
 - **Download-manifest zeros.** A completed remote observation downloads
