@@ -135,4 +135,3 @@ def test_capture_member_requires_original_and_sponsor_scopes(tmp_path, monkeypat
         admit(scopes={'owner_intent_ids': []})
     with pytest.raises(ValueError, match='scene_retirement_capture_association_invalid'):
         admit(member={'sponsoring_intent_id': 'other-intent'})
-

@@ -43,7 +43,7 @@ def owner_submission(tmp_path,monkeypatch,*,production=False):
         raw=json.dumps(recipe,sort_keys=True).encode()
         payloads[reference['uri']]=raw
         reference.update(digest='sha256:'+hashlib.sha256(raw).hexdigest(),size_bytes=len(raw))
-    output=tmp_path/'factory' 
+    output=tmp_path/'factory'
     output.mkdir()
     request=output/'submission_request.json'
     request.write_text(json.dumps(value))

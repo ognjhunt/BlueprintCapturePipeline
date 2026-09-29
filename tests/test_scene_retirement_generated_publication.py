@@ -76,7 +76,7 @@ def generated_fixture(tmp_path, monkeypatch, *, external=False, legacy_layer=Fal
             input_root=prep, content_store_root=native_store,
             allowed_uri_prefixes=['s3://blueprint-production-inputs/'], fetcher=fetcher(payloads),
             disk_reservation_root=None, disk_reservations=[])
-    producer = inputs / 'compiled-owned-episode' 
+    producer = inputs / 'compiled-owned-episode'
     born = enroll_preparation_child(producer, preparation_root=inputs/value['preparation_id'],
         request=value, now=101)
     assert born['source_storage_authority_raw_ref'] == selected
