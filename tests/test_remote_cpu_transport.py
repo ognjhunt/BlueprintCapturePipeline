@@ -280,26 +280,40 @@ def test_release_commit_is_the_clean_head_and_git_archive_writes_nothing(tmp_pat
 _AUDIT = textwrap.dedent('''
     import atexit, json, os, sys
 
-    release, out = sys.argv[1], sys.argv[2]
-    import blueprint_pipeline  # the release's package, before tests/conftest.py puts the checkout's src first
-    from blueprint_pipeline.remote_cpu_worker import install_release_audit
+    code_root, out = sys.argv[1], sys.argv[2]
+    import blueprint_pipeline  # pin the package to code_root before tests/conftest.py puts the checkout's src first
+    from blueprint_pipeline.remote_cpu_worker_stage import install_release_audit, release_read
 
-    roots = tuple({os.path.normpath(release) + os.sep, os.path.realpath(release) + os.sep})
-    found = set()
+    roots = tuple({os.path.normpath(code_root) + os.sep, os.path.realpath(code_root) + os.sep})
+    reads = set()
+
+    def origin():
+        # The innermost frame under the code root that led to this open: release code, or a test.
+        frame = sys._getframe(2)
+        while frame is not None:
+            root = next((root for root in roots if frame.f_code.co_filename.startswith(root)), None)
+            if root is not None:
+                return frame.f_code.co_filename[len(root):]
+            frame = frame.f_back
+        return None
 
     def record(event, args):
-        # The reads that did find their file, for the report; the worker's own audit records the misses.
-        if event == "open" and len(args) >= 3 and isinstance(args[0], str) and os.path.isabs(args[0]):
-            root = next((root for root in roots if args[0].startswith(root)), None)
-            if root is not None and "__pycache__" not in args[0] and os.path.isfile(args[0]):
-                found.add(os.path.normpath(args[0])[len(root):])
+        # Every read under the code root, by the worker's own rules (relative reads against the working directory).
+        if event == "open" and len(args) >= 3:
+            try:
+                found = release_read(args[0], args[1], args[2], roots=roots, cwd=os.getcwd())
+            except Exception:
+                return
+            if found is not None:  # the raw relative path: labels hash names such as secret_artifact_policy.py
+                root = next(root for root in roots if found[0].startswith(root))
+                reads.add((found[0][len(root):], os.path.isfile(found[0]), origin()))
 
     def dump():
         with open(out, "w", encoding="utf-8") as stream:
-            json.dump({"found": sorted(found), "missing": sorted(missing), "package": blueprint_pipeline.__file__},
-                      stream)
+            json.dump({"reads": sorted(reads, key=repr), "missing": sorted(missing),
+                       "package": blueprint_pipeline.__file__}, stream)
 
-    missing = install_release_audit(release)
+    missing = install_release_audit(code_root)
     sys.addaudithook(record)
     atexit.register(dump)
     import pytest
@@ -310,19 +324,16 @@ COMPILE_TESTS = ("tests/test_task_evaluation_native_arena_episode_compiler.py",
                  "tests/test_task_evaluation_episode_compilation_worker.py")
 
 
-def _compile_from(release: Path, tmp_path: Path) -> dict[str, list[str]]:
-    """Run the compiler and compile-worker tests with the release tree as the code, from inside it.
+def _compile_from(code_root: Path, tmp_path: Path) -> dict:
+    """Run the compiler and compile-worker tests with ``code_root`` as the code and the working directory, as the
+    host compiles from its checkout.  The tests and their fixture inputs always come from the checkout."""
 
-    The tests and their fixture inputs come from the checkout; every ``blueprint_pipeline`` module and
-    every path the code derives from its own location (``parents[2]``) comes from ``release``.
-    """
-
-    out = tmp_path / "audit.json"
+    out = tmp_path / f"audit-{code_root.name}.json"
     run = subprocess.run(
-        [sys.executable, "-c", _AUDIT, str(release), str(out), "-q", "-p", "no:cacheprovider", "--rootdir",
+        [sys.executable, "-c", _AUDIT, str(code_root), str(out), "-q", "-p", "no:cacheprovider", "--rootdir",
          str(ROOT), "-c", str(ROOT / "pyproject.toml"), *(str(ROOT / name) for name in COMPILE_TESTS)],
-        cwd=release, capture_output=True, text=True, timeout=900,
-        env={**os.environ, "PYTHONPATH": f"{release / 'src'}{os.pathsep}{ROOT}", "PYTHONDONTWRITEBYTECODE": "1",
+        cwd=code_root, capture_output=True, text=True, timeout=900,
+        env={**os.environ, "PYTHONPATH": f"{code_root / 'src'}{os.pathsep}{ROOT}", "PYTHONDONTWRITEBYTECODE": "1",
              "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache")})
     assert run.returncode == 0, run.stdout[-4000:] + run.stderr[-4000:]
     return json.loads(out.read_text(encoding="utf-8"))
@@ -348,19 +359,25 @@ def test_release_source_archive_contains_every_repo_root_read_of_the_compile(tmp
     release = tmp_path / "release"
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
         assert archive.pax_headers["comment"] == head
-        members = archive.getmembers()
-        assert all(member.name in {"src", "docs", "docs/schemas", "pyproject.toml"}
-                   or member.name.startswith(("src/", "docs/schemas/")) for member in members)
+        members = {member.name for member in archive.getmembers()}
+        assert all(name in {"src", "docs", "docs/schemas", "pyproject.toml"} or name.startswith(("src/", "docs/schemas/"))
+                   for name in members)
         archive.extractall(release, filter="data")
 
-    # The compile, run with the extracted archive as its code: the compiler and compile-worker tests, under the
-    # worker's own release audit (``remote_cpu_worker.install_release_audit``).  No read under the release misses.
-    audit = _compile_from(release, tmp_path)
-    assert audit["missing"] == []
-    assert Path(audit["package"]).is_relative_to(release)
-    assert "src/blueprint_pipeline/task_evaluation_native_arena_episode_compiler.py" in audit["found"]
-    # The reads outside src are schemas found through parents[2]: recipe v1 (src and pyproject.toml alone)
-    # would have shipped a tree that cannot compile (plan 14 C1).
-    outside_src = [path for path in audit["found"] if not path.startswith("src/")]
-    assert "docs/schemas/task_evaluation_launch_preparation_request.v1.schema.json" in outside_src
-    assert all(path.startswith("docs/schemas/") or path == "pyproject.toml" for path in outside_src), outside_src
+    # The reference: the compile run from the checkout, as the host runs it.  The repo-root files its release
+    # code reads are what the archive must hold; files the tests open themselves are fixture inputs.
+    checkout = _compile_from(ROOT, tmp_path)
+    fixtures = {path for path, _, origin in checkout["reads"] if (origin or "").startswith("tests/")}
+    code_reads = {path for path, _, origin in checkout["reads"] if (origin or "").startswith("src/")
+                  and not path.startswith(("src/", "tests/", ".git")) and path not in fixtures}
+    assert "docs/schemas/task_evaluation_launch_preparation_request.v1.schema.json" in code_reads
+    assert sorted(code_reads - members) == []
+    # Recipe v1 (src and pyproject.toml alone) would have shipped a tree that cannot compile (plan 14 C1).
+    assert all(path.startswith("docs/schemas/") or path == "pyproject.toml" for path in code_reads), code_reads
+
+    # The same compile with the extracted archive as its code, under the worker's own release audit: no read under
+    # the release misses, and every repo-root read of the checkout run is made there and found.
+    from_release = _compile_from(release, tmp_path)
+    assert from_release["missing"] == [] and Path(from_release["package"]).is_relative_to(release)
+    found = {path for path, exists, _ in from_release["reads"] if exists}
+    assert sorted(code_reads - found) == []
