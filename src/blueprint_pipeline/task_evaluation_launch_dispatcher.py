@@ -73,11 +73,12 @@ from .launch_profile_immutable_inputs import immutable_input_digest
 from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
     stage_directory_projections,
+    write_immutable_launch_record,
     write_exclusive_private_bytes as _write_exclusive_private_bytes,
 )
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
 
-from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint, _finish_publisher_admission
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint, _finish_publisher_admission, _profile_refusal
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
@@ -997,22 +998,7 @@ def validate_launch_request_against_public_catalog(
 
 
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
-    from .task_evaluation_release_reference_lock import release_reference_lock
-
-    with release_reference_lock(path.parents[2], exclusive=False):
-        payload = (_canonical_json(value) + "\n").encode("utf-8")
-        _publisher_checkpoint()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            _publisher_checkpoint()
-            with path.open("xb") as stream:
-                _publisher_checkpoint()
-                stream.write(payload)
-            return True
-        except FileExistsError:
-            if path.read_bytes() != payload:
-                raise TaskEvaluationLaunchError(f"immutable_launch_conflict:{path.name}")
-            return False
+    return write_immutable_launch_record(path, (_canonical_json(value) + "\n").encode("utf-8"))
 
 
 @_publisher_observation
@@ -1489,7 +1475,6 @@ def dispatch_launch_request(
     publication_readiness_probe: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    from .control_plane_lane_experiment_errors import OwnerTargetVersionError
     refuse_registered_references(request_path, profile_dir, state_root, public_catalog_path)
     request_source = Path(request_path).expanduser().resolve()
     request = _read_json(request_source)
@@ -1510,15 +1495,10 @@ def dispatch_launch_request(
     else:
         try:
             profile = _read_json(profile_path)
-            refuse_registered_references(profile)
-        except OwnerTargetVersionError as exc:
-            if exc.code not in ("experiment_external_publisher_unsupported", "experiment_publisher_input_limit"):
-                raise
-            # The destination roots were gated before any read. Keep this
-            # fixed refusal in their ordinary receipt; never copy/publish the
-            # rejected profile or enter its payload/reservation/allocator path.
-            blockers.append(exc.code)
-            profile = {}
+            refusal = _profile_refusal(profile)
+            if refusal:
+                blockers.append(refusal)
+                profile = {}
         except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
             blockers.append("launch_profile_invalid_json")
     if profile:
@@ -2121,12 +2101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_concurrency=args.max_concurrency,
     )
     print(json.dumps(result, sort_keys=True))
-    # The queue status describes the launch outcome, not whether dispatch
-    # worked. Exiting non-zero on a blocked launch made systemd mark the unit
-    # failed and deactivate the path unit that watches the queue, so one
-    # blocked run -- an entirely normal scientific outcome -- silently stopped
-    # every later website trigger from ever dispatching. Reserve a non-zero
-    # exit for a dispatcher that could not process the queue at all.
+    # Blocked launches are normal queue outcomes; nonzero means dispatch failed.
     return 0 if result.get("schema_version") == QUEUE_RUN_SCHEMA_VERSION else 2
 
 

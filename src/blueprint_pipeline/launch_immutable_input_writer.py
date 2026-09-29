@@ -86,3 +86,23 @@ def write_exclusive_private_bytes(path: Path, payload: bytes) -> bool:
         return True
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def write_immutable_launch_record(path: Path, payload: bytes) -> bool:
+    """Publish the existing launch record under its shared release lock."""
+    from .control_plane_registered_reference_gate import _publisher_checkpoint
+    from .task_evaluation_release_reference_lock import release_reference_lock
+
+    with release_reference_lock(path.parents[2], exclusive=False):
+        _publisher_checkpoint()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _publisher_checkpoint()
+            with path.open("xb") as stream:
+                _publisher_checkpoint()
+                stream.write(payload)
+            return True
+        except FileExistsError:
+            if path.read_bytes() != payload:
+                raise TaskEvaluationLaunchError(f"immutable_launch_conflict:{path.name}")
+            return False
