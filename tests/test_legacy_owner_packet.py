@@ -11,6 +11,8 @@ def _consent(path):
                 consent_id="a" * 32, consent_digest="sha256:" + "b" * 64,
                 principal="operator", policy_sha256="sha256:" + "c" * 64,
                 issued_at_epoch=1000, expires_at_epoch=1300,
+                _raw_record_sha256="sha256:" + "f" * 64,
+                _raw_record_size_bytes=777,
                 census=dict(sha256="sha256:" + "d" * 64, size_bytes=123),
                 annotations=dict(sha256="sha256:" + "e" * 64, size_bytes=456),
                 execution_authorized=False, target_generation_bound=False,
@@ -41,6 +43,7 @@ def test_packet_requires_separate_approved_target_generation(tmp_path):
     assert packet["owner"] == "owner"
     assert packet["target_generation"] == snapshot
     assert packet["old_consent"]["target_generation_bound"] is False
+    assert packet["old_consent"]["record_sha256"] == "sha256:" + "f" * 64
     assert packet["execution_authorized"] is False
     assert packet["approval_required"] is True
 

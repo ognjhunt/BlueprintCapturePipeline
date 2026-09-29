@@ -227,14 +227,22 @@ def build_version_packet(consent: dict, *, selected_path: str, generation: dict,
              and generation.get("target", {}).get("type") == "directory", code)
     _require(isinstance(consent.get("census"), dict) and isinstance(consent.get("annotations"), dict)
              and isinstance(consent.get("consent_digest"), str)
-             and isinstance(consent.get("policy_sha256"), str), code)
+             and isinstance(consent.get("policy_sha256"), str)
+             and isinstance(consent.get("_raw_record_sha256"), str)
+             and re.fullmatch(r"sha256:[0-9a-f]{64}", consent["_raw_record_sha256"]) is not None
+             and type(consent.get("_raw_record_size_bytes")) is int
+             and 0 < consent["_raw_record_size_bytes"] <= 512 * 1024, code)
     packet = dict(schema_version="control_plane_lane_legacy_owner_packet.v1",
                   selected_path=selected_path, principal=consent["principal"], owner=decision["owner"],
                   old_consent=dict(consent_id=consent["consent_id"],
                                    sha256=consent["consent_digest"], target_generation_bound=False,
+                                   record_sha256=consent["_raw_record_sha256"],
+                                   record_size_bytes=consent["_raw_record_size_bytes"],
                                    census=consent["census"], annotations=consent["annotations"]),
                   policy_sha256=consent["policy_sha256"],
                   target_generation=generation,
+                  fresh_census_digest=canonical_digest(fresh_census),
+                  fresh_selected_row=dict(fresh[0]),
                   fresh_reference_status="complete_no_observed_references",
                   observed_at_epoch=now,
                   expires_at_epoch=min(consent["expires_at_epoch"], now + decision["ttl_seconds"]),
@@ -542,8 +550,10 @@ def _load_old_consent(files, budget, config, *, consent_id: str,
     _require(len(raw) == expected_size_bytes
              and "sha256:" + hashlib.sha256(raw).hexdigest() == expected_sha256,
              "legacy_owner_consent_changed")
-    return owners._record(raw, consent_id, _policy_bytes(files, config),
-                          owners._roots(config, budget), now, budget)
+    record = owners._record(raw, consent_id, _policy_bytes(files, config),
+                            owners._roots(config, budget), now, budget)
+    return record | dict(_raw_record_sha256=expected_sha256,
+                         _raw_record_size_bytes=expected_size_bytes)
 
 
 _GC_UNIT = Path("/etc/systemd/system/blueprint-control-plane-storage-gc.service")
@@ -567,7 +577,7 @@ def _reference_settings(files, config) -> dict[str, tuple[Path, ...] | Path]:
                 key, separator, raw = value.partition("=")
                 if separator and key in _REFERENCE_KEYS:
                     raw = raw.strip().strip('"').strip("'")
-                    _require(raw and not any(char in raw for char in ("$", "`", "\\", "\n", "\r")),
+                    _require(raw and not any(char in raw for char in ("$", "`", "\\", "\n", "\r", " ", "\t")),
                              "legacy_owner_references_incomplete")
                     selected[key] = raw
         def paths(key):
@@ -583,7 +593,7 @@ def _reference_settings(files, config) -> dict[str, tuple[Path, ...] | Path]:
         pins = paths("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT")
         _require(len(pins) == 1, "legacy_owner_references_incomplete")
         return dict(queue_roots=queues, active_run_roots=active, pins_root=pins[0])
-    except (KeyError, UnicodeError):
+    except (KeyError, UnicodeError, LegacyOwnerError):
         raise LegacyOwnerError("legacy_owner_references_incomplete") from None
 
 
@@ -734,3 +744,61 @@ def observe_owner_review(*, installed_config_path: str, now: float,
                       gc_eligible=False, references_clear=False,
                       candidate_bytes=None, eta_seconds=None, mutations=0)
         return report
+
+
+def main(argv=None) -> int:
+    """Root operator entrypoint; every mode keeps legacy payload bytes in place."""
+    import argparse
+
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            raise LegacyOwnerError("legacy_owner_options_invalid")
+
+    parser = Parser(allow_abbrev=False)
+    parser.add_argument("mode", choices=("packet", "approve", "apply", "report"))
+    parser.add_argument("--consent-id")
+    parser.add_argument("--consent-sha256")
+    parser.add_argument("--consent-size-bytes", type=int)
+    parser.add_argument("--selected-path")
+    parser.add_argument("--packet-id")
+    parser.add_argument("--ack-packet-digest")
+    parser.add_argument("--principal")
+    parser.add_argument("--owner")
+    parser.add_argument("--door-config", default="/etc/blueprint-operator-door/door.json")
+    try:
+        args = parser.parse_args(argv)
+        options = {key for key in ("consent_id", "consent_sha256", "consent_size_bytes",
+                                   "selected_path", "packet_id", "ack_packet_digest",
+                                   "principal", "owner") if getattr(args, key) is not None}
+        expected = {"packet": {"consent_id", "consent_sha256", "consent_size_bytes", "selected_path"},
+                    "approve": {"packet_id", "ack_packet_digest", "principal", "owner"},
+                    "apply": {"packet_id"}, "report": set()}
+        _require(options == expected[args.mode], "legacy_owner_options_invalid")
+        selected = dict(installed_config_path=args.door_config, now=time.time(),
+                        monotonic=time.monotonic)
+        if args.mode == "packet":
+            result = issue_version_packet(consent_id=args.consent_id,
+                                          consent_sha256=args.consent_sha256,
+                                          consent_size_bytes=args.consent_size_bytes,
+                                          selected_path=args.selected_path, **selected)
+        elif args.mode == "approve":
+            result = issue_generation_approval(packet_id=args.packet_id,
+                                               ack_packet_digest=args.ack_packet_digest,
+                                               principal=args.principal, owner=args.owner,
+                                               **selected)
+        elif args.mode == "apply":
+            result = apply_owner_review(packet_id=args.packet_id, **selected)
+        else:
+            result = observe_owner_review(**selected)
+        print(json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False))
+        return 0
+    except LegacyOwnerError as error:
+        print(json.dumps(dict(status="refused", blockers=[str(error)],
+                              gc_eligible=False, references_clear=False,
+                              candidate_bytes=None, eta_seconds=None,
+                              target_mutations=0), sort_keys=True, separators=(",", ":")))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
