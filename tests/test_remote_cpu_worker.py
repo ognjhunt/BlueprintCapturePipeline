@@ -1,5 +1,6 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/remote_cpu_worker.py
+#   src/blueprint_pipeline/remote_cpu_worker_stage.py
 #   src/blueprint_pipeline/remote_cpu_job_contract.py
 #   src/blueprint_pipeline/remote_cpu_output_archive.py
 #   src/blueprint_pipeline/remote_cpu_environment.py
@@ -617,7 +618,8 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
 
     # The environment probe, the stage the allocator's preflight runs, is this PR's one registered stage; its
     # receipt carries that record.
-    assert worker.STAGE_HANDLERS == {"environment_probe": "blueprint_pipeline.remote_cpu_worker:run_environment_probe"}
+    assert worker.STAGE_HANDLERS == {
+        "environment_probe": "blueprint_pipeline.remote_cpu_worker_stage:run_environment_probe"}
     probe = WorkerWorld(tmp_path / "probe", stage=contract.PROBE_STAGE, environment_digest=host["environment_digest"])
     runtime = probe.runtime(measure=census.environment_record, run_stage=_registered)
     assert worker.bootstrap(["bootstrap"], probe.runtime(

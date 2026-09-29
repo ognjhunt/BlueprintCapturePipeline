@@ -24,7 +24,6 @@ transport object; every other byte moves through the attempt's presigned GETs an
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import os
 import re
@@ -56,6 +55,9 @@ from .remote_cpu_job_contract import (
     record_bytes, safe_label, validate_receipt,
 )
 from .remote_cpu_output_archive import RemoteCpuArchiveError, blobs_tar_size, index_bytes, index_tree, write_blobs_tar
+from .remote_cpu_worker_stage import StageRoots as StageRoots  # a handler's roots; re-exported for handlers
+from .remote_cpu_worker_stage import from_release, stage_main
+from .remote_cpu_worker_stage import install_release_audit as install_release_audit
 
 MODULE = "blueprint_pipeline.remote_cpu_worker"
 # What the dispatcher sets (``cloud_run_jobs_client``) and mints (``remote_cpu_job_allocator``); the
@@ -76,19 +78,16 @@ HANDOFF_SCHEMA_VERSION = "remote_cpu_worker_handoff.v1"
 STAGE_REQUEST_SCHEMA_VERSION = "remote_cpu_worker_stage_request.v1"
 # ``stage -> "module:function"``; a handler takes the sealed descriptor and ``StageRoots`` and returns the
 # stage's sealed result.  An unregistered stage is an infrastructure failure.
-STAGE_HANDLERS: Mapping[str, str] = {PROBE_STAGE: f"{MODULE}:run_environment_probe"}
-PROBE_RESULT_SCHEMA_VERSION = "remote_cpu_environment_probe_result.v1"
+STAGE_HANDLERS: Mapping[str, str] = {PROBE_STAGE: "blueprint_pipeline.remote_cpu_worker_stage:run_environment_probe"}
 EXIT_REFUSED = 2
 TRANSFER_TIMEOUT_SECONDS = 60.0
 FINAL_RECEIPT_SECONDS = 60
 MAX_TRANSPORT_BYTES = 16 * 1024 * 1024
 MAX_HANDOFF_BYTES = 32 * 1024 * 1024
 MAX_NAMED_PATHS = 16
-MAX_RELEASE_MISSES = 64
 _CHUNK = 1024 * 1024
 _NAME = re.compile(r"[a-z][a-z0-9-]{0,126}[a-z0-9]")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-_RELEASE_TOPS = ("src", "docs", "pyproject.toml")
 _GENERATION = re.compile(r"[1-9][0-9]{0,19}")
 _TRANSPORT_OBJECT = re.compile(r"gs://([a-z0-9][a-z0-9._-]{1,61}[a-z0-9])/(transport/(rcj-[a-z]{2}-[0-9a-f]{24})/"
                                r"(\3-a[1-9][0-9]{0,2}-[0-9a-f]{32})-[0-9a-f]{32}\.json)")
@@ -581,17 +580,6 @@ def _launch_execute(runtime: WorkerRuntime, handoff: Mapping[str, Any]) -> int:
     return _wait(process, budget, "remote_cpu_worker_execute_timeout")
 
 
-@dataclass(frozen=True)
-class StageRoots:
-    """Where a stage handler finds ``/`` (``local``) and the release it runs from."""
-
-    filesystem_root: Path
-    release_root: Path
-
-    def local(self, path: str) -> Path:
-        return Path(self.filesystem_root) / str(path).lstrip("/")
-
-
 class _Deadline:
     def __init__(self, clock: Callable[[], float], seconds: float, phase: str) -> None:
         self.clock, self.seconds, self.phase, self.end = clock, seconds, phase, clock() + seconds
@@ -669,76 +657,6 @@ def _materialize_inputs(attempt: _Attempt, runtime: WorkerRuntime, deadline: _De
         finally:
             partial.unlink(missing_ok=True)
     deadline.check()
-
-
-def install_release_audit(release: str | Path) -> list[str]:
-    """Record, in this process, every read of a missing path under the release root (plan 14 §5).
-
-    The stage's working directory is the release root, as the host compiles from its checkout.  An
-    ``os.open`` relative to a directory descriptor also looks relative in the audit event, so a
-    relative path counts only when it starts at a release top level.  Bytecode caches are not release paths.
-    """
-    roots = tuple({os.path.normpath(release) + os.sep, os.path.realpath(release) + os.sep})
-    misses: list[str] = []
-
-    def hook(event: str, args: tuple[Any, ...]) -> None:
-        if event != "open" or len(misses) >= MAX_RELEASE_MISSES or len(args) < 3 or isinstance(args[0], int):
-            return
-        try:
-            mode, flags, path = args[1], args[2], os.fsdecode(os.fspath(args[0]))
-            if ((isinstance(mode, str) and any(flag in mode for flag in "wax+"))
-                    or (isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT))
-                    or (not os.path.isabs(path) and path.split(os.sep, 1)[0] not in _RELEASE_TOPS)):
-                return
-            full = os.path.normpath(os.path.join(os.getcwd(), path))
-            root = next((root for root in roots if full.startswith(root)), None)
-            if root is not None and "__pycache__" not in full.split(os.sep) and not os.path.exists(full):
-                relative = safe_label(full[len(root):])
-                if relative not in misses:
-                    misses.append(relative)
-        except Exception:  # noqa: BLE001 - a hook that raises would fail the open it observes
-            return
-
-    sys.addaudithook(hook)
-    return misses
-
-
-def run_environment_probe(descriptor: Mapping[str, Any], roots: StageRoots) -> dict[str, Any]:
-    """``environment_probe`` (plan 14 §8): this worker's census record, sealed as the output and in the result."""
-    record = environment_record()
-    output = roots.local(descriptor["outputs"]["output_root"])
-    output.mkdir(parents=True)
-    (output / "environment.json").write_bytes(record_bytes(record))
-    result = {"schema_version": PROBE_RESULT_SCHEMA_VERSION, "status": STAGES[PROBE_STAGE]["success_status"],
-              "blockers": [], "source_commit": descriptor["code"]["source_commit"], "environment": record,
-              "result_digest": ""}
-    return {**result, "result_digest": canonical_digest(result, digest_field="result_digest")}
-
-
-def _from_release(release: str | Path) -> bool:
-    import blueprint_pipeline
-
-    return Path(blueprint_pipeline.__file__).resolve().is_relative_to(Path(release).resolve())
-
-
-def _stage_main() -> int:
-    """The stage child: refuse unless this code is the release's, audit release reads, run one handler."""
-    request = json.loads(sys.stdin.buffer.read(MAX_HANDOFF_BYTES + 1))
-    report: dict[str, Any] = {"result": None, "release_path_misses": [], "failures": []}
-    if not _from_release(request["release_root"]):
-        report["failures"] = ["remote_cpu_worker_source_shadowed"]
-    else:
-        misses = install_release_audit(request["release_root"])
-        try:
-            module, _, name = str(request["handler"]).partition(":")
-            handler = getattr(importlib.import_module(module), name)
-            roots = StageRoots(Path(request["filesystem_root"]), Path(request["release_root"]))
-            report["result"] = json.loads(json.dumps(handler(request["descriptor"], roots)))
-        except Exception as exc:  # noqa: BLE001 - a stage's own failures are in its result; this is infrastructure
-            report["failures"] = [f"stage_raised:{type(exc).__name__}"]
-        report["release_path_misses"] = list(misses)
-    Path(request["report"]).write_text(json.dumps(report), encoding="utf-8")
-    return 0
 
 
 def _run_stage_child(*, runtime: WorkerRuntime, descriptor: Mapping[str, Any], release: Path, handler: str,
@@ -914,7 +832,7 @@ def _execute_main() -> int:
     try:
         handoff = json.loads(sys.stdin.buffer.read(MAX_HANDOFF_BYTES + 1))
         runtime.filesystem_root = Path(handoff["filesystem_root"])
-        shadowed = not _from_release(handoff["release_root"])
+        shadowed = not from_release(handoff["release_root"])
     except (ValueError, KeyError, TypeError):
         return _refuse(runtime, "execute", "remote_cpu_worker_handoff_invalid")
     return execute_attempt(handoff, runtime, shadowed=shadowed)
@@ -973,7 +891,7 @@ def _main(arguments: list[str]) -> int:
     if arguments == ["execute"]:
         return _execute_main()
     if arguments == ["stage"]:
-        return _stage_main()
+        return stage_main()
     if arguments == ["environment"]:  # the host census's record, measured here (plan 14 §5)
         print(json.dumps(environment_record(), sort_keys=True))
         return 0
