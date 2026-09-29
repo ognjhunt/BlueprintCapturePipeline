@@ -49,6 +49,7 @@ RESULT_SCHEMA_BY_MODE = {
     "controls": "native_task_arena_control_result.v1",
     "policy": "native_task_arena_policy_result.v1",
     "policy_diagnostic": "native_task_arena_policy_diagnostic_result.v1",
+    "controlled_policy": "controlled_native_policy_result.v1",
 }
 POLICY_EXECUTION_AUTHORITY_BY_MODE = {
     "policy": "qualified_controls_evaluation",
@@ -502,6 +503,7 @@ def build_native_task_arena_bundle(
     container_image: str = DEFAULT_IMAGE,
     runtime_source_packet_receipt: str | Path | None = None,
     bound_runtime_inputs: Mapping[str, str | Path] | None = None,
+    runtime_extra_files: Mapping[str, str | Path] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Package one exact native-task packet without reconstructing its scene."""
@@ -519,6 +521,7 @@ def build_native_task_arena_bundle(
         "controls",
         "policy",
         "policy_diagnostic",
+        "controlled_policy",
     }:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_execution_mode_invalid"]
@@ -639,6 +642,20 @@ def build_native_task_arena_bundle(
             }
         )
     runtime_root_rows: list[dict[str, Any]] = []
+    for relative_text, source_text in sorted((runtime_extra_files or {}).items()):
+        relative = PurePosixPath(relative_text)
+        source = Path(source_text)
+        if (relative.is_absolute() or ".." in relative.parts or not relative.parts
+                or relative.parts[0] not in {"blueprint_pipeline", "rfc8785", "rfc8785-0.1.4.dist-info"}
+                or source.is_symlink() or not source.is_file()):
+            raise NativeTaskArenaBundleError(["native_task_arena_runtime_extra_file_invalid"])
+        destination = runtime / relative.as_posix()
+        if destination.exists():
+            raise NativeTaskArenaBundleError(["native_task_arena_runtime_extra_file_collision"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        runtime_root_rows.append({"relative_path": relative.as_posix(),
+            "size_bytes": destination.stat().st_size, "sha256": _sha256(destination)})
     policy_provisioning_script_name: str | None = None
     policy_provisioning_record: dict[str, Any] | None = None
     policy_execution_spec_digest: str | None = None

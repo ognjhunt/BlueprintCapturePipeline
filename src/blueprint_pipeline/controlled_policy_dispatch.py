@@ -20,6 +20,7 @@ class ControlledPolicyExecutor:
                  environment_factory: Callable[..., Any], sandbox_factory: Callable[..., Any],
                  allowed_origins: tuple[str, ...] = (), model_image_builder: Callable[..., str] | None = None,
                  credential_resolver: Callable[..., str | None] | None = None,
+                 outcome_reader: Callable[..., Mapping[str, Any]] | None = None,
                  max_queries: int = 128, deadline_seconds: float = 120):
         self.task_contract = task_contract
         self.environment_factory = environment_factory
@@ -29,6 +30,7 @@ class ControlledPolicyExecutor:
         self.allowed_origins = allowed_origins
         self.model_image_builder = model_image_builder
         self.credential_resolver = credential_resolver
+        self.outcome_reader = outcome_reader
         self.max_queries = max_queries
         self.deadline_seconds = deadline_seconds
 
@@ -81,6 +83,14 @@ class ControlledPolicyExecutor:
                     environment = self.environment_factory(job_request=job_request, observation=observation)
                     receipt = run_controlled_policy_episode(environment=environment, policy=policy,
                         max_queries=self.max_queries, deadline_seconds=self.deadline_seconds, retain=retain)
+                    if self.outcome_reader is not None:
+                        from .controlled_policy_outcome import validate_controlled_outcome
+                        outcome = validate_controlled_outcome(self.outcome_reader(
+                            environment=environment, job_request=job_request, observation=observation,
+                            episode_receipt=receipt), executed_motor_steps=receipt["executed_motor_steps"])
+                        retain({"kind": "independent_outcome", "receipt": outcome})
+                        receipt = {**receipt, "task_success": outcome["task_success"],
+                                   "outcome_evidence_required": False, "independent_outcome": outcome}
                     retain({"kind": "episode_terminal", "receipt": receipt})
                     return receipt
 
@@ -99,9 +109,14 @@ class ControlledPolicyExecutor:
                     receipt = sandbox["controlled_session"]
                 attempts.append({"attempt_id": f"{modality}_{index:05d}", **{
                     key: observation.get(key) for key in ("observation_id", "task_id", "scenario_id", "scenario_eval_run_id")},
-                    "status": "executed_outcome_pending" if receipt["executed_motor_steps"] else "blocked",
-                    "success": None, "evidence_scope": "controlled_policy_execution_without_outcome",
+                    "status": ("completed" if receipt.get("outcome_evidence_required") is False
+                               else "executed_outcome_pending") if receipt["executed_motor_steps"] else "blocked",
+                    "success": receipt.get("task_success"),
+                    "evidence_scope": ("native_simulator_independent_outcome" if receipt.get("outcome_evidence_required") is False
+                                       else "controlled_policy_execution_without_outcome"),
                     "metrics": receipt, "artifact_paths": {"controlled_policy_episode": str(path)}})
-        return {"status": "executed_outcome_pending", "attempts": attempts,
+        completed = bool(attempts) and all(row["status"] == "completed" for row in attempts)
+        return {"status": "completed" if completed else "executed_outcome_pending", "attempts": attempts,
+            "independent_outcome_proven": completed,
             "execution_performed": any(row["metrics"]["executed_motor_steps"] > 0 for row in attempts),
-            "blockers": ["independent_task_outcome_evidence_required"]}
+            "blockers": [] if completed else ["independent_task_outcome_evidence_required"]}

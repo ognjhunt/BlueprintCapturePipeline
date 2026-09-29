@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .company_policy_proxy import validate_action_response
+from .controlled_policy_actions import validate_action_response
 from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
 
 PROFILE = "onnx_state_mlp_cpu_v1"

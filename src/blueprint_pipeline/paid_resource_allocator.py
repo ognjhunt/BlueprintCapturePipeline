@@ -173,6 +173,7 @@ from .adp009d_franka_vast import (
     controls_only_max_compute_cap,
     run_adp009d_native_microcheck_vast,
 )
+from .controlled_native_policy_bundle import PROBE_KIND as CONTROLLED_NATIVE_POLICY_PROBE_KIND
 from .native_task_arena_construction_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
     build_native_task_arena_construction_bundle,
@@ -203,7 +204,7 @@ from .native_task_arena_allocator_dispatch import (
 )
 from .native_task_arena_vast import (
     POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES,
-    run_native_task_arena_controls_vast,
+    run_native_task_arena_controls_vast, run_controlled_native_policy_vast,
     run_native_task_arena_destination_qualification_vast,
     run_native_task_arena_policy_diagnostic_vast,
     run_native_task_arena_policy_vast,
@@ -1674,6 +1675,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+            CONTROLLED_NATIVE_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
             NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
@@ -5179,6 +5181,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind in {
+            CONTROLLED_NATIVE_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
             NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
@@ -5187,6 +5190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
         }:
             probe_mode = native_task_arena_probe_mode(args.probe_kind)
+            controlled_requested = probe_mode == "controlled_policy"
             preflight_requested = probe_mode == "runtime_preflight"
             destination_requested = probe_mode == "destination_qualification"
             controls_requested = probe_mode == "controls"
@@ -5368,6 +5372,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ),
                             "implementation_commit": control_identity["orchestrator_source_commit"],
                         }
+                        if controlled_requested:
+                            raise ValueError("controlled_native_policy_requires_sealed_bundle_receipt")
                         if destination_requested:
                             raise ValueError(
                                 "native_task_arena_destination_qualification_requires_dry_run_bundle_receipt"
@@ -5552,7 +5558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if native_warm_session
                     else None
                 ),
-                "candidate_policy_queried": any_policy_requested,
+                "candidate_policy_queried": any_policy_requested or controlled_requested,
                 "policy_candidate_id": (
                     prepared_bundle.get("policy_candidate_id") if prepared_bundle else None
                 ),
@@ -5605,7 +5611,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     "private_data_uploaded": True,
                     "raw_dataset_bytes_uploaded": False,
-                    "candidate_policy_queried": any_policy_requested,
+                    "candidate_policy_queried": any_policy_requested or controlled_requested,
                     "gated_backbone_access": gated_backbone_access,
                     "physical_outcome_values_uploaded": False,
                     "native_task_arena_authority_validation": (
@@ -5665,7 +5671,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(json.dumps({"success": success}, sort_keys=True))
                     return 0 if success else 2
                 run_native = (
-                    run_native_task_arena_runtime_preflight_vast
+                    run_controlled_native_policy_vast
+                    if controlled_requested
+                    else run_native_task_arena_runtime_preflight_vast
                     if preflight_requested
                     else run_native_task_arena_destination_qualification_vast
                     if destination_requested
@@ -5702,7 +5710,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if name in os.environ
                     }
                 if args.native_task_arena_retain_warm_session:
-                    if preflight_requested or destination_requested or any_policy_requested:
+                    if preflight_requested or destination_requested or any_policy_requested or controlled_requested:
                         result = {
                             "status": "blocked",
                             "blockers": [

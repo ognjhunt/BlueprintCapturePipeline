@@ -2149,7 +2149,9 @@ def _normalize_policy_attempts(
         status = _string(raw.get("status") or raw.get("result") or "completed").lower()
         success_raw = raw.get("success")
         success = (
-            _boolish(success_raw)
+            None
+            if raw.get("evidence_scope") == "submitted_skill_intent_only"
+            else _boolish(success_raw)
             if success_raw is not None
             else status
             in {
@@ -2631,11 +2633,17 @@ def build_policy_execution_bundle(
             attempts = _normalize_policy_attempts(payload=result, modality=modality,
                 observations=observations, generated_at=generated_at)
             all_attempts.extend(attempts)
+            outcome_proven = (result.get("status") == "completed"
+                and result.get("independent_outcome_proven") is True
+                and bool(attempts) and all(type(row.get("success")) is bool for row in attempts))
             modality_results[modality] = {"status": result.get("status", "blocked"),
                 "execution_performed": result.get("execution_performed") is True,
                 "attempt_count": len(attempts), **_policy_run_coverage(attempts, required_run_ids),
-                "robot_policy_execution_proven": False,
-                "blockers": result.get("blockers", []), "claim_boundary": dict(CLAIM_BOUNDARY)}
+                "robot_policy_execution_proven": outcome_proven,
+                "robot_team_policy_execution_proven": outcome_proven,
+                "blockers": result.get("blockers", []),
+                "claim_boundary": {**dict(CLAIM_BOUNDARY), "robot_policy_execution_proven": outcome_proven,
+                                   "robot_team_policy_execution_proven": outcome_proven}}
             continue
         command_text = _command_from_payload(
             modality=modality,
