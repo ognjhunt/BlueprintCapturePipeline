@@ -405,7 +405,9 @@ def test_forecast_hold_is_taken_before_consumption_and_refused_without_room(lane
         return lane.adapter(archive)(**kwargs)
 
     assert lane.run_session(adapter)["status"] == "completed"
-    assert seen == [1024**3]  # the declared footprint, held from before consumption through the paid window
+    # The budget's hold (review minor 5), not the role's 1 GiB ceiling, from before consumption
+    # through the paid window.
+    assert seen == [POLICY_CANARY_OUTPUT_CONTRACT.forecast_hold_bytes()] and seen[0] < 1024**3
 
     full = SimpleNamespace(total=100 * 1024**3, used=99 * 1024**3, free=1024**3)
     lane.monkeypatch.setattr(streaming, "disk_usage_provider", lambda _path: full)

@@ -67,6 +67,12 @@ NEEDED_SET_BUDGET_BYTES = 640 * 1024**2
 # view descriptor and filesystem overhead.
 PER_MEMBER_METADATA_BYTES = 1024
 FIXED_METADATA_BYTES = 16 * 1024**2
+# The forecast taken before the run (review minor 5), when neither the index nor
+# its member count exists: the needed-set budget, plus the metadata of up to
+# FORECAST_MEMBER_COUNT members (about three times the production shape's 6,745)
+# and an index row each (measured at 484 bytes on that shape).
+FORECAST_MEMBER_COUNT = 20_000
+FORECAST_INDEX_ROW_BYTES = 1024
 
 
 class PolicyCanaryOutputDeliveryError(ValueError):
@@ -127,6 +133,16 @@ class PolicyCanaryOutputContract:
         """What the ``policy_canary_output`` hold must cover once the index is known."""
         return needed_bytes + PER_MEMBER_METADATA_BYTES * member_count + index_file_bytes + FIXED_METADATA_BYTES
 
+    def forecast_hold_bytes(self) -> int:
+        """The hold before the run: the budget's, for up to ``FORECAST_MEMBER_COUNT`` members.
+
+        Every run the contract admits (a needed set within budget, members and
+        index rows within the allowance) then only shrinks it in place; a larger
+        archive blocks after the run with its archive durable, for the door.
+        """
+        return self.hold_bytes(needed_bytes=self.needed_set_budget_bytes, member_count=FORECAST_MEMBER_COUNT,
+                               index_file_bytes=FORECAST_MEMBER_COUNT * FORECAST_INDEX_ROW_BYTES)
+
 
 POLICY_CANARY_OUTPUT_CONTRACT = PolicyCanaryOutputContract()
 
@@ -137,6 +153,8 @@ __all__ = [
     "DELIVERY_ENV",
     "DELIVERY_MODES",
     "DOWNLOAD",
+    "FORECAST_INDEX_ROW_BYTES",
+    "FORECAST_MEMBER_COUNT",
     "MODE_INVALID",
     "NOT_INGESTED_GAP",
     "NEEDED_SET_BUDGET_BYTES",

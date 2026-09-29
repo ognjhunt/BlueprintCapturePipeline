@@ -602,7 +602,7 @@ def run_native_task_arena_policy_canary_session_vast(
             from .arena_provider_output_streaming import reserve_forecast_hold
             from .control_plane_disk_budget import ControlPlaneDiskBudgetError
             try:
-                output_hold = reserve_forecast_hold(job_dir=job_dir)
+                output_hold = reserve_forecast_hold(job_dir=job_dir, contract=member_contract)
             except ControlPlaneDiskBudgetError as exc:
                 refusal = _unconsumed_policy_canary_refusal(["policy_canary_output_disk_admission_refused"])
                 return {**refusal, "provider_output_admission": {"status": "refused", "reason": str(exc)}}

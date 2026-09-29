@@ -5,9 +5,10 @@ The arena lane's ``stream`` path, which only the Quick-10 session takes
 reaches this module.
 
 1. Before the session authority is consumed, ``reserve_forecast_hold`` takes
-   a ``policy_canary_output`` hold of the role's declared footprint (review
-   I3), so a host without room refuses before any spend. The session releases
-   it with the lane's outcome.
+   a ``policy_canary_output`` hold of the contract's forecast (review I3 and
+   minor 5): the needed-set budget's hold for up to 20,000 members, never more
+   than the role's declared footprint. A host without room refuses before any
+   spend. The session releases it with the lane's outcome.
 2. Inside the paid window the adapter observes the staged object by range
    (``collector``): no ZIP and no MP4 copy on the host.
 3. After teardown the lane promotes the staged object to B2 with a full
@@ -71,16 +72,19 @@ PRESIGN_EXPIRATION_SECONDS = 3600
 disk_usage_provider: Callable[[Any], Any] = shutil.disk_usage
 
 
-def reserve_forecast_hold(*, job_dir: str | Path, environ: Mapping[str, str] | None = None) -> DiskReservation:
+def reserve_forecast_hold(*, job_dir: str | Path, environ: Mapping[str, str] | None = None,
+                          contract: PolicyCanaryOutputContract = POLICY_CANARY_OUTPUT_CONTRACT) -> DiskReservation:
     """The ``policy_canary_output`` forecast hold, taken before the session authority is consumed.
 
-    It holds the role's declared footprint (1 GiB, or the operator's
-    ``BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_POLICY_CANARY_OUTPUT_BYTES``) and
+    It holds ``contract.forecast_hold_bytes()`` (about 695 MiB), capped at the
+    role's declared footprint (1 GiB, or the operator's
+    ``BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_POLICY_CANARY_OUTPUT_BYTES``), and
     is only ever shrunk afterwards. Raises ``ControlPlaneDiskBudgetError``.
     """
     values = os.environ if environ is None else environ
     return reserve_control_plane_disk(
-        OUTPUT_ROLE, target_root=Path(job_dir), expected_bytes=footprint_bytes(OUTPUT_ROLE),
+        OUTPUT_ROLE, target_root=Path(job_dir),
+        expected_bytes=min(contract.forecast_hold_bytes(), footprint_bytes(OUTPUT_ROLE)),
         reservation_root=values.get(RESERVATION_ROOT_ENV) or DEFAULT_RESERVATION_ROOT,
         disk_usage=lambda path: disk_usage_provider(path), workload=WORKLOAD)
 
