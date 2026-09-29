@@ -226,6 +226,34 @@ def test_owner_review_has_no_payload_or_provider_mutation(
     assert _payload_snapshot(target) == before
 
 
+@pytest.mark.parametrize('review_expiry', [3000, 3900])
+def test_owner_review_actions_do_not_starve_later_valid_delete(retirement_installation, review_expiry):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+
+    installation = retirement_installation  # noqa: F811
+    candidates = sorted((_born_scratch(installation) for _ in range(3)),
+                        key=lambda value: value[0]['intent_id'])
+    reviews = []
+    for grant, _, _ in candidates[:2]:
+        reviews.append(root.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+            action='owner_review', expires_at_epoch=review_expiry, installed_config_path=installation[0],
+            now=lambda: 2900))
+    grant, _, target = candidates[2]
+    action = root.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+        action='delete', expires_at_epoch=3900, installed_config_path=installation[0], now=lambda: 2900)
+    report = _gc(installation, at=3501)
+    outcomes = report['registered_experiments']['outcomes']
+    assert any(row['action_id'] == action['action_id'] and row['intent_id'] == grant['intent_id']
+               and row['decision'] == 'retired' and row['reason'] == 'disposable_expired'
+               for row in outcomes)
+    if review_expiry == 3000:
+        assert {row['action_id'] for row in outcomes if row['reason'] == 'experiment_action_expired'} == {
+            review['action_id'] for review in reviews}
+    else:
+        assert len(outcomes) == 2  # One delete and at most one live owner review.
+    assert not (target / 'intermediate.bin').exists()
+
+
 @pytest.mark.parametrize('fault', ['alternate_empty_root', 'duplicate', 'relative'])
 def test_actual_action_refuses_wrong_or_ambiguous_installed_reference_authority(
         retirement_installation, monkeypatch, fault):
