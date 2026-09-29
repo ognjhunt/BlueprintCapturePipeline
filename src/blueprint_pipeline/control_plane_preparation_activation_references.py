@@ -957,7 +957,12 @@ class _Interpretation:
                             "construction_queue_envelope_digest", "construction_queue_receipt_digest", "episode_compilation_queue_receipt_digest",
                             "configuration_render_inputs_result_digest", "scene_intent_digest", "website_request_digest", "task_success_contract_digest"):
                     if key in doc.value:
-                        self.selector(doc, key, doc.value[key])
+                        # This field is the raw SHA-256 of the configured
+                        # bundle, not a canonical JSON document seal. Its
+                        # exact local bytes are checked by the native bundle
+                        # transfer below.
+                        if key != "configured_scene_bundle_digest":
+                            self.selector(doc, key, doc.value[key])
                         self.defer(doc, key, "deferred_downstream_document")
                 for key in ("policy_run_plan", "task_success_contract", "episode_interpretation_authority", "episode_interpretation_source_rights_admission"):
                     if key in doc.value:

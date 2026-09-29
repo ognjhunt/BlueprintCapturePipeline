@@ -9,6 +9,8 @@ import json
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from tests.test_scene_inventory_history import fixture, event, project
 from tests.test_scene_compilation_owner_preparations import fixture as owner_fixture
 
@@ -36,6 +38,7 @@ def context_fixture(tmp_path, *, completed=False):
                'primary_queue_contracts': [{'root_path': roots['preparation_queue_root'],
                    'states': ['pending', 'processing', 'awaiting_source_preparation', 'awaiting_capacity', 'materialized', 'completed', 'blocked']}],
                'auxiliary_queue_contracts': [{'family': 'preparation', 'root_path': roots['preparation_queue_root']},
+                                            {'family': 'activation', 'root_path': roots['activation_queue_root']},
                                             {'family': 'sam', 'root_path': roots['sam_queue_root']}],
                'reference_family_contracts': [{'family': 'preparation', 'queue_root': roots['preparation_queue_root']},
                                              {'family': 'activation', 'queue_root': roots['activation_queue_root']}],
@@ -107,6 +110,26 @@ def test_configured_revision_projection_selector_has_exact_worker_shape(tmp_path
             assert 'context_selectors_invalid' in str(error)
         else:
             raise AssertionError((role,path))
+
+
+def test_activation_reference_selector_has_exact_worker_shape(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import _context
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    context, _ = context_fixture(tmp_path)
+    root = Path(context['roots']['activation_output_root'])
+    context['retained_metadata_roots'].append(str(root))
+    reference = root / 'activation-1' / 'references' / ('a' * 64)
+    context['retained_metadata_files'] = [{'role': 'opaque_evidence', 'path': str(reference)}]
+    _context(context, ReferenceCollectionBudget(monotonic=lambda: 0))
+    for role, candidate in (
+        ('sam_plans', reference),
+        ('opaque_evidence', root / 'other' / 'nested' / reference.name),
+        ('opaque_evidence', root / 'activation-1' / 'references' / reference.name.upper()),
+        ('opaque_evidence', tmp_path / 'foreign' / 'activation-1' / 'references' / reference.name),
+    ):
+        context['retained_metadata_files'] = [{'role': role, 'path': str(candidate)}]
+        with pytest.raises(ValueError, match='context_selectors_invalid'):
+            _context(context, ReferenceCollectionBudget(monotonic=lambda: 0))
 
 
 def preparation_fixture(tmp_path):

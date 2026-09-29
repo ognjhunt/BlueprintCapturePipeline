@@ -794,6 +794,14 @@ def _validated_production_recipe(
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_construction_recipe_invalid"
         ) from exc
+    return validate_recipe_request_binding(request=request, recipe=recipe)
+
+
+def validate_recipe_request_binding(
+    *, request: Mapping[str, Any], recipe: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Check the worker's immutable request identity against already validated recipe bytes."""
+    recipe = validate_scene_construction_recipe(recipe)
     # ``revision.source_commit`` identifies the historical configuration
     # release and is already protected by the revision digest.  The current
     # evaluator release is independently bound by the preparation request and
@@ -1604,6 +1612,12 @@ def process_launch_preparation_queue(
                     raise TaskEvaluationLaunchPreparationWorkerError(
                         "launch_preparation_scene_construction_queue_missing"
                     )
+                # Stage and supplemental materialization extend the exact
+                # pre-handoff references. Bind the construction envelope to
+                # that complete result, rather than its earlier fetch seal.
+                result["result_digest"] = canonical_digest(
+                    result, digest_field="result_digest"
+                )
                 construction_intake = stage_scene_construction(
                     request=envelope["request"],
                     preparation_result=result,

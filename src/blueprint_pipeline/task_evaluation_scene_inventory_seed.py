@@ -423,7 +423,7 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
     _require(budget["result"] <= MAX_REFERENCES, "references_limit", **_work_kwargs(work_budget))
     request_refs = context["typed"]
     workspace = retained._child(roots["preparation_input_root"], context["link"]["preparation_id"], **_work_kwargs(work_budget))
-    observed, projected, recipe_parent, recipe_stages = set(), {}, False, []
+    observed, projected, recipe_parent, recipe_stages, recipe_supplemental = set(), {}, False, [], []
     for row in (_work_items(references, work_budget) if work_budget is not None else references):
         _require(isinstance(row, dict) and isinstance(row.get("contract_path"), str)
                  and 0 < len(row["contract_path"].encode("utf-8")) <= retained.MAX_PATH_BYTES
@@ -451,6 +451,13 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
                 and path == retained._child(workspace, 'construction-stage-configurations',
                                             row['digest'][7:], **_work_kwargs(work_budget))):
             recipe_stages.append((int(stage_index.group(1)), row))
+        supplemental = re.fullmatch(
+            r'construction\.recipe\.supplemental_destination\.(authoring_receipt|simready_result)',
+            row['contract_path'])
+        if (supplemental is not None and row['full_byte_service_account_readback_passed'] is True
+                and path == retained._child(workspace, 'construction-supplemental-destination',
+                                            row['digest'][7:], **_work_kwargs(work_budget))):
+            recipe_supplemental.append((supplemental.group(1), row))
         if contract is None or not promote:
             deferred.append({**row, "preparation_id": context["link"]["preparation_id"], "source_provenance": _proofs(emission_budget, (provenance,), **_work_kwargs(work_budget)),
                              "binding_strength": "result_receipt_only", "reason": "deferred_parent_reference_proof"})
@@ -480,8 +487,10 @@ def _result_references(value: dict, provenance: dict, context: dict, roots: dict
     # The selected result can name recipe children for bounded measurement,
     # but the parent recipe bytes have not been reopened here. Keep each child
     # deferred; action admission must authenticate that parent before removal.
-    if promote and recipe_parent and len({index for index, _ in recipe_stages}) == len(recipe_stages):
-        for _, row in (_work_items(recipe_stages, work_budget) if work_budget is not None else recipe_stages):
+    if (promote and recipe_parent and len({index for index, _ in recipe_stages}) == len(recipe_stages)
+            and len({field for field, _ in recipe_supplemental}) == len(recipe_supplemental)):
+        recipe_children = [*recipe_stages, *recipe_supplemental]
+        for _, row in (_work_items(recipe_children, work_budget) if work_budget is not None else recipe_children):
             path = row['materialized_path']
             existing = budget['members'].get(path)
             if existing is None:

@@ -86,6 +86,9 @@ class Pool:
             if role=='configured_revisions' and not path.endswith('.json'):
                 raw=self.reader.read_json(path,configured_revision_root=(
                     self.context['roots']['preparation_input_root']))
+            elif role=='opaque_evidence' and not path.endswith('.json'):
+                raw=self.reader.read_json(path,activation_reference_root=(
+                    self.context['roots']['activation_output_root']))
             else:
                 raw = self.reader.read_json(path)
         except FileNotFoundError:
@@ -401,6 +404,16 @@ def select(decoded, context, intent_id, budget):
                 for child in _work_items(node, budget):
                     budget.charge('facts')
                     stack.append(child)
+    sam_result_keys = set()
+    for index, row in enumerate(_work_items(decoded, budget)):
+        if (index in selected and row['role'] == 'parent_envelopes'
+                and row['path'] in sam_hints and supported(row)
+                and row['value'].get('request_digest') not in linked_parents):
+            request = row['value'].get('request')
+            if isinstance(request, dict) and request.get('run_mode') == 'scene_configuration':
+                p = PurePosixPath(row['path'])
+                budget.charge('facts')
+                sam_result_keys.add((str(p.parent.parent), p.name))
     for index, row in enumerate(_work_items(decoded, budget)):
         role = row['role']
         value = row['value']
@@ -417,7 +430,9 @@ def select(decoded, context, intent_id, budget):
         if role in {'parent_envelopes', 'parent_results'}:
             p = PurePosixPath(row['path'])
             modes = parent_modes.get((str(p.parent.parent), p.name), set())
-            if (role == 'parent_envelopes' and row['path'] in sam_hints
+            if role == 'parent_results' and (str(p.parent.parent), p.name) in sam_result_keys:
+                role = 'sam_parent_results'
+            elif (role == 'parent_envelopes' and row['path'] in sam_hints
                     and modes == {'scene_configuration'} and (
                         value.get('request_digest') not in linked_parents or (
                             str(p.parent.parent) in alternate_queues

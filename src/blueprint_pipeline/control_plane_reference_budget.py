@@ -20,7 +20,9 @@ MAX_RAW_BYTES = MAX_OUTPUT_BYTES = 20 * 1024 * 1024
 MAX_VALUES, MAX_DEPTH, MAX_FACTS = 100_000, 64, 20_000
 MAX_BLOCKERS = 32
 _SCENE_LIFECYCLE_VALUES, _SCENE_LIFECYCLE_SECONDS = 2_000_000, 30.0
-_SCENE_LIFECYCLE_FACTS = 30_000
+# A representative connected source fixture resolves 35,566 bounded facts. Keep a
+# finite margin without enlarging the independent five-second observer budget.
+_SCENE_LIFECYCLE_FACTS = 40_000
 
 
 class ReferenceCollectionBudgetError(ValueError):

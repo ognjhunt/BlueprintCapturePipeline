@@ -339,12 +339,16 @@ class Context:
         require(digest not in self.sizes or self.sizes[digest] == size, 'content_size_conflict', **_work_kwargs(work_budget))
         self.sizes[digest] = size
 
-    def references(self, *, work_budget=None):
+    def references(self, *, roles=None, work_budget=None):
         if work_budget is None:
             work_budget = getattr(self, "work_budget", None)
         if work_budget is not None:
             _work(work_budget)
-        for rows in (_work_items(self.decoded.values(), work_budget) if work_budget is not None else self.decoded.values()):
+        if roles is not None:
+            require(work_budget is not None and isinstance(roles, frozenset)
+                    and roles <= self.decoded.keys(), 'reference_roles_invalid', **_work_kwargs(work_budget))
+        groups = (rows for role, rows in self.decoded.items() if roles is None or role in roles)
+        for rows in (_work_items(groups, work_budget) if work_budget is not None else groups):
             for value, proof in (_work_items(rows, work_budget) if work_budget is not None else rows):
                 stack = [value]
                 while stack:
@@ -352,8 +356,24 @@ class Context:
                         work_budget.charge("values")
                     current = stack.pop()
                     if isinstance(current, dict):
-                        if 'path' in current and 'sha256' in current:
+                        if {'path', 'sha256', 'size_bytes'} <= current.keys():
                             self.raw_ref(current, proof)
+                        elif 'path' in current and 'sha256' in current:
+                            # Website authoring source frames are semantic
+                            # descriptors without a byte count. Only this
+                            # exact producer shape may omit one; other partial
+                            # raw selectors cannot silently disappear.
+                            require(current.keys() <= {'path', 'sha256', 'role', 'frame_id',
+                                                       'reason', 'source_sha256'}
+                                    and current.get('role') == 'observed_source'
+                                    and isinstance(current.get('frame_id'), str)
+                                    and bool(current['frame_id'])
+                                    and (current.get('source_sha256') is None
+                                         or matches(current['source_sha256'], **_work_kwargs(work_budget))),
+                                    'reference_invalid', **_work_kwargs(work_budget))
+                            path(current['path'], **_work_kwargs(work_budget))
+                            require(matches(current['sha256'], **_work_kwargs(work_budget)),
+                                    'reference_invalid', **_work_kwargs(work_budget))
                         if 'uri' in current and 'digest' in current and 'size_bytes' in current:
                             self.consume()
                             uri, digest, size = (current[k] for k in (_work_items(('uri', 'digest', 'size_bytes'), work_budget) if work_budget is not None else ('uri', 'digest', 'size_bytes')))

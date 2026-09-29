@@ -32,6 +32,7 @@ SUPPORTED_SCHEMAS = {
     'sam_artifact_metadata': {'public_scene_sam31_task_input_packet.v1', 'semantic_sam31_source_track_run_request.v1',
                               'public_scene_interiorgs_edit_input_request.v2'},
     'sam_parent_envelopes': {'task_evaluation_launch_preparation_envelope.v1'},
+    'sam_parent_results': {'task_evaluation_launch_preparation_result.v1'},
     'preparation_envelopes': {'task_evaluation_launch_preparation_envelope.v1'},
     'sam_execution_receipts': {'task_evaluation_sam31_phase_execution_receipt.v1', 'task_evaluation_sam31_phase_replay_receipt.v1'},
     'sam_host_evidence': {'standard_splat_conversion_receipt.v1', 'public_scene_host_input_installation_receipt.v1',
@@ -139,15 +140,37 @@ class Context(c.Context):
         key = (row[1]['role'], row[0][field])
         self.selectors.setdefault(key, []).append(row)
 
-    def references(self, *, work_budget=None):
+    def references(self, *, roles=None, work_budget=None):
         if work_budget is None:
             work_budget = getattr(self, "work_budget", None)
         if work_budget is not None:
             _work(work_budget)
-        super().references()
+        super().references(roles=roles)
         # Generic remote records can repeat a URI but cannot promise two contents.
         for row in (_work_items(self.remote, work_budget) if work_budget is not None else self.remote):
             key = (row['digest'], row['size_bytes'])
+            require(row['uri'] not in self.uri_identities or self.uri_identities[row['uri']] == key,
+                    'remote_identity_conflict', **_work_kwargs(work_budget))
+            self.uri_identities[row['uri']] = key
+
+    def predecessor_remote_identities(self, rows, *, raw_rows=(), work_budget=None):
+        """Preserve cross-layer URI and digest-size refusals in scoped scans."""
+        if work_budget is None:
+            work_budget = getattr(self, 'work_budget', None)
+        for row in (_work_items(raw_rows, work_budget) if work_budget is not None else raw_rows):
+            if work_budget is not None:
+                work_budget.charge('facts')
+            digest, size = row['sha256'], row['size_bytes']
+            require(digest not in self.sizes or self.sizes[digest] == size,
+                    'content_size_conflict', **_work_kwargs(work_budget))
+            self.sizes[digest] = size
+        for row in (_work_items(rows, work_budget) if work_budget is not None else rows):
+            if work_budget is not None:
+                work_budget.charge('facts')
+            key = (row['digest'], row['size_bytes'])
+            require(key[0] not in self.sizes or self.sizes[key[0]] == key[1],
+                    'content_size_conflict', **_work_kwargs(work_budget))
+            self.sizes[key[0]] = key[1]
             require(row['uri'] not in self.uri_identities or self.uri_identities[row['uri']] == key,
                     'remote_identity_conflict', **_work_kwargs(work_budget))
             self.uri_identities[row['uri']] = key

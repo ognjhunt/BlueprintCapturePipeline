@@ -80,6 +80,30 @@ def test_exact_configured_revision_projection_is_the_only_digest_named_metadata(
             reader.read_json(str(path), configured_revision_root=str(root))
 
 
+def test_exact_activation_reference_projection_reads_only_matching_digest(tmp_path):
+    m = module()
+    root = tmp_path / 'activation-output'
+    references = root / 'activation-1' / 'references'
+    references.mkdir(parents=True)
+    raw = b'{"schema_version":"task_evaluation_shared_mutation_window.v1"}'
+    path = references / hashlib.sha256(raw).hexdigest()
+    path.write_bytes(raw)
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        with pytest.raises(m.AcquisitionError, match='metadata_filename_invalid'):
+            reader.read_json(str(path))
+        assert reader.read_json(str(path), activation_reference_root=str(root)) == raw
+        assert reader.verify() is True
+    path.write_bytes(b'{}')
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        with pytest.raises(m.AcquisitionError, match='metadata_digest_invalid'):
+            reader.read_json(str(path), activation_reference_root=str(root))
+    path.unlink()
+    path.mkdir()
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        with pytest.raises(m.AcquisitionError, match='metadata_type_invalid'):
+            reader.read_json(str(path), activation_reference_root=str(root))
+
+
 def test_shared_read_allowance_refuses_before_next_read(tmp_path, monkeypatch):
     m = module()
     path = tmp_path / 'owner.json'

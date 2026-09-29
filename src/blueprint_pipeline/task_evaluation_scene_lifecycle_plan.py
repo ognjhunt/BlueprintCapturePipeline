@@ -15,6 +15,7 @@ from .task_evaluation_scene_lineage_budget import RetainedEmissionBudget, _work_
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 FIELDS = {'roots', 'parent_routes', 'retained_metadata_roots', 'acquisition_anchors', 'retained_metadata_files',
           'pins_root', 'primary_queue_contracts', 'auxiliary_queue_contracts', 'reference_family_contracts', 'progression_config'}
+OPTIONAL_FIELDS = {'scene_construction_queue_root'}
 FALSE_FLAGS = ('scene_inventory_complete', 'references_clear', 'process_fences_held', 'retirement_eligible',
                'cleanup_authorized', 'restore_verified', 'fresh_remote_readback_verified', 'execution_authorized',
                'current_provider_zero_verified', 'current_rights_checked', 'settlement_reopen_clear', 'owner_consent_verified',
@@ -26,7 +27,7 @@ FAMILIES = ('capture_pipeline', 'administrative_source_workspace', 'preparation_
 # Union of the actual preparation, activation and SAM producer states. The
 # observers remain separate; a family unsupported by a child is not forwarded.
 PRIMARY_STATES = set(pool_module.STATES) | {'prepared', 'waiting_external', 'failed'}
-CONTRACT_FAMILIES = {'auxiliary_queue_contracts': {'preparation', 'sam'},
+CONTRACT_FAMILIES = {'auxiliary_queue_contracts': {'preparation', 'activation', 'sam'},
                      'reference_family_contracts': {'preparation', 'activation'}}
 
 
@@ -39,7 +40,8 @@ def fallback(code):
 def _context(value, budget):
     budget.tick()
     budget.measure(value)
-    acquisition.require(isinstance(value, dict) and set(value) == FIELDS, 'context_invalid')
+    acquisition.require(isinstance(value, dict) and FIELDS <= set(value) <= FIELDS | OPTIONAL_FIELDS,
+                        'context_invalid')
     roots = value['roots']
     expected = native.prior.downstream.seed_module._ROOTS | native.prior.downstream.EXTRA_ROOTS | native.prior.EXTRA_ROOTS
     acquisition.require(isinstance(roots, dict) and set(roots) == expected, 'context_roots_invalid')
@@ -54,6 +56,11 @@ def _context(value, budget):
         acquisition.path(path, budget)
         acquisition.require(any(PurePosixPath(path).is_relative_to(PurePosixPath(anchor)) for anchor in anchors),
                             'context_path_outside_anchor')
+    if 'scene_construction_queue_root' in value:
+        construction = acquisition.path(value['scene_construction_queue_root'], budget)
+        acquisition.require(any(PurePosixPath(construction).is_relative_to(PurePosixPath(anchor))
+                                for anchor in anchors), 'context_path_outside_anchor')
+        acquisition.require(construction not in roots.values(), 'context_roots_invalid')
     for route in _work_items(routes, budget):
         acquisition.require(isinstance(route, dict) and set(route) == {'queue_root', 'input_root'}, 'context_routes_invalid')
         for path in _work_items(route.values(), budget):
@@ -71,7 +78,9 @@ def _context(value, budget):
         path = acquisition.path(row['path'], budget)
         digest_revision=(row['role']=='configured_revisions'
             and acquisition.configured_revision_projection(path,roots['preparation_input_root']))
-        acquisition.require((path.endswith('.json') or digest_revision)
+        digest_activation=(row['role']=='opaque_evidence'
+            and acquisition.activation_reference_projection(path,roots['activation_output_root']))
+        acquisition.require((path.endswith('.json') or digest_revision or digest_activation)
                             and any(PurePosixPath(path).is_relative_to(PurePosixPath(root))
                             and path != root for root in metadata), 'context_selectors_invalid')
         acquisition.require(path not in selected, 'context_selectors_invalid')

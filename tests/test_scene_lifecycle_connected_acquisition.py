@@ -42,7 +42,7 @@ def full_connected_finished_scene():
     return args
 
 
-def installed(tmp_path, args, *, already_rebased=False):
+def installed(tmp_path, args, *, already_rebased=False, shared_hardlinks=True):
     from tests.test_scene_source_family_website import fixture as base_fixture
     base = base_fixture()
     args['roots'] = dict(base['roots'], **args['roots'])
@@ -88,7 +88,13 @@ def installed(tmp_path, args, *, already_rebased=False):
     os.link(first, shared)
     other = Path(args['roots']['activation_output_root']) / 'activation-1' / 'tiny.payload'
     other.parent.mkdir(parents=True, exist_ok=True)
-    os.link(first, other)
+    if shared_hardlinks:
+        os.link(first, other)
+    else:
+        # The all-family retirement fixture needs a single owner for every
+        # selected inode; other connected acquisition tests keep the shared
+        # cross-workspace hardlink as a refusal case.
+        other.write_bytes(b'x')
     payload.update(map(str, (first, shared, other)))
     return args, context, metadata, payload
 

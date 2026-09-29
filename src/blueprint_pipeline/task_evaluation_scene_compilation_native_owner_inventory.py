@@ -66,8 +66,13 @@ def _join(intent_id, seed, downstream, source, bridge, roots, routes, metadata, 
         sink = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
     context = c.Context(decoded, roots, limits, intent_id, ROLES, emission_budget=sink, **_work_kwargs(work_budget))
     context.routes, context.metadata_roots = routes, metadata
-    context.references()
+    # The nested source-family reader owns every predecessor role under this
+    # same budget. Scan native bridge records once in private composition.
+    context.references(roles=frozenset(ROLES) if work_budget is not None else None)
     old = prior._join(intent_id, seed, downstream, source, roots, routes, metadata, emission_budget=sink, **_work_kwargs(work_budget))
+    if work_budget is not None:
+        context.predecessor_remote_identities(old['remote_reference_obligations'])
+        context.predecessor_remote_identities(old['downstream_inventory']['remote_reference_obligations'])
     observations = preparation.inventory(context, **_work_kwargs(work_budget))
     output_observations = outputs.inventory(context, **_work_kwargs(work_budget))
     output_observations.extend(owners.inventory(context, **_work_kwargs(work_budget)))

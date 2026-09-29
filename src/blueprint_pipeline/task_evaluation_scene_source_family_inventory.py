@@ -5,6 +5,9 @@ provider state, presence, scientific validity, rights or original-owner transfer
 """
 from __future__ import annotations
 
+import json
+from pathlib import PurePosixPath
+
 from .task_evaluation_scene_lineage_budget import _work_collect, _work, _work_items, _work_kwargs
 
 from . import task_evaluation_scene_downstream_inventory as downstream
@@ -28,12 +31,97 @@ MAX_ADOPTION_DEPTH, MAX_ADOPTION_NODES = 16, 1024
 EXTRA_ROOTS = {'pubsub_root', 'website_source_binding_root', 'sam_queue_root', 'sam_execution_root', 'host_input_root'}
 ROLES = {'website_registrations', 'website_bindings', 'website_handoffs', 'website_preparations',
          'website_runtime_inputs', 'website_task_contexts', 'submission_publications', 'sam_parent_envelopes',
+         'sam_parent_results',
          'source_progress', 'source_resume_signals', 'sam_plans', 'sam_profiles', 'sam_recipes',
          'sam_stage_configurations', 'sam_jobs', 'sam_results', 'sam_execution_receipts', 'sam_execution_progress',
          'sam_adoptions', 'sam_prefix_selections', 'sam_host_tasks', 'sam_host_evidence', 'sam_artifact_metadata', 'opaque_evidence'}
 FALSE_FLAGS = downstream.FALSE_FLAGS + ('source_family_complete', 'original_owner_transfer_authorized',
     'scientific_validity_checked', 'current_rights_checked', 'current_billing_settled', 'capture_acknowledged',
     'current_queue_ownership_clear', 'sam_cache_retirement_policy_resolved')
+
+
+def _activation_raw_artifacts(context, old, opaque_records, *, work_budget=None):
+    """Bind exact activation-owned raw and sealed outputs without cleanup authority."""
+    if work_budget is not None:
+        _work(work_budget)
+    def rows(values):
+        return _work_items(values, work_budget) if work_budget is not None else values
+    bound = {row['path'] for row in rows(old['lexical_members'])
+             if row['kind'] == 'activation_workspace'}
+    opaque = [proof for _, proof in rows(context.decoded['opaque_evidence'])]
+    def sealed_document(path, field, digest, raw_reference=None):
+        proofs = [proof for proof in rows(opaque) if proof['path'] == path]
+        supplied = [raw for name, raw in rows(opaque_records) if name == path]
+        if len(proofs) != 1 or len(supplied) != 1 or not 0 < len(supplied[0]) <= 65536:
+            return None
+        proof, raw = proofs[0], supplied[0]
+        if (proof['size_bytes'] != len(raw)
+                or proof['sha256'] != contracts.c.raw_digest(raw, **_work_kwargs(work_budget))
+                or raw_reference is not None and (
+                    proof['sha256'] != raw_reference.get('digest')
+                    or proof['size_bytes'] != raw_reference.get('size_bytes'))):
+            return None
+        try:
+            value = json.loads(raw)
+        except (ValueError, UnicodeError):
+            return None
+        if (type(value) is not dict or value.get(field) != digest
+                or digest != contracts.c.canonical_digest(value, digest_field=field)):
+            return None
+        return value, dict(proof, seal_field=field, seal_digest=digest)
+
+    for result, result_proof in rows(context.decoded['activation_results']):
+        if result.get('status') != 'profile_authority_materialized_no_execution':
+            continue
+        root = contracts.c.child(context.roots['activation_output_root'], result['activation_id'],
+                                 **_work_kwargs(work_budget))
+        if root not in bound:
+            continue
+        profile_path = contracts.c.child(root, 'profiles', result['profile_id'] + '.json',
+                                         **_work_kwargs(work_budget))
+        matched_profile = sealed_document(profile_path, 'profile_digest', result['profile_digest'])
+        if matched_profile is not None:
+            profile, sealed = matched_profile
+            if (profile.get('schema_version') == 'task_evaluation_launch_profile.v1'
+                    and profile.get('profile_id') == result['profile_id']
+                    and profile.get('source_commit') == result['source_commit']):
+                context.member(root, 'activation_workspace', {
+                    'activation_id': result['activation_id'], 'profile_document_bound': True},
+                    context.provenance((result_proof, sealed)))
+        envelopes = [(envelope, proof) for envelope, proof in rows(context.decoded['activation_envelopes'])
+                     if envelope.get('request', {}).get('activation_id') == result['activation_id']
+                     and envelope.get('request', {}).get('expected_production_commit') == result['source_commit']]
+        if len(envelopes) == 1:
+            envelope, envelope_proof = envelopes[0]
+            reference = envelope['request'].get('release_window')
+            if (type(reference) is dict and type(reference.get('digest')) is str
+                    and len(reference['digest']) == 71 and reference['digest'].startswith('sha256:')):
+                window_path = contracts.c.child(root, 'references', reference['digest'][7:],
+                                                **_work_kwargs(work_budget))
+                matched_window = sealed_document(window_path, 'window_digest',
+                                                 result['release_window_digest'], reference)
+                if matched_window is not None:
+                    window, sealed = matched_window
+                    if (window.get('schema_version') == 'task_evaluation_shared_mutation_window.v1'
+                            and window.get('activation_id') == result['activation_id']
+                            and window.get('team_namespace') == result['team_namespace']
+                            and window.get('expected_production_commit') == result['source_commit']):
+                        context.member(root, 'activation_workspace', {
+                            'activation_id': result['activation_id'], 'release_window_document_bound': True},
+                            context.provenance((result_proof, envelope_proof, sealed)))
+        publication = root + '/launch-set/profile_publication_receipt.v1.json'
+        authorizations = PurePosixPath(root) / 'standing-authorizations'
+        matches = [proof for proof in rows(opaque)
+                   if proof['path'] == publication
+                   and proof['sha256'] == result['profile_publication_receipt_digest']]
+        approvals = [proof for proof in rows(opaque)
+                     if proof['sha256'] == result['standing_authorization_digest']
+                     and PurePosixPath(proof['path']).parent == authorizations
+                     and PurePosixPath(proof['path']).suffix == '.json']
+        if len(matches) != 1 or len(approvals) != 1:
+            continue
+        context.member(root, 'activation_workspace', {'activation_id': result['activation_id'],
+            'raw_artifacts_bound': True}, context.provenance((result_proof, matches[0], approvals[0])))
 
 
 def join_retained_scene_source_family_inventory(*, intent_id, seed_records, downstream_records, source_records,
@@ -90,9 +178,17 @@ def _join(intent_id, seed_records, downstream_records, source_records, roots, pa
         emission_budget = emission_budget.scope(max_bytes=MAX_OUTPUT_BYTES, max_rows=MAX_ROWS, max_references=MAX_REFERENCES)
     context = c.Context(decoded, roots, limits, intent_id, ROLES, emission_budget=emission_budget, **_work_kwargs(work_budget))
     context.routes, context.metadata_roots = routes, metadata_roots
-    context.references()
+    # The nested downstream reader already observes the predecessor roles.
+    # The private shared-budget composition scans source roles once here;
+    # the public standalone API retains its original complete projection.
+    context.references(roles=frozenset(ROLES) if work_budget is not None else None)
     old = _downstream_join(intent_id=intent_id, seed_records=seed_records, downstream_records=downstream_records,
                            roots={k: v for k, v in (_work_items(roots.items(), work_budget) if work_budget is not None else roots.items()) if k not in EXTRA_ROOTS}, emission_budget=emission_budget, **_work_kwargs(work_budget))
+    _activation_raw_artifacts(context, old, source_records['opaque_evidence'],
+                              **_work_kwargs(work_budget))
+    if work_budget is not None:
+        context.predecessor_remote_identities(old['remote_reference_obligations'],
+            raw_rows=old['raw_reference_obligations'])
     websites = website.capture(context, old, **_work_kwargs(work_budget))
     publications = website.publication(context, old, **_work_kwargs(work_budget))
     context.source_owner_workspaces = {m['path'] for m in (_work_items(old['seed']['members'], work_budget) if work_budget is not None else old['seed']['members']) if m['kind'] == 'administrative_source_workspace'}

@@ -54,6 +54,18 @@ def configured_revision_projection(value, root):
         and re.fullmatch(r'[0-9a-f]{64}',parts[1]) is not None)
 
 
+def activation_reference_projection(value, root):
+    """The activation worker's exact content-addressed reference layout."""
+    if type(value) is not str or type(root) is not str:
+        return False
+    try:
+        parts = PurePosixPath(value).relative_to(PurePosixPath(root)).parts
+    except ValueError:
+        return False
+    return (len(parts)==3 and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,191}',parts[0]) is not None
+        and parts[1]=='references' and re.fullmatch(r'[0-9a-f]{64}',parts[2]) is not None)
+
+
 def identity(info):
     return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
             info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)
@@ -203,9 +215,10 @@ class Acquisition:
         self.memberships.setdefault(value, observed)
         return tuple(names)
 
-    def read_json(self, value, *, configured_revision_root=None):
+    def read_json(self, value, *, configured_revision_root=None, activation_reference_root=None):
         digest_named=(type(value) is str and not value.endswith('.json')
-            and configured_revision_projection(value,configured_revision_root))
+            and (configured_revision_projection(value,configured_revision_root)
+                 or activation_reference_projection(value,activation_reference_root)))
         require(type(value) is str and (value.endswith('.json') or digest_named), 'metadata_filename_invalid')
         parent, name = self._parent(value)
         fd = None

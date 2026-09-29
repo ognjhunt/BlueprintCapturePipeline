@@ -341,6 +341,24 @@ def inventory(context, *, work_budget=None):
                 verified = revision is not None and context.supported(revision) and all(context.supported(p) for group in (_work_items((versions, candidates, parent_rows, intake_rows), work_budget) if work_budget is not None else (versions, candidates, parent_rows, intake_rows)) for p in (_work_items(group, work_budget) if work_budget is not None else group))
                 if not verified:
                     strength = None
+                else:
+                    # The native episode handoff may be a descendant rather
+                    # than the seed preparation. Its exact projected files
+                    # still belong in the scene's measured archive inventory.
+                    projected = {}
+                    for reference in (_work_items(final['references'], work_budget) if work_budget is not None else final['references']):
+                        path = reference['materialized_path']
+                        identity = (reference['digest'], reference['size_bytes'])
+                        if path in projected:
+                            c.require(projected[path] == identity, 'native_projected_identity_conflict',
+                                      **_work_kwargs(work_budget))
+                            continue
+                        projected[path] = identity
+                        context.member(path, 'preparation_projected_file',
+                            {'preparation_id': final['preparation_id'],
+                             'result_digest': final['result_digest'],
+                             'sha256': reference['digest'],
+                             'size_bytes': reference['size_bytes']}, sources)
                 if 'policy_run_plan' in inverse:
                     context.missing('policy_run_plan', 'policy_semantics_deferred', [proof])
             else:

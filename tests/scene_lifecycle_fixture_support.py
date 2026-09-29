@@ -10,7 +10,6 @@ import json
 import os
 import stat
 from pathlib import Path
-from types import SimpleNamespace
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
@@ -20,16 +19,27 @@ def stable_shared_ancestors(monkeypatch, anchor):
     original_open, original_stat, original_fstat = os.open, os.stat, os.fstat
     names, first = {}, {}
 
+    class PinnedStat:
+        __slots__ = ('_info', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_nlink')
+
+        def __init__(self, info, fields):
+            self._info = info
+            self.st_size, self.st_mtime_ns, self.st_ctime_ns, self.st_nlink = fields
+
+        def __getattr__(self, name):
+            return getattr(self._info, name)
+
     def resolve(name, parent=None):
         value = Path(name)
-        return value if value.is_absolute() else names.get(parent, Path.cwd()) / value
+        if value.is_absolute():
+            return value
+        base = names.get(parent)
+        return (base if base is not None else Path.cwd()) / value
 
     def pinned(path, info):
         if stat.S_ISDIR(info.st_mode) and path != anchor and anchor.is_relative_to(path):
             fields = first.setdefault(str(path), (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_nlink))
-            values = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
-            values.update(zip(('st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_nlink'), fields))
-            return SimpleNamespace(**values)
+            return PinnedStat(info, fields)
         return info
 
     def opened(name, flags, mode=0o777, *, dir_fd=None):

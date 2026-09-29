@@ -20,7 +20,7 @@ def test_scene_factory_is_fresh_exact_type_with_fixed_initial_policy():
     assert budget.limits['values'] == 2_000_000
     native = Budget(monotonic=clock)
     assert native.duration == 5 and native.limits['values'] == 100_000
-    assert budget.limits['facts'] == 30_000 and native.limits['facts'] == 20_000
+    assert budget.limits['facts'] == 40_000 and native.limits['facts'] == 20_000
     assert {k: v for k, v in budget.limits.items() if k not in {'values', 'facts'}} == {
         k: v for k, v in native.limits.items() if k not in {'values', 'facts'}}
     assert all(value == 0 for value in budget.counts.values())
@@ -44,11 +44,11 @@ def test_native_constructor_still_refuses_more_than_five_seconds():
 
 def test_private_scene_fact_ceiling_is_sticky_and_public_ceiling_unchanged():
     scene = Budget._for_scene_lifecycle_plan(monotonic=lambda: 0)
-    scene.charge('facts', 30_000)
-    assert scene.counts['facts'] == 30_000
+    scene.charge('facts', 40_000)
+    assert scene.counts['facts'] == 40_000
     with pytest.raises(ReferenceCollectionBudgetError, match='^reference_facts_limit$'):
         scene.charge('facts')
-    assert scene.counts['facts'] == 30_000 and scene.failure == 'reference_facts_limit'
+    assert scene.counts['facts'] == 40_000 and scene.failure == 'reference_facts_limit'
     with pytest.raises(ReferenceCollectionBudgetError, match='^reference_facts_limit$'):
         scene.charge('rows')
     assert scene.counts['rows'] == 0
