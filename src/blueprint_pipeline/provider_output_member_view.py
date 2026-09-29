@@ -38,6 +38,16 @@ and any entry-rule refusal the index would raise, from the central directory
 alone. The contract here is the measurement rule the lane's contract module
 will own: every ``.json`` file outside a ``policy-requests`` directory is
 materialized; everything else stays remote.
+
+Scratch copies: ``python -m blueprint_pipeline.provider_output_member_view
+materialize --evidence-root <root> --prefix cell_runs/NN/ --output-root
+<scratch>`` writes every indexed file under the prefix to
+``<scratch>/<path less prefix>`` -- the retained cell tree an offline tool such
+as ``policy_canary_interrupted_cell_recovery`` requires. A member on disk is
+copied, any other is fetched by one range request; every file is checked
+against the index and left ``0440``. The copy is built beside the output root
+and renamed into place whole, never inside the evidence root and never over an
+existing path.
 """
 
 from __future__ import annotations
@@ -46,6 +56,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 import uuid
 import zipfile
@@ -79,6 +90,23 @@ DESCRIPTOR_SUFFIX = ".member_view.v1.json"
 MAXIMUM_ANCESTORS = 8
 PRESIGN_EXPIRATION_SECONDS = 3600
 POLICY_CANARY_CONTRACT = "policy_canary_output_member_contract.v1"
+# Refusals worth another attempt: the transfer, not the bytes, failed.
+TRANSIENT_READ_CODES = frozenset({
+    "provider_output_http_failed",
+    "provider_output_transport_failed",
+    "provider_output_range_truncated",
+    "provider_output_archive_truncated",
+    "provider_output_cas_presign_invalid",
+    "provider_output_transfer_deadline_exceeded",
+})
+# Refusals meaning the durable copy's bytes are not the indexed member's -- a
+# digest refusal to readers, never a transient transport failure.
+CONTENT_MISMATCH_CODES = frozenset({
+    "provider_output_member_digest_mismatch",
+    "provider_output_archive_deflate_invalid",
+    "provider_output_archive_deflate_end_invalid",
+    "provider_output_archive_member_size_mismatch",
+})
 
 
 def _policy_canary_member_needed(path: str) -> bool:
@@ -212,6 +240,29 @@ class ProviderOutputMemberView:
         row = self._rows.get(self._path(relative))
         return dict(row) if row is not None else None
 
+    def members(self, prefix: str = "") -> list[dict]:
+        """The indexed file rows whose archive path starts with ``prefix``, in path order."""
+        return [dict(row) for path, row in sorted(self._rows.items()) if path.startswith(prefix)]
+
+    def relative(self, path: str | Path) -> str | None:
+        """The member path of ``path`` when it lies under the evidence root, else None."""
+        for candidate in (Path(path).absolute(), Path(path).resolve()):
+            try:
+                return candidate.relative_to(self.evidence_root).as_posix()
+            except ValueError:
+                continue
+        return None
+
+    def member_at(self, path: str | Path) -> dict | None:
+        """The index row of the file at ``path``, or None when it is no archive member."""
+        relative = self.relative(path)
+        if relative in (None, "."):
+            return None
+        try:
+            return self.member(relative)
+        except ProviderOutputMemberViewError:
+            return None
+
     def digest(self, relative: str) -> str | None:
         row = self.member(relative)
         return row["sha256"] if row is not None else None
@@ -227,16 +278,8 @@ class ProviderOutputMemberView:
         return row
 
     def _reader(self):
-        reference = self.index["archive"]["durable_reference"]
-        presign = self._presign or _default_presign(reference)
-        try:
-            reader = CasArchiveSource(reference, presign=presign, opener=self._opener).open(
-                self.index["archive"]["size"])
-        except (ProviderOutputIngestionError, ProviderOutputTransportError) as exc:
-            raise _refuse(str(exc)) from None
-        if reader.identity["size_bytes"] != self.index["archive"]["size"]:
-            raise _refuse("provider_output_remote_size_mismatch")
-        return reader
+        return open_durable_archive(self.index["archive"]["durable_reference"], self.index["archive"]["size"],
+                                    presign=self._presign, opener=self._opener)
 
     def read_member(self, relative: str, *, maximum_bytes: int) -> bytes:
         """One range request for the member's data, inflated in memory and checked."""
@@ -263,32 +306,73 @@ class ProviderOutputMemberView:
         partial = target.parent / f".{target.name}.{uuid.uuid4().hex}.partial"
         try:
             with partial.open("xb") as sink:
-                digest, crc = hashlib.sha256(), [0]
-
-                def emit(data):
-                    sink.write(data)
-                    digest.update(data)
-                    crc[0] = zlib.crc32(data, crc[0])
-
-                inflater = MemberInflater(row["method"], row["size"], emit,
-                                          step_bytes=inflate_step_bytes(reader.block_bytes))
-                if row["compressed_size"]:
-                    reader.stream_to(inflater.feed, start=row["data_offset"],
-                                     end=row["data_offset"] + row["compressed_size"])
-                inflater.finish()
+                stream_indexed_member(reader, row, sink.write)
                 sink.flush()
                 os.fsync(sink.fileno())
-            if (crc[0] & 0xFFFFFFFF, "sha256:" + digest.hexdigest()) != (row["crc32"], row["sha256"]):
-                raise _refuse("provider_output_member_digest_mismatch")
             partial.chmod(0o440)
             os.link(partial, target)
         except FileExistsError:
             raise _refuse("provider_output_member_view_destination_exists") from None
-        except (ProviderOutputMemberIndexError, ProviderOutputTransportError) as exc:
-            raise _refuse(str(exc)) from None
         finally:
             partial.unlink(missing_ok=True)
         return {"path": str(target), "size_bytes": row["size"], "sha256": row["sha256"]}
+
+    def stream_member(self, relative: str, sink: Callable[[bytes], Any]) -> dict:
+        """Pass one member's inflated bytes to ``sink`` in order, with one range request.
+
+        The bytes are checked against the index's CRC-32 and SHA-256 as they
+        pass; a mismatch raises ``provider_output_member_digest_mismatch``
+        after the last chunk, so a caller that keeps what ``sink`` received
+        must discard it on any refusal. Returns the member's index row.
+        """
+        row = self._row(relative)
+        return stream_indexed_member(self._reader(), row, sink)
+
+
+def open_durable_archive(reference: Mapping[str, Any], size_bytes: int, *,
+                         presign: Callable[[], str] | None = None, opener: Callable | None = None):
+    """A pinned range reader on an archive's durable B2 copy, checked against its size.
+
+    Without ``presign``, B2 must be explicitly configured (the staging store's
+    credentials are never borrowed) and a short-lived URL is issued in memory.
+    """
+    try:
+        reader = CasArchiveSource(reference, presign=presign or _default_presign(reference),
+                                  opener=opener).open(size_bytes)
+    except (ProviderOutputIngestionError, ProviderOutputTransportError) as exc:
+        raise _refuse(str(exc)) from None
+    if reader.identity["size_bytes"] != size_bytes:
+        raise _refuse("provider_output_remote_size_mismatch")
+    return reader
+
+
+def stream_indexed_member(reader, row: Mapping[str, Any], sink: Callable[[bytes], Any]) -> dict:
+    """Pass one indexed member's inflated bytes to ``sink``; one range request, checked.
+
+    ``row`` needs the index's ``method``, ``size``, ``compressed_size``,
+    ``data_offset``, ``crc32`` and ``sha256``. A CRC-32 or SHA-256 that is not
+    the row's raises ``provider_output_member_digest_mismatch`` after the last
+    chunk.
+    """
+    digest, crc = hashlib.sha256(), [0]
+
+    def emit(data):
+        sink(data)
+        digest.update(data)
+        crc[0] = zlib.crc32(data, crc[0])
+
+    try:
+        inflater = MemberInflater(row["method"], row["size"], emit,
+                                  step_bytes=inflate_step_bytes(reader.block_bytes))
+        if row["compressed_size"]:
+            reader.stream_to(inflater.feed, start=row["data_offset"],
+                             end=row["data_offset"] + row["compressed_size"])
+        inflater.finish()
+    except (ProviderOutputMemberIndexError, ProviderOutputTransportError) as exc:
+        raise _refuse(str(exc)) from None
+    if (crc[0] & 0xFFFFFFFF, "sha256:" + digest.hexdigest()) != (row["crc32"], row["sha256"]):
+        raise _refuse("provider_output_member_digest_mismatch")
+    return row
 
 
 def _open_descriptor(path: Path, root: Path, presign, opener) -> ProviderOutputMemberView:
@@ -327,6 +411,78 @@ def _open_descriptor(path: Path, root: Path, presign, opener) -> ProviderOutputM
         raise _refuse("provider_output_member_view_receipt_mismatch")
     return ProviderOutputMemberView(evidence_root=root.resolve(), descriptor=descriptor, index=index,
                                     presign=presign, opener=opener)
+
+
+SCRATCH_SCHEMA = "provider_output_member_scratch_copy.v1"
+
+
+def _copy_checked(source: Path, row: Mapping[str, Any], target: Path) -> None:
+    """Copy a local member to ``target`` (0440) only when its bytes are the index's."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.parent / f".{target.name}.{uuid.uuid4().hex}.partial"
+    try:
+        digest, crc = hashlib.sha256(), 0
+        with source.open("rb") as stream, partial.open("xb") as sink:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                sink.write(chunk)
+                digest.update(chunk)
+                crc = zlib.crc32(chunk, crc)
+            sink.flush()
+            os.fsync(sink.fileno())
+        if (crc & 0xFFFFFFFF, "sha256:" + digest.hexdigest()) != (row["crc32"], row["sha256"]):
+            raise _refuse("provider_output_member_digest_mismatch")
+        partial.chmod(0o440)
+        os.link(partial, target)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def materialize_scratch_copy(view: ProviderOutputMemberView, *, prefix: str, output_root: str | Path) -> dict:
+    """Write every indexed file under ``prefix`` to ``output_root``, each checked against the index.
+
+    ``prefix`` is ``""`` or a directory path ending in ``/``; it is stripped from
+    each written path. ``output_root`` must not exist and must lie outside the
+    evidence root; the copy is built in a sibling directory and renamed into
+    place only once every file verified.
+    """
+    stem = prefix.rstrip("/")
+    try:
+        if prefix and (not prefix.endswith("/") or safe_member_name(stem) != stem):
+            raise ProviderOutputInventoryError("prefix")
+    except ProviderOutputInventoryError:
+        raise _refuse("provider_output_member_view_prefix_invalid") from None
+    root = Path(output_root).absolute()
+    resolved = root.resolve()
+    if resolved == view.evidence_root or view.evidence_root in resolved.parents:
+        raise _refuse("provider_output_member_view_write_inside_evidence_root")
+    if root.exists() or root.is_symlink():
+        raise _refuse("provider_output_member_view_destination_exists")
+    rows = view.members(prefix)
+    if not rows:
+        raise _refuse("provider_output_member_view_prefix_empty")
+    root.parent.mkdir(parents=True, exist_ok=True)
+    building = root.parent / f".{root.name}.{uuid.uuid4().hex}.partial"
+    copied = fetched = 0
+    try:
+        for row in rows:
+            target = building / row["path"][len(prefix):]
+            local = view.evidence_root / row["path"]
+            if local.is_file() and not local.is_symlink():
+                _copy_checked(local, row, target)
+                copied += 1
+            else:
+                view.fetch_to(row["path"], target)
+                fetched += 1
+        os.rename(building, root)
+    except FileExistsError:
+        raise _refuse("provider_output_member_view_destination_exists") from None
+    finally:
+        if building.exists():
+            shutil.rmtree(building, ignore_errors=True)
+    return {"schema_version": SCRATCH_SCHEMA, "prefix": prefix, "member_index_digest": view.index["index_digest"],
+            "archive_sha256": view.index["archive"]["sha256"], "member_count": len(rows),
+            "copied_member_count": copied, "fetched_member_count": fetched,
+            "bytes": sum(row["size"] for row in rows), "private_url_recorded": False}
 
 
 def open_member_view(path: str | Path, *, presign: Callable[[], str] | None = None,
@@ -378,12 +534,28 @@ def plan_member_dispositions(archive_path: str | Path, contract: str) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Plan a provider archive's member dispositions (read-only).")
+    parser = argparse.ArgumentParser(
+        description="Plan a provider archive's member dispositions, or copy members to a scratch root.")
     commands = parser.add_subparsers(dest="command", required=True)
     plan = commands.add_parser("plan")
     plan.add_argument("--archive", required=True, type=Path)
     plan.add_argument("--contract", required=True, choices=sorted(CONTRACTS))
+    materialize = commands.add_parser("materialize")
+    materialize.add_argument("--evidence-root", required=True, type=Path)
+    materialize.add_argument("--prefix", required=True)
+    materialize.add_argument("--output-root", required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.command == "materialize":
+        try:
+            view = open_member_view(args.evidence_root)
+            if view is None:
+                raise _refuse("provider_output_member_view_absent")
+            summary = materialize_scratch_copy(view, prefix=args.prefix, output_root=args.output_root)
+        except ProviderOutputMemberViewError as exc:
+            print(f"provider_output_member_view refused: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
     try:
         summary = plan_member_dispositions(args.archive, args.contract)
     except (OSError, zipfile.BadZipFile):

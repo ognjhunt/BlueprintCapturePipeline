@@ -47,6 +47,10 @@ PROFILE_SCHEMA_VERSION = "policy_canary_episode_interpreter_profile.v1"
 BATCH_AUTHORITY_ENV = (
     "BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_BATCH_AUTHORITY_FILE"
 )
+# Beside the run, never registered: why a streamed bundle's index-bound digests
+# count as rehashed. Receipts, the joined result and the delivery stay download
+# mode's, byte for byte.
+SOURCE_DIGEST_BASIS_DIRNAME = "episode_interpretation_source_digest_basis"
 
 
 class EpisodeInterpretationRunner(Protocol):
@@ -126,7 +130,14 @@ def _artifact(path: Path, *, root: Path, role: str) -> dict[str, Any]:
     }
 
 
-def _source_path(root: Path, record: Any) -> Path:
+def _member_view(root: Path):
+    """The member view of a streamed evidence root, or None in download mode."""
+    from .provider_output_member_view import open_member_view
+
+    return open_member_view(root)
+
+
+def _source_path(root: Path, record: Any, view=None) -> Path:
     if not isinstance(record, Mapping):
         raise ValueError("episode_interpretation_source_record_missing")
     relative = str(record.get("relative_path") or "")
@@ -134,7 +145,13 @@ def _source_path(root: Path, record: Any) -> Path:
     if root != path and root not in path.parents:
         raise ValueError("episode_interpretation_source_outside_root")
     if path.is_symlink() or not path.is_file():
-        raise ValueError("episode_interpretation_source_missing")
+        # Streamed: a member left in the archive is bound by its index digest.
+        member = view.member_at(path) if view is not None else None
+        if member is None:
+            raise ValueError("episode_interpretation_source_missing")
+        if member["sha256"] != record.get("sha256"):
+            raise ValueError("episode_interpretation_source_digest_mismatch")
+        return path
     if _sha256(path) != record.get("sha256"):
         raise ValueError("episode_interpretation_source_digest_mismatch")
     return path
@@ -163,14 +180,18 @@ def _manifest_relative_frames(manifest: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def _episode_evidence_root(*, run_evidence_root: Path, manifest_path: Path) -> Path:
+def _episode_evidence_root(*, run_evidence_root: Path, manifest_path: Path, view=None) -> Path:
     manifest = _read(manifest_path)
     relative_frames = _manifest_relative_frames(manifest)
     if not relative_frames:
         raise ValueError("episode_interpretation_frame_inventory_missing")
+
+    def present(path: Path) -> bool:
+        return path.is_file() or (view is not None and view.member_at(path.resolve()) is not None)
+
     candidate = manifest_path.parent
     while run_evidence_root == candidate or run_evidence_root in candidate.parents:
-        if all((candidate / relative).is_file() for relative in relative_frames):
+        if all(present(candidate / relative) for relative in relative_frames):
             return candidate
         if candidate == run_evidence_root:
             break
@@ -341,6 +362,7 @@ def materialize_policy_canary_episode_interpretations(
     requests: list[tuple[dict[str, Any], EpisodeInterpretationRequest, Path, Path, Path]] = []
     receipts: list[dict[str, Any]] = []
     artifacts: list[dict[str, Any]] = []
+    view = _member_view(evidence)
     for row in episodes:
         source = row.get("evidence_artifacts")
         source = dict(source) if isinstance(source, Mapping) else {}
@@ -351,18 +373,19 @@ def materialize_policy_canary_episode_interpretations(
             or f"{result.get('run_id', 'policy-canary')}--{row.get('cell_id')}--{row.get('candidate_id')}"
         )
         try:
-            score_path = _source_path(evidence, source.get("score_receipt"))
-            state_path = _source_path(evidence, source.get("state_trace"))
-            contact_path = _source_path(evidence, source.get("contact_force_trace"))
-            manifest_path = _source_path(evidence, source.get("frame_manifest"))
+            score_path = _source_path(evidence, source.get("score_receipt"), view)
+            state_path = _source_path(evidence, source.get("state_trace"), view)
+            contact_path = _source_path(evidence, source.get("contact_force_trace"), view)
+            manifest_path = _source_path(evidence, source.get("frame_manifest"), view)
             video_paths = (
-                [_source_path(evidence, source.get("review_video"))]
+                [_source_path(evidence, source.get("review_video"), view)]
                 if source.get("review_video") is not None
                 else []
             )
             episode_evidence = _episode_evidence_root(
                 run_evidence_root=evidence,
                 manifest_path=manifest_path,
+                view=view,
             )
             contract_path = (
                 episode_evidence
@@ -404,6 +427,8 @@ def materialize_policy_canary_episode_interpretations(
             )
             continue
         token = request.input_receipt["input_bundle_digest"].removeprefix("sha256:")
+        if request.source_digest_basis is not None:
+            _write_once(root / SOURCE_DIGEST_BASIS_DIRNAME / f"{token}.json", request.source_digest_basis)
         plan_path = interpretation_root / "plans" / f"{token}.json"
         receipt_path = interpretation_root / "receipts" / f"{token}.json"
         marker_path = interpretation_root / "attempted" / f"{token}.json"

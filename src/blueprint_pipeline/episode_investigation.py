@@ -10,7 +10,25 @@ from typing import Any
 from .agent_execution.contracts import AgentExecutionError, AgentTool, ToolContext, canonical_json
 from .agent_execution.evidence import ImageEvidence, ImageEvidenceCatalog
 from .decision_evidence_contracts import canonical_digest
-from .episode_interpretation import EpisodeInterpretationRequest
+from .episode_interpretation import EpisodeInterpretationError, EpisodeInterpretationRequest
+
+
+def _frame_reader(request: EpisodeInterpretationRequest):
+    """Catalog reads of frames that are not on disk, through the request's checked reader."""
+    frames = request.input_receipt["artifacts"]["lossless_frames"]
+
+    def read(image, maximum_bytes: int) -> bytes:
+        index = int(image.image_id.removeprefix("episode_frame_"))
+        if frames[index]["size_bytes"] > maximum_bytes:
+            raise AgentExecutionError("agent_image_byte_limit_exceeded")
+        try:
+            return request.frame_reader(index)
+        except EpisodeInterpretationError as exc:
+            raise AgentExecutionError(
+                "agent_image_changed_before_disclosure"
+                if str(exc).startswith("episode_interpretation_frame_changed:")
+                else "agent_image_unavailable") from None
+    return read
 
 
 class EpisodeEvidenceTools:
@@ -46,6 +64,7 @@ class EpisodeEvidenceTools:
         self.images = ImageEvidenceCatalog(
             root=self.root, images=images, admitted_digests=self.admitted_digests,
             defer_path_validation=descriptors_only,
+            reader=_frame_reader(request) if request.frame_reader is not None else None,
         )
 
     def _read(self, role: str) -> dict[str, Any]:

@@ -290,8 +290,19 @@ def _write_episode_json_artifact(
 
 
 def _write_indexed_telemetry(
-    output_root: Path, episodes: list[Mapping[str, Any]]
+    output_root: Path,
+    episodes: list[Mapping[str, Any]],
+    *,
+    archive_members: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Write the run's telemetry index and inventory every file under ``output_root``.
+
+    ``archive_members`` (control plane only: a streamed recovery's adoption)
+    maps paths relative to ``output_root`` to ``{size_bytes, sha256}`` for
+    files that stay in the promoted archive. A listed path with no file on disk
+    is inventoried in the same order, with the same role, from those facts;
+    a file on disk always wins. The provider never passes it.
+    """
     rows = [
         {
             "run_kind": episode.get("run_kind"),
@@ -391,13 +402,24 @@ def _write_indexed_telemetry(
 
     artifacts = []
     seen: set[str] = set()
-    for path in sorted(output_root.rglob("*")):
+    listed = sorted(output_root.rglob("*"))
+    remote: dict[Path, Mapping[str, Any]] = {}
+    if archive_members is not None:
+        local = {path for path in listed if path.is_file()}
+        remote = {
+            output_root / relative: record
+            for relative, record in archive_members.items()
+            if output_root / relative not in local
+        }
+        listed = sorted([*listed, *remote])
+    for path in listed:
+        record = remote.get(path)
         # The parent process owns this file and keeps the child's stdout stream
         # open until after the child has sealed its result.  Including it here
         # races the final interpreter-shutdown writes and produces an inventory
         # entry whose size/digest no longer match by delivery time.
         if (
-            not path.is_file()
+            (record is None and not path.is_file())
             or path.name == PROVIDER_RESULT_FILENAME
             or path.name == "worker_console.log"
         ):
@@ -450,8 +472,8 @@ def _write_indexed_telemetry(
                 "media_type": mimetypes.guess_type(path.name)[0]
                 or "application/octet-stream",
                 "relative_path": relative,
-                "size_bytes": path.stat().st_size,
-                "sha256": _sha256(path),
+                "size_bytes": path.stat().st_size if record is None else record["size_bytes"],
+                "sha256": _sha256(path) if record is None else record["sha256"],
             }
         )
     return index, artifacts

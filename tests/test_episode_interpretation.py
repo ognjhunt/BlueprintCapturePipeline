@@ -617,3 +617,137 @@ def test_tampered_score_fails_before_interpreter(tmp_path: Path) -> None:
 
     with pytest.raises(EpisodeInterpretationError, match="score_digest_invalid"):
         _request(data)
+
+
+# -- Streamed episodes: frames and the review video stay in the archive ------
+
+
+def _streamed(data: dict, tmp_path: Path, monkeypatch):
+    from tests.provider_output_fixtures import serve_member_views, stream_evidence_tree
+
+    streamed = stream_evidence_tree(data["root"], tmp_path / "streamed" / "attempt_001")
+    serve_member_views(monkeypatch, streamed.store)
+    return streamed
+
+
+def _streamed_request(data: dict, streamed, *, videos: bool = True):
+    def relative(path: Path) -> str:
+        return path.relative_to(data["root"]).as_posix()
+
+    return build_episode_interpretation_request(
+        episode_id="episode-1",
+        candidate_policy_id="groot_n17_droid",
+        evidence_root=streamed.evidence,
+        task_success_contract_path=relative(data["contract_path"]),
+        deterministic_score_path=relative(data["score_path"]),
+        state_trace_path=relative(data["state_path"]),
+        contact_force_trace_path=relative(data["contact_path"]),
+        frame_manifest_path=relative(data["manifest_path"]),
+        review_video_paths=[relative(data["video_path"])] if videos else [],
+    )
+
+
+def test_streamed_request_has_the_download_mode_input_bundle_digest(tmp_path: Path, monkeypatch) -> None:
+    data = _episode_root(tmp_path, no_drop=False, deterministic_success=True)
+    downloaded = _request(data)
+    streamed = _streamed(data, tmp_path, monkeypatch)
+    assert streamed.remote() == ["media/episode.mp4", *[f"media/frame-{index}.png" for index in range(5)]]
+
+    request = _streamed_request(data, streamed)
+
+    assert request.input_receipt == downloaded.input_receipt
+    assert request.input_receipt["all_source_bytes_rehashed"] is True
+    assert downloaded.frame_reader is None and downloaded.source_digest_basis is None
+    assert request.source_digest_basis == {
+        "schema_version": "episode_interpretation_source_digest_basis.v1",
+        "basis": "provider_output_member_index",
+        "input_bundle_digest": downloaded.input_receipt["input_bundle_digest"],
+        "member_index_digest": streamed.index["index_digest"],
+        "archive_sha256": streamed.index["archive"]["sha256"],
+        "member_view_digest": streamed.descriptor["view_digest"],
+        "full_byte_readback_passed": True,
+        "indexed_lossless_frames": [0, 1, 2, 3, 4],
+        "indexed_review_videos": [0],
+    }
+    assert "s3://" not in json.dumps(request.source_digest_basis)
+    assert streamed.data_ranges() == []  # every binding came from the index
+    # A frame the manifest expects but the index does not vouch for keeps download mode's code.
+    manifest = json.loads((streamed.evidence / "frame_manifest.json").read_text())
+    manifest["policy_input_frames"][1]["png_sha256"] = "sha256:" + "0" * 64
+    manifest["frame_manifest_digest"] = canonical_digest(manifest, digest_field="frame_manifest_digest")
+    for path in (streamed.evidence / "frame_manifest.json", data["manifest_path"]):
+        path.chmod(0o640)
+        _write(path, manifest)
+    for build in (lambda: _request(data), lambda: _streamed_request(data, streamed)):
+        with pytest.raises(EpisodeInterpretationError, match="^episode_interpretation_frame_digest_mismatch:1$"):
+            build()
+
+
+def test_v1_interpreter_reads_only_its_selected_frames_by_range(tmp_path: Path, monkeypatch) -> None:
+    import base64
+
+    data = _episode_root(tmp_path, no_drop=False, deterministic_success=True)
+    streamed = _streamed(data, tmp_path, monkeypatch)
+    receipts = {}
+    for mode, request in (("download", _request(data)), ("stream", _streamed_request(data, streamed))):
+        invoker = _FakeAgentsSDKInvoker(_output(data))
+        interpreter = OpenAIMultimodalEpisodeInterpreter(
+            invoker=invoker, model="gpt-6-sol", model_version="gpt-6-sol-2026-09-03", max_frames=2,
+            run_id="quick10-interpretation-batch")
+        rights_path = tmp_path / f"{mode}-rights.json"
+        materialize_episode_interpretation_rights(
+            episode_id=request.episode_id, input_bundle_digest=request.input_receipt["input_bundle_digest"],
+            identity=interpreter.identity, allowed_artifact_roles=interpreter.disclosed_artifact_roles(request),
+            external_disclosure_authorized=True, accepted_by="robot-team:task-owner",
+            accepted_on="2026-09-03T12:00:00Z", authority_reference="task-owner-approval-42",
+            source_rights_admission_digest="sha256:" + "a" * 64, output_path=rights_path)
+        before = len(streamed.data_ranges())
+        receipts[mode] = interpret_episode(request=request, interpreter=interpreter,
+                                           rights_attestation_path=rights_path,
+                                           output_path=tmp_path / f"{mode}-interpretation.json")
+        frames = request.input_receipt["artifacts"]["lossless_frames"]
+        selected = interpreter._selected_frame_indices(request, frames)
+        images = [item["image_url"] for message in invoker.calls[0][1] for item in message["content"]
+                  if item["type"] == "input_image"]
+        assert images == ["data:image/png;base64," + base64.b64encode(
+            (data["root"] / frames[index]["relative_path"]).read_bytes()).decode() for index in selected]
+        if mode == "stream":
+            rows = [streamed.rows[frames[index]["relative_path"]] for index in selected]
+            assert streamed.data_ranges()[before:] == [
+                (row["data_offset"], row["data_offset"] + row["compressed_size"] - 1) for row in rows]
+    # The same receipt, byte for byte: the basis never enters a registered record.
+    assert receipts["stream"] == receipts["download"]
+    assert (tmp_path / "stream-interpretation.json").read_bytes() == (
+        tmp_path / "download-interpretation.json").read_bytes()
+    assert not any(path.suffix in {".png", ".mp4"} for path in streamed.evidence.rglob("*"))
+
+
+def test_a_transient_frame_read_failure_is_retried_and_the_episode_still_interprets(
+        tmp_path: Path, monkeypatch) -> None:
+    """The closeout writes its attempt marker before frames are read, so one transient B2 error
+    must not become a permanent abstention: the frame reader retries transient refusals."""
+    from blueprint_pipeline import episode_interpretation as interpretation
+
+    data = _episode_root(tmp_path, no_drop=False, deterministic_success=True)
+    streamed = _streamed(data, tmp_path, monkeypatch)
+    monkeypatch.setattr(interpretation, "FRAME_READ_RETRY_SECONDS", 0.0)
+    failures = []
+
+    def cut_short_once(entry):
+        if entry["range"] not in (None, (0, 0)) and not failures:
+            failures.append(entry["range"])
+            return True
+        return False
+
+    streamed.store.truncate_when = cut_short_once
+    request = _streamed_request(data, streamed)
+
+    assert request.frame_reader(0) == (data["root"] / "media/frame-0.png").read_bytes()
+    assert len(failures) == 1 and streamed.data_ranges().count(failures[0]) == 2
+    # A refusal that is not transient is not retried: one attempt, refused at its probe.
+    streamed.store.truncate_when = None
+    streamed.store.range_fault = "content_range"
+    before = len(streamed.store.requests)
+    with pytest.raises(EpisodeInterpretationError, match="^episode_interpretation_frame_read_failed:1$"):
+        request.frame_reader(1)
+    assert len(streamed.store.requests) == before + 1

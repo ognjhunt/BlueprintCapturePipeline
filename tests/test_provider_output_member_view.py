@@ -335,3 +335,91 @@ def test_view_reads_bytes_only_through_an_explicitly_configured_artifact_store(t
                        match="^provider_output_member_view_artifact_store_not_configured$"):
         view.read_member(FRAME, maximum_bytes=10**6)
     assert len(streamed.store.requests) == before
+
+
+def test_stream_member_passes_checked_bytes_by_one_range_and_member_at_maps_paths(tmp_path):
+    streamed = _streamed(tmp_path)
+    view = streamed.view()
+    frame = streamed.rows[FRAME]
+
+    assert view.member_at(streamed.evidence / FRAME) == frame
+    assert view.relative(streamed.evidence / FRAME) == FRAME
+    assert view.member_at(streamed.evidence) is None
+    assert view.member_at(tmp_path / "elsewhere.png") is None and view.relative(tmp_path) is None
+    assert view.member_at(streamed.evidence / "cell_runs/00") is None  # a directory is no member
+
+    chunks: list[bytes] = []
+    before = len(streamed.store.requests)
+    assert view.stream_member(FRAME, chunks.append) == frame
+    assert b"".join(chunks) == FRAME_BYTES
+    assert [entry["range"] for entry in streamed.store.requests[before:]] == [
+        (0, 0), (frame["data_offset"], frame["data_offset"] + frame["compressed_size"] - 1)]
+
+    tampered = RangeStore(streamed.archive.patched(frame["data_offset"] + 9, b"\xff"))
+    with pytest.raises(views.ProviderOutputMemberViewError, match="^provider_output_member_digest_mismatch$"):
+        streamed.view(opener=tampered.opener).stream_member(FRAME, lambda data: None)
+    with pytest.raises(views.ProviderOutputMemberViewError, match="^provider_output_member_view_member_absent$"):
+        view.stream_member("cell_runs/00/absent.png", lambda data: None)
+
+
+def test_materialize_prefix_writes_a_verified_scratch_copy(tmp_path, monkeypatch, capsys):
+    """The offline interrupted-cell tool needs a scratch copy of one retained cell: the members
+    under the prefix, verified, at the scratch root; never inside or over anything retained."""
+    from tests.provider_output_fixtures import serve_member_views
+
+    streamed = _streamed(tmp_path)
+    serve_member_views(monkeypatch, streamed.store)
+    before = _listing(streamed.evidence)
+    scratch = tmp_path / "scratch" / "cell_00"
+
+    def materialize(output, prefix="cell_runs/00/"):
+        return views.main(["materialize", "--evidence-root", str(streamed.evidence), "--prefix", prefix,
+                           "--output-root", str(output)])
+
+    assert materialize(scratch) == 0
+    summary = json.loads(capsys.readouterr().out)
+    expected = {path.removeprefix("cell_runs/00/"): row for path, row in streamed.rows.items()
+                if path.startswith("cell_runs/00/")}
+    written = {path.relative_to(scratch).as_posix(): path for path in scratch.rglob("*") if path.is_file()}
+    assert set(written) == set(expected) == {"episodes/e0.score_receipt.json",
+                                             "episodes/media/e0/external.mp4",
+                                             "episodes/media/e0/frames/external/000000.png"}
+    for relative, path in written.items():
+        assert "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() == expected[relative]["sha256"]
+        assert stat.S_IMODE(path.stat().st_mode) == 0o440
+    assert summary == {"schema_version": "provider_output_member_scratch_copy.v1", "prefix": "cell_runs/00/",
+                       "member_index_digest": streamed.index["index_digest"],
+                       "archive_sha256": streamed.index["archive"]["sha256"], "member_count": 3,
+                       "copied_member_count": 1, "fetched_member_count": 2,
+                       "bytes": sum(row["size"] for row in expected.values()), "private_url_recorded": False}
+    assert _listing(streamed.evidence) == before
+    assert sorted(path.name for path in scratch.parent.iterdir()) == ["cell_00"]  # nothing partial left
+
+    # Refused: an existing root, a root inside the evidence, a malformed or empty prefix,
+    # and bytes from the durable copy that are not the index's -- with no partial left behind.
+    tampered = RangeStore(streamed.archive.patched(streamed.rows[FRAME]["data_offset"] + 9, b"\xff"))
+    for output, prefix, code, store in (
+            (scratch, "cell_runs/00/", "provider_output_member_view_destination_exists", streamed.store),
+            (streamed.evidence / "copy", "cell_runs/00/", "provider_output_member_view_write_inside_evidence_root",
+             streamed.store),
+            (tmp_path / "scratch" / "a", "../cell_runs/", "provider_output_member_view_prefix_invalid", streamed.store),
+            (tmp_path / "scratch" / "b", "cell_runs/99/", "provider_output_member_view_prefix_empty", streamed.store),
+            (tmp_path / "scratch" / "c", "cell_runs/00/", "provider_output_member_digest_mismatch", tampered)):
+        serve_member_views(monkeypatch, store)
+        assert materialize(output, prefix) == 1
+        assert capsys.readouterr().err.strip() == f"provider_output_member_view refused: {code}"
+    assert sorted(path.name for path in (tmp_path / "scratch").iterdir()) == ["cell_00"]
+    assert _listing(streamed.evidence) == before
+
+
+def test_members_lists_indexed_files_under_a_prefix_in_path_order(tmp_path):
+    streamed = _streamed(tmp_path)
+    view = streamed.view()
+    assert [row["path"] for row in view.members("cell_runs/00/")] == sorted(
+        path for path, row in streamed.rows.items() if row["kind"] == "file" and path.startswith("cell_runs/00/"))
+    assert [row["path"] for row in view.members()] == sorted(
+        path for path, row in streamed.rows.items() if row["kind"] == "file")
+    assert view.members("absent/") == []
+    rows = view.members()
+    rows[0]["sha256"] = "changed"
+    assert view.members()[0]["sha256"] != "changed"  # copies: the view cannot be altered through them

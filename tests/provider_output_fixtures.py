@@ -612,3 +612,156 @@ def no_disk_writes(monkeypatch):
                      "symlink", "link", "truncate", "chmod"):
             patch.setattr(os, name, refuse(name))
         yield attempts
+
+
+# -- Streamed attempts ------------------------------------------------------
+# A download-mode evidence tree turned into the streamed layout the readers see:
+# the same files zipped, indexed and sealed with a durable reference, only the
+# needed members materialized under ``immutable_execution`` (0440), the view
+# descriptor beside it, and view reads served by a ``RangeStore``.
+
+STREAM_SELECTION_VERSION = "policy_canary_output_member_contract.v1"
+
+
+def cas_reference(index) -> dict:
+    """A remote-verified CAS reference naming the indexed archive's B2 copy."""
+    digest = index["archive"]["sha256"]
+    return {"schema_version": "task_evaluation_scene_artifact_reference.v1", "status": "remote_verified",
+            "artifact_kind": "policy-canary-provider-output",
+            "uri": ("s3://blueprint-artifacts/blueprint/arm-decision-proof-v1/configured-scenes/artifacts/"
+                    f"policy-canary-provider-output/sha256/{digest.removeprefix('sha256:')}/"
+                    "vast_provider_runtime_output.zip"),
+            "digest": digest, "size_bytes": index["archive"]["size"], "content_addressed_key": True,
+            "remote_identity_verified": True, "full_byte_service_account_readback_passed": True}
+
+
+def zip_tree(root) -> VirtualObject:
+    """Every regular file under ``root``, deflated, in relative-path order (the provider packer's)."""
+    from pathlib import Path
+
+    root = Path(root)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and not path.is_symlink():
+                info = zipfile.ZipInfo(path.relative_to(root).as_posix(), date_time=(2026, 9, 28, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o100644 << 16
+                archive.writestr(info, path.read_bytes())
+    return VirtualObject([buffer.getvalue()])
+
+
+@dataclass
+class StreamedAttempt:
+    """What ``stream_evidence_tree`` built: paths, the sealed index and the B2 double."""
+
+    attempt: object
+    evidence: object
+    index: dict
+    index_path: object
+    receipt_path: object
+    descriptor: dict
+    store: RangeStore
+    archive: VirtualObject
+
+    @property
+    def rows(self) -> dict:
+        return {row["path"]: row for row in self.index["members"] if row["kind"] == "file"}
+
+    def remote(self) -> list[str]:
+        return sorted(path for path in self.rows if not (self.evidence / path).is_file())
+
+    def data_ranges(self) -> list[tuple[int, int]]:
+        """The store's ranged requests, less the one-byte probes that pin the ETag."""
+        return [span for span in self.store.ranges() if span != (0, 0)]
+
+
+def _contract_v1_needed(path: str) -> bool:
+    return PurePosixPath(path).suffix.lower() == ".json" and "policy-requests" not in PurePosixPath(path).parts
+
+
+def stream_evidence_tree(source, attempt, *, needed=None, block_bytes=128 * 1024) -> StreamedAttempt:
+    """Stream ``source``'s files into ``attempt``: index, seal, ingest ``needed``, write the view.
+
+    ``needed`` decides which archive paths are materialized (contract v1 --
+    JSON outside ``policy-requests`` -- by default). Nothing is written under
+    ``source``.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from blueprint_pipeline.provider_output_member_index import (
+        build_member_index, build_member_selection, seal_durable_reference,
+    )
+    from blueprint_pipeline.provider_output_member_view import write_member_view_descriptor
+    from blueprint_pipeline.provider_output_range_ingestion import CasArchiveSource, ingest_selected_members
+
+    needed = needed or _contract_v1_needed
+    attempt = Path(attempt)
+    attempt.mkdir(parents=True, exist_ok=True)
+    archive = zip_tree(source)
+    store = RangeStore(archive)
+    index = build_member_index(store.reader(block_bytes=block_bytes),
+                               maximum_expanded_bytes=max(64 * 1024**2, 8 * archive.size))
+    index = seal_durable_reference(index, cas_reference(index))
+    index_path = attempt / "provider_output_member_index.v1.json"
+    index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    paths = [row["path"] for row in index["members"] if row["kind"] == "file" and needed(row["path"])]
+    selection = build_member_selection(index, paths, selection_version=STREAM_SELECTION_VERSION)
+    source_reference = CasArchiveSource(index["archive"]["durable_reference"], presign=lambda: URL,
+                                        opener=store.opener, block_bytes=block_bytes)
+    receipt = ingest_selected_members(
+        source=source_reference, index=index, selection=selection, members_root=attempt / "immutable_execution",
+        metadata_root=attempt / ".provider_output_ingestion", reserve=lambda outstanding: None,
+        disk_usage_provider=lambda path: SimpleNamespace(free=10**12))
+    assert receipt["status"] == "materialized", receipt.get("blockers")
+    receipt_path = attempt / ".provider_output_ingestion" / "receipt.json"
+    descriptor = write_member_view_descriptor(evidence_root=attempt / "immutable_execution",
+                                              index_path=index_path, ingestion_receipt_path=receipt_path)
+    store.requests.clear()
+    return StreamedAttempt(attempt=attempt, evidence=attempt / "immutable_execution", index=index,
+                           index_path=index_path, receipt_path=receipt_path, descriptor=descriptor,
+                           store=store, archive=archive)
+
+
+def serve_member_views(monkeypatch, store: RangeStore) -> None:
+    """Route production view reads to ``store``: B2 configured, presign in memory, the store's opener."""
+    from blueprint_pipeline import provider_output_member_view as views
+    from blueprint_pipeline import provider_output_range_transport as transport
+    from blueprint_pipeline.task_evaluation_configured_scene_object_store import _ARTIFACT_STORE_FILE_ENV
+
+    for name in _ARTIFACT_STORE_FILE_ENV.values():
+        monkeypatch.setenv(name, "/nonexistent/test-only-artifact-store-setting")
+    monkeypatch.setattr(views, "presign_configured_scene_artifact", lambda **kwargs: URL)
+    monkeypatch.setattr(transport, "_open_with_policy", store.opener)
+
+
+def write_staged_absence_proof(attempt, *, promotion_status: str = "promoted", gated: bool = True):
+    """A staging dir under ``attempt`` whose objects a completed cleanup proved absent, plus its sealed proof.
+
+    Returns the proof path. ``gated=False`` writes a manifest without
+    ``output_promotion_required`` (download mode's).
+    """
+    from pathlib import Path
+
+    from blueprint_pipeline import provider_output_promotion_records as records
+    from blueprint_pipeline.wam_provider_object_store import SCHEMA_VERSION
+
+    staging = Path(attempt) / "object_store_staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    manifest = {"schema_version": SCHEMA_VERSION, "status": "completed",
+                "object_store": {"key_prefix": "blueprint/task"},
+                "bundle_key": "blueprint/task/job/bundles/sha256/" + "a" * 64 + ".zip",
+                "output_key": "blueprint/task/job/runpod_provider_runtime_output_" + "0" * 32 + ".zip",
+                **({"output_promotion_required": True} if gated else {})}
+    (staging / records.STAGING_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    keys = records.staged_object_keys(manifest)
+    cleanup = {"schema_version": records.CLEANUP_SCHEMA,
+               "staging_manifest_sha256": records.staging_manifest_sha256(staging), "status": "completed",
+               "blockers": [], "all_objects_absent": True, "all_ephemeral_objects_absent": True,
+               "exact_object_count": len(keys),
+               "objects": [{"key_sha256": records.key_sha256(key), "absence": {"absence_confirmed": True}}
+                           for _, key in keys]}
+    promotion = {"receipt_digest": "sha256:" + "1" * 64, "status": promotion_status} if gated else None
+    records.write_staged_object_absence_proof(staging_dir=staging, cleanup=cleanup, promotion=promotion)
+    return staging / records.ABSENCE_PROOF_FILENAME
