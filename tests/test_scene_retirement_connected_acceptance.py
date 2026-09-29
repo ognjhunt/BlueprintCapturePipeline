@@ -734,6 +734,83 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
                                   attempt_runtime={new_attempt['attempt_id']:new_attempt['runtime_digest']})
 
 
+def _source_owned_configuration(base, monkeypatch, policy):
+    """Create the selected preparation through the actual no-provider producer."""
+    import pwd
+    from urllib.parse import urlsplit
+    from tests import test_task_evaluation_completed_scene_progression as progression
+    from tests.test_task_evaluation_scene_configuration_submission import SHA
+    from tests.test_task_evaluation_scene_configuration_submission_publication import Store
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as publication
+    from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import ensure_launch_preparation_queue_root
+    from blueprint_pipeline.task_evaluation_owner_source_store import PREFIX
+
+    source = base / 'source-produced'
+    source.mkdir()
+    queue = ensure_launch_preparation_queue_root(source / 'preparations')
+    input_root = source / 'worker-inputs'
+    input_root.mkdir()
+    progression_output = source / 'progression-output'
+    progression_output.mkdir()
+    original_owner = progression._owner
+    def active_owner(store, now, **kwargs):
+        owner = original_owner(store, now, **kwargs)
+        owner['execution'].update(max_total_spend_usd=100,
+                                  expires_at_epoch=now + 6 * 24 * 60 * 60)
+        return owner
+    monkeypatch.setattr(progression, '_owner', active_owner)
+    try:
+        config, intent_id, intake, issued_at = progression._config(
+            source, monkeypatch, submission_enabled=True, source_kind='mesh', real_destination=True,
+            extra={'preparation_queue_root': str(queue),
+                   'publication_lock_root': str(source / 'publication-locks'),
+                   'service_account': pwd.getpwuid(os.geteuid()).pw_name,
+                   'submission_transport': 'local_owned_queue', 'activation_enabled': False})
+    finally:
+        monkeypatch.setattr(progression, '_owner', original_owner)
+    policy['roots'] = [
+        {'root': str(input_root), 'storage_class': 'cache', 'device': input_root.stat().st_dev},
+        {'root': str(progression_output), 'storage_class': 'host',
+         'device': progression_output.stat().st_dev}]
+    _sealed_file(base / 'policy.json', policy, 'policy_digest', mode=0o644)
+    monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(base / 'policy.json'))
+    store = Store()
+    monkeypatch.setattr(publication, '_verified_checkout_head', lambda: SHA)
+    def publish(**kwargs):
+        return publication.publish_scene_configuration_submission(**kwargs, client=store)
+    progression_run = engine.process_scene_intents(config_path=config, publisher=publish, now=issued_at)
+    assert len(progression_run['results']) == 1
+    assert progression_run['results'][0]['status'] == 'running', progression_run
+    def fetch(uri, destination, maximum_bytes):
+        if uri.startswith(PREFIX):
+            return worker.default_reference_fetcher(uri, destination, maximum_bytes)
+        data = store.objects[urlsplit(uri).path.lstrip('/')]
+        assert len(data) == maximum_bytes
+        destination.write_bytes(data)
+    preparation_run = worker.process_launch_preparation_queue(
+        queue_root=queue, input_root=input_root,
+        allowed_uri_prefixes=['s3://blueprint/task-evaluation/'],
+        service_account=pwd.getpwuid(os.geteuid()).pw_name,
+        source_commit=SHA, fetcher=fetch, construction_queue_root=source / 'construction')
+    assert len(preparation_run['results']) == 1
+    assert preparation_run['results'][0]['status'] == 'queued_for_production_scene_configuration', preparation_run
+    result_path = next((queue / 'results').glob('*.json'))
+    result = json.loads(result_path.read_bytes())
+    envelope_path = next((queue / state / result_path.name for state in ('materialized', 'completed')
+                          if (queue / state / result_path.name).is_file()), queue / 'materialized' / result_path.name)
+    assert envelope_path.is_file()
+    request = json.loads(envelope_path.read_bytes())['request']
+    member = input_root / request['preparation_id']
+    generation = Path(policy['generation_store']) / (hashlib.sha256(str(member).encode()).hexdigest() + '.json')
+    assert json.loads(generation.read_bytes())['canonical_path'] == str(member)
+    return {'base': source, 'queue': queue, 'input_root': input_root, 'progression_output': progression_output,
+            'intake': intake, 'intent_id': intent_id, 'owner': _raw(intake / intent_id / 'intent.json'),
+            'request': request, 'envelope': (str(envelope_path), envelope_path.read_bytes()),
+            'result': (str(result_path), result_path.read_bytes()), 'issued_at': issued_at}
+
+
 def _authentic_connected_graph(base, monkeypatch, policy):
     from tests.test_scene_lifecycle_connected_acquisition import full_connected_finished_scene, installed
     from tests.test_task_evaluation_scene_intake import request, stage, attempt
@@ -1176,6 +1253,20 @@ def test_current_sam_worker_and_parent_link_use_real_selected_owner(short_scene_
     receipt = next(path for path, _ in args['source_records']['sam_execution_receipts']
                    if job['child_id'] in Path(path).parts)
     assert Path(receipt).is_file()
+
+
+@pytest.mark.slow
+def test_source_owned_configuration_is_enrolled_before_activation(short_scene_directory, monkeypatch):
+    from tests.test_scene_retirement_real_participants import access_fixture
+
+    base = short_scene_directory.resolve()
+    _, policy, placeholder = access_fixture(base, monkeypatch)
+    placeholder.rmdir()
+    source = _source_owned_configuration(base, monkeypatch, policy)
+    assert source['request']['scene_intent_digest'] == json.loads(
+        Path(source['owner']['path']).read_bytes())['intent_digest']
+    assert json.loads(source['result'][1])['status'] == 'queued_for_production_scene_configuration'
+    assert source['request']['scene']['identity']['id'].startswith('completed-scene-')
 
 
 @pytest.mark.slow
