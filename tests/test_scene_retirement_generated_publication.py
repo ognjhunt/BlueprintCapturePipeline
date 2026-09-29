@@ -15,18 +15,35 @@ from tests.test_task_evaluation_launch_preparation_contract import request
 from tests.test_task_evaluation_launch_preparation_worker import request_with_fetchable_bytes
 
 
-def generated_fixture(tmp_path, monkeypatch):
+def generated_fixture(tmp_path, monkeypatch, *, external=False):
     from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
     from blueprint_pipeline.task_evaluation_launch_preparation_queue import stage_launch_preparation_request
     from blueprint_pipeline.task_evaluation_scene_retirement_producer_births import enroll_preparation_child
     from blueprint_pipeline import task_evaluation_native_arena_preparation_adapter as adapter
     access, policy, _, _, queue, inputs, proofs = owner_submission(tmp_path, monkeypatch)
-    value, _ = request_with_fetchable_bytes(request())
+    value, payloads = request_with_fetchable_bytes(request())
     intent = json.loads(Path(proofs['intent_raw_ref']['path']).read_bytes())
     attempt = json.loads(Path(proofs['attempt_raw_ref']['path']).read_bytes())
     value['expected_production_commit'] = attempt['source_commit']
     value['scene_intent_digest'] = intent['intent_digest']
     value['task']['identity']['id'] = intent['request']['task']['task_id']
+    runtime_build = None
+    if external:
+        runtime_source = tmp_path/'factory'/'runtime-source'
+        runtime_source.mkdir()
+        (runtime_source/'runtime.py').write_bytes(b'# actual tiny native release payload\n')
+        runtime_build = adapter.build_task_evaluation_runtime_source_bundle(
+            source_root=runtime_source, output_path=tmp_path/'factory'/'runtime.zip',
+            expected_production_commit=value['expected_production_commit'],
+            runtime_identity=value['runtime']['identity'],
+            external_layer_store_root=tmp_path/'factory'/'layers',
+            external_layer_bucket='blueprint-production-inputs', external_layer_min_bytes=1)
+        uri = 's3://blueprint-production-inputs/runtime.zip'
+        value['execution_adapter']['runtime_source_bundle'] = dict(uri=uri,
+            digest=runtime_build['sha256'], size_bytes=runtime_build['size_bytes'])
+        payloads[uri] = Path(runtime_build['path']).read_bytes()
+        for row in runtime_build['external_layers']:
+            payloads[row['uri']] = Path(row['store_path']).read_bytes()
     selected_request = inputs.parent / 'factory' / 'generated_request.json'
     selected_request.write_text(json.dumps(value))
     factory = selected_request.with_name('generated_factory.json')
@@ -39,7 +56,22 @@ def generated_fixture(tmp_path, monkeypatch):
     selected = cache.publish_preparation_storage_authority(queue_root=queue, request=value, now=101, **proofs)
     queued = stage_launch_preparation_request(value=value, queue_root=queue, submitted_by='scene-progression')
     cache.enroll_preparation_storage(queue_path=queued['queue_path'], input_root=inputs, now=101)
-    producer = inputs / 'compiled-owned-episode'
+    materialized = None
+    if external:
+        from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
+        from tests.test_task_evaluation_launch_preparation_worker import fetcher, SERVICE_ACCOUNT
+        prep = inputs/value['preparation_id']
+        native_store = inputs/'content-addressed'/'sha256'
+        materialized = worker.materialize_preparation_references(request=value, input_root=prep,
+            content_store_root=native_store, allowed_uri_prefixes=['s3://blueprint-production-inputs/'],
+            service_account=SERVICE_ACCOUNT, source_commit=value['expected_production_commit'], fetcher=fetcher(payloads))
+        runtime_row = next(row for row in materialized['references']
+                           if row['contract_path'] == 'execution_adapter.runtime_source_bundle')
+        layers = worker._materialize_runtime_source_external_layers(request=value, runtime_source=runtime_row,
+            input_root=prep, content_store_root=native_store,
+            allowed_uri_prefixes=['s3://blueprint-production-inputs/'], fetcher=fetcher(payloads),
+            disk_reservation_root=None, disk_reservations=[])
+    producer = inputs / 'compiled-owned-episode' 
     born = enroll_preparation_child(producer, preparation_root=inputs/value['preparation_id'],
         request=value, now=101)
     assert born['source_storage_authority_raw_ref'] == selected
@@ -52,14 +84,20 @@ def generated_fixture(tmp_path, monkeypatch):
     reference = dict(uri='production-internal://compiled-episode-packet', digest=built['sha256'],
                      size_bytes=built['size_bytes'])
     store = inputs/'content-addressed'/'adapter-members'/'sha256'
+    if external:
+        bundle = Path(runtime_row['materialized_path'])
+        reference = value['execution_adapter']['runtime_source_bundle']
     return dict(access=access, policy=policy, request=value, authority=selected, producer=producer,
-        bundle=bundle, reference=reference, store=store, adapter=adapter, proofs=proofs)
+        bundle=bundle, reference=reference, store=store, adapter=adapter, proofs=proofs,
+        external_layers={} if not external else {row['digest']: Path(row['materialized_path']) for row in layers},
+        role='runtime_source' if external else 'construction_packet')
 
 
 def extract(fixture, name='first'):
     return fixture['adapter']._extract_verified_bundle(bundle_path=fixture['bundle'],
-        request=fixture['request'], expected_reference=fixture['reference'], role='construction_packet',
-        destination=fixture['producer']/name, content_store_root=fixture['store'])
+        request=fixture['request'], expected_reference=fixture['reference'], role=fixture['role'],
+        destination=fixture['producer']/name, content_store_root=fixture['store'],
+        external_layers=fixture['external_layers'])
 
 
 def generation(fixture, digest):
@@ -161,3 +199,59 @@ def test_native_source_or_identity_refusal_precedes_any_generated_publication(tm
                         fixture['access'].SceneRetirementAccessError)):
         extract(fixture)
     assert not fixture['store'].exists()
+
+
+def test_actual_registered_runtime_external_member_keeps_native_zero_copy(tmp_path, monkeypatch):
+    fixture = generated_fixture(tmp_path, monkeypatch, external=True)
+    original = next(iter(fixture['external_layers'].values()))
+    manifest, destination = extract(fixture)
+    row = manifest['entries'][0]
+    leaf, current = generation(fixture, row['sha256'])
+    assert leaf.stat().st_ino == original.stat().st_ino == (destination/'runtime.py').stat().st_ino
+    publication = json.loads(Path(current['source_publication_raw_ref']['path']).read_bytes())
+    assert publication['external_source_raw_ref'] == _raw(original)
+    assert publication['external_generation_raw_ref'] is not None
+    assert json.loads(Path(publication['external_generation_raw_ref']['path']).read_bytes())['ino'] == original.stat().st_ino
+
+
+@pytest.mark.parametrize('operation', ['whole_source_hash', 'native_zip_read'])
+def test_action_source_byte_refusal_precedes_actual_native_read(tmp_path, monkeypatch, operation):
+    fixture = generated_fixture(tmp_path, monkeypatch)
+    from blueprint_pipeline import task_evaluation_scene_retirement_generated as generated
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    import os
+    calls = []
+    native = os.read
+    with pytest.raises(ValueError):
+        with generated.bundle_lifetime(bundle_path=fixture['bundle'], request=fixture['request'],
+                expected_reference=fixture['reference'], role=fixture['role'],
+                destination=fixture['producer']/'budget-test', content_store_root=fixture['store']) as use:
+            use.allowance = ActionAllowance(expires_at=1000, now=lambda: 101, local_bytes=0)
+            def observed(fd, size):
+                if fd == use.fd:
+                    calls.append(size)
+                return native(fd, size)
+            monkeypatch.setattr(os, 'read', observed)
+            if operation == 'whole_source_hash':
+                use.verify_reference()
+            else:
+                generated._ArchiveReader(use).read(1)
+    assert calls == [], 'physical native source read occurred after the original byte budget was exhausted'
+
+
+def test_generated_manifest_publication_is_immutable_only_after_full_write(tmp_path, monkeypatch):
+    fixture = generated_fixture(tmp_path, monkeypatch)
+    import os
+    native = os.write
+    ledger = Path(fixture['policy']['generation_store'])
+    seen = []
+    def observed(fd, raw):
+        for path in ledger.glob('generated-manifest-*.json'):
+            current, expected = os.fstat(fd), path.stat()
+            assert (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino), \
+                'partial manifest is exposed under its final immutable selector'
+        seen.append(len(raw))
+        return native(fd, raw)
+    monkeypatch.setattr(os, 'write', observed)
+    extract(fixture)
+    assert seen and list(ledger.glob('generated-manifest-*.json'))
