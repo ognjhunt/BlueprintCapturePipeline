@@ -372,6 +372,7 @@ def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: 
 
     inputs = [{"materialize_at": item["materialize_at"], "digest": item["digest"], "size_bytes": item["size_bytes"],
                "url": get(item["uri"])} for item in descriptor["inputs"]]
+    # PR 3: the receipt GET shares the fetch window, so the worker checks for an earlier receipt before fetching.
     source, receipt = {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])}, get(
         staging + "receipt.json")
     outputs = {name: presign_remote_cpu_put(grant=grant, binding_digest=binding_digest, staging_uri=staging + name,
@@ -592,6 +593,8 @@ def _start(action: _Action, descriptor: Mapping[str, Any], *, grant: PaidResourc
         try:
             operation = runtime.cloud_run.run_job(grant=grant, target=target, etag=etag, overrides=overrides)
             names = [str((operation.get("metadata") or {}).get("name") or "")]
+            if not names[0].startswith(target["job"] + "/executions/"):  # accepted, but it names no execution
+                raise CloudRunAmbiguousResponse(None, "cloud_run_run_response_unnamed")
         except CloudRunAmbiguousResponse:
             found = result["reconciled"] = reconcile_ambiguous_dispatch(action, descriptor)
             if found["status"] == "unresolved":

@@ -210,7 +210,12 @@ def remote_cpu_object_store() -> tuple[Any, str, str]:
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_artifact_store_bucket_identity_mismatch"
         )
-    return client, bucket, _private_file_value(_ARTIFACT_STORE_FILE_ENV["region"], required=True)
+    # The admitted data location is the region the endpoint serves, not a self-declared one.
+    region = _private_file_value(_ARTIFACT_STORE_FILE_ENV["region"], required=True)
+    endpoint = urlsplit(_private_file_value(_ARTIFACT_STORE_FILE_ENV["endpoint"], required=True))
+    if endpoint.scheme != "https" or region not in str(endpoint.hostname or "").split("."):
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_object_store_region_unbound")
+    return client, bucket, region
 
 
 def _safe_object_name(value: str) -> PurePosixPath:
@@ -1125,6 +1130,8 @@ def copy_remote_cpu_staging_to_cas(
         except Exception as exc:  # noqa: BLE001 - provider exception shapes vary
             if not _object_missing(exc):
                 raise
+            # PR 4: this stamps Metadata.sha256 before any byte is read back; the collector's one
+            # streaming readback deletes the CAS object when the bytes do not match it.
             _server_side_copy(client, bucket=bucket, source=source, key=key, size=size_bytes, etag=etag,
                               metadata={"sha256": hexdigest}, single_copy_limit=single_copy_limit,
                               part_bytes=part_bytes)

@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import stat
+import sys
+import types
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -297,6 +299,13 @@ def test_non_us_config_or_b2_region_is_refused(tmp_path: Path, monkeypatch) -> N
     refused = world.run("dispatch", descriptor=descriptor)
     assert "remote_cpu_object_store_region_not_us" in refused["blockers"]
     world.assert_untouched()
+    # The region is not self-declared: it must be the one the endpoint serves.
+    (settings / "REGION").chmod(0o600)
+    (settings / "REGION").write_text("us-west-004", encoding="utf-8")
+    world.runtime.object_store = None
+    unbound = world.run("dispatch", descriptor=descriptor)
+    assert unbound["blockers"] == ["remote_cpu_object_store_region_unbound"]
+    world.assert_untouched()
 
 
 def _transport(world: RemoteCpuWorld, descriptor: dict) -> tuple[str, int, dict]:
@@ -409,9 +418,15 @@ def test_transport_is_read_only_at_its_generation(tmp_path: Path, monkeypatch) -
             calls.append(("bucket", bucket_name))
             return type("Bucket", (), {"blob": staticmethod(lambda blob_name, generation=None: Blob(blob_name, generation))})()
 
-    from google.cloud import storage
-
-    monkeypatch.setattr(storage, "Client", Client)
+    # Hermetic even where google.* cannot be imported: the adapter's lazy import meets these stubs.
+    storage = types.ModuleType("google.cloud.storage")
+    storage.Client = Client
+    cloud = types.ModuleType("google.cloud")
+    cloud.storage = storage
+    google = types.ModuleType("google")
+    google.cloud = cloud
+    for name, module in (("google", google), ("google.cloud", cloud), ("google.cloud.storage", storage)):
+        monkeypatch.setitem(sys.modules, name, module)
     bucket = GcsTransportBucket(TRANSPORT_BUCKET, credentials=object(), project="blueprint-8c1ca")
     assert bucket.create("transport/x.json", b"{}", if_generation_match=0) == 1234
     assert bucket.get("transport/x.json", generation=1234) == b"{}"
@@ -1001,3 +1016,23 @@ def test_remote_cpu_put_presigns_require_the_attempts_grant(tmp_path: Path, monk
         put(expires_in_seconds=4 * 3600 + 1)  # a PUT never outlives the longest attempt the contract allows
     assert str(too_long.value) == "remote_cpu_presign_expiration_invalid"
     assert "X-Amz-Expires=2520" in put() and [method for method, _, _ in store.presigned] == ["put_object"]
+
+
+def test_a_run_response_without_an_execution_name_is_reconciled_as_ambiguous(tmp_path: Path, monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    world.record_environment()
+    rest = world.rest
+
+    def nameless(method: str, url: str, *, body, headers):
+        status, payload = rest(method, url, body=body, headers=headers)
+        if url.endswith(":run") and status == 200:  # the run was accepted, but the operation names nothing
+            return 200, json.dumps({"name": "operations/op-1", "done": False}).encode()
+        return status, payload
+
+    world.runtime.cloud_run._transport = nameless
+    descriptor = world.descriptor()
+    result = world.run("dispatch", descriptor=descriptor)
+    [execution] = _attempt_executions(world, descriptor["attempt_id"])
+    assert result["status"] == "dispatched" and result["reconciled"]["status"] == "found"
+    assert world.lease(descriptor)["worker_identity"].endswith("/executions/" + execution["name"].rsplit("/", 1)[1])
+    assert len(_runs(world, descriptor["attempt_id"])) == 1
