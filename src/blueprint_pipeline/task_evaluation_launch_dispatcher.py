@@ -1478,7 +1478,8 @@ def dispatch_launch_request(
     publication_readiness_probe: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(request_path)
+    from .control_plane_lane_experiment_errors import OwnerTargetVersionError
+    refuse_registered_references(request_path, profile_dir, state_root, public_catalog_path)
     request_source = Path(request_path).expanduser().resolve()
     request = _read_json(request_source)
     refuse_registered_references(request)
@@ -1499,6 +1500,14 @@ def dispatch_launch_request(
         try:
             profile = _read_json(profile_path)
             refuse_registered_references(profile)
+        except OwnerTargetVersionError as exc:
+            if exc.code not in ("experiment_external_publisher_unsupported", "experiment_publisher_input_limit"):
+                raise
+            # The destination roots were gated before any read. Keep this
+            # fixed refusal in their ordinary receipt; never copy/publish the
+            # rejected profile or enter its payload/reservation/allocator path.
+            blockers.append(exc.code)
+            profile = {}
         except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
             blockers.append("launch_profile_invalid_json")
     if profile:

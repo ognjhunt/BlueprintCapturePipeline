@@ -386,8 +386,17 @@ def test_dispatcher_never_forwards_a_directory_alias_changed_after_reservation(t
         allocator_runner=lambda argv: calls.append(argv) or 0,
     )
     assert receipt["status"] == "blocked"
-    assert "immutable_input_staging_failed:immutable_input_allocator_directory_changed" in receipt["blockers"]
+    assert "experiment_external_publisher_unsupported" in receipt["blockers"]
     assert calls == []
+    # The public entrypoint now refuses the alias before reservation. Preserve
+    # the original deeper staging race proof on the actual native helper too.
+    assert alias.resolve() == first
+    with pytest.raises(TaskEvaluationLaunchError, match="immutable_input_allocator_directory_changed"):
+        dispatcher_module._stage_profile_immutable_inputs(
+            profile=profile, run_root=tmp_path / "direct-staging",
+            allocator_argv=["--native-task-arena-packet", str(alias / "inputs")],
+        )
+    assert alias.resolve() == second
 
 
 def test_dispatcher_disk_refusal_blocks_before_any_provider_call(tmp_path, monkeypatch):

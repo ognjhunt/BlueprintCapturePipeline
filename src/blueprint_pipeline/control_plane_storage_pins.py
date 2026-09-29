@@ -114,6 +114,9 @@ def write_storage_pin(
 ) -> dict[str, Any]:
     """Pin ``paths`` for ``owner_id``; an existing pin is returned unchanged."""
 
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(paths, pins_root, depends_on)
+
     kind, owner_id = _validated_owner(kind, owner_id)
     if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or ttl_seconds <= 0:
         raise ControlPlaneStoragePinError("control_plane_storage_pin_ttl_invalid")
@@ -123,8 +126,6 @@ def write_storage_pin(
         if not path.is_absolute():
             raise ControlPlaneStoragePinError("control_plane_storage_pin_path_not_absolute")
         pinned.append(str(path))
-    from .control_plane_registered_reference_gate import refuse_registered_references
-    refuse_registered_references(pinned)
     dependencies: list[dict[str, str]] = []
     for row in depends_on:
         dependency_kind, dependency_id = _validated_owner(
@@ -235,6 +236,9 @@ def release_storage_pin(
     *, pins_root: str | Path, kind: str, owner_id: str, now: Any = time.time
 ) -> dict[str, Any]:
     """Release one pin and every dependency no other live pin still needs."""
+
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(pins_root)
 
     kind, owner_id = _validated_owner(kind, owner_id)
     observed_at = float(now())
