@@ -271,3 +271,73 @@ def test_actual_producer_metadata_uses_service_store_not_root_authority_mode(tmp
             yield selected
     monkeypatch.setattr(generated, '_opened', observed)
     extract(fixture)
+
+
+def test_actual_generated_temporary_proves_original_fd_before_first_write(tmp_path, monkeypatch):
+    fixture = generated_fixture(tmp_path, monkeypatch)
+    import os
+    native_open, native_stat, native_write = os.open, os.fstat, os.write
+    created, proved = set(), set()
+    def opened(path, flags, *args, **kwargs):
+        fd = native_open(path, flags, *args, **kwargs)
+        if flags & os.O_CREAT and flags & os.O_WRONLY and '.partial-' in str(path):
+            created.add(fd)
+        return fd
+    def observed(fd):
+        value = native_stat(fd)
+        if fd in created:
+            proved.add(fd)
+        return value
+    def written(fd, raw):
+        assert fd not in created or fd in proved, 'generated payload write used an unadopted numeric descriptor'
+        return native_write(fd, raw)
+    monkeypatch.setattr(os, 'open', opened)
+    monkeypatch.setattr(os, 'fstat', observed)
+    monkeypatch.setattr(os, 'write', written)
+    extract(fixture)
+    assert created and created <= proved
+
+
+def test_generated_first_fd_named_mismatch_never_writes_or_closes_unknown_token(tmp_path, monkeypatch):
+    fixture = generated_fixture(tmp_path, monkeypatch)
+    import os
+    native_open, native_stat, native_write, native_close = os.open, os.fstat, os.write, os.close
+    selected = {}
+    writes, closes = [], []
+    def opened(path, flags, *args, **kwargs):
+        fd = native_open(path, flags, *args, **kwargs)
+        if flags & os.O_CREAT and flags & os.O_WRONLY and '.partial-' in str(path):
+            target = Path(path)
+            if not target.is_absolute():
+                target = fixture['store']/target.name
+            selected.update(fd=fd, identity=(native_stat(fd).st_dev, native_stat(fd).st_ino), path=target)
+            target.unlink()
+            target.write_bytes(b'foreign named replacement')
+        return fd
+    def written(fd, raw):
+        if fd == selected.get('fd'):
+            writes.append(len(raw))
+        return native_write(fd, raw)
+    def closed(fd):
+        if fd == selected.get('fd'):
+            closes.append(fd)
+        return native_close(fd)
+    monkeypatch.setattr(os, 'open', opened)
+    monkeypatch.setattr(os, 'write', written)
+    monkeypatch.setattr(os, 'close', closed)
+    try:
+        with pytest.raises(ValueError):
+            extract(fixture)
+        assert writes == [] and closes == [], 'first unproven numeric token was used or closed'
+        assert selected['path'].read_bytes() == b'foreign named replacement'
+    finally:
+        # Only this test owns the independently recorded real acquisition.
+        # Production has no adoption proof and must preserve that token.
+        if 'fd' in selected:
+            try:
+                current = native_stat(selected['fd'])
+            except OSError:
+                pass
+            else:
+                if (current.st_dev, current.st_ino) == selected['identity']:
+                    native_close(selected['fd'])
