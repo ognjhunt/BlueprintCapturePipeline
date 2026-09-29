@@ -22,8 +22,7 @@ def _fixture(tmp_path, monkeypatch):
         [owner["bucket"], marker["object_name"], marker["generation"]],
         separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
     selector = {"object_name": f"{prefix}/deliveries/{delivery_key}/capture_delivery_membership.json",
-                "generation": "17000000000000000003", "size_bytes": 100,
-                "sha256": "sha256:" + "d" * 64}
+                "generation": "17000000000000000003"}
     membership = {
         "schema_version": "capture_delivery_membership.v1", "delivery_key": delivery_key,
         "source_finalize": {"bucket": owner["bucket"], "object_name": marker["object_name"],
@@ -43,16 +42,21 @@ def _fixture(tmp_path, monkeypatch):
              "crc32c": video["crc32c"], "sha256": "sha256:" + "f" * 64},
         ], "derived": [],
     }
-    target = root / "capture"
-    return access, policy, target, owner, selector, membership
+    encoded = json.dumps(membership, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    selector["size_bytes"] = len(encoded)
+    selector["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    target = (root / owner["bucket"] / "scenes" / owner["scene_id"] / "captures" /
+              owner["capture_id"])
+    target.parent.mkdir(parents=True)
+    return access, policy, target, owner, selector, encoded
 
 
 def test_capture_birth_retains_original_proofs_before_empty_target(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 
-    _, policy, target, owner, selector, membership = _fixture(tmp_path, monkeypatch)
+    _, policy, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch)
     born = birth_capture_member(target, observation=owner, membership_selector=selector,
-                                membership=membership)
+                                membership_raw=membership_raw)
     assert born["schema_version"] == "scene_capture_generation.v1"
     assert born["capture_owner_user_id"] == "owner-1"
     assert "owner_intent_id" not in born and "birth_request_raw_ref" not in born
@@ -66,32 +70,35 @@ def test_capture_birth_retains_original_proofs_before_empty_target(tmp_path, mon
         assert ref == {"path": ref["path"], "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
                        "size_bytes": len(raw)}
     assert birth_capture_member(target, observation=owner, membership_selector=selector,
-                                membership=membership) == born
+                                membership_raw=membership_raw) == born
 
 
 def test_capture_birth_rejects_missing_member_or_changed_delivery_without_target(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 
-    _, _, target, owner, selector, membership = _fixture(tmp_path, monkeypatch)
+    _, _, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch)
+    membership = json.loads(membership_raw)
     membership["raw"] = membership["raw"][:1]
+    membership_raw = json.dumps(membership, sort_keys=True, separators=(",", ":")).encode()
+    selector["size_bytes"] = len(membership_raw)
+    selector["sha256"] = "sha256:" + hashlib.sha256(membership_raw).hexdigest()
     with pytest.raises(ValueError):
         birth_capture_member(target, observation=owner, membership_selector=selector,
-                             membership=membership)
+                             membership_raw=membership_raw)
     assert not target.exists()
 
 
 def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypatch):
-    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 
-    _, policy, target, owner, selector, membership = _fixture(tmp_path, monkeypatch)
+    _, policy, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch)
     born = birth_capture_member(target, observation=owner, membership_selector=selector,
-                                membership=membership)
+                                membership_raw=membership_raw)
     key = hashlib.sha256(str(target).encode()).hexdigest() + ".json"
     retired = dict(born, state="retired", state_sequence=born["state_sequence"] + 1)
     _sealed_file(Path(policy["generation_store"]) / key, retired, "state_digest", mode=0o600)
     target.rmdir()
     with pytest.raises(ValueError):
         birth_capture_member(target, observation=owner, membership_selector=selector,
-                             membership=membership)
+                             membership_raw=membership_raw)
     assert not target.exists()

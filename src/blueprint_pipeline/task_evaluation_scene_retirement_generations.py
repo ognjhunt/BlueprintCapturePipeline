@@ -221,3 +221,134 @@ def birth_member(path, *, owner_intent_id, owner_raw_ref, birth_request_raw_ref,
                     _write(parent, key + '.' + value['generation_id'] + '.active.json', value, parent_identity=_identity(store_info))
                     _write(parent, key + '.json', value, parent_identity=_identity(store_info), replace=True)
                     return value
+
+
+def _retain_capture_proof(parent, store, value, *, label, parent_identity):
+    raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    _require(0 < len(raw) <= 65536, 'scene_capture_proof_bounds_invalid')
+    digest = hashlib.sha256(raw).hexdigest()
+    name = f'capture-{label}-{digest}.json'
+    reference = {'path': str(store / name), 'sha256': 'sha256:' + digest,
+                 'size_bytes': len(raw)}
+    try:
+        _write(parent, name, value, parent_identity=parent_identity)
+    except FileExistsError:
+        _require(_raw_reference(reference) == value, 'scene_capture_proof_changed')
+    _require(_raw_reference(reference) == value, 'scene_capture_proof_changed')
+    return reference
+
+
+def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None):
+    """Birth a selected website capture before its first ledger or payload write.
+
+    The caller acquires ``observation`` through the signed original-owner read
+    and ``membership_raw`` through a generation-pinned GCS read. No local sidecar
+    is an authority for either acquisition.
+    """
+    policy = _policy()
+    if policy is None:
+        return None
+    path = _canonical(str(path))
+    rows = [row for row in policy['roots'] if path.is_relative_to(Path(row['root']))]
+    _require(rows, 'scene_retirement_birth_outside_roots')
+    with scene_access():
+        from .capture_original_owner_observer import validate_observation
+        from .capture_delivery_membership import validate_capture_delivery_membership
+
+        _require(type(observation) is dict and type(membership_selector) is dict,
+                 'scene_capture_source_invalid')
+        owner = validate_observation(
+            observation, bucket=observation.get('bucket'),
+            scene_id=observation.get('scene_id'), capture_id=observation.get('capture_id'),
+            marker_generation=observation.get('completion_marker', {}).get('generation'),
+            now_epoch=now,
+        )
+        _require(tuple(path.parts[-5:]) == (
+            owner['bucket'], 'scenes', owner['scene_id'], 'captures', owner['capture_id']),
+            'scene_capture_target_identity_invalid')
+        membership = validate_capture_delivery_membership(
+            membership_raw, selector=membership_selector, observation=owner)
+        marker = owner['completion_marker']
+        delivery = owner['producer_delivery']
+        birth_delivery = {
+            'schema_version': 'capture_birth_delivery.v1',
+            'delivery_key': membership['delivery_key'],
+            'source_finalize': membership['source_finalize'],
+            'source_membership_selector': membership_selector,
+            'producer_delivery': delivery,
+        }
+        store = Path(policy['generation_store'])
+        key = hashlib.sha256(str(path).encode()).hexdigest()
+        with _opened(store, directory=True) as (parent, store_info):
+            store_identity = _identity(store_info)
+            _require(store_info.st_uid == os.geteuid()
+                     and stat.S_IMODE(store_info.st_mode) == 0o700,
+                     'scene_capture_generation_store_unsafe')
+            with _birth_gate(parent, key, parent_identity=store_identity):
+                try:
+                    prior = _read(store / (key + '.json'))
+                except FileNotFoundError:
+                    prior = None
+                if prior is not None:
+                    _require(prior.get('schema_version') == 'scene_capture_generation.v1'
+                             and prior.get('canonical_path') == str(path)
+                             and prior.get('state_digest') == canonical_digest(
+                                 prior, digest_field='state_digest'),
+                             'scene_capture_generation_invalid')
+                    prior_owner = _raw_reference(prior['owner_observation_raw_ref'])
+                    prior_delivery = _raw_reference(prior['birth_delivery_raw_ref'])
+                    if prior['state'] in {'active', 'restored-active'}:
+                        with _opened(path, directory=True) as (_, info):
+                            _require(_identity(info) == (prior['dev'], prior['ino'], prior['mode']),
+                                     'scene_capture_generation_changed')
+                        _require(prior_owner['source_projection_digest'] == owner['source_projection_digest']
+                                 and prior_delivery == birth_delivery
+                                 and prior['capture_owner_user_id'] == owner['capture_owner']['user_id']
+                                 and prior['pinned_marker'] == marker,
+                                 'scene_capture_active_delivery_conflict')
+                        return prior
+                    _require(prior['state'] == 'retired'
+                             and prior_owner['capture_owner']['user_id'] == owner['capture_owner']['user_id']
+                             and prior_delivery['producer_delivery']['delivery_key'] != delivery['delivery_key']
+                             and prior_delivery['source_finalize']['generation'] != marker['generation']
+                             and prior_delivery['producer_delivery']['raw_video'] != delivery['raw_video'],
+                             'scene_capture_generation_unavailable')
+                elif path.exists() or path.is_symlink():
+                    return None  # Prebirth/legacy target is never adopted.
+                _require(not path.exists() and not path.is_symlink(),
+                         'scene_capture_target_occupied')
+                with _opened(path.parent, directory=True) as (target_parent, info):
+                    _require(any(row['device'] == info.st_dev for row in rows),
+                             'scene_capture_parent_device_invalid')
+                    owner_ref = _retain_capture_proof(
+                        parent, store, owner, label='owner', parent_identity=store_identity)
+                    delivery_ref = _retain_capture_proof(
+                        parent, store, birth_delivery, label='delivery', parent_identity=store_identity)
+                    value = _sealed(dict(
+                        schema_version='scene_capture_generation.v1', canonical_path=str(path),
+                        generation_id=secrets.token_hex(16),
+                        previous_generation_id=prior['generation_id'] if prior else None,
+                        capture_owner_user_id=owner['capture_owner']['user_id'],
+                        owner_observation_raw_ref=owner_ref,
+                        pinned_marker=marker,
+                        birth_delivery_raw_ref=delivery_ref,
+                        state='birth', dev=None, ino=None, mode=None,
+                        inventory_sha256=None, retirement_token=None, journal_sha256=None,
+                        state_sequence=prior['state_sequence'] + 1 if prior else 0))
+                    _write(parent, key + '.' + value['generation_id'] + '.birth.json',
+                           value, parent_identity=store_identity)
+                    _write(parent, key + '.json', value, parent_identity=store_identity,
+                           replace=prior is not None)
+                    _guard(target_parent, _identity(info))
+                    os.mkdir(path.name, 0o750, dir_fd=target_parent)
+                    _guard(target_parent, _identity(info))
+                    os.fsync(target_parent)
+                    with _opened(path, directory=True) as (_, born):
+                        value = _sealed(dict(value, state='active', dev=born.st_dev,
+                                             ino=born.st_ino, mode=born.st_mode,
+                                             state_sequence=value['state_sequence'] + 1))
+                    _write(parent, key + '.' + value['generation_id'] + '.active.json',
+                           value, parent_identity=store_identity)
+                    _write(parent, key + '.json', value, parent_identity=store_identity,
+                           replace=True)
+                    return value
