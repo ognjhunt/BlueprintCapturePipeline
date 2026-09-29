@@ -23,6 +23,12 @@ from pathlib import Path
 import pytest
 
 
+# Give the real activation worker a live intake owner while allowing the
+# subsequent local retirement observation to see a full day of idle age.
+SCENE_SOURCE_EPOCH = int(time.time())
+SCENE_RETIREMENT_EPOCH = SCENE_SOURCE_EPOCH + 2 * 24 * 60 * 60
+
+
 def _raw(path):
     path = Path(path)
     data = path.read_bytes()
@@ -199,13 +205,19 @@ def _add_current_sam(args, owned_current_task):
     from tests.test_scene_source_family_website import pair, ref, seal
     current = sam_fixture(parent_id='prep-1')
     previous_task = current['source_records']['sam_host_tasks'][0]
+    previous_plan = current['source_records']['sam_plans'][0]
+    plan = json.loads(previous_plan[1])
+    for key in ('scene_identity', 'task_identity', 'publisher_scene_id'):
+        plan[key] = copy.deepcopy(owned_current_task[key])
+    plan['plan_digest'] = canonical_digest(plan, digest_field='plan_digest')
     current_task = pair('/retained/host-inputs/current-scene-task.json', owned_current_task)
     # Current and independently owned original tasks are different raw records.
     current = _rebase_complete_graph(current, '/retained', {previous_task[0]: current_task[0],
         current['source_records']['sam_profiles'][0][0]: '/retained/metadata/current-scene-profile.json',
         current['source_records']['sam_plans'][0][0]: '/retained/metadata/current-scene-plan.json',
         's3://test/plan.json': 's3://test/current-scene-plan.json'},
-        requests={canonical_digest(json.loads(previous_task[1])): owned_current_task})
+        requests={canonical_digest(json.loads(previous_task[1])): owned_current_task,
+                  canonical_digest(json.loads(previous_plan[1])): plan})
     old_parent = json.loads(current['source_records']['sam_parent_envelopes'][0][1])
     previous_pair = args['seed_records']['preparation_envelopes'][0]
     previous = json.loads(previous_pair[1])
@@ -541,7 +553,7 @@ def _complete_installed_queue_layouts(context):
             (Path(contract['root_path']) / relative).mkdir(parents=True, exist_ok=True)
 
 
-def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth, current_birth):
+def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth, current_birth, source):
     """Run the no-provider queue producer for selected successful parents.
 
     The composed historical graph includes unfinished preparatory records. Keep
@@ -570,9 +582,9 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
                        {'root': str(sam_execution_root), 'storage_class': 'host', 'device': sam_execution_root.stat().st_dev}]
     _sealed_file(base / 'policy.json', policy, 'policy_digest', mode=0o644)
     monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(base / 'policy.json'))
-    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT', str(base / 'intents'))
-    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'webapp')
-    monkeypatch.setattr(cache.time, 'time', lambda: 200)
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT', str(source['intake']))
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'blueprint-webapp,webapp')
+    monkeypatch.setattr(cache.time, 'time', lambda: source['issued_at'] + 2)
     old_rows = {'prep-1': (args['seed_records']['preparation_envelopes'][0],
                             args['seed_records']['preparation_results'][0])}
     adopted_parent=next(row for row in args['source_records']['sam_parent_envelopes']
@@ -599,8 +611,21 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
                        team_namespace=old_request['team_namespace'],
                        expected_production_commit=old_request['expected_production_commit'])
         request['scene_intent_digest'] = json.loads(Path(owner['path']).read_bytes())['intent_digest']
-        request['scene']['identity'] = {'id':old_request['scene']['identity']['id'],'version':'v1'}
-        request['task']['identity'] = {'id':old_request['task']['identity']['id'],'version':'v1'}
+        request['scene']['identity'] = copy.deepcopy(source['request']['scene']['identity'])
+        request['task']['identity'] = copy.deepcopy(source['request']['task']['identity'])
+        if identifier == 'prep-1':
+            definition = {'schema_version': 'task_evaluation_rigid_relocation_template.v1',
+                'task_identity': request['task']['identity'],
+                'object_identity': request['task']['subject']['identity'],
+                'strategy': request['task']['strategy'],
+                'start_center_xyz_m': [0.0, 0.0, 0.0],
+                'target_center_xyz_m': [0.0, 0.1, 0.0]}
+            definition_ref = request['task']['definition']
+            definition_bytes = json.dumps(definition, sort_keys=True).encode()
+            definition_ref.update(uri='s3://blueprint-production-inputs/prep-1-task-definition.json',
+                                  digest='sha256:' + hashlib.sha256(definition_bytes).hexdigest(),
+                                  size_bytes=len(definition_bytes))
+            payloads[definition_ref['uri']] = definition_bytes
         recipe_ref = request['construction']['recipe']
         recipe = json.loads(payloads[recipe_ref['uri']])
         if identifier == 'current-parent':
@@ -713,7 +738,8 @@ def _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth,
     new_attempt = reserve_scene_attempt(queue_root=args['roots']['intent_root'],intent_id=args['intent_id'],
         attempt_id='scene-configuration-'+request_digest[7:31],source_commit=request['expected_production_commit'],
         runtime_digest=request['execution_adapter']['runtime_source_bundle']['digest'],
-        input_digest=request_digest,provider='vast',maximum_spend_usd=1.0,now=200)
+        input_digest=request_digest,provider='vast',
+        maximum_spend_usd=request['spend']['hard_cap_usd'],now=SCENE_SOURCE_EPOCH + 2)
     attempt_path = str(Path(args['roots']['intent_root'])/args['intent_id']/'attempts'/(new_attempt['attempt_id']+'.json'))
     attempt_pair = (attempt_path,Path(attempt_path).read_bytes())
     args['seed_records']['attempts'][old_attempt_index]=attempt_pair
@@ -749,10 +775,10 @@ def _source_owned_configuration(base, monkeypatch, policy):
 
     source = base / 'source-produced'
     source.mkdir()
-    queue = ensure_launch_preparation_queue_root(source / 'preparations')
-    input_root = source / 'worker-inputs'
+    queue = ensure_launch_preparation_queue_root(source / 'queue')
+    input_root = source / 'inputs'
     input_root.mkdir()
-    progression_output = source / 'progression-output'
+    progression_output = source / 'factories'
     progression_output.mkdir()
     original_owner = progression._owner
     def active_owner(store, now, **kwargs):
@@ -765,6 +791,7 @@ def _source_owned_configuration(base, monkeypatch, policy):
         config, intent_id, intake, issued_at = progression._config(
             source, monkeypatch, submission_enabled=True, source_kind='mesh', real_destination=True,
             extra={'preparation_queue_root': str(queue),
+                   'factory_output_root': str(progression_output),
                    'publication_lock_root': str(source / 'publication-locks'),
                    'service_account': pwd.getpwuid(os.geteuid()).pw_name,
                    'submission_transport': 'local_owned_queue', 'activation_enabled': False})
@@ -811,33 +838,82 @@ def _source_owned_configuration(base, monkeypatch, policy):
             'result': (str(result_path), result_path.read_bytes()), 'issued_at': issued_at}
 
 
+def _select_source_owned_lineage(args, source, base, original_graph):
+    """Select the source producer's workspace; retain unrelated old fixture bytes."""
+    records = args['seed_records']
+    history = base / 'unselected-queue-history'
+    history.mkdir(mode=0o700, exist_ok=True)
+    historical = []
+    for role in ('source_snapshots', 'factories', 'source_submissions'):
+        assert len(records[role]) == len(original_graph['seed_records'][role])
+        historical.extend((role, row) for row in original_graph['seed_records'][role])
+        records[role] = []
+    old_admin = [row for row in records['attempts']
+                 if json.loads(row[1])['schema_version'] == 'task_evaluation_scene_preparation_attempt.v1']
+    assert len(old_admin) == 1
+    records['attempts'].remove(old_admin[0])
+    original_admin = [row for row in original_graph['seed_records']['attempts']
+        if json.loads(row[1])['schema_version'] == 'task_evaluation_scene_preparation_attempt.v1']
+    assert len(original_admin) == 1
+    historical.append(('attempt', original_admin[0]))
+    retained_index = []
+    for index, (role, (original_path, raw)) in enumerate(historical):
+        path = history / f'source-history-{index:02d}-{role}.json'
+        path.write_bytes(raw)
+        args['source_records']['opaque_evidence'].append((str(path), raw))
+        retained_index.append({'role': role, 'original_path': original_path, 'retained_path': str(path),
+                               'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(),
+                               'size_bytes': len(raw), 'disposition': 'KEEP'})
+    index_path = history / 'source-history-index.json'
+    index_bytes = json.dumps({'schema_version': 'retained_source_history_fixture.v1',
+                              'records': retained_index}, sort_keys=True).encode()
+    index_path.write_bytes(index_bytes)
+    args['source_records']['opaque_evidence'].append((str(index_path), index_bytes))
+    selected = list((source['intake'] / source['intent_id'] / 'preparation-attempts').glob('source-*.json'))
+    assert len(selected) == 1
+    attempt = selected[0]
+    records['attempts'].append((str(attempt), attempt.read_bytes()))
+    workspace = source['progression_output'] / source['intent_id'] / attempt.stem
+    for role, relative_paths in {
+        'source_snapshots': ('source_binding.json', 'machinery.json', 'release_binding.json'),
+        'factories': ('factory.json',),
+        'source_submissions': ('materialized/submission/scene_configuration_preparation_request.v1.json',
+                               'materialized/submission/bundle_manifest.v1.json'),
+    }.items():
+        for relative in relative_paths:
+            path = workspace / relative
+            assert path.is_file(), path
+            records[role].append((str(path), path.read_bytes()))
+    args['roots']['factory_output_root'] = str(source['progression_output'])
+
+
 def _authentic_connected_graph(base, monkeypatch, policy):
     from tests.test_scene_lifecycle_connected_acquisition import full_connected_finished_scene, installed
     from tests.test_task_evaluation_scene_intake import request, stage, attempt
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
-    args = _native_fixture_records(full_connected_finished_scene())
+    source = _source_owned_configuration(base, monkeypatch, policy)
+    original_graph = full_connected_finished_scene()
+    args = _native_fixture_records(original_graph)
     # The source-family regression fixture deliberately has no current parent
     # for this progress row. A successful retirement must use a separately
     # produced, parent-bound progress chain instead of adopting those bytes.
     args['source_records']['source_progress'] = []
     old_intent = json.loads(args['seed_records']['intent'][1])
-    body = request()
-    body['execution']['allowed_providers'] = ['vast', 'openai']
-    body['owner'] = old_intent['request']['owner']
-    body['consent']['accepted_by'] = body['owner']['user_id']
-    body['source'] = old_intent['request']['source']
-    body['task']['task_id'] = old_intent['request']['task']['task_id']
-    intake = base / 'intents'
-    accepted = stage(intake, body)
-    issued_attempt = attempt(intake, accepted, commit='a', cost=1)
-    current_attempt = attempt(intake, accepted, attempt_id='a2', commit='b', cost=1)
+    intake = source['intake']
+    accepted = {'intent_id': source['intent_id']}
+    issued_attempt = attempt(intake, accepted, commit='a', cost=1, now=source['issued_at'] + 1)
+    current_attempt = attempt(intake, accepted, attempt_id='a2', commit='b', cost=1,
+                              now=source['issued_at'] + 1)
     actual_path = intake / accepted['intent_id'] / 'intent.json'
     actual = json.loads(actual_path.read_bytes())
-    prior_body = copy.deepcopy(body)
+    prior_body = copy.deepcopy(actual['request'])
     prior_body['submission_id'] = 'original-sam-owner'
     prior_body['owner'] = {'user_id': 'original-owner', 'organization_id': 'original-org'}
     prior_body['consent']['accepted_by'] = 'original-owner'
+    prior_body['consent']['accepted_at_epoch'] = 99
+    prior_body['execution']['expires_at_epoch'] = 1000
+    prior_body['execution']['max_total_spend_usd'] = 4
     prior = stage(intake, prior_body)
     prior_attempt = attempt(intake, prior, commit='a')
     prior_path = intake / prior['intent_id'] / 'intent.json'
@@ -850,6 +926,14 @@ def _authentic_connected_graph(base, monkeypatch, policy):
     from datetime import datetime, timezone
     def owned_task(task, intent, raw_owner, raw_attempt):
         task = copy.deepcopy(task)
+        historical_scene_version = task['scene_identity']['version']
+        historical_task_version = task['task_identity']['version']
+        task['scene_identity'] = copy.deepcopy(source['request']['scene']['identity'])
+        if raw_owner == prior_owner:
+            task['scene_identity']['version'] = historical_scene_version
+        task['task_identity'] = copy.deepcopy(source['request']['task']['identity'])
+        if raw_owner == prior_owner:
+            task['task_identity']['version'] = historical_task_version
         for key in ('strategy', 'subject', 'support', 'destination', 'success'):
             task[key] = intent['request']['task'][key]
         task['scene_intent_authority'] = {'intent': raw_owner, 'intent_digest': intent['intent_digest'], 'attempt': raw_attempt}
@@ -870,6 +954,11 @@ def _authentic_connected_graph(base, monkeypatch, policy):
     args = _rebase_complete_graph(args,'/retained',current_changes)
     args = _native_fixture_records(args)
     changes={}
+    old_preparation = json.loads(args['seed_records']['preparation_envelopes'][0][1])['request']
+    changes.update({old_preparation['scene']['identity']['id']: source['request']['scene']['identity']['id'],
+                    old_preparation['task']['identity']['id']: source['request']['task']['identity']['id'],
+                    old_preparation['team_namespace']: source['request']['team_namespace'],
+                    old_preparation['run_id']: source['request']['run_id']})
     changes.update({old_intent['intent_digest']: actual['intent_digest'],
                     old_intent['task_content_digest']: actual['task_content_digest'],
                     canonical_digest(old_intent['request']): canonical_digest(actual['request']),
@@ -884,12 +973,17 @@ def _authentic_connected_graph(base, monkeypatch, policy):
         except (ValueError, UnicodeError):
             pass
         for value in values:
-            if old_id in value:
-                changes[value] = value.replace(old_id, accepted['intent_id']).replace('/retained', str(base))
+            old_scene = old_preparation['scene']['identity']['id']
+            new_scene = source['request']['scene']['identity']['id']
+            revised = value.replace(old_id, accepted['intent_id'])
+            if old_scene in revised and new_scene not in revised:
+                revised = revised.replace(old_scene, new_scene)
+            if revised != value:
+                changes[value] = revised.replace('/retained', str(source['base']))
     changes[old_id] = accepted['intent_id']
     args['intent_id'] = accepted['intent_id']
     args['seed_records']['intent'] = (str(actual_path), actual_path.read_bytes())
-    args = _rebase_complete_graph(args, base, changes, requests=replacements,
+    args = _rebase_complete_graph(args, source['base'], changes, requests=replacements,
                                  immutable_paths={str(actual_path), str(prior_path)})
     assert all(json.loads(raw).get('scene_intent_authority',{}).get('intent')==owner
         for _,raw in args['source_records']['sam_host_tasks']
@@ -897,10 +991,14 @@ def _authentic_connected_graph(base, monkeypatch, policy):
             (path,json.loads(raw).get('scene_intent_authority',{}).get('intent'))
             for path,raw in args['source_records']['sam_host_tasks']
             if json.loads(raw)['expected_production_commit']=='b'*40]
-    _add_adopted_current_sam(args, base, owned_task(adopted_task, actual, owner, current_birth))
+    selected_current_task = next(json.loads(raw) for _, raw in args['source_records']['sam_host_tasks']
+        if json.loads(raw)['expected_production_commit'] == 'b'*40
+        and json.loads(raw)['scene_intent_authority']['intent'] == owner)
+    _add_adopted_current_sam(args, source['base'], selected_current_task)
     task_bytes_before_worker=list(args['source_records']['sam_host_tasks'])
-    args = _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth, current_birth)
+    args = _selected_worker_preparations(args, base, policy, monkeypatch, owner, birth, current_birth, source)
     _link_current_parent(args, current_birth)
+    _select_source_owned_lineage(args, source, base, original_graph)
     assert args['source_records']['sam_host_tasks']==task_bytes_before_worker, [
         (old[0],hashlib.sha256(old[1]).hexdigest(),new[0],hashlib.sha256(new[1]).hexdigest())
         for old,new in zip(task_bytes_before_worker,args['source_records']['sam_host_tasks']) if old!=new]
@@ -933,6 +1031,21 @@ def _authentic_connected_graph(base, monkeypatch, policy):
         **identities, **dict(args['source_records']['queue_identities'])}.items())
     # Intake publishes immutable owner bytes. The metadata installer must not
     # reopen that real authority for writing merely to install fixture copies.
+    # The source progression already wrote its own numbered event chain. The
+    # historical composed fixture must remain byte-exact evidence elsewhere;
+    # it cannot overwrite the live owner's event names or projection.
+    historical_progress = base / 'unselected-queue-history' / 'historical-progress'
+    historical_progress.mkdir(parents=True)
+    for path, raw in [*args['seed_records']['events'], args['seed_records']['projection']]:
+        target = historical_progress / ('projection.json' if path.endswith('/progression.json')
+                                        else Path(path).name)
+        target.write_bytes(raw)
+        args['source_records']['opaque_evidence'].append((str(target), raw))
+    progress_dir = source['intake'] / source['intent_id']
+    args['seed_records']['events'] = [(str(path), path.read_bytes()) for path in sorted(
+        (progress_dir / 'progression-events').glob('*.json'))]
+    projection_path = progress_dir / 'progression.json'
+    args['seed_records']['projection'] = (str(projection_path), projection_path.read_bytes())
     authentic_pair = (str(actual_path), actual_path.read_bytes())
     args['seed_records']['intent'] = None
     args, context, _, _ = installed(base, args, already_rebased=True)
@@ -942,21 +1055,26 @@ def _authentic_connected_graph(base, monkeypatch, policy):
     _produce_current_sam_progress(args, context, base)
     assert actual_path.read_bytes() == authentic_pair[1]
     monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT', str(intake))
-    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'webapp')
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'blueprint-webapp,webapp')
     from blueprint_pipeline.task_evaluation_scene_owner_authority import validate_task_scene_owner
     for task_path, raw in args['source_records']['sam_host_tasks']:
         task = json.loads(raw)
-        verified = validate_task_scene_owner(task, now=200)
+        verified = validate_task_scene_owner(task, now=200 if task['scene_intent_authority']['intent'] == prior_owner
+                                             else SCENE_SOURCE_EPOCH + 2)
         expected = prior['intent_id'] if task['expected_production_commit'] == 'a'*40 and task['scene_intent_authority']['intent']==prior_owner else accepted['intent_id']
         assert verified['intent_id'] == expected
     task_index = {(path, 'sha256:' + hashlib.sha256(raw).hexdigest(), len(raw)): json.loads(raw)
                   for path, raw in args['source_records']['sam_host_tasks']}
     for path, raw in args['source_records']['sam_plans']:
-        selector = json.loads(raw)['host_inputs']['task_request']
+        plan_value = json.loads(raw)
+        selector = plan_value['host_inputs']['task_request']
         assert (selector['path'], selector['sha256'], selector['size_bytes']) in task_index, (
             path, selector, [(key, value.get('scene_intent_authority',{}).get('intent'))
                              for key,value in task_index.items() if key[0]==selector['path']])
         task = task_index[selector['path'], selector['sha256'], selector['size_bytes']]
+        for identity_key in ('scene_identity', 'task_identity', 'publisher_scene_id'):
+            assert task.get(identity_key) == plan_value.get(identity_key), (
+                path, identity_key, task.get(identity_key), plan_value.get(identity_key))
         expected_owner = owner if Path(path).name in {'current-scene-plan.json', 'adopted-current-plan.json'} else prior_owner
         assert task['scene_intent_authority']['intent'] == expected_owner, (
             path, task['expected_production_commit'], task['scene_intent_authority']['intent']['path'],
@@ -964,7 +1082,7 @@ def _authentic_connected_graph(base, monkeypatch, policy):
     for _, raw in args['source_records']['sam_adoptions']:
         selector = json.loads(raw)['current_host_inputs']['task_request']
         assert task_index[selector['path'], selector['sha256'], selector['size_bytes']]['scene_intent_authority']['intent'] == owner
-    assert actual['intent_digest'] == canonical_digest(actual, digest_field='intent_digest')
+    assert actual['intent_digest'] == cross_runtime_canonical_digest(actual, digest_field='intent_digest')
     from blueprint_pipeline.task_evaluation_scene_source_family_inventory import ROLES, _join
     from blueprint_pipeline.task_evaluation_scene_source_family_sam import SCHEMAS as SAM_SCHEMAS
     for role, (schema, field) in SAM_SCHEMAS.items():
@@ -973,10 +1091,23 @@ def _authentic_connected_graph(base, monkeypatch, policy):
                 value = json.loads(raw)
                 if value.get('schema_version') == schema:
                     assert value[field] == canonical_digest(value, digest_field=field), (role, path)
+    for role in ('website_handoffs', 'website_task_contexts'):
+        for path, raw in args['source_records'][role]:
+            value = json.loads(raw)
+            assert f"/scenes/{value['scene_id']}/captures/{value['capture_id']}/" in path, (role, path, value)
     source_args={key:args[key] for key in ('intent_id','seed_records','downstream_records',
         'roots','parent_routes','retained_metadata_roots')}
     source_args['source_records']={role:args['source_records'][role] for role in ROLES}
     source_args['metadata_roots']=source_args.pop('retained_metadata_roots')
+    allowed_roots = [*source_args['metadata_roots'], args['roots']['host_input_root'],
+                     args['roots']['sam_queue_root'], args['roots']['sam_execution_root'],
+                     args['roots']['factory_output_root'],
+                     *(route['input_root'] for route in args['parent_routes'])]
+    for role in SAM_SCHEMAS:
+        if role in {'sam_parent_envelopes', 'sam_parent_results', 'source_progress', 'source_resume_signals'}:
+            continue
+        for path, _ in args['source_records'].get(role, []):
+            assert any(Path(path).is_relative_to(root) for root in allowed_roots), (role, path, allowed_roots)
     _join(**source_args)
     return args, context, (accepted['intent_id'], owner, birth), (prior['intent_id'], prior_owner, prior_birth)
 
@@ -993,23 +1124,31 @@ def _produce_current_sam_phase(args, context, base, monkeypatch):
     job_pair = next(row for row in rows['sam_jobs']
                     if json.loads(row[1])['parent_preparation_id'] == 'current-parent')
     job = json.loads(job_pair[1])
+    for label, candidate in [('plan', job['plan_ref']), *job['inputs'].items()]:
+        actual_ref = _raw(Path(candidate['path']))
+        assert actual_ref == candidate, (label, candidate, actual_ref)
     result_pair = next(row for row in rows['sam_results']
                        if json.loads(row[1])['child_id'] == job['child_id'])
     prior_result = json.loads(result_pair[1])
     assert set(prior_result['artifacts']) == {'phase_artifact'}
     output = Path(args['roots']['sam_execution_root']) / job['parent_request_digest'][7:] / job['child_id']
-    prior_receipt = next(row for row in rows['sam_execution_receipts']
-                         if Path(row[0]).parent == output)
+    prior_output = Path(prior_result['artifacts']['phase_artifact']['path']).parent
+    assert prior_output.is_relative_to(args['roots']['sam_execution_root'])
+    receipt_matches = [row for row in rows['sam_execution_receipts']
+                       if Path(row[0]).parent == prior_output]
+    assert len(receipt_matches) == 1
+    prior_receipt = receipt_matches[0]
+    assert json.loads(prior_receipt[1])['job_digest'] == job['job_digest']
     prior_artifact = next(row for row in rows['opaque_evidence']
                           if row[0] == prior_result['artifacts']['phase_artifact']['path'])
     assert prior_artifact[1] == b'tiny-evidence'
-    assert {path.name for path in output.iterdir()} == {
+    assert {path.name for path in prior_output.iterdir()} == {
         Path(prior_receipt[0]).name, Path(prior_artifact[0]).name}
     for pair in (job_pair, result_pair, prior_receipt, prior_artifact):
         Path(pair[0]).unlink()
-    output.rmdir()
-    assert list(output.parent.iterdir()) == []
-    output.parent.rmdir()
+    prior_output.rmdir()
+    assert list(prior_output.parent.iterdir()) == []
+    prior_output.parent.rmdir()
     for role, pair in (('sam_jobs', job_pair), ('sam_results', result_pair),
                        ('sam_execution_receipts', prior_receipt), ('opaque_evidence', prior_artifact)):
         rows[role].remove(pair)
@@ -1217,6 +1356,20 @@ def short_scene_directory():
 
 
 @pytest.mark.slow
+def test_source_owned_configuration_is_enrolled_before_activation(short_scene_directory, monkeypatch):
+    from tests.test_scene_retirement_real_participants import access_fixture
+
+    base = short_scene_directory.resolve()
+    _, policy, placeholder = access_fixture(base, monkeypatch)
+    placeholder.rmdir()
+    source = _source_owned_configuration(base, monkeypatch, policy)
+    assert source['request']['scene_intent_digest'] == json.loads(
+        Path(source['owner']['path']).read_bytes())['intent_digest']
+    assert json.loads(source['result'][1])['status'] == 'queued_for_production_scene_configuration'
+    assert source['request']['scene']['identity']['id'].startswith('completed-scene-')
+
+
+@pytest.mark.slow
 def test_current_sam_worker_and_parent_link_use_real_selected_owner(short_scene_directory, monkeypatch):
     from tests.test_scene_retirement_real_participants import access_fixture
 
@@ -1228,6 +1381,13 @@ def test_current_sam_worker_and_parent_link_use_real_selected_owner(short_scene_
     (journals / 'retired').mkdir(mode=0o700)
     monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
     args, _, main_owner, original_owner = _authentic_connected_graph(base, monkeypatch, policy)
+    history_index = json.loads((base / 'unselected-queue-history' / 'source-history-index.json').read_bytes())['records']
+    assert history_index and all(row['disposition'] == 'KEEP' for row in history_index)
+    for row in history_index:
+        raw = Path(row['retained_path']).read_bytes()
+        assert row['original_path'].startswith('/retained/')
+        assert row['sha256'] == 'sha256:' + hashlib.sha256(raw).hexdigest()
+        assert row['size_bytes'] == len(raw)
     links = [(path, json.loads(raw)) for path, raw in args['seed_records']['preparation_links']]
     current = [(path, link) for path, link in links if link['preparation_id'] == 'current-parent']
     assert len(current) == 1
@@ -1253,20 +1413,6 @@ def test_current_sam_worker_and_parent_link_use_real_selected_owner(short_scene_
     receipt = next(path for path, _ in args['source_records']['sam_execution_receipts']
                    if job['child_id'] in Path(path).parts)
     assert Path(receipt).is_file()
-
-
-@pytest.mark.slow
-def test_source_owned_configuration_is_enrolled_before_activation(short_scene_directory, monkeypatch):
-    from tests.test_scene_retirement_real_participants import access_fixture
-
-    base = short_scene_directory.resolve()
-    _, policy, placeholder = access_fixture(base, monkeypatch)
-    placeholder.rmdir()
-    source = _source_owned_configuration(base, monkeypatch, policy)
-    assert source['request']['scene_intent_digest'] == json.loads(
-        Path(source['owner']['path']).read_bytes())['intent_digest']
-    assert json.loads(source['result'][1])['status'] == 'queued_for_production_scene_configuration'
-    assert source['request']['scene']['identity']['id'].startswith('completed-scene-')
 
 
 @pytest.mark.slow
