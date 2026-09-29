@@ -66,6 +66,18 @@ def test_exact_configured_revision_projection_is_the_only_digest_named_metadata(
     with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
         with pytest.raises(m.AcquisitionError, match='metadata_'):
             reader.read_json(str(path), configured_revision_root=str(root))
+    path.unlink()
+    target = tmp_path / 'same-bytes.json'
+    target.write_bytes(raw)
+    path.symlink_to(target)
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        with pytest.raises(m.AcquisitionError, match='metadata_type_invalid'):
+            reader.read_json(str(path), configured_revision_root=str(root))
+    path.unlink()
+    path.mkdir()
+    with m.Acquisition(ReferenceCollectionBudget(monotonic=lambda: 0), [str(tmp_path)]) as reader:
+        with pytest.raises(m.AcquisitionError, match='metadata_type_invalid'):
+            reader.read_json(str(path), configured_revision_root=str(root))
 
 
 def test_shared_read_allowance_refuses_before_next_read(tmp_path, monkeypatch):

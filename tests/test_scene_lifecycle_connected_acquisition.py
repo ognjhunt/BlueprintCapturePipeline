@@ -136,6 +136,21 @@ def connected_native_terminal():
     return native
 
 
+def test_unrelated_digest_named_revision_cannot_bind_selected_preparation(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
+    args, context, _, _ = installed(tmp_path, connected_native_terminal())
+    raw = args['bridge_records']['configured_revisions'][0][1]
+    revision = Path(context['roots']['preparation_input_root']) / 'foreign-preparation' / hashlib.sha256(raw).hexdigest()
+    revision.parent.mkdir(parents=True, exist_ok=True)
+    revision.write_bytes(raw)
+    context['retained_metadata_files'].append({'role': 'configured_revisions', 'path': str(revision)})
+    stable_shared_ancestors(monkeypatch, tmp_path)
+    report = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context, observed_at_epoch=900000)
+    handoffs = report['historical_lineage']['preparation_handoff_observations']
+    assert handoffs[0]['pre_handoff_binding_verified'] is True
+    assert all(str(revision) != proof.get('path') for row in handoffs for proof in row['source_provenance'])
+
+
 @pytest.mark.slow
 def test_terminal_scene_report_acquires_exact_members_once_with_unique_inode_bytes(tmp_path, monkeypatch, record_property):
     # One real-shaped completed scene traverses all retained producer families
