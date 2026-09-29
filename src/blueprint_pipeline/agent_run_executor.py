@@ -91,17 +91,31 @@ def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = No
         request_root = str(_mapping(canonical.get("site_package")).get("capture_root") or "")
         if request_root != configured_root or canonical.get("capture_root") != configured_root:
             blockers.append("agent_execution_capture_root_partition_mismatch")
-        episode_specs_path = capture_root / "pipeline" / "simulation_automation" / "episode_specs.json"
-        if not episode_specs_path.is_file():
-            blockers.append("agent_execution_episode_specs_missing")
-        else:
+        from .controlled_native_queue import configured_profile, routes_controlled_request
+        if routes_controlled_request(canonical):
+            # Native scope is frozen in the operator registry and admitted
+            # request. Legacy capture compilation can rewrite episode_specs.
             try:
-                episode_specs = _load_json(episode_specs_path)
+                profile = configured_profile(canonical)
             except (OSError, ValueError):
-                blockers.append("agent_execution_episode_specs_invalid")
+                blockers.append("agent_execution_native_profile_invalid")
             else:
-                if episode_specs.get("episode_count") != row.get("quoted_episodes"):
-                    blockers.append("agent_execution_episode_spec_count_mismatch")
+                if profile is None:
+                    blockers.append("agent_execution_native_profile_missing")
+                elif authorization.get("episodes") != 1:
+                    blockers.append("agent_execution_native_single_episode_required")
+        else:
+            episode_specs_path = capture_root / "pipeline" / "simulation_automation" / "episode_specs.json"
+            if not episode_specs_path.is_file():
+                blockers.append("agent_execution_episode_specs_missing")
+            else:
+                try:
+                    episode_specs = _load_json(episode_specs_path)
+                except (OSError, ValueError):
+                    blockers.append("agent_execution_episode_specs_invalid")
+                else:
+                    if episode_specs.get("episode_count") != row.get("quoted_episodes"):
+                        blockers.append("agent_execution_episode_spec_count_mismatch")
         job_id = str(canonical.get("job_id") or "")
         if Path(job_id).name != job_id or job_id in {"", ".", ".."}:
             blockers.append("agent_execution_canonical_job_id_unsafe")
@@ -523,6 +537,9 @@ def poll_once(
         "agent_execution_episode_specs_invalid",
         "agent_execution_episode_spec_count_mismatch",
         "agent_execution_unapproved_staged_policy_package",
+        "agent_execution_native_profile_missing",
+        "agent_execution_native_profile_invalid",
+        "agent_execution_native_single_episode_required",
     }
     for row in client.list_runs(limit, capture_id=capture_id):
         summary["examined"] += 1
