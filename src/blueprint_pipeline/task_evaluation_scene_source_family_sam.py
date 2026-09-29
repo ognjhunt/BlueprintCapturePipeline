@@ -117,12 +117,12 @@ def _parent_result(context, row, parents, *, work_budget=None):
 
 def _mounted_plan_cache_member(context, result, parent, plans, *, work_budget=None):
     """Name one readback plan CAS candidate; action still proves its generation."""
-    if parent is None:
-        return
     if work_budget is None:
         work_budget = getattr(context, 'work_budget', None)
     if work_budget is not None:
         _work(work_budget)
+    if parent is None:
+        return
     value, proof = result
     request = parent[0]['request']
     mounts = request.get('runtime', {}).get('mounts', [])

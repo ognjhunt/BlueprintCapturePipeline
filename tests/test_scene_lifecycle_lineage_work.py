@@ -2,6 +2,8 @@
 #   src/blueprint_pipeline/task_evaluation_scene_compilation_native_owner_inventory.py
 #   src/blueprint_pipeline/task_evaluation_scene_lineage_budget.py
 """ADP-009D: one optional work allowance reaches every retained child."""
+import json
+
 import pytest
 
 from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
@@ -20,7 +22,33 @@ def test_private_work_path_matches_native_and_uses_one_budget():
     args = fixture()
     budget = ReferenceCollectionBudget(monotonic=lambda: 0)
     expected = m.join_retained_scene_compilation_native_owner_inventory(**args)
-    assert invoke(args, budget) == expected
+    actual = invoke(args, budget)
+    # The private path records predecessor references once under their owning
+    # child. The legacy public report repeats them in enclosing children, where
+    # the same target can be unresolved because that child lacks its role.
+    # Preserve all members and every target/source byte selector despite that
+    # grouping difference; comparing only totals would miss a lost reference.
+    def observable(value, selectors):
+        if isinstance(value, dict):
+            retained = {}
+            for key, child in value.items():
+                if key in {'raw_reference_obligations', 'remote_reference_obligations'}:
+                    for row in child:
+                        target = ({name: row[name] for name in ('path', 'sha256', 'size_bytes')}
+                                  if key == 'raw_reference_obligations' else
+                                  {name: row[name] for name in ('uri', 'digest', 'size_bytes')})
+                        for source in row['source_provenance']:
+                            raw_source = {name: source[name] for name in ('role', 'path', 'sha256', 'size_bytes')}
+                            selectors.add(json.dumps([key, target, raw_source], sort_keys=True))
+                else:
+                    retained[key] = observable(child, selectors)
+            return retained
+        if isinstance(value, list):
+            return [observable(child, selectors) for child in value]
+        return value
+    native_selectors, private_selectors = set(), set()
+    assert observable(actual, private_selectors) == observable(expected, native_selectors)
+    assert private_selectors == native_selectors
     assert budget.counts['values'] > 0 and budget.counts['facts'] > 0
     assert budget.counts['raw_bytes'] == 0  # Already-acquired bytes are not new disk I/O.
 
