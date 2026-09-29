@@ -101,7 +101,9 @@ def _policies(raw, budget):
 
 
 def _policy(raw, principal, budget):
-    selected = _policies(raw, budget).get(principal)
+    policies = _policies(raw, budget)
+    _require(type(principal) is str, 'owner_consent_principal_unmapped')
+    selected = policies.get(principal)
     _require(selected is not None, 'owner_consent_principal_unmapped')
     return selected
 
