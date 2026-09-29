@@ -394,7 +394,7 @@ def test_actual_scene_validation_cannot_publish_after_original_deadline(tmp_path
             queue_root=destination,
             authenticated_client="webapp-service",
             trusted_clients={"webapp-service"},
-            now=1000,
+            now=100,
         )
     assert not destination.exists()
     assert len(budgets) == 1 and budgets[0].closed
