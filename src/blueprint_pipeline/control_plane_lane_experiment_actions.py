@@ -869,23 +869,38 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
         public = birth_code._authority_lock(files, config.experiment_authority_root, gid)
         current = _current(files, public, gid)
         actions = []
+        expired = []
         if current is not None:
             for entry in current[1]["enrollments"]:
                 if entry["state"] in ("active", "retiring") and entry["operation_id"] is not None:
                     if entry["state"] == "active" and _is_selected_restoration(files, public, entry, gid):
                         continue
-                    if len(actions) == 2:
-                        break
                     raw, _ = files.read(Path(config.experiment_record_store) / (entry["operation_id"] + ".action.json"),
                                         cap=32768, protected=True, mode=0o600)
-                    actions.append((entry["operation_id"], issuance._selector(raw, files.budget), entry["intent_id"]))
+                    candidate = retained._document(raw, 32768, _work_budget=files.budget)
+                    _require(set(candidate) == _ACTION_FIELDS and candidate['schema_version'] == ACTION_SCHEMA
+                             and candidate['action_digest'] == canonical_digest(candidate, digest_field='action_digest')
+                             and candidate['action_id'] == entry['operation_id']
+                             and candidate['intent_id'] == entry['intent_id']
+                             and all(candidate[key] == entry[key] for key in
+                                     ('generation', 'birth', 'target_identity', 'lease', 'completion', 'owner'))
+                             and candidate['action'] in ('delete', 'offload', 'owner_review')
+                             and _epoch(candidate['issued_at_epoch']) and _epoch(candidate['expires_at_epoch']),
+                             'experiment_action_invalid')
+                    if issued >= candidate['expires_at_epoch']:
+                        expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
+                                            decision='kept', reason='experiment_action_expired', receipt=None,
+                                            removed_logical_bytes=0, removed_allocated_bytes=0))
+                        continue
+                    actions.append((candidate['action'] == 'owner_review', candidate['expires_at_epoch'],
+                                    entry['operation_id'], issuance._selector(raw, files.budget), entry['intent_id']))
     finally:
         try:
             files.finish()
         finally:
             files.budget.close()
-    outcomes = []
-    for action_id, expected, intent_id in actions:
+    outcomes = expired
+    for _, _, action_id, expected, intent_id in sorted(actions)[:2]:
         try:
             outcomes.append(run_action(action_id, expected_action_intent=expected,
                 installed_config_path=installed_config_path, now=now, _pins_root=pins_root))
