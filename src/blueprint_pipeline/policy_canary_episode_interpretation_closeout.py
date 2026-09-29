@@ -47,6 +47,10 @@ PROFILE_SCHEMA_VERSION = "policy_canary_episode_interpreter_profile.v1"
 BATCH_AUTHORITY_ENV = (
     "BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_BATCH_AUTHORITY_FILE"
 )
+# Beside the run, never registered: why a streamed bundle's index-bound digests
+# count as rehashed. Receipts, the joined result and the delivery stay download
+# mode's, byte for byte.
+SOURCE_DIGEST_BASIS_DIRNAME = "episode_interpretation_source_digest_basis"
 
 
 class EpisodeInterpretationRunner(Protocol):
@@ -423,6 +427,8 @@ def materialize_policy_canary_episode_interpretations(
             )
             continue
         token = request.input_receipt["input_bundle_digest"].removeprefix("sha256:")
+        if request.source_digest_basis is not None:
+            _write_once(root / SOURCE_DIGEST_BASIS_DIRNAME / f"{token}.json", request.source_digest_basis)
         plan_path = interpretation_root / "plans" / f"{token}.json"
         receipt_path = interpretation_root / "receipts" / f"{token}.json"
         marker_path = interpretation_root / "attempted" / f"{token}.json"

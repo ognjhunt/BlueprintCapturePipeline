@@ -658,17 +658,18 @@ def test_streamed_request_has_the_download_mode_input_bundle_digest(tmp_path: Pa
     assert request.input_receipt == downloaded.input_receipt
     assert request.input_receipt["all_source_bytes_rehashed"] is True
     assert downloaded.frame_reader is None and downloaded.source_digest_basis is None
-    archive = streamed.index["archive"]
     assert request.source_digest_basis == {
         "schema_version": "episode_interpretation_source_digest_basis.v1",
         "basis": "provider_output_member_index",
+        "input_bundle_digest": downloaded.input_receipt["input_bundle_digest"],
         "member_index_digest": streamed.index["index_digest"],
-        "archive_sha256": archive["sha256"],
-        "durable_reference_uri": archive["durable_reference"]["uri"],
+        "archive_sha256": streamed.index["archive"]["sha256"],
+        "member_view_digest": streamed.descriptor["view_digest"],
         "full_byte_readback_passed": True,
         "indexed_lossless_frames": [0, 1, 2, 3, 4],
         "indexed_review_videos": [0],
     }
+    assert "s3://" not in json.dumps(request.source_digest_basis)
     assert streamed.data_ranges() == []  # every binding came from the index
     # A frame the manifest expects but the index does not vouch for keeps download mode's code.
     manifest = json.loads((streamed.evidence / "frame_manifest.json").read_text())
@@ -714,9 +715,8 @@ def test_v1_interpreter_reads_only_its_selected_frames_by_range(tmp_path: Path, 
             rows = [streamed.rows[frames[index]["relative_path"]] for index in selected]
             assert streamed.data_ranges()[before:] == [
                 (row["data_offset"], row["data_offset"] + row["compressed_size"] - 1) for row in rows]
-    # The same receipt, save the recorded basis of the index-bound digests.
-    streamed_receipt = dict(receipts["stream"])
-    assert streamed_receipt.pop("source_digest_basis")["basis"] == "provider_output_member_index"
-    assert {key: value for key, value in streamed_receipt.items() if key != "receipt_digest"} == {
-        key: value for key, value in receipts["download"].items() if key != "receipt_digest"}
+    # The same receipt, byte for byte: the basis never enters a registered record.
+    assert receipts["stream"] == receipts["download"]
+    assert (tmp_path / "stream-interpretation.json").read_bytes() == (
+        tmp_path / "download-interpretation.json").read_bytes()
     assert not any(path.suffix in {".png", ".mp4"} for path in streamed.evidence.rglob("*"))

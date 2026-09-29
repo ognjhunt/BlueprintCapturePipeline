@@ -475,6 +475,10 @@ def test_streamed_closeout_materializes_twenty_receipts_and_replay_does_not_rein
     rights_root = tmp_path / "rights"
     # Rights are sealed from the download-mode bundles: the streamed bundles are the same digests.
     _rights_for_all(data, result, rights_root, interpreter)
+    downloaded = materialize_policy_canary_episode_interpretations(
+        run_root=tmp_path, evidence_root=data["root"], session_result=result,
+        runner=_FixtureRunner(DeterministicFixtureInterpreter(_output(data))), rights_root=rights_root,
+        environment={})
 
     first = materialize_policy_canary_episode_interpretations(
         run_root=tmp_path / "streamed", evidence_root=streamed.evidence, session_result=result,
@@ -488,11 +492,20 @@ def test_streamed_closeout_materializes_twenty_receipts_and_replay_does_not_rein
     assert interpreter.call_count == 20
     assert second["episode_interpretation"]["reused_receipt_count"] == 20
     assert second["episode_interpretation"]["provider_call_count"] == 0
-    receipts = list((streamed.evidence / "episode_interpretation/receipts").glob("*.json"))
-    assert len(receipts) == 20
-    assert all(json.loads(path.read_text())["source_digest_basis"]["basis"] == "provider_output_member_index"
-               for path in receipts)
     assert streamed.data_ranges() == []
+    # Receipts, the joined summary and the inventory are download mode's, byte for byte.
+    assert first == downloaded
+    receipts = sorted((streamed.evidence / "episode_interpretation/receipts").glob("*.json"))
+    assert len(receipts) == 20
+    for path in receipts:
+        assert path.read_bytes() == (data["root"] / "episode_interpretation/receipts" / path.name).read_bytes()
+    # The index basis sits outside every registered artifact, beside the run, one per bundle.
+    bases = sorted((tmp_path / "streamed" / "episode_interpretation_source_digest_basis").glob("*.json"))
+    assert [path.name for path in bases] == [path.name for path in receipts]
+    assert all(json.loads(path.read_text())["basis"] == "provider_output_member_index" for path in bases)
+    registered = [streamed.evidence / row["relative_path"] for row in first["artifact_inventory"]]
+    assert not any(b"s3://" in path.read_bytes() for path in registered if path.is_file())
+    assert not any(b"s3://" in path.read_bytes() for path in bases)
 
 
 def test_interpretation_writes_nothing_under_the_view_root_but_its_receipts(tmp_path: Path, monkeypatch) -> None:

@@ -1205,9 +1205,12 @@ path it reads; without one (download mode) it runs exactly its old code.
   GC counts these members as already remote.
 - **Interpretation, adoption and rescoring** bind frames, videos and inventory
   rows by index digest; the v1 interpreter reads only its selected frames, by
-  range. Interpretation receipts carry `source_digest_basis` (the index pass
-  over the pinned archive, bound to a B2 copy whose full readback passed); the
-  input receipt, and so every input bundle digest, is download mode's.
+  range. Interpretation receipts, input bundle digests, the joined result and
+  the delivery are download mode's, byte for byte. Why index-bound digests
+  count as rehashed (the index pass over the pinned archive, bound to a B2
+  copy whose full readback passed) is recorded, without any URL, in an
+  unregistered sidecar per bundle,
+  `<run>/episode_interpretation_source_digest_basis/<input bundle digest>.json`.
 - **Closeout and billing** accept `object_store_staging/staged_object_absence_proof.v1.json`,
   written by `provider_output_promotion resume`, in place of a sealed
   `all_staged_objects_absent: false`. Billing needs only the absence. Closeout

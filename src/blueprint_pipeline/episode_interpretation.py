@@ -23,9 +23,11 @@ the manifest's expectation, so the input receipt is byte-identical to download
 mode's; the request's ``frame_reader`` fetches only the frames an interpreter
 selects, by range and checked against the index. The index is Blueprint's own
 pass over the pinned archive, bound to a B2 copy whose full readback passed,
-so ``all_source_bytes_rehashed`` stays true; the request's
-``source_digest_basis`` records that basis outside the input receipt, and the
-interpretation receipt carries it.
+so ``all_source_bytes_rehashed`` stays true. The request's
+``source_digest_basis`` records that basis (index and view digests, no URL)
+outside every registered record: the policy-canary closeout writes it to an
+unregistered sidecar keyed by the input bundle digest, so interpretation
+receipts stay byte-identical to download mode's.
 """
 
 from __future__ import annotations
@@ -479,9 +481,11 @@ def build_episode_interpretation_request(
         basis = {
             "schema_version": "episode_interpretation_source_digest_basis.v1",
             "basis": "provider_output_member_index",
+            "input_bundle_digest": receipt["input_bundle_digest"],
             "member_index_digest": view.index["index_digest"],
             "archive_sha256": archive["sha256"],
-            "durable_reference_uri": archive["durable_reference"]["uri"],
+            # The descriptor binds the durable copy; no URL is recorded here.
+            "member_view_digest": view.descriptor["view_digest"],
             "full_byte_readback_passed": (
                 archive["durable_reference"]["full_byte_service_account_readback_passed"] is True
             ),
@@ -772,8 +776,6 @@ def materialize_episode_interpretation_abstention(
         },
         "receipt_digest": "",
     }
-    if request.source_digest_basis is not None:
-        receipt["source_digest_basis"] = dict(request.source_digest_basis)
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
@@ -866,8 +868,6 @@ def interpret_episode(
         },
         "receipt_digest": "",
     }
-    if request.source_digest_basis is not None:
-        receipt["source_digest_basis"] = dict(request.source_digest_basis)
     metadata_provider = getattr(interpreter, "execution_metadata", None)
     if metadata_provider is not None and provider_called:
         metadata = dict(metadata_provider())
