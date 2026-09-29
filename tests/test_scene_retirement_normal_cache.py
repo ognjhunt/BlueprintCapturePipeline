@@ -5,6 +5,7 @@
 """ADP-009D/day28: normal CAS publication must retain authenticated storage birth."""
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -298,7 +299,7 @@ def test_restore_cache_alias_never_overwrites_even_same_bytes(tmp_path,monkeypat
     assert alias.read_bytes()==data and alias.stat().st_ino==original
 
 
-def cache_action_consent(tmp_path,monkeypatch):
+def cache_action_consent(tmp_path,monkeypatch,*,cache_age=24*60*60):
     from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
     from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
     from blueprint_pipeline.task_evaluation_launch_preparation_queue import stage_launch_preparation_request
@@ -312,6 +313,8 @@ def cache_action_consent(tmp_path,monkeypatch):
     generation_path=next(path for path in Path(policy['generation_store']).glob('*.json')
         if json.loads(path.read_bytes()).get('schema_version')=='scene_content_generation.v1')
     generation=json.loads(generation_path.read_bytes())
+    # Actual native idle age, independent of logical ownership or consent.
+    os.utime(generation['canonical_path'],(101-cache_age,101-cache_age))
     owner=json.loads(Path(proofs['intent_raw_ref']['path']).read_bytes())
     policy['principals']=[dict(principal_id='operator',actions=['retire','restore'],
         owner_intent_ids=[owner['intent_id']],private_archive_classes=[])]
@@ -329,6 +332,24 @@ def cache_action_consent(tmp_path,monkeypatch):
     path=tmp_path/'consent.json'
     _sealed_file(path,consent,'consent_digest',mode=0o600)
     return path,consent
+
+
+@pytest.mark.parametrize('age',[24*60*60-1,24*60*60,24*60*60+1])
+def test_native_cache_action_preserves_original_idle_grace(tmp_path,monkeypatch,age):
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline.task_evaluation_scene_retirement_authority import load_authority
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    path,consent=cache_action_consent(tmp_path,monkeypatch,cache_age=age)
+    authority=load_authority(path,action='retire',now=lambda:101)
+    allowance=ActionAllowance(expires_at=200,now=lambda:101,monotonic=lambda:0)
+    original=Path(consent['cache_objects'][0]['canonical_path']).stat()
+    if age<24*60*60:
+        with pytest.raises(ValueError,match='scene_retirement_cache_idle_grace_unproven'):
+            cache.validate_cache_objects(authority['policy'],consent,allowance)
+    else:
+        assert cache.validate_cache_objects(authority['policy'],consent,allowance)==consent['cache_objects']
+    current=Path(consent['cache_objects'][0]['canonical_path']).stat()
+    assert (current.st_dev,current.st_ino,current.st_mtime_ns)==(original.st_dev,original.st_ino,original.st_mtime_ns)
 
 
 def test_cache_consent_is_bound_to_actual_generation_and_same_authenticated_owner(tmp_path,monkeypatch):
