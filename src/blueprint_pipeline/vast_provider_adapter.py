@@ -8882,7 +8882,7 @@ def run_vast_provider_adapter(
             )
             raise RuntimeError(f"vast_instance_not_running:{status}")
 
-        if provider_bundle_kind == "native_task_arena_policy_canary_session":
+        if provider_bundle_kind in {"native_task_arena", "native_task_arena_policy_canary_session"}:
             from .company_policy_network_lease import allow_policy_network  # noqa: PLC0415
             liveness = _instance_liveness_from_payload(instance_payload, instance_id=instance_id)
             network_receipt = allow_policy_network(
@@ -9794,7 +9794,7 @@ def run_vast_provider_adapter(
             provider_reason=exception_blockers[0],
         )
     finally:
-        if provider_bundle_kind == "native_task_arena_policy_canary_session":
+        if provider_bundle_kind in {"native_task_arena", "native_task_arena_policy_canary_session"}:
             try:
                 from .company_policy_network_lease import close_policy_network  # noqa: PLC0415
                 network_close = close_policy_network()

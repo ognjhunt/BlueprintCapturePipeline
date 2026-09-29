@@ -249,11 +249,24 @@ def execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: Pa
         _execute_staged_controlled_request(request=request, job_dir=job_dir)
     except Exception as exc:
         from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
+        blockers = [str(exc)[:300]]
+        if (job_dir / "qualified_sandbox_bridge.json").is_file():
+            try:
+                profile = configured_profile(request)
+                manager_profile = profile.get("sandbox_manager") if profile else None
+                if isinstance(manager_profile, Mapping):
+                    from .company_policy_sandbox_manager_client import SandboxManagerClient
+                    SandboxManagerClient(endpoint_url=str(manager_profile["endpoint_url"]),
+                        token_file=Path(str(manager_profile["token_file"])),
+                        certificate_file=Path(str(manager_profile["certificate_file"]))).close_network(
+                            job_id=str(request["job_id"]))
+            except Exception as close_exc:
+                blockers.append("policy_sandbox_close_unverified:" + type(close_exc).__name__)
         failure = job_dir / "controlled_native_failure.json"
         if not failure.exists():
             _write(failure, {"schema_version": "blueprint.controlled_native_failure.v1",
                 "job_id": request["job_id"], "error_class": type(exc).__name__,
-                "blockers": [str(exc)[:300]], "observed_at_iso": utc_now_iso()})
+                "blockers": blockers, "observed_at_iso": utc_now_iso()})
         try:
             zero = collect_vast_provider_zero_receipt()
         except Exception:

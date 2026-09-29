@@ -267,10 +267,46 @@ class SandboxManager:
         return {"status": "network_allowed", "job_id": job_id,
             "instance_id": instance_id, "outbound_ipv4": str(payload["outbound_ipv4"])}
 
+    def _bridge_control(self, session: Path, route: str) -> dict[str, Any]:
+        manifest = validate_remote_sandbox_bridge(
+            json.loads((session / "bridge-manifest.json").read_text()))
+        binding = {key: manifest[key] for key in (
+            "job_id", "canonical_request_digest", "contract_digest", "image_ref")}
+        certificate = Path(str(self.settings["bridge_tls_certificate"])).read_text()
+        context = ssl.create_default_context(cadata=certificate)
+        # This request stays on loopback; the pinned certificate names the VM's
+        # public bridge address, so only its hostname check is inapplicable.
+        context.check_hostname = False
+        request = urllib.request.Request(
+            f"https://127.0.0.1:{self.settings['bridge_bind_port']}/v1/controlled-policy/{route}",
+            method="POST", data=json.dumps(binding, sort_keys=True).encode(),
+            headers={"Authorization": "Bearer " + manifest["bearer_token"],
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(request, context=context, timeout=10) as response:
+            result = json.load(response)
+        if not isinstance(result, dict):
+            raise ValueError("policy_sandbox_manager_bridge_response_invalid")
+        return result
+
     def close_network(self, job_id: str) -> dict[str, Any]:
-        if not (self.root / job_id).is_dir():
+        session = self.root / job_id
+        if not session.is_dir():
             raise ValueError("policy_sandbox_manager_session_unknown")
         self.firewall.close()
+        with self.lock:
+            child = self.child if self.active_job == job_id else None
+        if child is not None and child.poll() is None:
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self._bridge_control(session, "abort")
+                deadline = time.monotonic() + 75
+                while child.poll() is None and time.monotonic() < deadline:
+                    terminal = self._bridge_control(session, "terminal")
+                    if terminal.get("status") != "terminal_pending":
+                        break
+                    time.sleep(1)
+                child.wait(timeout=15)
         return {"status": "network_closed", "job_id": job_id}
 
 
