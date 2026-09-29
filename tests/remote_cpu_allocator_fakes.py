@@ -238,7 +238,7 @@ class RemoteCpuWorld:
         assert self.consumed() == []
 
 
-def source_reference() -> dict[str, Any]:
+def source_reference(_object_store: Any = None) -> dict[str, Any]:
     """What PR 3's release-source staging returns: the commit and its content-addressed archive."""
 
     digest = hashlib.sha256(b"release-source.tar").hexdigest()
