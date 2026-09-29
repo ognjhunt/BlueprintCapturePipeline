@@ -306,6 +306,50 @@ def _current_parent(path,fd,identity):
     _guard(fd,identity)
 
 
+def remove_unused_content_for_gc(path,*,digest,size_bytes):
+    """Existing blob-GC phase: SH/current generation, original FD and name.
+
+    Missing or disabled installation returns the original native path. This
+    does not supply scene ownership, a private action grant or a new birth.
+    """
+    policy=access._policy()
+    if policy is None:
+        return None
+    from .task_evaluation_scene_retirement_preservation import _snapshot
+    path=_canonical(str(path))
+    _require(path.parent.name=='sha256' and path.name==digest and len(digest)==64
+        and all(char in '0123456789abcdef' for char in digest)
+        and type(size_bytes) is int and size_bytes>=0,'scene_retirement_cache_candidate_changed')
+    with access.scene_access(path):
+        _require(access._policy()==policy,'scene_retirement_policy_binding_unproven')
+        with _opened(path.parent,directory=True) as (parent,parent_info),_opened(path) as (fd,info):
+            expected,identity=_identity(parent_info),_identity(info)
+            before=_snapshot(info)
+            _require(info.st_nlink==1 and info.st_size==size_bytes,'scene_retirement_cache_candidate_changed')
+            def prove():
+                _current_parent(path.parent,parent,expected)
+                _guard(fd,identity)
+                _require(_snapshot(os.fstat(fd))==before and
+                    _snapshot(os.stat(path.name,dir_fd=parent,follow_symlinks=False))==before,
+                    'scene_retirement_cache_candidate_changed')
+            hashed=hashlib.sha256()
+            remaining=size_bytes
+            while remaining:
+                prove()
+                data=os.read(fd,min(1024*1024,remaining))
+                prove()
+                _require(data,'scene_retirement_cache_candidate_changed')
+                hashed.update(data)
+                remaining-=len(data)
+            _require(hashed.hexdigest()==digest,'scene_retirement_cache_candidate_changed')
+            prove()
+            os.unlink(path.name,dir_fd=parent)
+            _current_parent(path.parent,parent,expected)
+            _guard(fd,identity)
+            os.fsync(parent)
+    return size_bytes
+
+
 def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):
     """Internal EX action: remove only the separately inventoried LAST union aliases."""
     from .task_evaluation_scene_retirement_preservation import _snapshot,_payload

@@ -292,32 +292,37 @@ def apply_gc_manifest(
         )
     removed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    from .task_evaluation_scene_retirement_access import SceneRetirementAccessError
+    from .task_evaluation_scene_retirement_cache import remove_unused_content_for_gc
     for row in manifest.get("candidates") or []:
         root = Path(str(row.get("root") or ""))
         digest = str(row.get("digest") or "").removeprefix("sha256:")
         path = root / digest
         try:
-            stat = path.lstat()
-            safe = (
-                root.name == "sha256"
-                and path.parent == root
-                and _DIGEST_NAME.fullmatch(path.name) is not None
-                and not path.is_symlink()
-                and path.is_file()
-                and stat.st_nlink == 1
-                and stat.st_size == row.get("size_bytes")
-                and _sha256(path) == digest
-            )
-            if not safe:
-                raise OSError("candidate changed after dry run")
-            path.unlink()
-        except OSError:
+            removed_size = remove_unused_content_for_gc(path,digest=digest,size_bytes=row.get("size_bytes"))
+            if removed_size is None:
+                stat = path.lstat()
+                safe = (
+                    root.name == "sha256"
+                    and path.parent == root
+                    and _DIGEST_NAME.fullmatch(path.name) is not None
+                    and not path.is_symlink()
+                    and path.is_file()
+                    and stat.st_nlink == 1
+                    and stat.st_size == row.get("size_bytes")
+                    and _sha256(path) == digest
+                )
+                if not safe:
+                    raise OSError("candidate changed after dry run")
+                path.unlink()
+                removed_size = stat.st_size
+        except (OSError,SceneRetirementAccessError):
             skipped.append(
                 {"digest": "sha256:" + digest, "reason": "candidate_changed"}
             )
         else:
             removed.append(
-                {"digest": "sha256:" + digest, "size_bytes": stat.st_size}
+                {"digest": "sha256:" + digest, "size_bytes": removed_size}
             )
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

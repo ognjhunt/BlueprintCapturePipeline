@@ -352,7 +352,7 @@ def test_native_cache_action_preserves_original_idle_grace(tmp_path,monkeypatch,
     assert (current.st_dev,current.st_ino,current.st_mtime_ns)==(original.st_dev,original.st_ino,original.st_mtime_ns)
 
 
-@pytest.mark.parametrize('closed',['exclusive_action','retired_generation'])
+@pytest.mark.parametrize('closed',['exclusive_action','retired_generation','active_generation'])
 def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_path,monkeypatch,closed):
     from blueprint_pipeline import control_plane_storage_gc as gc
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
@@ -375,9 +375,25 @@ def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_p
         value['state_digest']=canonical_digest(value,digest_field='state_digest')
         ledger.write_text(json.dumps(value))
         result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
-    else:
+    elif closed=='exclusive_action':
         with access.exclusive_scene_access():
             result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
+    else:
+        from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+        native_read=cache.os.read
+        observed=[]
+        def read(fd,count):
+            info=os.fstat(fd)
+            if (info.st_dev,info.st_ino)==inode:
+                with pytest.raises(ValueError,match='scene_retirement_reader_active'):
+                    with access.exclusive_scene_access():
+                        pytest.fail('blob GC payload read escaped its native shared lifetime')
+                observed.append(count)
+            return native_read(fd,count)
+        monkeypatch.setattr(cache.os,'read',read)
+        result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
+        assert result['removed_count']==1 and not leaf.exists() and observed
+        return
     assert result['removed_count']==0 and len(result['skipped'])==1
     assert leaf.read_bytes()==original
 
