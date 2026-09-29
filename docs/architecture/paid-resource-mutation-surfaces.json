@@ -18,6 +18,7 @@
       "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
       "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+      "src/blueprint_pipeline/remote_cpu_job_allocator.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
       "src/blueprint_pipeline/teleport_paid_allocator.py"
@@ -42,6 +43,7 @@
       "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
       "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+      "src/blueprint_pipeline/remote_cpu_job_allocator.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
       "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
@@ -76,6 +78,14 @@
       "required_markers": [
         "legacy_postshot_windows_worker_launch_disabled_use_paid_resource_allocator",
         "delete_object"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/cloud_run_jobs_client.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "CLOUD_RUN_CPU_JOB_RESOURCE_CLASS = \"cloud_run_cpu_job\""
       ]
     },
     {
@@ -229,6 +239,14 @@
       ]
     },
     {
+      "path": "src/blueprint_pipeline/native_task_arena_paired_witness_staging.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": [
+        "stage_paired_witness_slot",
+        "signed_output_object_binding_sha256"
+      ]
+    },
+    {
       "path": "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
       "classification": "canonical_adapter",
       "required_markers": [
@@ -253,7 +271,8 @@
         "cpu-build",
         "model-volume",
         "gpu-canary",
-        "provider-reconstruction"
+        "provider-reconstruction",
+        "remote-cpu-job"
       ]
     },
     {
@@ -351,6 +370,15 @@
         "require_paid_resource_admission_grant",
         "run_reconstruction_vast_worker_smoke",
         "provider.launch("
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/remote_cpu_job_allocator.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_remote_cpu_job"
       ]
     },
     {

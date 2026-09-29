@@ -31,6 +31,22 @@ LEGACY_BUILD_SCRIPTS = (
 )
 RELEASE_WORKFLOW = ROOT / ".github/workflows/groot-oscar-thin-release.yml"
 MUTATION_SURFACE_MANIFEST = ROOT / "docs/architecture/paid-resource-mutation-surfaces.json"
+AGENTS = ROOT / "AGENTS.md"
+REMOTE_CPU_ALLOCATOR = ROOT / "src/blueprint_pipeline/remote_cpu_job_allocator.py"
+CLOUD_RUN_JOBS_CLIENT = ROOT / "src/blueprint_pipeline/cloud_run_jobs_client.py"
+CANONICAL_SUBCOMMANDS = ("cpu-build", "model-volume", "gpu-canary", "provider-reconstruction", "remote-cpu-job")
+# Plan 14 §8: what run_remote_cpu_job must reach, and the blocker each missing call raises.
+REMOTE_CPU_REQUIRED_CALLS = {
+    "require_paid_resource_admission": "remote_cpu_lane_bypasses_shared_admission",
+    "reconcile_ambiguous_dispatch": "remote_cpu_ambiguous_dispatch_reconciliation_missing",
+    "list_all_executions": "remote_cpu_execution_listing_pagination_missing",
+    "prove_compute_zero": "remote_cpu_compute_zero_proof_missing",
+    "prove_provider_zero": "remote_cpu_provider_zero_proof_missing",
+}
+REMOTE_CPU_REQUIRED_MARKERS = (
+    "remote_cpu_provider_zero_unproven",
+    "remote_cpu_ambiguous_dispatch_unresolved",
+)
 OPERATOR_DOCS = (
     ROOT / "README.md",
     ROOT / "docs/FIRST_GPU_E2E_RUNBOOK.md",
@@ -60,6 +76,7 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+    "src/blueprint_pipeline/remote_cpu_job_allocator.py",
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
@@ -84,6 +101,7 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+    "src/blueprint_pipeline/remote_cpu_job_allocator.py",
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
     "src/blueprint_pipeline/teleport_paid_allocator.py",
@@ -96,6 +114,29 @@ APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {
     (
         "src/blueprint_pipeline/groot_oscar_model_cache_s3_remote_executor.py",
         "execute_remote_packet",
+    ),
+}
+S3_TRANSPORT_CAPABILITIES = frozenset(
+    {"_issue_transport_execution_capability", "_upload_and_verify_model_cache_impl"}
+)
+# Plan 14: B2 write authority for remote CPU staging.  The presigned PUT and the sentinel also
+# require the attempt's grant; the copy and the version delete run in later processes without
+# one (the collector, a resumed teardown), so only these functions may call any of them.
+REMOTE_CPU_OBJECT_STORE_WRITERS = frozenset(
+    {
+        "presign_remote_cpu_put",
+        "copy_remote_cpu_staging_to_cas",
+        "delete_remote_cpu_staging_versions",
+        "remote_cpu_object_store_sentinel",
+    }
+)
+APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS = {
+    ("src/blueprint_pipeline/remote_cpu_job_allocator.py", "mint_transport"),
+    ("src/blueprint_pipeline/remote_cpu_job_allocator.py", "_probe_checks"),
+    ("src/blueprint_pipeline/remote_cpu_job_allocator.py", "prove_provider_zero"),
+    (
+        "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py",
+        "remote_cpu_object_store_sentinel",
     ),
 }
 SURFACE_CLASSIFICATIONS = {
@@ -171,8 +212,42 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         r"_call\([\"']POST[\"'].{0,160}/instances", source
     ):
         signals.add("gcp_instance_create")
-    if ".upload_file(" in source or ".delete_object(" in source:
+    if any(
+        call in source
+        for call in (
+            ".upload_file(",
+            ".delete_object(",
+            ".delete_objects(",
+            ".copy_object(",
+            ".upload_part_copy(",
+        )
+    ):
         signals.add("s3_object_write_or_delete")
+    # A presigned PUT, POST, part upload or delete is write authority held by whoever has the URL.
+    if "generate_presigned_post(" in source or (
+        "generate_presigned_url(" in source
+        and re.search(r"[\"'](?:put_object|upload_part|delete_object)[\"']", source)
+    ):
+        signals.add("s3_presigned_write_authority")
+    # Starting, creating-and-starting or cancelling a Cloud Run job execution, by any client.
+    if (
+        re.search(r"run\.googleapis\.com", source)
+        and re.search(r":(?:run|cancel)(?![A-Za-z0-9_])", source)
+    ) or re.search(
+        r"\bgoogle\.cloud(?:\.|\s+import\s+)run_v2\b"
+        r"|\b(?:JobsClient|ExecutionsClient|RunJobRequest)\b"
+        r"|discovery\.build\(\s*[\"']run[\"']"
+        r"|\b(?:start|run)(?:ExecutionToken|_execution_token)\b"
+        # Global flags and release tracks may sit between gcloud and its command group.
+        r"|gcloud\b[\s\S]{0,200}?\brun\W+jobs\W+"
+        r"(?:execute|create|deploy|replace|update|executions\W+cancel)\b",
+        source,
+    ) or (
+        # The discovery client's build, imported by name.
+        re.search(r"\bgoogleapiclient\b", source)
+        and re.search(r"(?<![\w.])build\(\s*[\"']run[\"']", source)
+    ):
+        signals.add("gcp_cloud_run_job_mutation")
     if (
         "teleport.varjo.com" in source
         and "/api/v1/captures" in source
@@ -180,6 +255,63 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
     ):
         signals.add("teleport_capture_create_upload_or_delete")
     return signals
+
+
+def _reachable_calls(source: str, entry: str) -> set[str]:
+    """Names called from ``entry`` or from any same-module function it reaches."""
+
+    functions = {
+        node.name: node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    calls: set[str] = set()
+    reached: set[str] = set()
+    pending = [entry]
+    while pending:
+        name = pending.pop()
+        if name in reached or name not in functions:
+            continue
+        reached.add(name)
+        for node in ast.walk(functions[name]):
+            if isinstance(node, ast.Call):
+                target = node.func
+                called = target.id if isinstance(target, ast.Name) else getattr(target, "attr", None)
+                if called:
+                    calls.add(called)
+                    pending.append(called)
+    return calls
+
+
+def _remote_cpu_lane_blockers(allocator: str, client: str) -> list[str]:
+    """The remote CPU lane admits, reconciles from a complete listing and proves both zeros."""
+
+    calls = _reachable_calls(allocator, "run_remote_cpu_job")
+    blockers = [blocker for call, blocker in REMOTE_CPU_REQUIRED_CALLS.items() if call not in calls]
+    blockers.extend(
+        f"remote_cpu_lane_marker_missing:{marker}"
+        for marker in REMOTE_CPU_REQUIRED_MARKERS
+        if marker not in allocator
+    )
+    if "require_paid_resource_admission_grant" not in _reachable_calls(client, "run_job"):
+        blockers.append("remote_cpu_run_job_grant_validation_missing")
+    if "nextPageToken" not in client:
+        blockers.append("remote_cpu_execution_listing_pagination_missing")
+    return sorted(set(blockers))
+
+
+def _canonical_subcommand_blockers(canonical: str, agents: str) -> list[str]:
+    """Rule (h): the allocator registers every canonical subcommand, and AGENTS.md lists each."""
+
+    blockers = []
+    if not all(item in canonical for item in CANONICAL_SUBCOMMANDS):
+        blockers.append("canonical_allocator_subcommands_missing")
+    blockers.extend(
+        f"agents_md_paid_allocator_command_missing:{item}"
+        for item in CANONICAL_SUBCOMMANDS
+        if f"python -m blueprint_pipeline.paid_resource_allocator {item}" not in agents
+    )
+    return blockers
 
 
 def _unclassified_direct_mutators(
@@ -194,13 +326,14 @@ def _unclassified_direct_mutators(
 
 def _s3_transport_capability_callers(
     source_by_path: dict[str, str],
+    protected: frozenset[str] = S3_TRANSPORT_CAPABILITIES,
 ) -> set[tuple[str, str]]:
+    """Every (module, function) whose body names a protected capability, directly or by alias."""
+
     observed: set[tuple[str, str]] = set()
-    protected = {
-        "_issue_transport_execution_capability",
-        "_upload_and_verify_model_cache_impl",
-    }
     for relative, source in source_by_path.items():
+        if not any(name in source for name in protected):
+            continue  # a reference, an alias or a string naming one always contains its text
         tree = ast.parse(source, filename=relative)
         aliases: dict[str, str] = {}
         for node in ast.walk(tree):
@@ -208,11 +341,9 @@ def _s3_transport_capability_callers(
                 for alias in node.names:
                     if alias.name in protected:
                         aliases[alias.asname or alias.name] = alias.name
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        def referenced(nodes) -> set[str]:
             references: set[str] = set()
-            for child in ast.walk(node):
+            for child in (inner for node in nodes for inner in ast.walk(node)):
                 if isinstance(child, ast.Name):
                     references.add(aliases.get(child.id, child.id))
                 elif isinstance(child, ast.Attribute):
@@ -220,8 +351,27 @@ def _s3_transport_capability_callers(
                 elif isinstance(child, ast.Constant) and isinstance(child.value, str):
                     if child.value in protected:
                         references.add(child.value)
-            if references & protected:
+            return references
+
+        functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+        for node in ast.walk(tree):
+            if isinstance(node, functions) and referenced([node]) & protected:
                 observed.add((relative, node.name))
+            elif isinstance(node, ast.ClassDef):
+                # Class-level statements run at import, outside any method.
+                body = [child for child in node.body if not isinstance(child, (*functions, ast.ClassDef))]
+                if referenced(body) & protected:
+                    observed.add((relative, node.name))
+        def exports(node) -> bool:  # ``__all__`` names exports; it calls nothing
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else [])
+            return any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets)
+
+        # Module-level statements run at import, outside any function or class.
+        top = [node for node in tree.body
+               if not isinstance(node, (*functions, ast.ClassDef, ast.Import, ast.ImportFrom)) and not exports(node)]
+        if referenced(top) & protected:
+            observed.add((relative, "<module>"))
     return observed
 
 
@@ -360,6 +510,10 @@ def _verify_mutation_surface_contract() -> list[str]:
     observed_s3_capability_callers = _s3_transport_capability_callers(source_by_path)
     if observed_s3_capability_callers != APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS:
         blockers.append("runpod_s3_transport_capability_caller_set_mismatch")
+    if _s3_transport_capability_callers(
+        source_by_path, REMOTE_CPU_OBJECT_STORE_WRITERS
+    ) != APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS:
+        blockers.append("remote_cpu_object_store_writer_caller_set_mismatch")
     transport_module = "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py"
     for relative, source in source_by_path.items():
         if relative != transport_module and (
@@ -402,11 +556,13 @@ def verify() -> list[str]:
         blockers.append("legacy_cpu_builder_not_hard_disabled")
     if "legacy_gpu_canary_launcher_disabled" not in gpu:
         blockers.append("legacy_gpu_canary_not_hard_disabled")
-    if not all(
-        item in canonical
-        for item in ("cpu-build", "model-volume", "gpu-canary", "provider-reconstruction")
-    ):
-        blockers.append("canonical_allocator_subcommands_missing")
+    blockers.extend(_canonical_subcommand_blockers(canonical, AGENTS.read_text(encoding="utf-8")))
+    blockers.extend(
+        _remote_cpu_lane_blockers(
+            REMOTE_CPU_ALLOCATOR.read_text(encoding="utf-8"),
+            CLOUD_RUN_JOBS_CLIENT.read_text(encoding="utf-8"),
+        )
+    )
     if "run_storage_model_volume(" not in canonical:
         blockers.append("canonical_allocator_missing_model_volume_route")
     model_calls = _function_calls(STORAGE_VOLUME_ADAPTER)
