@@ -158,3 +158,22 @@ def test_actual_queue_births_before_wait_or_preprovider_block_receipt(tmp_path, 
     filename = 'preprovider_waiting.json' if mode == 'waiting' else 'preprovider_blocked.json'
     assert (output / filename).is_file()
     assert run['results'][0]['provider_mutation_performed'] is False
+
+
+def test_actual_retained_canary_output_does_not_reserve_new_birth_after_expiry(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline.task_evaluation_scene_retirement_producer_births import enroll_activation_child
+    policy, request, result, result_path, setup_path, _, _, output = owned_activation(tmp_path, monkeypatch)
+    original = enroll_activation_child(output, activation_result=result, now=101)
+    monkeypatch.setattr(cache.time, 'time', lambda: 1001)
+    key = hashlib.sha256(str(output).encode()).hexdigest() + '.json'
+    def metadata_only(root, **kwargs):
+        assert json.loads((Path(policy['generation_store']) / key).read_bytes()) == original
+        raise RuntimeError('retained output reached metadata phase without a new birth')
+    monkeypatch.setattr(dispatcher, '_event_and_sync', metadata_only)
+    with pytest.raises(RuntimeError, match='retained output reached'):
+        dispatcher.dispatch_policy_canary_activation(activation_result_path=result_path,
+            execution_setup_path=setup_path, output_root=output,
+            implementation_commit=request['expected_production_commit'],
+            allocator_runner=lambda argv: pytest.fail('no provider execution'))
