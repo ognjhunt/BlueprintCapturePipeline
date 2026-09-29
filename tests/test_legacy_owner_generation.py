@@ -43,6 +43,22 @@ def test_generation_snapshot_refuses_linked_child_and_bounded_scan(tmp_path):
         snapshot_generation(target, allowed_roots=(root,))
 
 
+def test_generation_snapshot_bounds_aggregate_names_and_encoded_paths(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_legacy_owner as owner
+
+    root = tmp_path / "work"
+    target = root / "old-1"
+    target.mkdir(parents=True)
+    nested = target
+    for index in range(4):
+        nested = nested / ("n" * 55 + str(index))
+        nested.mkdir()
+    (nested / "one.log").write_bytes(b"one")
+    monkeypatch.setattr(owner, "MAX_GENERATION_BYTES", 128)
+    with pytest.raises(owner.LegacyOwnerError, match="legacy_target_measurement_incomplete"):
+        owner.snapshot_generation(target, allowed_roots=(root,))
+
+
 def test_generation_snapshot_refuses_root_and_target_alias(tmp_path):
     from blueprint_pipeline.control_plane_lane_legacy_owner import (
         LegacyOwnerError, snapshot_generation,

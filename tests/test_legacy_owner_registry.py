@@ -71,6 +71,29 @@ def test_registry_rejects_foreign_link_and_unknown_entry(registry):
         store.committed_heads()
 
 
+def test_registry_reads_multiple_committed_heads_without_parent_fd_exhaustion(registry):
+    from blueprint_pipeline.control_plane_lane_legacy_owner import LegacyOwnerStore
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    store, root = registry
+    for index in range(6):
+        packet_id = f"{index + 1:032x}"
+        path = f"/work/lanes/diagnostics/old-{index}"
+        registration = {"path": path, "owner": "reviewer"}
+        receipt = {"registration": registration}
+        head = {"schema_version": "control_plane_lane_legacy_owner_head.v1",
+                "packet_id": packet_id, "path": path,
+                "registration_digest": canonical_digest(registration),
+                "gc_eligible": False, "references_clear": False, "mutations": 0}
+        for name, record in ((f"{packet_id}.registration.json", registration),
+                             (f"{packet_id}.receipt.json", receipt),
+                             (LegacyOwnerStore._head_name(path, packet_id), head)):
+            entry = root / name
+            entry.write_bytes(LegacyOwnerStore._payload(record))
+            entry.chmod(0o600)
+    assert len(store.committed_heads()) == 6
+
+
 def test_crash_between_no_replace_link_and_temp_unlink_recovers_owned_link(registry, monkeypatch):
     from blueprint_pipeline import control_plane_lane_legacy_owner as legacy
     store, root = registry
