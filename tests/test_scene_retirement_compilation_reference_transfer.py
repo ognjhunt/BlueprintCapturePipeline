@@ -57,6 +57,61 @@ def test_selected_finished_compilation_bytes_transfer_with_native_binding_and_or
     assert fresh==original and result['references_clear'] is False and result['consumer_fence_checked'] is False
 
 
+def inline_owner_fact(tmp_path):
+    import hashlib
+    fresh,_,allowance=fixture(tmp_path)
+    proofs=[proof for row in fresh['measured_members'] for proof in row['source_provenance']
+            if proof.get('role')=='native_activation_envelopes']
+    envelope=next(proof for proof in proofs if proof.get('seal_field')=='envelope_digest')
+    owner=next(proof for proof in proofs if proof.get('json_pointer')=='/request/authorization/scene_owner_attempt')
+    raw=Path(envelope['path']).read_bytes()
+    source={'family':'activation','queue_root':fresh['planner_context']['roots']['activation_queue_root'],
+            'role':'envelope','row_path':envelope['path'],'raw_sha256':'sha256:'+hashlib.sha256(raw).hexdigest(),
+            'raw_size_bytes':len(raw),'observed_identity':None}
+    fresh['reference_observation']['record_dispositions']=[{'source':source,'disposition':'supported',
+        'reason':'supplied_integrity_only','canonical_digest':envelope['seal_digest']}]
+    fact={'source':source,'contract_path':'authorization.scene_owner_attempt','binding_status':'unresolved',
+          'reason':'deferred_semantic_object','digest_meaning':'no_inferred_raw_identity',
+          'digest':None,'path':None,'uri':None,'size_bytes':None,'related_sources':[]}
+    fresh['reference_observation']['protections'].append({'kind':'missing_edge_obligations',
+        'observation':fact,'action':'KEEP'})
+    fresh['reference_observation']['blockers']=['deferred_semantic_object']
+    return fresh,allowance,envelope,owner,source
+
+
+def test_selected_inline_native_owner_attempt_closes_only_its_exact_deferred_fact(tmp_path):
+    fresh,allowance,_,owner,_=inline_owner_fact(tmp_path)
+    result=check(fresh,allowance)
+    assert result['transferred_obligations'][-1]['preservation_proof']['kind']=='selected_inline_native_owner_attempt'
+    assert result['transferred_obligations'][-1]['preservation_proof']['canonical_digest']==owner['seal_digest']
+
+
+def test_path_bearing_inline_owner_stays_keep_even_with_current_sealed_bytes(tmp_path):
+    import hashlib
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    fresh,allowance,envelope,_,source=inline_owner_fact(tmp_path)
+    path=Path(envelope['path'])
+    value=json.loads(path.read_bytes())
+    owner=value['request']['authorization']['scene_owner_attempt']
+    owner['active_path']=str(tmp_path.resolve()/'live-consumer')
+    owner['owner_attempt_digest']=canonical_digest(owner,digest_field='owner_attempt_digest')
+    value['request_digest']=canonical_digest(value['request'])
+    value['envelope_digest']=canonical_digest(value,digest_field='envelope_digest')
+    raw=json.dumps(value,sort_keys=True).encode()
+    path.write_bytes(raw)
+    digest='sha256:'+hashlib.sha256(raw).hexdigest()
+    for row in fresh['measured_members']:
+        for proof in row['source_provenance']:
+            if proof.get('path')==str(path):
+                proof.update(sha256=digest,size_bytes=len(raw))
+                proof['seal_digest']=(owner['owner_attempt_digest'] if proof.get('json_pointer')
+                                      else value['envelope_digest'])
+    source.update(raw_sha256=digest,raw_size_bytes=len(raw))
+    fresh['reference_observation']['record_dispositions'][0]['canonical_digest']=value['envelope_digest']
+    with pytest.raises(ValueError,match='scene_retirement_reference_closure_unproven'):
+        check(fresh,allowance)
+
+
 @pytest.mark.parametrize('change',['active','foreign_copy','raw_drift','unselected','adapter_unproven','compiler_unproven'])
 def test_unproven_or_changed_compilation_cannot_borrow_a_terminal_selected_version(tmp_path,change):
     fresh,proofs,allowance=fixture(tmp_path)

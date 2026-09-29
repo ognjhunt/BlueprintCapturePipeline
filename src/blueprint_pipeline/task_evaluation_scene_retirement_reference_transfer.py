@@ -380,9 +380,11 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
     observation=fresh.get('reference_observation')
     _require(type(observation) is dict,'scene_retirement_reference_scope_unproven')
     scopes=_rows(observation.get('child_scopes'))
+    blockers=_rows(observation.get('blockers'))
     _require(len(scopes)==3 and {row.get('child') for row in scopes if type(row) is dict}==_SCOPES
              and all(type(row) is dict and row.get('complete') is True for row in scopes)
-             and not observation.get('blockers'),'scene_retirement_reference_scope_unproven')
+             and all(reason=='deferred_semantic_object' for reason in blockers),
+             'scene_retirement_reference_scope_unproven')
     selected=_sources(fresh,allowance)
     jobs=_current_sam_results(selected,fresh,allowance)
     progress=_current_sam_progress(selected,fresh,jobs,allowance)
@@ -431,6 +433,7 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
     terminal_pins=select_terminal_pins(fresh,policy,consent,pin_documents,allowance,history=history) if consent is not None else []
     released=0
     auxiliaries=[]
+    deferred=[]
     for protection in _rows(observation.get('protections')):
         allowance.tick()
         _require(type(protection) is dict,_REASON)
@@ -446,6 +449,10 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
             'raw_digest_selector_obligations','canonical_document_selector_obligations'}:
             facts.transfer(protection)
             continue
+        if protection.get('kind')=='missing_edge_obligations':
+            facts.transfer_inline_owner(protection)
+            deferred.append('deferred_semantic_object')
+            continue
         # Released observations carry retained evidence but protect no live
         # consumer. Every positive/dependent/unreleased/unknown fact still keeps.
         _require(protection.get('kind')=='pin_observation',_REASON)
@@ -454,6 +461,7 @@ def validate_current_reference_transfer(fresh,allowance,*,preserved=None,policy=
                  and type(pin.get('released_at_epoch')) in (int,float)
                  and math.isfinite(pin['released_at_epoch']) and pin['released_at_epoch']>=0,_REASON)
         released+=1
+    _require(set(deferred)==set(blockers),_REASON)
     return dict(scope='selected_closed_metadata_transfer_only',
         transferred_records=records,transferred_record_count=len(records),
         transferred_auxiliary_records=auxiliaries,

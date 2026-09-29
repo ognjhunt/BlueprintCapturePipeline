@@ -248,6 +248,66 @@ class TerminalProofs:
             key=(source,fact['contract_path'],fact['path'],fact['digest'],fact['size_bytes'])
             self.covered[key]=protection
 
+    def transfer_inline_owner(self,protection):
+        """Keep one original sealed native owner, with no inferred live path."""
+        self.allowance.tick()
+        self.count+=1
+        _require(self.count<=MAX_OCCURRENCES,'scene_retirement_reference_limit')
+        fact,source,value=self._fact(protection)
+        _require(protection['kind']=='missing_edge_obligations'
+            and fact['binding_status']=='unresolved'
+            and fact['reason']=='deferred_semantic_object'
+            and fact['digest_meaning']=='no_inferred_raw_identity'
+            and fact['contract_path']=='authorization.scene_owner_attempt'
+            and all(fact[key] is None for key in ('digest','path','uri','size_bytes'))
+            and not fact['related_sources']
+            and fact['source']['family']=='activation' and fact['source']['role']=='envelope',_REASON)
+        from .task_evaluation_scene_compilation_native_owners import RECORD_FIELDS, BINDING_FIELDS
+        owner=_at(value.get('request'),'authorization.scene_owner_attempt')
+        _require(type(owner) is dict and set(owner)==RECORD_FIELDS
+            and owner.get('schema_version')=='task_evaluation_scene_owner_attempt.v1'
+            and type(owner.get('scene_attempt_binding')) is dict
+            and set(owner['scene_attempt_binding'])==BINDING_FIELDS
+            and owner.get('owner_attempt_digest')==canonical_digest(owner,digest_field='owner_attempt_digest'),_REASON)
+        digest=owner['owner_attempt_digest']
+        matching=[]
+        for proof in self.selected[source]:
+            self.allowance.tick()
+            if (proof.get('json_pointer')=='/request/authorization/scene_owner_attempt'
+                    and proof.get('seal_field')=='owner_attempt_digest'
+                    and proof.get('seal_digest')==digest):
+                matching.append(proof)
+        _require(len(matching)==1 and source in self.canonical.get(digest,set()),_REASON)
+        lineage=self.fresh.get('historical_lineage',{})
+        native=lineage.get('compilation_native_owner_inventory',lineage)
+        rows=native.get('compilation_native_owner_observations',[])
+        _require(type(rows) in (list,_Rows) and len(rows)<=MAX_OCCURRENCES,_REASON)
+        matched=[]
+        for row in rows:
+            self.allowance.tick()
+            if (type(row) is dict and row.get('kind')=='native_owner'
+                    and row.get('owner_metadata_binding_verified') is True
+                    and row.get('profile_metadata_binding_verified') is True):
+                proofs=row.get('source_provenance',[])
+                _require(type(proofs) in (list,_Rows) and len(proofs)<=MAX_OCCURRENCES,_REASON)
+                bound=False
+                for proof in proofs:
+                    self.allowance.tick()
+                    if (type(proof) is dict and _selector(proof)==source
+                            and proof.get('json_pointer')=='/request/authorization/scene_owner_attempt'
+                            and proof.get('seal_digest')==digest):
+                        bound=True
+                if bound:
+                    matched.append(row)
+        _require(len(matched)==1,_REASON)
+        proof={'kind':'selected_inline_native_owner_attempt','canonical_digest':digest,
+               'original_envelope':dict(zip(('path','sha256','size_bytes'),source)),
+               'active_path_inferred':False}
+        size=_measure(protection,MAX_BYTES-self.emitted)+_measure(proof,MAX_BYTES-self.emitted)
+        _require(size<=MAX_BYTES-self.emitted,'scene_retirement_reference_limit')
+        self.emitted+=size
+        self.transferred.append({'original_obligation':protection,'preservation_proof':proof,'action':'KEEP'})
+
     def _targets(self,targets,protection):
         # Reserve bounded framing before growing any variable target collection.
         remaining=MAX_BYTES-self.emitted-_measure(protection,MAX_BYTES-self.emitted)-256
