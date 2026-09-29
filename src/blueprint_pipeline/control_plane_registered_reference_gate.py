@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import math
 import posixpath
 import re
 import stat
@@ -69,13 +70,22 @@ def refuse_registered_references(*values):
     budget = ReferenceCollectionBudget(values_limit=10000)
     raw = 0
 
-    def visit(value, depth):
+    def charge_raw(amount):
         nonlocal raw
+        if amount > _RAW_LIMIT - raw:
+            raise OwnerTargetVersionError('experiment_publisher_input_limit')
+        budget.charge('raw_bytes', amount)
+        raw += amount
+
+    def visit(value, depth):
         budget.charge('values')
         if depth > 64:
             raise OwnerTargetVersionError('experiment_publisher_input_limit')
         if isinstance(value, (str, Path)):
+            if isinstance(value, Path) and (len(value.parts) > 64 or sum(len(part) + 1 for part in value.parts) > 4096):
+                raise OwnerTargetVersionError('experiment_publisher_input_limit')
             text = str(value)
+            charge_raw(2)
             if len(text) > _RAW_LIMIT - raw:
                 raise OwnerTargetVersionError('experiment_publisher_input_limit')
             for index, char in enumerate(text):
@@ -84,22 +94,30 @@ def refuse_registered_references(*values):
                 ordinal = ord(char)
                 if 0xD800 <= ordinal <= 0xDFFF:
                     raise OwnerTargetVersionError('experiment_publisher_input_limit')
-                width = 1 if ordinal < 128 else 2 if ordinal < 2048 else 3 if ordinal < 65536 else 4
-                if width > _RAW_LIMIT - raw:
-                    raise OwnerTargetVersionError('experiment_publisher_input_limit')
-                budget.charge('raw_bytes', width)
-                raw += width
+                width = (2 if char in '\\"\b\f\n\r\t' else 6 if ordinal < 32 else
+                         1 if ordinal < 128 else 2 if ordinal < 2048 else 3 if ordinal < 65536 else 4)
+                charge_raw(width)
             _reference(text, budget)
         elif isinstance(value, Mapping):
             budget.available('values', len(value) * 2)
+            charge_raw(2 + len(value) + max(0, len(value) - 1))
             for key, item in value.items():
                 visit(key, depth + 1)
                 visit(item, depth + 1)
         elif isinstance(value, (tuple, list)):
             budget.available('values', len(value))
+            charge_raw(2 + max(0, len(value) - 1))
             for item in value:
                 visit(item, depth + 1)
-        elif value is not None and type(value) not in (bool, int, float):
+        elif value is None:
+            charge_raw(4)
+        elif type(value) is bool:
+            charge_raw(4 if value else 5)
+        elif type(value) is int and value.bit_length() <= 4096:
+            charge_raw(len(str(value)))
+        elif type(value) is float and math.isfinite(value):
+            charge_raw(len(str(value)))
+        else:
             raise OwnerTargetVersionError('experiment_publisher_input_limit')
 
     try:
