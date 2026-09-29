@@ -109,12 +109,31 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                     'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                     'capture_root': str(capture_root),
                     'blockers': ['capture_owner_observation_unavailable']}
-        # A signed observation is retained only in memory until the native
-        # capture-generation birth and exact source-membership gate exists.
-        # It cannot flow through legacy lease mkdir/prefix staging.
         _listener.logger.info('pubsub_handoff.capture_owner_observed',
                               extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                                      'observation_digest': observation['observation_digest']})
+        if handoff.source_membership_selector is not None:
+            try:
+                staged = _listener.stage_handoff_capture(
+                    handoff, storage_root=storage_root, storage_client=storage_client)
+            except Exception:
+                _listener.logger.warning('pubsub_handoff.capture_source_membership_unavailable',
+                                         extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id})
+                return {'schema_version': 'v1',
+                        'status': 'capture_source_membership_unavailable_retryable',
+                        'queue_disposition': 'retryable', 'bucket': handoff.bucket,
+                        'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                        'capture_root': str(capture_root),
+                        'blockers': ['capture_source_membership_unavailable']}
+            # The selected source is now born and staged. Existing lease state
+            # still keys terminal endings by payload bytes, so execution waits
+            # for the semantic delivery-key association rather than reentering
+            # that older mutable-digest path.
+            return {'schema_version': 'v1', 'status': 'capture_source_staged_retryable',
+                    'queue_disposition': 'retryable', 'bucket': handoff.bucket,
+                    'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                    'capture_root': str(staged),
+                    'blockers': ['capture_delivery_lease_binding_unavailable']}
         return {'schema_version': 'v1', 'status': 'capture_original_birth_unavailable_retryable',
                 'queue_disposition': 'retryable', 'bucket': handoff.bucket,
                 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,

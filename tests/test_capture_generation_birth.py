@@ -207,3 +207,12 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(tmp
     assert staged_manifest['source_membership_selector'] == selector
     assert staged_manifest['local_generation_id']
     assert not (target / 'derived').exists()
+    for _ in range(2):
+        result = listener.process_handoff_payload(
+            payload, storage_root=target.parents[4], storage_client=Client(),
+            provider='openai', run_e2e=lambda **_: pytest.fail('provider or consumer ran'))
+        assert result['status'] == 'capture_source_staged_retryable'
+        assert result['queue_disposition'] == 'retryable'
+        current = json.loads((target / listener.STAGING_MANIFEST_FILENAME).read_bytes())
+        assert current['local_generation_id'] == staged_manifest['local_generation_id']
+        assert not (target / listener.JOB_LEDGER_FILENAME).exists()
