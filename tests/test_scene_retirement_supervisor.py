@@ -474,6 +474,10 @@ def retained_core_fixture(tmp_path, monkeypatch):
         bundle[name] = dict(path=str(path), raw=raw, identity=list(identity))
     from types import MappingProxyType
     values.identities = MappingProxyType(identities)
+    # The loader now retains the selected source/SDK cohort as well as core bytes.
+    values.runtime_root = tmp_path
+    values.dependencies_root = tmp_path / 'dependencies'
+    values.dependencies_root.mkdir()
     loader = bootstrap._SourceOnly(values)
     for name in values:
         monkeypatch.setitem(sys.modules, name, SimpleNamespace(__spec__=SimpleNamespace(loader=loader)))

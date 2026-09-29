@@ -1276,6 +1276,11 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_install_scene_object_discovery_runtime_directories": lambda: [],
         "_install_episode_compilation_runtime_directories": lambda: [],
         "_install_storage_pins_runtime_root": lambda: {},
+        # Orchestration isolation only: actual protected runtime acquisition is
+        # covered separately; this receipt makes no enabled-runtime claim.
+        "_prepare_scene_retirement_runtime": lambda **_kwargs: {
+            "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False,
+        },
         "_install_configured_controls_runtime_prerequisites": lambda: {},
         "_install_configured_controls_autostart_registry": lambda **_kwargs: {},
         "_install_intake_runtime_identity_drop_in": lambda *_args, **_kwargs: {},
@@ -2152,6 +2157,12 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         observed.append(stage)
 
     monkeypatch.setattr(
+        deploy, "_prepare_scene_retirement_runtime",
+        lambda **_kwargs: (assert_lock_held("scene_retirement_runtime_prepare") or {
+            "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False,
+        }),
+    )
+    monkeypatch.setattr(
         deploy,
         "_restart_units",
         lambda units: (assert_lock_held("restart") or [{"unit": units[0]}]),
@@ -2248,6 +2259,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
 
     assert observed == [
         "path_quiesce",
+        "scene_retirement_runtime_prepare",
         "restart",
         "runtime_probe",
         "path_activation",
@@ -2869,6 +2881,11 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
     staged = tmp_path / "staged-release"
     staged.mkdir()
     moved: list[str] = []
+    # Isolate the preceding host step so this test reaches its intended splat
+    # prerequisite refusal. This is not proof of an installed or enabled SDK.
+    monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", lambda **_kwargs: {
+        "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False,
+    })
     watcher = "blueprint-scene-object-discovery.path"
     restored: list[dict[str, object]] = []
     monkeypatch.setattr(
