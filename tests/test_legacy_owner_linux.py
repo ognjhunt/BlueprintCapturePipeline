@@ -24,6 +24,7 @@ import pytest
 def _root_fixture() -> dict:
     assert sys.platform == "linux" and os.geteuid() == 0
     assert Path("/proc/1/exe").resolve() == Path("/usr/lib/systemd/systemd")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy/operator-door"))
     from operator_door.config import DoorConfig
     from operator_door.spool_runner import _legacy_owner_properties
     from blueprint_pipeline.control_plane_lane_legacy_owner import snapshot_generation
