@@ -8,7 +8,7 @@ from .task_evaluation_scene_retirement_access import _opened, _identity
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_retirement_access import _require
 from .task_evaluation_scene_retirement_authority import selected_document, load_document, TOKEN
-from .task_evaluation_scene_retirement_intent_receipt import _projection, _resume, publish_pending_receipt
+from .task_evaluation_scene_retirement_intent_receipt import MAX_BYTES as RECEIPT_MAX_BYTES, _projection, _resume, publish_pending_receipt
 from .task_evaluation_scene_retirement_journal import publish_record, SceneJournal, _parent
 
 
@@ -170,7 +170,7 @@ def select_retirement(policy, authority, allowance):
     claim=None if selected_claim is None else selected_claim[0]
     missing_projection=False
     try:
-        _, reference = load_document(path, maximum=65536)
+        _, reference = load_document(path, maximum=RECEIPT_MAX_BYTES)
     except FileNotFoundError:
         if claim is None:
             return None
@@ -283,7 +283,7 @@ def resumed_generations(engine, policy, consent, journal, initial):
 def select_restore(policy, authority, allowance, retired_reference):
     consent=authority['consent']
     path=Path(policy['reference_context']['roots']['intent_root'])/consent['intent_id']/'scene-retired.v1.json'
-    _,reference=load_document(path,maximum=65536)
+    _,reference=load_document(path,maximum=RECEIPT_MAX_BYTES)
     _,current,_,_,_,_=_projection(policy,consent,reference,allowance,restoring=True)
     if 'restore_journal_initial_raw_ref' not in current:
         _require(current['status']=='retired','scene_retirement_restore_resume_unproven')

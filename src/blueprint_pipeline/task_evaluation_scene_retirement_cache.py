@@ -10,6 +10,7 @@ import os
 import secrets
 import stat
 import time
+import re
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
@@ -476,13 +477,136 @@ def restore_preserved_cache_aliases(preserved,roots,file_identities,journal):
                 _require(done['evidence']==evidence,'scene_retirement_cache_restore_conflict')
 
 
-def validate_cache_objects(policy,consent,allowance):
+def _selected_queue_document(fresh,path,role,seal,allowance):
+    matches={}
+    for member in fresh.get('measured_members',[]):
+        allowance.tick()
+        for proof in member.get('source_provenance',[]):
+            allowance.tick()
+            if (proof.get('path')==str(path) and proof.get('role')==role
+                    and proof.get('seal_field')==seal):
+                ref={key:proof[key] for key in ('path','sha256','size_bytes')}
+                matches[(ref['sha256'],ref['size_bytes'])]=(ref,proof)
+    _require(len(matches)==1,_ERROR)
+    ref,proof=next(iter(matches.values()))
+    _require(0<ref['size_bytes']<=4*1024*1024,_ERROR)
+    allowance.charge('local_bytes',ref['size_bytes'])
+    value=selected_document(ref,maximum=4*1024*1024)
+    _require(value.get(seal)==proof['seal_digest']
+             and value[seal]==canonical_digest(value,digest_field=seal),_ERROR)
+    return value,ref
+
+
+def _recipe_stage_authority(source,request,source_ref,fresh,consent,allowance):
+    """Derive transitive stage identities only from selected original recipe bytes."""
+    from .task_evaluation_scene_construction_recipe import validate_scene_construction_recipe, CAPABILITY_ORDER
+    from .task_evaluation_launch_preparation_worker import validate_recipe_request_binding
+    context=fresh.get('planner_context',{}).get('roots',{})
+    prep=request.get('preparation_id')
+    recipe_ref=request.get('construction',{}).get('recipe')
+    _require(type(prep) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,191}',prep)
+             and type(recipe_ref) is dict and set(recipe_ref)=={'uri','digest','size_bytes'}
+             and type(recipe_ref['digest']) is str and re.fullmatch(r'sha256:[0-9a-f]{64}',recipe_ref['digest'])
+             and type(recipe_ref['size_bytes']) is int and 0<recipe_ref['size_bytes']<=4*1024*1024,_ERROR)
+    queue=Path(context.get('preparation_queue_root',''))
+    input_root=Path(context.get('preparation_input_root',''))
+    cache_root=Path(context.get('content_store_root',''))
+    _require(queue.is_absolute() and input_root.is_absolute() and cache_root.is_absolute()
+             and Path(source_ref['path']).parent==queue/'scene-authorities',_ERROR)
+    name=prep+'-'+source['request_digest'][7:]+'.json'
+    _require(Path(source_ref['path']).name==name,_ERROR)
+    envelope,envelope_ref=_selected_queue_document(fresh,queue/'materialized'/name,
+        'preparation_envelopes','envelope_digest',allowance)
+    result,result_ref=_selected_queue_document(fresh,queue/'results'/name,
+        'preparation_results','result_digest',allowance)
+    _require(envelope.get('schema_version')=='task_evaluation_launch_preparation_envelope.v1'
+             and envelope.get('request')==request and envelope.get('request_digest')==source['request_digest']
+             and result.get('schema_version')=='task_evaluation_launch_preparation_result.v1'
+             and result.get('status')=='queued_for_production_scene_configuration'
+             and result.get('preparation_id')==prep and result.get('run_id')==request.get('run_id')
+             and result.get('source_commit')==source['source_commit']
+             and result.get('full_byte_service_account_readback_passed') is True
+             and result.get('provider_mutation_performed') is False
+             and result.get('paid_execution_requested') is False,_ERROR)
+    refs=result.get('references')
+    _require(type(refs) is list and len(refs)<=256,_ERROR)
+    parent=[row for row in refs if type(row) is dict and row.get('contract_path')=='construction.recipe']
+    recipe_path=input_root/prep/recipe_ref['digest'][7:]
+    _require(len(parent)==1 and all(parent[0].get(k)==recipe_ref[k] for k in ('uri','digest','size_bytes'))
+             and parent[0].get('materialized_path')==str(recipe_path)
+             and parent[0].get('full_byte_service_account_readback_passed') is True,_ERROR)
+    allowance.charge('local_bytes',recipe_ref['size_bytes'])
+    recipe_raw=dict(path=str(recipe_path),sha256=recipe_ref['digest'],size_bytes=recipe_ref['size_bytes'])
+    recipe=selected_document(recipe_raw,maximum=4*1024*1024)
+    recipe=validate_scene_construction_recipe(recipe)
+    validate_recipe_request_binding(request=request,recipe=recipe)
+    _require(len(recipe['stage_sequence'])==len(CAPABILITY_ORDER),_ERROR)
+    stage_rows={}
+    for row in refs:
+        allowance.tick()
+        if type(row) is not dict or not str(row.get('contract_path','')).startswith('construction.recipe.stage_sequence.'):
+            continue
+        match=re.fullmatch(r'construction\.recipe\.stage_sequence\.([0-9]+)\.configuration',row['contract_path'])
+        _require(match is not None and int(match.group(1))<len(CAPABILITY_ORDER),_ERROR)
+        index=int(match.group(1))
+        _require(index not in stage_rows,_ERROR)
+        stage_rows[index]=row
+    _require(len(stage_rows)==len(CAPABILITY_ORDER),_ERROR)
+    stages=[]
+    supplemental=[]
+    cache_paths={}
+    for index,stage in enumerate(recipe['stage_sequence']):
+        allowance.tick()
+        row=stage_rows[index]
+        reference=stage['configuration']
+        digest=reference['digest']
+        path=input_root/prep/'construction-stage-configurations'/digest[7:]
+        _require(all(row.get(k)==reference[k] for k in ('uri','digest','size_bytes'))
+                 and row.get('materialized_path')==str(path)
+                 and row.get('full_byte_service_account_readback_passed') is True
+                 and type(row.get('content_addressed_reuse')) is bool,_ERROR)
+        alias=cache_root/digest[7:]
+        prior=cache_paths.setdefault(str(alias),reference)
+        _require(prior==reference,_ERROR)
+        stages.append(dict(index=index,contract_path=row['contract_path'],reference=reference,
+                           projected_path=str(path),cache_path=str(alias)))
+    destination=recipe.get('supplemental_destination')
+    if destination is not None:
+        for field in ('authoring_receipt','simready_result'):
+            allowance.tick()
+            contract_path='construction.recipe.supplemental_destination.'+field
+            matches=[row for row in refs if type(row) is dict and row.get('contract_path')==contract_path]
+            _require(len(matches)==1,_ERROR)
+            row=matches[0]
+            reference=destination[field]
+            digest=reference['digest']
+            path=input_root/prep/'construction-supplemental-destination'/digest[7:]
+            _require(all(row.get(k)==reference[k] for k in ('uri','digest','size_bytes'))
+                     and row.get('materialized_path')==str(path)
+                     and row.get('full_byte_service_account_readback_passed') is True
+                     and type(row.get('content_addressed_reuse')) is bool,_ERROR)
+            alias=cache_root/digest[7:]
+            prior=cache_paths.setdefault(str(alias),reference)
+            _require(prior==reference,_ERROR)
+            supplemental.append(dict(contract_path=contract_path,reference=reference,
+                                     projected_path=str(path),cache_path=str(alias)))
+    targets={row['canonical_path']:row for row in consent['cache_objects']}
+    _require(all(path in targets and targets[path]['digest']==ref['digest']
+                 and targets[path]['size_bytes']==ref['size_bytes'] for path,ref in cache_paths.items()),_ERROR)
+    return dict(kind='selected_recipe_stage_authority.v1',source_raw_ref=source_ref,
+                envelope_raw_ref=envelope_ref,result_raw_ref=result_ref,recipe_raw_ref=recipe_raw,
+                recipe_digest=recipe['recipe_digest'],stages=stages,supplemental=supplemental,
+                cache_objects=[dict(targets[path]) for path in sorted(cache_paths)])
+
+
+def validate_cache_objects(policy,consent,allowance,*,fresh=None):
     """Exact target/publication proof only; native current-reference closure is separate."""
     from .control_plane_storage_gc import DEFAULT_MINIMUM_AGE_SECONDS
     from .task_evaluation_launch_preparation_worker import collect_preparation_references
     objects=consent.get('cache_objects',[])
     _require(type(objects) is list and len(objects)<=256,'scene_retirement_inventory_limit')
     selected=[]
+    recipe_proofs={}
     for row in objects:
         allowance.tick()
         for reference in (row['generation_raw_ref'],row['source_raw_ref']):
@@ -508,7 +632,16 @@ def validate_cache_objects(policy,consent,allowance):
             request=_storage_history(source,allowance)
             allowance.tick()
             refs=collect_preparation_references(request)
-            _require(any(ref['digest']==row['digest'] and ref['size_bytes']==row['size_bytes'] for ref in refs),_ERROR)
+            direct=any(ref['digest']==row['digest'] and ref['size_bytes']==row['size_bytes'] for ref in refs)
+            if not direct:
+                _require(fresh is not None,_ERROR)
+                key=tuple(row['source_raw_ref'][field] for field in ('path','sha256','size_bytes'))
+                if key not in recipe_proofs:
+                    recipe_proofs[key]=_recipe_stage_authority(source,request,row['source_raw_ref'],fresh,consent,allowance)
+                _require(any(stage['cache_path']==row['canonical_path']
+                             and stage['reference']['digest']==row['digest']
+                             and stage['reference']['size_bytes']==row['size_bytes']
+                             for stage in [*recipe_proofs[key]['stages'],*recipe_proofs[key]['supplemental']]),_ERROR)
         path=_canonical(row['canonical_path'])
         with _opened(path) as (_,info):
             allowance.tick()
@@ -518,4 +651,6 @@ def validate_cache_objects(policy,consent,allowance):
             _require(allowance.last_wall-info.st_mtime>=DEFAULT_MINIMUM_AGE_SECONDS,
                      'scene_retirement_cache_idle_grace_unproven')
         selected.append(dict(row))
+    if fresh is not None:
+        return selected,list(recipe_proofs.values())
     return selected

@@ -47,13 +47,13 @@ def publish_record(directory,name,value,*,maximum,allowance):
         fd,identity=_new_file(parent,temporary,parent_identity=expected)
         placed=False
         try:
-            for text in encoder.iterencode(value):
-                allowance.tick()
-                raw=text.encode('utf-8')
-                _require(size+len(raw)<=maximum,'scene_retirement_journal_limit')
-                size+=len(raw)
-                digest.update(raw)
-                view=memoryview(raw)
+            buffer=bytearray()
+            def flush():
+                if not buffer:
+                    return
+                chunk=bytes(buffer)
+                buffer.clear()
+                view=memoryview(chunk)
                 while view:
                     allowance.tick()
                     _parent(directory,parent,expected)
@@ -61,6 +61,20 @@ def publish_record(directory,name,value,*,maximum,allowance):
                     written=os.write(fd,view)
                     _require(written>0)
                     view=view[written:]
+            for text in encoder.iterencode(value):
+                allowance.tick()
+                raw=text.encode('utf-8')
+                _require(size+len(raw)<=maximum,'scene_retirement_journal_limit')
+                size+=len(raw)
+                digest.update(raw)
+                offset=0
+                while offset<len(raw):
+                    amount=min(65536-len(buffer),len(raw)-offset)
+                    buffer.extend(raw[offset:offset+amount])
+                    offset+=amount
+                    if len(buffer)==65536:
+                        flush()
+            flush()
             allowance.tick()
             _parent(directory,parent,expected)
             _named(parent,expected,temporary,fd,identity)

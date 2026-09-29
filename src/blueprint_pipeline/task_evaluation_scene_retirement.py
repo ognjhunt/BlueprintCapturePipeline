@@ -343,7 +343,10 @@ def _plan_members(plan, consent, allowance=None, *, cache_inventory=None):
         path=_canonical(row['path'])
         owners=[index for index,root in enumerate(roots) if path.is_relative_to(root)]
         if not owners and str(path) in aliases:
-            _require(row.get('status')=='observed_scoped_metadata' and row.get('storage_class')=='cache'
+            _require(row.get('status')=='observed_scoped_metadata'
+                     and row.get('storage_class') in {'cache','host'}
+                     and type(row.get('kinds')) in (list,_Rows)
+                     and 'prepared_cache_object' in row['kinds']
                      and type(row.get('keeps')) in (list,_Rows)
                      and set(row['keeps'])<= {'shared_content_object_not_exclusive',
                          'external_hardlink_or_unobserved_alias'},'scene_retirement_shared_or_unresolved_member')
@@ -419,7 +422,8 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
     if consent.get('cache_objects'):
         from .task_evaluation_scene_retirement_cache import validate_cache_objects
         from .task_evaluation_scene_retirement_preservation import _inventory_members
-        cache_targets=validate_cache_objects(policy,consent,allowance)
+        cache_targets,recipe_proofs=validate_cache_objects(policy,consent,allowance,fresh=fresh)
+        fresh['recipe_stage_authority']=recipe_proofs
         cache_inventory=_inventory_members([row['canonical_path'] for row in consent['members']],allowance,
             cache_aliases=[{key:row[key] for key in ('canonical_path','digest','size_bytes')} for row in cache_targets])
     fresh['unselected_shared_content_keeps']=_plan_members(
@@ -445,7 +449,8 @@ def _current_readers(policy,allowance):
     allowance.tick()
 
 
-def _resume_current_references(policy,consent,retained,allowance,now,monotonic,*,preserved,pin_journal=None):
+def _resume_current_references(policy,consent,retained,allowance,now,monotonic,*,preserved,pin_journal=None,
+                               recipe_stage_authority=None):
     from .control_plane_reference_budget import ReferenceCollectionBudget
     from .task_evaluation_scene_lineage_budget import RetainedEmissionBudget
     from .task_evaluation_scene_lifecycle_plan import _context
@@ -457,12 +462,15 @@ def _resume_current_references(policy,consent,retained,allowance,now,monotonic,*
              and retained.get('intent_id')==consent['intent_id'], 'scene_retirement_plan_invalid')
     _installed_cohort(policy,allowance)
     budget=ReferenceCollectionBudget._for_scene_lifecycle_plan(monotonic=monotonic,time_budget_seconds=30)
-    sink=RetainedEmissionBudget(max_bytes=16*1024*1024,max_rows=10000,max_refs=10000,work_budget=budget)
+    sink=RetainedEmissionBudget(max_bytes=16*1024*1024,max_rows=10000,max_references=10000,work_budget=budget)
     try:
         _context(context,budget)
         observation=observe(context,now(),budget,sink)
         allowance.tick()
-        validate_current_reference_transfer(dict(retained,reference_observation=observation),allowance,
+        current=dict(retained,reference_observation=observation)
+        if recipe_stage_authority is not None:
+            current['recipe_stage_authority']=recipe_stage_authority
+        validate_current_reference_transfer(current,allowance,
                                             preserved=preserved,policy=policy,consent=consent,pin_journal=pin_journal)
         _current_readers(policy,allowance)
     finally:
@@ -596,8 +604,10 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
         if generation['state']!='retired':
             generations[index]=_transition(policy,generation,state='retired',token=token,
                     journal_ref=outcome['event_raw_ref'])
-        pending=publish_progress_receipt(policy,consent,pending,dict(status='retiring',token=token,
-            intent_id=consent['intent_id'],members=list(outcomes),last_event_raw_ref=journal.prior_ref),allowance)
+        # The member event and generation transition are already durable. A
+        # failure projects their exact journal prefix through _partial_result;
+        # a successful run publishes the terminal receipt once. Revalidating
+        # the full protected journal/cache for every member is quadratic.
     from .task_evaluation_scene_retirement_cache import remove_preserved_cache_aliases
     cache_outcomes=remove_preserved_cache_aliases(preserved,journal=journal,removed_inodes=removed)
     _require(len(cache_outcomes)==len(cache_generations),'scene_retirement_cache_journal_unproven')
@@ -654,7 +664,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             if resumed is not None and type(resumed) is tuple:
                 journal,pending,initial=resumed
                 _resume_current_references(policy,consent,retained,allowance,now,monotonic,
-                                           preserved=initial['preserved'],pin_journal=journal)
+                                           preserved=initial['preserved'],pin_journal=journal,
+                                           recipe_stage_authority=initial['reference_transfer'].get('recipe_stage_authority',[]))
                 generations=recovery.resumed_generations(sys.modules[__name__],policy,consent,journal,initial)
                 published_objects=initial.get('declared_byte_verification',{}).get('published_objects',[])
                 recovery.reserve_phase(journal,initial['preserved'],readback=True,published_objects=published_objects)

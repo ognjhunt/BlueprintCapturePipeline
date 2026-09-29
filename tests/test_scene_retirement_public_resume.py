@@ -48,7 +48,7 @@ def fresh_action(tmp_path,monkeypatch):
     consent.chmod(0o600)
     # Replay-only isolation supplies a complete empty reference-stage result;
     # production admission still performs the real scans and native closure.
-    monkeypatch.setattr(engine,'_current_plan',lambda *args: {'reference_observation':{
+    monkeypatch.setattr(engine,'_current_plan',lambda *args: {'unselected_shared_content_keeps':[], 'reference_observation':{
         'blockers':[], 'child_scopes':[{'child':name,'complete':True}
             for name in ('pins','primary_queues','auxiliary_queues')],
         'record_dispositions':[], 'protections':[]}})
@@ -67,11 +67,14 @@ def pending_action(tmp_path,monkeypatch,*,after_generation=False):
         if kwargs['member_index']==0:
             raise OSError('owned test interruption after durable native removal')
         return outcome
-    original_progress=engine.publish_progress_receipt
+    original_transition=engine._transition
     if after_generation:
-        def interrupted_progress(*args,**kwargs):
-            raise OSError('owned interruption after native removal and generation update')
-        monkeypatch.setattr(engine,'publish_progress_receipt',interrupted_progress)
+        def interrupted_transition(*args,**kwargs):
+            updated=original_transition(*args,**kwargs)
+            if kwargs['state']=='retired' and args[1]['canonical_path']==members[0]['canonical_path']:
+                raise OSError('owned interruption after native removal and generation update')
+            return updated
+        monkeypatch.setattr(engine,'_transition',interrupted_transition)
     else:
         monkeypatch.setattr(engine,'detach_and_remove',interrupted)
     result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
@@ -79,7 +82,7 @@ def pending_action(tmp_path,monkeypatch,*,after_generation=False):
     assert not Path(members[0]['canonical_path']).exists()
     assert Path(members[1]['canonical_path']).exists()
     monkeypatch.setattr(engine,'detach_and_remove',original)
-    monkeypatch.setattr(engine,'publish_progress_receipt',original_progress)
+    monkeypatch.setattr(engine,'_transition',original_transition)
     # Original source-presence assertion is for INITIAL archive readback only;
     # replay validates the exact already-preserved private archive natively.
     def readback(uri):
@@ -98,6 +101,36 @@ def test_public_retire_resumes_same_journal_and_finishes_remaining_member(tmp_pa
     assert all(not Path(row['canonical_path']).exists() for row in scope['members'])
     assert len(result['members'])==2 and all(row['removed_file_count']==1 for row in result['members'])
     assert json.loads(Path(result['intent_receipt_path']).read_bytes())['status']=='retired'
+
+
+def test_durable_member_journal_finishes_without_rechecking_public_progress_per_member(tmp_path,monkeypatch):
+    engine,_,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    monkeypatch.setattr(engine,'publish_progress_receipt',
+                        lambda *args,**kwargs: pytest.fail('public progress reread per member'))
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,
+                               now=lambda:200,monotonic=lambda:0)
+    assert result['status']=='retired',result
+    assert len(result['members'])==2
+    assert json.loads(Path(result['intent_receipt_path']).read_bytes())['status']=='retired'
+
+
+def test_public_resume_after_retired_snapshot_before_terminal_receipt(tmp_path,monkeypatch):
+    engine,_,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    original_terminal=engine.publish_terminal_receipt
+    monkeypatch.setattr(engine,'publish_terminal_receipt',
+                        lambda *args,**kwargs: (_ for _ in ()).throw(OSError('owned terminal projection interruption')))
+    first=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,
+                              now=lambda:200,monotonic=lambda:0)
+    assert first['status']=='incomplete',first
+    assert all(not Path(row['canonical_path']).exists() for row in scope['members'])
+    objects=dict(transport.objects)
+    monkeypatch.setattr(engine,'publish_terminal_receipt',original_terminal)
+    transport.read_archive=lambda uri: iter((transport.objects[uri],))
+    second=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,
+                               now=lambda:201,monotonic=lambda:1)
+    assert second['status']=='retired',second
+    assert transport.objects==objects
+    assert json.loads(Path(second['intent_receipt_path']).read_bytes())['status']=='retired'
 
 
 def test_public_recovery_cannot_renew_the_original_action_deadline(tmp_path,monkeypatch):

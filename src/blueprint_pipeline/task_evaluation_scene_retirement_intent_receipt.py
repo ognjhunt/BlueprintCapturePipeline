@@ -21,7 +21,7 @@ from .task_evaluation_scene_retirement_authority import ID, SHA, TOKEN, raw_refe
 from .task_evaluation_scene_retirement_generations import _guard, _named, _new_file
 from .task_evaluation_scene_retirement_journal import SceneJournal
 
-MAX_BYTES = 65536
+MAX_BYTES = 1024 * 1024
 NAME = 'scene-retired.v1.json'
 
 
@@ -49,10 +49,10 @@ def _parent(path, parent, expected):
     _guard(parent, _identity(expected))
 
 
-def _read(path, allowance, *, selected=None, projection=False):
+def _read(path, allowance, *, selected=None, projection=False, maximum=MAX_BYTES):
     with _opened(path) as (fd, info):
         _require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                 and not info.st_mode & 0o022 and 0 < info.st_size <= MAX_BYTES,
+                 and not info.st_mode & 0o022 and 0 < info.st_size <= maximum,
                  'scene_retirement_receipt_permissions')
         if projection:
             _require(info.st_uid == access._POLICY_UID and stat.S_IMODE(info.st_mode) == 0o644,
@@ -87,7 +87,7 @@ def _location(policy, consent, allowance):
     intent_path = directory / 'intent.json'
     selected = raw_reference(consent['intent_raw_ref'])
     _require(selected['path'] == str(intent_path), 'scene_retirement_receipt_intent_invalid')
-    value, _, intent_info = _read(intent_path, allowance, selected=selected)
+    value, _, intent_info = _read(intent_path, allowance, selected=selected, maximum=65536)
     _require(value.get('intent_id') == intent_id and value.get('schema_version') == 'task_evaluation_scene_intent.v1'
              and value.get('intent_digest') == canonical_digest(value, digest_field='intent_digest'),
              'scene_retirement_receipt_intent_invalid')
@@ -235,8 +235,8 @@ def _measured_cache(policy,pending,journal,allowance,*,snapshot=None,outcomes=No
             if not activated:
                 continue
             key=hashlib.sha256(result[index]['canonical_path'].encode()).hexdigest()+'.json'
-            allowance.charge('local_bytes',MAX_BYTES)
-            generation,_,info=_read(Path(policy['generation_store'])/key,allowance)
+            allowance.charge('local_bytes',65536)
+            generation,_,info=_read(Path(policy['generation_store'])/key,allowance,maximum=65536)
             service=access._service_identity()
             _require(stat.S_IMODE(info.st_mode)==0o600 and (info.st_uid,info.st_gid)==service
                 and generation.get('schema_version')=='scene_content_generation.v1'
@@ -365,9 +365,9 @@ def _measured_members(policy, pending, snapshot, outcomes, allowance, *, partial
                  'scene_retirement_receipt_members_invalid')
         event_ref = raw_reference(outcome['event_raw_ref'])
         _require(Path(event_ref['path']).parent == Path(policy['journal_store'])
-                 and event_ref['size_bytes'] <= MAX_BYTES, 'scene_retirement_receipt_event_invalid')
+                 and event_ref['size_bytes'] <= 65536, 'scene_retirement_receipt_event_invalid')
         allowance.tick()
-        event = selected_document(event_ref, maximum=MAX_BYTES, protected=True)
+        event = selected_document(event_ref, maximum=65536, protected=True)
         sequence = event.get('sequence')
         _require(type(sequence) is int and 1 <= sequence <= 10000
                  and Path(event_ref['path']).name == pending['retiring_token'] + '.' + str(sequence) + '.json'
@@ -453,7 +453,7 @@ def _restored_generation(policy, selected, outcome, original_token, allowance):
         _require(stat.S_IMODE(info.st_mode) == 0o700 and (info.st_uid, info.st_gid) == service,
                  'scene_retirement_service_identity_unproven')
     key = hashlib.sha256(selected['canonical_path'].encode()).hexdigest() + '.json'
-    state, _, info = _read(Path(policy['generation_store']) / key, allowance)
+    state, _, info = _read(Path(policy['generation_store']) / key, allowance, maximum=65536)
     _require(stat.S_IMODE(info.st_mode) == 0o600 and (info.st_uid, info.st_gid) == service
              and state.get('schema_version') == 'scene_member_generation.v1'
              and state.get('state_digest') == canonical_digest(state, digest_field='state_digest')

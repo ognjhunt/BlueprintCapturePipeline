@@ -531,8 +531,19 @@ def test_native_action_targets_exact_normal_cache_union_without_claiming_store_p
     plan={'action':'KEEP','cleanup_authorized':False,'measured_members':[
         {'path':str(root),'status':'observed_scoped_metadata','keeps':['external_hardlink_or_unobserved_alias']},
         *[{'path':row['canonical_path'],'status':'observed_scoped_metadata','storage_class':'cache',
+            'kinds':['prepared_cache_object'],
             'keeps':['shared_content_object_not_exclusive','external_hardlink_or_unobserved_alias']} for row in aliases]]}
     _plan_members(plan,consent,allowance,cache_inventory=inventory)
+    # Survey classification is advisory for arbitrary installed storage roots;
+    # exact target, generation and complete alias inventory carry action proof.
+    for row in plan['measured_members'][1:]:
+        row['storage_class']='host'
+        row['kinds']=['prepared_cache_object']
+    _plan_members(plan,consent,allowance,cache_inventory=inventory)
+    plan['measured_members'][1]['kinds']=[]
+    with pytest.raises(ValueError,match='scene_retirement_shared_or_unresolved_member'):
+        _plan_members(plan,consent,allowance,cache_inventory=inventory)
+    plan['measured_members'][1]['kinds']=['prepared_cache_object']
     assert plan['action']=='KEEP' and plan['cleanup_authorized'] is False
     assert str(root.parent/'content-addressed') not in [row['path'] for row in plan['measured_members']]
     with pytest.raises(ValueError):

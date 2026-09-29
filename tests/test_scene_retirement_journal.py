@@ -1,6 +1,7 @@
 """Durable exact detachment intent precedes every namespace or leaf mutation."""
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -50,3 +51,24 @@ def test_existing_journal_token_cannot_be_replaced_and_expiry_refuses_new_event(
     with pytest.raises(ValueError,match='scene_retirement_consent_expired'):
         journal.append('detach_planned',member_key='0',evidence={})
     assert len(list(store.glob('*.json')))==1
+
+
+def test_large_initial_journal_checks_parent_per_bounded_chunk(tmp_path,monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_journal as journal_module
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    access_fixture(tmp_path,monkeypatch)
+    store=tmp_path/'journals'
+    store.mkdir(mode=0o700)
+    original_parent=journal_module._parent
+    calls=[]
+    def counted_parent(*args,**kwargs):
+        calls.append(None)
+        return original_parent(*args,**kwargs)
+    monkeypatch.setattr(journal_module,'_parent',counted_parent)
+    payload={'members':[{'index':index,'proof':'x'*96} for index in range(1000)]}
+    journal=journal_module.SceneJournal.create(store,token='3'*32,initial=payload,
+        allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0))
+    raw=Path(journal.initial_ref['path']).read_bytes()
+    assert len(raw)>100_000 and hashlib.sha256(raw).hexdigest()==journal.initial_ref['sha256'][7:]
+    assert json.loads(raw)['members']==payload['members']
+    assert len(calls)<=32
