@@ -20,6 +20,7 @@ MAX_RAW_BYTES = MAX_OUTPUT_BYTES = 20 * 1024 * 1024
 MAX_VALUES, MAX_DEPTH, MAX_FACTS = 100_000, 64, 20_000
 MAX_BLOCKERS = 32
 _SCENE_LIFECYCLE_VALUES, _SCENE_LIFECYCLE_SECONDS = 2_000_000, 30.0
+_SCENE_LIFECYCLE_FACTS = 21_000
 
 
 class ReferenceCollectionBudgetError(ValueError):
@@ -53,11 +54,13 @@ class ReferenceCollectionBudget:
             raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
         budget = object.__new__(ReferenceCollectionBudget)
         budget._initialize_validated(monotonic=monotonic, duration=float(time_budget_seconds),
-                                     values_limit=_SCENE_LIFECYCLE_VALUES)
+                                     values_limit=_SCENE_LIFECYCLE_VALUES,
+                                     facts_limit=_SCENE_LIFECYCLE_FACTS)
         return budget
 
-    def _initialize_validated(self, *, monotonic, duration, values_limit):
-        if hasattr(self, "_initialization_started"):
+    def _initialize_validated(self, *, monotonic, duration, values_limit, facts_limit=MAX_FACTS):
+        if (hasattr(self, "_initialization_started") or type(facts_limit) is not int
+                or facts_limit not in (MAX_FACTS, _SCENE_LIFECYCLE_FACTS)):
             raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
         # A later allocation/assignment failure must never permit retry/reset.
         self._initialization_started = True
@@ -68,7 +71,7 @@ class ReferenceCollectionBudget:
         self._failure: str | None = None
         self._limits = {"roots": MAX_ROOTS, "groups": MAX_GROUPS, "rows": MAX_ROWS,
                        "entries": MAX_ENTRIES, "raw_bytes": MAX_RAW_BYTES,
-                       "values": values_limit, "facts": MAX_FACTS, "output_bytes": MAX_OUTPUT_BYTES}
+                       "values": values_limit, "facts": facts_limit, "output_bytes": MAX_OUTPUT_BYTES}
         self._counts = dict.fromkeys(self.limits, 0)
         self.blockers: set[str] = set()
 
