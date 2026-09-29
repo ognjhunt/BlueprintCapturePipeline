@@ -216,3 +216,27 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(tmp
         current = json.loads((target / listener.STAGING_MANIFEST_FILENAME).read_bytes())
         assert current['local_generation_id'] == staged_manifest['local_generation_id']
         assert not (target / listener.JOB_LEDGER_FILENAME).exists()
+
+
+def test_capture_lease_binds_semantic_delivery_across_changed_payload_bytes(tmp_path):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    target = tmp_path / 'capture'
+    target.mkdir()
+    key = 'sha256:' + 'a' * 64
+    first, ledger = listener._claim_job_lease(
+        target, scene_id='scene-1', capture_id='cap-1', owner='worker-1',
+        lease_seconds=60, payload_sha256='b' * 64,
+        producer_delivery_key=key, create_capture_root=False)
+    assert first == 'claimed' and ledger['producer_delivery_key'] == key
+    assert ledger['source_payload_sha256'] == 'b' * 64
+    listener._finish_job_lease(target, owner='worker-1', token=ledger['lease_token'],
+                               update={'status': listener.TERMINAL_AUTHORITY_STATUS,
+                                       'terminal_payload_sha256': 'b' * 64,
+                                       'terminal_producer_delivery_key': key})
+    second, unchanged = listener._claim_job_lease(
+        target, scene_id='scene-1', capture_id='cap-1', owner='worker-2',
+        lease_seconds=60, payload_sha256='c' * 64,
+        producer_delivery_key=key, create_capture_root=False)
+    assert second == 'terminal' and unchanged['terminal_producer_delivery_key'] == key
+    assert unchanged['revision'] == 2

@@ -725,21 +725,36 @@ def _claim_job_lease(
     lease_seconds: int,
     now: datetime | None = None,
     payload_sha256: str | None = None,
+    producer_delivery_key: str | None = None,
     create_capture_root: bool = True,
     retired_ended_payload_sha256s: Sequence[str] = (),
+    retired_ended_producer_delivery_keys: Sequence[str] = (),
 ) -> tuple[str, dict[str, Any]]:
+    if producer_delivery_key is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", producer_delivery_key) is None:
+        raise PipelineError('capture_delivery_key_invalid')
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _locked_job_ledger(capture_root, create=create_capture_root) as ledger:
         revision = int(ledger.get("revision") or 0)
         status = _string(ledger.get("status"))
         if status == "corrupt":
             return "corrupt", dict(ledger)
+        if producer_delivery_key is not None and ledger and ledger.get('producer_delivery_key') != producer_delivery_key:
+            return 'source_conflict', dict(ledger)
         history = _attempt_history(ledger)
         if not ledger and retired_ended_payload_sha256s:
             history.extend({"status": TERMINAL_AUTHORITY_STATUS, "payload_sha256": digest,
                             "source": "scene_retirement_receipt"}
                            for digest in sorted(set(retired_ended_payload_sha256s))
                            if re.fullmatch(r"[0-9a-f]{64}", digest))
+        if not ledger and retired_ended_producer_delivery_keys:
+            history.extend({'status': TERMINAL_AUTHORITY_STATUS,
+                            'producer_delivery_key': key,
+                            'source': 'scene_retirement_receipt'}
+                           for key in sorted(set(retired_ended_producer_delivery_keys))
+                           if re.fullmatch(r"sha256:[0-9a-f]{64}", key))
+        if producer_delivery_key is not None and producer_delivery_key in (
+                _ended_delivery_keys(ledger) | set(retired_ended_producer_delivery_keys)):
+            return 'terminal', dict(ledger)
         # A payload whose run ended for lost authority never runs again, even
         # while a later payload reopened the job and is running or retrying.
         # Only a completed job answers a redelivery from its output commit.
@@ -750,6 +765,8 @@ def _claim_job_lease(
         ):
             return "terminal", dict(ledger)
         if status == TERMINAL_AUTHORITY_STATUS:
+            if producer_delivery_key is not None:
+                return 'terminal', dict(ledger)
             ended_by = _string(ledger.get("terminal_payload_sha256"))
             # Without both digests nothing proves this is a new request, so the
             # ending stands (a redelivery must not re-run an ended scene).
@@ -815,6 +832,9 @@ def _claim_job_lease(
                 "previous_lease_owner": ledger.get("lease_owner")
                 if status == "processing"
                 else None,
+                **({'producer_delivery_key': producer_delivery_key,
+                    'source_payload_sha256': payload_sha256}
+                   if producer_delivery_key is not None else {}),
             },
             previous_revision=revision,
         )
@@ -968,6 +988,17 @@ def _ended_payload_digests(ledger: Mapping[str, Any]) -> set[str]:
             digests.add(_string(row.get("terminal_payload_sha256")))
     digests.discard("")
     return digests
+
+
+def _ended_delivery_keys(ledger: Mapping[str, Any]) -> set[str]:
+    keys = {_string(ledger.get('terminal_producer_delivery_key'))}
+    for row in _attempt_history(ledger):
+        if row.get('status') == TERMINAL_AUTHORITY_STATUS:
+            keys.add(_string(row.get('producer_delivery_key')))
+        elif row.get('status') == 'reopened_after_terminal_authority':
+            keys.add(_string(row.get('terminal_producer_delivery_key')))
+    keys.discard('')
+    return keys
 
 
 def _output_commit(
