@@ -97,8 +97,8 @@ def test_engine_retains_exact_reference_keeps_then_requires_independent_native_r
     # This tests the reference-stage ordering, not owner/cohort admission or
     # whole-action clearance. The native reader stage deliberately NEVER admits.
     monkeypatch.setattr(engine, 'build_scene_lifecycle_plan', lambda **kwargs:fresh)
-    monkeypatch.setattr(engine, '_plan_members', lambda *args:None)
-    monkeypatch.setattr(engine, '_installed_cohort', lambda *args:None)
+    monkeypatch.setattr(engine, '_plan_members', lambda *args,**kwargs:None)
+    monkeypatch.setattr(engine, '_installed_cohort', lambda *args,**kwargs:None)
     entered=[]
     def deny(*args):
         entered.append(True)
@@ -139,3 +139,32 @@ def test_terminal_facts_cannot_borrow_foreign_missing_or_contradictory_proof(tmp
         preserved['files'][0]['sha256']='sha256:'+'a'*64
     with pytest.raises(ValueError,match='scene_retirement_reference_'):
         validate_current_reference_transfer(fresh,allowance,preserved=preserved)
+
+@pytest.mark.parametrize('change',[None,'foreign_inode','wrong_digest','wrong_member'])
+def test_verified_projection_cache_union_retains_exact_auxiliary_physical_identity(tmp_path,monkeypatch,change):
+    import os
+    from tests.test_scene_retirement_member_mutation import setup_operation
+    from blueprint_pipeline.task_evaluation_scene_retirement_reference_proofs import TerminalProofs
+    _,member,_,journal=setup_operation(tmp_path,monkeypatch)
+    payload=member/'nested'/'evidence.bin'
+    digest='sha256:'+hashlib.sha256(payload.read_bytes()).hexdigest()
+    store=tmp_path/'cache'
+    store.mkdir()
+    alias=store/digest[7:]
+    os.link(payload,alias)
+    preserved=preserve_members([member],transport=Transport(),allowance=journal.allowance,token='a'*32,
+        cache_aliases=[dict(canonical_path=str(alias),digest=digest,size_bytes=payload.stat().st_size)])
+    row=preserved['cache_aliases'][0]
+    if change=='foreign_inode':
+        row['physical_identity'][1]+=1
+    elif change=='wrong_digest':
+        row['digest']='sha256:'+'f'*64
+    elif change=='wrong_member':
+        row['member_index']=99
+    if change:
+        with pytest.raises(ValueError,match='scene_retirement_reference_'):
+            TerminalProofs({}, {}, [],journal.allowance,preserved)
+    else:
+        proof=TerminalProofs({}, {}, [],journal.allowance,preserved)
+        assert proof.physical[str(alias)]==(str(alias),digest,payload.stat().st_size)
+        assert proof.physical[str(payload)]==(str(payload),digest,payload.stat().st_size)
