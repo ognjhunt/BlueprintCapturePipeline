@@ -51,6 +51,7 @@ from .remote_cpu_job_contract import (
 from .remote_cpu_job_records import (
     compute_zero_proven, fsync_directory, teardown_record, validate_teardown, write_remote_cpu_record,
 )
+from .remote_cpu_transport import publish_running_release
 from .spend_authority_consumption_root import (
     SpendAuthorityRootError, authorizations_root, prepare_consumption_root, spend_authority_root,
 )
@@ -393,8 +394,8 @@ def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: 
 @dataclass
 class RemoteCpuRuntime:
     """What the seam touches beyond this host; production builds each service lazily from its credential.
-    ``stage_release_source`` (plan 14 task 3.1) returns the release commit and its CAS source archive;
-    until it is wired, the preflight probe refuses before any mutation."""
+    ``stage_release_source(object_store)`` stages the release this code runs from (plan 14 task 3.1) and
+    returns its commit and CAS source archive; without one, the preflight probe refuses before any mutation."""
 
     config_path: str | None = None
     clock: Callable[[], float] = time.time
@@ -402,7 +403,7 @@ class RemoteCpuRuntime:
     cloud_run: Any = None
     transport_bucket: Any = None
     object_store: tuple[Any, str, str] | None = None
-    stage_release_source: Callable[[], Mapping[str, Any]] | None = None
+    stage_release_source: Callable[[tuple[Any, str, str]], Mapping[str, Any]] | None = publish_running_release
     host_environment: Callable[[], Mapping[str, Any]] = environment_record
     presigned_put: Callable[[str, bytes], int] | None = None
     poll_seconds: float = 15.0
@@ -820,7 +821,7 @@ def preflight_remote_cpu_stage(action: _Action, stage: str) -> dict[str, Any]:
         return {"status": "blocked" if action.blockers else "dry_run_ready", "blockers": action.blockers}
     host = dict(runtime.host_environment())
     probe = replace(action, config=_probe_config(action.config, stage))
-    descriptor = _probe_descriptor(probe, stage, source=runtime.stage_release_source(),
+    descriptor = _probe_descriptor(probe, stage, source=runtime.stage_release_source(runtime.object_store),
                                    host_digest=host["environment_digest"])
     write_remote_cpu_record(action.root / "descriptors" / f"{descriptor['attempt_id']}.json", descriptor)
     result = {"probe": {name: descriptor[name] for name in ("job_id", "attempt_id", "descriptor_digest")},
