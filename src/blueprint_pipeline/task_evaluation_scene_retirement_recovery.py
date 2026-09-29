@@ -220,7 +220,7 @@ def bind_original_allowance(journal, initial, allowance, *, restoring=False):
     allowance.bind_resume(selected)
 
 
-def reserve_phase(journal, preserved, *, readback=False, restoring=False, published_objects=None):
+def reserve_phase(journal, preserved, *, readback=False, restoring=False, published_objects=None, pin_rows=()):
     """Persist an upper bound before physical work, including a crash prefix.
 
     Actual reads still charge natively. This conservative reservation is never
@@ -244,6 +244,11 @@ def reserve_phase(journal, preserved, *, readback=False, restoring=False, publis
     else:
         allowance.charge('local_bytes', 2 * (sum(row['size_bytes'] for row in preserved['files'])
                                            +sum(row['size_bytes'] for row in preserved.get('cache_aliases',[]))))
+    _require(type(pin_rows) in (list,tuple) and len(pin_rows)<=256,'scene_retirement_resume_unproven')
+    if not readback:
+        # Nonrefundable pin metadata escrow precedes every temporary/physical
+        # CAS phase; actual bytes are also charged at each guarded read/write.
+        allowance.charge('local_bytes',8*16384*len(pin_rows))
     evidence = dict(phase='restore' if restoring else ('resume-readback' if readback else 'remove'),
                     action_allowance=allowance.checkpoint())
     journal.preflight([('allowance_reserved', 'action', evidence)])

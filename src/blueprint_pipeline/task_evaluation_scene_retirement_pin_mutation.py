@@ -294,3 +294,21 @@ def pin_history(policy,consent,journal):
         result[tuple(row['original_raw_ref'][key] for key in ('path','sha256','size_bytes'))]=dict(row,
             observed_raw_ref=current,observed_snapshot=snapshot)
     return result
+
+
+def pin_records(rows,*,restoring=False,outcomes=()):
+    """Worst-case suffix framing for the same complete operation preflight."""
+    _require(type(rows) is list and len(rows)<=256 and (not restoring or len(rows)==len(outcomes)),_REASON)
+    for index,row in enumerate(rows):
+        _row(row)
+        reference=row['original_raw_ref']
+        before=outcomes[index]['released_raw_ref'] if restoring else reference
+        snapshot=outcomes[index]['snapshot'] if restoring else row['snapshot']
+        after=reference if restoring else dict(reference,sha256='sha256:'+'f'*64,size_bytes=16384)
+        key='pin-'+str(index)
+        yield ('pin_restore_planned' if restoring else 'pin_release_planned'),key,dict(pin_index=index,
+            original_raw_ref=reference,before_raw_ref=before,before_snapshot=snapshot,after_raw_ref=after,
+            temporary_name='.'+'f'*32+'.pin-pending',temporary_identity=[2**64-1]*3,parent_identity=[2**64-1]*3)
+        yield ('pin_restored' if restoring else 'pin_released'),key,dict(pin_index=index,
+            original_raw_ref=reference,snapshot=[2**64-1]*9,
+            **{('restored_raw_ref' if restoring else 'released_raw_ref'):after})

@@ -15,6 +15,7 @@ import stat
 import time
 import sys
 from pathlib import Path
+from contextlib import ExitStack
 
 from .decision_evidence_contracts import canonical_digest
 from . import task_evaluation_scene_retirement_access as access
@@ -32,6 +33,7 @@ from . import task_evaluation_scene_retirement_recovery as recovery
 from .task_evaluation_scene_retirement_declared_bytes import verify_declared_bytes as _verify_declared_bytes, verify_publication_rows
 from .task_evaluation_scene_retirement_reference_transfer import validate_current_reference_transfer
 from .task_evaluation_scene_lineage_budget import _Rows
+from . import task_evaluation_scene_retirement_pin_mutation as pins
 
 
 _LIFETIME='scene_retirement_lifetime.v1'
@@ -276,7 +278,7 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
              'scene_retirement_reference_protected')
     # Every intersecting local keep must be retained by an exact selected proof;
     # this is pending preservation, never global reference/reader clearance.
-    fresh['reference_transfer']=validate_current_reference_transfer(fresh,allowance)
+    fresh['reference_transfer']=validate_current_reference_transfer(fresh,allowance,policy=policy,consent=consent)
     _current_readers(policy,allowance)
     return fresh
 
@@ -292,7 +294,7 @@ def _current_readers(policy,allowance):
     allowance.tick()
 
 
-def _resume_current_references(policy,consent,retained,allowance,now,monotonic,*,preserved):
+def _resume_current_references(policy,consent,retained,allowance,now,monotonic,*,preserved,pin_journal=None):
     from .control_plane_reference_budget import ReferenceCollectionBudget
     from .task_evaluation_scene_lineage_budget import RetainedEmissionBudget
     from .task_evaluation_scene_lifecycle_plan import _context
@@ -310,7 +312,7 @@ def _resume_current_references(policy,consent,retained,allowance,now,monotonic,*
         observation=observe(context,now(),budget,sink)
         allowance.tick()
         validate_current_reference_transfer(dict(retained,reference_observation=observation),allowance,
-                                            preserved=preserved)
+                                            preserved=preserved,policy=policy,consent=consent,pin_journal=pin_journal)
         _current_readers(policy,allowance)
     finally:
         budget.close()
@@ -422,11 +424,14 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
                 with _opened(Path(consent['members'][index]['canonical_path']).parent,directory=True) as (_,info):
                     yield from removal_records(preserved,index,generation['generation_id'],journal,_identity(info))
             yield from _cache_remove_records(initial)
+            yield from pins.pin_records(initial.get('terminal_pin_release_rows',[]))
         for event,key,evidence in records():
             allowance.tick()
             if (event,key,evidence.get('relative_path')) not in existing:
                 yield event,key,evidence
     journal.preflight(remaining_records())
+    pin_rows=initial.get('terminal_pin_release_rows',[])
+    pin_outcomes=pins.release_terminal_pins(policy,consent,pin_rows,journal=journal,pending_raw_ref=pending) if pin_rows else []
     for index,generation in enumerate(cache_generations):
         if generation['state'] in {'active','restored-active'}:
             event=journal.append('retiring',member_key='cache-'+str(index),
@@ -450,6 +455,8 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
             cache_generations[index]=_transition(policy,generation,state='retired',token=token,
                 journal_ref=outcome['event_raw_ref'])
     extra=dict(cache_outcomes=cache_outcomes,cache_generations=cache_generations) if cache_generations else {}
+    if pin_rows:
+        extra['terminal_pin_outcomes']=pin_outcomes
     snapshot=journal.retired_snapshot(dict(initial,status='retired',members=consent['members'],
                    outcomes=outcomes,generations=generations,**extra))
     receipt=dict(schema_version='scene_retirement_receipt.v1',status='retired',intent_id=consent['intent_id'],
@@ -476,7 +483,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
         _bind_transport(transport,allowance)
         _require(str(_canonical(str(plan_path)))==consent['plan_raw_ref']['path'],
                  'scene_retirement_raw_reference_changed')
-        with access.exclusive_scene_access() as locked:
+        with access.exclusive_scene_access() as locked, pins.terminal_pin_guard(policy,consent,allowance):
             _require(locked==policy,'scene_retirement_policy_changed')
             # Reload both authorities after EX; none of the earlier observation
             # can grant action if the installed records changed while waiting.
@@ -487,13 +494,13 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             if resumed is not None and type(resumed) is tuple:
                 journal,pending,initial=resumed
                 _resume_current_references(policy,consent,retained,allowance,now,monotonic,
-                                           preserved=initial['preserved'])
+                                           preserved=initial['preserved'],pin_journal=journal)
                 generations=recovery.resumed_generations(sys.modules[__name__],policy,consent,journal,initial)
                 published_objects=initial.get('declared_byte_verification',{}).get('published_objects',[])
                 recovery.reserve_phase(journal,initial['preserved'],readback=True,published_objects=published_objects)
                 _consume(initial['preserved'],transport,allowance)
                 verify_publication_rows(published_objects,transport,allowance)
-                recovery.reserve_phase(journal,initial['preserved'])
+                recovery.reserve_phase(journal,initial['preserved'],pin_rows=initial.get('terminal_pin_release_rows',[]))
                 for index,generation in enumerate(generations):
                     if generation['state'] in {'active','restored-active'}:
                         event=journal.append('retiring',member_key=str(index),evidence={
@@ -551,7 +558,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                     remote_bytes=preserved['archive']['size_bytes']+1)
                 _consume(preserved,transport,allowance)
             verified_bytes=_verify_declared_bytes(fresh,preserved,transport,allowance,verify_remote=False)
-            verified_references=validate_current_reference_transfer(fresh,allowance,preserved=preserved)
+            verified_references=validate_current_reference_transfer(fresh,allowance,preserved=preserved,policy=policy,consent=consent)
             _require(verified_references['archive_inventory_verified'] is True,
                      'scene_retirement_reference_closure_unproven')
             recovery.preparation_escrow(policy,preparation,allowance,phase='finalize',
@@ -573,6 +580,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 reference_transfer=verified_references)
             if cache_targets:
                 initial.update(cache_objects=cache_targets,cache_generations=cache_generations)
+            if verified_references.get('terminal_pin_release_rows'):
+                initial['terminal_pin_release_rows']=verified_references['terminal_pin_release_rows']
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
             pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
             def complete_records():
@@ -586,8 +595,9 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                     with _opened(Path(consent['members'][index]['canonical_path']).parent,directory=True) as (_,info):
                         yield from removal_records(preserved,index,generation['generation_id'],journal,_identity(info))
                 yield from _cache_remove_records(initial)
+                yield from pins.pin_records(initial.get('terminal_pin_release_rows',[]))
             journal.preflight(complete_records())
-            recovery.reserve_phase(journal,preserved)
+            recovery.reserve_phase(journal,preserved,pin_rows=initial.get('terminal_pin_release_rows',[]))
             for index,generation in enumerate(generations):
                 event=journal.append('retiring',member_key=str(index),evidence={
                     'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][index]['inventory_sha256']})
@@ -674,6 +684,10 @@ def _finish_restore(policy,consent,retired,reference,journal,pending,restore_con
         allowance.tick()
         existing.add((event['event'],event['member_key'],event['evidence'].get('relative_path')))
     def remaining():
+        for event,key,evidence in pins.pin_records(retired.get('terminal_pin_release_rows',[]),
+                restoring=True,outcomes=retired.get('terminal_pin_outcomes',[])):
+            if (event,key,evidence.get('relative_path')) not in existing:
+                yield event,key,evidence
         for event,key,evidence in _cache_restore_records(retired):
             allowance.tick()
             if (event,key,evidence.get('relative_path')) not in existing:
@@ -731,10 +745,14 @@ def _finish_restore(policy,consent,retired,reference,journal,pending,restore_con
             _transition(policy,generation,state='restored-active',token=retired['token'],journal_ref=event,
                 identity=evidence['restore_identity'])
         cache_outcomes.append(dict(evidence,outcome='restored'))
+    pin_rows=retired.get('terminal_pin_release_rows',[])
+    pin_outcomes=pins.restore_terminal_pins(policy,pin_rows,retired.get('terminal_pin_outcomes',[]),journal=journal) if pin_rows else []
     receipt=dict(schema_version='scene_restore_receipt.v1',status='restored',intent_id=consent['intent_id'],
          token=token,members=outcomes,retired_journal_raw_ref=reference)
     if cache_outcomes:
         receipt['cache_outcomes']=cache_outcomes
+    if pin_rows:
+        receipt['terminal_pin_outcomes']=pin_outcomes
     receipt['intent_receipt_raw_ref']=publish_progress_receipt(policy,consent,pending,dict(status='restored',
         token=token,intent_id=consent['intent_id'],members=outcomes,last_event_raw_ref=journal.prior_ref,
         **restore_context),allowance)
@@ -754,7 +772,7 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
         _bind_transport(transport,allowance)
         reference=consent['retired_journal_raw_ref']
         _require(str(_canonical(str(retired_journal_path)))==reference['path'],'scene_retirement_raw_reference_changed')
-        with access.exclusive_scene_access() as locked:
+        with access.exclusive_scene_access() as locked, ExitStack() as lifetimes:
             _require(locked==policy and load_authority(consent_path,action='restore',now=now)==authority,
                      'scene_retirement_policy_changed')
             retired=selected_document(reference,maximum=16*1024*1024,protected=True)
@@ -762,6 +780,9 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                      and retired.get('journal_digest')==canonical_digest(retired,digest_field='journal_digest')
                      and retired.get('intent_id')==consent['intent_id'] and retired.get('members')==consent['members'],
                      'scene_retirement_restore_snapshot_invalid')
+            pin_rows=retired.get('terminal_pin_release_rows',[])
+            lifetimes.enter_context(pins.terminal_pin_guard(policy,dict(consent,terminal_pin_refs=[
+                row['original_raw_ref'] for row in pin_rows]),allowance))
             resumed=recovery.select_restore(policy,authority,allowance,reference)
             if resumed is not None:
                 journal,pending,initial,projection=resumed
@@ -769,7 +790,7 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 _installed_cohort(policy,allowance)
                 generations=recovery.resumed_restore_generations(sys.modules[__name__],policy,consent,journal,initial)
                 outcomes.extend(recovery.restored_prefix(journal,generations))
-                recovery.reserve_phase(journal,retired['preserved'],restoring=True)
+                recovery.reserve_phase(journal,retired['preserved'],restoring=True,pin_rows=retired.get('terminal_pin_release_rows',[]))
                 restore_context=dict(original_retirement_token=retired['token'],restore_journal_initial_raw_ref=journal.initial_ref)
                 was_restored=projection['status']=='restored'
                 if not was_restored:
@@ -800,6 +821,8 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 consent_raw_ref=authority['consent_raw_ref'],action_allowance=allowance.checkpoint())
             if retired.get('cache_objects'):
                 initial.update(cache_objects=retired['cache_objects'],cache_generations=retired['cache_generations'])
+            if pin_rows:
+                initial.update(terminal_pin_release_rows=pin_rows,terminal_pin_outcomes=retired['terminal_pin_outcomes'])
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
             def complete_restore_records():
                 for index,generation in enumerate(generations):
@@ -808,8 +831,9 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                         outcome='restored',restore_identity=[2**64-1]*3)
                 yield from restore_records(retired['preserved'],journal)
                 yield from _cache_restore_records(retired)
+                yield from pins.pin_records(pin_rows,restoring=True,outcomes=retired.get('terminal_pin_outcomes',[]))
             journal.preflight(complete_restore_records())
-            recovery.reserve_phase(journal,retired['preserved'],restoring=True)
+            recovery.reserve_phase(journal,retired['preserved'],restoring=True,pin_rows=retired.get('terminal_pin_release_rows',[]))
             receipt_path=Path(policy['reference_context']['roots']['intent_root'])/consent['intent_id']/'scene-retired.v1.json'
             allowance.tick()
             _,pending=load_document(receipt_path,maximum=16*1024*1024)
