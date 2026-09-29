@@ -1,0 +1,71 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/control_plane_lane_legacy_owner.py
+"""Only a committed protected head can expose a historical owner label."""
+
+import os
+
+import pytest
+
+
+@pytest.fixture
+def registry(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_owner_consents as owners
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from blueprint_pipeline.control_plane_lane_legacy_owner import LegacyOwnerStore
+
+    root = tmp_path / "registry"
+    root.mkdir(mode=0o700)
+    (root / ".legacy-owner.lock").write_bytes(b"")
+    (root / ".legacy-owner.lock").chmod(0o600)
+    true_protected = owners._protected
+
+    def fixture_protection(info, *, directory=False, mode=None):
+        import stat
+        assert stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+        assert mode is None or stat.S_IMODE(info.st_mode) == mode
+
+    monkeypatch.setattr(owners, "_protected", fixture_protection)
+    budget = ReferenceCollectionBudget(monotonic=lambda: 0)
+    files = owners._Files(budget)
+    store = LegacyOwnerStore(files, root)
+    yield store, root
+    files.finish()
+    budget.close()
+    monkeypatch.setattr(owners, "_protected", true_protected)
+
+
+def test_registry_commits_only_after_full_receipt_and_head(registry):
+    from blueprint_pipeline.control_plane_lane_legacy_owner import LegacyOwnerError
+
+    store, root = registry
+    packet_id = "a" * 32
+    path = "/work/lanes/diagnostics/old-1"
+    packet = {"schema_version": "packet", "path": path, "digest": "sha256:" + "a" * 64}
+    approval = {"schema_version": "approval", "packet_digest": packet["digest"]}
+    registration = {"schema_version": "registration", "path": path, "owner": "owner"}
+    store.publish(packet_id, "packet", packet)
+    store.publish(packet_id, "approval", approval)
+    store.publish(packet_id, "registration", registration)
+    assert store.committed_heads() == []
+    store.publish(packet_id, "receipt", {"registration": registration})
+    assert store.committed_heads() == []
+    store.publish_head(path, packet_id, registration)
+    assert len(store.committed_heads()) == 1
+    assert store.read(packet_id, "packet") == packet
+    store.publish(packet_id, "packet", packet)  # exact retry
+    with pytest.raises(LegacyOwnerError, match="legacy_owner_record_conflict"):
+        store.publish(packet_id, "packet", packet | {"path": "/other"})
+    assert not (root / ("b" * 32 + ".head.json")).exists()
+
+
+def test_registry_rejects_foreign_link_and_unknown_entry(registry):
+    from blueprint_pipeline.control_plane_lane_legacy_owner import LegacyOwnerError
+
+    store, root = registry
+    outside = root.parent / "outside"
+    outside.write_bytes(b"foreign")
+    (root / ("a" * 32 + ".packet.json")).symlink_to(outside)
+    with pytest.raises(LegacyOwnerError):
+        store.publish("a" * 32, "packet", {"x": 1})
+    with pytest.raises(LegacyOwnerError):
+        store.committed_heads()
