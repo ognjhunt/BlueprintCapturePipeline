@@ -240,3 +240,89 @@ def build_version_packet(consent: dict, *, selected_path: str, generation: dict,
     packet["packet_digest"] = canonical_digest(packet, digest_field="packet_digest")
     _require(len(json.dumps(packet, sort_keys=True).encode()) <= 32768, code)
     return packet
+
+
+def _approved_policy(packet: dict, policy_bytes: bytes, principal: str, owner: str,
+                     *, now: float) -> dict:
+    from . import control_plane_lane_owner_consents as owners
+    from .control_plane_reference_budget import ReferenceCollectionBudget
+
+    _require(isinstance(policy_bytes, bytes) and 0 < len(policy_bytes) <= owners.MAX_POLICY_BYTES,
+             "legacy_owner_policy_changed")
+    current = "sha256:" + hashlib.sha256(policy_bytes).hexdigest()
+    _require(current == packet.get("policy_sha256"), "legacy_owner_policy_changed")
+    _require(principal == packet.get("principal") and owner == packet.get("owner"),
+             "legacy_owner_approval_principal_mismatch")
+    budget = ReferenceCollectionBudget(monotonic=time.monotonic)
+    try:
+        try:
+            policy = owners._policy(policy_bytes, principal, budget)
+        except owners.OwnerCensusConsentError:
+            raise LegacyOwnerError("legacy_owner_policy_changed") from None
+        _require(owner in policy["owners"] and "register" in policy["allowed_actions"]
+                 and now <= packet["observed_at_epoch"] + policy["max_consent_seconds"],
+                 "legacy_owner_policy_changed")
+        return policy
+    finally:
+        budget.close()
+
+
+def approve_version_packet(packet: dict, *, ack_packet_digest: str,
+                           current_policy_bytes: bytes, principal: str, owner: str,
+                           now: float) -> dict:
+    """Separate explicit owner decision after the generation packet is reviewable."""
+    _require(isinstance(packet, dict)
+             and packet.get("schema_version") == "control_plane_lane_legacy_owner_packet.v1"
+             and packet.get("packet_digest") == canonical_digest(packet, digest_field="packet_digest")
+             and packet.get("approval_required") is True
+             and packet.get("execution_authorized") is False, "legacy_owner_packet_invalid")
+    _require(ack_packet_digest == packet["packet_digest"], "legacy_owner_approval_ack_mismatch")
+    _require(type(now) in (int, float) and packet["observed_at_epoch"] <= now < packet["expires_at_epoch"],
+             "legacy_owner_approval_expired")
+    policy = _approved_policy(packet, current_policy_bytes, principal, owner, now=now)
+    decision = dict(schema_version="control_plane_lane_legacy_owner_approval.v1",
+                    packet_digest=packet["packet_digest"], principal=principal, owner=owner,
+                    approved_action="register_owner_review", approved_at_epoch=now,
+                    expires_at_epoch=min(packet["expires_at_epoch"],
+                                         now + policy["max_consent_seconds"]),
+                    policy_sha256=packet["policy_sha256"], execution_authorized=False,
+                    gc_eligible=False, mutations=0)
+    decision["approval_digest"] = canonical_digest(decision, digest_field="approval_digest")
+    return decision
+
+
+def validate_registration(packet: dict, approval: dict, *, current_generation: dict,
+                          fresh_census: dict, current_policy_bytes: bytes,
+                          now: float) -> dict:
+    """Check both decisions and current evidence; the result is owner_review only."""
+    _require(isinstance(packet, dict) and isinstance(approval, dict)
+             and packet.get("packet_digest") == canonical_digest(packet, digest_field="packet_digest")
+             and approval.get("schema_version") == "control_plane_lane_legacy_owner_approval.v1"
+             and approval.get("approval_digest") == canonical_digest(approval, digest_field="approval_digest")
+             and approval.get("packet_digest") == packet["packet_digest"]
+             and approval.get("approved_action") == "register_owner_review"
+             and approval.get("execution_authorized") is False and approval.get("gc_eligible") is False,
+             "legacy_owner_approval_invalid")
+    _require(type(now) in (int, float) and now >= approval["approved_at_epoch"]
+             and now < approval["expires_at_epoch"] and now < packet["expires_at_epoch"],
+             "legacy_owner_approval_expired")
+    _approved_policy(packet, current_policy_bytes, approval["principal"], approval["owner"], now=now)
+    _require(current_generation == packet.get("target_generation"), "legacy_target_changed")
+    _require(isinstance(fresh_census, dict) and fresh_census.get("status") == "complete"
+             and fresh_census.get("scan_errors") == []
+             and isinstance(fresh_census.get("rows"), list), "legacy_owner_references_incomplete")
+    rows = [row for row in fresh_census["rows"] if isinstance(row, dict)
+            and row.get("path") == packet.get("selected_path")]
+    _require(len(rows) == 1 and rows[0].get("references") == [] and rows[0].get("unreadable") == 0,
+             "legacy_owner_references_incomplete")
+    result = dict(schema_version="control_plane_lane_legacy_owner_registration.v1",
+                  path=packet["selected_path"], owner=approval["owner"],
+                  principal=approval["principal"], packet_digest=packet["packet_digest"],
+                  approval_digest=approval["approval_digest"],
+                  target_generation=packet["target_generation"],
+                  expires_at_epoch=approval["expires_at_epoch"], cleanup="owner_review",
+                  classification="legacy_owner_review", gc_eligible=False,
+                  references_clear=False, candidate_bytes=None, eta_seconds=None,
+                  mutations=0)
+    result["registration_digest"] = canonical_digest(result, digest_field="registration_digest")
+    return result
