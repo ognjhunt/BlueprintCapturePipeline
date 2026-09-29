@@ -150,7 +150,7 @@ def _legacy_owner_properties(config: DoorConfig, _request: dict[str, Any]) -> tu
             "AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE",
             f"ReadOnlyPaths={registry} {config.lane_owner_policy_file} "
             f"{config.experiment_gc_environment_file} "
-            f"/etc/systemd/system/blueprint-control-plane-storage-gc.service "
+            f"-/etc/systemd/system/blueprint-control-plane-storage-gc.service "
             f"{config.lane_scratch_work_root} {config.lane_scratch_inputs_root}",
             f"ReadWritePaths={Path(config.spool_root) / 'results'}")
 
