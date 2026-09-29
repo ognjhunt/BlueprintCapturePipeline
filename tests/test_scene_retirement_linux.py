@@ -293,7 +293,14 @@ def _enabled_sdk_native_phase():
         shutil.copyfile(runtime/'deploy/systemd'/unit,unit_path)
         unit_path.chmod(0o644)
         _native(['/usr/bin/systemctl','daemon-reload'])
-        _native(['/usr/bin/systemctl','start',unit],timeout=90)
+        try:
+            _native(['/usr/bin/systemctl','start',unit],timeout=90)
+        except AssertionError as error:
+            # Retain the actual guard/bootstrap failure before the disposable
+            # unit and installed SDK are removed by the fixture's finalizer.
+            journal = _native(['/usr/bin/journalctl','--unit='+unit,'--no-pager',
+                               '--lines=80','--output=cat','--quiet'])
+            raise AssertionError(str(error) + '\n' + journal) from None
         deadline=time.monotonic()+90
         health=None
         while time.monotonic()<deadline:

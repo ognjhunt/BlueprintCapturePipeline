@@ -81,7 +81,21 @@ def bounded_size(value, limit, *, work_budget=None):
         elif isinstance(item, str):
             require(len(item) <= limit - size, 'output_limit', work_budget=work_budget) if work_budget is not None else require(len(item) <= limit - size, 'output_limit')
             size += 2
-            for char in (_work_items(item, work_budget) if work_budget is not None else item):
+            if work_budget is not None:
+                # The complete value already passed the native representation
+                # preflight. Encode only bounded string fragments, checking the
+                # live clock before allocation and after each native call.
+                for offset in range(0, len(item), 1024):
+                    _work(work_budget)
+                    try:
+                        fragment = json.dumps(item[offset:offset + 1024], ensure_ascii=False).encode('utf-8')
+                    except (ValueError, UnicodeError):
+                        require(False, 'json_invalid', work_budget=work_budget)
+                    _work(work_budget)
+                    size += len(fragment) - 2
+                    require(size <= limit, 'output_limit', work_budget=work_budget)
+                continue
+            for char in item:
                 code = ord(char)
                 require(not 0xD800 <= code <= 0xDFFF, 'json_invalid', work_budget=work_budget) if work_budget is not None else require(not 0xD800 <= code <= 0xDFFF, 'json_invalid')
                 size += (2 if char in '"\\\b\f\n\r\t' else 6 if code < 32 else
