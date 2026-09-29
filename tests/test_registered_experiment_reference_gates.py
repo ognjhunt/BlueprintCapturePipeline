@@ -358,6 +358,70 @@ def test_actual_nested_queue_cannot_restart_deadline_before_publication(tmp_path
         queue.stage_launch_preparation_request(
             value=request(), queue_root=tmp_path / "queue", submitted_by="webapp-service"
         )
+    assert not (tmp_path / "queue").exists()
     assert not list(tmp_path.rglob("*.json"))
     assert len(budgets) == 1
     assert budgets[0].closed is True
+
+
+def test_actual_scene_validation_cannot_publish_after_original_deadline(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from tests.test_task_evaluation_scene_intake import request
+
+    clock = [0.0]
+    budgets = []
+
+    def create(**kw):
+        value = ReferenceCollectionBudget(monotonic=lambda: clock[0], **kw)
+        budgets.append(value)
+        return value
+
+    original = intake.validate_request
+
+    def delayed(*args, **kwargs):
+        value = original(*args, **kwargs)
+        clock[0] = 6.0
+        return value
+
+    monkeypatch.setattr(gate, "ReferenceCollectionBudget", create)
+    monkeypatch.setattr(intake, "validate_request", delayed)
+    destination = tmp_path / "no-output"
+    with pytest.raises(intake.SceneIntakeError, match="experiment_publisher_input_limit"):
+        intake.stage_scene_intent(
+            value=request(),
+            queue_root=destination,
+            authenticated_client="webapp-service",
+            trusted_clients={"webapp-service"},
+            now=1000,
+        )
+    assert not destination.exists()
+    assert len(budgets) == 1 and budgets[0].closed
+
+
+def test_actual_private_queue_encoding_cannot_open_after_original_deadline(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    from blueprint_pipeline import task_evaluation_launch_preparation_queue as queue
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+
+    clock = [0.0]
+    monkeypatch.setattr(
+        gate,
+        "ReferenceCollectionBudget",
+        lambda **kw: ReferenceCollectionBudget(monotonic=lambda: clock[0], **kw),
+    )
+    original = queue.json.dumps
+
+    def delayed(*args, **kwargs):
+        value = original(*args, **kwargs)
+        clock[0] = 6.0
+        return value
+
+    monkeypatch.setattr(queue.json, "dumps", delayed)
+    destination = tmp_path / "one" / "two" / "receipt.json"
+    destination.parent.mkdir(parents=True)
+    with pytest.raises(ValueError, match="experiment_publisher_input_limit"):
+        queue.write_launch_preparation_record_exclusive(destination, {"version": 1})
+    assert not destination.exists()
+    assert not list(destination.parent.iterdir())

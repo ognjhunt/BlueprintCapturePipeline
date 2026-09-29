@@ -416,3 +416,11 @@ def test_actual_gc_can_stream_slow_payload_without_resetting_metadata_budget(exp
     assert outcome['decision'] == 'retired', outcome
     assert _current_entry(value, intent_id)['state'] == 'retired'
     assert len(list(target.iterdir())) == 2 and all(body.closed for body in cloud.bodies)
+
+
+def test_completed_evidence_uses_same_protected_installed_pins_selection(expired_completed_evidence):
+    value, _, _, _, _ = expired_completed_evidence
+    settings = json.loads(value[0].read_bytes())
+    env = Path(settings['experiment_gc_environment_file'])
+    assert env.parent == value[0].parent
+    assert env.read_text().splitlines() == ['BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=' + str(value[0].parent / 'pins')]
