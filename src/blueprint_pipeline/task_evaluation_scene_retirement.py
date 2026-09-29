@@ -601,8 +601,97 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
         return _partial_result('scene_retirement_action_unproven',journal,outcomes,policy,consent,pending,allowance,preparation=preparation)
 
 
+def _cache_restore_records(retired):
+    identity=[2**64-1]*3
+    aliases=retired['preserved'].get('cache_aliases',[])
+    generations=retired.get('cache_generations',[])
+    _require(len(aliases)==len(generations)<=256,'scene_retirement_cache_journal_unproven')
+    for index,(alias,generation) in enumerate(zip(aliases,generations)):
+        key='cache-'+str(index)
+        yield 'restoring',key,{'generation_id':generation['generation_id']}
+        evidence=dict(canonical_path=alias['path'],restore_identity=identity,
+            source_path=str(Path(retired['preserved']['members'][alias['member_index']]['path'])/alias['relative_path']),
+            parent_identity=identity,digest=alias['digest'],size_bytes=alias['size_bytes'])
+        yield 'cache_restore_planned',key,evidence
+        yield 'cache_alias_restored',key,evidence
+        yield 'restored-active',key,evidence
+
+
+def _cache_restore_generations(policy,retired,journal,allowance):
+    targets=retired.get('cache_objects',[])
+    prior=retired.get('cache_generations',[])
+    aliases=retired['preserved'].get('cache_aliases',[])
+    _require(type(targets) is list and type(prior) is list and type(aliases) is list
+             and len(targets)==len(prior)==len(aliases)<=256,'scene_retirement_cache_journal_unproven')
+    proofs={}
+    for event in journal.events:
+        allowance.tick()
+        proofs[event['raw_ref']['sha256']]=event
+    result=[]
+    variable={'state','dev','ino','mode','state_sequence','journal_sha256','state_digest'}
+    for index,(target,original,alias) in enumerate(zip(targets,prior,aliases)):
+        allowance.tick()
+        path=_canonical(target['canonical_path'])
+        _require(any(path.is_relative_to(Path(row['root'])) for row in policy['roots'])
+            and original.get('schema_version')=='scene_content_generation.v1' and original.get('state')=='retired'
+            and original.get('retirement_token')==retired['token']
+            and original.get('state_digest')==canonical_digest(original,digest_field='state_digest')
+            and all(target[field]==original[field] for field in ('canonical_path','generation_id','digest','size_bytes'))
+            and target['source_raw_ref']==original['source_publication_raw_ref']
+            and alias['path']==str(path) and alias['digest']==target['digest']
+            and alias['size_bytes']==target['size_bytes'],'scene_retirement_generation_changed')
+        key=hashlib.sha256(str(path).encode()).hexdigest()+'.json'
+        allowance.charge('local_bytes',65536)  # Conservative bound before protected generation acquisition.
+        current,_=load_document(Path(policy['generation_store'])/key,maximum=65536)
+        _require(type(current) is dict and set(current)==set(original)
+            and current.get('state_digest')==canonical_digest(current,digest_field='state_digest')
+            and all(current[field]==original[field] for field in set(original)-variable),
+            'scene_retirement_generation_changed')
+        if current['state']=='retired':
+            _require(current==original,'scene_retirement_generation_changed')
+        else:
+            event=proofs.get(current.get('journal_sha256'))
+            _require(current['state'] in {'restoring','restored-active'} and event is not None
+                and event['member_key']=='cache-'+str(index) and event['event']==current['state'],
+                'scene_retirement_generation_changed')
+            if current['state']=='restoring':
+                _require(event['evidence']=={'generation_id':current['generation_id']},
+                    'scene_retirement_generation_changed')
+            else:
+                _require(all(event['evidence'].get(field)==current[field] for field in
+                    ('canonical_path','digest','size_bytes'))
+                    and event['evidence'].get('restore_identity')==[current[field] for field in ('dev','ino','mode')],
+                    'scene_retirement_generation_changed')
+        result.append(current)
+    return result
+
+
 def _finish_restore(policy,consent,retired,reference,journal,pending,restore_context,generations,outcomes,allowance,transport,*,was_restored=False):
     token=journal.token
+    cache_generations=_cache_restore_generations(policy,retired,journal,allowance)
+    existing=set()
+    for event in journal.events:
+        allowance.tick()
+        existing.add((event['event'],event['member_key'],event['evidence'].get('relative_path')))
+    def remaining():
+        for event,key,evidence in _cache_restore_records(retired):
+            allowance.tick()
+            if (event,key,evidence.get('relative_path')) not in existing:
+                yield event,key,evidence
+        for event,key,evidence in restore_records(retired['preserved'],journal):
+            allowance.tick()
+            if (event,key,evidence.get('relative_path')) not in existing:
+                yield event,key,evidence
+        for index,generation in enumerate(generations):
+            if generation['state']!='restored-active':
+                yield 'restored-active',str(index),dict(canonical_path=consent['members'][index]['canonical_path'],
+                    outcome='restored',restore_identity=[2**64-1]*3)
+    journal.preflight(remaining())
+    for index,generation in enumerate(cache_generations):
+        if generation['state']=='retired':
+            event=journal.append('restoring',member_key='cache-'+str(index),
+                evidence={'generation_id':generation['generation_id']})
+            cache_generations[index]=_transition(policy,generation,state='restoring',token=retired['token'],journal_ref=event)
     restored=restore_preserved_members(retired['preserved'],transport=transport,journal=journal)
     for index,(generation,outcome) in enumerate(zip(generations,restored)):
         if generation['state']!='restored-active':
@@ -620,8 +709,32 @@ def _finish_restore(policy,consent,retired,reference,journal,pending,restore_con
             pending=publish_progress_receipt(policy,consent,pending,dict(status='restoring',token=token,
                 intent_id=consent['intent_id'],members=list(outcomes),last_event_raw_ref=journal.prior_ref,
                 **restore_context),allowance)
+    aliases=retired['preserved'].get('cache_aliases',[])
+    alias_events={}
+    for event in journal.events:
+        allowance.tick()
+        if event['event']=='cache_alias_restored':
+            _require(event['member_key'] not in alias_events,'scene_retirement_cache_journal_unproven')
+            alias_events[event['member_key']]=event
+    cache_outcomes=[]
+    for index,(generation,alias) in enumerate(zip(cache_generations,aliases)):
+        allowance.tick()
+        event=alias_events.get('cache-'+str(index))
+        _require(event is not None,'scene_retirement_cache_journal_unproven')
+        evidence=event['evidence']
+        with _opened(alias['path']) as (_,info):
+            _require(evidence['restore_identity']==list(_identity(info)) and info.st_size==alias['size_bytes']
+                and (info.st_uid,info.st_gid)==(alias['uid'],alias['gid'])
+                and stat.S_IMODE(info.st_mode)==alias['mode'],'scene_retirement_generation_changed')
+        if generation['state']!='restored-active':
+            event=journal.append('restored-active',member_key='cache-'+str(index),evidence=evidence)
+            _transition(policy,generation,state='restored-active',token=retired['token'],journal_ref=event,
+                identity=evidence['restore_identity'])
+        cache_outcomes.append(dict(evidence,outcome='restored'))
     receipt=dict(schema_version='scene_restore_receipt.v1',status='restored',intent_id=consent['intent_id'],
          token=token,members=outcomes,retired_journal_raw_ref=reference)
+    if cache_outcomes:
+        receipt['cache_outcomes']=cache_outcomes
     receipt['intent_receipt_raw_ref']=publish_progress_receipt(policy,consent,pending,dict(status='restored',
         token=token,intent_id=consent['intent_id'],members=outcomes,last_event_raw_ref=journal.prior_ref,
         **restore_context),allowance)
@@ -685,6 +798,8 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 intent_raw_ref=consent['intent_raw_ref'],members=consent['members'],generations=generations,
                 original_retirement_token=retired['token'],retired_journal_raw_ref=reference,
                 consent_raw_ref=authority['consent_raw_ref'],action_allowance=allowance.checkpoint())
+            if retired.get('cache_objects'):
+                initial.update(cache_objects=retired['cache_objects'],cache_generations=retired['cache_generations'])
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=initial,allowance=allowance)
             def complete_restore_records():
                 for index,generation in enumerate(generations):
@@ -692,6 +807,7 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                     yield 'restored-active',str(index),dict(canonical_path=consent['members'][index]['canonical_path'],
                         outcome='restored',restore_identity=[2**64-1]*3)
                 yield from restore_records(retired['preserved'],journal)
+                yield from _cache_restore_records(retired)
             journal.preflight(complete_restore_records())
             recovery.reserve_phase(journal,retired['preserved'],restoring=True)
             receipt_path=Path(policy['reference_context']['roots']['intent_root'])/consent['intent_id']/'scene-retired.v1.json'

@@ -408,7 +408,7 @@ def test_native_cache_union_metadata_refuses_a_second_owner_alias_before_payload
             cache_aliases=[dict(canonical_path=str(alias),digest='sha256:'+alias.name,size_bytes=6)])
 
 
-@pytest.mark.parametrize('mode',['complete','combined_journal_cap','restore'])
+@pytest.mark.parametrize('mode',['complete','combined_journal_cap','restore','restore_generation_changed','restore_combined_cap'])
 def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generations(tmp_path,monkeypatch,mode):
     from blueprint_pipeline import task_evaluation_scene_retirement as engine
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
@@ -474,7 +474,7 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
     snapshot=json.loads(Path(receipt['retired_journal_raw_ref']['path']).read_bytes())
     assert snapshot['cache_outcomes']==receipt['cache_outcomes']
     assert all(json.loads(file.read_bytes())['state']=='retired' for file,_ in caches)
-    if mode!='restore':
+    if not mode.startswith('restore'):
         return
     from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_progress_receipt
     retired_generation=engine._generation(policy,consent['members'][0],expected_states={'retired'},
@@ -498,6 +498,30 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
     with access.exclusive_scene_access():
         event=restore.append('restoring',member_key='0',evidence={'generation_id':retired_generation['generation_id']})
         restoring=engine._transition(policy,retired_generation,state='restoring',token=journal.token,journal_ref=event)
+        if mode=='restore_generation_changed':
+            target,foreign=caches[0]
+            foreign=json.loads(target.read_bytes())
+            foreign['source_publication_raw_ref']=consent['intent_raw_ref']
+            _sealed_file(target,foreign,'state_digest',mode=0o600)
+            monkeypatch.setattr(transport,'read_archive',lambda *args:pytest.fail('unproved generation entered restore read'))
+            with pytest.raises(ValueError,match='scene_retirement_generation_changed'):
+                engine._finish_restore(policy,restore_consent,snapshot,receipt['retired_journal_raw_ref'],
+                    restore,pending,context,[restoring],[],allowance,transport)
+            assert not root.exists() and all(not Path(row['canonical_path']).exists() for row in consent['cache_objects'])
+            return
+        if mode=='restore_combined_cap':
+            from blueprint_pipeline import task_evaluation_scene_retirement_journal as journal_module
+            from blueprint_pipeline.task_evaluation_scene_retirement_restore import restore_records
+            folder_rows=list(restore_records(preserved,restore))
+            cache_rows=list(engine._cache_restore_records(snapshot))
+            monkeypatch.setattr(journal_module,'MAX_EVENTS',restore.sequence+max(len(folder_rows),len(cache_rows)))
+            monkeypatch.setattr(transport,'read_archive',lambda *args:pytest.fail('underreserved restore entered payload read'))
+            with pytest.raises(ValueError,match='scene_retirement_journal_limit'):
+                engine._finish_restore(policy,restore_consent,snapshot,receipt['retired_journal_raw_ref'],
+                    restore,pending,context,[restoring],[],allowance,transport)
+            assert not root.exists()
+            assert all(json.loads(file.read_bytes())['state']=='retired' for file,_ in caches)
+            return
         result=engine._finish_restore(policy,restore_consent,snapshot,receipt['retired_journal_raw_ref'],
             restore,pending,context,[restoring],[],allowance,transport)
     assert result['status']=='restored' and root.is_dir()
