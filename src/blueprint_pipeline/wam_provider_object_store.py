@@ -1779,15 +1779,18 @@ def _upload_registered_checkpoint_file(client, *, bucket, key, expected, row, us
     """One proven payload FD; synchronous SDK calls receive bounded bytes only."""
     from .control_plane_registered_checkpoint_cache import NeededCheckpointCacheError
     use.check()
-    created = _registered_call(use, client.create_multipart_upload, Bucket=bucket, Key=key,
-                               Metadata={"sha256": expected})
-    if (type(created) is not dict or len(created) > 64 or type(created.get("UploadId")) is not str
-            or not 0 < len(created["UploadId"].encode()) <= 4096):
-        raise NeededCheckpointCacheError("needed_cache_upload_identity_invalid")
-    upload_id, parts, buffer = created["UploadId"], [], bytearray()
+    upload_id, stream, parts, buffer = None, None, [], bytearray()
     digest, total, completed = hashlib.sha256(), 0, False
-    stream = use.chunks(use._root / row["relative_path"], role="upload")
     try:
+        created = client.create_multipart_upload(Bucket=bucket, Key=key, Metadata={"sha256": expected})
+        if (type(created) is not dict or len(created) > 64 or type(created.get("UploadId")) is not str
+                or not 0 < len(created["UploadId"].encode()) <= 4096):
+            raise NeededCheckpointCacheError("needed_cache_upload_identity_invalid")
+        # Retain the bounded native handle BEFORE current authority can refuse.
+        # This selects cleanup only, never permission to send another byte.
+        upload_id = created["UploadId"]
+        use.check()
+        stream = use.chunks(use._root / row["relative_path"], role="upload")
         for chunk in stream:
             digest.update(chunk)
             total += len(chunk)
@@ -1811,16 +1814,18 @@ def _upload_registered_checkpoint_file(client, *, bucket, key, expected, row, us
     finally:
         # Close/join owned local work even after a sticky current-authority refusal.
         try:
-            stream.close()
+            if stream is not None:
+                stream.close()
         except Exception:
             use._failure = use._failure or "needed_cache_upload_cleanup_unresolved"
             raise
         finally:
-            if not completed:
+            if upload_id is not None and not completed:
                 try:
                     client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
                 except Exception:
                     use._failure = use._failure or "needed_cache_upload_cleanup_unresolved"
+                    raise NeededCheckpointCacheError("needed_cache_upload_cleanup_unresolved") from None
 
 
 def _stage_registered_runtime_dependency(*, job_dir, dependency_path, expected_sha256, key_prefix,

@@ -796,12 +796,13 @@ def test_known_wam_create_response_is_aborted_on_current_revoke(cache_installati
     with cache.NeededCheckpointCacheUse.open_registered(Path(result['path']), installed_config_path=value['config'],
                                                        now=lambda: 1200) as use:
         row = use._rows[0]
-        with pytest.raises(cache.NeededCheckpointCacheError):
+        with pytest.raises(cache.NeededCheckpointCacheError,
+                           match='needed_cache_upload_cleanup_unresolved' if abort_fails else 'needed_cache_'):
             wam._upload_registered_checkpoint_file(Client(), bucket='fixture', key='fixture-object',
                 expected=row['sha256'].removeprefix('sha256:'), row=row, use=use)
         assert events == ['create', 'abort']
         if abort_fails:
-            assert use._failure == 'needed_cache_upload_cleanup_unresolved'
+            assert use._failure is not None  # The original sticky refusal is not cleared.
 
 
 @pytest.mark.parametrize('phase', ['issue', 'fill'])
