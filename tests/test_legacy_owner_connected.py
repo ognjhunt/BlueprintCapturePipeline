@@ -205,6 +205,30 @@ def test_new_reference_before_head_keeps_uncommitted_owner_record_unlabeled(inst
     assert payload.read_bytes() == b"old, preserved"
 
 
+def test_revoked_old_consent_blocks_head_and_drops_existing_label(installed, monkeypatch):
+    target, payload, registry, legacy = installed
+    packet, _ = _issue_and_approve(installed)
+    original = legacy._load_old_consent
+    monkeypatch.setattr(legacy, "_load_old_consent", lambda *a, **k: (_ for _ in ()).throw(
+        legacy.LegacyOwnerError("legacy_owner_consent_changed")))
+    with pytest.raises(legacy.LegacyOwnerError, match="legacy_owner_consent_changed"):
+        legacy.apply_owner_review(packet_id=packet["packet_id"],
+                                  installed_config_path="/fixture/door.json", now=1021,
+                                  monotonic=lambda: 0)
+    assert not list(registry.glob("*.head.json"))
+    monkeypatch.setattr(legacy, "_load_old_consent", original)
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+    monkeypatch.setattr(legacy, "_load_old_consent", lambda *a, **k: (_ for _ in ()).throw(
+        legacy.LegacyOwnerError("legacy_owner_consent_changed")))
+    report = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                         monotonic=lambda: 0)
+    row = next(item for item in report["rows"] if item["path"] == str(target))
+    assert "owner" not in row and report["observed_owner_count"] == 0
+    assert payload.read_bytes() == b"old, preserved"
+
+
 def test_crash_before_head_is_recoverable_without_promoting_torn_record(installed, monkeypatch):
     target, payload, registry, legacy = installed
     packet, _ = _issue_and_approve(installed)
