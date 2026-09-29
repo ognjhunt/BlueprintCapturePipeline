@@ -80,6 +80,29 @@ def expired_completed_evidence(installation, tmp_path, monkeypatch):  # noqa: F8
     return installation, target, born, action, use.entry['intent_id']
 
 
+@pytest.mark.parametrize('kind,mode', [('file', 0o660), ('directory', 0o770), ('file', 0o1600), ('directory', 0o1700)])
+def test_offload_refuses_original_metadata_native_restore_cannot_reproduce(installation, monkeypatch, request, kind, mode):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    actual = root.issue_experiment_action_intent
+    selected = []
+
+    def issue(intent_id, **kwargs):
+        settings = json.loads(Path(kwargs['installed_config_path']).read_bytes())
+        target = Path(settings['lane_scratch_work_root']) / 'g1' / ('registered-' + intent_id)
+        member = (target / 'native_g1_development_pair.v1.json' if kind == 'file'
+                  else next(path for path in target.iterdir() if path.is_dir()))
+        member.chmod(mode)
+        selected.append((member, _payload_snapshot(target)))
+        return actual(intent_id, **kwargs)
+
+    monkeypatch.setattr(root, 'issue_experiment_action_intent', issue)
+    with pytest.raises(ValueError, match='experiment_restore_member_mode'):
+        request.getfixturevalue('expired_completed_evidence')
+    member, snapshot = selected[0]
+    assert member.stat().st_mode & 0o7777 == mode
+    assert _payload_snapshot(member.parent if kind == 'file' else member.parent) == snapshot
+
+
 @pytest.mark.parametrize('corrupt', [False, True])
 def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         expired_completed_evidence, monkeypatch, corrupt):
