@@ -397,6 +397,9 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     assert (module._RUNTIME_ROOT / 'dependencies/fixture_sdk/__init__.py').read_bytes() == b'value = 1\n'
     assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
     assert result['authority_issued'] is False and result['cleanup_enabled'] is False
+    repeated = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent)
+    assert repeated['status'] == 'refreshed'
+    assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/_sam_parser_js/__init__.py').read_bytes() == b''
 
 
 def test_live_installer_prepares_immutable_runtime_before_service_ownership_and_units():
