@@ -19,8 +19,12 @@ def _raw(path: Path):
     return (str(path), 'sha256:' + hashlib.sha256(body).hexdigest(), len(body))
 
 
-@pytest.mark.parametrize('drift', [None, 'publication_bytes', 'revision_bytes', 'revision_not_archived'])
-def test_completed_construction_handoff_requires_selected_published_revision(tmp_path, monkeypatch, drift):
+@pytest.mark.parametrize('finish,drift', [
+    ('completed', None), ('completed', 'publication_bytes'),
+    ('completed', 'revision_bytes'), ('completed', 'revision_not_archived'),
+    ('expired_grace_elapsed', None),
+])
+def test_completed_construction_handoff_requires_selected_published_revision(tmp_path, monkeypatch, finish, drift):
     from tests import test_task_evaluation_scene_configuration_publication as producer_test
 
     # Exercise the existing no-provider publication test's actual producer and
@@ -73,23 +77,25 @@ def test_completed_construction_handoff_requires_selected_published_revision(tmp
     receipt = stage_scene_construction(request=request, preparation_result=pre, recipe=recipe,
         recipe_configuration_references=[], render_inputs_result=render, queue_root=root)
     queued = json.loads(Path(receipt['queue_path']).read_bytes())
+    completed = finish == 'completed'
     final = finalize_scene_construction(queue_root=root,
         envelope={**queued, 'control_plane_envelope_digest': queued['envelope_digest']},
-        terminal_result={'status': 'completed', 'run_id': request['run_id'],
+        terminal_result={'status': 'completed' if completed else 'blocked', 'run_id': request['run_id'],
             'source_commit': request['expected_production_commit'],
-            'configuration_completed': True, 'configured_scene_published': True,
-            'configured_scene_revision_digest': revision['revision_digest'],
-            'publication_result_digest': publication['result_digest'],
-            'full_byte_service_account_readback_passed': True,
-            'continuing_spend_from_this_run': False, 'blockers': []})
-    assert final['status'] == 'completed'
+            'configuration_completed': completed, 'configured_scene_published': completed,
+            'configured_scene_revision_digest': revision['revision_digest'] if completed else None,
+            'publication_result_digest': publication['result_digest'] if completed else None,
+            'full_byte_service_account_readback_passed': completed,
+            'continuing_spend_from_this_run': False,
+            'blockers': [] if completed else ['scene_execution_owner_expired']})
+    assert final['status'] == ('completed' if completed else 'blocked')
     result = {**pre, 'status': 'queued_for_production_scene_configuration',
               'construction_recipe_digest': recipe['recipe_digest'],
               'construction_orchestration_id': request['preparation_id'],
               'construction_queue_envelope_digest': queued['envelope_digest'],
               'construction_queue_receipt_digest': receipt['receipt_digest']}
     proofs = object.__new__(TerminalProofs)
-    proofs.fresh = {'finished_observation': {'status': 'completed'},
+    proofs.fresh = {'finished_observation': {'status': finish},
                     'planner_context': {'scene_construction_queue_root': str(root)}}
     proofs.allowance = ActionAllowance(expires_at=999, now=lambda: 200, monotonic=lambda: 0)
     proofs.has_inventory = True
@@ -112,6 +118,10 @@ def test_completed_construction_handoff_requires_selected_published_revision(tmp
         return
 
     assert proofs._index_scene_construction_handoff(result, request, render) == _raw(
-        root / 'completed' / Path(receipt['queue_path']).name)
+        root / ('completed' if completed else 'blocked') / Path(receipt['queue_path']).name)
+    if not completed:
+        assert revision['revision_digest'] not in proofs.canonical
+        assert publication['result_digest'] not in proofs.canonical
+        return
     assert proofs.canonical[revision['revision_digest']] == {_raw(revision_path)}
     assert proofs.canonical[publication['result_digest']] == {_raw(publication_path)}

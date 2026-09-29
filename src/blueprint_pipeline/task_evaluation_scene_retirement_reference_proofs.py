@@ -206,7 +206,8 @@ class TerminalProofs:
         if root is None:
             return
         finished=self.fresh.get('finished_observation',{}).get('status')
-        _require(type(root) is str and finished in {'completed','revoked_grace_elapsed'},_REASON)
+        _require(type(root) is str and finished in {
+            'completed','revoked_grace_elapsed','expired_grace_elapsed'},_REASON)
         recipe_digest=result.get('construction_recipe_digest')
         _require(type(recipe_digest) is str and re.fullmatch(r'sha256:[0-9a-f]{64}',recipe_digest),_REASON)
         name=result['preparation_id']+'-'+recipe_digest[7:]+'.json'
@@ -267,9 +268,11 @@ class TerminalProofs:
                      and final.get('blockers')==[],_REASON)
             self._index_completed_construction_publication(final,request)
         else:
+            authority_blocker = ('scene_owner_revoked' if finished == 'revoked_grace_elapsed'
+                                 else 'scene_execution_owner_expired')
             _require(final.get('configuration_completed') is False
                      and final.get('configured_scene_published') is False
-                     and final.get('blockers')==['scene_owner_revoked'],_REASON)
+                     and final.get('blockers')==[authority_blocker],_REASON)
         original_path=queue/'pending'/name
         receipts=[]
         for created in (False,True):
