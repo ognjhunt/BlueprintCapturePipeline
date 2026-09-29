@@ -218,3 +218,93 @@ def test_lossless_control_frame_tampering_refuses_delivery(tmp_path, case):
     (evidence / frame["relative_path"]).write_bytes(b"corrupted after provider return")
     with pytest.raises(TaskEvaluationResultDeliveryError, match="artifact_inventory_invalid"):
         _deliver(tmp_path, case)
+
+
+# -- Streamed controls (review C1) -------------------------------------------
+# The same strict-control evidence as ``case``, delivered from a streamed
+# attempt: its PNG frames and MP4 reviews stay in the promoted archive.
+
+
+def _stream_case(tmp_path, case, monkeypatch, *, tamper=None):
+    from tests.provider_output_fixtures import RangeStore, serve_member_views, stream_evidence_tree
+
+    result, evidence, _ = case
+    stream_root = tmp_path / "streamed"
+    streamed = stream_evidence_tree(evidence, stream_root / "allocator/attempts/attempt_001")
+    store = streamed.store
+    if tamper is not None:
+        row = streamed.rows[tamper]
+        store = RangeStore(streamed.archive.patched(row["data_offset"] + 1, b"\xff"))
+    serve_member_views(monkeypatch, store)
+    closure = {key: _closure(stream_root / f"{key}.json", flag=flag) for key, flag in (
+        ("billing", "official_billing_sealed"), ("teardown", "teardown_completed"),
+        ("provider_zero", "provider_zero_verified"))}
+    return streamed, store, stream_root, closure
+
+
+def _deliver_streamed(stream_root, streamed, result, closure, status="completed_unqualified"):
+    return materialize_policy_canary_result_delivery(run_root=stream_root, run_id=result["run_id"],
+        result_status=status, session_result=result, evidence_root=streamed.evidence, closure_records=closure)
+
+
+def test_streamed_control_archives_are_byte_identical_and_frames_verify_by_index(tmp_path, case, monkeypatch):
+    result, _, _ = case
+    downloaded = _deliver(tmp_path, case)
+    streamed, store, stream_root, closure = _stream_case(tmp_path, case, monkeypatch)
+    remote_controls = [path for path in streamed.remote() if path.startswith("control_runs/")]
+    assert any(path.endswith(".png") for path in remote_controls)
+    assert any(path.endswith(".mp4") for path in remote_controls)
+
+    delivered = _deliver_streamed(stream_root, streamed, result, closure)
+
+    assert delivered == downloaded
+    assert delivered["scene_controls_status"] == "controls_verified_development_only"
+    assert all(not control["evidence_gaps"] for control in delivered["controls"])
+    zips = sorted((tmp_path / "artifacts/result_delivery/controls").glob("cell-*.zip"))
+    assert len(zips) == 10
+    for archive in zips:
+        streamed_zip = stream_root / "artifacts/result_delivery/controls" / archive.name
+        assert streamed_zip.read_bytes() == archive.read_bytes()
+    # Each remote control member was read once, by one range, into its cell
+    # archive; the frames were verified from the index, which reads no bytes.
+    expected = sorted((row["data_offset"], row["data_offset"] + row["compressed_size"] - 1)
+                      for path, row in streamed.rows.items() if path in remote_controls)
+    assert sorted(streamed.data_ranges()) == expected
+    assert streamed.remote() == sorted(set(streamed.remote()))  # nothing was materialized
+    assert not any(path.name.endswith(".png") for path in streamed.evidence.rglob("*"))
+
+
+def test_streamed_control_frames_are_checked_against_the_index_without_bytes(tmp_path, case, monkeypatch):
+    from blueprint_pipeline.policy_canary_control_result_delivery import verify_retained_frames
+    from blueprint_pipeline.provider_output_member_view import open_member_view
+
+    streamed, _, _, _ = _stream_case(tmp_path, case, monkeypatch)
+    manifest_path = next(streamed.evidence.glob("control_runs/00/strict_controls/**/multicamera_frame_manifest.json"))
+    manifest = json.loads(manifest_path.read_text())
+    view = open_member_view(streamed.evidence)
+    output_dir = manifest_path.parent.parent.parent
+
+    frames = verify_retained_frames(manifest, output_dir=output_dir, view=view)
+    assert frames and all(not (output_dir / frame["relative_path"]).exists() for frame in frames)
+    assert streamed.data_ranges() == []  # digests only; no frame byte was read
+    frame = manifest["policy_input_observations"][0]["views"]["external"]
+    for field, value, code in (("png_sha256", "sha256:" + "0" * 64, "png_digest_mismatch"),
+                               ("size_bytes", frame["size_bytes"] + 1, "size_mismatch"),
+                               ("relative_path", "media/absent/frame.png", "missing")):
+        changed = deepcopy(manifest)
+        changed["policy_input_observations"][0]["views"]["external"][field] = value
+        with pytest.raises(ValueError, match=f"multicamera_frame_manifest_{code}"):
+            verify_retained_frames(changed, output_dir=output_dir, view=view)
+
+
+def test_streamed_control_member_whose_archive_bytes_differ_refuses_delivery(tmp_path, case, monkeypatch):
+    result, _, _ = case
+    streamed_first, _, _, _ = _stream_case(tmp_path / "probe", case, monkeypatch)
+    target = next(path for path in streamed_first.remote()
+                  if path.startswith("control_runs/00/") and path.endswith(".mp4"))
+    streamed, _, stream_root, closure = _stream_case(tmp_path, case, monkeypatch, tamper=target)
+
+    with pytest.raises(TaskEvaluationResultDeliveryError, match="^policy_canary_artifact_inventory_invalid$"):
+        _deliver_streamed(stream_root, streamed, result, closure)
+    controls = stream_root / "artifacts/result_delivery/controls"
+    assert not controls.exists() or sorted(path.name for path in controls.iterdir()) == []

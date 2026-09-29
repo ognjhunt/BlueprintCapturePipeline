@@ -292,6 +292,21 @@ that outcome proves report observation only. Public report/outcome files are reg
 ancestry; protected consent remains0600 under0700 and is never made readable
 through the door. Public reports omit policy bytes, tokens and private documents.
 
+### Current historical owner review
+
+After a separate, exact target-generation approval has been recorded, request
+the current historical owner census with `python3 scripts/operator_door.py
+legacy-owner-census --wait`. This is a distinct read-only request with no path,
+owner, action or cleanup option. The outcome names `<results>/<id>.legacy-owner-census.json`
+and its raw SHA-256 and byte count; use the checked `pull` command above with
+those exact values. Rows include every bounded current candidate's size, age,
+references and KEEP reason. A row receives `legacy_owner_review` and an owner
+only while its generation, policy, expiry and references still validate.
+Unregistered, changed, expired and active folders remain visible without an
+owner label. An incomplete or oversized scan publishes zero owner labels.
+Every row remains `gc_eligible=false`: this request does not authorize
+deletion, offload or reclaim credit.
+
 Leaf CLI refusal is bounded typed JSON; detailed fixed refusal is retained in
 the request log when safely available. Wrapper invocation failure has the fixed
 outcome `owner_consent_report_refused`, including resource exhaustion; it never

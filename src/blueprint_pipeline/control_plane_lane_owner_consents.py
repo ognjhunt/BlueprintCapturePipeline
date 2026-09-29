@@ -68,7 +68,7 @@ def _identity(raw, digest, size, budget):
              'owner_consent_input_identity_mismatch')
 
 
-def _policy(raw, principal, budget):
+def _policies(raw, budget):
     try:
         value = retained._document(raw, MAX_POLICY_BYTES, _work_budget=budget)
     except retained.CensusDecisionError:
@@ -79,13 +79,13 @@ def _policy(raw, principal, budget):
     _require(value['enabled'], 'owner_consent_disabled')
     rows = value['principals']
     _require(isinstance(rows, list) and len(rows) <= MAX_PRINCIPALS, 'owner_consent_policy_invalid')
-    seen, selected = set(), None
+    selected = {}
     for row in rows:
         budget.charge('groups')
         _require(isinstance(row, dict) and set(row) == {'principal', 'owners', 'allowed_actions', 'max_consent_seconds'},
                  'owner_consent_policy_invalid')
         name, owners, actions, duration = (row[k] for k in ('principal', 'owners', 'allowed_actions', 'max_consent_seconds'))
-        _require(_matches(name, _PRINCIPAL) and name not in seen, 'owner_consent_policy_invalid')
+        _require(_matches(name, _PRINCIPAL) and name not in selected, 'owner_consent_policy_invalid')
         _require(isinstance(owners, list) and 0 < len(owners) <= MAX_PRINCIPALS,
                  'owner_consent_policy_invalid')
         budget.charge('groups')
@@ -96,9 +96,14 @@ def _policy(raw, principal, budget):
                  and all(isinstance(action, str) and action in retained.ACTIONS for action in actions)
                  and len(set(actions)) == len(actions)
                  and type(duration) is int and 1 <= duration <= 1209600, 'owner_consent_policy_invalid')
-        seen.add(name)
-        if name == principal:
-            selected = row
+        selected[name] = row
+    return selected
+
+
+def _policy(raw, principal, budget):
+    policies = _policies(raw, budget)
+    _require(type(principal) is str, 'owner_consent_principal_unmapped')
+    selected = policies.get(principal)
     _require(selected is not None, 'owner_consent_principal_unmapped')
     return selected
 

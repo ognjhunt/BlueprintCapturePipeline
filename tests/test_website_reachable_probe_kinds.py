@@ -68,6 +68,9 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # The queue's actual allocator/installed-command tests own that bridge;
     # this classification does not prove deployment or product fulfillment.
     "native-g1-team-policy": "not_a_website_lane",
+    # The team-only controlled-observation offer follows its own signed run
+    # queue and exact checkpoint registry, rather than a scene profile builder.
+    "native-task-arena-controlled-policy": "not_a_website_lane",
     # Real debt -- executable, not retired, not frozen, and unreachable -- is
     # empty as of this lane's builder. Every probe kind the allocator can run
     # is now either reachable from the website or a recorded decision. A new

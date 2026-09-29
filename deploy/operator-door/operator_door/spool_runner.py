@@ -149,11 +149,41 @@ def _lifecycle_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple
             f"ReadWritePaths={roots} /mnt/blueprint-work {Path(config.spool_root) / 'results'}")
 
 
+def _legacy_owner_environment(config: DoorConfig, _request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python,
+            "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_CONFIG_PATH": "/etc/blueprint-operator-door/door.json"}
+
+
 def _owner_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
     return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
             "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "PrivateNetwork=yes",
             "CapabilityBoundingSet=", "AmbientCapabilities=",
             f"ReadOnlyPaths={config.owner_consent_store} {config.lane_owner_policy_file}",
+            f"ReadWritePaths={Path(config.spool_root) / 'results'}")
+
+
+def _legacy_owner_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """Fixed read-only inputs; the only writable location is this door's results."""
+    registry = Path(config.owner_consent_store).parent / "legacy-owner-registrations"
+    # CAP_PERFMON admits read-only foreign /proc metadata but cannot open
+    # foreign /proc/PID/mem. This transient must also inherit
+    # the door's secret hides. The config/policy files under the door root are
+    # required; hide its token and deploy key individually instead.
+    hidden = [path for path in config.hidden_paths if path != "/etc/blueprint-operator-door"]
+    hidden.extend((config.token_file, "/etc/blueprint-operator-door/deploy-key"))
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "PrivateNetwork=yes",
+            "SystemCallFilter=@system-service",
+            "SystemCallFilter=~ptrace process_vm_readv process_vm_writev",
+            "SystemCallErrorNumber=EPERM",
+            "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_PERFMON",
+            "AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_PERFMON",
+            "InaccessiblePaths=" + " ".join("-" + path for path in hidden),
+            f"ReadOnlyPaths={registry} {config.lane_owner_policy_file} "
+            f"{config.experiment_gc_environment_file} "
+            f"-/etc/systemd/system/blueprint-control-plane-storage-gc.service "
+            f"{config.lane_scratch_work_root} {config.lane_scratch_inputs_root}",
             f"ReadWritePaths={Path(config.spool_root) / 'results'}")
 
 
@@ -190,6 +220,10 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
     "restore-scene": _LaunchSpec("blueprint-operator-door-scene-restore", "door-scene-lifecycle.sh", "2h",
                                  lambda request: request["consent_id"][:12],
                                  _lifecycle_environment, _lifecycle_properties),
+    "legacy-owner-census": _LaunchSpec("blueprint-operator-door-legacy-owner-census",
+                                      "door-legacy-owner-census.sh", "5min",
+                                      lambda _request: "current", _legacy_owner_environment,
+                                      _legacy_owner_properties),
     "owner-census-decision": _LaunchSpec("blueprint-operator-door-owner-census", "door-owner-census.sh", "10s",
                                          lambda request: request["consent_id"][:12], _owner_environment, _owner_properties),
     "deploy": _LaunchSpec("blueprint-operator-door-deploy", "door-deploy.sh", "3h",
@@ -409,7 +443,7 @@ def _act_release_hold(
 
 def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],
          requested_by: str = "") -> dict[str, Any]:
-    if request["kind"] == "owner-census-decision" and config.owner_census_decisions_enabled != 1:
+    if request["kind"] in {"owner-census-decision", "legacy-owner-census"} and config.owner_census_decisions_enabled != 1:
         return {"status": "refused", "code": "owner_consent_disabled"}
     if request["kind"] == "unit":
         result = runner.run(

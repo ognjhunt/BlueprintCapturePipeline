@@ -397,8 +397,26 @@ def _validate_command_plan(
         "--memory", f'{resources["memory_mib"]}m', "--tmpfs",
         f'/tmp:rw,noexec,nosuid,nodev,size={resources["tmpfs_mib"]}m',
         "--user", f'{container["run_as_uid"]}:{container["run_as_gid"]}',
-        "--log-driver=none",
     ]
+    model_artifact = plan.get("model_artifact")
+    if model_artifact is not None:
+        from .policy_model_onnx import validate_model_task_binding
+
+        if not isinstance(model_artifact, Mapping):
+            raise CompanyPolicySandboxExecutorError("company_policy_model_binding_invalid")
+        validate_model_task_binding(model_artifact, contract)
+        model_directory = Path(str(plan.get("model_stage_directory") or ""))
+        model_root = runtime_root / "company-policy-model"
+        if (model_directory.parent != model_root or model_directory.name != ipc_dir.name
+                or security.get("policy_mounts") !=
+                [f"{model_directory}:/opt/policy-model:readonly"]):
+            raise CompanyPolicySandboxExecutorError("company_policy_model_mount_invalid")
+        expected_policy_run.extend([
+            "--mount", f"type=bind,src={model_directory},dst=/opt/policy-model,readonly",
+        ])
+    elif plan.get("model_stage_directory") is not None or security.get("policy_mounts") != []:
+        raise CompanyPolicySandboxExecutorError("company_policy_unapproved_mount")
+    expected_policy_run.append("--log-driver=none")
     if container["gpu_required"]:
         expected_policy_run.extend(["--gpus", "all"])
     expected_policy_run.extend(
@@ -586,7 +604,7 @@ def execute_company_policy_sandbox_preobservation(
     socket_ready: Callable[[str, int], bool] = wait_for_unix_socket,
     apparmor_profiles_path: Path = Path("/sys/kernel/security/apparmor/profiles"),
     allowed_runtime_root: Path = Path("/run/blueprint"),
-    qualified_session: Callable[[Callable[[bytes, float], bytes]], Mapping[str, Any]] | None = None,
+    qualified_session: Callable[[Callable[[bytes, float], bytes], Mapping[str, Any]], Mapping[str, Any]] | None = None,
     authorize_scene_access: Callable[[Mapping[str, Any], Mapping[str, Any]], bool] | None = None,
 ) -> dict[str, Any]:
     """Qualify the sandbox, then optionally run an authorized controlled session.
@@ -906,7 +924,7 @@ def execute_company_policy_sandbox_preobservation(
                 return json.dumps(actions, allow_nan=False, separators=(",", ":")).encode()
 
             result.update(status="controlled_session_incomplete", scene_access_authorized=True)
-            session = qualified_session(controlled_transport)
+            session = qualified_session(controlled_transport, qualification)
             result.update(status="controlled_session_completed", controlled_session=dict(session),
                           real_observation_sent=real_observation_sent, scene_access_authorized=True)
     except (

@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
-from .company_policy_proxy import validate_action_response
+from .controlled_policy_actions import validate_action_response
 from .controlled_policy_observations import project_controlled_observation
 from .core.security_controls import fetch_bounded_https
 
@@ -36,7 +36,7 @@ class ControlledPolicyClient:
     def __init__(self, *, contract: Mapping[str, Any],
                  transport: Callable[[bytes, float], bytes], transport_name: str):
         self.contract = validate_company_policy_container_contract_v2(contract)
-        if transport_name not in {"approved_https", "qualified_sandbox_unix_proxy"}:
+        if transport_name not in {"approved_https", "qualified_sandbox_unix_proxy", "qualified_sandbox_https_bridge"}:
             raise ValueError("controlled_policy_transport_invalid")
         self.transport = transport
         self.transport_name = transport_name

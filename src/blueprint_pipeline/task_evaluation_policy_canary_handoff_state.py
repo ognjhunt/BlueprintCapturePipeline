@@ -12,6 +12,7 @@ import stat
 import tempfile
 from typing import Any, Callable, Mapping
 
+from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -27,24 +28,33 @@ def _atomic_write(path: Path, value: Mapping[str, Any], *, replace: bool) -> Non
     if any(p.is_symlink() for p in (path, *path.parents)):
         raise PolicyCanaryHandoffError("policy_canary_handoff_unsafe_state_path")
     payload = _payload(value)
+    _publisher_checkpoint()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    _publisher_checkpoint()
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".handoff-", delete=False) as stream:
         temporary = Path(stream.name)
         try:
+            _publisher_checkpoint()
             stream.write(payload)
+            _publisher_checkpoint()
             stream.flush()
+            _publisher_checkpoint()
             os.fsync(stream.fileno())
+            _publisher_checkpoint()
             os.fchmod(stream.fileno(), 0o440)
             if replace:
+                _publisher_checkpoint()
                 os.replace(temporary, path)
             else:
                 try:
+                    _publisher_checkpoint()
                     os.link(temporary, path)
                 except FileExistsError:
                     if path.is_symlink() or path.read_bytes() != payload:
                         raise PolicyCanaryHandoffError("policy_canary_handoff_immutable_conflict") from None
             directory = os.open(path.parent, os.O_RDONLY)
             try:
+                _publisher_checkpoint()
                 os.fsync(directory)
             finally:
                 os.close(directory)
@@ -52,12 +62,18 @@ def _atomic_write(path: Path, value: Mapping[str, Any], *, replace: bool) -> Non
             temporary.unlink(missing_ok=True)
 
 
+@_publisher_observation
 def write_immutable(path: Path, value: Mapping[str, Any]) -> Path:
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(value, path)
     _atomic_write(path, value, replace=False)
     return path
 
 
+@_publisher_observation
 def seal_state(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(value, path)
     record = {"schema_version": "task_evaluation_policy_canary_handoff_progression.v1",
               **value, "provider_mutation_performed": False, "progression_digest": ""}
     record["progression_digest"] = canonical_digest(record, digest_field="progression_digest")
@@ -105,8 +121,11 @@ def _validate_ack(receipt: Mapping[str, Any], *, run_id: str) -> None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_webapp_ack_mismatch")
 
 
+@_publisher_observation
 def submit_or_adopt(*, root: Path, endpoint: str, selection: Mapping[str, Any],
         source_commit: str, headers: Callable[[], Mapping[str, str]], poster: Callable) -> tuple[dict[str, Any], str]:
+    from .control_plane_registered_reference_gate import refuse_registered_references
+    refuse_registered_references(selection, root, endpoint)
     run_id = str(selection["run_id"])
     binding = {"schema_version": "policy_canary_handoff_web_request_binding.v1",
                "endpoint": endpoint, "run_id": run_id, "source_commit": source_commit,

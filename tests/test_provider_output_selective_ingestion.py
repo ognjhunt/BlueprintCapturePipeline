@@ -451,3 +451,88 @@ def test_cas_source_must_name_the_indexed_archive(tmp_path, indexed):
         _ingest(tmp_path, RangeStore(archive), index, selection, reference=unverified)
     assert not (tmp_path / "members").exists() and not (tmp_path / "ingestion").exists()
 
+
+
+def test_sealing_binds_the_reference_and_keeps_the_index_valid(indexed):
+    from blueprint_pipeline.provider_output_member_index import (
+        seal_durable_reference,
+        validate_member_index,
+    )
+
+    _, index = indexed
+    reference = _reference(index) | {"cache_hit": False, "upload_performed": True,
+                                     "readback_digest": index["archive"]["sha256"],
+                                     "remote_verified_at": "2026-09-28T00:00:00Z"}
+    sealed = seal_durable_reference(index, reference)
+
+    assert validate_member_index(sealed) is sealed
+    assert index["archive"]["durable_reference"] is None  # the input is not mutated
+    # Only the secret-free facts naming the verified object; nothing per-call.
+    assert sealed["archive"]["durable_reference"] == {
+        key: reference[key] for key in (
+            "schema_version", "status", "artifact_kind", "uri", "digest", "size_bytes",
+            "content_addressed_key", "remote_identity_verified",
+            "full_byte_service_account_readback_passed")}
+    assert sealed["index_digest"] == canonical_digest(sealed, digest_field="index_digest")
+    assert sealed["index_digest"] != index["index_digest"]
+    assert {key: value for key, value in sealed.items() if key not in ("archive", "index_digest")} == {
+        key: value for key, value in index.items() if key not in ("archive", "index_digest")}
+    # Resealing with the same object, however it was reached, is idempotent.
+    again = seal_durable_reference(sealed, reference | {"cache_hit": True, "upload_performed": False})
+    assert again == sealed
+    # The sealed facts are themselves a reference ingestion accepts.
+    assert CasArchiveSource(sealed["archive"]["durable_reference"], presign=lambda: URL).durable_reference() == {
+        "uri": reference["uri"], "digest": reference["digest"], "size_bytes": reference["size_bytes"]}
+
+
+def test_sealing_refuses_a_reference_for_another_archive(indexed):
+    from blueprint_pipeline.provider_output_member_index import (
+        ProviderOutputMemberIndexError,
+        seal_durable_reference,
+        validate_member_index,
+    )
+
+    _, index = indexed
+    reference = _reference(index)
+    other_digest = "sha256:" + "0" * 64
+    other = reference | {"digest": other_digest, "uri": reference["uri"].replace(
+        index["archive"]["sha256"].removeprefix("sha256:"), "0" * 64)}
+    for candidate, code in (
+        (other, "provider_output_member_index_durable_reference_mismatch"),
+        (reference | {"size_bytes": index["archive"]["size"] + 1},
+         "provider_output_member_index_durable_reference_mismatch"),
+        (reference | {"full_byte_service_account_readback_passed": False},
+         "provider_output_member_index_durable_reference_invalid"),
+        (reference | {"status": "uploaded"}, "provider_output_member_index_durable_reference_invalid"),
+        (reference | {"uri": "https://example.invalid/key"},
+         "provider_output_member_index_durable_reference_invalid"),
+    ):
+        with pytest.raises(ProviderOutputMemberIndexError, match=f"^{code}$"):
+            seal_durable_reference(index, candidate)
+    sealed = seal_durable_reference(index, reference)
+    elsewhere = reference | {"uri": reference["uri"].replace("blueprint-artifacts", "another-bucket")}
+    with pytest.raises(ProviderOutputMemberIndexError,
+                       match="^provider_output_member_index_durable_reference_conflict$"):
+        seal_durable_reference(sealed, elsewhere)
+    # A forged index whose recorded reference names another archive fails validation.
+    forged = copy.deepcopy(sealed)
+    forged["archive"]["durable_reference"] = dict(sealed["archive"]["durable_reference"], digest=other_digest)
+    forged["index_digest"] = canonical_digest(forged, digest_field="index_digest")
+    with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_index_invalid$"):
+        validate_member_index(forged)
+
+
+def test_ingestion_refuses_a_cas_source_other_than_the_sealed_one(tmp_path, indexed):
+    from blueprint_pipeline.provider_output_member_index import seal_durable_reference
+
+    archive, index = indexed
+    reference = _reference(index)
+    sealed = seal_durable_reference(index, reference)
+    selection = build_member_selection(sealed, [IDENTITY], selection_version=CONSUMERS)
+    # Same digest and size, another object: the index binds the promoted copy only.
+    copy_elsewhere = reference | {"uri": reference["uri"].replace("blueprint-artifacts", "another-bucket")}
+    store = RangeStore(archive)
+    with pytest.raises(ProviderOutputIngestionError, match="^provider_output_cas_reference_mismatch$"):
+        _ingest(tmp_path, store, sealed, selection, reference=copy_elsewhere)
+    assert store.requests == [] and not (tmp_path / "members").exists()
+    assert _ingest(tmp_path, store, sealed, selection, reference=reference)["status"] == "materialized"

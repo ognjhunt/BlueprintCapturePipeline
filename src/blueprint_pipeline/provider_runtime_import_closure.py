@@ -32,6 +32,13 @@ PACKAGE_NAME = "blueprint_pipeline"
 # worker never executes, documented by the function that contains the import.
 CONTROL_PLANE_ONLY_LAZY_IMPORTS: frozenset[tuple[str, str]] = frozenset(
     {
+        # Optional authenticated local experiment uses only. Both actual
+        # provider entrypoints first use the SHIPPED refusal leaf on their
+        # default None path. Only the host bootstrap supplies registered use;
+        # the provider bundle cannot construct that private/public authority.
+        ("native_g1_runtime_assembly.py", "control_plane_lane_experiment_consumer"),
+        ("native_g1_policy_server_supervisor.py", "control_plane_lane_experiment_consumer"),
+        ("native_g1_policy_server_supervisor.py", "native_g1_registered_containment"),
         # ``_validation_errors`` on the measurement routing contract classes;
         # provider workers only compute digests from this module.
         ("decision_evidence_contracts.py", "task_site_measurement_routing"),
@@ -90,6 +97,7 @@ def provider_runtime_import_closure_blockers(
     *,
     package_source_dir: str | Path,
     shipped_module_names: Iterable[str],
+    shipped_package_files: Sequence[str] = (),
     exemptions: Mapping[tuple[str, str], Any] | frozenset[tuple[str, str]] = (
         CONTROL_PLANE_ONLY_LAZY_IMPORTS
     ),
@@ -103,6 +111,8 @@ def provider_runtime_import_closure_blockers(
 
     source_dir = Path(package_source_dir).expanduser().resolve()
     shipped = {str(name) for name in shipped_module_names}
+    package_files = set(shipped_package_files)
+    shipped.update(package_files)
     blockers: set[str] = set()
     for name in sorted(shipped):
         path = source_dir / name
@@ -127,6 +137,18 @@ def provider_runtime_import_closure_blockers(
                 )
                 continue
             if (source_dir / target).is_dir():
+                modules = []
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                    if isinstance(node, ast.ImportFrom) and node.module:
+                        module = node.module.removeprefix(PACKAGE_NAME + ".")
+                        if module.startswith(target + "."):
+                            modules.append(module.replace(".", "/") + ".py")
+                    elif isinstance(node, ast.Import):
+                        modules.extend(alias.name.removeprefix(PACKAGE_NAME + ".").replace(".", "/") + ".py"
+                            for alias in node.names if alias.name.startswith(PACKAGE_NAME + "." + target + "."))
+                if (modules and target + "/__init__.py" in package_files
+                        and all(module in package_files for module in modules)):
+                    continue
                 blockers.add(
                     f"provider_runtime_import_of_unshipped_subpackage:{name}->{target}"
                 )
@@ -139,13 +161,15 @@ def provider_runtime_import_closure_blockers(
 
 
 def assert_provider_runtime_import_closure(
-    *, package_source_dir: str | Path, shipped_module_names: Sequence[str], code: str
+    *, package_source_dir: str | Path, shipped_module_names: Sequence[str], code: str,
+    shipped_package_files: Sequence[str] = (),
 ) -> None:
     """Raise ``ValueError(code:...)`` when the shipped package is not import-closed."""
 
     blockers = provider_runtime_import_closure_blockers(
         package_source_dir=package_source_dir,
         shipped_module_names=shipped_module_names,
+        shipped_package_files=shipped_package_files,
     )
     if blockers:
         raise ValueError(f"{code}:" + ",".join(blockers))

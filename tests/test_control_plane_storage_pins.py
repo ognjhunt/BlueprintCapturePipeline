@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -118,3 +119,78 @@ def test_pins_root_comes_from_the_unit_environment(monkeypatch: pytest.MonkeyPat
     assert pins_root_from_environment() is None
     monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT", "/var/lib/blueprint/pins")
     assert pins_root_from_environment() == Path("/var/lib/blueprint/pins")
+
+
+def test_pin_encoding_cannot_write_after_original_publisher_deadline(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    from blueprint_pipeline import control_plane_storage_pins as pins
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+
+    clock = [0.0]
+    budgets = []
+    expired_sizes = []
+    original_encode = json.JSONEncoder.iterencode
+    original_fdopen = os.fdopen
+
+    def create(**kwargs):
+        budget = ReferenceCollectionBudget(monotonic=lambda: clock[0], **kwargs)
+        budgets.append(budget)
+        return budget
+
+    def delayed_encode(encoder, value, *args, **kwargs):
+        if isinstance(value, dict) and value.get("owner_id") == "delayed-pin":
+            clock[0] = 6.0
+        return original_encode(encoder, value, *args, **kwargs)
+
+    class ObservedStream:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def write(self, value):
+            result = self.stream.write(value)
+            self.stream.flush()
+            if clock[0] >= 5.0:
+                expired_sizes.append(os.fstat(self.stream.fileno()).st_size)
+            return result
+
+    monkeypatch.setattr(gate, "ReferenceCollectionBudget", create)
+    monkeypatch.setattr(json.JSONEncoder, "iterencode", delayed_encode)
+    monkeypatch.setattr(pins.os, "fdopen", lambda *a, **kw: ObservedStream(original_fdopen(*a, **kw)))
+    root = tmp_path / "pins"
+    with pytest.raises(ValueError, match="experiment_publisher_input_limit"):
+        write_storage_pin(
+            pins_root=root, kind="preparation", owner_id="delayed-pin",
+            paths=[tmp_path / f"ordinary-{index:03d}" for index in range(300)], now=lambda: 100.0,
+        )
+    assert not list(root.rglob("*.json"))
+    assert not list(root.rglob(".pin-*"))
+    assert len(budgets) == 1
+    assert budgets[0].closed and budgets[0].deadline == 5.0
+    assert budgets[0].failure == "reference_deadline_exceeded"
+    assert max(expired_sizes, default=0) == 0
+
+
+def test_atomic_pin_without_publisher_context_preserves_exact_output(tmp_path):
+    from blueprint_pipeline import control_plane_storage_pins as pins
+
+    payload = {"z": "caf\u00e9", "a": [1, True, None]}
+    path = tmp_path / "pins" / "existing.json"
+    assert pins._write_atomic(path, payload, exclusive=True)
+    assert path.read_bytes() == b'{"a":[1,true,null],"z":"caf\\u00e9"}\n'
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert not pins._write_atomic(path, {"replacement": True}, exclusive=True)
+    assert json.loads(path.read_text()) == payload
+    assert pins._write_atomic(path, {"replacement": True}, exclusive=False)
+    assert path.read_bytes() == b'{"replacement":true}\n'
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert not list(path.parent.glob(".pin-*"))

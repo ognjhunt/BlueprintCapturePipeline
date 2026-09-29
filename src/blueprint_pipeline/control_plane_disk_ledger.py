@@ -37,6 +37,8 @@ ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "stage_replay": 4 * GIB,
     "semantic_pretraining": 3 * GIB,
     "cpu_prestage": 6 * GIB,
+    "g1_checkpoint_cache": 32 * GIB,
+    "experiment_restore": 256 * 1024 * 1024,
     # A website scene configuration's returned archive and its extraction.
     # Measured admission holds the exact upload ceiling plus 512 MiB; this
     # declared value only shapes projections until the history is measured.

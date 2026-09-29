@@ -322,3 +322,56 @@ def test_scorer_identity_explicitly_admits_detached_foreign_owned_repo(
     assert identity["scorer_commit"] == expected_commit
     assert len(calls) == 2
     assert all(call[:5] == ["git", "-c", safe_argument, "-C", str(repo)] for call in calls)
+
+
+def _with_media(source: Path, evidence: Path, result: dict) -> dict:
+    """Add a review video and a lossless frame to the inventory, as a real run carries."""
+    rows = []
+    for relative, data in (("media/review.mp4", b"\x00\x00\x00\x18ftypmp42" * 40),
+                           ("media/frames/external/000000.png", b"\x89PNG\r\n\x1a\n" + bytes(range(200)))):
+        path = evidence / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        rows.append({"relative_path": relative, "size_bytes": len(data), "sha256": _sha(path),
+                     "role": "review_video" if relative.endswith(".mp4") else "lossless_frame"})
+    return _reseal_inventory(source, result, [*result["artifact_inventory"], *rows])
+
+
+def _reseal_inventory(source: Path, result: dict, inventory: list) -> dict:
+    result = {**result, "artifact_inventory": inventory,
+              "artifact_inventory_digest": canonical_digest({"value": inventory})}
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    source.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return result
+
+
+def test_streamed_inventory_verifies_archive_members_by_index_digest(tmp_path: Path, monkeypatch) -> None:
+    """Review I1: rescoring (and the graded report and integration canary that reuse its
+    inventory check) accepts a streamed attempt, whose media stay in the promoted archive."""
+    from tests.provider_output_fixtures import serve_member_views, stream_evidence_tree
+
+    source, evidence, result = _fixture(tmp_path)
+    result = _with_media(source, evidence, result)
+    streamed = stream_evidence_tree(evidence, tmp_path / "streamed" / "attempt_001")
+    serve_member_views(monkeypatch, streamed.store)
+    assert streamed.remote() == ["media/frames/external/000000.png", "media/review.mp4"]
+
+    def rescore(root: Path, output: str):
+        return rescore_policy_canary_result(source_result_path=source, evidence_root=root,
+                                            output_root=tmp_path / output, expected_run_id=RUN_ID,
+                                            scorer_identity=_scorer_identity())
+
+    downloaded = rescore(evidence, "download-corrections")
+    assert rescore(streamed.evidence, "streamed-corrections") == downloaded
+    assert streamed.data_ranges() == []
+    verified = rescore_module._verify_artifact_inventory(result, evidence_root=streamed.evidence.resolve())
+    assert set(verified) == {row["relative_path"] for row in result["artifact_inventory"]}
+    # A digest the index does not vouch for, or a member in neither place, keeps download mode's code.
+    for change, code in (({"sha256": "sha256:" + "0" * 64}, "artifact_digest_mismatch:media/review.mp4"),
+                         ({"relative_path": "media/absent.mp4"}, "artifact_missing")):
+        inventory = [dict(row) for row in result["artifact_inventory"]]
+        next(row for row in inventory if row["relative_path"] == "media/review.mp4").update(change)
+        changed = _reseal_inventory(source, result, inventory)
+        for root in (evidence, streamed.evidence):
+            with pytest.raises(PolicyCanaryRescoreError, match=f"^policy_canary_rescore_{code}$"):
+                rescore_module._verify_artifact_inventory(changed, evidence_root=root.resolve())

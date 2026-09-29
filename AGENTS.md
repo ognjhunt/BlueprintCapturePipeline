@@ -293,10 +293,11 @@ python -m blueprint_pipeline.paid_resource_allocator cpu-build <arguments>
 python -m blueprint_pipeline.paid_resource_allocator model-volume <arguments>
 python -m blueprint_pipeline.paid_resource_allocator gpu-canary <arguments>
 python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <arguments>
+python -m blueprint_pipeline.paid_resource_allocator remote-cpu-job <arguments>
 ```
 
-These are the only supported CPU-build, model-volume, GPU-canary, and paid
-provider-reconstruction allocation commands.
+These are the only supported CPU-build, model-volume, GPU-canary, paid
+provider-reconstruction, and remote CPU job (Cloud Run) allocation commands.
 Provider-specific builder/canary modules are adapters and must not be invoked
 as launchers. Every new paid-resource path must pass the shared fail-closed
 admission seam and the CI bypass verifier.

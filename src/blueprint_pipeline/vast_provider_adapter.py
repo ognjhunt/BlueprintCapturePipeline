@@ -159,6 +159,10 @@ from .wam_provider_output import (
     probe_mp4_video,
     summarize_runtime_result,
 )
+from .vast_structured_policy_canary_inspection import (
+    inspect_structured_policy_canary_archive,
+    structured_policy_canary_summary,
+)
 from .retained_gpu_session_lifecycle import record_retained_gpu_state
 from .vast_retained_instance import (
     NATIVE_TASK_ARENA_WARM_RETENTION_MODE,
@@ -3010,8 +3014,8 @@ def _blueprint_bundle_preflight(
                                 if isinstance(row, Mapping)
                             }
                             expected_modules = set(mode_contract.runtime_module_names)
-                            observed_modules = {
-                                Path(entry).name
+                            observed_module_paths = {
+                                entry
                                 for entry in zip_entries
                                 if entry.startswith(
                                     "provider_runtime/blueprint_pipeline/"
@@ -3019,6 +3023,14 @@ def _blueprint_bundle_preflight(
                                 and entry.endswith(".py")
                                 and not entry.endswith("/__init__.py")
                             }
+                            expected_module_paths = {
+                                f"provider_runtime/blueprint_pipeline/{name}"
+                                for name in expected_modules
+                            }
+                            if execution_mode == "controlled_policy":
+                                expected_module_paths.add(
+                                    "provider_runtime/blueprint_pipeline/core/security_controls.py"
+                                )
                             if (
                                 native_manifest.get("schema_version")
                                 != "native_task_arena_provider_bundle.v1"
@@ -3034,7 +3046,12 @@ def _blueprint_bundle_preflight(
                                 or mode_contract.expected_output_filename
                                 not in entrypoint_text
                                 or declared_modules != expected_modules
-                                or observed_modules != expected_modules
+                                or observed_module_paths != expected_module_paths
+                                or (
+                                    execution_mode == "controlled_policy"
+                                    and "provider_runtime/blueprint_pipeline/core/__init__.py"
+                                    not in zip_entries
+                                )
                                 or native_manifest.get("candidate_policy_queried")
                                 is not False
                             ):
@@ -6837,109 +6854,13 @@ def _inspect_provider_runtime_output_zip(
 def _inspect_structured_policy_canary_output(path: Path | None) -> dict[str, Any]:
     """Validate a structured policy canary without requiring rollout video."""
 
-    blockers: list[str] = []
-    payload: dict[str, Any] = {}
     if path is None or not path.is_file():
-        blockers.append("structured_policy_canary_output_zip_missing")
-    else:
-        try:
-            with zipfile.ZipFile(path) as archive:
-                if "policy_structured_canary.json" not in archive.namelist():
-                    blockers.append("structured_policy_canary_member_missing")
-                else:
-                    value = json.loads(archive.read("policy_structured_canary.json"))
-                    payload = _mapping(value)
-        except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile):
-            blockers.append("structured_policy_canary_member_invalid")
-
-    native_action = payload.get("native_action")
-    wam_prefix = payload.get("wam_prefix_action")
-    executed_action = payload.get("executed_action")
-    commanded_joint = payload.get("commanded_next_joint_position")
-    commanded_gripper = payload.get("commanded_next_gripper_position")
-    endpoint = _mapping(payload.get("policy_endpoint_evidence"))
-    receipt = _mapping(payload.get("policy_request_receipt"))
-    server_metadata = _mapping(endpoint.get("server_metadata"))
-    if payload and payload.get("status") != "passed":
-        blockers.append("structured_policy_canary_status_not_passed")
-    if payload and endpoint.get("identity_verified") is not True:
-        blockers.append("structured_policy_canary_identity_not_verified")
-    if payload and endpoint.get("request_count") != 1:
-        blockers.append("structured_policy_canary_request_count_invalid")
-    native_shape_valid = bool(
-        isinstance(native_action, list)
-        and len(native_action) == 32
-        and all(isinstance(row, list) and len(row) == 8 for row in native_action)
-    )
-    if payload and not native_shape_valid:
-        blockers.append("structured_policy_canary_native_action_shape_invalid")
-    if (
-        payload
-        and native_shape_valid
-        and not all(
-            type(value) in {int, float} and math.isfinite(float(value))
-            for row in native_action
-            for value in row
-        )
-    ):
-        blockers.append("structured_policy_canary_native_action_not_finite")
-    if payload and not (
-        isinstance(wam_prefix, list)
-        and len(wam_prefix) == 16
-        and isinstance(native_action, list)
-        and wam_prefix == native_action[:16]
-    ):
-        blockers.append("structured_policy_canary_wam_prefix_invalid")
-    if payload and not (
-        isinstance(executed_action, list)
-        and len(executed_action) == 8
-        and isinstance(native_action, list)
-        and executed_action == native_action[:8]
-    ):
-        blockers.append("structured_policy_canary_executed_prefix_invalid")
-    if payload and not (
-        isinstance(native_action, list)
-        and len(native_action) == 32
-        and commanded_joint == native_action[7][:7]
-        and commanded_gripper == [native_action[7][7]]
-    ):
-        blockers.append("structured_policy_canary_commanded_state_invalid")
-    expected_receipt_shapes = {
-        "native_action_shape": [32, 8],
-        "wam_prefix_action_shape": [16, 8],
-        "executed_prefix_steps": 8,
-    }
-    for key, expected in expected_receipt_shapes.items():
-        if payload and receipt.get(key) != expected:
-            blockers.append(f"structured_policy_canary_receipt_{key}_invalid")
-    for key in (
-        "server_identity_sha256",
-        "observation_sha256",
-        "native_action_sha256",
-        "wam_prefix_action_sha256",
-        "executed_prefix_action_sha256",
-        "commanded_next_state_sha256",
-        "receipt_sha256",
-    ):
-        if payload and not re.fullmatch(r"[0-9a-f]{64}", _string(receipt.get(key))):
-            blockers.append(f"structured_policy_canary_receipt_{key}_invalid")
-
-    return {
-        "status": "passed" if payload and not blockers else "blocked",
-        "blockers": blockers,
-        "identity_verified": endpoint.get("identity_verified") is True,
-        "request_count": endpoint.get("request_count"),
-        "policy_id": server_metadata.get("policy_id"),
-        "model_revision": server_metadata.get("model_revision"),
-        "server_identity_sha256": receipt.get("server_identity_sha256"),
-        "observation_sha256": receipt.get("observation_sha256"),
-        "native_action_sha256": receipt.get("native_action_sha256"),
-        "wam_prefix_action_sha256": receipt.get("wam_prefix_action_sha256"),
-        "executed_prefix_action_sha256": receipt.get("executed_prefix_action_sha256"),
-        "commanded_next_state_sha256": receipt.get("commanded_next_state_sha256"),
-        "receipt_sha256": receipt.get("receipt_sha256"),
-        "raw_secret_values_recorded": False,
-    }
+        return inspect_structured_policy_canary_archive(None)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return inspect_structured_policy_canary_archive(archive)
+    except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile):
+        return structured_policy_canary_summary({}, ["structured_policy_canary_member_invalid"])
 
 
 def _structured_policy_canary_runtime_passed(
@@ -7224,6 +7145,7 @@ def run_vast_provider_adapter(
     expected_provider_upload_bytes: int = 0,
     expected_provider_bundle_sha256: str | None = None,
     provider_output_minimum_free_bytes: int = 0,
+    provider_output_collector: Callable[..., Mapping[str, Any]] | None = None,
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -9028,7 +8950,7 @@ def run_vast_provider_adapter(
         # A missing log marker must never erase the worker's diagnostic result.
         preclassification_transfer = None
         if enable_blueprint_bundle and onstart_logs.get("output_probe_observed"):
-            transfer = _download_provider_output_with_capacity_guard(
+            transfer = (provider_output_collector or _download_provider_output_with_capacity_guard)(
                 url=_string(provider_output_get_url),
                 output_path=output_zip_path,
                 minimum_free_bytes=provider_output_minimum_free_bytes,
@@ -9457,8 +9379,9 @@ def run_vast_provider_adapter(
             # so an output the workload may well have uploaded would never have
             # been fetched. The object's presence is stronger evidence than a
             # line claiming it was written.
+            remote_transfer: Mapping[str, Any] = {}
             if _string(provider_output_get_url):
-                transfer = preclassification_transfer or _download_provider_output_with_capacity_guard(
+                transfer = preclassification_transfer or (provider_output_collector or _download_provider_output_with_capacity_guard)(
                     url=_string(provider_output_get_url),
                     output_path=output_zip_path,
                     minimum_free_bytes=provider_output_minimum_free_bytes,
@@ -9470,6 +9393,7 @@ def run_vast_provider_adapter(
                     }
                 )
                 if transfer["status"] == "completed":
+                    remote_transfer = transfer if transfer.get("delivery") == "remote_only" else {}
                     output_download_manifest.update(
                         {
                             "status": "completed",
@@ -9565,9 +9489,9 @@ def run_vast_provider_adapter(
                 r"BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:([^\s]+)",
                 heartbeat_text,
             )
-            output_zip_inspection = _inspect_provider_runtime_output_zip(
+            output_zip_inspection = _mapping(remote_transfer.get("inspection")) or _inspect_provider_runtime_output_zip(
                 output_zip_path,
-                video_extract_dir=resolved_job_dir / "vast_provider_runtime_output_videos",
+                video_extract_dir=None if provider_output_collector else resolved_job_dir / "vast_provider_runtime_output_videos",
                 expected_video_count=_provider_expected_video_count(provider_bundle_kind),
             )
             output_zip_received = output_zip_inspection.get("zip_present") is True
@@ -9632,7 +9556,7 @@ def run_vast_provider_adapter(
             runtime_result = _mapping(output_zip_inspection.get("runtime_result"))
             runtime_result_status = _string(runtime_result.get("status"))
             expected_provider_video_count = _provider_expected_video_count(provider_bundle_kind)
-            structured_policy_canary = _inspect_structured_policy_canary_output(output_zip_path)
+            structured_policy_canary = _mapping(remote_transfer.get("structured_policy_canary")) or _inspect_structured_policy_canary_output(output_zip_path)
             structured_policy_canary_passed = _structured_policy_canary_runtime_passed(
                 runtime_result,
                 structured_policy_canary,
@@ -9701,6 +9625,7 @@ def run_vast_provider_adapter(
                     "provider_output_get_url_present": bool(_string(provider_output_get_url)),
                     "provider_output_download_manifest": output_download_manifest,
                     "provider_runtime_output_zip_inspection": output_zip_inspection,
+                    **({"provider_output_remote_observation": dict(remote_transfer["remote_object"])} if remote_transfer else {}),
                     "runtime_result_status": runtime_result_status or None,
                     "runtime_result_blockers": _string_list(runtime_result.get("blockers")),
                     "blueprint_provider_bundle_execution_proven": provider_status == "completed",

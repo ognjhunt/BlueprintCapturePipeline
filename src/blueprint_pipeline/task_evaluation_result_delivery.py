@@ -143,7 +143,7 @@ def _write_immutable(path: Path, content: bytes) -> None:
             )
 
 
-def _write_zip_immutable(path: Path, files: list[tuple[str, bytes | Path]]) -> None:
+def _write_zip_immutable(path: Path, files: list[tuple[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
@@ -164,6 +164,11 @@ def _write_zip_immutable(path: Path, files: list[tuple[str, bytes | Path]]) -> N
                 info.external_attr = 0o100644 << 16
                 if isinstance(source, bytes):
                     archive.writestr(info, source)
+                elif callable(source):
+                    # A streamed archive member: the same bytes, written as they
+                    # arrive, so the deflated entry is the local file's.
+                    with archive.open(info, "w", force_zip64=True) as output_stream:
+                        source(output_stream.write)
                 else:
                     with (
                         source.open("rb") as input_stream,
@@ -819,8 +824,8 @@ def resolve_task_evaluation_result_artifact(
         ) from exc
     path = _inside(evidence_root, str(record.get("relative_path") or ""), role=requested, require_exists=False)
     if not path.exists():
-        from .task_evaluation_result_artifact_store import materialize_result_artifact
-        return materialize_result_artifact(
+        from .task_evaluation_result_artifact_store import materialize_missing_result_artifact
+        return materialize_missing_result_artifact(
             run_root=root, registry=registry, record=dict(record), source_path=path,
         )
     if _sha256(path) != record.get("sha256") or path.stat().st_size != record.get("size_bytes"):
@@ -882,6 +887,10 @@ def materialize_policy_canary_result_delivery(
         raise TaskEvaluationResultDeliveryError(
             "policy_canary_result_delivery_evidence_root_invalid"
         )
+    # A streamed attempt: members that are not on disk are answered by the
+    # archive's member index. Download mode has no view and is unchanged.
+    from .task_evaluation_result_archive_members import archive_member, open_evidence_view
+    view = open_evidence_view(evidence, error_factory=TaskEvaluationResultDeliveryError)
     delivery_root = root / "artifacts" / "result_delivery"
     delivery_root.mkdir(parents=True, exist_ok=True)
     registry_artifacts: list[dict[str, Any]] = []
@@ -896,16 +905,20 @@ def materialize_policy_canary_result_delivery(
             raise TaskEvaluationResultDeliveryError(
                 f"policy_canary_artifact_outside_root:{role}"
             ) from exc
-        if path.is_symlink() or not resolved.is_file():
+        member = None
+        if not path.is_symlink() and not resolved.is_file():
+            member = archive_member(view, resolved)
+        if path.is_symlink() or (not resolved.is_file() and member is None):
             raise TaskEvaluationResultDeliveryError(f"policy_canary_artifact_invalid:{role}")
-        digest = _sha256(resolved)
+        digest = _sha256(resolved) if member is None else member["sha256"]
+        size = resolved.stat().st_size if member is None else member["size"]
         artifact_id = _artifact_id(role, relative, digest)
         public = {
             "artifact_id": artifact_id,
             "role": role,
             "digest": digest,
             "sha256": digest,
-            "size_bytes": resolved.stat().st_size,
+            "size_bytes": size,
             "content_type": _content_type(resolved),
             "media_type": _content_type(resolved),
             "relative_path": relative,
@@ -914,7 +927,7 @@ def materialize_policy_canary_result_delivery(
             "access_mode": "authenticated_ticket",
         }
         public_artifacts.append(public)
-        public_artifacts_by_binding[(role, digest, resolved.stat().st_size, relative)] = public
+        public_artifacts_by_binding[(role, digest, size, relative)] = public
         registry_artifacts.append(
             {
                 **public,
@@ -926,7 +939,7 @@ def materialize_policy_canary_result_delivery(
         return {
             "artifact_id": artifact_id,
             "digest": digest,
-            "size_bytes": resolved.stat().st_size,
+            "size_bytes": size,
         }
 
     def bound_artifact(record: Any, *, role: str | None = None) -> dict[str, Any] | None:
@@ -963,11 +976,15 @@ def materialize_policy_canary_result_delivery(
             raise TaskEvaluationResultDeliveryError("policy_canary_artifact_inventory_invalid")
         relative = str(row.get("relative_path") or "")
         role = str(row.get("role") or f"provider_artifact_{position}")
-        path = _inside(evidence, relative, role=role)
+        path = _inside(evidence, relative, role=role, require_exists=view is None)
+        member = archive_member(view, path) if view is not None and not path.is_file() else None
+        if view is not None and not path.is_file() and member is None:
+            # Neither on disk nor in the archive: download mode's refusal.
+            raise TaskEvaluationResultDeliveryError(f"delivery_artifact_missing:{role}")
         if (
             relative in seen_paths
-            or _sha256(path) != row.get("sha256")
-            or path.stat().st_size != row.get("size_bytes")
+            or (_sha256(path) if member is None else member["sha256"]) != row.get("sha256")
+            or (path.stat().st_size if member is None else member["size"]) != row.get("size_bytes")
         ):
             raise TaskEvaluationResultDeliveryError("policy_canary_artifact_inventory_invalid")
         seen_paths.add(relative)
@@ -1418,7 +1435,7 @@ def materialize_policy_canary_result_delivery(
         result=result, evidence_root=evidence, delivery_root=delivery_root,
         public_artifacts=public_artifacts, add_artifact=add_artifact,
         write_immutable=_write_immutable, write_zip=_write_zip_immutable,
-        error_factory=TaskEvaluationResultDeliveryError)
+        error_factory=TaskEvaluationResultDeliveryError, member_view=view)
     if control_omission_authority is not None:
         from .policy_canary_control_result_delivery import materialize_control_omission
         control_delivery = materialize_control_omission(
@@ -1585,6 +1602,19 @@ def materialize_policy_canary_result_delivery(
         delivery_root / "artifact_registry.json",
         (canonical_json(registry) + "\n").encode("utf-8"),
     )
+    if view is not None:
+        from .task_evaluation_result_archive_members import (
+            ArchiveMemberReferenceError,
+            build_archive_member_references,
+            write_archive_member_references,
+        )
+
+        try:
+            references = build_archive_member_references(run_root=root, registry=registry, view=view)
+            if references is not None:
+                write_archive_member_references(root, references)
+        except ArchiveMemberReferenceError as exc:
+            raise TaskEvaluationResultDeliveryError(str(exc)) from None
     return delivery
 
 

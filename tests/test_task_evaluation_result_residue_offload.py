@@ -1817,3 +1817,44 @@ def test_an_interrupted_restore_is_never_undone_by_a_tick(tmp_path, monkeypatch,
     assert {relative: (f.run / relative).read_bytes() for relative in RESIDUE} == RESIDUE
     assert json.loads(f.pointer.read_text(encoding="utf-8"))["state"] == "restored"
     assert _offload(f)["retained_reason"] == "restored"
+
+
+def test_residue_offload_keeps_the_member_references_index_and_descriptor(tmp_path, monkeypatch) -> None:
+    """A streamed run's view survives residue offload: the references file names its index and
+    descriptor, and the descriptor names its ingestion receipt, so readers keep reaching them."""
+    from blueprint_pipeline.provider_output_member_view import open_member_view
+    from tests.test_task_evaluation_policy_canary_result_delivery import _deliver, _streamed_case
+
+    # A review video over the bulk offload's 64 KiB floor that never came to the host.
+    result, _, (run, streamed) = _streamed_case(tmp_path, monkeypatch, video_bytes=b"v" * 100_000)
+    _deliver(run, streamed.evidence, result)
+    assert artifacts.offload_result_artifacts(run_root=run, hot_window_seconds=0)["already_remote_count"] == 1
+    (run / TERMINAL_RESULT).write_text(json.dumps({"run_id": "scene-839873-canary-1"}), encoding="utf-8")
+    receipt = {"schema_version": "task_evaluation_policy_canary_dispatch.v1", "status": "completed",
+               "run_id": "scene-839873-canary-1", "run_kind": "internal_policy_canary",
+               "terminal_result": {"path": str(run / TERMINAL_RESULT)}, "receipt_digest": ""}
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    (run / "dispatch_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    (run / "logs").mkdir()
+    (run / "logs" / "worker.log").write_bytes(b"stage line\n" * 400)
+    _age(run)
+    client = _ContentAddressedClient()
+    f = SimpleNamespace(run=run, client=client, pointer=tmp_path / f"streamed{residue.POINTER_SUFFIX}",
+                        publisher=functools.partial(store.publish_configured_scene_artifact, client=client,
+                                                    bucket=BUCKET))
+    attempt = streamed.attempt.relative_to(run).as_posix()
+    view_files = [f"{attempt}/provider_output_member_index.v1.json",
+                  f"{attempt}/immutable_execution.member_view.v1.json",
+                  f"{attempt}/.provider_output_ingestion/receipt.json",
+                  "artifacts/result_delivery/archive_member_references.v1.json"]
+
+    applied = _offload(f)
+
+    assert applied["status"] == "applied" and applied["offloaded_count"] >= 1
+    left = _local_files(run)
+    assert "logs/worker.log" not in left
+    for relative in view_files:
+        assert relative in left, relative
+    # The view still opens and answers a remote member from its index.
+    view = open_member_view(streamed.evidence)
+    assert view.digest("episode-one.external.mp4") == streamed.rows["episode-one.external.mp4"]["sha256"]

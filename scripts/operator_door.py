@@ -16,6 +16,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py hold blueprint-scene-progression.timer --owner alice --reason "inspection" --for 2h
     python3 scripts/operator_door.py release-hold blueprint-scene-progression.timer
     python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
+    python3 scripts/operator_door.py legacy-owner-census --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -58,7 +59,8 @@ MAX_CHECKED_PULL_REQUESTS = 4096
 MAX_CHECKED_HTTP_ERROR_BYTES = 4096
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
-_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released"}
+_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
+                "legacy_owner_census_observed"}
 
 
 class DoorError(Exception):
@@ -582,6 +584,8 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         if action == "retire-scene":
             lifecycle.add_argument("--apply", action="store_true")
         _add_wait(lifecycle, 2 * 3600 + 600)
+    legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
+    _add_wait(legacy_census, 360)
     scratch = commands.add_parser("lane-scratch", help="inspect or end an owned lane scratch lease")
     scratch_actions = scratch.add_subparsers(dest="scratch_action", required=True)
     for action in ("ls", "renew", "release"):
@@ -664,6 +668,8 @@ def run(args: argparse.Namespace) -> int:
         if command == "retire-scene":
             body["apply"] = args.apply
         return _submit(body, args)
+    elif command == "legacy-owner-census":
+        return _submit({"kind": "legacy-owner-census"}, args)
     elif command == "lane-scratch":
         body = {"kind": "lane-scratch", "action": args.scratch_action, "root": args.root, "lane": args.lane}
         if args.scratch_action == "ls":

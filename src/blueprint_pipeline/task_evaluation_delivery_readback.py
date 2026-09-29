@@ -101,7 +101,10 @@ def verify_website_delivery(*, run_root, registration=None, owner_execution=None
                     and value.get('verified') is True and value.get('http_status') == 200):
                 finished[artifact_id] = value
     inbox = None
-    remaining = [key for key in wanted if key not in finished]
+    # A streamed run's archive members first, in archive order, so each span
+    # read the intake makes for one download serves the next ones.
+    from .task_evaluation_result_archive_members import archive_download_order
+    remaining = archive_download_order(run_root, [key for key in wanted if key not in finished])
     batches = [remaining[index:index+BATCH_SIZE] for index in range(0, len(remaining), BATCH_SIZE)]
     if not batches:
         batches = [list(wanted)[:1]]  # Reopen owner-index membership on every completion attempt.

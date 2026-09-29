@@ -4,11 +4,26 @@ The scientific registry and closure metadata remain immutable and local. Only
 registered bulk payloads are evicted, after full remote byte readback and a
 fsynced, registry-bound private reference. Downloads materialize one artifact
 under a disk reservation; the response releases it even on disconnect.
+
+A streamed run's artifacts that never came to the host stay in the promoted
+provider archive, named by ``archive_member_references.v1.json``
+(``task_evaluation_result_archive_members``): a download reads such a member
+with one B2 range request, and the offload counts it as already remote.
+
+Coalescing. A reader that downloads every artifact -- the owner readback --
+would pay one B2 range request per member. A download therefore reads, in the
+same range, the registered members that follow its member in the archive (at
+most ``SPAN_MEMBER_LIMIT`` of them within ``SPAN_BYTES`` of record data, gaps
+under ``SPAN_GAP_BYTES``). Each is checked against its CRC-32 and SHA-256, and
+the followers' bytes wait in a small in-process cache (``CACHE_BYTES``, for
+``CACHE_SECONDS``) for the next download; the readback walks members in
+archive order, so a whole run costs a few span reads.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import fcntl
 import hashlib
 import json
@@ -17,7 +32,9 @@ import re
 import shutil
 import stat
 import tempfile
+import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from functools import partial
@@ -221,6 +238,244 @@ def _artifact_eviction_lease(root: Path):
         release()
 
 
+def _download_cache() -> Path:
+    cache = Path(os.getenv(CACHE_ROOT_ENV, DEFAULT_CACHE_ROOT))
+    if not cache.is_absolute() or cache.is_symlink() or cache.resolve() != cache:
+        raise TaskEvaluationResultDeliveryError("result_artifact_cache_root_invalid")
+    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _reap_abandoned_downloads(cache)
+    return cache
+
+
+SPAN_BYTES = 8 * 1024 * 1024
+SPAN_GAP_BYTES = 1024 * 1024
+SPAN_MEMBER_LIMIT = 64
+CACHE_BYTES = 64 * 1024 * 1024
+CACHE_SECONDS = 300.0
+
+
+class _MemberCache:
+    """Verified member bytes a span read fetched ahead, bounded in bytes and time."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rows: OrderedDict[tuple[str, str], tuple[bytes, float]] = OrderedDict()
+        self._bytes = 0
+
+    def take(self, key: tuple[str, str]) -> bytes | None:
+        with self._lock:
+            row = self._rows.pop(key, None)
+            if row is None:
+                return None
+            self._bytes -= len(row[0])
+            return row[0] if row[1] > time.monotonic() else None
+
+    def put(self, key: tuple[str, str], data: bytes) -> None:
+        with self._lock:
+            if key in self._rows or len(data) > CACHE_BYTES:
+                return
+            self._rows[key] = (data, time.monotonic() + CACHE_SECONDS)
+            self._bytes += len(data)
+            while self._bytes > CACHE_BYTES:
+                _, (dropped, _) = self._rows.popitem(last=False)
+                self._bytes -= len(dropped)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._rows.clear()
+            self._bytes = 0
+
+
+_MEMBER_CACHE = _MemberCache()
+
+
+def clear_archive_member_cache() -> None:
+    """Drop every member fetched ahead (tests; a process that must release memory)."""
+    _MEMBER_CACHE.clear()
+
+
+class _SpanSource:
+    """A fetched byte span, served to the member reader like the archive it came from."""
+
+    def __init__(self, data: bytes, start: int) -> None:
+        self._data, self._start, self.block_bytes = data, start, 1024 * 1024
+
+    def stream_to(self, sink, *, start: int, end: int) -> int:
+        view = memoryview(self._data)[start - self._start:end - self._start]
+        for offset in range(0, len(view), self.block_bytes):
+            sink(bytes(view[offset:offset + self.block_bytes]))
+        return end - start
+
+
+def _member_row(entry: dict) -> dict:
+    return {"method": entry["method"], "size": entry["size_bytes"], "crc32": entry["crc32"],
+            "sha256": entry["sha256"], "data_offset": entry["data_offset"],
+            "compressed_size": entry["compressed_size"]}
+
+
+_ARCHIVE_ORDER: OrderedDict[str, tuple[list[dict], list[int]]] = OrderedDict()
+_ARCHIVE_ORDER_LOCK = threading.Lock()
+
+
+def _archive_order(references: dict) -> tuple[list[dict], list[int]]:
+    """The references' distinct members in archive order and their offsets, kept for a few runs."""
+    key = str(references.get("references_digest"))
+    with _ARCHIVE_ORDER_LOCK:
+        order = _ARCHIVE_ORDER.get(key)
+        if order is not None:
+            _ARCHIVE_ORDER.move_to_end(key)
+            return order
+    rows = sorted({row["archive_path"]: row for row in references["members"].values()}.values(),
+                  key=lambda row: row["data_offset"])
+    order = (rows, [row["data_offset"] for row in rows])
+    with _ARCHIVE_ORDER_LOCK:
+        _ARCHIVE_ORDER[key] = order
+        while len(_ARCHIVE_ORDER) > 4:
+            _ARCHIVE_ORDER.popitem(last=False)
+    return order
+
+
+def _span(references: dict, entry: dict) -> list[dict]:
+    """``entry`` and the registered members that follow it closely enough to share its range read."""
+    start, end, span = entry["data_offset"], entry["data_offset"] + entry["compressed_size"], [entry]
+    followers, offsets = _archive_order(references)
+    for row in followers[bisect.bisect_right(offsets, start):]:
+        if row["data_offset"] < end:
+            continue
+        stop = row["data_offset"] + row["compressed_size"]
+        if (len(span) >= SPAN_MEMBER_LIMIT or row["data_offset"] - end > SPAN_GAP_BYTES
+                or stop - start > SPAN_BYTES or row["size_bytes"] > SPAN_BYTES):
+            break
+        span.append(row)
+        end = stop
+    return span
+
+
+def _read_archive_member(references: dict, entry: dict, sink) -> None:
+    """Write one member's checked bytes to ``sink``; fetch its followers ahead in the same range."""
+    from .provider_output_member_view import (
+        ProviderOutputMemberViewError,
+        open_durable_archive,
+        stream_indexed_member,
+    )
+    from .provider_output_range_transport import ProviderOutputTransportError
+
+    archive = references["archive"]
+    cached = _MEMBER_CACHE.take((archive["sha256"], entry["archive_path"]))
+    if (cached is not None and len(cached) == entry["size_bytes"]
+            and "sha256:" + hashlib.sha256(cached).hexdigest() == entry["sha256"]):
+        sink(cached)
+        return
+    reader = open_durable_archive(archive["durable_reference"], archive["size_bytes"])
+    span = _span(references, entry)
+    if len(span) == 1:
+        stream_indexed_member(reader, _member_row(entry), sink)
+        return
+    start = entry["data_offset"]
+    end = span[-1]["data_offset"] + span[-1]["compressed_size"]
+    fetched = bytearray()
+    try:
+        reader.stream_to(fetched.extend, start=start, end=end)
+    except ProviderOutputTransportError as exc:
+        raise ProviderOutputMemberViewError(str(exc)) from None
+    source = _SpanSource(bytes(fetched), start)
+    stream_indexed_member(source, _member_row(entry), sink)
+    for row in span[1:]:
+        chunks: list[bytes] = []
+        try:
+            stream_indexed_member(source, _member_row(row), chunks.append)
+        except ProviderOutputMemberViewError:
+            continue  # its own download reads and refuses it; this one's bytes were checked
+        _MEMBER_CACHE.put((archive["sha256"], row["archive_path"]), b"".join(chunks))
+
+
+def materialize_missing_result_artifact(
+    *,
+    run_root: Path,
+    registry: dict,
+    record: dict,
+    source_path: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """A registered artifact that is not on disk: offloaded, or an archive member.
+
+    An offload reference takes precedence; without one, a streamed run's
+    archive-member references serve the member. A run with neither is exactly
+    today's ``materialize_result_artifact``.
+    """
+    from .task_evaluation_result_archive_members import REFERENCES_RELATIVE_PATH
+
+    relative = source_path.relative_to(run_root).as_posix()
+    remote = _remote_path(run_root, relative)
+    members = run_root / REFERENCES_RELATIVE_PATH
+    if not remote.exists() and not remote.is_symlink() and (members.exists() or members.is_symlink()):
+        return materialize_archive_member_artifact(
+            run_root=run_root, registry=registry, record=record, source_path=source_path)
+    return materialize_result_artifact(
+        run_root=run_root, registry=registry, record=record, source_path=source_path)
+
+
+def materialize_archive_member_artifact(
+    *,
+    run_root: Path,
+    registry: dict,
+    record: dict,
+    source_path: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Serve a registered artifact that stays in its streamed attempt's promoted archive.
+
+    The run's archive-member references, bound to this registry, name the
+    member's record in the durable archive. One B2 range request (after the
+    reader's one-byte ETag probe) inflates it into the result-artifact cache
+    under a ``result_artifact_download`` reservation of its exact size plus
+    1 MiB, checked against the recorded CRC-32 and SHA-256. The cleanup
+    contract is ``materialize_result_artifact``'s.
+    """
+    from .provider_output_member_view import ProviderOutputMemberViewError
+    from .task_evaluation_result_archive_members import (
+        ArchiveMemberReferenceError,
+        archive_member_entry,
+        load_archive_member_references,
+    )
+
+    relative = source_path.relative_to(run_root).as_posix()
+    _safe_path(run_root, relative)
+    try:
+        references = load_archive_member_references(run_root, registry)
+        entry = archive_member_entry(references, relative, record)
+    except ArchiveMemberReferenceError as exc:
+        raise TaskEvaluationResultDeliveryError(str(exc)) from None
+    if entry is None:
+        raise TaskEvaluationResultDeliveryError("result_artifact_metadata_missing")
+    cache = _download_cache()
+    reservation = reserve_control_plane_disk(
+        "result_artifact_download",
+        target_root=cache,
+        expected_bytes=record["size_bytes"] + 1024 * 1024,
+    )
+    temporary: Path | None = None
+
+    def cleanup() -> None:
+        try:
+            if temporary is not None:
+                shutil.rmtree(temporary, ignore_errors=True)
+        finally:
+            reservation.release()
+
+    try:
+        temporary = Path(tempfile.mkdtemp(prefix=f"download-{os.getpid()}-", dir=cache))
+        destination = temporary / source_path.name
+        with destination.open("xb") as sink:
+            try:
+                _read_archive_member(references, entry, sink.write)
+            except ProviderOutputMemberViewError as exc:
+                raise TaskEvaluationResultDeliveryError(
+                    f"result_artifact_archive_member_unreadable:{exc}") from None
+        return destination, {**record, "_artifact_cleanup": cleanup}
+    except Exception:
+        cleanup()
+        raise
+
+
 def materialize_result_artifact(
     *,
     run_root: Path,
@@ -236,11 +491,7 @@ def materialize_result_artifact(
         relative=relative,
         record=record,
     )
-    cache = Path(os.getenv(CACHE_ROOT_ENV, DEFAULT_CACHE_ROOT))
-    if not cache.is_absolute() or cache.is_symlink() or cache.resolve() != cache:
-        raise TaskEvaluationResultDeliveryError("result_artifact_cache_root_invalid")
-    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _reap_abandoned_downloads(cache)
+    cache = _download_cache()
     reservation = reserve_control_plane_disk(
         "result_artifact_download",
         target_root=cache,
@@ -315,6 +566,30 @@ def _sealed_registry(root: Path) -> tuple[dict, Path, bytes]:
     return registry, registry_path, raw
 
 
+def _archive_member_references(root: Path, registry: dict) -> dict:
+    from .task_evaluation_result_archive_members import (
+        ArchiveMemberReferenceError,
+        load_archive_member_references,
+    )
+
+    try:
+        return load_archive_member_references(root, registry) or {}
+    except ArchiveMemberReferenceError as exc:
+        raise TaskEvaluationResultDeliveryError(str(exc)) from None
+
+
+def _archive_member_entry(references: dict, relative: str, record: dict) -> dict | None:
+    from .task_evaluation_result_archive_members import (
+        ArchiveMemberReferenceError,
+        archive_member_entry,
+    )
+
+    try:
+        return archive_member_entry(references, relative, record)
+    except ArchiveMemberReferenceError as exc:
+        raise TaskEvaluationResultDeliveryError(str(exc)) from None
+
+
 def _offload_candidates(root: Path, registry: dict, minimum_size_bytes: int, report: dict) -> list:
     """The registered bulk files still local, each with its path and record; the remote ones counted.
 
@@ -333,6 +608,7 @@ def _offload_candidates(root: Path, registry: dict, minimum_size_bytes: int, rep
         _safe_path(root, relative)
         groups.setdefault(relative, []).append(record)
     candidates = []
+    members = None
     for relative, records in groups.items():
         record = records[0]
         if any(row.get("role") not in BULK_ROLES for row in records):
@@ -350,8 +626,15 @@ def _offload_candidates(root: Path, registry: dict, minimum_size_bytes: int, rep
             raise TaskEvaluationResultDeliveryError("result_artifact_alias_conflict")
         path = _safe_path(root, relative)
         if not path.exists():
+            remote = _remote_path(root, relative)
+            if not remote.exists() and not remote.is_symlink():
+                # A streamed run's member that never came to the host.
+                members = members if members is not None else _archive_member_references(root, registry)
+                if _archive_member_entry(members, relative, record) is not None:
+                    report["already_remote_count"] += 1
+                    continue
             _validate_remote(
-                _read(_remote_path(root, relative)),
+                _read(remote),
                 registry=registry,
                 relative=relative,
                 record=record,

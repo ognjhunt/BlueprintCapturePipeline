@@ -356,6 +356,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
         hard_ttl_seconds=3600,
         require_independent_watchdog=True,
         max_compute_cap=0,
+        allowed_machine_ids=(41950, 56722),
         provider_runtime_environment={
             "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
         },
@@ -378,6 +379,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
     )
     assert observed_adapter["retention_watchdog_handoff"]["status"] == "armed"
     assert observed_adapter["max_compute_cap"] == 0
+    assert observed_adapter["allowed_machine_ids"] == (41950, 56722)
     assert observed_adapter["provider_runtime_environment"] == {
         "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
     }
@@ -1002,3 +1004,60 @@ def test_avoidlist_already_in_the_job_directory_does_not_abort_the_launch(
     staged.unlink()
     assert _stage_machine_avoidlist(job, None) == staged
     assert not staged.exists()
+
+
+def test_native_pre_spend_waits_for_fresh_billing_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[int] = []
+    sleeps: list[int] = []
+
+    def preflight(**_kwargs: object) -> dict[str, str]:
+        seen.append(1)
+        if len(seen) == 1:
+            raise arena.PreSpendPreflightBlocked(
+                {"blockers": ["spend_admission:spend_admission_lock_stale"]}
+            )
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    monkeypatch.setattr(arena.time, "sleep", sleeps.append)
+    assert arena._require_native_pre_spend_preflight(
+        provider_bundle_kind="native_task_arena", preflight_args={}
+    ) == {"status": "PASS"}
+    assert len(seen) == 2 and sleeps == [15]
+
+
+@pytest.mark.parametrize("blockers", [
+    ["spend_admission:spend_admission_lock_stale", "spend_admission:vast_billing_missing"],
+    ["spend_admission:vast_billing_missing"],
+])
+def test_native_pre_spend_never_retries_other_blockers(
+    monkeypatch: pytest.MonkeyPatch, blockers: list[str]
+) -> None:
+    def preflight(**_kwargs: object) -> dict[str, str]:
+        raise arena.PreSpendPreflightBlocked({"blockers": blockers})
+
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    monkeypatch.setattr(arena.time, "sleep", lambda _seconds: pytest.fail("unexpected wait"))
+    with pytest.raises(arena.PreSpendPreflightBlocked):
+        arena._require_native_pre_spend_preflight(
+            provider_bundle_kind="native_task_arena", preflight_args={}
+        )
+
+
+def test_native_pre_spend_stale_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[int] = []
+    sleeps: list[int] = []
+
+    def preflight(**_kwargs: object) -> dict[str, str]:
+        attempts.append(1)
+        raise arena.PreSpendPreflightBlocked(
+            {"blockers": ["spend_admission:spend_admission_lock_stale"]}
+        )
+
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    monkeypatch.setattr(arena.time, "sleep", sleeps.append)
+    with pytest.raises(arena.PreSpendPreflightBlocked):
+        arena._require_native_pre_spend_preflight(
+            provider_bundle_kind="native_task_arena", preflight_args={}
+        )
+    assert len(attempts) == 17 and sleeps == [15] * 16

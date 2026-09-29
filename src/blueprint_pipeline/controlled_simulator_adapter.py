@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
-from .company_policy_proxy import validate_action_response
+from .controlled_policy_actions import validate_action_response
 
 
 class ControlledSimulatorAdapter:
@@ -22,7 +22,8 @@ class ControlledSimulatorAdapter:
                  state_units: Mapping[str, str], control_frequency_hz: float,
                  prompt: str,
                  translate_action: Callable[[Sequence[float], Any, Mapping[str, Any]], Sequence[float]],
-                 terminal: Callable[[], bool], stop_controller: Callable[[], None]):
+                 terminal: Callable[[], bool], stop_controller: Callable[[], None],
+                 outcome_recorder: Any = None):
         self.native = native_environment
         self.contract = validate_company_policy_container_contract_v2(contract)
         observation = self.contract["observation_schema"]
@@ -37,6 +38,7 @@ class ControlledSimulatorAdapter:
         self.camera_bindings, self.state_bindings = dict(camera_bindings), dict(state_bindings)
         self.prompt, self.translate_action = prompt, translate_action
         self.terminal, self.stop_controller = terminal, stop_controller
+        self.outcome_recorder = outcome_recorder
 
     def read_policy_inputs(self) -> Mapping[str, Any]:
         inputs = self.native.read_policy_inputs()
@@ -75,6 +77,8 @@ class ControlledSimulatorAdapter:
             if not isinstance(native_action, (list, tuple, np.ndarray)) or not np.isfinite(np.asarray(native_action, dtype=float)).all():
                 raise ValueError("controlled_simulator_native_action_invalid")
             self.native.step(native_action)
+            if self.outcome_recorder is not None:
+                self.outcome_recorder.capture(motor_step=True)
             executed += 1
         return {"executed_motor_steps": executed, "independent_outcome_required": True}
 

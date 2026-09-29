@@ -76,3 +76,30 @@ def test_source_change_and_cross_task_disclosure_are_rejected(tmp_path):
     data["state_path"].write_text('{"changed":true}')
     with pytest.raises(AgentExecutionError, match="artifact_changed"):
         tools.trace("state_trace", start_step=0, end_step=5)
+
+
+def test_managed_catalog_reads_a_missing_frame_through_the_view(tmp_path, monkeypatch):
+    from blueprint_pipeline.episode_interpretation import build_episode_interpretation_request
+    from tests.provider_output_fixtures import RangeStore, serve_member_views, stream_evidence_tree
+
+    tools, data, admitted = evidence(tmp_path)
+    streamed = stream_evidence_tree(data["root"], tmp_path / "streamed" / "attempt_001")
+    serve_member_views(monkeypatch, streamed.store)
+    request = build_episode_interpretation_request(
+        episode_id="episode-1", candidate_policy_id="groot_n17_droid", evidence_root=streamed.evidence,
+        task_success_contract_path="task_success_contract.json", deterministic_score_path="score.json",
+        state_trace_path="state.json", contact_force_trace_path="contact.json",
+        frame_manifest_path="frame_manifest.json", review_video_paths=["media/episode.mp4"])
+    streamed_tools = EpisodeEvidenceTools(request, admitted_digests=admitted)
+
+    content = streamed_tools.interval(start_seconds=0.05, end_seconds=0.15)
+
+    assert content == tools.interval(start_seconds=0.05, end_seconds=0.15)
+    shown = [row for row in request.input_receipt["artifacts"]["lossless_frames"] if row["simulation_time_s"] == 0.1]
+    assert len(streamed.data_ranges()) == len(shown) == 2
+    assert not any(path.suffix == ".png" for path in streamed.evidence.rglob("*"))
+    # Bytes from the durable copy that are not the index's are refused before disclosure.
+    frame = streamed.rows[shown[0]["relative_path"]]
+    serve_member_views(monkeypatch, RangeStore(streamed.archive.patched(frame["data_offset"], b"\x00")))
+    with pytest.raises(AgentExecutionError, match="agent_image_changed_before_disclosure"):
+        streamed_tools.images.inspect(f"episode_frame_{shown[0]['frame_index']}")

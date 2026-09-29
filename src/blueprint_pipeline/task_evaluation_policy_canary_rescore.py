@@ -97,6 +97,32 @@ def _inside(root: Path, relative_path: Any, *, code: str) -> Path:
     return path
 
 
+def _member_view(root: Path):
+    """The member view of a streamed evidence root, or None in download mode."""
+    from .provider_output_member_view import ProviderOutputMemberViewError, open_member_view
+
+    try:
+        return open_member_view(root)
+    except ProviderOutputMemberViewError as exc:
+        raise PolicyCanaryRescoreError("policy_canary_rescore_member_view_invalid") from exc
+
+
+def _archive_member(root: Path, relative_path: Any, *, view) -> dict[str, Any] | None:
+    """The index row of an inventory file a streamed attempt keeps only in its archive.
+
+    None for download mode, a file on disk, or a path the view does not
+    index; ``_inside`` then applies download mode's checks and codes.
+    """
+    relative = str(relative_path or "")
+    if view is None or not relative or relative.startswith("/"):
+        return None
+    unresolved = root / relative
+    path = unresolved.resolve()
+    if unresolved.is_symlink() or path.is_file() or (root != path and root not in path.parents):
+        return None
+    return view.member_at(path)
+
+
 def _load_object(path: Path, *, code: str) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file():
         raise PolicyCanaryRescoreError(code)
@@ -162,6 +188,9 @@ def _verify_artifact_inventory(
     if result.get("artifact_inventory_digest") != canonical_digest({"value": inventory}):
         raise PolicyCanaryRescoreError("policy_canary_rescore_artifact_inventory_digest_mismatch")
     records: dict[str, dict[str, Any]] = {}
+    # A streamed attempt keeps its media in the promoted archive: those rows
+    # are verified against the member index instead of rehashed (review I1).
+    view = _member_view(evidence_root)
     for raw in inventory:
         record = _mapping(raw, code="policy_canary_rescore_artifact_inventory_invalid")
         relative = str(record.get("relative_path") or "")
@@ -169,16 +198,21 @@ def _verify_artifact_inventory(
             raise PolicyCanaryRescoreError(
                 "policy_canary_rescore_artifact_inventory_duplicate_path"
             )
-        path = _inside(
-            evidence_root,
-            relative,
-            code="policy_canary_rescore_artifact_missing",
-        )
+        member = _archive_member(evidence_root, relative, view=view)
+        if member is None:
+            path = _inside(
+                evidence_root,
+                relative,
+                code="policy_canary_rescore_artifact_missing",
+            )
+            observed_digest, observed_size = _sha256(path), path.stat().st_size
+        else:
+            observed_digest, observed_size = member["sha256"], member["size"]
         if (
             not _digest(record.get("sha256"))
-            or _sha256(path) != record.get("sha256")
+            or observed_digest != record.get("sha256")
             or isinstance(record.get("size_bytes"), bool)
-            or record.get("size_bytes") != path.stat().st_size
+            or record.get("size_bytes") != observed_size
         ):
             raise PolicyCanaryRescoreError(
                 f"policy_canary_rescore_artifact_digest_mismatch:{relative}"

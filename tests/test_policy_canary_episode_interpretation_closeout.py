@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -451,3 +452,78 @@ def test_production_route_does_not_reserve_cost_without_eligible_rights(
 
     assert interpreted["episode_interpretation"]["provider_call_count"] == 0
     assert interpreted["episode_interpretation"]["abstained_count"] == 20
+
+
+# -- Streamed sessions: frames and review videos stay in the archive ----------
+
+
+def _streamed_session(tmp_path: Path, monkeypatch):
+    from tests.provider_output_fixtures import serve_member_views, stream_evidence_tree
+
+    data, result = _session(tmp_path)
+    streamed = stream_evidence_tree(data["root"], tmp_path / "streamed" / "attempt_001")
+    serve_member_views(monkeypatch, streamed.store)
+    return data, result, streamed
+
+
+def test_streamed_closeout_materializes_twenty_receipts_and_replay_does_not_reinvoke(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data, result, streamed = _streamed_session(tmp_path, monkeypatch)
+    interpreter = DeterministicFixtureInterpreter(_output(data))
+    runner = _FixtureRunner(interpreter)
+    rights_root = tmp_path / "rights"
+    # Rights are sealed from the download-mode bundles: the streamed bundles are the same digests.
+    _rights_for_all(data, result, rights_root, interpreter)
+    downloaded = materialize_policy_canary_episode_interpretations(
+        run_root=tmp_path, evidence_root=data["root"], session_result=result,
+        runner=_FixtureRunner(DeterministicFixtureInterpreter(_output(data))), rights_root=rights_root,
+        environment={})
+
+    first = materialize_policy_canary_episode_interpretations(
+        run_root=tmp_path / "streamed", evidence_root=streamed.evidence, session_result=result,
+        runner=runner, rights_root=rights_root, environment={})
+    second = materialize_policy_canary_episode_interpretations(
+        run_root=tmp_path / "streamed", evidence_root=streamed.evidence, session_result=first,
+        runner=runner, rights_root=rights_root, environment={})
+
+    assert first["episode_interpretation"]["receipt_count"] == 20
+    assert first["episode_interpretation"]["completed_count"] == 20
+    assert interpreter.call_count == 20
+    assert second["episode_interpretation"]["reused_receipt_count"] == 20
+    assert second["episode_interpretation"]["provider_call_count"] == 0
+    assert streamed.data_ranges() == []
+    # Receipts, the joined summary and the inventory are download mode's, byte for byte.
+    assert first == downloaded
+    receipts = sorted((streamed.evidence / "episode_interpretation/receipts").glob("*.json"))
+    assert len(receipts) == 20
+    for path in receipts:
+        assert path.read_bytes() == (data["root"] / "episode_interpretation/receipts" / path.name).read_bytes()
+    # The index basis sits outside every registered artifact, beside the run, one per bundle.
+    bases = sorted((tmp_path / "streamed" / "episode_interpretation_source_digest_basis").glob("*.json"))
+    assert [path.name for path in bases] == [path.name for path in receipts]
+    assert all(json.loads(path.read_text())["basis"] == "provider_output_member_index" for path in bases)
+    registered = [streamed.evidence / row["relative_path"] for row in first["artifact_inventory"]]
+    assert not any(b"s3://" in path.read_bytes() for path in registered if path.is_file())
+    assert not any(b"s3://" in path.read_bytes() for path in bases)
+
+
+def test_interpretation_writes_nothing_under_the_view_root_but_its_receipts(tmp_path: Path, monkeypatch) -> None:
+    data, result, streamed = _streamed_session(tmp_path, monkeypatch)
+    interpreter = DeterministicFixtureInterpreter(_output(data))
+    rights_root = tmp_path / "rights"
+    _rights_for_all(data, result, rights_root, interpreter)
+    before = {path.relative_to(streamed.evidence).as_posix(): path.read_bytes()
+              for path in streamed.evidence.rglob("*") if path.is_file()}
+
+    materialize_policy_canary_episode_interpretations(
+        run_root=tmp_path / "streamed", evidence_root=streamed.evidence, session_result=result,
+        runner=_FixtureRunner(interpreter), rights_root=rights_root, environment={})
+
+    after = {path.relative_to(streamed.evidence).as_posix(): path.read_bytes()
+             for path in streamed.evidence.rglob("*") if path.is_file()}
+    assert {path: after[path] for path in before} == before
+    added = sorted(set(after) - set(before))
+    assert added and all(path.split("/", 1)[0] in {"episode_interpretation", "episode_interpretation_sources"}
+                         for path in added)
+    assert not any(path.endswith((".png", ".mp4")) for path in after)

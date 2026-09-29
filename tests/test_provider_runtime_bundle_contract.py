@@ -128,3 +128,30 @@ def test_policy_canary_reuses_the_closed_native_arena_runtime_contract() -> None
         entrypoint_text=entrypoint,
         runner_text=runner,
     ) == []
+
+
+def test_controlled_native_policy_worker_has_a_closed_provider_contract() -> None:
+    from blueprint_pipeline.native_task_arena_bundle import _entrypoint
+
+    entrypoint = _entrypoint(
+        expected_output_filename="controlled_native_policy_result.v1.json",
+        expected_result_schema="controlled_native_policy_result.v1",
+        runtime_source_packet_required=True,
+        policy_provisioning_script_name=None,
+    )
+    runner = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/controlled_native_policy_worker.py"
+    ).read_text()
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="native_task_arena",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []
+    assert "provider_runner_missing_native_task_arena_runtime_contract" in (
+        provider_runtime_contract_blockers(
+            provider_bundle_kind="native_task_arena",
+            entrypoint_text=entrypoint,
+            runner_text=runner.replace("read_controlled_native_outcome", "outcome_missing"),
+        )
+    )

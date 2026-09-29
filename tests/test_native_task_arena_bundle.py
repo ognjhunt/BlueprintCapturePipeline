@@ -110,6 +110,7 @@ def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
         "controls",
         "policy",
         "policy_diagnostic",
+        "controlled_policy",
     }
 
 

@@ -8,6 +8,7 @@ import math
 import os
 import shutil
 import stat
+import time
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -239,6 +240,22 @@ def _bounded_spend_gate_open(
     return projected_cost_usd <= hard_cap_usd + 1e-12
 
 
+def _require_native_pre_spend_preflight(
+    *, provider_bundle_kind: str, preflight_args: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Wait only for a new billing-backed lock, without waiving any blocker."""
+    for stale_attempt in range(17):
+        try:
+            return require_pre_spend_preflight(**preflight_args)
+        except PreSpendPreflightBlocked as error:
+            if (provider_bundle_kind != "native_task_arena"
+                    or error.preflight.get("blockers") != ["spend_admission:spend_admission_lock_stale"]
+                    or stale_attempt == 16):
+                raise
+            time.sleep(15)
+    raise AssertionError("native_pre_spend_retry_exhausted")
+
+
 @contextmanager
 def _vast_authority_environment(*, gated_backbone_authorized: bool = False):
     managed = (*_VAST_MUTATION_ENV, _ADP009D_GATED_BACKBONE_AUTH_ENV)
@@ -413,6 +430,7 @@ def run_arena_native_control_vast(
     enable_isaac_smoke: bool = True,
     forward_hf_token: bool = False,
     allowed_active_instance_ids: Sequence[int] = (),
+    allowed_machine_ids: Sequence[int] = (),
     allowed_active_resource_names: Sequence[str] = (),
     instance_label_exact: str | None = None,
     stale_offer_create_retry_limit: int | None = None,
@@ -497,7 +515,7 @@ def run_arena_native_control_vast(
     ensure_dir(provider_run)
     vast_credential_present = _vast_credential_file_present()
     try:
-        pre_spend_preflight = require_pre_spend_preflight(
+        preflight_args = dict(
             lane=provider_bundle_kind,
             provider="vast",
             credential_present=vast_credential_present,
@@ -528,6 +546,11 @@ def run_arena_native_control_vast(
                 if str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
                 else {}
             ),
+        )
+        # Bundle preparation can outlast one lock. The independent guard may
+        # publish a fresh one while this native launch remains unallocated.
+        pre_spend_preflight = _require_native_pre_spend_preflight(
+            provider_bundle_kind=provider_bundle_kind, preflight_args=preflight_args,
         )
     except PreSpendPreflightBlocked as exc:
         observed_preflight_blockers = [
@@ -772,6 +795,7 @@ def run_arena_native_control_vast(
                 retention_watchdog_handoff=watchdog_handoff,
                 forward_hf_token=forward_hf_token,
                 allowed_active_instance_ids=allowed_active_instance_ids,
+                allowed_machine_ids=allowed_machine_ids,
                 allowed_active_resource_names=allowed_active_resource_names,
                 vast_launch_lock_file=vast_launch_lock_file,
                 paid_resource_admission_grant=paid_resource_admission_grant,

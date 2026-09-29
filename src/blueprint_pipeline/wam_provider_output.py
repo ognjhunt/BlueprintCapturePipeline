@@ -36,6 +36,7 @@ RUNTIME_RESULT_FILENAMES = (
     "adp009d_source_calibration_gpu_render_result.v1.json",
     "adp009b_gaussian_excision_result.json",
     "native_task_arena_construction_result.v1.json",
+    "controlled_native_policy_result.v1.json",
     "native_task_arena_control_result.v1.json",
     "native_task_arena_policy_result.v1.json",
     "native_task_arena_policy_diagnostic_result.v1.json",
@@ -257,6 +258,49 @@ def inspect_provider_runtime_output_zip(
             "zip_size_bytes": 0,
             "video_smoke_proven": False,
         }
+    try:
+        archive = zipfile.ZipFile(resolved)
+    except Exception as exc:
+        return _invalid_archive(str(resolved), resolved.stat().st_size, exc)
+    with archive:
+        return inspect_provider_runtime_output_archive(
+            archive,
+            zip_path=str(resolved),
+            zip_size_bytes=resolved.stat().st_size,
+            video_extract_dir=video_extract_dir,
+            expected_video_count=expected_video_count,
+            video_probe=video_probe,
+        )
+
+
+def _invalid_archive(zip_path: str, zip_size_bytes: int, exc: Exception) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "zip_path": zip_path,
+        "zip_present": True,
+        "zip_size_bytes": zip_size_bytes,
+        "blockers": [f"provider_runtime_output_zip_invalid:{type(exc).__name__}"],
+        "video_smoke_proven": False,
+    }
+
+
+def inspect_provider_runtime_output_archive(
+    archive: zipfile.ZipFile,
+    *,
+    zip_path: str,
+    zip_size_bytes: int,
+    video_extract_dir: Path | None = None,
+    expected_video_count: int | None = None,
+    video_probe: VideoProbe = probe_mp4_video,
+) -> dict[str, Any]:
+    """Inspect an open provider-output archive; the archive needs no local path.
+
+    ``archive`` may read a local file or a remote object by range. ``zip_path``
+    and ``zip_size_bytes`` are reported exactly as given. Only the members the
+    inspection reads are touched: the shallowest runtime result, the first
+    entrypoint diagnostic and, when ``video_extract_dir`` is set, every MP4.
+    """
+
     names: list[str] = []
     runtime_result: dict[str, Any] | None = None
     runtime_result_member: str | None = None
@@ -265,64 +309,56 @@ def inspect_provider_runtime_output_zip(
     mp4s: list[str] = []
     mp4_validation_rows: list[dict[str, Any]] = []
     try:
-        with zipfile.ZipFile(resolved) as archive:
-            names = sorted(archive.namelist())
-            mp4s = [name for name in names if name.lower().endswith(".mp4")]
-            result_candidates = [
-                candidate
-                for candidate in names
-                if Path(candidate).name in RUNTIME_RESULT_FILENAMES
-            ]
-            # A failed multi-cell canary contains both the authoritative
-            # top-level terminal result and completed child-cell results.  A
-            # lexical scan chose ``cell_runs/00/...`` first and misreported a
-            # blocked run as one completed cell.  Prefer the shallowest exact
-            # result; nested results remain evidence, never the run verdict.
-            result_candidates.sort(key=lambda candidate: (candidate.count("/"), candidate))
-            for candidate in result_candidates:
-                if Path(candidate).name in RUNTIME_RESULT_FILENAMES:
-                    try:
-                        parsed = json.loads(archive.read(candidate).decode("utf-8"))
-                        if isinstance(parsed, Mapping):
-                            if Path(candidate).name == "adp009d_source_calibration_gpu_render_result.v1.json" and (
-                                parsed.get("schema_version") != "adp009d_source_calibration_gpu_render_result.v1"
-                                or parsed.get("render_scope") != "source_calibration"
-                            ):
-                                json_parse_errors.append(f"{candidate}:SourceCalibrationResultIdentityMismatch")
-                                break
-                            runtime_result = dict(parsed)
-                            runtime_result_member = candidate
-                        break
-                    except Exception as exc:
-                        json_parse_errors.append(
-                            f"{candidate}:{type(exc).__name__}"
-                        )
-            for candidate in names:
-                if candidate.endswith(ENTRYPOINT_DIAGNOSTIC_FILENAME):
-                    try:
-                        parsed = json.loads(archive.read(candidate).decode("utf-8"))
-                        if isinstance(parsed, Mapping):
-                            entrypoint_diagnostic = dict(parsed)
-                        break
-                    except Exception as exc:
-                        json_parse_errors.append(f"{candidate}:{type(exc).__name__}")
-            if video_extract_dir and mp4s:
-                ensure_dir(video_extract_dir)
-                for index, member in enumerate(mp4s):
-                    local_path = video_extract_dir / f"{index:03d}_{Path(member).name}"
-                    local_path.write_bytes(archive.read(member))
-                    row = video_probe(local_path)
-                    row["zip_member"] = member
-                    mp4_validation_rows.append(row)
+        names = sorted(archive.namelist())
+        mp4s = [name for name in names if name.lower().endswith(".mp4")]
+        result_candidates = [
+            candidate
+            for candidate in names
+            if Path(candidate).name in RUNTIME_RESULT_FILENAMES
+        ]
+        # A failed multi-cell canary contains both the authoritative
+        # top-level terminal result and completed child-cell results.  A
+        # lexical scan chose ``cell_runs/00/...`` first and misreported a
+        # blocked run as one completed cell.  Prefer the shallowest exact
+        # result; nested results remain evidence, never the run verdict.
+        result_candidates.sort(key=lambda candidate: (candidate.count("/"), candidate))
+        for candidate in result_candidates:
+            if Path(candidate).name in RUNTIME_RESULT_FILENAMES:
+                try:
+                    parsed = json.loads(archive.read(candidate).decode("utf-8"))
+                    if isinstance(parsed, Mapping):
+                        if Path(candidate).name == "adp009d_source_calibration_gpu_render_result.v1.json" and (
+                            parsed.get("schema_version") != "adp009d_source_calibration_gpu_render_result.v1"
+                            or parsed.get("render_scope") != "source_calibration"
+                        ):
+                            json_parse_errors.append(f"{candidate}:SourceCalibrationResultIdentityMismatch")
+                            break
+                        runtime_result = dict(parsed)
+                        runtime_result_member = candidate
+                    break
+                except Exception as exc:
+                    json_parse_errors.append(
+                        f"{candidate}:{type(exc).__name__}"
+                    )
+        for candidate in names:
+            if candidate.endswith(ENTRYPOINT_DIAGNOSTIC_FILENAME):
+                try:
+                    parsed = json.loads(archive.read(candidate).decode("utf-8"))
+                    if isinstance(parsed, Mapping):
+                        entrypoint_diagnostic = dict(parsed)
+                    break
+                except Exception as exc:
+                    json_parse_errors.append(f"{candidate}:{type(exc).__name__}")
+        if video_extract_dir and mp4s:
+            ensure_dir(video_extract_dir)
+            for index, member in enumerate(mp4s):
+                local_path = video_extract_dir / f"{index:03d}_{Path(member).name}"
+                local_path.write_bytes(archive.read(member))
+                row = video_probe(local_path)
+                row["zip_member"] = member
+                mp4_validation_rows.append(row)
     except Exception as exc:
-        return {
-            "status": "blocked",
-            "zip_path": str(resolved),
-            "zip_present": True,
-            "zip_size_bytes": resolved.stat().st_size,
-            "blockers": [f"provider_runtime_output_zip_invalid:{type(exc).__name__}"],
-            "video_smoke_proven": False,
-        }
+        return _invalid_archive(zip_path, zip_size_bytes, exc)
     expected_count = expected_video_count if expected_video_count is not None else 0
     mp4_count_matches_expected = expected_count > 0 and len(mp4s) >= expected_count
     all_validated = bool(mp4_validation_rows) and all(
@@ -339,9 +375,9 @@ def inspect_provider_runtime_output_zip(
     runtime_result_summary = summarize_runtime_result(runtime_result)
     return {
         "status": "completed",
-        "zip_path": str(resolved),
+        "zip_path": zip_path,
         "zip_present": True,
-        "zip_size_bytes": resolved.stat().st_size,
+        "zip_size_bytes": zip_size_bytes,
         "zip_member_count": len(names),
         "zip_members_preview": names[:50],
         "runtime_result_present": runtime_result is not None,
