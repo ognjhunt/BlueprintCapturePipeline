@@ -280,3 +280,27 @@ def test_native_launch_selected_profile_root_is_gated_before_request_payload(tmp
             profile_dir=target,
             state_root=tmp_path / "state",
         )
+
+
+def test_installed_source_cannot_copy_needed_cache_without_registered_use(tmp_path):
+    import hashlib
+    from blueprint_pipeline.task_evaluation_installed_source_bindings import (
+        InstalledSource,
+        InstalledSourceBindings,
+    )
+
+    path = tmp_path / "g1-checkpoint" / "cache" / "payload"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"payload")
+    digest = "sha256:" + hashlib.sha256(b"payload").hexdigest()
+    source = InstalledSource(
+        path=path,
+        digest=digest,
+        size_bytes=7,
+        installation_receipt_digest="receipt",
+        publisher_intake_sha256="intake",
+    )
+    with pytest.raises(ValueError, match="experiment_external_publisher_unsupported"):
+        InstalledSourceBindings({"https://publisher.example/pinned": source}).resolve(
+            "https://publisher.example/pinned", digest, 7
+        )
