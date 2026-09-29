@@ -258,6 +258,42 @@ def test_slow_multi_head_store_reports_incomplete_without_partial_owner_labels(i
     assert payload.read_bytes() == b"old, preserved"
 
 
+def test_expiry_crossing_during_censuses_cannot_commit_head_or_show_label(installed, monkeypatch):
+    target, payload, registry, legacy = installed
+    packet, _ = _issue_and_approve(installed)
+
+    class Clock:
+        value = 0.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+
+    def slow_census(*_args, **_kwargs):
+        clock.value += 100.0
+        return _survey(str(target))
+
+    monkeypatch.setattr(legacy, "_fresh_census", slow_census)
+    with pytest.raises(legacy.LegacyOwnerError, match="expired"):
+        legacy.apply_owner_review(packet_id=packet["packet_id"],
+                                  installed_config_path="/fixture/door.json", now=1021,
+                                  monotonic=clock)
+    assert not list(registry.glob("*.head.json"))
+    assert payload.read_bytes() == b"old, preserved"
+
+    monkeypatch.setattr(legacy, "_fresh_census", lambda *a, **k: _survey(str(target)))
+    legacy.apply_owner_review(packet_id=packet["packet_id"],
+                              installed_config_path="/fixture/door.json", now=1021,
+                              monotonic=lambda: 0)
+    clock.value = 0
+    monkeypatch.setattr(legacy, "_fresh_census", slow_census)
+    observed = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
+                                           monotonic=clock, max_seconds=240)
+    row = next(item for item in observed["rows"] if item["path"] == str(target))
+    assert observed["observed_owner_count"] == 0 and "owner" not in row
+
+
 def test_crash_before_head_is_recoverable_without_promoting_torn_record(installed, monkeypatch):
     target, payload, registry, legacy = installed
     packet, _ = _issue_and_approve(installed)
