@@ -206,7 +206,6 @@ class PresignedTransfers:
     def upload(self, url: str, *, size: int, body: bytes | Callable[[Any], Any], content_type: str,
                timeout: float) -> None:
         """PUT ``body`` (bytes, or a writer streamed through a pipe) with a known ``Content-Length``."""
-
         headers = {"Content-Type": content_type, "Content-Length": str(size)}
         if isinstance(body, bytes):
             self._open(url, method="PUT", data=body, headers=headers, timeout=timeout)
@@ -247,7 +246,6 @@ class GcsTransportReader:
 
 def _sealed_descriptor(value: Any) -> dict[str, Any]:
     """The checks that need no host config: shape, seal, identity, paths and closure (plan 14 §3)."""
-
     try:
         descriptor = contract._clone(value, "descriptor")
         reasons = contract.forbidden_record_content(descriptor)
@@ -277,7 +275,6 @@ def _object_prefix(value: Any) -> tuple[str, str, str]:
 
 def _check_url(url: Any, uri: str, prefix: tuple[str, str, str]) -> None:
     """A presigned URL names exactly ``uri``'s object, on the pinned host, under the pinned key prefix."""
-
     parts = urlsplit(url) if isinstance(url, str) else None
     path = "/" + uri.removeprefix("s3://")
     if (parts is None or (parts.scheme, parts.netloc) != prefix[:2] or parts.fragment or not path.startswith(prefix[2])
@@ -320,7 +317,6 @@ def validated_transport(transport: Any, environ: Mapping[str, str]) -> dict[str,
 
 def read_transport(runtime: WorkerRuntime) -> dict[str, Any]:
     """The transport at exactly the generation the dispatcher named: a replaced object is not it (plan 14 §4)."""
-
     environ = runtime.environ
     match = _TRANSPORT_OBJECT.fullmatch(str(environ.get(TRANSPORT_OBJECT_VARIABLE) or ""))
     generation = str(environ.get(TRANSPORT_GENERATION_VARIABLE) or "")
@@ -356,7 +352,6 @@ class _Attempt:
     def receipt_exists(self, *, strict: bool = True) -> bool:
         """Whether a receipt is up.  Unknown refuses at bootstrap (``strict``); before sealing, when the receipt
         GET may have outlived its fetch-window lifetime (plan 14 §11), unknown is no."""
-
         try:
             return self.runtime.http.read(self.transport["receipt_url"], max_bytes=MAX_RECEIPT_BYTES,
                                           timeout=TRANSFER_TIMEOUT_SECONDS) is not None
@@ -382,7 +377,6 @@ class _Attempt:
 
     def beat(self) -> bool:
         """PUT the next heartbeat; a lost one is tolerated, and the host's lease goes stale if they stop."""
-
         with self._lock:
             self.sequence += 1
             heartbeat = {"schema_version": HEARTBEAT_SCHEMA_VERSION, "attempt_id": self.descriptor["attempt_id"],
@@ -433,7 +427,6 @@ class _Attempt:
                misses: Sequence[str] = ()) -> dict[str, Any]:
         """Upload the receipt, the commit marker, last.  One the host would refuse keeps its failures but not
         its result, and failing that says only why it was refused."""
-
         receipt = self._receipt(status, result, output, failures, misses)
         refusal = self._refusal(receipt)
         if refusal is not None:
@@ -446,7 +439,6 @@ class _Attempt:
     def finish(self, status: str, *, mode: str, result: Any = None, output: Any = None, codes: Sequence[str] = (),
                misses: Sequence[str] = ()) -> int:
         """Commit the receipt; exit 0 once it is up (plan 14 §6), or refuse when it could not be."""
-
         try:
             self.commit(status, result=result, output=output, failures=[INFRASTRUCTURE_FAILED + code for code in codes],
                         misses=misses)
@@ -497,7 +489,6 @@ def _require_writable_roots(descriptor: Mapping[str, Any], runtime: WorkerRuntim
 def _download(runtime: WorkerRuntime, attempt: _Attempt, url: str, destination: Path, *, digest: str, size: int,
               mismatch: str, timeout: float) -> None:
     """Fetch by presigned GET into ``destination``, then re-hash it: only the declared bytes survive."""
-
     try:
         runtime.http.download(url, destination, max_bytes=max(size, 1), timeout=timeout)
     except Exception as exc:  # noqa: BLE001 - typed by status or type, never by message
@@ -533,7 +524,6 @@ def _extract_release(archive: Path, staging: Path, commit: str) -> None:
 
 def _fetch_release(transport: Mapping[str, Any], runtime: WorkerRuntime, attempt: _Attempt) -> Path:
     """Fetch recipe v2, verify it, and extract it to ``/tmp/blueprint-release/<commit>/`` (``/opt`` is not writable)."""
-
     commit, source = transport["descriptor"]["code"]["source_commit"], transport["source_archive"]
     parent = runtime.local(RELEASE_PARENT)
     release, nonce = parent / commit, secrets.token_hex(8)
@@ -566,7 +556,6 @@ def _release_environment(runtime: WorkerRuntime, descriptor: Mapping[str, Any], 
 
 def _wait(process: subprocess.Popen, seconds: float, timeout_code: str) -> int:
     """Wait for a child started in its own session; past ``seconds`` its whole group is killed."""
-
     try:
         return process.wait(timeout=max(1.0, seconds))
     except subprocess.TimeoutExpired:
@@ -613,7 +602,6 @@ class _Deadline:
 
     def timeout(self) -> float:
         """A socket timeout that never outlives the phase."""
-
         self.check()
         return max(1.0, min(TRANSFER_TIMEOUT_SECONDS, self.end - self.clock()))
 
@@ -661,7 +649,6 @@ def _unchanged(path: Path, item: Mapping[str, Any]) -> bool:
 
 def _materialize_inputs(attempt: _Attempt, runtime: WorkerRuntime, deadline: _Deadline) -> None:
     """Each input by presigned GET into a partial file, re-hashed, given its mode and linked onto ``materialize_at``."""
-
     for row, item in zip(attempt.transport["inputs"], attempt.descriptor["inputs"]):
         deadline.check()
         target, label = runtime.local(item["materialize_at"]), safe_label(item["materialize_at"])
@@ -736,7 +723,6 @@ def _from_release(release: str | Path) -> bool:
 
 def _stage_main() -> int:
     """The stage child: refuse unless this code is the release's, audit release reads, run one handler."""
-
     request = json.loads(sys.stdin.buffer.read(MAX_HANDOFF_BYTES + 1))
     report: dict[str, Any] = {"result": None, "release_path_misses": [], "failures": []}
     if not _from_release(request["release_root"]):
@@ -805,7 +791,6 @@ def _undeclared_writes(descriptor: Mapping[str, Any], runtime: WorkerRuntime) ->
 
 def _integrity_failures(descriptor: Mapping[str, Any], runtime: WorkerRuntime) -> list[str]:
     """A changed input, or a write under a path root outside the declared outputs (plan 14 §6)."""
-
     changed = [f"input_changed:{safe_label(item['materialize_at'])}" for item in descriptor["inputs"]
                if not _unchanged(runtime.local(item["materialize_at"]), item)]
     written = [f"undeclared_write:{safe_label(path)}" for path in _undeclared_writes(descriptor, runtime)]
@@ -837,7 +822,6 @@ def _host_known(descriptor: Mapping[str, Any], runtime: WorkerRuntime) -> dict[s
 
 def _seal(attempt: _Attempt, runtime: WorkerRuntime, deadline: _Deadline) -> dict[str, Any]:
     """Upload ``blobs.tar`` (new bytes only) and ``index.json``; the receipt, which names them, comes after."""
-
     descriptor, limits = attempt.descriptor, attempt.descriptor["limits"]
     root = runtime.local(descriptor["outputs"]["output_root"])
     try:
@@ -893,7 +877,6 @@ def _stage_outcome(attempt: _Attempt, runtime: WorkerRuntime, release: Path) -> 
 
 def execute_attempt(handoff: Mapping[str, Any], runtime: WorkerRuntime, *, shadowed: bool = False) -> int:
     """Run one attempt from bootstrap's handoff and commit its receipt last; exit 0 once it is up."""
-
     try:
         transport = validated_transport(handoff["transport"], runtime.environ)
         release, descriptor = Path(handoff["release_root"]), transport["descriptor"]
@@ -970,11 +953,20 @@ def bootstrap(argv: Sequence[str], runtime: WorkerRuntime) -> int:
         code = runtime.launch(handoff) if runtime.launch is not None else _launch_execute(runtime, handoff)
     except WorkerFailure as exc:
         return attempt.fail(exc.code, mode="bootstrap")
+    except Exception as exc:  # noqa: BLE001 - its message could carry anything; its type cannot
+        return attempt.fail(f"remote_cpu_worker_raised:{type(exc).__name__}", mode="bootstrap")
     return 0 if code == 0 else attempt.fail(f"remote_cpu_worker_execute_failed:exit_{code}", mode="bootstrap")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = list(sys.argv[1:] if argv is None else argv)
+    try:
+        return _main(list(sys.argv[1:] if argv is None else argv))
+    except Exception as exc:  # noqa: BLE001 - a traceback prints its message, which could carry a URL
+        _log_stderr(_line("worker", "failed", type(exc).__name__))
+        return EXIT_REFUSED
+
+
+def _main(arguments: list[str]) -> int:
     if arguments[:1] == ["bootstrap"]:
         os.umask(0o077)  # as the host unit does; execute and the stage child inherit it
         return bootstrap(arguments, WorkerRuntime(environ=os.environ, http=PresignedTransfers()))

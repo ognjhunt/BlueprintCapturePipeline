@@ -328,6 +328,9 @@ def test_undeclared_write_or_changed_input_is_an_infrastructure_failure(tmp_path
     assert _verdict(clean) == ("succeeded", True)
     # Sealed: host-known bytes are indexed by origin, only new bytes are archived, and the receipt goes last.
     runtime_zip, robot = (clean.descriptor["inputs"][index]["digest"] for index in (1, 2))
+    from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import MANIFEST_NAME
+
+    assert worker.BUNDLE_MANIFEST == MANIFEST_NAME  # the runtime bundle's own manifest names its members
     index = json.loads(clean.staged("index.json"))
     assert {entry["path"]: entry["origin"] for entry in index["entries"]} == {
         "native-arena-adapter/model.bin": {"input_member": {"input": runtime_zip, "member": "runtime/model.bin"}},
@@ -719,3 +722,25 @@ def test_the_worker_holds_no_allocation_authority() -> None:
     assert not called & {"require_paid_resource_admission", "require_paid_resource_admission_grant",
                          "build_paid_lane_admission", "generate_presigned_url", "client", "run_job"}
     assert "boto3" not in source and "service_account" not in source
+
+
+def test_an_unexpected_error_is_typed_never_printed(tmp_path: Path, monkeypatch, capsys) -> None:
+    """A traceback prints its exception's message, which could carry a URL: the worker logs only types."""
+
+    world = WorkerWorld(tmp_path)
+    url = world.transport()["outputs"]["heartbeat.json"]
+
+    def launch(handoff: dict) -> int:
+        raise OSError(f"could not start execute for {url}")
+
+    assert worker.bootstrap(["bootstrap"], world.runtime(launch=launch)) == 0
+    assert world.receipt()["infrastructure_failures"] == ["infrastructure_failed:remote_cpu_worker_raised:OSError"]
+
+    def explode(argv, runtime) -> int:
+        raise ValueError(url)
+
+    monkeypatch.setattr(worker, "bootstrap", explode)
+    assert worker.main(["bootstrap"]) == worker.EXIT_REFUSED
+    out, err = capsys.readouterr()
+    assert json.loads(err) == {"mode": "worker", "status": "failed", "code": "ValueError"} and out == ""
+    assert "X-Amz-" not in "\n".join(world.logs)
