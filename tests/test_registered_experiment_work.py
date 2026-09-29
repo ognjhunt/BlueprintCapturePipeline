@@ -1,7 +1,7 @@
 """Real owned descriptor work keeps metadata phases separate from payload IO."""
 import pytest
 
-from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
+from tests.test_owner_target_version_publication import root_metadata, protected_root_tmp_path  # noqa: F401
 from tests.test_registered_experiment_retirement_flow import retirement_installation  # noqa: F401
 from tests.test_registered_experiment_issuer import installation  # noqa: F401
 
@@ -66,11 +66,11 @@ def test_declared_metadata_phase_cannot_be_repeated_to_extend_deadline(tmp_path)
         files.budget.close()
 
 
-def test_immutable_event_publication_releases_only_its_original_fds(tmp_path, root_metadata):  # noqa: F811
+def test_immutable_event_publication_releases_only_its_original_fds(protected_root_tmp_path, root_metadata):  # noqa: F811
     import json
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
-    destination = tmp_path/'events'
+    destination = protected_root_tmp_path/'events'
     destination.mkdir(mode=0o700)
     files = _ActionFiles()
     try:

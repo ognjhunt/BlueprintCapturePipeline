@@ -5,6 +5,8 @@
 
 import os
 import stat
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +24,13 @@ def root_metadata(monkeypatch):
         return SimpleNamespace(**fields)
     monkeypatch.setattr(os, "stat", lambda *a, **kw: root(original_stat(*a, **kw)))
     monkeypatch.setattr(os, "fstat", lambda *a, **kw: root(original_fstat(*a, **kw)))
+
+
+@pytest.fixture
+def protected_root_tmp_path():
+    """Hermetic protected ancestry for Linux and Mac root-metadata fixtures."""
+    with tempfile.TemporaryDirectory(prefix="plan12-protected-", dir=Path.home().resolve()) as name:
+        yield Path(name)
 
 
 def published(tmp_path, payload=b'{"kept":true}\n', **changes):

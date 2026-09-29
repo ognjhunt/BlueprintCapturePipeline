@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
+from tests.test_owner_target_version_publication import root_metadata, protected_root_tmp_path  # noqa: F401
 from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
 from tests.test_registered_experiment_birth import birth
 from tests.test_registered_experiment_retirement_flow import retirement_installation, _issue_action  # noqa: F401
@@ -192,13 +192,13 @@ def test_gc_cannot_reset_original_issue_controller_after_boot_change(
 
 
 def test_fixed_kernel_boot_record_accepts_zero_stat_size_with_bounded_original_read(
-    tmp_path, root_metadata, monkeypatch
+    protected_root_tmp_path, root_metadata, monkeypatch
 ):
     import os
     from types import SimpleNamespace
     from blueprint_pipeline import control_plane_lane_experiment_work as work
 
-    path = tmp_path / "kernel-boot-id"
+    path = protected_root_tmp_path / "kernel-boot-id"
     path.write_bytes(b"12345678-1234-1234-1234-123456789abc\n")
     path.chmod(0o444)
     identity = (path.stat().st_dev, path.stat().st_ino)
@@ -233,12 +233,12 @@ def test_fixed_kernel_boot_record_accepts_zero_stat_size_with_bounded_original_r
 
 @pytest.mark.parametrize("kind", ["member_removed", "restore_directory", "restore_member"])
 def test_all_row_event_kinds_refuse_oversized_payload_before_publication(
-    tmp_path, root_metadata, kind
+    protected_root_tmp_path, root_metadata, kind
 ):
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
 
-    operation = tmp_path / "operation"
+    operation = protected_root_tmp_path / "operation"
     operation.mkdir(mode=0o700)
     action = dict(action_id="a" * 32, intent_id="b" * 32, generation="c" * 32)
     files = _ActionFiles()
