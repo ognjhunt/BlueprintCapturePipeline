@@ -195,6 +195,25 @@ def test_streamed_ssh_recovery_adopts_ten_cells_by_index_digest(tmp_path, monkey
     assert streamed.data_ranges() == []
 
 
+def test_streamed_recovery_whose_ssh_zip_survived_adopts_through_the_view(tmp_path, monkeypatch):
+    """Review minor 9: a streamed attempt can keep its SSH ZIP (its removal failed, or a crash came
+    between the promotion receipt and the unlink). Its evidence root still holds only the contract's
+    JSON, so whenever a member view descriptor exists adoption reads through the view."""
+    inputs, archive_bytes, (download_root, download_attempt), (stream_root, streamed) = _cases(tmp_path, monkeypatch)
+    _command(streamed.attempt, archive_bytes, local_archive=True)  # the ZIP survived its promotion
+    assert (streamed.attempt / "immutable_execution.member_view.v1.json").is_file()
+
+    downloaded, _ = _adopt(download_root, download_attempt, inputs)
+    adopted = _adopt(stream_root, streamed.attempt, inputs)
+
+    assert adopted is not None and adopted[0] == downloaded
+    receipt = json.loads((stream_root / "recovered_provider_output_adoption.json").read_text())
+    assert receipt["archive"]["location"] == "durable_archive"
+    assert sorted(streamed.data_ranges()) == sorted(
+        (streamed.rows[path]["data_offset"], streamed.rows[path]["data_offset"] + streamed.rows[path]["compressed_size"] - 1)
+        for path in _children(streamed))
+
+
 @pytest.mark.parametrize("mismatch", ["archive_sha256", "archive_size", "mp4_count", "child_digest", "no_view"])
 def test_reference_adoption_refuses_a_mismatched_archive_or_mp4_count(tmp_path, monkeypatch, mismatch):
     inputs, archive_bytes, _, (stream_root, streamed) = _cases(

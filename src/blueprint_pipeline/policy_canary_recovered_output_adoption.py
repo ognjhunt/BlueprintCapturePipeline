@@ -5,12 +5,13 @@ Moved out of ``task_evaluation_policy_canary_dispatcher``. The dispatcher keeps
 readers, writers, error class and -- looked up at call time, so tests that patch
 the dispatcher's name still apply -- the isolated-cell aggregator.
 
-Two sources. With the recovered ZIP on disk (download mode) the archive must
-be the recovery record's bytes, hold exactly 120 MP4s, and carry the ten child
-results byte for byte. In stream mode the ZIP was published to B2 and removed
-behind its pointer, and only the contract's JSON is on the host: the evidence
-root's member view must index an archive whose sha256 and size are the
-recovery record's, with 120 MP4 members. The contract leaves the ten child
+Two sources. In stream mode -- whenever the evidence root has a member view
+descriptor, even if the SSH ZIP survived its removal -- the ZIP was published
+to B2 and only the contract's JSON is on the host: the member view must index
+an archive whose sha256 and size are the recovery record's, with 120 MP4
+members. Otherwise (download mode) the recovered ZIP on disk must be the
+recovery record's bytes, hold exactly 120 MP4s, and carry the ten child
+results byte for byte. The contract leaves the ten child
 results in the archive (review I7), so each is read through the view -- one
 range request, checked against its index CRC-32 and SHA-256 (PR B review M7);
 a child that is on disk (an older layout) must hash to its index member
@@ -196,8 +197,16 @@ def adopt_recovered_complete_result(
         or inspection.get("mp4_count") != EXPECTED_MP4_COUNT
     ):
         return None
-    view = None
-    if archive.is_symlink() or archive.exists():
+    # Stream mode, whenever a member view descriptor exists: the ZIP was promoted, and
+    # its member index is the proof -- even if the ZIP survived its removal (review
+    # minor 9), since the evidence root holds only the contract's JSON.
+    from .provider_output_member_view import ProviderOutputMemberViewError, open_member_view
+
+    try:
+        view = open_member_view(evidence_root)
+    except ProviderOutputMemberViewError:
+        raise error_factory("policy_canary_recovered_output_member_view_invalid") from None
+    if view is None:
         # Download mode: the recovered ZIP itself is the proof.
         if (
             archive.is_symlink()
@@ -205,16 +214,6 @@ def adopt_recovered_complete_result(
             or archive.stat().st_size != recovery.get("recovered_size_bytes")
             or sha256(archive) != recovery.get("recovered_sha256")
         ):
-            return None
-    else:
-        # Stream mode: the ZIP was promoted and removed; its member index is the proof.
-        from .provider_output_member_view import ProviderOutputMemberViewError, open_member_view
-
-        try:
-            view = open_member_view(evidence_root)
-        except ProviderOutputMemberViewError:
-            raise error_factory("policy_canary_recovered_output_member_view_invalid") from None
-        if view is None:
             return None
     child_paths = [
         evidence_root / "cell_runs" / f"{index:02d}" / PROVIDER_RESULT_FILENAME
