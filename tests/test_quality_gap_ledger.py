@@ -1378,6 +1378,39 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
     return sorted(set(errors))
 
 
+def test_retained_historical_artifacts_match_original_ledger_bindings() -> None:
+    retained = _retained_historical_repository_files()
+    artifacts = [
+        artifact
+        for gap in _load_ledger()["gaps"]
+        for criterion in gap["criteria"]
+        for artifact in criterion["evidence_artifacts"]
+        if artifact["path"] in retained
+    ]
+    assert len(retained) == 3
+    assert len(artifacts) == 6
+    for artifact in artifacts:
+        assert _sha256(retained[artifact["path"]]) == artifact["sha256"]
+        assert artifact["commit"] is None and artifact["release_id"] is None
+
+
+def test_historical_replay_cannot_hide_current_artifact_drift(monkeypatch: Any) -> None:
+    ledger = _load_ledger()
+    retained = _retained_historical_repository_files()
+    current = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
+    for path in retained:
+        assert any(f"artifact_digest_mismatch:{path}" in error for error in current)
+    with monkeypatch.context() as snapshot:
+        _select_retained_historical_artifacts(snapshot)
+        historical = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
+        for path in retained:
+            assert not any(f"artifact_digest_mismatch:{path}" in error for error in historical)
+    assert _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF) == current
+    assert _validate_ledger(ledger)  # Real-clock evidence stays expired/refused.
+    assert ledger["closure_authority_policy"]["enabled"] is False
+    assert ledger["command_attestation_policy"]["enabled"] is False
+
+
 def test_historical_gap_ledger_snapshot_maps_all_107_acceptance_criteria_and_derives_status() -> None:
     ledger = _load_ledger()
     audit_rows = _audit_rows()
