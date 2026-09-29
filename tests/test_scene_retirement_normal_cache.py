@@ -483,6 +483,7 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
         retired_journal_raw_ref=receipt['retired_journal_raw_ref'])
     restore_path=tmp_path/'restore-consent.json'
     _sealed_file(restore_path,restore_consent,'consent_digest',mode=0o600)
+    restore_consent=json.loads(restore_path.read_bytes())
     restore=SceneJournal.create(store,token='8'*32,allowance=allowance,initial=dict(
         schema_version='scene_restore_journal.v1',status='restoring',intent_id=consent['intent_id'],
         intent_raw_ref=consent['intent_raw_ref'],members=consent['members'],generations=[retired_generation],
