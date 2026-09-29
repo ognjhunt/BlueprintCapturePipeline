@@ -451,6 +451,21 @@ def _identity_reasons(descriptor: Mapping[str, Any]) -> list[str]:
     return reasons
 
 
+# Plan 14 §3/§10: fetch 300 s + stage 900 s + seal/upload 420 s + a 180 s margin fill the 1800 s task.
+STAGE_LIMITS: Mapping[str, Any] = {
+    "phase_seconds": {"fetch": 300, "stage": 900, "seal_upload": 420}, "start_allowance_seconds": 600,
+    "heartbeat_interval_seconds": 30, "heartbeat_stale_seconds": 180, "max_input_bytes": 6 * 1024**3,
+    "max_output_bytes": 4 * 1024**3, "max_output_paths": 20000, "allowed_path_roots": list(PERMITTED_PATH_ROOTS),
+}
+
+
+def stage_limits(config: Mapping[str, Any], stage: str, *, allowed_cpu_classes: Sequence[str] = ()) -> dict[str, Any]:
+    """A descriptor's limits: the stage job's resources, plan 14's phase budget and the config's attempts."""
+    entry = config["stages"][stage]
+    return {**{name: entry[name] for name in _JOB_LIMITS}, **json.loads(json.dumps(STAGE_LIMITS)),
+            "max_attempts": config["max_attempts"], "allowed_cpu_classes": sorted(allowed_cpu_classes)}
+
+
 def _limit_reasons(descriptor: Mapping[str, Any], entry: Mapping[str, Any], config: Mapping[str, Any]) -> list[str]:
     """Limits match the config's job, fit the phase budget and stay inside hard bounds."""
     limits = descriptor["limits"]

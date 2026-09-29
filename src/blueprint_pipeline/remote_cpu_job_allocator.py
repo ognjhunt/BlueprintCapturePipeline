@@ -43,7 +43,8 @@ from .paid_resource_admission import (
 from .remote_cpu_environment import DIGESTED_FIELDS, environment_record
 from .remote_cpu_job_contract import (
     MAX_HEARTBEAT_BYTES, MAX_RECEIPT_BYTES, PROBE_STAGE, STAGES, TRANSPORT_SCHEMA_VERSION, RemoteCpuContractError,
-    _is_count, _text, build_descriptor, config_blockers, execution_name_of, record_bytes, validate_descriptor,
+    _is_count, _text, build_descriptor, config_blockers, execution_name_of, record_bytes, stage_limits,
+    validate_descriptor,
     validate_receipt, worker_identity_for,
 )
 from .remote_cpu_job_records import (
@@ -79,12 +80,6 @@ DAY_SECONDS = 86400
 GIB = 1024**3
 # The worker's write authority: one presigned PUT per staging object (plan 14 §4, §6).
 STAGING_OBJECTS = ("blobs.tar", "index.json", "receipt.json", "heartbeat.json")
-# Plan 14 §3/§10: fetch 300 s + stage 900 s + seal/upload 420 s + a 180 s margin fill the 1800 s task.
-STAGE_LIMITS: Mapping[str, Any] = {
-    "phase_seconds": {"fetch": 300, "stage": 900, "seal_upload": 420}, "start_allowance_seconds": 600,
-    "heartbeat_interval_seconds": 30, "heartbeat_stale_seconds": 180, "max_input_bytes": 6 * GIB,
-    "max_output_bytes": 4 * GIB, "max_output_paths": 20000, "allowed_path_roots": ["/var/lib/blueprint/"],
-}
 _AUTHORITY_KEYS = frozenset({"schema_version", "stages", "max_executions", "max_attempt_usd", "max_daily_usd",
                              "max_total_usd", "expires_at_epoch", "authorized_by", "authorized_on",
                              "authorization_reference", "authorization_digest"})
@@ -212,14 +207,6 @@ def worst_case_usd(*, limits: Mapping[str, Any], rate_table: Mapping[str, Any]) 
                                                 + limits["memory_bytes"] / GIB * rate_table["usd_per_gib_second"])
     egress = limits["max_output_bytes"] / GIB * rate_table["usd_per_egress_gib"]
     return math.ceil((compute + egress) * 1_000_000 - 1e-6) / 1_000_000
-
-
-def stage_limits(config: Mapping[str, Any], stage: str, *, allowed_cpu_classes: tuple[str, ...] = ()) -> dict[str, Any]:
-    """A descriptor's limits: the stage job's resources, plan 14's phase budget and the config's attempts."""
-    entry = config["stages"][stage]
-    return {**{name: entry[name] for name in ("vcpu", "memory_bytes", "ephemeral_bytes", "task_timeout_seconds")},
-            **json.loads(json.dumps(STAGE_LIMITS)), "max_attempts": config["max_attempts"],
-            "allowed_cpu_classes": sorted(allowed_cpu_classes)}
 
 
 def _attempt_key(attempt_id: str) -> str:
