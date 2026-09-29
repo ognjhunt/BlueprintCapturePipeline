@@ -12,12 +12,16 @@ import json
 import os
 import re
 import secrets
+import socket
+import ipaddress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
-from .company_policy_sandbox_v2 import build_company_policy_sandbox_plan
+from .company_policy_sandbox_v2 import (
+    build_company_policy_sandbox_plan, company_policy_registry_host,
+)
 from .controlled_policy_configuration import canonical_request_digest
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 
@@ -90,6 +94,15 @@ def prepare_company_policy_session(
     if not _DIGEST.fullmatch(proxy_contract_digest):
         raise ValueError("company_policy_session_proxy_digest_invalid")
     artifact = ((request.get("policy_package") or {}).get("docker_container") or {}).get("model_artifact")
+    if not registry_addresses:
+        host = company_policy_registry_host(normalized["container"]["image"])
+        registry_addresses = sorted({str(address)
+            for family, _, _, _, sockaddr in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            if family in {socket.AF_INET, socket.AF_INET6}
+            for address in [ipaddress.ip_address(sockaddr[0])]
+            if address.is_global})
+        if not registry_addresses:
+            raise ValueError("company_policy_session_registry_resolution_unavailable")
     plan = build_company_policy_sandbox_plan(
         admission_receipt=receipt,
         contract=normalized,

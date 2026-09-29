@@ -223,7 +223,7 @@ class SandboxManager:
                     seccomp_profile_digest=str(settings["seccomp_profile_digest"]),
                     apparmor_profile_source_path=str(settings["apparmor_profile_source_path"]),
                     apparmor_profile_digest=str(settings["apparmor_profile_digest"]),
-                    registry_addresses=list(settings["registry_addresses"]),
+                    registry_addresses=list(settings.get("registry_addresses", [])),
                     allowed_registry_hosts=list(settings["allowed_registry_hosts"]),
                     approved_by=str(settings["approved_by"]),
                     lifetime_seconds=int(settings.get("session_lifetime_seconds", 2400)),
