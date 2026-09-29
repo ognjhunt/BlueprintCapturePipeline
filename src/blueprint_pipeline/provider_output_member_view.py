@@ -240,6 +240,10 @@ class ProviderOutputMemberView:
         row = self._rows.get(self._path(relative))
         return dict(row) if row is not None else None
 
+    def members(self, prefix: str = "") -> list[dict]:
+        """The indexed file rows whose archive path starts with ``prefix``, in path order."""
+        return [dict(row) for path, row in sorted(self._rows.items()) if path.startswith(prefix)]
+
     def relative(self, path: str | Path) -> str | None:
         """The member path of ``path`` when it lies under the evidence root, else None."""
         for candidate in (Path(path).absolute(), Path(path).resolve()):
@@ -453,7 +457,7 @@ def materialize_scratch_copy(view: ProviderOutputMemberView, *, prefix: str, out
         raise _refuse("provider_output_member_view_write_inside_evidence_root")
     if root.exists() or root.is_symlink():
         raise _refuse("provider_output_member_view_destination_exists")
-    rows = [row for path, row in sorted(view._rows.items()) if path.startswith(prefix)]
+    rows = view.members(prefix)
     if not rows:
         raise _refuse("provider_output_member_view_prefix_empty")
     root.parent.mkdir(parents=True, exist_ok=True)

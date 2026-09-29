@@ -410,3 +410,16 @@ def test_materialize_prefix_writes_a_verified_scratch_copy(tmp_path, monkeypatch
         assert capsys.readouterr().err.strip() == f"provider_output_member_view refused: {code}"
     assert sorted(path.name for path in (tmp_path / "scratch").iterdir()) == ["cell_00"]
     assert _listing(streamed.evidence) == before
+
+
+def test_members_lists_indexed_files_under_a_prefix_in_path_order(tmp_path):
+    streamed = _streamed(tmp_path)
+    view = streamed.view()
+    assert [row["path"] for row in view.members("cell_runs/00/")] == sorted(
+        path for path, row in streamed.rows.items() if row["kind"] == "file" and path.startswith("cell_runs/00/"))
+    assert [row["path"] for row in view.members()] == sorted(
+        path for path, row in streamed.rows.items() if row["kind"] == "file")
+    assert view.members("absent/") == []
+    rows = view.members()
+    rows[0]["sha256"] = "changed"
+    assert view.members()[0]["sha256"] != "changed"  # copies: the view cannot be altered through them
