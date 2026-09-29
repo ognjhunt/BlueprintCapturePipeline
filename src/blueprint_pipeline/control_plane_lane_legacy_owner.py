@@ -15,6 +15,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from .control_plane_disk_usage import allocated_bytes
+from .decision_evidence_contracts import canonical_digest
 
 _DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 MAX_ENTRIES = 200_000
@@ -132,6 +133,8 @@ def snapshot_generation(
             tick()
             _require(name not in ("", ".", "..") and len(os.fsencode(name)) <= 255,
                      "legacy_target_measurement_incomplete")
+            if relative == "":
+                _require(name != ".lane-scratch.v1.json", "legacy_target_existing_lease")
             try:
                 info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
             except OSError:
@@ -182,3 +185,58 @@ def snapshot_generation(
                     target=_directory_identity(os.fstat(target_entry[2])),
                     tree=dict(digest="sha256:" + hashlib.sha256(encoded).hexdigest(),
                               entries=len(entries), allocated_bytes=bytes_allocated))
+
+
+def build_version_packet(consent: dict, *, selected_path: str, generation: dict,
+                         fresh_census: dict, now: float) -> dict:
+    """Project a protected old consent and fresh survey into a reviewable packet.
+
+    This output has no authority. A distinct owner decision must later bind its
+    exact digest, and both generation and references must be freshly rechecked.
+    """
+    code = "legacy_owner_packet_incomplete"
+    _require(type(now) in (int, float) and now >= 0 and now < float("inf"), code)
+    _require(isinstance(consent, dict) and consent.get("schema_version") == "control_plane_lane_owner_consent.v1"
+             and consent.get("execution_authorized") is False
+             and consent.get("target_generation_bound") is False
+             and isinstance(consent.get("decisions"), list)
+             and isinstance(consent.get("expires_at_epoch"), (int, float))
+             and now < consent["expires_at_epoch"], code)
+    selected = [pair for pair in consent["decisions"]
+                if isinstance(pair, dict) and isinstance(pair.get("census_row"), dict)
+                and pair["census_row"].get("path") == selected_path]
+    _require(len(selected) == 1, code)
+    row, decision = selected[0]["census_row"], selected[0].get("decision")
+    _require(isinstance(decision, dict) and decision.get("path") == selected_path
+             and decision.get("action") == "register" and decision.get("cleanup") == "owner_review"
+             and isinstance(decision.get("owner"), str) and decision["owner"]
+             and type(decision.get("ttl_seconds")) is int and 0 < decision["ttl_seconds"] <= 1209600
+             and row.get("references") == [] and row.get("unreadable") == 0, code)
+    _require(isinstance(fresh_census, dict) and fresh_census.get("status") == "complete"
+             and fresh_census.get("scan_errors") == [] and isinstance(fresh_census.get("rows"), list), code)
+    fresh = [row for row in fresh_census["rows"]
+             if isinstance(row, dict) and row.get("path") == selected_path]
+    _require(len(fresh) == 1 and fresh[0].get("references") == []
+             and fresh[0].get("unreadable") == 0, code)
+    _require(isinstance(generation, dict) and generation.get("path") == selected_path
+             and isinstance(generation.get("tree"), dict)
+             and isinstance(generation["tree"].get("digest"), str)
+             and generation.get("target", {}).get("type") == "directory", code)
+    _require(isinstance(consent.get("census"), dict) and isinstance(consent.get("annotations"), dict)
+             and isinstance(consent.get("consent_digest"), str)
+             and isinstance(consent.get("policy_sha256"), str), code)
+    packet = dict(schema_version="control_plane_lane_legacy_owner_packet.v1",
+                  selected_path=selected_path, principal=consent["principal"], owner=decision["owner"],
+                  old_consent=dict(consent_id=consent["consent_id"],
+                                   sha256=consent["consent_digest"], target_generation_bound=False,
+                                   census=consent["census"], annotations=consent["annotations"]),
+                  policy_sha256=consent["policy_sha256"],
+                  target_generation=generation,
+                  fresh_reference_status="complete_no_observed_references",
+                  observed_at_epoch=now,
+                  expires_at_epoch=min(consent["expires_at_epoch"], now + decision["ttl_seconds"]),
+                  cleanup="owner_review", execution_authorized=False, approval_required=True,
+                  gc_eligible=False, references_clear=False, mutations=0)
+    packet["packet_digest"] = canonical_digest(packet, digest_field="packet_digest")
+    _require(len(json.dumps(packet, sort_keys=True).encode()) <= 32768, code)
+    return packet
