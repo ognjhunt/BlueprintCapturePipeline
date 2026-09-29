@@ -114,6 +114,33 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                                      'observation_digest': observation['observation_digest']})
         if handoff.source_membership_selector is not None:
             try:
+                from .website_scene_workspace_retention import retired_capture_status
+                retired = retired_capture_status(
+                    storage_root=storage_root, bucket=handoff.bucket,
+                    scene_id=handoff.scene_id, capture_id=handoff.capture_id)
+            except Exception:
+                return {'schema_version': 'v1', 'status': 'retirement_lookup_failed_retryable',
+                        'queue_disposition': 'retryable', 'bucket': handoff.bucket,
+                        'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                        'capture_root': str(capture_root),
+                        'blockers': ['retirement_lookup_failed']}
+            if retired is not None:
+                semantic_key = observation['producer_delivery']['delivery_key']
+                ended_keys = retired['producer_delivery_keys']
+                if not ended_keys:
+                    return {'schema_version': 'v1',
+                            'status': 'retired_delivery_identity_unproven_retryable',
+                            'queue_disposition': 'retryable', 'bucket': handoff.bucket,
+                            'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                            'capture_root': str(capture_root),
+                            'blockers': ['retired_delivery_identity_unproven']}
+                if semantic_key in ended_keys:
+                    return {'schema_version': 'v1', 'status': 'skipped_retired_terminal',
+                            'queue_disposition': retired['queue_disposition'],
+                            'bucket': handoff.bucket, 'scene_id': handoff.scene_id,
+                            'capture_id': handoff.capture_id, 'capture_root': str(capture_root),
+                            'retirement_receipt': retired['receipt']}
+            try:
                 staged = _listener.stage_handoff_capture(
                     handoff, storage_root=storage_root, storage_client=storage_client)
             except Exception:

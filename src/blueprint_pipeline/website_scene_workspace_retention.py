@@ -1750,6 +1750,26 @@ def ended_payload_digests(ledger: Mapping[str, Any]) -> set[str]:
     return digests
 
 
+def ended_producer_delivery_keys(ledger: Mapping[str, Any]) -> set[str]:
+    """Original semantic deliveries ended by this captured job ledger."""
+    def key(value: Any) -> str:
+        return value if isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) else ""
+
+    keys = {key(ledger.get("terminal_producer_delivery_key"))}
+    history = ledger.get("attempt_history")
+    for row in history if isinstance(history, list) else ():
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("status") == TERMINAL_AUTHORITY_STATUS:
+            keys.add(key(row.get("producer_delivery_key")))
+        elif row.get("status") == "reopened_after_terminal_authority":
+            keys.add(key(row.get("terminal_producer_delivery_key")))
+    if ledger.get("status") == "completed":
+        keys.add(key(ledger.get("producer_delivery_key")))
+    keys.discard("")
+    return keys
+
+
 def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
                            capture_id: str) -> dict[str, Any] | None:
     """What a retired scene's receipt records about one capture, or None when it records nothing.
@@ -1797,8 +1817,10 @@ def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
         digests.add(ack["payload_sha256"])
     if status == TERMINAL_AUTHORITY_STATUS:
         digests |= ended_payload_digests(ledger)
+    delivery_keys = ended_producer_delivery_keys(ledger)
     return {"status": status, "queue_disposition": disposition, "covers_every_payload": status == "completed",
-            "payload_sha256s": sorted(digests), "receipt": str(path),
+            "payload_sha256s": sorted(digests), "producer_delivery_keys": sorted(delivery_keys),
+            "receipt": str(path),
             "retired_at_epoch": receipt.get("retired_at_epoch")}
 
 

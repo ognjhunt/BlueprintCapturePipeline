@@ -240,3 +240,50 @@ def test_capture_lease_binds_semantic_delivery_across_changed_payload_bytes(tmp_
         producer_delivery_key=key, create_capture_root=False)
     assert second == 'terminal' and unchanged['terminal_producer_delivery_key'] == key
     assert unchanged['revision'] == 2
+
+
+def test_retired_capture_selector_uses_original_producer_key_before_any_stage(tmp_path, monkeypatch):
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+
+    _, _, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch,
+                                                               prepare_parent=False)
+    membership = json.loads(membership_raw)
+    payload = {'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
+               'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
+               'source_finalize': {**membership['source_finalize'], 'event_id': 'evt-1',
+                                   'event_source': 'storage'},
+               'source_membership_selector': selector}
+    monkeypatch.setattr(observer, 'load_original_owner_observation', lambda **_: owner)
+    calls = []
+    monkeypatch.setattr(listener, 'stage_handoff_capture',
+                        lambda *_args, **_kwargs: calls.append('stage') or target)
+    key = owner['producer_delivery']['delivery_key']
+    retired = {'status': listener.TERMINAL_AUTHORITY_STATUS,
+               'queue_disposition': listener.TERMINAL_AUTHORITY_STATUS,
+               'receipt': 'retained-receipt'}
+    monkeypatch.setattr(retention, 'retired_capture_status',
+                        lambda **_: {**retired, 'producer_delivery_keys': [key]})
+    result = listener.process_handoff_payload(payload, storage_root=target.parents[4],
+                                               provider='openai', run_e2e=lambda **_: pytest.fail('ran'))
+    assert result['status'] == 'skipped_retired_terminal' and calls == []
+    monkeypatch.setattr(retention, 'retired_capture_status',
+                        lambda **_: {**retired, 'producer_delivery_keys': []})
+    result = listener.process_handoff_payload(payload, storage_root=target.parents[4],
+                                               provider='openai', run_e2e=lambda **_: pytest.fail('ran'))
+    assert result['status'] == 'retired_delivery_identity_unproven_retryable' and calls == []
+    assert not target.exists()
+
+
+def test_retired_status_collects_delivery_keys_from_current_and_history():
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+
+    old, current = 'sha256:' + 'a' * 64, 'sha256:' + 'b' * 64
+    ledger = {'status': listener.TERMINAL_AUTHORITY_STATUS,
+              'terminal_producer_delivery_key': current,
+              'attempt_history': [{'status': listener.TERMINAL_AUTHORITY_STATUS,
+                                   'producer_delivery_key': old}]}
+    assert retention.ended_producer_delivery_keys(ledger) == {old, current}
+    assert listener._ended_delivery_keys(ledger) == {old, current}
