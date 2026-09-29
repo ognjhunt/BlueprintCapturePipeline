@@ -294,6 +294,53 @@ def test_expiry_crossing_during_censuses_cannot_commit_head_or_show_label(instal
     assert observed["observed_owner_count"] == 0 and "owner" not in row
 
 
+def test_expiry_crossing_before_packet_or_approval_publication_is_refused(installed, monkeypatch):
+    target, payload, registry, legacy = installed
+
+    class Clock:
+        value = 0.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+
+    def slow_census(*_args, **_kwargs):
+        clock.value += 100.0
+        return _survey(str(target))
+
+    monkeypatch.setattr(legacy, "_fresh_census", slow_census)
+    with pytest.raises(legacy.LegacyOwnerError, match="expired"):
+        legacy.issue_version_packet(consent_id="a" * 32,
+                                    consent_sha256="sha256:" + "b" * 64,
+                                    consent_size_bytes=1, selected_path=str(target),
+                                    installed_config_path="/fixture/door.json", now=1010,
+                                    monotonic=clock)
+    assert not list(registry.glob("*.packet.json"))
+    monkeypatch.setattr(legacy, "_fresh_census", lambda *a, **k: _survey(str(target)))
+    packet = legacy.issue_version_packet(consent_id="a" * 32,
+                                         consent_sha256="sha256:" + "b" * 64,
+                                         consent_size_bytes=1, selected_path=str(target),
+                                         installed_config_path="/fixture/door.json", now=1010,
+                                         monotonic=lambda: 0)
+    original = legacy._snapshot_for
+
+    def slow_snapshot(*args, **kwargs):
+        clock.value += 100.0
+        return original(*args, **kwargs)
+
+    clock.value = 0
+    monkeypatch.setattr(legacy, "_snapshot_for", slow_snapshot)
+    with pytest.raises(legacy.LegacyOwnerError, match="expired"):
+        legacy.issue_generation_approval(packet_id=packet["packet_id"],
+                                         ack_packet_digest=packet["packet_digest"],
+                                         principal="operator", owner="owner",
+                                         installed_config_path="/fixture/door.json", now=1020,
+                                         monotonic=clock)
+    assert not list(registry.glob("*.approval.json"))
+    assert payload.read_bytes() == b"old, preserved"
+
+
 def test_crash_before_head_is_recoverable_without_promoting_torn_record(installed, monkeypatch):
     target, payload, registry, legacy = installed
     packet, _ = _issue_and_approve(installed)

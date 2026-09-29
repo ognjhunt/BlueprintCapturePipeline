@@ -98,7 +98,7 @@ def publish_current(*, installed_config_path: str, results_dir: str,
     _require(isinstance(request_id, str) and _ID.fullmatch(request_id) is not None)
     observed = legacy.observe_owner_review(installed_config_path=installed_config_path,
                                            now=time.time() if now is None else now,
-                                           max_seconds=240)
+                                           max_seconds=240, wall_clock=time.time)
     result = _public_report(observed)
     payload = json.dumps(result, sort_keys=True, separators=(",", ":"),
                          allow_nan=False).encode("utf-8")

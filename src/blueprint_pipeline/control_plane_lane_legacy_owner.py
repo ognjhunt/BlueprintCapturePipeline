@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import fcntl
+import math
 import os
 import re
 import secrets
@@ -758,6 +759,19 @@ def _remaining(monotonic, deadline: float, limit: float) -> float:
     return value
 
 
+def _effective_now(now: float, started: float, monotonic, wall_clock=None) -> float:
+    elapsed = monotonic() - started
+    _require(0 <= elapsed <= MAX_SECONDS and math.isfinite(now + elapsed),
+             "legacy_owner_budget_exhausted")
+    current = now + elapsed
+    if wall_clock is not None:
+        observed = wall_clock()
+        _require(type(observed) in (int, float) and math.isfinite(observed),
+                 "legacy_owner_budget_exhausted")
+        current = max(current, observed)
+    return current
+
+
 def _same_authority(files, config, *, expected_config: dict,
                     expected_settings: dict | None = None,
                     expected_policy: bytes | None = None) -> None:
@@ -798,9 +812,10 @@ def _snapshot_for(config, path: str, *, max_seconds: float = MAX_SECONDS) -> dic
 
 def issue_version_packet(*, consent_id: str, consent_sha256: str, consent_size_bytes: int,
                          selected_path: str, installed_config_path: str, now: float,
-                         monotonic=time.monotonic) -> dict:
+                         monotonic=time.monotonic, wall_clock=None) -> dict:
     """Persist a reviewable target packet; no owner decision is inferred."""
-    deadline = monotonic() + MAX_SECONDS
+    started = monotonic()
+    deadline = started + MAX_SECONDS
     with _installed_session(installed_config_path, monotonic, write=True,
                             max_seconds=_remaining(monotonic, deadline, 5)) as (files, budget, config, store):
         consent = _load_old_consent(files, budget, config, consent_id=consent_id,
@@ -814,6 +829,8 @@ def issue_version_packet(*, consent_id: str, consent_sha256: str, consent_size_b
                                max_seconds=_remaining(monotonic, deadline, MAX_SECONDS))
     packet = build_version_packet(consent, selected_path=selected_path,
                                   generation=generation, fresh_census=census, now=now)
+    _require(_effective_now(now, started, monotonic, wall_clock) < packet["expires_at_epoch"],
+             "legacy_owner_packet_expired")
     packet_id = secrets.token_hex(16)
     with _installed_session(installed_config_path, monotonic, write=True,
                             max_seconds=_remaining(monotonic, deadline, 5)) as (files, budget, current, store):
@@ -821,8 +838,11 @@ def issue_version_packet(*, consent_id: str, consent_sha256: str, consent_size_b
                         expected_settings=settings, expected_policy=policy)
         _require(_load_old_consent(files, budget, current, consent_id=consent_id,
                                    expected_sha256=consent_sha256,
-                                   expected_size_bytes=consent_size_bytes, now=now) == consent,
+                                   expected_size_bytes=consent_size_bytes,
+                                   now=_effective_now(now, started, monotonic, wall_clock)) == consent,
                  "legacy_owner_consent_changed")
+        _require(_effective_now(now, started, monotonic, wall_clock) < packet["expires_at_epoch"],
+                 "legacy_owner_packet_expired")
         store.publish(packet_id, "packet", packet)
     _require(_snapshot_for(config, selected_path,
                            max_seconds=_remaining(monotonic, deadline, MAX_SECONDS)) == generation,
@@ -835,17 +855,20 @@ def issue_version_packet(*, consent_id: str, consent_sha256: str, consent_size_b
 def issue_generation_approval(*, packet_id: str, ack_packet_digest: str,
                               principal: str, owner: str, installed_config_path: str,
                               now: float, monotonic=time.monotonic,
-                              ack_process_fd_unknown: bool = False) -> dict:
+                              ack_process_fd_unknown: bool = False, wall_clock=None) -> dict:
     """Distinct root/owner action requiring the exact packet digest as input."""
-    deadline = monotonic() + MAX_SECONDS
+    started = monotonic()
+    deadline = started + MAX_SECONDS
     with _installed_session(installed_config_path, monotonic, write=True,
                             max_seconds=_remaining(monotonic, deadline, 5)) as (files, budget, config, store):
         packet = store.read(packet_id, "packet")
-        _recheck_packet_consent(files, budget, config, packet, now=now)
+        _recheck_packet_consent(files, budget, config, packet,
+                                now=_effective_now(now, started, monotonic, wall_clock))
         policy, identity = _policy_bytes(files, config), _config_identity(config)
         approval = approve_version_packet(packet, ack_packet_digest=ack_packet_digest,
                                           current_policy_bytes=policy,
-                                          principal=principal, owner=owner, now=now,
+                                          principal=principal, owner=owner,
+                                          now=_effective_now(now, started, monotonic, wall_clock),
                                           ack_process_fd_unknown=ack_process_fd_unknown)
     _require(_snapshot_for(config, packet["selected_path"],
                            max_seconds=_remaining(monotonic, deadline, MAX_SECONDS)) == packet["target_generation"],
@@ -854,7 +877,10 @@ def issue_generation_approval(*, packet_id: str, ack_packet_digest: str,
                             max_seconds=_remaining(monotonic, deadline, 5)) as (files, budget, current, store):
         _same_authority(files, current, expected_config=identity, expected_policy=policy)
         _require(store.read(packet_id, "packet") == packet, "legacy_owner_record_changed")
-        _recheck_packet_consent(files, budget, current, packet, now=now)
+        _recheck_packet_consent(files, budget, current, packet,
+                                now=_effective_now(now, started, monotonic, wall_clock))
+        _require(_effective_now(now, started, monotonic, wall_clock) < approval["expires_at_epoch"],
+                 "legacy_owner_approval_expired")
         store.publish(packet_id, "approval", approval)
     _require(_snapshot_for(config, packet["selected_path"],
                            max_seconds=_remaining(monotonic, deadline, MAX_SECONDS)) == packet["target_generation"],
@@ -867,13 +893,15 @@ def issue_generation_approval(*, packet_id: str, ack_packet_digest: str,
 
 
 def apply_owner_review(*, packet_id: str, installed_config_path: str,
-                       now: float, monotonic=time.monotonic) -> dict:
+                       now: float, monotonic=time.monotonic, wall_clock=None) -> dict:
     """Publish only a protected external owner label and recoverable receipt."""
-    deadline = monotonic() + MAX_SECONDS
+    started = monotonic()
+    deadline = started + MAX_SECONDS
     with _installed_session(installed_config_path, monotonic, write=True,
                             max_seconds=_remaining(monotonic, deadline, 5)) as (files, budget, config, store):
         packet, approval = store.read(packet_id, "packet"), store.read(packet_id, "approval")
-        _recheck_packet_consent(files, budget, config, packet, now=now)
+        _recheck_packet_consent(files, budget, config, packet,
+                                now=_effective_now(now, started, monotonic, wall_clock))
         settings, policy = _reference_settings(files, config), _policy_bytes(files, config)
         identity = _config_identity(config)
     path = packet["selected_path"]
@@ -882,7 +910,8 @@ def apply_owner_review(*, packet_id: str, installed_config_path: str,
     census = _fresh_census(config, settings, now=now,
                            max_seconds=_remaining(monotonic, deadline, 120))
     registration = validate_registration(packet, approval, current_generation=current,
-                                         fresh_census=census, current_policy_bytes=policy, now=now)
+                                         fresh_census=census, current_policy_bytes=policy,
+                                         now=_effective_now(now, started, monotonic, wall_clock))
     receipt = dict(schema_version="control_plane_lane_legacy_owner_receipt.v1",
                    packet_digest=packet["packet_digest"],
                    approval_digest=approval["approval_digest"],
@@ -897,7 +926,7 @@ def apply_owner_review(*, packet_id: str, installed_config_path: str,
                                    max_seconds=_remaining(monotonic, deadline, 120))
             _require(validate_registration(packet, approval, current_generation=current,
                                            fresh_census=latest, current_policy_bytes=policy,
-                                           now=now) == registration,
+                                           now=_effective_now(now, started, monotonic, wall_clock)) == registration,
                      "legacy_owner_references_incomplete")
         with _installed_session(installed_config_path, monotonic, write=True,
                                 max_seconds=_remaining(monotonic, deadline, 5)) as (files, budget, active, store):
@@ -906,7 +935,8 @@ def apply_owner_review(*, packet_id: str, installed_config_path: str,
             _require(store.read(packet_id, "packet") == packet
                      and store.read(packet_id, "approval") == approval,
                      "legacy_owner_record_changed")
-            _recheck_packet_consent(files, budget, active, packet, now=now)
+            _recheck_packet_consent(files, budget, active, packet,
+                                    now=_effective_now(now, started, monotonic, wall_clock))
             for head in store.committed_heads():
                 _require(head["path"] != path or head["packet_id"] == packet_id,
                          "legacy_owner_active_conflict")
@@ -920,6 +950,10 @@ def apply_owner_review(*, packet_id: str, installed_config_path: str,
                 _require(store.read(packet_id, "registration") == registration
                          and store.read(packet_id, "receipt") == receipt,
                          "legacy_owner_record_changed")
+                _require(validate_registration(packet, approval, current_generation=current,
+                                               fresh_census=latest, current_policy_bytes=policy,
+                                               now=_effective_now(now, started, monotonic, wall_clock))
+                         == registration, "legacy_owner_approval_expired")
                 store.publish_head(path, packet_id, registration)
         _require(_snapshot_for(config, path,
                                max_seconds=_remaining(monotonic, deadline, MAX_SECONDS)) == current,
@@ -932,11 +966,13 @@ def apply_owner_review(*, packet_id: str, installed_config_path: str,
 
 
 def observe_owner_review(*, installed_config_path: str, now: float,
-                         monotonic=time.monotonic, max_seconds: float | None = None) -> dict:
+                         monotonic=time.monotonic, max_seconds: float | None = None,
+                         wall_clock=None) -> dict:
     """Fresh owner census with authenticated legacy labels, never GC authority."""
     _require(max_seconds is None or (type(max_seconds) in (int, float)
              and 0 < max_seconds <= MAX_SECONDS), "legacy_owner_options_invalid")
-    deadline = monotonic() + (MAX_SECONDS if max_seconds is None else max_seconds)
+    started = monotonic()
+    deadline = started + (MAX_SECONDS if max_seconds is None else max_seconds)
 
     def remaining(limit: float) -> float:
         return _remaining(monotonic, deadline, limit)
@@ -979,7 +1015,8 @@ def observe_owner_review(*, installed_config_path: str, now: float,
                 _same_authority(files, active, expected_config=identity,
                                 expected_settings=settings, expected_policy=current_policy)
                 packet = store.read(packet_id, "packet")
-                _recheck_packet_consent(files, budget, active, packet, now=now)
+                _recheck_packet_consent(files, budget, active, packet,
+                                        now=_effective_now(now, started, monotonic, wall_clock))
                 approval = store.read(packet_id, "approval")
                 recorded = store.read(packet_id, "registration")
                 _require(store._read(store._head_name(path, packet_id)) == head,
@@ -987,7 +1024,8 @@ def observe_owner_review(*, installed_config_path: str, now: float,
             current = _snapshot_for(config, path, max_seconds=remaining(MAX_SECONDS))
             checked = validate_registration(packet, approval, current_generation=current,
                                             fresh_census=census,
-                                            current_policy_bytes=current_policy, now=now)
+                                            current_policy_bytes=current_policy,
+                                            now=_effective_now(now, started, monotonic, wall_clock))
             _require(recorded == checked, "legacy_owner_record_invalid")
             with _installed_session(installed_config_path, monotonic,
                                     max_seconds=remaining(5)) as (files, budget, active, store):
@@ -998,9 +1036,14 @@ def observe_owner_review(*, installed_config_path: str, now: float,
                          and store.read(packet_id, "registration") == recorded
                          and store._read(store._head_name(path, packet_id)) == head,
                          "legacy_owner_record_changed")
-                _recheck_packet_consent(files, budget, active, packet, now=now)
+                _recheck_packet_consent(files, budget, active, packet,
+                                        now=_effective_now(now, started, monotonic, wall_clock))
             _require(_snapshot_for(config, path, max_seconds=remaining(MAX_SECONDS)) == current,
                      "legacy_target_changed")
+            _require(_effective_now(now, started, monotonic, wall_clock)
+                     < approval["expires_at_epoch"]
+                     and _effective_now(now, started, monotonic, wall_clock)
+                     < packet["expires_at_epoch"], "legacy_owner_approval_expired")
             possible.setdefault(path, []).append(checked)
         except LegacyOwnerError as error:
             blockers.append(str(error))
@@ -1063,7 +1106,7 @@ def main(argv=None) -> int:
         _require(args.mode == "approve" or not args.ack_process_fd_unknown,
                  "legacy_owner_options_invalid")
         selected = dict(installed_config_path=args.door_config, now=time.time(),
-                        monotonic=time.monotonic)
+                        monotonic=time.monotonic, wall_clock=time.time)
         if args.mode == "packet":
             result = issue_version_packet(consent_id=args.consent_id,
                                           consent_sha256=args.consent_sha256,
