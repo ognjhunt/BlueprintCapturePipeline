@@ -352,6 +352,36 @@ def test_native_cache_action_preserves_original_idle_grace(tmp_path,monkeypatch,
     assert (current.st_dev,current.st_ino,current.st_mtime_ns)==(original.st_dev,original.st_ino,original.st_mtime_ns)
 
 
+@pytest.mark.parametrize('closed',['exclusive_action','retired_generation'])
+def test_existing_blob_gc_cannot_race_scene_exclusion_or_closed_generation(tmp_path,monkeypatch,closed):
+    from blueprint_pipeline import control_plane_storage_gc as gc
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    _,consent=cache_action_consent(tmp_path,monkeypatch)
+    row=consent['cache_objects'][0]
+    leaf=Path(row['canonical_path'])
+    inode=(leaf.stat().st_dev,leaf.stat().st_ino)
+    for candidate in (tmp_path/'inputs').rglob('*'):
+        if candidate.is_file() and candidate!=leaf and (candidate.stat().st_dev,candidate.stat().st_ino)==inode:
+            candidate.unlink()
+    assert leaf.stat().st_nlink==1
+    original=leaf.read_bytes()
+    manifest=gc.build_gc_manifest(content_store_roots=[leaf.parent],minimum_age_seconds=0,now=lambda:101)
+    assert manifest['candidate_count']==1
+    if closed=='retired_generation':
+        ledger=Path(row['generation_raw_ref']['path'])
+        value=json.loads(ledger.read_bytes())
+        value['state']='retired'
+        value['state_digest']=canonical_digest(value,digest_field='state_digest')
+        ledger.write_text(json.dumps(value))
+        result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
+    else:
+        with access.exclusive_scene_access():
+            result=gc.apply_gc_manifest(manifest,ack=gc.EXECUTE_ACK)
+    assert result['removed_count']==0 and len(result['skipped'])==1
+    assert leaf.read_bytes()==original
+
+
 def test_cache_consent_is_bound_to_actual_generation_and_same_authenticated_owner(tmp_path,monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_authority import load_authority
     path,consent=cache_action_consent(tmp_path,monkeypatch)
