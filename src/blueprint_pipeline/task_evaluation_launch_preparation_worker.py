@@ -510,6 +510,7 @@ def _materialize_reference_records(
     allowed_uri_prefixes: Sequence[str],
     fetcher: ReferenceFetcher,
     installed_sources: InstalledSourceBindings | None = None,
+    publication_authorities: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch and hash typed references without assuming their parent contract."""
 
@@ -520,6 +521,7 @@ def _materialize_reference_records(
     rows: list[dict[str, Any]] = []
     by_identity: dict[tuple[str, int], Path] = {}
     for reference in references:
+        authority = storage_authority if publication_authorities is None else publication_authorities[reference["contract_path"]]
         uri = reference["uri"]
         digest = reference["digest"]
         size = reference["size_bytes"]
@@ -569,7 +571,7 @@ def _materialize_reference_records(
                     finally:
                         os.close(descriptor)
                     published = scene_cache.publish_content_generation(cached, temporary,
-                        digest=digest, size_bytes=size, authority=storage_authority)
+                        digest=digest, size_bytes=size, authority=authority)
                     if not published:
                         try:
                             os.link(temporary, cached, follow_symlinks=False)
@@ -603,7 +605,7 @@ def _materialize_reference_records(
                         "launch_preparation_materialized_target_unsafe"
                     )
                 projection_created = False
-                projected = scene_cache.project_content(cached, destination, authority=storage_authority)
+                projected = scene_cache.project_content(cached, destination, authority=authority)
                 if not projected:
                     try:
                         os.link(cached, destination, follow_symlinks=False)
@@ -1093,12 +1095,17 @@ def _materialize_runtime_source_external_layers(
                 disk_reservation_root=disk_reservation_root,
                 disk_reservations=disk_reservations,
             )
+    from .task_evaluation_scene_retirement_generated import publish_runtime_layer_authority
+    authorities={reference["contract_path"]: publish_runtime_layer_authority(
+        request=request,runtime_source=runtime_source,layer=layer,input_root=input_root)
+        for reference,layer in zip(references,layers)}
     rows, _ = _materialize_reference_records(
         references=references,
         input_root=input_root,
         content_store_root=content_store_root,
         allowed_uri_prefixes=validate_allowed_uri_prefixes(allowed_uri_prefixes),
         fetcher=fetcher,
+        publication_authorities=authorities,
     )
     return rows
 

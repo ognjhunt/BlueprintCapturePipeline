@@ -309,10 +309,15 @@ def _external_source(policy, path, entry, authority_ref):
         generation, reference = _generation(policy, native_cache, directory=False)
         with _opened(native_cache) as (_, cached), _opened(path) as (_, projected):
             _require(_identity(cached) == _identity(projected), _ERROR)
-    _require(source.get('schema_version') == 'scene_preparation_storage_authority.v1'
-             and generation['source_publication_raw_ref'] == authority_ref
-             and generation['digest'] == entry['sha256']
-             and generation['size_bytes'] == entry['size_bytes'], _ERROR)
+    selected = selected_document(generation['source_publication_raw_ref'], maximum=65536)
+    if selected.get('schema_version') == SCHEMA:
+        verified = _validate_current_publication(selected, policy)
+        _require(selected['storage_authority_raw_ref'] == authority_ref
+                 and verified['digest'] == entry['sha256'] and verified['size_bytes'] == entry['size_bytes'], _ERROR)
+    else:
+        _require(source.get('schema_version') == 'scene_preparation_storage_authority.v1'
+                 and generation['source_publication_raw_ref'] == authority_ref, _ERROR)
+    _require(generation['digest'] == entry['sha256'] and generation['size_bytes'] == entry['size_bytes'], _ERROR)
     with _opened(path.parent, directory=True) as (parent, parent_info), _opened(path) as (fd, info):
         digest = hashlib.sha256()
         remaining = info.st_size
@@ -377,8 +382,7 @@ def _verified_record(record, policy, consent, allowance):
     return request, retained
 
 
-def validate_publication(record, *, policy, consent, allowance):
-    request, retained = _verified_record(record, policy, consent, allowance)
+def _native_publication(record, request, retained, policy, allowance=None):
     from . import task_evaluation_native_arena_preparation_adapter as adapter
     path = _canonical(record['bundle_raw_ref']['path'])
     _require(record['expected_reference']['digest'] == record['bundle_raw_ref']['sha256']
@@ -398,6 +402,55 @@ def validate_publication(record, *, policy, consent, allowance):
         _require(actual == retained and record['entry'] in actual['entries'], _ERROR)
     return dict(digest=record['entry']['sha256'], size_bytes=record['entry']['size_bytes'],
                 intent_raw_ref=record['intent_raw_ref'], request_digest=record['request_digest'])
+
+
+def validate_publication(record, *, policy, consent, allowance):
+    request, retained = _verified_record(record, policy, consent, allowance)
+    return _native_publication(record, request, retained, policy, allowance)
+
+
+def _validate_current_publication(record, policy):
+    _require(type(record) is dict and set(record) == _FIELDS and record['schema_version'] == SCHEMA
+             and record['publication_digest'] == canonical_digest(record, digest_field='publication_digest'), _ERROR)
+    from . import task_evaluation_scene_retirement_cache as cache
+    authority = selected_document(record['storage_authority_raw_ref'], maximum=65536)
+    request = selected_document(authority['submission_request_raw_ref'], maximum=65536)
+    intent, _ = cache._validate(authority, request, now=cache.time.time())
+    root = _canonical(record['producer_root'])
+    current, _ = _generation(policy, root, directory=True)
+    prior = selected_document(record['producer_generation_raw_ref'], maximum=65536)
+    _require(current['generation_id'] == prior['generation_id']
+             and current['owner_raw_ref'] == record['intent_raw_ref'] == authority['intent_raw_ref']
+             and current['owner_intent_id'] == intent['intent_id']
+             and current['birth_request_raw_ref'] == authority['attempt_raw_ref']
+             and current['source_storage_authority_raw_ref'] == record['storage_authority_raw_ref']
+             and authority['request_digest'] == record['request_digest'], _ERROR)
+    retained = selected_document(record['manifest_raw_ref'], maximum=4*1024*1024)
+    return _native_publication(record, request, retained, policy)
+
+
+def publish_runtime_layer_authority(*, request, runtime_source, layer, input_root):
+    """Actual native wrapper-derived fetch selector, before payload publication."""
+    from . import task_evaluation_native_arena_preparation_adapter as adapter
+    _require(type(layer) is dict and type(layer.get('size_bytes')) is int
+             and type(layer.get('sha256')) is str, _ERROR)
+    reference = request['execution_adapter']['runtime_source_bundle']
+    _require(runtime_source['digest'] == reference['digest']
+             and runtime_source['size_bytes'] == reference['size_bytes'], _ERROR)
+    with bundle_lifetime(bundle_path=runtime_source['materialized_path'], request=request,
+            expected_reference=reference, role='runtime_source',
+            destination=Path(input_root)/'native-runtime-layer-publication', content_store_root=None) as use:
+        if use is None or use.producer is None:
+            return None
+        with use.archive() as archive:
+            manifest = adapter._manifest_from_archive(archive, request=request, expected_role='runtime_source')
+            raw = archive.read(adapter.MANIFEST_NAME)
+        rows = [entry for entry in manifest['entries']
+                if entry.get('external_layer', {}).get('uri') == layer['uri']
+                and entry['relative_path'] == layer['relative_path']
+                and entry['sha256'] == layer['sha256'] and entry['size_bytes'] == layer['size_bytes']]
+        _require(len(rows) == 1, _ERROR)
+        return use.publish(manifest_bytes=raw, manifest=manifest, entry=rows[0])
 
 
 def validate_external_publication_source(record, *, source_path, digest, size_bytes):
