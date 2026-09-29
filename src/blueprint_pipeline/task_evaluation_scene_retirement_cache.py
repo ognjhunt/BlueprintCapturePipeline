@@ -231,7 +231,16 @@ def publish_content_generation(path,temporary,*,digest,size_bytes,authority):
     with _opened(store,directory=True) as (ledger,ledger_info),_birth_gate(ledger,key,parent_identity=_identity(ledger_info)):
         with _opened(path.parent,directory=True) as (parent,parent_info),_opened(temporary) as (fd,info):
             identity=_identity(info)
-            _require(info.st_size==size_bytes and info.st_nlink==1,_ERROR)
+            _require(info.st_size==size_bytes and info.st_nlink>=1,_ERROR)
+            if info.st_nlink!=1:
+                from . import task_evaluation_scene_retirement_generated as generated
+                source=selected_document(authority,maximum=65536)
+                _require(type(source) is dict and source.get('schema_version')==generated.SCHEMA,_ERROR)
+                generated.validate_external_publication_source(source,source_path=temporary,
+                    digest=digest,size_bytes=size_bytes)
+                _guard(fd,identity)
+                _guard(parent,_identity(parent_info))
+                _require(_identity(os.stat(temporary.name,dir_fd=parent,follow_symlinks=False))==identity,_ERROR)
             prior=None
             try:
                 prior,_=load_document(store/(key+'.json'),maximum=65536)
@@ -442,11 +451,17 @@ def validate_cache_objects(policy,consent,allowance):
             and all(row[key]==generation[key] for key in ('canonical_path','digest','size_bytes','generation_id'))
             and generation['source_publication_raw_ref']==row['source_raw_ref']
             and source.get('intent_raw_ref')==consent['intent_raw_ref'],_ERROR)
-        _require(type(source) is dict and set(source)==_SIDE_FIELDS,_ERROR)
-        request=_storage_history(source,allowance)
-        allowance.tick()
-        refs=collect_preparation_references(request)
-        _require(any(ref['digest']==row['digest'] and ref['size_bytes']==row['size_bytes'] for ref in refs),_ERROR)
+        from . import task_evaluation_scene_retirement_generated as generated
+        if type(source) is dict and source.get('schema_version')==generated.SCHEMA:
+            verified=generated.validate_publication(source,policy=policy,consent=consent,allowance=allowance)
+            _require(verified['digest']==row['digest'] and verified['size_bytes']==row['size_bytes']
+                and verified['intent_raw_ref']==consent['intent_raw_ref'],_ERROR)
+        else:
+            _require(type(source) is dict and set(source)==_SIDE_FIELDS,_ERROR)
+            request=_storage_history(source,allowance)
+            allowance.tick()
+            refs=collect_preparation_references(request)
+            _require(any(ref['digest']==row['digest'] and ref['size_bytes']==row['size_bytes'] for ref in refs),_ERROR)
         path=_canonical(row['canonical_path'])
         with _opened(path) as (_,info):
             _require(_identity(info)==(generation['dev'],generation['ino'],generation['mode'])
