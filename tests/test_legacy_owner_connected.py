@@ -42,6 +42,8 @@ def installed(tmp_path, monkeypatch):
     consent["policy_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
     monkeypatch.setattr(owners, "_installed_config", lambda files, path: config)
     monkeypatch.setattr(legacy, "_load_old_consent", lambda *args, **kwargs: consent)
+    monkeypatch.setattr(legacy, "_reference_settings", lambda files, config: dict(
+        queue_roots=(), active_run_roots=(), pins_root=tmp_path / "pins"))
     monkeypatch.setattr(legacy, "_fresh_census", lambda *args, **kwargs: _survey(str(target)))
     monkeypatch.setattr(legacy.os, "geteuid", lambda: 0)
     def protected(info, *, directory=False, mode=None):
@@ -158,6 +160,49 @@ def test_long_bounded_census_uses_fresh_protected_sessions(installed, monkeypatc
     report = legacy.observe_owner_review(installed_config_path="/fixture/door.json", now=1022,
                                          monotonic=clock, max_seconds=30)
     assert report["observed_owner_count"] == 1
+
+
+def test_changed_protected_reference_settings_after_census_never_publish_packet(installed, monkeypatch):
+    target, payload, registry, legacy = installed
+    state = {"pins": target.parent / "pins-a"}
+    monkeypatch.setattr(legacy, "_reference_settings", lambda files, config: dict(
+        queue_roots=(), active_run_roots=(), pins_root=state["pins"]))
+
+    def changed_census(*_args, **_kwargs):
+        state["pins"] = target.parent / "pins-b"
+        return _survey(str(target))
+
+    monkeypatch.setattr(legacy, "_fresh_census", changed_census)
+    with pytest.raises(legacy.LegacyOwnerError, match="legacy_owner_references_incomplete"):
+        legacy.issue_version_packet(consent_id="a" * 32,
+                                    consent_sha256="sha256:" + "b" * 64,
+                                    consent_size_bytes=1, selected_path=str(target),
+                                    installed_config_path="/fixture/door.json", now=1010,
+                                    monotonic=lambda: 0)
+    assert not list(registry.glob("*.packet.json"))
+    assert payload.read_bytes() == b"old, preserved"
+
+
+def test_new_reference_before_head_keeps_uncommitted_owner_record_unlabeled(installed, monkeypatch):
+    target, payload, registry, legacy = installed
+    packet, _ = _issue_and_approve(installed)
+    calls = 0
+
+    def reference_arrives(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        survey = _survey(str(target))
+        if calls == 2:
+            survey["rows"][0]["references"] = ["process"]
+        return survey
+
+    monkeypatch.setattr(legacy, "_fresh_census", reference_arrives)
+    with pytest.raises(legacy.LegacyOwnerError, match="legacy_owner_references_incomplete"):
+        legacy.apply_owner_review(packet_id=packet["packet_id"],
+                                  installed_config_path="/fixture/door.json", now=1021,
+                                  monotonic=lambda: 0)
+    assert calls == 2 and not list(registry.glob("*.head.json"))
+    assert payload.read_bytes() == b"old, preserved"
 
 
 def test_crash_before_head_is_recoverable_without_promoting_torn_record(installed, monkeypatch):

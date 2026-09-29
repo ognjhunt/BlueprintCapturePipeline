@@ -157,7 +157,10 @@ def _root_fixture() -> dict:
             "from blueprint_pipeline.control_plane_lane_scratch_census import _process_references,build_census\n"
             "errors=[]\n"
             "found=_process_references([Path(payload).parent],Path(process_root),errors,time.monotonic()+10)\n"
-            "assert errors==['process_inventory_unreadable'] and Path(payload).parent in found\n"
+            "stage='exact_process_scanner_error_shape'\n"
+            "assert errors and set(errors)=={'process_inventory_unreadable'}\n"
+            "stage='exact_process_scanner_found'\n"
+            "assert Path(payload).parent in found\n"
             "stage='bounded_unknown_census'\n"
             "census=build_census(work_root=Path(payload).parents[3],inputs_root=Path(payload).parents[4]/'inputs',process_root=Path(process_root),pins_root=Path(pins),queue_roots=[],release_link=Path(release),active_run_roots=[],max_seconds=10)\n"
             "assert census['status']=='incomplete' and census['scan_errors']==['process_inventory_unreadable']\n"
@@ -206,7 +209,8 @@ def _root_fixture() -> dict:
             code = detail.get("code", "unit_before_report")
             assert code in {"start", "foreign_payload", "fixed_environment", "hidden_secret",
                             "foreign_proc_cmdline", "foreign_proc_environ", "foreign_proc_fd",
-                            "exact_process_scanner", "bounded_unknown_census",
+                            "exact_process_scanner", "exact_process_scanner_error_shape",
+                            "exact_process_scanner_found", "bounded_unknown_census",
                             "bounded_unknown_public_report", "foreign_memory",
                             "ptrace", "lock", "read_only", "unit_before_report"}
             raise AssertionError(f"disposable unit failed at {code}; exit={run.returncode}")
