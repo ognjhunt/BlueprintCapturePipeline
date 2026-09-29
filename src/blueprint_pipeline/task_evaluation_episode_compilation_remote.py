@@ -61,7 +61,7 @@ EXECUTION_ENV = "BLUEPRINT_EPISODE_COMPILATION_EXECUTION"
 MODES = ("host", "cloud_run_shadow", "cloud_run")
 JOBS_ROOT_ENV = "BLUEPRINT_REMOTE_CPU_JOBS_ROOT"
 DEFAULT_JOBS_ROOT = "/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs"
-# The allocator reads the same file (``remote_cpu_job_allocator.CONFIG_ENV``); the no-spend unit reads it to decide.
+# The allocator reads the same file (its own ``CONFIG_ENV``); the no-spend unit reads it to decide.
 CONFIG_ENV = "BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG"
 DEFAULT_CONFIG_PATH = "/etc/blueprint/remote-cpu-workers.json"
 RUN_SCHEMA_VERSION = "task_evaluation_episode_compilation_queue_run.v1"
