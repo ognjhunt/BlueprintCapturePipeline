@@ -365,3 +365,34 @@ def test_a_publication_that_does_not_verify_is_refused(tmp_path: Path) -> None:
     record, source, evidence = _site_record(tmp_path / "b")
     with pytest.raises(GradedReportError, match="generated_at_invalid"):
         _build(record, source, evidence, generated_at_iso="2026-09-23T21:00:00")
+
+
+def test_a_streamed_run_is_graded_from_its_member_index(tmp_path: Path, monkeypatch) -> None:
+    """Review I1: the graded report reuses the rescorer's inventory check, so a streamed run whose
+    media stay in the promoted archive grades exactly as the downloaded run does, reading no bytes."""
+    from tests.provider_output_fixtures import serve_member_views, stream_evidence_tree
+    from tests.test_task_evaluation_policy_canary_rescore import _with_media
+
+    record, source, evidence = _site_record(tmp_path)
+    result = _with_media(source, evidence, json.loads(source.read_text()))
+    projection = record["publication"]["policy_canary_result"]
+    projection["report"] = {"result_digest": result["result_digest"]}
+    projection["projection_digest"] = cross_runtime_canonical_digest(projection, digest_field="projection_digest")
+    streamed = stream_evidence_tree(evidence, tmp_path / "streamed" / "attempt_001")
+    serve_member_views(monkeypatch, streamed.store)
+    assert streamed.remote() == ["media/frames/external/000000.png", "media/review.mp4"]
+
+    assert _build(record, source, streamed.evidence) == _build(record, source, evidence)
+    assert streamed.data_ranges() == []
+    # A remote row the index does not vouch for is the downloaded run's refusal.
+    inventory = [dict(row) for row in result["artifact_inventory"]]
+    next(row for row in inventory if row["relative_path"] == "media/review.mp4")["sha256"] = "sha256:" + "0" * 64
+    changed = {**result, "artifact_inventory": inventory,
+               "artifact_inventory_digest": canonical_digest({"value": inventory})}
+    changed["result_digest"] = canonical_digest(changed, digest_field="result_digest")
+    source.write_text(json.dumps(changed), encoding="utf-8")
+    projection["report"] = {"result_digest": changed["result_digest"]}
+    projection["projection_digest"] = cross_runtime_canonical_digest(projection, digest_field="projection_digest")
+    for root in (evidence, streamed.evidence):
+        with pytest.raises(GradedReportError, match="^graded_report_artifact_inventory_invalid$"):
+            _build(record, source, root)

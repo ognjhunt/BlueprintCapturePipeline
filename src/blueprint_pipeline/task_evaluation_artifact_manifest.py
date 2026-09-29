@@ -52,6 +52,66 @@ def _role_files(path: Path) -> list[Path]:
     return []
 
 
+def _archive_member_rows(
+    root: Path,
+    archive_members: Mapping[str, tuple[Mapping[str, Any], str]],
+    normalized_roles: Mapping[str, Path],
+    local_rows: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rows for archive members kept only in the durable archive, by index digest.
+
+    Each role maps to (sealed member index, its root relative to the attempt),
+    and that root must be the role's own artifact root. A member present
+    locally keeps its hashed row but must match the index; every other file
+    member is listed with the index's sha256 and size and
+    ``"location": "archive_member"``, reading no bytes.
+    """
+
+    from .provider_output_member_index import (
+        ProviderOutputMemberIndexError,
+        validate_member_index,
+    )
+
+    rows: list[dict[str, Any]] = []
+    for role, (index, prefix) in sorted(archive_members.items()):
+        try:
+            validate_member_index(index)
+        except ProviderOutputMemberIndexError as exc:
+            raise TaskEvaluationArtifactManifestError(
+                "task_evaluation_artifact_archive_member_index_invalid"
+            ) from exc
+        if index["archive"]["durable_reference"] is None:
+            raise TaskEvaluationArtifactManifestError(
+                "task_evaluation_artifact_archive_member_index_not_durable"
+            )
+        base = _under_attempt_root(root / str(prefix), root)
+        if normalized_roles.get(str(role)) != base:
+            raise TaskEvaluationArtifactManifestError(
+                "task_evaluation_artifact_archive_member_root_mismatch"
+            )
+        for member in index["members"]:
+            if member["kind"] != "file":
+                continue
+            relative = (base / member["path"]).relative_to(root).as_posix()
+            local = local_rows.get(relative)
+            if local is not None:
+                if (local["sha256"], local["size_bytes"]) != (member["sha256"], member["size"]):
+                    raise TaskEvaluationArtifactManifestError(
+                        "task_evaluation_artifact_archive_member_digest_mismatch"
+                    )
+                continue
+            rows.append(
+                {
+                    "relative_path": relative,
+                    "roles": [str(role)],
+                    "size_bytes": member["size"],
+                    "sha256": member["sha256"],
+                    "location": "archive_member",
+                }
+            )
+    return rows
+
+
 def build_task_evaluation_artifact_manifest(
     *,
     attempt_root: str | Path,
@@ -59,8 +119,16 @@ def build_task_evaluation_artifact_manifest(
     required_roles: Sequence[str],
     binding: Mapping[str, Any],
     output_path: str | Path | None = None,
+    archive_members: Mapping[str, tuple[Mapping[str, Any], str]] | None = None,
 ) -> dict[str, Any]:
-    """Inventory allocator-retained evidence and write one immutable manifest."""
+    """Inventory allocator-retained evidence and write one immutable manifest.
+
+    ``archive_members`` lists, for a streamed attempt, the files that stay in
+    the promoted archive: ``{role: (sealed member index, root relative to the
+    attempt)}``. Those rows carry the index's digest and size and
+    ``"location": "archive_member"``; a local member must hash to its index
+    digest. Without it the manifest is exactly as before.
+    """
 
     root = Path(attempt_root).expanduser().resolve()
     if not root.is_dir():
@@ -77,9 +145,6 @@ def build_task_evaluation_artifact_manifest(
         if str(role).strip()
     }
     required = sorted(set(str(role) for role in required_roles if str(role).strip()))
-    missing_roles = sorted(
-        role for role in required if not _role_files(normalized_roles.get(role, root / ".missing"))
-    )
 
     roles_by_path: dict[Path, set[str]] = defaultdict(set)
     for role, path in sorted(normalized_roles.items()):
@@ -97,6 +162,19 @@ def build_task_evaluation_artifact_manifest(
         }
         for path, roles in sorted(roles_by_path.items(), key=lambda item: item[0].as_posix())
     ]
+    archive_roles: set[str] = set()
+    if archive_members:
+        remote = _archive_member_rows(
+            root, archive_members, normalized_roles, {row["relative_path"]: row for row in files}
+        )
+        archive_roles = {role for row in remote for role in row["roles"]}
+        files = sorted([*files, *remote], key=lambda row: row["relative_path"])
+    missing_roles = sorted(
+        role
+        for role in required
+        if not _role_files(normalized_roles.get(role, root / ".missing"))
+        and role not in archive_roles
+    )
     blockers = [f"task_evaluation_artifact_role_missing:{role}" for role in missing_roles]
     if not files:
         blockers.append("task_evaluation_artifact_manifest_empty")
@@ -106,7 +184,9 @@ def build_task_evaluation_artifact_manifest(
         "binding": dict(binding),
         "required_roles": required,
         "observed_roles": sorted(
-            role for role, path in normalized_roles.items() if _role_files(path)
+            role
+            for role, path in normalized_roles.items()
+            if _role_files(path) or role in archive_roles
         ),
         "file_count": len(files),
         "total_size_bytes": sum(int(row["size_bytes"]) for row in files),

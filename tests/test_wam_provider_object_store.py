@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
+import pytest
+
 from blueprint_pipeline import wam_provider_object_store as object_store
 
 
@@ -1256,3 +1258,349 @@ def test_cleanup_does_not_retry_a_non_transient_failure(tmp_path: Path, monkeypa
     assert result["cleanup_attempts"] == 1
     assert client.attempts == 1
     assert any("AccessDenied" in blocker for blocker in result["blockers"])
+
+
+def _staging_fakes(monkeypatch, tmp_path: Path):
+    """A fake boto3 for staging: presigns deterministic URLs, stores sentinel PUTs."""
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.objects: dict[str, bytes] = {}
+            self.presigned: list[tuple[str, dict]] = []
+
+        def delete_object(self, *, Bucket: str, Key: str):
+            self.objects.pop(Key, None)
+            return {"ResponseMetadata": {"HTTPStatusCode": 204}}
+
+        def head_object(self, *, Bucket: str, Key: str):
+            if Key in self.objects:
+                return {"ContentLength": len(self.objects[Key]), "ETag": '"etag"'}
+            error = RuntimeError("not found")
+            error.response = {  # type: ignore[attr-defined]
+                "ResponseMetadata": {"HTTPStatusCode": 404}, "Error": {"Code": "NoSuchKey"}}
+            raise error
+
+        def upload_file(self, source: str, bucket: str, key: str) -> None:
+            self.objects[key] = Path(source).read_bytes()
+
+        def generate_presigned_url(self, operation: str, *, Params, ExpiresIn, HttpMethod):
+            self.presigned.append((operation, dict(Params)))
+            return (f"https://spaces.example.invalid/{Params['Bucket']}/{Params['Key']}"
+                    f"?X-Amz-Signature=SECRET_DO_NOT_RECORD&Method={HttpMethod}&Expires={ExpiresIn}")
+
+    client = FakeClient()
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda _service, **_kwargs: client))
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
+
+    def fake_request(url: str, *, method: str, data=None, **_kwargs):
+        key = urlparse(url).path.split("/", 2)[2]
+        if method == "PUT":
+            client.objects[key] = bytes(data)
+            return SimpleNamespace(status=200, body=b"")
+        return SimpleNamespace(status=200, body=client.objects[key])
+
+    monkeypatch.setattr(object_store, "safe_http_request", fake_request)
+    monkeypatch.setattr(object_store.secrets, "token_hex", lambda _size: "0" * 32)
+    monkeypatch.setattr(object_store.secrets, "token_bytes", lambda size: b"s" * size)
+    for name, value in (("ACCESS_KEY_ID", "access"), ("SECRET_ACCESS_KEY", "secret"), ("BUCKET", "bucket")):
+        path = tmp_path / f"spaces-{name.lower()}"
+        path.write_text(value + "\n", encoding="utf-8")
+        monkeypatch.setenv(f"BLUEPRINT_WAM_OBJECT_STORE_{name}_FILE", str(path))
+    # Values, so no default secret file on the machine running the test is read.
+    monkeypatch.setenv("BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL", "https://spaces.example.invalid")
+    monkeypatch.setenv("BLUEPRINT_WAM_OBJECT_STORE_REGION", "nyc3")
+    return client
+
+
+def _stage(tmp_path: Path, name: str, **options) -> tuple[Path, dict]:
+    bundle = tmp_path / "provider_bundle.zip"
+    if not bundle.exists():
+        bundle.write_bytes(b"bundle")
+    # The same last three path components, so the job key (and every key) is identical.
+    job = tmp_path / name / "attempts" / "runs" / "job"
+    manifest = object_store.stage_wam_provider_bundle_object_store(
+        job_dir=job, bundle_path=bundle, key_prefix="blueprint/wam-test",
+        expiration_seconds=600, generated_at="2026-09-28T00:00:00Z", **options)
+    return job, manifest
+
+
+def test_ungated_staging_and_cleanup_are_byte_identical(tmp_path: Path, monkeypatch) -> None:
+    client = _staging_fakes(monkeypatch, tmp_path)
+    # Equal-length names: the binding file records the job path, so its size follows it.
+    default_job, default = _stage(tmp_path, "run_a")
+    explicit_job, explicit = _stage(tmp_path, "run_b", output_promotion_required=False)
+    gated_job, gated = _stage(tmp_path, "run_c", output_promotion_required=True)
+    assert default["status"] == explicit["status"] == gated["status"] == "completed"
+
+    def normalized(job: Path) -> dict:
+        text = (job / object_store.STAGING_MANIFEST_FILENAME).read_text(encoding="utf-8")
+        value = json.loads(text.replace(str(job.resolve()), "<job>"))
+        for field in ("staging_binding_file", "provider_bundle_url_file", "provider_output_put_url_file",
+                      "provider_output_get_url_file"):
+            value[field].pop("mtime_ns")
+        return value
+
+    assert "output_promotion_required" not in default and "output_promotion_required" not in explicit
+    assert normalized(explicit_job) == normalized(default_job)
+    assert gated["output_promotion_required"] is True
+    assert {k: v for k, v in normalized(gated_job).items() if k != "output_promotion_required"} == normalized(default_job)
+
+    # An ungated manifest keeps today's cleanup: delete then absence-prove, no HEAD first.
+    calls: list[tuple[str, str]] = []
+    real_delete, real_head = client.delete_object, client.head_object
+    client.delete_object = lambda **kw: calls.append(("delete", kw["Key"])) or real_delete(**kw)
+    client.head_object = lambda **kw: calls.append(("head", kw["Key"])) or real_head(**kw)
+    result = object_store.cleanup_staged_wam_provider_objects(default_job)
+    keys = [default["bundle_key"], default["output_key"]]
+    assert calls == [("delete", keys[0]), ("head", keys[0]), ("delete", keys[1]), ("head", keys[1])]
+    assert set(result) == {
+        "schema_version", "generated_at", "status", "staging_manifest_sha256", "exact_object_count",
+        "objects", "cleanup_attempts", "all_objects_absent", "all_ephemeral_objects_absent",
+        "content_addressed_bundle_retained_for_reuse", "retained_bundle_key_sha256",
+        "signed_url_files_removed", "blockers", "raw_secret_values_recorded"}
+    assert all(set(row) == {"key_sha256", "absence"} for row in result["objects"])
+    assert result["status"] == "completed" and result["all_objects_absent"] is True
+
+
+def test_presign_staged_object_get_never_rewrites_the_manifest(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline.native_task_arena_paired_witness_staging import SUFFIX
+
+    client = _staging_fakes(monkeypatch, tmp_path)
+    job, manifest = _stage(tmp_path, "presign", output_promotion_required=True)
+    path = job / object_store.STAGING_MANIFEST_FILENAME
+    # A staged witness slot, as paired canaries record it.
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["paired_witness"] = {"status": "ready", "witness_key": value["output_key"] + SUFFIX}
+    path.write_text(json.dumps(value), encoding="utf-8")
+    before_bytes, before_stat = path.read_bytes(), path.stat()
+    before_files = sorted(item.name for item in job.iterdir())
+
+    output_url = object_store.presign_staged_object_get(job, object_role="output")
+    witness_url = object_store.presign_staged_object_get(job, object_role="paired_witness",
+                                                         expiration_seconds=900)
+
+    assert urlparse(output_url).path.endswith("/" + value["output_key"])
+    assert urlparse(witness_url).path.endswith("/" + value["output_key"] + SUFFIX)
+    assert client.presigned[-2:] == [
+        ("get_object", {"Bucket": "bucket", "Key": value["output_key"]}),
+        ("get_object", {"Bucket": "bucket", "Key": value["output_key"] + SUFFIX})]
+    assert "Expires=7200" in output_url and "Expires=900" in witness_url
+    assert path.read_bytes() == before_bytes and path.stat().st_mtime_ns == before_stat.st_mtime_ns
+    assert sorted(item.name for item in job.iterdir()) == before_files  # no URL file is written
+    for role, code in (("bundle", "staged_object_presign_role_invalid"),
+                       ("paired_witness", "staged_object_presign_manifest_invalid")):
+        if role == "paired_witness":
+            value["paired_witness"] = {"status": "ready", "witness_key": "elsewhere/other.zip"}
+            path.write_text(json.dumps(value), encoding="utf-8")
+        try:
+            object_store.presign_staged_object_get(job, object_role=role)
+        except ValueError as exc:
+            assert str(exc) == code
+        else:
+            raise AssertionError(f"{role} must be refused")
+    for expiration in (59, 7 * 24 * 60 * 60 + 1):
+        try:
+            object_store.presign_staged_object_get(job, object_role="output", expiration_seconds=expiration)
+        except ValueError as exc:
+            assert str(exc) == "staged_object_presign_expiration_invalid"
+        else:
+            raise AssertionError("expiration must be bounded")
+
+
+class _GatedSpaces:
+    """HEAD and DELETE for a staging bucket's exact keys; key -> (size, etag)."""
+
+    def __init__(self, objects: dict[str, tuple[int, str]]) -> None:
+        self.objects = dict(objects)
+        self.calls: list[tuple[str, str]] = []
+        self.version_ids: dict[str, str] = {}  # a versioned bucket reports these on HEAD
+        self.delete_arguments: list[tuple[str, dict]] = []
+
+    def head_object(self, *, Bucket: str, Key: str):
+        self.calls.append(("head", Key))
+        if Key not in self.objects:
+            error = RuntimeError("not found")
+            error.response = {  # type: ignore[attr-defined]
+                "ResponseMetadata": {"HTTPStatusCode": 404}, "Error": {"Code": "NoSuchKey"}}
+            raise error
+        size, etag = self.objects[Key]
+        head = {"ContentLength": size, "ETag": etag, "ResponseMetadata": {"HTTPStatusCode": 200}}
+        if Key in self.version_ids:
+            head["VersionId"] = self.version_ids[Key]
+        return head
+
+    def delete_object(self, *, Bucket: str, Key: str, **extra):
+        self.calls.append(("delete", Key))
+        self.delete_arguments.append((Key, extra))
+        self.objects.pop(Key, None)
+        return {"ResponseMetadata": {"HTTPStatusCode": 204}}
+
+
+def _gated_job(tmp_path: Path, monkeypatch, objects, *, witness: bool = False):
+    from blueprint_pipeline.native_task_arena_paired_witness_staging import SUFFIX
+
+    job = tmp_path / "job"
+    job.mkdir()
+    keys = {"bundle": "blueprint/task/job/bundle.zip", "output": "blueprint/task/job/output.zip"}
+    manifest = {"schema_version": object_store.SCHEMA_VERSION, "status": "completed",
+                "object_store": {"key_prefix": "blueprint/task"}, "bundle_key": keys["bundle"],
+                "output_key": keys["output"], "output_promotion_required": True}
+    if witness:
+        keys["paired_witness"] = keys["output"] + SUFFIX
+        manifest["paired_witness"] = {"status": "ready", "witness_key": keys["paired_witness"]}
+    (job / object_store.STAGING_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+    for name in object_store.SIGNED_URL_FILENAMES:
+        (job / name).write_text("https://signed.example/?secret\n", encoding="utf-8")
+    client = _GatedSpaces({keys[role]: identity for role, identity in objects.items()})
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda _service, **_kwargs: client))
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=lambda **_kwargs: object()))
+    for name in ("access", "secret"):
+        (tmp_path / name).write_text(name + "\n", encoding="utf-8")
+    return job, keys, client
+
+
+def _receipt(job: Path, keys: dict, *, manifest_sha256: str | None = None, **sections):
+    """A sealed promotion receipt: role -> (state, [(size, etag), ...])."""
+    from blueprint_pipeline import provider_output_promotion_records as records
+
+    return records.write_promotion_receipt(job, {
+        "schema_version": records.RECEIPT_SCHEMA, "status": "promoted",
+        "staging_manifest_sha256": manifest_sha256 or records.staging_manifest_sha256(job),
+        "staged_objects": {role: {"key_sha256": records.key_sha256(keys[role]), "state": state,
+                                  "versions": [{"size_bytes": size, "etag": etag} for size, etag in versions]}
+                           for role, (state, versions) in sections.items()},
+        "blockers": [], "private_url_recorded": False})
+
+
+def _gated_cleanup(tmp_path: Path, job: Path):
+    return object_store.cleanup_staged_wam_provider_objects(
+        job, access_key_id_file=tmp_path / "access", secret_access_key_file=tmp_path / "secret",
+        bucket="bucket")
+
+
+def test_gated_cleanup_never_deletes_a_present_output_without_a_receipt(tmp_path: Path, monkeypatch) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (100, '"e1"')})
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert ("delete", keys["output"]) not in client.calls and keys["output"] in client.objects
+    assert ("delete", keys["bundle"]) in client.calls  # the bundle is cleaned as today
+    assert result["status"] == "blocked" and result["all_objects_absent"] is False
+    assert result["blockers"] == ["staged_output_promotion_receipt_missing"]
+    deferred = [row for row in result["objects"] if row.get("promotion_gate", {}).get("decision") == "deferred"]
+    assert deferred == [{"key_sha256": hashlib.sha256(keys["output"].encode()).hexdigest(),
+                         "absence": {"status": "deferred", "absence_confirmed": False,
+                                     "object_still_present": True, "raw_secret_values_recorded": False},
+                         "promotion_gate": {"decision": "deferred",
+                                            "reason": "staged_output_promotion_receipt_missing"}}]
+    assert result["output_promotion_gate"] == {"required": True, "receipt_digest": None, "receipt_status": None}
+    assert result["signed_url_files_removed"] is True
+
+    # A receipt that is not durable for the output, or is bound to another
+    # manifest, allows nothing either: a late upload after absence was confirmed.
+    for sections in ({"output": ("absent_confirmed", [])},
+                     {"output": ("promoted", [(100, '"e1"')]), "manifest_sha256": "0" * 64}):
+        _receipt(job, keys, **sections)
+        result = _gated_cleanup(tmp_path, job)
+        assert keys["output"] in client.objects
+        assert result["blockers"] == ["staged_output_promotion_receipt_missing"]
+
+
+def test_gated_cleanup_deletes_after_a_bound_receipt_and_reports_all_absent(tmp_path: Path, monkeypatch) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (100, '"e1"')})
+    receipt = _receipt(job, keys, output=("promoted", [(100, '"e1"')]))
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert result["status"] == "completed" and result["blockers"] == []
+    assert result["all_objects_absent"] is True and client.objects == {}
+    assert client.calls == [("delete", keys["bundle"]), ("head", keys["bundle"]),
+                            ("head", keys["output"]), ("delete", keys["output"]), ("head", keys["output"])]
+    output_row = next(row for row in result["objects"] if "promotion_gate" in row)
+    assert output_row["promotion_gate"] == {"decision": "deleted_after_promotion_receipt"}
+    assert output_row["absence"]["absence_confirmed"] is True
+    assert result["output_promotion_gate"] == {"required": True, "receipt_digest": receipt["receipt_digest"],
+                                               "receipt_status": "promoted"}
+
+
+def test_gated_cleanup_needs_no_receipt_for_an_absent_output(tmp_path: Path, monkeypatch) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"')})
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert result["status"] == "completed" and result["all_objects_absent"] is True
+    assert ("delete", keys["output"]) not in client.calls
+    output_row = next(row for row in result["objects"] if "promotion_gate" in row)
+    assert output_row == {"key_sha256": hashlib.sha256(keys["output"].encode()).hexdigest(),
+                          "absence": {"status": "passed", "absence_confirmed": True, "http_status_code": 404,
+                                      "raw_secret_values_recorded": False},
+                          "promotion_gate": {"decision": "absent_no_receipt_required"}}
+
+
+@pytest.mark.parametrize("state, recorded, deleted, reason", [
+    ("redundant_with_promoted_output", (50, '"w1"'), True, None),
+    ("promoted", (50, '"w1"'), True, None),
+    ("deferred", None, False, "staged_output_promotion_receipt_missing"),
+    ("absent_confirmed", None, False, "staged_output_promotion_receipt_missing"),
+    ("redundant_with_promoted_output", (50, '"w0"'), False, "staged_output_promotion_identity_mismatch"),
+])
+def test_witness_deletion_follows_the_receipt_disposition(
+    tmp_path: Path, monkeypatch, state, recorded, deleted, reason
+) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {
+        "bundle": (6, '"b"'), "output": (100, '"e1"'), "paired_witness": (50, '"w1"')}, witness=True)
+    _receipt(job, keys, output=("promoted", [(100, '"e1"')]),
+             paired_witness=(state, [recorded] if recorded else []))
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert (keys["paired_witness"] not in client.objects) is deleted
+    assert keys["output"] not in client.objects
+    assert result["all_objects_absent"] is deleted
+    assert result["blockers"] == ([] if deleted else [reason])
+
+
+def test_gated_cleanup_defers_a_present_object_whose_identity_differs_from_the_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (101, '"e2"')})
+    _receipt(job, keys, output=("promoted", [(100, '"e1"')]))
+
+    for current in ((101, '"e2"'), (100, '"e2"'), (101, '"e1"')):
+        client.objects[keys["output"]] = current
+        result = _gated_cleanup(tmp_path, job)
+        assert keys["output"] in client.objects, current
+        assert result["blockers"] == ["staged_output_promotion_identity_mismatch"]
+
+    # The receipt's identity, however the store quotes its ETag, is deletable.
+    client.objects[keys["output"]] = (100, "e1")
+    assert _gated_cleanup(tmp_path, job)["all_objects_absent"] is True
+    assert keys["output"] not in client.objects
+
+
+def test_gated_cleanup_deletes_the_exact_version_it_headed(tmp_path: Path, monkeypatch) -> None:
+    job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (100, '"e1"')},
+                                   witness=True)
+    client.objects[keys["paired_witness"]] = (50, '"w1"')
+    client.version_ids = {keys["output"]: "3HL4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY"}
+    _receipt(job, keys, output=("promoted", [(100, '"e1"')]),
+             paired_witness=("redundant_with_promoted_output", [(50, '"w1"')]))
+
+    result = _gated_cleanup(tmp_path, job)
+
+    assert result["all_objects_absent"] is True
+    # The versioned object is deleted by the version the gate matched, so a
+    # re-upload landing between the HEAD and the delete is never removed.
+    assert dict(client.delete_arguments) == {
+        keys["bundle"]: {}, keys["output"]: {"VersionId": "3HL4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY"},
+        keys["paired_witness"]: {}}
+    output_row = next(row for row in result["objects"]
+                      if row["key_sha256"] == hashlib.sha256(keys["output"].encode()).hexdigest())
+    assert output_row["promotion_gate"] == {"decision": "deleted_after_promotion_receipt",
+                                            "version_pinned": True}

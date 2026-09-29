@@ -34,6 +34,18 @@ def _read(root, relative, maximum_json_bytes):
     return value
 
 
+def index_member_records(index: Mapping) -> dict:
+    """The path -> {sha256, size_bytes} records ``verify_native_inventory`` checks, from index rows.
+
+    A streamed attempt keeps its bulk members only in the promoted archive, so
+    its native inventory is verified against Blueprint's own member index --
+    digests without bytes. The index lists file rows with ``size``; the
+    verifier looks records up by path.
+    """
+    return {str(row["path"]): {"sha256": row["sha256"], "size_bytes": row["size"]}
+            for row in index.get("members") or [] if isinstance(row, Mapping) and row.get("kind") == "file"}
+
+
 def verify_native_inventory(root: Path, binding: Mapping, members: Mapping,
                             *, maximum_json_bytes=128 * 1024**2,
                             maximum_result_json_bytes=256 * 1024**2):

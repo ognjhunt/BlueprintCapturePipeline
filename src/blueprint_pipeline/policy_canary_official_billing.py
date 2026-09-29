@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .policy_canary_late_watchdog import late_watchdog_instance
+from .policy_canary_staged_object_absence import billing_staged_objects_absent
 
 
 def policy_canary_terminal_evidence(
@@ -54,6 +55,9 @@ def policy_canary_terminal_evidence(
             )
     elif instance_ids is None:
         watchdog_instance_lineage_valid = False
+    # A streamed attempt whose lane deferred its cleanup is proven absent by
+    # the digest-bound proof resume writes (review C2).
+    staged_absent, absence_proof_path = billing_staged_objects_absent(result)
     if (
         instance_ids != [instance_id]
         or result.get("status") not in {"completed", "blocked"}
@@ -63,7 +67,7 @@ def policy_canary_terminal_evidence(
         or not isinstance(closeout, Mapping)
         or closeout.get("provider_zero_confirmed") is not True
         or closeout.get("warm_session_retained") is not False
-        or closeout.get("all_staged_objects_absent") is not True
+        or not staged_absent
     ):
         raise error_factory("vast_official_terminal_result_invalid")
     paths = {
@@ -108,6 +112,11 @@ def policy_canary_terminal_evidence(
             late_watchdog_path, code="vast_official_policy_canary_late_watchdog_invalid"
         )
         terminal["independent_watchdog_terminal"] = record(path, payload)
+    if absence_proof_path is not None:
+        path, _value, payload = json_file(
+            absence_proof_path, code="vast_official_policy_canary_staged_object_absence_proof_invalid"
+        )
+        terminal["staged_object_absence_proof"] = record(path, payload)
     return terminal
 
 

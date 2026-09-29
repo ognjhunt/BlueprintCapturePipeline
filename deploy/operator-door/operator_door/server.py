@@ -262,7 +262,7 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
             scope = required_scope(normalized["kind"])
             if scope not in identity.scopes:
                 raise _Denied(f"scope_missing:{scope}")
-            if normalized["kind"] == "owner-census-decision" and app.config.owner_census_decisions_enabled != 1:
+            if normalized["kind"] in {"owner-census-decision", "legacy-owner-census"} and app.config.owner_census_decisions_enabled != 1:
                 raise _Denied("owner_consent_disabled")
             request_id = enqueue(app.config, normalized, requested_by=identity.name)
             self._send_json(202, {"id": request_id, "state": "pending"})
@@ -320,4 +320,3 @@ class DoorServer(ThreadingHTTPServer):
 def make_server(config: DoorConfig, *, host: HostInfo) -> DoorServer:
     app = DoorApp(config, host=host)
     return DoorServer((config.listen_host, config.listen_port), make_handler(app))
-

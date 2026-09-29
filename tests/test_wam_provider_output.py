@@ -95,6 +95,22 @@ def test_provider_output_recognizes_arena_runtime_preflight(tmp_path: Path) -> N
     assert result["runtime_result"]["blockers"] == ["measured_preflight_blocker"]
 
 
+def test_provider_output_recognizes_controlled_native_policy_result(tmp_path: Path) -> None:
+    output_zip = tmp_path / "controlled-native-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "controlled_native_policy_result.v1.json",
+            json.dumps({"schema_version": "controlled_native_policy_result.v1",
+                        "status": "completed", "blockers": []}),
+        )
+
+    result = inspect_provider_runtime_output_zip(output_zip)
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_member"] == "controlled_native_policy_result.v1.json"
+    assert result["runtime_result_status"] == "completed"
+
+
 def test_provider_output_recognizes_native_policy_diagnostic_result(
     tmp_path: Path,
 ) -> None:

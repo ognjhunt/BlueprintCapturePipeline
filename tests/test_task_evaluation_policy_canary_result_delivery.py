@@ -22,6 +22,9 @@ from blueprint_pipeline.task_evaluation_result_delivery import (
 from blueprint_pipeline.task_evaluation_policy_canary_result_projection import (
     build_policy_canary_result_projection,
 )
+from blueprint_pipeline.task_evaluation_result_archive_members import (
+    REFERENCES_RELATIVE_PATH as REFERENCES,
+)
 from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
@@ -588,3 +591,142 @@ def test_canary_delivery_refuses_estimated_cost_as_official_billing(
                 ),
             },
         )
+
+
+# -- Streamed (archive-member) delivery ---------------------------------------
+# The same evidence delivered from a download-mode tree and from a streamed
+# attempt whose non-JSON members stay in the promoted archive.
+
+
+
+def _closures(run_root: Path) -> dict[str, dict[str, object]]:
+    run_root.mkdir(parents=True, exist_ok=True)
+    return {
+        "billing": _closure(run_root / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(run_root / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(run_root / "provider-zero.json", flag="provider_zero_verified"),
+    }
+
+
+def _streamed_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, video_bytes: bytes | None = None):
+    from tests.provider_output_fixtures import serve_member_views, stream_evidence_tree
+
+    download_root, stream_root = tmp_path / "download", tmp_path / "streamed"
+    source = download_root / "allocator/attempts/attempt_001/immutable_execution"
+    source.mkdir(parents=True)
+    result = _result(source)
+    if video_bytes is not None:
+        video = source / "episode-one.external.mp4"
+        video.write_bytes(video_bytes)
+        binding = {"sha256": _sha(video), "size_bytes": len(video_bytes)}
+        next(row for row in result["artifact_inventory"] if row["relative_path"] == video.name).update(binding)
+        result["episodes"][0]["episode"]["visual_evidence"]["videos"]["external"] = binding
+        _reseal(result)
+    streamed = stream_evidence_tree(source, stream_root / "allocator/attempts/attempt_001")
+    serve_member_views(monkeypatch, streamed.store)
+    return result, (download_root, source), (stream_root, streamed)
+
+
+def _deliver(run_root: Path, evidence: Path, result: dict) -> dict:
+    return materialize_policy_canary_result_delivery(
+        run_root=run_root, run_id="scene-839873-canary-1", result_status="completed_unqualified",
+        session_result=result, evidence_root=evidence, closure_records=_closures(run_root))
+
+
+def _registry(run_root: Path) -> dict:
+    return json.loads((run_root / "artifacts/result_delivery/artifact_registry.json").read_text())
+
+
+def _reseal(result: dict) -> dict:
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
+def test_remote_members_register_by_index_digest_with_unchanged_artifact_ids(tmp_path, monkeypatch):
+    result, (download_root, source), (stream_root, streamed) = _streamed_case(tmp_path, monkeypatch)
+    remote = streamed.remote()
+    assert remote == ["episode-one.external.mp4", "policy_canary_telemetry.jsonl"]
+
+    downloaded = _deliver(download_root, source, result)
+    delivered = _deliver(stream_root, streamed.evidence, result)
+
+    # The projection, and every artifact id (role, path, digest), are the download mode's.
+    assert delivered == downloaded
+    expected, observed = _registry(download_root), _registry(stream_root)
+    assert [{key: value for key, value in row.items() if key != "evidence_root"} for row in observed["artifacts"]] == [
+        {key: value for key, value in row.items() if key != "evidence_root"} for row in expected["artifacts"]]
+    for row in observed["artifacts"]:
+        if row["relative_path"] in remote:
+            member = streamed.rows[row["relative_path"]]
+            assert (row["sha256"], row["size_bytes"]) == (member["sha256"], member["size"])
+            assert row["evidence_root"] == str(streamed.evidence.resolve())
+    # Digests came from the index: no member byte was requested, none was written.
+    assert streamed.data_ranges() == []
+    assert streamed.remote() == remote
+
+
+def test_archive_member_references_bind_the_registry(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest as digest_of
+
+    result, (download_root, source), (stream_root, streamed) = _streamed_case(tmp_path, monkeypatch)
+    _deliver(download_root, source, result)
+    _deliver(stream_root, streamed.evidence, result)
+
+    assert not (download_root / REFERENCES).exists()
+    references = json.loads((stream_root / REFERENCES).read_text())
+    registry = _registry(stream_root)
+    assert references["schema_version"] == "task_evaluation_result_archive_member_references.v1"
+    assert references["references_digest"] == digest_of(references, digest_field="references_digest")
+    assert (references["run_id"], references["registry_digest"]) == (registry["run_id"], registry["registry_digest"])
+    assert references["member_index_digest"] == streamed.index["index_digest"]
+    archive = streamed.index["archive"]
+    assert references["archive"] == {"sha256": archive["sha256"], "size_bytes": archive["size"],
+                                     "durable_reference": archive["durable_reference"]}
+    attempt = streamed.attempt.relative_to(stream_root).as_posix()
+    assert references["member_index"] == {"path": f"{attempt}/provider_output_member_index.v1.json",
+                                          "sha256": _sha(streamed.index_path),
+                                          "size_bytes": streamed.index_path.stat().st_size}
+    descriptor = streamed.attempt / "immutable_execution.member_view.v1.json"
+    assert references["member_view"] == {"path": f"{attempt}/immutable_execution.member_view.v1.json",
+                                         "sha256": _sha(descriptor), "view_digest": streamed.descriptor["view_digest"]}
+    # One entry per registered artifact that is not on disk, keyed run-relative.
+    evidence = streamed.evidence.relative_to(stream_root).as_posix()
+    assert sorted(references["members"]) == [f"{evidence}/{path}" for path in streamed.remote()]
+    for path, entry in references["members"].items():
+        row = streamed.rows[entry["archive_path"]]
+        assert path == f"{evidence}/{entry['archive_path']}"
+        assert entry == {"archive_path": row["path"], "sha256": row["sha256"], "size_bytes": row["size"],
+                         "crc32": row["crc32"], "method": row["method"], "data_offset": row["data_offset"],
+                         "compressed_size": row["compressed_size"]}
+        assert any((record["sha256"], record["size_bytes"]) == (entry["sha256"], entry["size_bytes"])
+                   for record in registry["artifacts"])
+    assert "https:" not in json.dumps(references)
+    # A replay seals the same bytes; nothing is rewritten.
+    before = (stream_root / REFERENCES).read_bytes()
+    _deliver(stream_root, streamed.evidence, result)
+    assert (stream_root / REFERENCES).read_bytes() == before
+
+
+def test_member_absent_from_disk_and_index_keeps_the_download_mode_code(tmp_path, monkeypatch):
+    result, (download_root, source), (stream_root, streamed) = _streamed_case(tmp_path, monkeypatch)
+    result["artifact_inventory"].append({"role": "review_video", "relative_path": "episode-one.wrist.mp4",
+                                         "media_type": "video/mp4", "size_bytes": 12,
+                                         "sha256": "sha256:" + "9" * 64})
+    _reseal(result)
+    for run_root, evidence in ((download_root, source), (stream_root, streamed.evidence)):
+        with pytest.raises(TaskEvaluationResultDeliveryError, match="^delivery_artifact_missing:review_video$"):
+            _deliver(run_root, evidence, result)
+    assert not (stream_root / REFERENCES).exists()
+
+
+def test_view_digest_mismatch_is_the_download_mode_digest_refusal(tmp_path, monkeypatch):
+    result, (download_root, source), (stream_root, streamed) = _streamed_case(tmp_path, monkeypatch)
+    for field, value in (("sha256", "sha256:" + "0" * 64), ("size_bytes", 13)):
+        changed = deepcopy(result)
+        row = next(row for row in changed["artifact_inventory"] if row["relative_path"] == "episode-one.external.mp4")
+        row[field] = value
+        _reseal(changed)
+        for run_root, evidence in ((download_root, source), (stream_root, streamed.evidence)):
+            with pytest.raises(TaskEvaluationResultDeliveryError, match="^policy_canary_artifact_inventory_invalid$"):
+                _deliver(run_root, evidence, changed)
+    assert streamed.data_ranges() == []

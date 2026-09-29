@@ -475,3 +475,17 @@ def test_provider_billing_reconciler_timer_is_deployed_for_accounting_closure() 
     deployer = _text("scripts/deploy_control_plane_commit.py")
     assert '"blueprint-provider-billing-reconciler.service",' in deployer
     assert '"blueprint-provider-billing-reconciler.timer",' in deployer
+
+
+def test_agent_run_dispatcher_uses_active_release_and_preserves_only_bound_watchdogs() -> None:
+    unit = _text("deploy/systemd/blueprint-agent-run-dispatcher.service")
+    assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane" in unit
+    assert "BLUEPRINT_PIPELINE_REPO" not in unit
+    assert 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}"' in unit
+    assert 'GIT_CONFIG_VALUE_0="$${PWD}"' in unit
+    assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
+    assert "KillMode=process" in unit
+    assert "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process" in unit
+    assert "ExecStopPost=" in unit and "blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup" in unit
+    assert "--state-root" in unit and "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT" in unit
+    assert "BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519" in unit

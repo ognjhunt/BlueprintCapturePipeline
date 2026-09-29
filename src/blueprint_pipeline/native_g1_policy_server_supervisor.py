@@ -198,11 +198,15 @@ class NativeG1PolicyServerLease:
                 if self.process.poll() is None:
                     self.process.kill()
                 self.process.wait(timeout=10)
-        return {
+        result = {
             "status": "child_exited" if self.process.poll() is not None else "teardown_unverified",
             "pid": self.process.pid,
             "exit_code": self.process.poll(),
         }
+        lifetime = getattr(self, "_registered_child_lifetime", None)
+        if lifetime is not None:
+            result["registered_child_lifetime"] = lifetime.finish()
+        return result
 
 
 def start_g1_policy_server(
@@ -216,8 +220,22 @@ def start_g1_policy_server(
     owner_reader: Callable[[int], set[int]] = listener_owner_pids,
     popen_factory: Callable[..., subprocess.Popen[Any]] = subprocess.Popen,
     client_factory: Callable[..., NativeG1HumanoidArenaPolicyClient] = NativeG1HumanoidArenaPolicyClient,
+    _registered_use: Any = None,
 ) -> NativeG1PolicyServerLease:
     """Launch exact staged bytes, wait for its own listener, and reset once."""
+
+    if _registered_use is None:
+        from .native_g1_registered_path_boundary import refuse_unowned_registered_path
+        refuse_unowned_registered_path(log_path)
+    else:
+        # Only the host's authenticated public bootstrap can supply this use.
+        # Provider callers retain None and never import private host adapters.
+        from .control_plane_lane_experiment_consumer import LANE_ROOTS, require_registered_use
+        require_registered_use(log_path, _registered_use, LANE_ROOTS)
+    if _registered_use is not None:
+        from .native_g1_registered_containment import launch_policy_child
+        if popen_factory is not subprocess.Popen:
+            raise ValueError("experiment_child_participation_unproven")
 
     if (
         isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
@@ -261,11 +279,15 @@ def start_g1_policy_server(
     ]
     log_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
-    with log_path.open("x", encoding="utf-8") as log_stream:
-        process = popen_factory(
-            argv, stdin=subprocess.DEVNULL, stdout=log_stream,
-            stderr=subprocess.STDOUT, start_new_session=True,
-        )
+    child_lifetime = None
+    if _registered_use is not None:
+        process, child_lifetime = launch_policy_child(_registered_use, argv=argv, log_path=log_path)
+    else:
+        with log_path.open("x", encoding="utf-8") as log_stream:
+            process = popen_factory(
+                argv, stdin=subprocess.DEVNULL, stdout=log_stream,
+                stderr=subprocess.STDOUT, start_new_session=True,
+            )
     try:
         client = client_factory(
             base_url=f"http://{LOOPBACK_HOST}:{port}",
@@ -305,14 +327,17 @@ def start_g1_policy_server(
                             "inference_timeout_policy": timeout_policy,
                         }
                         receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
-                        return NativeG1PolicyServerLease(
-                            process=process, client=client, receipt=receipt, log_path=log_path
-                        )
+                        lease = NativeG1PolicyServerLease(
+                            process=process, client=client, receipt=receipt, log_path=log_path)
+                        lease._registered_child_lifetime = child_lifetime
+                        return lease
             time.sleep(0.25)
         raise TimeoutError("g1_server_startup_timeout")
     except BaseException:
-        NativeG1PolicyServerLease(
+        lease = NativeG1PolicyServerLease(
             process=process, client=None,
             receipt={}, log_path=log_path,
-        ).close()
+        )
+        lease._registered_child_lifetime = child_lifetime
+        lease.close()
         raise

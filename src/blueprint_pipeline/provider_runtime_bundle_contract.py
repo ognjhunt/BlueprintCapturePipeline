@@ -292,7 +292,25 @@ def provider_runtime_contract_blockers(
                 "provider_zero_required_after_return",
             )
         )
-        runner_valid = construction_runner_valid or runtime_preflight_runner_valid
+        controlled_policy_runner_valid = (
+            "controlled_native_policy_result.v1.json" in entrypoint_text
+            and all(
+                token in runner_text
+                for token in (
+                    "ControlledPolicyExecutor",
+                    "build_controlled_native_environment",
+                    "read_controlled_native_outcome",
+                    "candidate_policy_queried",
+                    "physical_success_proven",
+                    "qualification_eligible",
+                )
+            )
+        )
+        runner_valid = (
+            construction_runner_valid
+            or runtime_preflight_runner_valid
+            or controlled_policy_runner_valid
+        )
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
     elif provider_bundle_kind == "native_g1_development_campaign":
         entrypoint_valid = all(

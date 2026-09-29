@@ -1,4 +1,22 @@
-"""Verify native per-cell controls and expose their retained evidence privately."""
+"""Verify native per-cell controls and expose their retained evidence privately.
+
+Streamed attempts (review C1). When a member view covers the evidence root,
+a control file that is not on disk is a member of the promoted archive: its
+cell archive (``result_delivery/controls/cell-NN.zip``) is built by streaming
+it through the view into the same deterministic ZIP writer, so the archive's
+bytes are download mode's, and each retained frame of a control's lossless
+manifest is verified against the index's digest and size instead of being
+rehashed from disk. A frame on disk keeps the full check. The cell archives
+stay on the host (``control_cell_archive`` is not an offloadable role), so a
+streamed run keeps those bytes locally too.
+
+Parity difference (review M4). Download mode also decodes every retained
+control frame and checks its PNG mode, shape and raw RGB digest
+(``raw_rgb_sha256``). A frame kept in the archive is checked by its index
+digest and size only: an altered PNG still fails, because the index digest is
+Blueprint's own hash of the exact bytes, but that those bytes decode to the
+recorded RGB image is not re-proven at delivery.
+"""
 from __future__ import annotations
 
 import csv
@@ -103,8 +121,70 @@ def control_summary(controls: list[Mapping[str, Any]], episodes: list[Mapping[st
             "verified_cell_count": verified}
 
 
+def verify_retained_frames(manifest: Mapping[str, Any], *, output_dir: Path, view) -> list[dict[str, Any]]:
+    """Check every retained frame of a validated manifest: on disk by bytes, else by index.
+
+    A frame on disk is rehashed and decoded exactly as ``verify_files=True``
+    does. A frame that is not must be an archive member whose index digest and
+    size are the manifest's; it is not decoded, so its mode, shape and
+    ``raw_rgb_sha256`` are not re-checked (a documented parity difference).
+    Every frame's calibration is validated. Raises ``ValueError`` with a
+    ``multicamera_frame_manifest_*`` code.
+    """
+    from .episode_visual_evidence import _validate_camera_calibration, _verified_retained_rgb_frame
+
+    root = output_dir.resolve()
+    observations = [*(manifest.get("policy_input_observations") or []),
+                    *(manifest.get("review_observations") or [])]
+    if isinstance(manifest.get("terminal_observation"), Mapping):
+        observations.append(manifest["terminal_observation"])
+    frames = []
+    for observation in observations:
+        for frame in (observation.get("views") or {}).values():
+            frame = dict(frame)
+            path = (root / str(frame.get("relative_path") or "")).resolve()
+            if root not in path.parents:
+                raise ValueError("multicamera_frame_manifest_path_outside_output")
+            try:
+                if path.is_file() or view is None:
+                    _verified_retained_rgb_frame(frame, output_dir=root)
+                else:
+                    member = view.member_at(path)
+                    if member is None:
+                        raise ValueError("retained_policy_frame_missing")
+                    if member["sha256"] != frame.get("png_sha256"):
+                        raise ValueError("retained_policy_frame_png_digest_mismatch")
+                    if member["size"] != frame.get("size_bytes"):
+                        raise ValueError("retained_policy_frame_size_mismatch")
+                _validate_camera_calibration(frame.get("calibration") or {}, width=frame["width"],
+                                             height=frame["height"])
+            except (ValueError, OSError, KeyError) as exc:
+                raise ValueError("multicamera_frame_manifest_" + str(exc).removeprefix("retained_policy_frame_")) \
+                    from None
+            frames.append(frame)
+    return frames
+
+
+def _member_source(view, path: Path, error_factory):
+    """A ZIP source that streams one archive member through the view, checked."""
+    from .provider_output_member_view import ProviderOutputMemberViewError
+    from .task_evaluation_result_archive_members import CONTENT_MISMATCH_CODES
+
+    relative = view.relative(path)
+
+    def stream(write):
+        try:
+            view.stream_member(relative, write)
+        except ProviderOutputMemberViewError as exc:
+            if str(exc) in CONTENT_MISMATCH_CODES:
+                raise error_factory("policy_canary_artifact_inventory_invalid") from None
+            raise error_factory(f"policy_canary_control_archive_member_unavailable:{exc}") from None
+    return stream
+
+
 def materialize_control_delivery(*, result, evidence_root: Path, delivery_root: Path,
-                                 public_artifacts, add_artifact, write_immutable, write_zip, error_factory) -> dict[str, Any]:
+                                 public_artifacts, add_artifact, write_immutable, write_zip, error_factory,
+                                 member_view=None) -> dict[str, Any]:
     rows = result.get("controls")
     if rows is None:
         return {}
@@ -178,7 +258,10 @@ def materialize_control_delivery(*, result, evidence_root: Path, delivery_root: 
         receipt_artifact = compact(native_receipts[0][1])
         if prefix not in archives:
             archive_path = delivery_root / "controls" / f"cell-{len(archives):02d}.zip"
-            write_zip(archive_path, [(str(path.relative_to(parent_path.parent)), path) for path, _ in bound_files]
+            write_zip(archive_path, [(str(path.relative_to(parent_path.parent)),
+                                      path if member_view is None or path.is_file()
+                                      else _member_source(member_view, path, error_factory))
+                                     for path, _ in bound_files]
                       + [(parent_path.name, parent_path)])
             archives[prefix] = add_artifact(role="control_cell_archive", path=archive_path, artifact_root=delivery_root)
         videos, gaps = {}, []
@@ -207,7 +290,13 @@ def materialize_control_delivery(*, result, evidence_root: Path, delivery_root: 
             if len(manifest_matches) != 1:
                 raise ValueError("manifest_binding")
             manifest = json.loads(manifest_path.read_text())
-            validate_multicamera_frame_manifest(manifest, output_dir=native_receipts[0][0].parent, verify_files=True)
+            if member_view is None:
+                validate_multicamera_frame_manifest(manifest, output_dir=native_receipts[0][0].parent,
+                                                    verify_files=True)
+            else:
+                validate_multicamera_frame_manifest(manifest, output_dir=native_receipts[0][0].parent,
+                                                    verify_files=False)
+                verify_retained_frames(manifest, output_dir=native_receipts[0][0].parent, view=member_view)
             if (manifest.get("frame_manifest_digest") != receipt["visual_evidence"].get("frame_manifest_digest")
                     or set(manifest.get("required_camera_ids", [])) != {"external", "wrist", "overview"}
                     or manifest.get("review_only_camera_ids") != ["overview"]):

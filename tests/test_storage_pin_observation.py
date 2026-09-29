@@ -81,6 +81,21 @@ def test_existing_empty_root_has_a_complete_pin_only_observation(root):
     assert result.general_reference_inventory_complete is False
 
 
+def test_borrowed_root_lock_is_retained_through_observation(root):
+    held = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    probe = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = observe(root, _held_root_fd=held)
+        assert result.complete and result.root_identity == (root.stat().st_dev, root.stat().st_ino)
+        os.fstat(held)  # Observation did not close the caller's lock descriptor.
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    finally:
+        os.close(probe)
+        os.close(held)
+
+
 def test_valid_row_is_frozen_and_keeps_raw_identity(root):
     path = write(root, pin(paths=["/payload/b", "/payload/a", "/payload/a"]))
     raw = path.read_bytes()

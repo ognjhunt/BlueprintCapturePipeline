@@ -74,13 +74,51 @@ def terminate_owned_instance(intent):
         resource_name_exact=intent["resource_name"])
 
 
+# A short wait for the per-staging promotion lock: when the lane or a resume
+# holds it, promotion is skipped, the gated cleanup still runs (and defers a
+# present output), and the next tick tries again.
+CLEANUP_PROMOTION_LOCK_TIMEOUT_SECONDS = 10.0
+
+
 def cleanup_owned_objects(intent):
     staging = verified_record(intent["ingestion_binding"]["staging_manifest"])
     allowed = {"access_key_id_file", "secret_access_key_file", "endpoint_url_file", "bucket_file", "region_file"}
     config = intent["cleanup_configuration"]
     if not set(config) <= allowed:
         raise ContinuationError("continuation_cleanup_configuration_invalid")
-    return cleanup_staged_wam_provider_objects(staging.parent, **config)
+
+    def cleanup():
+        return cleanup_staged_wam_provider_objects(staging.parent, **config)
+
+    if read_json(staging).get("output_promotion_required") is not True:
+        return cleanup()
+    return _promote_then_cleanup(intent, staging, config, cleanup)
+
+
+def _promote_then_cleanup(intent, staging, config, cleanup):
+    """Promote the staged output to B2 before the gated cleanup may delete it.
+
+    The observation is the (size, ETag) the continuation's own collection
+    pinned; the presign uses the same staging credentials as the cleanup.
+    Promotion never raises: a failed or skipped promotion leaves the output
+    staged, the gate defers it, and ``_cleanup_valid`` keeps the tick pending.
+    """
+    from functools import partial
+
+    from .provider_output_promotion import promote_then_cleanup
+    from .wam_provider_object_store import presign_staged_object_get
+
+    collected = metadata_root(intent) / "collected.json"
+    identity = (read_json(collected).get("remote_identity") or {}) if collected.is_file() else {}
+    observation = ({"size_bytes": identity["size_bytes"], "etag": identity["etag"]}
+                   if type(identity.get("size_bytes")) is int and identity.get("etag") else None)
+    attempt = staging.parent.parent if staging.parent.name == "object_store_staging" else staging.parent
+    _, cleaned = promote_then_cleanup(
+        cleanup=cleanup, lock_timeout_seconds=CLEANUP_PROMOTION_LOCK_TIMEOUT_SECONDS,
+        staging_dir=staging.parent, attempt_root=attempt, observation=observation, local_archive=None,
+        maximum_archive_bytes=intent["ingestion_binding"]["maximum_archive_bytes"],
+        presign_staged=partial(presign_staged_object_get, **config))
+    return cleaned
 
 
 def retained_official_billing_query_period(continuation_intent, audit_root):

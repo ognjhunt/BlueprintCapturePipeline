@@ -68,6 +68,15 @@ def test_exact_identities_principal_and_expiry_refuse(field, value, code):
     refuse(code, **{field: value})
 
 
+def test_policy_lookup_refuses_unhashable_untrusted_principal_with_typed_code():
+    from blueprint_pipeline import control_plane_lane_owner_consents as c
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+
+    with pytest.raises(c.OwnerCensusConsentError, match='owner_consent_principal_unmapped'):
+        c._policy(_json(policy()), {'untrusted': 'operator'},
+                  ReferenceCollectionBudget(monotonic=lambda: 0))
+
+
 @pytest.mark.parametrize(('change', 'code'), [
     ({'enabled': False}, 'owner_consent_disabled'),
     ({'unexpected': 'private'}, 'owner_consent_policy_invalid'),

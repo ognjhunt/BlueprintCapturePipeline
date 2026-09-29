@@ -386,8 +386,17 @@ def test_dispatcher_never_forwards_a_directory_alias_changed_after_reservation(t
         allocator_runner=lambda argv: calls.append(argv) or 0,
     )
     assert receipt["status"] == "blocked"
-    assert "immutable_input_staging_failed:immutable_input_allocator_directory_changed" in receipt["blockers"]
+    assert "experiment_external_publisher_unsupported" in receipt["blockers"]
     assert calls == []
+    # The public entrypoint now refuses the alias before reservation. Preserve
+    # the original deeper staging race proof on the actual native helper too.
+    assert alias.resolve() == first
+    with pytest.raises(TaskEvaluationLaunchError, match="immutable_input_allocator_directory_changed"):
+        dispatcher_module._stage_profile_immutable_inputs(
+            profile=profile, run_root=tmp_path / "direct-staging",
+            allocator_argv=["--native-task-arena-packet", str(alias / "inputs")],
+        )
+    assert alias.resolve() == second
 
 
 def test_dispatcher_disk_refusal_blocks_before_any_provider_call(tmp_path, monkeypatch):
@@ -3562,3 +3571,40 @@ def test_immutable_input_digest_is_reused_by_stat_identity_and_fails_closed_on_c
     assert immutable_input_digest(bundle) != first
     assert dispatcher.verify_profile_immutable_inputs(profile) == [
         "launch_profile_immutable_input_digest_mismatch:bundle"]
+
+
+def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    clock = [0.0]
+    budgets = []
+    def create(**kw):
+        budget = ReferenceCollectionBudget(monotonic=lambda: clock[0], **kw)
+        budgets.append(budget)
+        return budget
+    monkeypatch.setattr(gate, 'ReferenceCollectionBudget', create)
+    profile_dir, request_path = _write_profile_and_request(tmp_path, _profile(tmp_path))
+    def runner(_argv):
+        assert len(budgets) == 1 and budgets[0].closed
+        clock[0] = 60.0
+        print('retained fake allocator terminal output')
+        return 0
+    receipt = dispatch_launch_request(request_path=request_path, profile_dir=profile_dir, state_root=tmp_path/'state', allocator_runner=runner)
+    assert receipt['status'] == 'dry_run_completed'
+    run = tmp_path/'state'/'launch-interiorgs-sage-001'
+    assert json.loads((run/'launch_receipt.json').read_text()) == receipt
+    assert 'retained fake allocator terminal output' in (run/'allocator.stdout.log').read_text()
+    assert len(budgets) == 1 and budgets[0].closed
+    assert budgets[0].deadline == 5.0 and budgets[0].failure is None
+
+
+def test_nested_dispatch_cannot_end_parent_publisher_allowance(tmp_path):
+    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+    profile_dir, request_path = _write_profile_and_request(tmp_path, _profile(tmp_path))
+    calls = []
+    @gate._publisher_observation
+    def finite_metadata_publisher():
+        return dispatch_launch_request(request_path=request_path, profile_dir=profile_dir, state_root=tmp_path/'state', allocator_runner=lambda argv: calls.append(argv) or 0)
+    with pytest.raises(ValueError, match='experiment_publisher_input_limit'):
+        finite_metadata_publisher()
+    assert calls == []

@@ -9824,3 +9824,177 @@ def test_uploaded_result_survives_log_failure_before_teardown(tmp_path, monkeypa
     receipt = _read_json(tmp_path / "vast_provider_output_preclassification_receipt.json")
     assert receipt["transfer"]["status"] == "completed"
     assert receipt["startup_or_scientific_success_claimed"] is False
+
+
+_OUTPUT_GET_URL = "https://storage.example.invalid/private/run.zip?X-Amz-Signature=SECRET_DO_NOT_RECORD"
+
+
+def _runtime_output_archive(*, mp4_members: int = 2) -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("isaac_runtime_result.json", json.dumps(
+            {"status": "blocked_controller_runtime_unavailable", "blockers": ["controller_missing"]}))
+        for index in range(mp4_members):
+            archive.writestr(f"media/camera_{index}.mp4", b"\0" * 4096)
+    return buffer.getvalue()
+
+
+def _run_with_staged_output(tmp_path: Path, monkeypatch, events: list[str], **adapter_options):
+    """Drive the real adapter to its output collection with a staged GET URL."""
+
+    _configure_live_gates(tmp_path, monkeypatch)
+    ngc_key = tmp_path / "ngc_api_key"
+    _write_secret(ngc_key, "secret-ngc-key")
+    monkeypatch.setenv("NGC_API_KEY_FILE", str(ngc_key))
+    bundle = tmp_path / "isaac_provider_runtime_bundle.zip"
+    _write_valid_provider_bundle(bundle)
+
+    def api(*, method, path, **kwargs):
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {"offers": [{"id": 303, "ask_contract_id": 303, "gpu_name": "RTX 4090",
+                                     "dph_total": 0.31, "driver_version": "580.95.05", "num_gpus": 1,
+                                     "rentable": True, "verified": True}]}
+        if method == "PUT" and path == "/asks/303/":
+            return 200, {"success": True, "new_contract": 888}
+        if method == "GET" and path == "/instances/888/":
+            return 200, _created_instance_detail("exited", dph_total=0.31)
+        if method == "PUT" and path == "/instances/request_logs/888/":
+            return 200, {"success": True, "result_url": "https://logs.example/provider"}
+        if method == "DELETE" and path == "/instances/888/":
+            events.append("teardown")
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    tails = iter([
+        "BLUEPRINT_VAST_ONSTART_STARTED\nBLUEPRINT_VAST_HEARTBEAT_OK\nRTX 4090, 580.95.05, 24564 MiB\n"
+        "BLUEPRINT_VAST_GPU_SANITY_OK\nBLUEPRINT_VAST_CUDA_RUNTIME_OK\nBLUEPRINT_VAST_ISAAC_SMOKE_OK\n"
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED\nBLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED\n"
+        "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\nBLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:0\n",
+        "BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:4096\nBLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK\n"
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED\nBLUEPRINT_VAST_ONSTART_DONE\n",
+    ])
+    monkeypatch.setattr(vpa, "_api_json", api)
+    monkeypatch.setattr(vpa, "_fetch_text", lambda url, timeout_seconds=30: next(tails))
+    monkeypatch.setattr(vpa, "_provider_output_probe", lambda url: None)
+    monkeypatch.setattr(vpa.time, "sleep", lambda _: None)
+    output = tmp_path / "vast_provider_runtime_output.zip"
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path, mode="live-startup-probe", paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True, allow_instance_launch=True, provider_bundle=bundle,
+        provider_bundle_url="https://example.invalid/bundle.zip?token=secret-token",
+        provider_output_put_url="https://example.invalid/output.zip?token=secret-token",
+        provider_output_get_url=_OUTPUT_GET_URL, provider_runtime_output_zip=output,
+        enable_isaac_smoke=True, enable_blueprint_bundle=True, poll_interval_seconds=0,
+        startup_timeout_seconds=20, **adapter_options)
+    return result, output
+
+
+def test_default_collector_still_downloads_before_teardown(tmp_path: Path, monkeypatch) -> None:
+    events: list[str] = []
+    calls: list[dict] = []
+
+    def download(**kwargs):
+        events.append("download")
+        calls.append(dict(kwargs))
+        kwargs["output_path"].write_bytes(_runtime_output_archive())
+        return {"status": "completed", "download_attempted": True, "http_status_code": 200,
+                "downloaded_size_bytes": kwargs["output_path"].stat().st_size}
+
+    monkeypatch.setattr(vpa, "_download_provider_output_with_capacity_guard", download)
+    _, output = _run_with_staged_output(tmp_path, monkeypatch, events)
+
+    assert events == ["download", "teardown"]
+    assert calls == [{"url": _OUTPUT_GET_URL, "output_path": output, "minimum_free_bytes": 0}]
+    provider = _read_json(tmp_path / "vast_provider_command_result.json")
+    assert "provider_output_remote_observation" not in provider
+    assert provider["provider_runtime_output_zip_received"] is True
+    # Without a collector the path inspection still copies MP4s for ffprobe.
+    assert len(list((tmp_path / "vast_provider_runtime_output_videos").glob("*.mp4"))) == 2
+    manifest = _read_json(tmp_path / "vast_provider_output_download_manifest.json")
+    assert manifest["output_zip_present_after_download"] is True
+
+
+def test_remote_transfer_replaces_path_inspection_and_records_the_observation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from blueprint_pipeline.provider_output_remote_collection import RemoteProviderOutputCollector
+    from tests.provider_output_fixtures import RangeStore
+
+    events: list[str] = []
+    store = RangeStore(_runtime_output_archive(), etag='"spaces-etag"', url=_OUTPUT_GET_URL)
+
+    def opener(request, timeout, policy):
+        events.append("collect")
+        return store.opener(request, timeout, policy)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a completed remote transfer must not be downloaded or re-inspected")
+
+    monkeypatch.setattr(vpa, "_download_provider_output_with_capacity_guard", refuse)
+    monkeypatch.setattr(vpa, "_inspect_provider_runtime_output_zip", refuse)
+    monkeypatch.setattr(vpa, "_inspect_structured_policy_canary_output", refuse)
+    collector = RemoteProviderOutputCollector(maximum_archive_bytes=10**6, expected_video_count=6,
+                                              opener=opener)
+    _, output = _run_with_staged_output(tmp_path, monkeypatch, events,
+                                        provider_output_collector=collector)
+
+    assert events[-1] == "teardown" and set(events[:-1]) == {"collect"}
+    assert not output.exists() and not (tmp_path / "vast_provider_runtime_output_videos").exists()
+    provider = _read_json(tmp_path / "vast_provider_command_result.json")
+    observation = {"size_bytes": store.object.size, "etag": '"spaces-etag"'}
+    assert provider["provider_output_remote_observation"] == observation == collector.observation
+    inspection = provider["provider_runtime_output_zip_inspection"]
+    assert inspection["zip_path"] == str(output) and inspection["zip_present"] is True
+    assert inspection["mp4_count"] == 2 and inspection["mp4_validation"]["files"] == []
+    assert provider["provider_runtime_output_zip_received"] is True
+    assert provider["runtime_result_status"] == "blocked_controller_runtime_unavailable"
+    assert provider["structured_policy_canary"]["blockers"] == [
+        "structured_policy_canary_member_missing"]
+    manifest = _read_json(tmp_path / "vast_provider_output_download_manifest.json")
+    # The download-manifest zeros a remote observation leaves.
+    assert (manifest["status"], manifest["download_attempted"]) == ("completed", False)
+    assert manifest["output_zip_present_after_download"] is False
+    assert manifest["output_zip_size_bytes"] == 0
+    assert manifest["disk_capacity"]["status"] == "not_required"
+    persisted = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.glob("*.json"))
+    assert "SECRET_DO_NOT_RECORD" not in persisted
+
+
+def test_absent_remote_output_keeps_the_ssh_recovery_path_without_mp4_copies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from blueprint_pipeline.provider_output_remote_collection import RemoteProviderOutputCollector
+    from tests.provider_output_fixtures import RangeStore
+
+    events: list[str] = []
+    store = RangeStore(b"never uploaded", url=_OUTPUT_GET_URL)
+    store.absent = True
+    recoveries: list[dict] = []
+
+    def recover(**kwargs):
+        events.append("ssh_recovery")
+        recoveries.append(kwargs)
+        kwargs["output_path"].write_bytes(_runtime_output_archive())
+        return {"status": "completed", "recovered_size_bytes": kwargs["output_path"].stat().st_size}
+
+    monkeypatch.setattr(vpa, "recover_provider_output_before_teardown", recover)
+    collector = RemoteProviderOutputCollector(maximum_archive_bytes=10**6, expected_video_count=6,
+                                              opener=store.opener)
+    _, output = _run_with_staged_output(tmp_path, monkeypatch, events,
+                                        provider_output_collector=collector)
+
+    assert events == ["ssh_recovery", "teardown"] and output.is_file()
+    assert recoveries[0]["expected_size_bytes"] == 4096 and collector.observation is None
+    manifest = _read_json(tmp_path / "vast_provider_output_download_manifest.json")
+    assert manifest["blockers"] == [] and manifest["ssh_recovery"]["status"] == "completed"
+    assert manifest["output_zip_present_after_download"] is True
+    provider = _read_json(tmp_path / "vast_provider_command_result.json")
+    assert "provider_output_remote_observation" not in provider
+    inspection = provider["provider_runtime_output_zip_inspection"]
+    # With a collector set, even the SSH zip's MP4s are not copied.
+    assert not (tmp_path / "vast_provider_runtime_output_videos").exists()
+    assert inspection["mp4_count"] == 2 and inspection["mp4_validation"]["files"] == []
+    assert "mp4_ffprobe_validation_not_requested" in inspection["mp4_validation"]["blockers"]
+    assert provider["runtime_result_status"] == "blocked_controller_runtime_unavailable"
