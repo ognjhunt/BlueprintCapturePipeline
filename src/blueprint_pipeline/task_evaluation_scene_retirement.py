@@ -100,13 +100,36 @@ def _path_relation(a,b):
 def _generation(policy, member, *, expected_states, retired_token=None):
     key=hashlib.sha256(member['canonical_path'].encode()).hexdigest()+'.json'
     value,ref=load_document(Path(policy['generation_store'])/key,maximum=65536)
-    _require(value.get('schema_version')=='scene_member_generation.v1'
+    capture='capture_owner_user_id' in member
+    _require(value.get('schema_version')==(
+                 'scene_capture_generation.v1' if capture else 'scene_member_generation.v1')
              and value.get('state_digest')==canonical_digest(value,digest_field='state_digest')
              and value.get('canonical_path')==member['canonical_path']
              and value.get('generation_id')==member['generation_id']
-             and value.get('owner_intent_id')==member['owner_intent_id']
-             and value.get('owner_raw_ref')==member['owner_raw_ref']
              and value.get('state') in expected_states,'scene_retirement_generation_unavailable')
+    if capture:
+        _require(value.get('capture_owner_user_id')==member['capture_owner_user_id']
+                 and value.get('owner_observation_raw_ref')==member['owner_observation_raw_ref']
+                 and value.get('birth_delivery_raw_ref')==member['birth_delivery_raw_ref'],
+                 'scene_retirement_generation_unavailable')
+        owner=selected_document(member['owner_observation_raw_ref'],maximum=65536)
+        birth=selected_document(member['birth_delivery_raw_ref'],maximum=65536)
+        selected_document(member['source_membership_raw_ref'],maximum=65536)
+        _require(owner.get('request_id')==member['request_id']
+                 and owner.get('capture_owner',{}).get('user_id')==member['capture_owner_user_id']
+                 and owner.get('completion_marker')==value.get('pinned_marker')
+                 and birth.get('schema_version')=='capture_birth_delivery.v1'
+                 and birth.get('source_membership_raw_ref')==member['source_membership_raw_ref']
+                 and birth.get('producer_delivery')==owner.get('producer_delivery')
+                 and birth.get('source_finalize')=={
+                     'bucket':owner.get('bucket'),
+                     'object_name':value['pinned_marker']['object_name'],
+                     'generation':value['pinned_marker']['generation']},
+                 'scene_retirement_generation_unavailable')
+    else:
+        _require(value.get('owner_intent_id')==member['owner_intent_id']
+                 and value.get('owner_raw_ref')==member['owner_raw_ref'],
+                 'scene_retirement_generation_unavailable')
     if retired_token is not None:
         _require(value.get('retirement_token')==retired_token,'scene_retirement_generation_unavailable')
     return value,ref
@@ -479,6 +502,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
     try:
         authority=load_authority(consent_path,action='retire',now=now)
         policy,consent=authority['policy'],authority['consent']
+        _require(not any('capture_owner_user_id' in member for member in consent['members']),
+                 'scene_capture_current_owner_unavailable')
         allowance=_allowance(authority,now,monotonic)
         _bind_transport(transport,allowance)
         _require(str(_canonical(str(plan_path)))==consent['plan_raw_ref']['path'],
@@ -768,6 +793,8 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
     try:
         authority=load_authority(consent_path,action='restore',now=now)
         policy,consent=authority['policy'],authority['consent']
+        _require(not any('capture_owner_user_id' in member for member in consent['members']),
+                 'scene_capture_current_owner_unavailable')
         allowance=_allowance(authority,now,monotonic)
         _bind_transport(transport,allowance)
         reference=consent['retired_journal_raw_ref']
