@@ -46,7 +46,9 @@ from .remote_cpu_job_contract import (
     _is_count, _text, build_descriptor, config_blockers, execution_name_of, record_bytes, validate_descriptor,
     validate_receipt, worker_identity_for,
 )
-from .remote_cpu_job_records import compute_zero_proven, fsync_directory, teardown_record, write_remote_cpu_record
+from .remote_cpu_job_records import (
+    compute_zero_proven, fsync_directory, teardown_record, validate_teardown, write_remote_cpu_record,
+)
 from .spend_authority_consumption_root import (
     SpendAuthorityRootError, authorizations_root, prepare_consumption_root, spend_authority_root,
 )
@@ -581,8 +583,7 @@ def _start(action: _Action, descriptor: Mapping[str, Any], *, grant: PaidResourc
             refusal = f"remote_cpu_dispatch_refused:{exc.code}"
     if names:
         return {**result, **_record_dispatched(action, descriptor, names[0])}
-    torn = _teardown(action, descriptor, outcome=refusal, terminal="abandoned_dispatch",
-                     wait=descriptor["stage"] == PROBE_STAGE)
+    torn = _teardown(action, descriptor, outcome=refusal, wait=descriptor["stage"] == PROBE_STAGE)
     return {**result, **torn, "blockers": sorted({refusal, *torn["blockers"]})}
 
 
@@ -634,38 +635,70 @@ def prove_provider_zero(action: _Action, lease: Mapping[str, Any], descriptor: M
             **{name: lease[name] for name in ("write_urls_expire_at_epoch", "read_urls_expire_at_epoch")}}
 
 
-def _teardown(action: _Action, descriptor: Mapping[str, Any], *, outcome: str, terminal: str, wait: bool,
-              usage: tuple[float, int] | None = None) -> dict[str, Any]:
-    """Prove compute-zero, then provider-zero once the write URLs have expired; seal the teardown, turn the
-    lease terminal (which frees its slot) and settle the attempt's spend."""
+def _terminal_for(lease: Mapping[str, Any], outcome: str) -> str:
+    if lease["state"] == "dispatching" or (lease["state"] == "expired" and not lease["worker_identity"]):
+        return "abandoned_dispatch"
+    if lease["state"] == "expired":
+        return "fallback_host"
+    return "completed" if outcome == "environment_recorded" else "blocked"
+
+
+def _sealed_teardown(path: Path, lease: Mapping[str, Any], descriptor: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The provider-zero teardown this attempt already sealed, which a resumed teardown reuses unchanged."""
+    if not path.exists():
+        return None
+    record = validate_teardown(_read_private_json(path, forbidden_mode=0o022))
+    compute, provider = record["compute_zero"], record["provider_zero"]
+    if not record["provider_zero_proven"] or (
+            record["attempt_id"], record["descriptor_digest"], record["worker_identity"], compute["transport_object"],
+            compute["transport_generation"], provider["write_urls_expire_at_epoch"]) != (
+            descriptor["attempt_id"], descriptor["descriptor_digest"], lease["worker_identity"],
+            lease["transport_object"], lease["transport_generation"], lease["write_urls_expire_at_epoch"]):
+        raise RemoteCpuAllocatorError("remote_cpu_teardown_record_unbound")
+    return record
+
+
+def _teardown(action: _Action, descriptor: Mapping[str, Any], *, outcome: str, wait: bool,
+              uploaded_bytes: int | None = None) -> dict[str, Any]:
+    """Prove compute-zero, then provider-zero once the write URLs have expired; seal the teardown, turn the lease
+    terminal (which frees its slot) and settle.  Every step resumes: a sealed teardown is reused, never re-proven."""
     runtime, root, job_id, attempt_id = action.runtime, action.root, descriptor["job_id"], descriptor["attempt_id"]
-    while True:
+    path, lease = root / "teardowns" / f"{attempt_id}.json", _lease(root, job_id)
+    record = _sealed_teardown(path, lease, descriptor)
+    while record is None:
         lease, now = _lease(root, job_id), float(runtime.clock())
         compute = prove_compute_zero(action, lease, descriptor)
         if not compute_zero_proven(compute, worker_identity=lease["worker_identity"]):
             return {"status": "teardown_pending", "blockers": ["remote_cpu_compute_zero_unproven"]}
-        record = teardown_record(descriptor=descriptor, worker_identity=lease["worker_identity"], outcome=outcome,
-                                 compute=compute, provider=prove_provider_zero(action, lease, descriptor),
-                                 observed_at_epoch=now)
-        if record["provider_zero_proven"] or not wait:
-            break
-        runtime.sleep(max(1.0, lease["write_urls_expire_at_epoch"] - now))
-    if not record["provider_zero_proven"]:
-        leases.transition(root, job_id, attempt_id=attempt_id, to_state=None, now=now, updates={"compute_zero": compute})
-        return {"status": "teardown_pending", "blockers": ["remote_cpu_provider_zero_unproven"]}
-    write_remote_cpu_record(root / "teardowns" / f"{attempt_id}.json", record)
-    leases.transition(root, job_id, attempt_id=attempt_id, to_state=terminal, now=now,
-                      updates={"compute_zero": compute, "teardown": record, "outcome": outcome})
-    if lease["worker_identity"] is None and compute["executions_for_attempt"] == 0:
+        candidate = teardown_record(descriptor=descriptor, worker_identity=lease["worker_identity"], outcome=outcome,
+                                    compute=compute, provider=prove_provider_zero(action, lease, descriptor),
+                                    observed_at_epoch=now)
+        if candidate["provider_zero_proven"]:
+            write_remote_cpu_record(path, candidate)
+            record = candidate
+        elif wait:
+            runtime.sleep(max(1.0, lease["write_urls_expire_at_epoch"] - now))
+        else:
+            leases.transition(root, job_id, attempt_id=attempt_id, to_state=None, now=now,
+                              updates={"compute_zero": compute})
+            return {"status": "teardown_pending", "blockers": ["remote_cpu_provider_zero_unproven"]}
+    if lease["state"] not in leases.TERMINAL_STATES:
+        lease = leases.transition(root, job_id, attempt_id=attempt_id, to_state=_terminal_for(lease, record["outcome"]),
+                                  now=float(runtime.clock()), updates={"compute_zero": record["compute_zero"],
+                                                                       "teardown": record, "outcome": record["outcome"]})
+    rates, limits, seconds = action.config["rate_table"], descriptor["limits"], None
+    if lease["worker_identity"]:
+        seconds = execution_seconds(runtime.cloud_run.get_execution(execution_resource_name(
+            run_target(descriptor)["job"], execution_name_of(lease["worker_identity"]))))
+    if lease["worker_identity"] is None and record["compute_zero"]["executions_for_attempt"] == 0:
         settled, basis = 0.0, "no_execution"
-    elif usage is not None:
-        limits = {**descriptor["limits"], "task_timeout_seconds": usage[0], "max_output_bytes": usage[1]}
-        settled, basis = worst_case_usd(limits=limits, rate_table=action.config["rate_table"]), "execution_runtime"
     else:
-        settled, basis = worst_case_usd(limits=descriptor["limits"], rate_table=action.config["rate_table"]), "worst_case"
-    settle_remote_cpu_attempt(descriptor=descriptor, teardown_digest=record["teardown_digest"], settled_usd=settled,
-                              basis=basis, now=now)
-    return {"status": terminal, "blockers": [], "settled_usd": settled,
+        usage = {**limits, "task_timeout_seconds": min(limits["task_timeout_seconds"], seconds or math.inf),
+                 "max_output_bytes": limits["max_output_bytes"] if uploaded_bytes is None else uploaded_bytes}
+        settled, basis = worst_case_usd(limits=usage, rate_table=rates), "worst_case" if seconds is None else "execution_runtime"
+    settlement = settle_remote_cpu_attempt(descriptor=descriptor, teardown_digest=record["teardown_digest"],
+                                           settled_usd=settled, basis=basis, now=float(runtime.clock()))
+    return {"status": lease["state"], "blockers": [], "settled_usd": settlement["settled_usd"],
             "teardown": {name: record[name] for name in ("teardown_digest", "compute_zero_proven",
                                                           "provider_zero_proven", "observed_at_epoch")}}
 
@@ -717,7 +750,7 @@ def _await_execution(action: _Action, descriptor: Mapping[str, Any]) -> dict[str
         give_up_at=hard + CANCEL_GRACE_SECONDS, on_poll=renew)
 
 
-def _collect_probe(action: _Action, descriptor: Mapping[str, Any], execution: Mapping[str, Any], *, stage: str,
+def _collect_probe(action: _Action, descriptor: Mapping[str, Any], *, stage: str,
                    host: Mapping[str, Any]) -> dict[str, Any]:
     """Fence the probe's receipt, record the worker environment, and move the lease to collecting."""
     store, lease = action.runtime.object_store, _lease(action.root, descriptor["job_id"])
@@ -738,11 +771,8 @@ def _collect_probe(action: _Action, descriptor: Mapping[str, Any], execution: Ma
     if lease["state"] in ("dispatched", "running"):
         leases.transition(action.root, descriptor["job_id"], attempt_id=descriptor["attempt_id"], to_state="collecting",
                           now=float(action.runtime.clock()), updates={"outcome": outcome})
-    timeout = float(descriptor["limits"]["task_timeout_seconds"])
-    seconds = min(timeout, execution_seconds(execution) or timeout)
-    uploaded = receipt["bytes_uploaded"] if receipt else descriptor["limits"]["max_output_bytes"]
-    return {"outcome": outcome, "environment": environment, "usage": (seconds, uploaded),
-            "terminal": "fallback_host" if lease["state"] == "expired" else "completed" if environment else "blocked"}
+    return {"outcome": outcome, "environment": environment,
+            "uploaded_bytes": receipt["bytes_uploaded"] if receipt else None}
 
 
 def _record_environment(action: _Action, descriptor: Mapping[str, Any], *, stage: str, worker: Mapping[str, Any],
@@ -776,9 +806,10 @@ def preflight_remote_cpu_stage(action: _Action, stage: str) -> dict[str, Any]:
               **_dispatch(probe, descriptor)}
     if result["status"] != "dispatched":
         return result
-    collected = _collect_probe(probe, descriptor, _await_execution(probe, descriptor), stage=stage, host=host)
-    torn = _teardown(probe, descriptor, outcome=collected["outcome"], terminal=collected["terminal"], wait=True,
-                     usage=collected["usage"])
+    _await_execution(probe, descriptor)
+    collected = _collect_probe(probe, descriptor, stage=stage, host=host)
+    torn = _teardown(probe, descriptor, outcome=collected["outcome"], wait=True,
+                     uploaded_bytes=collected["uploaded_bytes"])
     blockers = sorted({*torn["blockers"], *([] if collected["environment"] else [f"remote_cpu_{collected['outcome']}"])})
     return {**result, **torn, "outcome": collected["outcome"], "environment": collected["environment"],
             "status": "completed" if torn["status"] == "completed" and not blockers else "blocked", "blockers": blockers}
@@ -824,6 +855,11 @@ def _reconcile(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]
     lease = _lease(action.root, descriptor["job_id"])
     if lease is None or lease["attempt_id"] != descriptor["attempt_id"]:
         return {"status": "nothing_to_reconcile", "blockers": []}
+    settled = (_settled_root() / f"{_attempt_key(descriptor['attempt_id'])}.json").exists()
+    if (action.root / "teardowns" / f"{descriptor['attempt_id']}.json").exists() and not (
+            lease["state"] in leases.TERMINAL_STATES and settled):  # a sealed teardown left unfinished resumes
+        return _teardown(action, descriptor, outcome="resumed", wait=False) if action.execute else {
+            "status": "dry_run_ready", "blockers": [], "lease_state": lease["state"]}
     state, identity, deadlines = lease["state"], lease["worker_identity"], lease["deadlines"] or {}
     lost = identity is None and lease["dispatch_started"] and state in ("dispatching", "expired")
     # A probe is its preflight's to close; reconcile takes over only once that preflight would have finished.
@@ -844,8 +880,7 @@ def _reconcile(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]
         if state in ("dispatched", "running"):
             leases.transition(action.root, descriptor["job_id"], attempt_id=descriptor["attempt_id"],
                               to_state="collecting", now=action.now, updates={"outcome": outcome})
-        return _teardown(action, descriptor, outcome=outcome, wait=False, terminal="fallback_host" if state == "expired"
-                         else "completed" if outcome == "environment_recorded" else "blocked")
+        return _teardown(action, descriptor, outcome=outcome, wait=False)
     found = reconcile_ambiguous_dispatch(action, descriptor)
     if found["status"] == "unresolved":
         return {"status": "ambiguous_dispatch_unresolved", "blockers": found["blockers"], "reconciled": found}
@@ -855,8 +890,8 @@ def _reconcile(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]
         leases.transition(action.root, descriptor["job_id"], attempt_id=descriptor["attempt_id"], to_state=None,
                           now=action.now, updates={"worker_identity": worker_identity_for(
                               descriptor["execution"], found["executions"][0].rsplit("/", 1)[-1])})
-    return {**_teardown(action, descriptor, outcome=lease["outcome"] or "remote_cpu_dispatch_lost", wait=False,
-                        terminal="fallback_host" if found["executions"] else "abandoned_dispatch"), "reconciled": found}
+    return {**_teardown(action, descriptor, outcome=lease["outcome"] or "remote_cpu_dispatch_lost", wait=False),
+            "reconciled": found}
 
 
 def add_remote_cpu_job_arguments(commands: Any) -> None:

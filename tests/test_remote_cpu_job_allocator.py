@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import ast
+import fcntl
 import hashlib
 import json
 import logging
+import os
 import stat
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -872,3 +874,45 @@ def test_recorded_url_expiry_outlasts_every_minted_url_and_dispatch_is_stamped_a
     assert closed["status"] == "abandoned_dispatch" and closed["teardown"]["provider_zero_proven"] is True
     # Provider zero is sealed only once no minted write URL still works.
     assert {world.store.request("PUT", url, body=b"late").status for url in puts} == {403}
+
+
+def test_teardown_resumes_from_its_sealed_record_after_a_failed_transition(tmp_path: Path, monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch, config=remote_cpu_config(max_live_executions=4))
+    world.record_environment()
+    world.runtime.cloud_run._transport = _refusing_runs(world)
+    locked, unsettled = world.descriptor(label="prep-locked"), world.descriptor(label="prep-unsettled")
+    for descriptor in (locked, unsettled):
+        assert world.run("dispatch", descriptor=descriptor)["status"] == "teardown_pending"
+    world.clock.now = max(world.lease(descriptor)["write_urls_expire_at_epoch"] for descriptor in (locked, unsettled))
+
+    # Another holder of the lease lock makes the terminal transition fail after the teardown is sealed.
+    held = os.open(world.root / "leases" / f"{locked['job_id']}.lock", os.O_RDWR)
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        refused = world.run("reconcile", descriptor=locked)
+    finally:
+        os.close(held)
+    assert refused["blockers"] == [f"remote_cpu_lease_locked:{locked['job_id']}"]
+    path = world.root / "teardowns" / f"{locked['attempt_id']}.json"
+    sealed = path.read_bytes()
+    world.clock.advance(60)
+    resumed = world.run("reconcile", descriptor=locked)
+    assert (resumed["status"], resumed["success"]) == ("abandoned_dispatch", True)
+    assert path.read_bytes() == sealed
+    assert world.lease(locked)["teardown_digest"] == json.loads(sealed)["teardown_digest"]
+
+    # A settlement that fails after the lease turned terminal is finished by the next reconcile.
+    settle = allocator.settle_remote_cpu_attempt
+
+    def fails_once(**kwargs):
+        monkeypatch.setattr(allocator, "settle_remote_cpu_attempt", settle)
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(allocator, "settle_remote_cpu_attempt", fails_once)
+    interrupted = world.run("reconcile", descriptor=unsettled)
+    assert interrupted["status"] == "blocked" and world.lease(unsettled)["state"] == "abandoned_dispatch"
+    finished = world.run("reconcile", descriptor=unsettled)
+    assert (finished["status"], finished["success"]) == ("abandoned_dispatch", True)
+    assert len(list((world.spend / "remote-cpu-settled").glob("*.json"))) == 2
+    assert leases.slots_in_use(world.root) == 0
+    assert world.run("reconcile", descriptor=locked)["status"] == "nothing_to_reconcile"
