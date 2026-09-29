@@ -22,14 +22,17 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.remote_cpu_allocator_fakes import CAS, IMAGE, OBJECT_PREFIX, environment, remote_cpu_config
 from tests.remote_episode_compilation_support import (
     CACHE,
+    COMPILE_CASES,
     HOST_RECORD,
     INPUTS,
     OUTPUTS,
     QUEUE,
     Host,
+    RemoteWorld,
     digest_of,
     nurec_usdz,
     stage_compile,
+    tree_snapshot,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -318,3 +321,127 @@ def test_an_invalid_envelope_or_config_compiles_on_the_host(tmp_path: Path) -> N
     Path(reference["materialized_path"]).chmod(0o640)
     Path(reference["materialized_path"]).write_bytes(b"changed after readback")
     assert _plan(host, claimed) == remote.HostDecision("remote_ineligible:envelope_invalid")
+
+
+EXECUTION = "blueprint-remote-cpu-episode-compilation-x7k2p"
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(("policy_observation_override", "destination_support", "qualification_only"), COMPILE_CASES)
+def test_remote_compile_is_byte_identical_to_host_compile(tmp_path: Path, monkeypatch, policy_observation_override: bool,
+                                                          destination_support: bool, qualification_only: bool) -> None:
+    """Plan 14 §5, acceptance 2: the host compile at R, then the worker's compile at the same R from the
+    extracted recipe-v2 archive in a spawned stage child, landed whole: every path, byte and mode agree."""
+
+    import io
+
+    from blueprint_pipeline.remote_cpu_output_archive import land_subset
+    from blueprint_pipeline.task_evaluation_episode_compilation_worker import process_episode_compilation_queue
+    from blueprint_pipeline.task_evaluation_scene_construction_queue import _canonical_bytes
+    from tests.remote_cpu_worker_stages import install_compile_stand_ins
+
+    host = Host(tmp_path / "host")
+    host.record_worker_environment()
+    compiler = install_compile_stand_ins(monkeypatch.setattr)
+    envelope, name = stage_compile(host, policy_observation_override=policy_observation_override,
+                                   destination_support=destination_support, qualification_only=qualification_only)
+    commit = envelope["expected_production_commit"]
+    world = RemoteWorld(tmp_path / "remote")
+    plan = remote.plan_remote_compilation(
+        host.claim(name), inputs=host.inputs, outputs=host.outputs, source_commit=commit, config=world.config,
+        jobs_root=host.jobs, filesystem_root=host.fs, cache_root=host.cache, host_environment=HOST_RECORD,
+        require_shadow_gate=False)
+    assert isinstance(plan, remote.RemotePlan), plan
+    os.replace(host.queue / "processing" / name, host.queue / "pending" / name)
+
+    # (1) The host compile at R, exactly as the no-spend unit runs it today.
+    run = process_episode_compilation_queue(queue_root=host.queue, input_root=host.inputs, output_root=host.outputs,
+                                            source_commit=commit, episode_compiler=compiler)
+    assert run["results"][0]["status"] == "compiled_for_production_launch", run["results"][0]["blockers"]
+    host_result = (host.queue / "results" / name).read_bytes()
+    output_root = host.outputs / envelope["compilation_id"]
+    snapshot = tree_snapshot(output_root)
+    descriptor = world.descriptor(plan, queue_root=host.queue)
+    environ = world.environ(descriptor, execution=EXECUTION)
+
+    # (2) R, and every other host path, moves aside: the worker's /var/lib/blueprint starts empty.
+    aside = tmp_path / "host" / "aside"
+    os.rename(host.fs, aside)
+
+    # (3) At the same R, the worker executes; its stage child spawns from the extracted release archive with
+    # PYTHONPATH set only to that tree.
+    assert world.execute(environ, filesystem_root=host.fs, measure=lambda: HOST_RECORD) == 0
+    receipt = json.loads(world.staged(descriptor, "receipt.json"))
+    assert receipt["status"] == "succeeded", (receipt["infrastructure_failures"], receipt["release_path_misses"])
+    verdict = contract.validate_receipt(receipt, descriptor=descriptor, execution_name=EXECUTION)
+    assert (verdict["outcome"], verdict["terminal"]) == ("succeeded", True)
+    assert _canonical_bytes(receipt["result"]) == host_result
+
+    # (4) Land all of it, from the archive and the host's own copies of host-known blobs, and compare.
+    index, blobs = json.loads(world.staged(descriptor, "index.json")), world.staged(descriptor, "blobs.tar")
+    landed = tmp_path / "landed" / envelope["compilation_id"]
+    landed.parent.mkdir()
+    sources = {row["digest"]: aside / Path(row["host_path"]).relative_to(host.fs) for row in plan.inputs}
+    members = aside / OUTPUTS.lstrip("/") / "content-addressed" / "adapter-members" / "sha256"
+    land_subset(index=index, reader=lambda offset, length: io.BytesIO(blobs[offset:offset + length]),
+                host_sources=sources, destination_root=landed, selectors=["**"], member_store=members)
+    assert tree_snapshot(landed) == snapshot
+    # Only new bytes left the worker: input files and runtime members travelled as references.
+    assert index["host_known"]["count"] > 0 and len(blobs) < sum(entry["size_bytes"] for entry in index["entries"])
+
+
+_RUNTIME_CLOSURE = textwrap.dedent('''
+    import json, sys
+    from pathlib import Path
+
+    claimed, inputs, outputs, commit, out = sys.argv[1:6]
+    import tests.remote_cpu_worker_stages as stages
+    from blueprint_pipeline import remote_cpu_worker
+
+    module, _, name = remote_cpu_worker.STAGE_HANDLERS["episode_compilation"].partition(":")
+    handler = getattr(__import__(module, fromlist=[name]), name)
+    from blueprint_pipeline.task_evaluation_episode_compilation_worker import compile_claimed_envelope
+
+    state, result = compile_claimed_envelope(Path(claimed), source_name=Path(claimed).name, inputs=Path(inputs),
+                                             outputs=Path(outputs), source_commit=commit,
+                                             episode_compiler=stages.install_compile_stand_ins(),
+                                             disk_reservation_root=None, storage_pins_root=None)
+    Path(out).write_text(json.dumps({"status": result["status"], "handler": handler.__name__,
+                                     "loaded": sorted(sys.modules)}), encoding="utf-8")
+''')
+
+
+def test_episode_compilation_is_a_registered_worker_stage() -> None:
+    from blueprint_pipeline import remote_cpu_worker as worker
+
+    assert worker.STAGE_HANDLERS[remote.STAGE] == (
+        "blueprint_pipeline.task_evaluation_episode_compilation_remote:run_episode_compilation_in_worker")
+    source = Path(remote.__file__).read_text(encoding="utf-8")
+    for authority in ("remote_cpu_job_allocator", "paid_resource_allocator", "cloud_run_jobs_client",
+                      "remote_cpu_transport", "task_evaluation_configured_scene_object_store", "boto3",
+                      "google.oauth2"):
+        assert authority not in source, authority
+
+
+@pytest.mark.slow
+def test_a_worker_compile_loads_no_allocation_or_staging_authority(tmp_path: Path) -> None:
+    """The handler runs inside the paid execution: a real compile through it loads no allocator, Cloud Run
+    client, host staging, boto3 or google.oauth2.  (The compiler itself imports the admission chokepoint and
+    the object-store module's key constants; neither holds or reaches a credential in the worker.)"""
+
+    host = Host(tmp_path)
+    envelope, name = stage_compile(host, destination_support=True, qualification_only=True)
+    claimed, out = host.claim(name), tmp_path / "loaded.json"
+    run = subprocess.run(
+        [sys.executable, "-c", _RUNTIME_CLOSURE, str(claimed), str(host.inputs.resolve()), str(host.outputs.resolve()),
+         envelope["expected_production_commit"], str(out)],
+        cwd=ROOT, capture_output=True, text=True, timeout=600,
+        env={**os.environ, "PYTHONPATH": f"{ROOT / 'src'}{os.pathsep}{ROOT}", "PYTHONDONTWRITEBYTECODE": "1"})
+    assert run.returncode == 0, run.stderr[-4000:]
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert (report["status"], report["handler"]) == ("compiled_for_production_launch", "run_episode_compilation_in_worker")
+    loaded = set(report["loaded"])
+    assert not {"blueprint_pipeline.paid_resource_allocator", "blueprint_pipeline.remote_cpu_job_allocator",
+                "blueprint_pipeline.cloud_run_jobs_client", "blueprint_pipeline.remote_cpu_transport",
+                "blueprint_pipeline.task_evaluation_episode_compilation_collector"} & loaded
+    assert not {name for name in loaded if name == "boto3" or name.startswith(("boto3.", "google.oauth2"))}

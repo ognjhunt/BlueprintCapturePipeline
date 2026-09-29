@@ -615,9 +615,12 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
     assert worker.main(["environment", "--extra"]) == worker.EXIT_REFUSED
     assert os.umask(umask) == umask  # a mode other than bootstrap leaves the process's umask alone
 
-    # The environment probe, the stage the allocator's preflight runs, is this PR's one registered stage; its
-    # receipt carries that record.
-    assert worker.STAGE_HANDLERS == {"environment_probe": "blueprint_pipeline.remote_cpu_worker:run_environment_probe"}
+    # The environment probe, the stage the allocator's preflight runs, carries that record in its receipt;
+    # PR 4 registers episode compilation beside it.
+    assert worker.STAGE_HANDLERS == {
+        "environment_probe": "blueprint_pipeline.remote_cpu_worker:run_environment_probe",
+        "episode_compilation": "blueprint_pipeline.task_evaluation_episode_compilation_remote:"
+                               "run_episode_compilation_in_worker"}
     probe = WorkerWorld(tmp_path / "probe", stage=contract.PROBE_STAGE, environment_digest=host["environment_digest"])
     runtime = probe.runtime(measure=census.environment_record, run_stage=_registered)
     assert worker.bootstrap(["bootstrap"], probe.runtime(

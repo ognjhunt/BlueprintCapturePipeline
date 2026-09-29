@@ -209,14 +209,15 @@ def stand_in_adapter(*, request: dict[str, Any], compiled_episode_packet_path: A
     return result
 
 
-def install_compile_stand_ins() -> Any:
-    """Patch the compiler's runtime-bound steps and return the compiler to call (idempotent)."""
+def install_compile_stand_ins(assign: Any = setattr) -> Any:
+    """Patch the compiler's runtime-bound steps through ``assign`` (a test passes ``monkeypatch.setattr``) and
+    return the compiler to call; installing twice leaves the first installation in place."""
 
     import functools
 
     from blueprint_pipeline import task_evaluation_native_arena_episode_compiler as compiler
 
-    if not getattr(compiler, "_plan14_stand_ins", False):
+    if compiler.materialize_native_arena_adapter is not stand_in_adapter:
         template = compiler.adapt_rigid_relocation_task_template
 
         def grounded(**kwargs: Any) -> dict[str, Any]:
@@ -227,10 +228,9 @@ def install_compile_stand_ins() -> Any:
                 result["adapter_digest"] = canonical_digest(result, digest_field="adapter_digest")
             return result
 
-        compiler.adapt_rigid_relocation_task_template = grounded
-        compiler.materialize_native_task_arena_packet = stand_in_packet
-        compiler.materialize_native_arena_adapter = stand_in_adapter
-        compiler._plan14_stand_ins = True
+        assign(compiler, "adapt_rigid_relocation_task_template", grounded)
+        assign(compiler, "materialize_native_task_arena_packet", stand_in_packet)
+        assign(compiler, "materialize_native_arena_adapter", stand_in_adapter)
     return functools.partial(compiler.compile_native_arena_episode, native_appearance_materializer=stand_in_appearance)
 
 

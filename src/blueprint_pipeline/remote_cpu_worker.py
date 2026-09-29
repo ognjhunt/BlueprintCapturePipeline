@@ -76,7 +76,10 @@ HANDOFF_SCHEMA_VERSION = "remote_cpu_worker_handoff.v1"
 STAGE_REQUEST_SCHEMA_VERSION = "remote_cpu_worker_stage_request.v1"
 # ``stage -> "module:function"``; a handler takes the sealed descriptor and ``StageRoots`` and returns the
 # stage's sealed result.  An unregistered stage is an infrastructure failure.
-STAGE_HANDLERS: Mapping[str, str] = {PROBE_STAGE: f"{MODULE}:run_environment_probe"}
+STAGE_HANDLERS: Mapping[str, str] = {
+    PROBE_STAGE: f"{MODULE}:run_environment_probe",
+    "episode_compilation": "blueprint_pipeline.task_evaluation_episode_compilation_remote:run_episode_compilation_in_worker",
+}
 PROBE_RESULT_SCHEMA_VERSION = "remote_cpu_environment_probe_result.v1"
 EXIT_REFUSED = 2
 TRANSFER_TIMEOUT_SECONDS = 60.0

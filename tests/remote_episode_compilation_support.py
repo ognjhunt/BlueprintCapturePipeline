@@ -410,3 +410,122 @@ def stage_compile(host: Host, *, policy_observation_override: bool = False, dest
     name = f"{value['preparation_id']}-{envelope['envelope_digest'].removeprefix('sha256:')}.json"
     write_launch_preparation_record_exclusive(host.queue / "pending" / name, envelope)
     return envelope, name
+
+
+def tree_snapshot(root: Path) -> dict[str, Any]:
+    """Every file's ``(sha256, mode)`` and every directory's mode under ``root``, by relative path."""
+
+    import stat as stat_module
+
+    files, folders = {}, {}
+    for path in sorted(root.rglob("*")):
+        relative, info = path.relative_to(root).as_posix(), path.lstat()
+        if stat_module.S_ISDIR(info.st_mode):
+            folders[relative] = oct(stat_module.S_IMODE(info.st_mode))
+        else:
+            files[relative] = (digest_of(path.read_bytes()), oct(stat_module.S_IMODE(info.st_mode)))
+    return {"root_mode": oct(stat_module.S_IMODE(root.lstat().st_mode)), "files": files, "directories": folders}
+
+
+class RemoteWorld:
+    """One B2 account, transport bucket and Cloud Run execution environment for a remote compile attempt.
+
+    It stages a plan's inputs and the release source by digest with PR 3's own staging, seals the
+    descriptor, mints the transport with the allocator's ``mint_transport`` and runs PR 3's worker, whose
+    stage child spawns from the extracted release archive.
+    """
+
+    def __init__(self, tmp_path: Path, *, config: dict[str, Any] | None = None, clock: Any = None) -> None:
+        from tests.remote_cpu_allocator_fakes import B2_BUCKET, T0, TRANSPORT_BUCKET, remote_cpu_config
+        from tests.remote_cpu_fakes import FakeArtifactStore, FakeClock, FakeTransportBucket
+        from tests.remote_cpu_worker_support import RecordingHttp
+
+        self.tmp_path, self.clock = tmp_path, clock or FakeClock(T0)
+        self.config = config or remote_cpu_config()
+        self.store = FakeArtifactStore(clock=self.clock, bucket=B2_BUCKET)
+        self.bucket = FakeTransportBucket(TRANSPORT_BUCKET, clock=self.clock)
+        self.http, self.bucket_name, self.logs = RecordingHttp(self.store), B2_BUCKET, []
+
+    def release(self, commit: str) -> dict[str, Any]:
+        """The recipe-v2 release of this working tree, staged in CAS as the paid unit stages it."""
+
+        from blueprint_pipeline.remote_cpu_transport import SOURCE_FILENAME, SOURCE_KIND, cas_key
+        from tests.remote_cpu_worker_support import worker_release_archive
+
+        archive = worker_release_archive(commit, entries=(
+            "blueprint_pipeline.remote_cpu_worker", "blueprint_pipeline.task_evaluation_episode_compilation_remote"))
+        key = cas_key(SOURCE_KIND, digest_of(archive), SOURCE_FILENAME)
+        self.store.put_object(Bucket=self.bucket_name, Key=key, Body=archive,
+                              Metadata={"sha256": digest_of(archive)[7:]})
+        return {"source_commit": commit, "digest": digest_of(archive), "size_bytes": len(archive),
+                "uri": f"s3://{self.bucket_name}/{key}"}
+
+    def descriptor(self, plan: Any, *, queue_root: Path, mode: str = "authoritative", attempt: int = 1,
+                   nonce: str | None = None) -> dict[str, Any]:
+        from blueprint_pipeline import remote_cpu_job_allocator as allocator
+        from blueprint_pipeline import remote_cpu_job_contract as contract
+        from blueprint_pipeline.remote_cpu_transport import stage_inputs
+        from blueprint_pipeline.task_evaluation_episode_compilation_remote import input_sources
+        from tests.remote_cpu_allocator_fakes import OBJECT_PREFIX
+
+        staged = stage_inputs(input_sources(plan, queue_root), client=self.store, bucket=self.bucket_name)
+        source = self.release(plan.source_commit)
+        limits = contract.stage_limits(self.config, "episode_compilation",
+                                       allowed_cpu_classes=plan.allowed_cpu_classes)
+        return contract.build_descriptor(
+            config=self.config, stage="episode_compilation", mode=mode, attempt=attempt, queue_row=plan.queue_row,
+            code={"source_commit": plan.source_commit, "image": plan.image,
+                  "environment_digest": plan.environment_digest,
+                  "source_archive": {name: source[name] for name in ("digest", "size_bytes", "uri")}},
+            environment=plan.environment,
+            inputs=[{**{name: row[name] for name in ("role", "contract_path", "digest", "size_bytes", "mode",
+                                                    "materialize_at")}, "uri": staged_row["uri"]}
+                    for row, staged_row in zip(plan.inputs, staged)],
+            outputs={"output_root": plan.output_root, "declared_scratch": list(plan.declared_scratch),
+                     "object_prefix": OBJECT_PREFIX},
+            limits=limits, closure=plan.closure,
+            spend={"worst_case_usd": allocator.worst_case_usd(limits=limits, rate_table=self.config["rate_table"]),
+                   "rate_table_digest": canonical_digest(self.config["rate_table"])}, nonce=nonce)
+
+    def environ(self, descriptor: dict[str, Any], *, execution: str) -> dict[str, str]:
+        """Mint the attempt's transport as the allocator does; the execution's environment variables."""
+
+        from blueprint_pipeline import remote_cpu_job_allocator as allocator
+        from tests.remote_cpu_allocator_fakes import B2_REGION, JOB_SHORT, TRANSPORT_BUCKET
+        from tests.remote_cpu_worker_support import PREFIX_URL
+
+        admission, grant = allocator.admit_remote_cpu_job(blockers=[], binding={"attempt_id": descriptor["attempt_id"]},
+                                                          execute=True)
+        name = f"gs://{TRANSPORT_BUCKET}/transport/{descriptor['job_id']}/{descriptor['attempt_id']}-{'a' * 32}.json"
+        minted = allocator.mint_transport(
+            grant=grant, binding_digest=admission["allocation_binding_digest"], descriptor=descriptor,
+            bucket=self.bucket, object_store=(self.store, self.bucket_name, B2_REGION), clock=self.clock,
+            object_uri=name)
+        return {"CLOUD_RUN_JOB": JOB_SHORT, "CLOUD_RUN_EXECUTION": execution, "CLOUD_RUN_TASK_INDEX": "0",
+                "CLOUD_RUN_TASK_ATTEMPT": "0", "CLOUD_RUN_TASK_COUNT": "1", "PATH": os.environ.get("PATH", ""),
+                "BLUEPRINT_REMOTE_CPU_STAGE": "episode-compilation", "BLUEPRINT_REMOTE_CPU_OBJECT_PREFIX": PREFIX_URL,
+                "BLUEPRINT_REMOTE_CPU_ATTEMPT_ID": descriptor["attempt_id"],
+                "BLUEPRINT_REMOTE_CPU_DESCRIPTOR_SHA256": descriptor["descriptor_digest"],
+                "BLUEPRINT_REMOTE_CPU_TRANSPORT_OBJECT": name,
+                "BLUEPRINT_REMOTE_CPU_TRANSPORT_GENERATION": str(minted["transport_generation"])}
+
+    def execute(self, environ: dict[str, str], *, filesystem_root: Path, measure: Any,
+                handler: str = "remote_cpu_worker_stages:compiles_episode", run_stage: Any = None) -> int:
+        """Bootstrap, then execute in this process; the stage child is a real spawn from the release."""
+
+        from blueprint_pipeline import remote_cpu_worker as worker
+
+        common = {"environ": environ, "http": self.http, "filesystem_root": filesystem_root, "clock": self.clock,
+                  "measure": measure, "log": self.logs.append}
+        execute = worker.WorkerRuntime(**common, run_stage=run_stage, handlers={"episode_compilation": handler})
+        return worker.bootstrap(["bootstrap"], worker.WorkerRuntime(
+            **common, reader=self.bucket.reader(), launch=lambda handoff: worker.execute_attempt(handoff, execute)))
+
+    def staged(self, descriptor: dict[str, Any], name: str) -> bytes | None:
+        from botocore.exceptions import ClientError
+
+        key = descriptor["outputs"]["staging_prefix"].removeprefix(f"s3://{self.bucket_name}/") + name
+        try:
+            return self.store.get_object(Bucket=self.bucket_name, Key=key)["Body"].read()
+        except ClientError:
+            return None

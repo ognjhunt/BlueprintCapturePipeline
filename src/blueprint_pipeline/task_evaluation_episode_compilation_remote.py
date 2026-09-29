@@ -427,6 +427,23 @@ def plan_remote_compilation(
         allowed_cpu_classes=(str(cpu_class),) if inline else (), ephemeral_bytes_required=required)
 
 
+def input_sources(plan: RemotePlan, queue_root: str | Path) -> list[dict[str, Any]]:
+    """Each plan input's current host file: the row's envelope moves between queue states after the plan
+    (a shadow row is compiled and moved before its attempt stages), every other input stays where it was."""
+
+    rows = []
+    for row in plan.inputs:
+        path = Path(row["host_path"])
+        if row["role"] == "queue_envelope":
+            found = [Path(queue_root) / state / path.name for state in ("processing", "completed", "blocked", "pending")
+                     if (Path(queue_root) / state / path.name).is_file()]
+            if len(found) != 1:
+                raise TaskEvaluationEpisodeCompilationRemoteError("remote_episode_compilation_row_unlocated")
+            path = found[0]
+        rows.append({"path": str(path), "digest": row["digest"], "size_bytes": row["size_bytes"]})
+    return rows
+
+
 def run_episode_compilation_in_worker(descriptor: Mapping[str, Any], roots: Any, *,
                                       episode_compiler: Any = None) -> dict[str, Any]:
     """The worker's ``episode_compilation`` stage: the host's ``compile_claimed_envelope`` at the host's paths,
@@ -453,6 +470,7 @@ __all__ = [
     "RemoteCpuContractError",
     "TaskEvaluationEpisodeCompilationRemoteError",
     "image_drift",
+    "input_sources",
     "plan_remote_compilation",
     "record_job_image",
     "record_shadow_parity",
