@@ -59,6 +59,9 @@ def pin_path(pins_root: str | Path, kind: str, owner_id: str) -> Path:
 
 
 def _write_atomic(path: Path, payload: Mapping[str, Any], *, exclusive: bool) -> bool:
+    # Encoding may consume the remaining original admission time. Finish it
+    # before checking that SAME allowance and making any native write.
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
     _publisher_checkpoint()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     _publisher_checkpoint()
@@ -66,9 +69,8 @@ def _write_atomic(path: Path, payload: Mapping[str, Any], *, exclusive: bool) ->
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
             _publisher_checkpoint()
-            stream.write("\n")
+            stream.write(encoded)
             _publisher_checkpoint()
             stream.flush()
             _publisher_checkpoint()
