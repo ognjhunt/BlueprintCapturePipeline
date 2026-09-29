@@ -32,7 +32,8 @@ from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import remote_cpu_output_archive as archive
 from blueprint_pipeline import remote_cpu_worker as worker
 from blueprint_pipeline import remote_cpu_worker_stage as stage_child
-from tests.remote_cpu_allocator_fakes import B2_BUCKET, JOB, RemoteCpuWorld
+from blueprint_pipeline import task_evaluation_configured_scene_object_store as object_store
+from tests.remote_cpu_allocator_fakes import B2_BUCKET, B2_REGION, JOB, OBJECT_PREFIX, TRANSPORT_BUCKET, RemoteCpuWorld
 from tests.remote_cpu_worker_stages import NEW_BYTES, sealed_result
 from tests.remote_cpu_worker_support import (
     BUNDLE_MEMBERS,
@@ -143,6 +144,41 @@ def test_bootstrap_refuses_extra_argv_task_count_and_urls_outside_the_prefix(tmp
     assert json.loads(world.logs[-1])["code"] == "remote_cpu_worker_descriptor_invalid"
     # Nothing trusted, so nothing was fetched, uploaded or written.
     assert world.http.requests == [] and not world.fs.exists() and world.receipt() is None
+
+
+def test_the_production_b2_client_mints_the_path_style_urls_the_worker_pins(tmp_path: Path, monkeypatch) -> None:
+    """Review M8: the worker pins ``https://<B2 host>/<bucket>/<key prefix>/``, so every URL must be path style."""
+
+    endpoint = "https://s3.us-west-004.backblazeb2.com"
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "absent"))  # no shared config picks the style for it
+    settings = tmp_path / "b2"
+    settings.mkdir()
+    for name, value in {"ACCESS_KEY_ID": "id", "SECRET_ACCESS_KEY": "secret", "BUCKET": B2_BUCKET,
+                        "ENDPOINT_URL": endpoint, "REGION": B2_REGION}.items():
+        (settings / name).write_text(value, encoding="utf-8")
+        (settings / name).chmod(0o600)
+        monkeypatch.setenv(f"BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_{name}_FILE", str(settings / name))
+    client, bucket, region = object_store.remote_cpu_object_store()
+    assert (client.meta.config.s3 or {}).get("addressing_style") == "path"
+
+    # The allocator mints a whole transport with the real client (signing is local), and the worker accepts it.
+    world = WorkerWorld(tmp_path)
+    admission, grant = allocator.admit_remote_cpu_job(
+        blockers=[], binding={"attempt_id": world.descriptor["attempt_id"]}, execute=True)
+    name = f"gs://{TRANSPORT_BUCKET}/transport/{world.descriptor['job_id']}/{world.descriptor['attempt_id']}-{'b' * 32}.json"
+    minted = allocator.mint_transport(
+        grant=grant, binding_digest=admission["allocation_binding_digest"], descriptor=world.descriptor,
+        bucket=world.bucket, object_store=(client, bucket, region), clock=world.clock, object_uri=name)
+    transport = json.loads(world.bucket.get(name.split("/", 3)[3], generation=minted["transport_generation"]))
+    urls = [transport["receipt_url"], transport["source_archive"]["url"], *transport["outputs"].values(),
+            *(row["url"] for row in transport["inputs"])]
+    assert len(urls) == 9 and all(url.startswith(f"{endpoint}/{bucket}/") for url in urls)
+    pinned = {**world.environ, worker.PREFIX_VARIABLE: f"{endpoint}/{OBJECT_PREFIX.removeprefix('s3://')}/"}
+    assert worker.validated_transport(transport, pinned)["descriptor"] == world.descriptor
+    # botocore's default style is not pinned; a virtual-hosted URL (``https://<bucket>.<host>/<key>``) is refused.
+    virtual = transport["receipt_url"].replace(f"{endpoint}/{bucket}/", f"https://{bucket}.{endpoint[8:]}/")
+    with pytest.raises(worker.WorkerFailure):
+        worker.validated_transport({**transport, "receipt_url": virtual}, pinned)
 
 
 def test_bootstrap_extracts_the_release_under_tmp_and_verifies_digests(tmp_path: Path) -> None:
