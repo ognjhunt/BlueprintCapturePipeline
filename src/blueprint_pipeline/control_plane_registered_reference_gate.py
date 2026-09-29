@@ -30,7 +30,10 @@ def _reference(text, budget):
     else:
         path, local = text, True
     normalized = posixpath.normpath(path.replace('\\', '/'))
-    if _RESERVED.search(normalized):
+    if _RESERVED.search(normalized) or (local and re.search(r'(?:^|/)g1-checkpoint(?:$|/)', normalized)):
+        # This publisher family has no enrolled needed-cache read lifetime.
+        # Remote URIs are still interpreted by their own scheme; a resolved
+        # local InstalledSource is separately checked at its actual pathname.
         raise OwnerTargetVersionError('experiment_external_publisher_unsupported')
     # Only path-shaped local strings have a filesystem interpretation. Walk
     # one finite pathname without following links; never resolve a payload.
