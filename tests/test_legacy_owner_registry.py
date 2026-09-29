@@ -69,3 +69,18 @@ def test_registry_rejects_foreign_link_and_unknown_entry(registry):
         store.publish("a" * 32, "packet", {"x": 1})
     with pytest.raises(LegacyOwnerError):
         store.committed_heads()
+
+
+def test_crash_between_no_replace_link_and_temp_unlink_recovers_owned_link(registry):
+    store, root = registry
+    packet_id = "b" * 32
+    temporary = root / (".consent-" + "c" * 32 + ".tmp")
+    final = root / (packet_id + ".packet.json")
+    temporary.write_bytes(b'{"stage":"packet"}\n')
+    temporary.chmod(0o600)
+    import os
+    os.link(temporary, final)
+    assert final.stat().st_nlink == 2
+    assert final.name in store._scan()
+    assert not temporary.exists()
+    assert final.stat().st_nlink == 1
