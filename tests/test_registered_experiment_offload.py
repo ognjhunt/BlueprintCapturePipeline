@@ -100,7 +100,71 @@ def test_offload_refuses_original_metadata_native_restore_cannot_reproduce(insta
         request.getfixturevalue('expired_completed_evidence')
     member, snapshot = selected[0]
     assert member.stat().st_mode & 0o7777 == mode
-    assert _payload_snapshot(member.parent if kind == 'file' else member.parent) == snapshot
+    assert _payload_snapshot(member.parent) == snapshot
+
+
+@pytest.mark.parametrize('boundary', ['first', 'second', 'directory', 'foreign', 'readback'])
+def test_archived_unlink_before_event_reconciles_without_unknown_byte_credit(expired_completed_evidence, monkeypatch, boundary):
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline import control_plane_lane_experiment_archive as archive
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+    from blueprint_pipeline import control_plane_lane_experiment_restore as restore
+    value, target, born, action, intent_id = expired_completed_evidence
+    before = _payload_snapshot(target)
+    cloud, stopped, attempts = Cloud(), [], []
+    monkeypatch.setattr(archive, '_client', lambda *args: (cloud, 'development-only'))
+    original = actions._event
+
+    def crash(*args, **kwargs):
+        if args[3] == 'member_removed':
+            attempts.append(args[4]['path'])
+            chosen = (args[4]['original_identity']['type'] == 'directory' if boundary == 'directory'
+                      else len(attempts) == (2 if boundary == 'second' else 1))
+            if chosen and not stopped:
+                stopped.append(args[4])
+                raise RuntimeError('development_only_unlink_before_event')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(actions, '_event', crash)
+    first = _gc(value)
+    assert 'registered_experiments' in first['phase_errors']
+    assert len(cloud.objects) == 1 and len(stopped) == 1
+    missing = target / stopped[0]['path']
+    assert not missing.exists() and _current_entry(value, intent_id)['state'] == 'retiring'
+    monkeypatch.setattr(actions, '_event', original)
+    if boundary == 'foreign':
+        missing.write_bytes(b'foreign')
+    elif boundary == 'readback':
+        cloud.corrupt = True
+    result = _gc(value)['registered_experiments']['outcomes'][0]
+    if boundary in ('foreign', 'readback'):
+        assert result['decision'] == 'kept' and result['removed_logical_bytes'] == 0
+        assert _current_entry(value, intent_id)['state'] == 'retiring'
+        if boundary == 'foreign':
+            assert missing.read_bytes() == b'foreign'
+        return
+    assert result['decision'] == 'retired', result
+    operation = value[2] / 'operations' / action['action_id']
+    events = [json.loads(path.read_bytes()) for path in sorted(operation.glob('e-*.json'))]
+    uncertain = [event for event in events if event['event_kind'] == 'removal_uncertain']
+    assert len(uncertain) == 1 and uncertain[0]['body']['path'] == stopped[0]['path']
+    assert uncertain[0]['body']['logical_bytes'] == uncertain[0]['body']['eligible_allocated_bytes'] == 0
+    assert result['removed_logical_bytes'] == sum(event['body']['logical_bytes'] for event in events
+                                                if event['event_kind'] == 'member_removed')
+    grant = root.issue_experiment_restore_intent(intent_id, principal='operator', owner='owner',
+        lease_ttl_seconds=600, expires_at_epoch=3400, installed_config_path=value[0], now=lambda: 2901)
+
+    class Reservation:
+        def release(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(restore, 'reserve_control_plane_disk', lambda *args, **kwargs: Reservation())
+    restored = root.restore_registered_experiment(grant['action_id'], expected_restore_intent=grant['restore_intent'],
+        installed_config_path=value[0], now=lambda: 2902, _pins_root=value[0].parent / 'pins')
+    assert restored['decision'] == 'restored'
+    for path, raw in before.items():
+        if path != '.lane-scratch.v1.json':
+            assert (target / path).read_bytes() == raw
 
 
 @pytest.mark.parametrize('corrupt', [False, True])
