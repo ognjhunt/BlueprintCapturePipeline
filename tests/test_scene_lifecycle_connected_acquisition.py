@@ -4,6 +4,7 @@
 #   src/blueprint_pipeline/task_evaluation_scene_lifecycle_measurement.py
 """Actual acquisition -> reviewed child -> measured KEEP-only scene reports."""
 import hashlib
+import json
 import os
 import time
 
@@ -149,6 +150,37 @@ def test_unrelated_digest_named_revision_cannot_bind_selected_preparation(tmp_pa
     handoffs = report['historical_lineage']['preparation_handoff_observations']
     assert handoffs[0]['pre_handoff_binding_verified'] is True
     assert all(str(revision) != proof.get('path') for row in handoffs for proof in row['source_provenance'])
+
+
+def test_progression_cursor_is_retained_shared_metadata_not_an_other_owner(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_intake import _seal
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
+
+    args, context, _, _ = installed(tmp_path, connected_native_terminal())
+    cursor = Path(context['roots']['intent_root']) / 'progression-cursor.json'
+    cursor.write_text(json.dumps(_seal({'last_intent_id': args['intent_id']}, 'cursor_digest')))
+    stable_shared_ancestors(monkeypatch, tmp_path)
+    report = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context, observed_at_epoch=900000)
+    assert 'historical_lineage' in report, report
+    assert any(row['role'] == 'progression_cursor' and row['path'] == str(cursor)
+               and row['status'] == 'kept_unselected_metadata'
+               for row in report['unselected_metadata_protections'])
+    assert all(row['path'] != str(cursor) for row in report['measured_members'])
+
+
+@pytest.mark.parametrize('bad_layout', ['cursor_symlink', 'unknown_regular'])
+def test_progression_cursor_exception_does_not_admit_other_root_files(tmp_path, monkeypatch, bad_layout):
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
+
+    args, context, _, _ = installed(tmp_path, connected_native_terminal())
+    root = Path(context['roots']['intent_root'])
+    if bad_layout == 'cursor_symlink':
+        (root / 'progression-cursor.json').symlink_to(root / args['intent_id'] / 'intent.json')
+    else:
+        (root / 'unknown-control.json').write_text('{}')
+    stable_shared_ancestors(monkeypatch, tmp_path)
+    report = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context, observed_at_epoch=900000)
+    assert report['action'] == 'KEEP' and 'historical_lineage' not in report
 
 
 @pytest.mark.slow

@@ -141,6 +141,12 @@ class Pool:
         self.rows('attempts', owner + '/preparation-attempts', ID + r'\.json')
         self.read('revocations', owner + '/revoked.json')
         for other in self.names('other_owner_groups', roots['intent_root'], ID):
+            if other == 'progression-cursor.json':
+                # The progression writer keeps one shared root cursor. Read its
+                # actual no-follow bytes as protected metadata; it is never an
+                # owner directory or selected-scene member.
+                self.read('progression_cursor', roots['intent_root'] + '/' + other)
+                continue
             if other != self.intent_id:
                 for role, name in [('other_owner_intents', 'intent.json'),
                                    ('other_owner_projections', 'progression.json'),
