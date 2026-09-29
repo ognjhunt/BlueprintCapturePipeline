@@ -453,6 +453,19 @@ def select(decoded, context, intent_id, budget):
                 protected.append({'role': role, 'path': row['path'], 'sha256': row['sha256'],
                                   'size_bytes': len(row['raw']), 'status': 'kept_activation_lane_unproven'})
                 continue
+        elif role == 'native_owner_records' and value.get('phase') == 'scene_configuration':
+            # The configuration worker writes the same owner-attempt schema as
+            # native activation, but native inventory only proves native lanes.
+            # Retain its exact bytes without granting native member authority.
+            budget.measure(value)
+            if (value.get('schema_version') == 'task_evaluation_scene_owner_attempt.v1'
+                    and value.get('owner_attempt_digest') == native.c.canonical_digest(
+                        value, digest_field='owner_attempt_digest')):
+                budget.charge('facts')
+                protected.append({'role': role, 'path': row['path'], 'sha256': row['sha256'],
+                                  'size_bytes': len(row['raw']),
+                                  'status': 'kept_configuration_owner_outside_native_scope'})
+                continue
         pair = row['path'], row['raw']
         budget.charge('facts')
         if role in {'intent', 'projection'}:

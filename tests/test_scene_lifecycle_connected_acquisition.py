@@ -183,6 +183,45 @@ def test_progression_cursor_exception_does_not_admit_other_root_files(tmp_path, 
     assert report['action'] == 'KEEP' and 'historical_lineage' not in report
 
 
+def test_configuration_owner_attempt_is_protected_outside_native_inventory(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
+
+    args = connected_native_terminal()
+    source = json.loads(args['bridge_records']['native_owner_records'][0][1])
+    source['phase'] = 'scene_configuration'
+    source['owner_attempt_digest'] = canonical_digest(source, digest_field='owner_attempt_digest')
+    path = str(Path(args['roots']['activation_output_root']) / 'configuration-activation' / 'scene_owner_attempt.json')
+    args['bridge_records']['native_owner_records'].append((path, json.dumps(source).encode()))
+    args, context, _, _ = installed(tmp_path, args)
+    actual = str(Path(context['roots']['activation_output_root']) / 'configuration-activation' / 'scene_owner_attempt.json')
+    stable_shared_ancestors(monkeypatch, tmp_path)
+    report = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context, observed_at_epoch=900000)
+    assert 'historical_lineage' in report, report
+    assert any(row['role'] == 'native_owner_records' and row['path'] == actual
+               and row['status'] == 'kept_configuration_owner_outside_native_scope'
+               for row in report['unselected_metadata_protections'])
+    assert all(row['path'] != actual for row in report['measured_members'])
+
+
+@pytest.mark.parametrize('changed', ['unknown_phase', 'bad_seal'])
+def test_configuration_owner_exception_rejects_unknown_or_changed_record(tmp_path, monkeypatch, changed):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
+
+    args = connected_native_terminal()
+    source = json.loads(args['bridge_records']['native_owner_records'][0][1])
+    source['phase'] = 'unknown' if changed == 'unknown_phase' else 'scene_configuration'
+    source['owner_attempt_digest'] = (canonical_digest(source, digest_field='owner_attempt_digest')
+                                      if changed == 'unknown_phase' else 'sha256:' + '0' * 64)
+    path = str(Path(args['roots']['activation_output_root']) / 'configuration-activation' / 'scene_owner_attempt.json')
+    args['bridge_records']['native_owner_records'].append((path, json.dumps(source).encode()))
+    args, context, _, _ = installed(tmp_path, args)
+    stable_shared_ancestors(monkeypatch, tmp_path)
+    report = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context, observed_at_epoch=900000)
+    assert report['action'] == 'KEEP' and 'historical_lineage' not in report
+
+
 @pytest.mark.slow
 def test_terminal_scene_report_acquires_exact_members_once_with_unique_inode_bytes(tmp_path, monkeypatch, record_property):
     # One real-shaped completed scene traverses all retained producer families
