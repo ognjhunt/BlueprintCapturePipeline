@@ -560,11 +560,13 @@ def _pin_fence(files, config, root, target, issued):
     parent, _ = files.parent(Path(root) / ".reference-probe")
     initial = os.fstat(parent)
     files.location(parent)
-    observed = observe_storage_pins(str(root), observed_at_epoch=issued, budget=files.budget)
+    files.proof(parent)
+    fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    observed = observe_storage_pins(str(root), observed_at_epoch=issued, budget=files.budget,
+                                    _held_root_fd=parent)
     _require(observed.complete and observed.root_identity == (initial.st_dev, initial.st_ino),
              "experiment_pin_observation_incomplete")
     files.proof(parent)
-    fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
     files.location(parent)
     _require(owners._metadata(os.fstat(parent)) == owners._metadata(initial), "experiment_pin_inventory_changed")
     for row in observed.rows:
