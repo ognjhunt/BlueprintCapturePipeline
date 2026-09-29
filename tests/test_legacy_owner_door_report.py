@@ -4,7 +4,6 @@
 
 import hashlib
 import json
-import os
 import stat
 from contextlib import contextmanager
 from types import SimpleNamespace

@@ -664,7 +664,7 @@ def _reference_settings(files, config) -> dict[str, tuple[Path, ...] | Path]:
         raise LegacyOwnerError("legacy_owner_references_incomplete") from None
 
 
-def _fresh_census(files, config, *, now: float) -> dict:
+def _fresh_census(files, config, *, now: float, max_seconds: float = 120) -> dict:
     from .control_plane_lane_scratch_census import build_census
 
     selected = _reference_settings(files, config)
@@ -673,16 +673,16 @@ def _fresh_census(files, config, *, now: float) -> dict:
                           process_root=Path("/proc"), pins_root=selected["pins_root"],
                           queue_roots=selected["queue_roots"],
                           active_run_roots=selected["active_run_roots"],
-                          release_link=Path(config.active_release_link), now=now, max_seconds=120)
+                          release_link=Path(config.active_release_link), now=now, max_seconds=max_seconds)
     _require(report.get("status") == "complete" and report.get("scan_errors") == [],
              "legacy_owner_references_incomplete")
     return report
 
 
-def _snapshot_for(config, path: str) -> dict:
+def _snapshot_for(config, path: str, *, max_seconds: float = MAX_SECONDS) -> dict:
     roots = (Path(config.lane_scratch_work_root).parent,
              Path(config.lane_scratch_inputs_root).parent)
-    return snapshot_generation(path, allowed_roots=roots)
+    return snapshot_generation(path, allowed_roots=roots, max_seconds=max_seconds)
 
 
 def issue_version_packet(*, consent_id: str, consent_sha256: str, consent_size_bytes: int,
@@ -758,24 +758,43 @@ def apply_owner_review(*, packet_id: str, installed_config_path: str,
 
 
 def observe_owner_review(*, installed_config_path: str, now: float,
-                         monotonic=time.monotonic) -> dict:
+                         monotonic=time.monotonic, max_seconds: float | None = None) -> dict:
     """Fresh owner census with authenticated legacy labels, never GC authority."""
+    _require(max_seconds is None or (type(max_seconds) in (int, float)
+             and 0 < max_seconds <= MAX_SECONDS), "legacy_owner_options_invalid")
+    deadline = None if max_seconds is None else monotonic() + max_seconds
+
+    def remaining(limit: float) -> float:
+        if deadline is None:
+            return limit
+        value = min(limit, deadline - monotonic())
+        _require(value > 0, "legacy_owner_budget_exhausted")
+        return value
+
+    def incomplete(code: str) -> dict:
+        return dict(schema_version="control_plane_lane_legacy_owner_survey.v1",
+                    status="incomplete", rows=[], scan_errors=[code],
+                    observed_owner_count=0, gc_eligible=False,
+                    references_clear=False, candidate_bytes=None,
+                    eta_seconds=None, mutations=0)
+
     with _installed_session(installed_config_path, monotonic) as (files, _, config, store):
         try:
-            census = _fresh_census(files, config, now=now)
+            census = _fresh_census(files, config, now=now,
+                                   max_seconds=remaining(120))
             heads = store.committed_heads()
         except LegacyOwnerError as error:
-            return dict(schema_version="control_plane_lane_legacy_owner_survey.v1",
-                        status="incomplete", rows=[], scan_errors=[str(error)],
-                        observed_owner_count=0, gc_eligible=False,
-                        references_clear=False, candidate_bytes=None,
-                        eta_seconds=None, mutations=0)
+            return incomplete(str(error))
         rows = [dict(row) for row in census["rows"]]
         by_path = {row["path"]: row for row in rows}
         possible: dict[str, list[dict]] = {}
         blockers = []
         current_policy = _policy_bytes(files, config)
         for head in heads:
+            try:
+                remaining(MAX_SECONDS)
+            except LegacyOwnerError as error:
+                return incomplete(str(error))
             path, packet_id = head["path"], head["packet_id"]
             if path not in by_path:
                 continue
@@ -783,7 +802,8 @@ def observe_owner_review(*, installed_config_path: str, now: float,
                 packet = store.read(packet_id, "packet")
                 approval = store.read(packet_id, "approval")
                 recorded = store.read(packet_id, "registration")
-                current = _snapshot_for(config, path)
+                current = _snapshot_for(config, path,
+                                        max_seconds=remaining(MAX_SECONDS))
                 checked = validate_registration(packet, approval, current_generation=current,
                                                 fresh_census=census,
                                                 current_policy_bytes=current_policy, now=now)
@@ -791,6 +811,10 @@ def observe_owner_review(*, installed_config_path: str, now: float,
                 possible.setdefault(path, []).append(checked)
             except LegacyOwnerError as error:
                 blockers.append(str(error))
+        try:
+            remaining(MAX_SECONDS)
+        except LegacyOwnerError as error:
+            return incomplete(str(error))
         applied = 0
         for path, candidates in possible.items():
             if len(candidates) != 1:

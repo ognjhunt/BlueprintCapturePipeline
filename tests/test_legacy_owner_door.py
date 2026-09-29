@@ -12,10 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_owner_census_door import DEPLOYER, READER, _call, _json, door
+from tests.test_owner_census_door import DEPLOYER, READER, _call, _json, door as _door_fixture
 from tests.test_operator_door_runner import FakeRunner
 from operator_door import requests, spool_runner
 from operator_door.config import DoorConfig
+
+door = _door_fixture
 
 
 def test_legacy_report_request_has_no_caller_selected_path_or_action():
@@ -80,7 +82,7 @@ def test_legacy_report_wrapper_only_runs_fixed_report_with_discoverable_result(t
                           env=env, capture_output=True, text=True, timeout=10)
     assert done.returncode == 0
     args = argv.read_text().splitlines()
-    assert args[:3] == ["-m", "blueprint_pipeline.control_plane_lane_legacy_owner", "report"]
+    assert args[:3] == ["-m", "blueprint_pipeline.control_plane_lane_legacy_owner_door", "report"]
     assert "--results-dir" in args and "--request-id" in args
     assert not any(part in {"packet", "approve", "apply"} for part in args)
     outcome = json.loads((results / (env["DOOR_REQUEST_ID"] + ".outcome.json")).read_bytes())
