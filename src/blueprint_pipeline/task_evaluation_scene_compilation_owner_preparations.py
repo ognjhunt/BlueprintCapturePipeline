@@ -215,7 +215,7 @@ def _revision(context, revisions, request, compilation, final, proof, *, work_bu
         _work(work_budget)
     row = _selected_revision(context, request, final['references'], proof, **_work_kwargs(work_budget))
     if row is None:
-        return False
+        return None
     value = row[0]
     c.require(value.get('status') == 'configured' and c.matches(value.get('source_commit'), c.COMMIT, **_work_kwargs(work_budget))
         and value.get('revision_digest') == compilation['configured_scene_revision_digest'] == final['configured_scene_revision_digest']
@@ -224,7 +224,7 @@ def _revision(context, revisions, request, compilation, final, proof, *, work_bu
     bundle = compilation['configured_scene_bundle']
     c.require(value.get('configured_scene_bundle') == {k: bundle[k] for k in (_work_items(('uri', 'digest', 'size_bytes'), work_budget) if work_budget is not None else ('uri', 'digest', 'size_bytes'))}
         and final['configured_scene_bundle_digest'] == bundle['digest'], 'revision_bundle_invalid', **_work_kwargs(work_budget))
-    return True
+    return row
 
 
 
@@ -317,10 +317,13 @@ def inventory(context, *, work_budget=None):
                 c.require(parent[0]['request'] == request, 'preparation_request_binding_invalid', **_work_kwargs(work_budget))
             sources += context.provenance(p[1] for p in (_work_items(parent_rows, work_budget) if work_budget is not None else parent_rows))
             sources += context.provenance(p[1] for p in (_work_items(candidates, work_budget) if work_budget is not None else candidates))
-            _revision(context, revisions, request, compilation, final, proof, **_work_kwargs(work_budget))
+            revision = _revision(context, revisions, request, compilation, final, proof, **_work_kwargs(work_budget))
+            if revision is not None:
+                sources += context.provenance((revision[1],))
             intake_rows = receipts.get((final['preparation_id'], final['episode_compilation_queue_receipt_digest']), [])
             for intake in (_work_items(intake_rows[:1], work_budget) if work_budget is not None else intake_rows[:1]):
                 c.require(intake[0]['envelope_digest'] == compilation['envelope_digest'], 'handoff_intake_invalid', **_work_kwargs(work_budget))
+            sources += context.provenance(p[1] for p in (_work_items(intake_rows, work_budget) if work_budget is not None else intake_rows))
             if not intake_rows:
                 context.canonical('compilation_intake', final['episode_compilation_queue_receipt_digest'], proof)
             if (_work_collect(work_budget, set, final) if work_budget is not None else set(final)) in (BASE | HANDOFF, BASE | HANDOFF | {'policy_run_plan'}):
@@ -335,7 +338,7 @@ def inventory(context, *, work_budget=None):
                               'pre_handoff_raw_binding_invalid', **_work_kwargs(work_budget))
                 sources += context.provenance(p[1] for p in (_work_items(retained, work_budget) if work_budget is not None else retained))
                 strength = 'retained_raw_and_derived_metadata' if retained else 'derived_metadata_inverse'
-                verified = all(context.supported(p) for group in (_work_items((versions, candidates, parent_rows, intake_rows), work_budget) if work_budget is not None else (versions, candidates, parent_rows, intake_rows)) for p in (_work_items(group, work_budget) if work_budget is not None else group))
+                verified = revision is not None and context.supported(revision) and all(context.supported(p) for group in (_work_items((versions, candidates, parent_rows, intake_rows), work_budget) if work_budget is not None else (versions, candidates, parent_rows, intake_rows)) for p in (_work_items(group, work_budget) if work_budget is not None else group))
                 if not verified:
                     strength = None
                 if 'policy_run_plan' in inverse:

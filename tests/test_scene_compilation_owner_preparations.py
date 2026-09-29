@@ -104,6 +104,14 @@ def test_exact_native_handoff_inverse_has_final_provenance_without_fake_raw_pre_
     assert not any(p.get('role') == 'derived_pre_handoff_raw' for p in result['raw_versions'])
 
 
+def test_verified_handoff_retains_original_revision_and_intake_provenance():
+    result=api().join_retained_scene_compilation_native_owner_inventory(**fixture())
+    observed=next(row for row in result['preparation_handoff_observations']
+                  if row['pre_handoff_binding_verified'] is True)
+    roles={proof['role'] for proof in observed['source_provenance']}
+    assert {'configured_revisions','compilation_intake_receipts'}<=roles
+
+
 @pytest.mark.parametrize('edit', [
     {'reference_count': True}, {'unique_object_count': 2}, {'content_addressed_reuse_count': 1},
     {'source_commit': 'c'*40}, {'run_id': 'foreign-run'}, {'team_namespace': 'foreign'},
