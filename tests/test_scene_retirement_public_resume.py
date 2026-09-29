@@ -289,3 +289,53 @@ def test_changed_consent_inventory_refuses_before_archive_upload(tmp_path,monkey
     assert result['reason']=='scene_retirement_inventory_changed',result
     assert transport.objects==original_objects,'unknown changed bytes crossed archive transport before consent inventory proof'
     assert payload.read_bytes()==b'changed-private-source'
+
+
+def test_public_pin_phase_releases_before_removal_and_restores_after_current_generations(tmp_path,monkeypatch):
+    """Isolate lineage/lifetime admission; actual EX, pin, journal and action run.
+
+    This is integration of previously selected rows, not a current-reader or
+    all-family acceptance proof. The selected native lineage is covered by the
+    separate real terminal-pin selectors.
+    """
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
+    from blueprint_pipeline.task_evaluation_scene_retirement_pin_mutation import _snapshot
+    engine,policy,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
+    pins=tmp_path/'pins'
+    first=Path(scope['members'][0]['canonical_path'])
+    write_storage_pin(pins_root=pins,kind='preparation',owner_id=first.name,paths=[first],now=lambda:0)
+    pin=pins/'preparation'/(first.name+'.json')
+    original=pin.read_bytes()
+    reference=raw_ref(pin)
+    selected=dict(original_raw_ref=reference,original_value=json.loads(original),original_raw_hex=original.hex(),
+        physical_identity=[pin.stat().st_dev,pin.stat().st_ino,pin.stat().st_mode],snapshot=_snapshot(pin.stat()))
+    policy['reference_context']['pins_root']=str(pins)
+    policy['policy_digest']=canonical_digest(policy,digest_field='policy_digest')
+    policy_path=Path(os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE'])
+    policy_path.write_text(json.dumps(policy))
+    scope.update(terminal_pin_refs=[reference],policy_sha256=raw_ref(policy_path)['sha256'])
+    scope['consent_digest']=canonical_digest(scope,digest_field='consent_digest')
+    consent.write_text(json.dumps(scope))
+    proof={'archive_inventory_verified':True,'terminal_pin_release_rows':[selected]}
+    monkeypatch.setattr(engine,'validate_current_reference_transfer',lambda *args,**kwargs:proof)
+    current=engine._current_plan
+    monkeypatch.setattr(engine,'_current_plan',lambda *args:dict(current(*args),reference_transfer=proof))
+    removed=engine.detach_and_remove
+    def remove(*args,**kwargs):
+        assert json.loads(pin.read_bytes())['released_at_epoch'] is not None
+        assert kwargs['journal'].events[-1]['event'] in {'pin_released','retiring','member_removed'}
+        return removed(*args,**kwargs)
+    monkeypatch.setattr(engine,'detach_and_remove',remove)
+    result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    assert result['status']=='retired',result
+    retired=json.loads(Path(result['retired_journal_raw_ref']['path']).read_bytes())
+    assert retired['terminal_pin_release_rows']==[selected] and len(retired['terminal_pin_outcomes'])==1
+    scope.update(action='restore',plan_raw_ref=None,retired_journal_raw_ref=result['retired_journal_raw_ref'])
+    scope['consent_digest']=canonical_digest(scope,digest_field='consent_digest')
+    consent.write_text(json.dumps(scope))
+    transport.read_archive=lambda uri:iter([transport.objects[uri]])
+    restored=engine.restore_scene(result['retired_journal_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    assert restored['status']=='restored',restored
+    assert pin.read_bytes()==original
+    for member in scope['members']:
+        assert engine._generation(policy,member,expected_states={'restored-active'})[0]['state']=='restored-active'
