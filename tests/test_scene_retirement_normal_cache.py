@@ -216,7 +216,8 @@ def test_cache_union_refuses_other_alias_before_upload(tmp_path):
     assert not transport.objects and other.read_bytes()==b'normal-object'
 
 
-def test_real_cache_alias_removal_and_restore_keep_full_bytes_mode_and_inode_union(tmp_path,monkeypatch):
+@pytest.mark.parametrize('mode',['single','two','two-resume'])
+def test_real_cache_alias_removal_and_restore_keep_full_bytes_mode_and_inode_union(tmp_path,monkeypatch,mode):
     import os
     from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
     from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members
@@ -231,19 +232,39 @@ def test_real_cache_alias_removal_and_restore_keep_full_bytes_mode_and_inode_uni
     store.mkdir()
     alias=store/digest[7:]
     os.link(payload,alias)
+    aliases=[alias]
+    if mode!='single':
+        alternate=tmp_path/'adapter-store'
+        alternate.mkdir()
+        aliases.append(alternate/digest[7:])
+        os.link(payload,aliases[-1])
+    allocated=payload.stat().st_blocks*512
     transport=MemoryTransport([member])
     preserved=preserve_members([member],transport=transport,allowance=journal.allowance,token='3'*32,
-        cache_aliases=[dict(canonical_path=str(alias),digest=digest,size_bytes=payload.stat().st_size)])
+        cache_aliases=[dict(canonical_path=str(path),digest=digest,size_bytes=payload.stat().st_size) for path in aliases])
     removed={}
     with access.exclusive_scene_access():
         detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal,removed_inodes=removed)
+        if mode=='two-resume':
+            append=journal.append
+            def interrupted(event,**kwargs):
+                if event=='cache_unlink_planned' and kwargs.get('member_key')=='cache-1':
+                    raise OSError('test interruption after first cache unlink')
+                return append(event,**kwargs)
+            monkeypatch.setattr(journal,'append',interrupted)
+            with pytest.raises(OSError):
+                cache.remove_preserved_cache_aliases(preserved,journal=journal,removed_inodes=removed)
+            monkeypatch.setattr(journal,'append',append)
+            from blueprint_pipeline.task_evaluation_scene_retirement_recovery import removed_inode_counts
+            removed=removed_inode_counts(journal)
         outcomes=cache.remove_preserved_cache_aliases(preserved,journal=journal,removed_inodes=removed)
-        assert outcomes[0]['outcome']=='removed' and not alias.exists()
+        assert all(row['outcome']=='removed' for row in outcomes) and all(not path.exists() for path in aliases)
+        assert sum(row['removed_allocated_bytes'] for row in outcomes)==allocated
         transport.members=[]
         restored=restore_preserved_members(preserved,transport=transport,journal=journal)
     assert restored[0]['outcome']=='restored'
     assert payload.read_bytes()==alias.read_bytes()==b'preserved-evidence'
-    assert payload.stat().st_ino==alias.stat().st_ino and payload.stat().st_nlink==2
+    assert all(payload.stat().st_ino==path.stat().st_ino for path in aliases) and payload.stat().st_nlink==len(aliases)+1
     assert (alias.stat().st_uid,alias.stat().st_gid,alias.stat().st_mode & 0o777)==(
         preserved['cache_aliases'][0]['uid'],preserved['cache_aliases'][0]['gid'],preserved['cache_aliases'][0]['mode'])
 
