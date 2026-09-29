@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import remote_cpu_job_lease as leases
 from blueprint_pipeline import remote_cpu_job_records as records
 from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
@@ -468,3 +469,61 @@ def test_the_collector_writes_object_storage_only_through_its_approved_promotion
     # No direct provider mutation of its own: executions start and stop only through the allocator subcommand.
     assert verifier._direct_paid_mutation_signals(source) == set()
     assert not {"require_paid_resource_admission", "build_paid_lane_admission"} & verifier._all_calls(root / module)
+
+
+def test_shadow_keeps_host_authoritative_and_counts_parity_per_closure_class(tmp_path: Path, monkeypatch) -> None:
+    """Plan 14 §1, §13: the host compiled and moved each row first; a shadow attempt compiles again remotely,
+    is compared, and is discarded: nothing is promoted or landed, staging is deleted, parity is per class."""
+
+    from tests.remote_episode_compilation_support import nurec_usdz
+
+    monkeypatch.setattr(remote, "MAX_INLINE_NUREC_BYTES", 8192)
+    world = CollectorWorld(tmp_path, monkeypatch, mode="cloud_run_shadow", marker="shadow")
+    appearance = nurec_usdz(16384)
+    shipped = world.add_row(label="shipped", appearance=appearance, appearance_name="appearance.usdz", cache=True)
+    drifted = world.add_row(label="drifted")
+    assert (world.plan.closure["class"], shipped.closure["class"], drifted.closure["class"]) == (
+        "not_applicable", "shipped", "not_applicable")
+
+    def differs(descriptor: dict, roots) -> dict:  # this worker's packet request is not the host's
+        from blueprint_pipeline.task_evaluation_episode_compilation_remote import run_episode_compilation_in_worker
+
+        result = run_episode_compilation_in_worker(descriptor, roots, episode_compiler=world.compiler)
+        if descriptor["queue_row"]["name"] == drifted.queue_row["name"]:
+            request = roots.local(descriptor["outputs"]["output_root"]) / "native-task-packet" / (
+                "native_task_arena_packet_request.v1.json")
+            request.write_text(request.read_text(encoding="utf-8") + " ", encoding="utf-8")
+        return {"result": result, "release_path_misses": [], "failures": []}
+
+    world.stage_override = differs
+    host_before = {path: tree_snapshot(path) for path in sorted(world.host.outputs.iterdir())}
+    results_before = {path.name: path.read_bytes() for path in (world.host.queue / "results").iterdir()}
+    world.drive(until=lambda: not remote.markers(world.host.jobs, "shadow"), step=120)
+
+    # The host stayed authoritative: every row was compiled and moved by the host, and none of it changed.
+    assert {path.name: path.read_bytes() for path in (world.host.queue / "results").iterdir()} == results_before
+    assert {path: tree_snapshot(path) for path in sorted(world.host.outputs.iterdir())} == host_before
+    assert not list(world.host.outputs.glob("*.remote-output.v1.json"))
+    assert sorted(path.name for path in (world.host.queue / "completed").iterdir()) == sorted(results_before)
+    # Nothing was promoted, and every attempt's staging and transport are gone at provider-zero.
+    assert not [key for key in world.store.buckets[B2_BUCKET] if "/remote-cpu-output/" in key]
+    assert _staging_versions(world) == [] and world.bucket._objects == {}
+    assert leases.slots_in_use(world.host.jobs) == 0 and len(world.executions()) == 3
+    for plan in (world.plan, shipped, drifted):
+        job_id = contract.job_id_for("episode_compilation", plan.queue_row["name"])
+        lease = json.loads((world.host.jobs / "leases" / f"{job_id}.json").read_text(encoding="utf-8"))
+        assert lease["state"] == "shadow_compared" and lease["provider_zero_proven"]
+    # Parity is counted per closure class, for the image, host environment and CPU class it was measured on.
+    parity = {record["queue_row"]["name"]: record for record in (
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (world.host.jobs / "parity" / "episode_compilation").glob("*.json"))}
+    assert parity[world.name]["parity"] == parity[shipped.queue_row["name"]]["parity"] == "passed"
+    assert parity[drifted.queue_row["name"]]["parity"] == "failed"
+    assert parity[drifted.queue_row["name"]]["mismatches"] == ["native-task-packet/native_task_arena_packet_request.v1.json"]
+    assert world.results[-1]["parity"] == {"not_applicable": {"passed": 1, "failed": 1}, "shipped": {"passed": 1, "failed": 0}}
+    identity = {"image": world.plan.image, "host_environment_digest": HOST_RECORD["environment_digest"],
+                "cpu_class": HOST_RECORD["cpu_class"]}
+    # Consecutive passes since the class's last failure: the pass counts only if it was compared after it.
+    passed_last = parity[world.name]["compared_at_epoch"] > parity[drifted.queue_row["name"]]["compared_at_epoch"]
+    assert remote.shadow_passes(world.host.jobs, closure_class="not_applicable", **identity) == int(passed_last)
+    assert remote.shadow_passes(world.host.jobs, closure_class="shipped", **identity) == 1

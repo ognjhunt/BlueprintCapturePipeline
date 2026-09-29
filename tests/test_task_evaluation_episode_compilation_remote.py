@@ -286,6 +286,14 @@ def test_closure_class_without_three_shadow_passes_stays_on_host(tmp_path: Path)
     for index in (9, 10, 11):
         _parity(host, "not_applicable", True, index=index)
     assert isinstance(_plan(host, claimed, gate=True), remote.RemotePlan)
+    # A failure compared in the same instant as a pass counts as the later one.
+    identity = {"image": IMAGE, "host_environment_digest": HOST_RECORD["environment_digest"],
+                "cpu_class": HOST_RECORD["cpu_class"]}
+    _parity(host, "shipped", True, index=20)
+    remote.record_shadow_parity(host.jobs, {**json.loads((host.jobs / "parity" / "episode_compilation" / (
+        f"rcj-ec-{'0' * 24}-a1-{20:032x}.json")).read_text(encoding="utf-8")), "attempt_id": f"rcj-ec-{'0' * 24}-a1-{21:032x}",
+        "parity": "failed", "record_digest": ""} | {"compared_at_epoch": 20.0})
+    assert remote.shadow_passes(host.jobs, closure_class="shipped", **identity) == 0
 
 
 def test_ephemeral_budget_overflow_stays_on_host(tmp_path: Path) -> None:

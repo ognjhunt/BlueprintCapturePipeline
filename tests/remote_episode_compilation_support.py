@@ -342,7 +342,7 @@ def _policy_observation(inputs: Path, value: dict[str, Any], references: dict[st
 
 def stage_compile(host: Host, *, policy_observation_override: bool = False, destination_support: bool = False,
                   qualification_only: bool = False, appearance: bytes | None = None,
-                  appearance_name: str = "appearance.usda") -> tuple[dict[str, Any], str]:
+                  appearance_name: str = "appearance.usda", label: str | None = None) -> tuple[dict[str, Any], str]:
     """Stage the compiler test's closed compile as one envelope in ``pending/``: every reference is a file
     under the host's input root, as preparation materializes them.  Returns the envelope and its row name."""
 
@@ -350,6 +350,8 @@ def stage_compile(host: Host, *, policy_observation_override: bool = False, dest
     from tests.test_task_evaluation_native_arena_episode_compiler import _record, _write_json
 
     value, configured = request(), revision()
+    if label is not None:
+        value["preparation_id"], value["run_id"] = f"{label}-v1", f"run-{label}-v1"
     value["team_namespace"] = configured["team_namespace"]
     value["expected_production_commit"] = configured["source_commit"]
     value["scene"]["identity"] = configured["scene_identity"]
@@ -572,7 +574,42 @@ class CollectorWorld:
                 host_environment=HOST_RECORD, require_shadow_gate=False)
             assert isinstance(plan, remote.RemotePlan), plan
         self.plan, self.name = plan, plan.queue_row["name"]
+        if marker == "shadow":
+            self.host_compile(self.name)
         remote.write_handoff(self.host.jobs, plan, mode=marker, now=self.clock.now)
+
+    def host_compile(self, name: str) -> dict[str, Any]:
+        """What the no-spend unit does to a claimed row in shadow mode before its marker: compile, record, move."""
+
+        from blueprint_pipeline.task_evaluation_episode_compilation_worker import compile_claimed_envelope
+
+        state, result = compile_claimed_envelope(
+            self.host.queue / "processing" / name, source_name=name, inputs=self.host.inputs.resolve(),
+            outputs=self.host.outputs.resolve(), source_commit=json.loads(
+                (self.host.queue / "processing" / name).read_text(encoding="utf-8"))["expected_production_commit"],
+            episode_compiler=self.compiler, disk_reservation_root=None, storage_pins_root=None)
+        write_launch_preparation_record_exclusive(self.host.queue / "results" / name, result)
+        os.replace(self.host.queue / "processing" / name, self.host.queue / state / name)
+        return result
+
+    def add_row(self, *, label: str, marker: str = "shadow", appearance: bytes | None = None,
+                appearance_name: str = "appearance.usda", cache: bool = False) -> Any:
+        """Stage, claim and plan one more row; a shadow row is host-compiled before its marker is written."""
+
+        from blueprint_pipeline import task_evaluation_episode_compilation_remote as remote
+
+        _, name = stage_compile(self.host, label=label, appearance=appearance, appearance_name=appearance_name)
+        if cache:
+            self.host.cache_entry(digest_of(appearance))
+        plan = remote.plan_remote_compilation(
+            self.host.claim(name), inputs=self.host.inputs, outputs=self.host.outputs, source_commit="a" * 40,
+            config=self.remote.config, jobs_root=self.host.jobs, filesystem_root=self.host.fs,
+            cache_root=self.host.cache, host_environment=HOST_RECORD, require_shadow_gate=False)
+        assert isinstance(plan, remote.RemotePlan), plan
+        if marker == "shadow":
+            self.host_compile(name)
+        remote.write_handoff(self.host.jobs, plan, mode=marker, now=self.clock.now)
+        return plan
 
     # ------------------------------------------------------------------ the paid unit
     def allocate(self, argv: list[str]) -> dict[str, Any]:

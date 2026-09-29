@@ -311,10 +311,11 @@ def shadow_passes(jobs_root: str | Path, *, closure_class: str, image: str, host
                 and record.get("record_digest") == canonical_digest(record, digest_field="record_digest")
                 and (record.get("closure_class"), record.get("image"), record.get("host_environment_digest"),
                      record.get("cpu_class")) == (closure_class, image, host_environment_digest, cpu_class)):
-            rows.append((float(record.get("compared_at_epoch") or 0.0), record.get("parity") == "passed"))
+            rows.append((float(record.get("compared_at_epoch") or 0.0), record.get("parity") != "passed"))
     count = 0
-    for _, passed in sorted(rows, reverse=True):
-        if not passed:
+    # Newest first; a failure compared at the same moment as a pass counts as the later one.
+    for _, failed in sorted(rows, reverse=True):
+        if failed:
             break
         count += 1
     return count
