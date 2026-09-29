@@ -999,7 +999,8 @@ def observe_owner_review(*, installed_config_path: str, now: float,
         return incomplete(str(error))
     rows = [dict(row) for row in census["rows"]]
     by_path = {row["path"]: row for row in rows}
-    possible: dict[str, list[dict]] = {}
+    original_by_path = {row["path"]: row for row in census["rows"]}
+    possible: dict[str, list[tuple[dict, float]]] = {}
     blockers = []
     for head in heads:
         try:
@@ -1044,7 +1045,8 @@ def observe_owner_review(*, installed_config_path: str, now: float,
                      < approval["expires_at_epoch"]
                      and _effective_now(now, started, monotonic, wall_clock)
                      < packet["expires_at_epoch"], "legacy_owner_approval_expired")
-            possible.setdefault(path, []).append(checked)
+            possible.setdefault(path, []).append((
+                checked, min(packet["expires_at_epoch"], approval["expires_at_epoch"])))
         except LegacyOwnerError as error:
             blockers.append(str(error))
     try:
@@ -1052,11 +1054,20 @@ def observe_owner_review(*, installed_config_path: str, now: float,
     except LegacyOwnerError as error:
         return incomplete(str(error))
     applied = 0
+    projected_expiries: dict[str, float] = {}
     for path, candidates in possible.items():
         if len(candidates) != 1:
             blockers.append("legacy_owner_active_conflict")
             continue
-        record, row = candidates[0], by_path[path]
+        record, expires_at = candidates[0]
+        try:
+            current_now = _effective_now(now, started, monotonic, wall_clock)
+        except LegacyOwnerError as error:
+            return incomplete(str(error))
+        if current_now >= expires_at:
+            blockers.append("legacy_owner_approval_expired")
+            continue
+        row = by_path[path]
         row.update(owner=record["owner"], owner_decision="owner_review",
                    approved_expiry=record["expires_at_epoch"],
                    classification=record["classification"],
@@ -1064,7 +1075,18 @@ def observe_owner_review(*, installed_config_path: str, now: float,
                    owner_source="protected_second_generation_approval",
                    gc_eligible=False, references_clear=False,
                    candidate_bytes=None, eta_seconds=None)
+        projected_expiries[path] = expires_at
         applied += 1
+    try:
+        final_now = _effective_now(now, started, monotonic, wall_clock)
+    except LegacyOwnerError as error:
+        return incomplete(str(error))
+    for path, expires_at in projected_expiries.items():
+        if final_now >= expires_at:
+            by_path[path].clear()
+            by_path[path].update(original_by_path[path])
+            blockers.append("legacy_owner_approval_expired")
+            applied -= 1
     report = dict(census)
     report.update(schema_version="control_plane_lane_legacy_owner_survey.v1",
                   rows=rows, observed_owner_count=applied,
