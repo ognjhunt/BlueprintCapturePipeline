@@ -316,6 +316,24 @@ def publish_pending_receipt(policy, consent, journal, preserved, allowance):
              'plan_raw_ref': consent['plan_raw_ref'], 'retiring_token': journal.token,
              'journal_initial_raw_ref': journal.initial_ref, 'members': members, 'archive': archive,
              'planned_unique_allocated_bytes': preserved['unique_allocated_bytes']}
+    shared_keeps=initial.get('unselected_shared_content_keeps',[])
+    _require(type(shared_keeps) is list and len(shared_keeps)<=10000 and
+             all(type(row) is dict and set(row)=={
+                     'canonical_path','action','observation_status','reasons'}
+                 and row['action']=='KEEP'
+                 and (row['observation_status'],row['reasons']) in (
+                     ('observed_scoped_metadata',['shared_content_object_not_exclusive']),
+                     ('incomplete_scoped_metadata',[
+                         'member_or_child_unavailable_or_changed','shared_content_object_not_exclusive']),
+                     ('incomplete_scoped_metadata',[
+                         'shared_content_object_not_exclusive','member_or_child_unavailable_or_changed']))
+                 and type(row['canonical_path']) is str
+                 and str(_canonical(row['canonical_path']))==row['canonical_path']
+                 and not any(Path(row['canonical_path']).is_relative_to(Path(member['canonical_path']))
+                             for member in consent['members']) for row in shared_keeps)
+             and len({row['canonical_path'] for row in shared_keeps})==len(shared_keeps),
+             'scene_retirement_receipt_members_invalid')
+    value['unselected_shared_content_keeps']=shared_keeps
     _require(initial.get('cache_objects',[])==consent.get('cache_objects',[]),'scene_retirement_receipt_members_invalid')
     cache_members=_cache_members(initial.get('cache_objects',[]),preserved,allowance)
     if cache_members:
@@ -485,7 +503,8 @@ def _restore_progress(policy, consent, current_raw_ref, progress, allowance):
     _require(snapshot.get('schema_version') == 'scene_retirement_journal.v1' and snapshot.get('status') == 'retired'
              and snapshot.get('journal_digest') == canonical_digest(snapshot, digest_field='journal_digest')
              and snapshot.get('token') == pending['retiring_token']
-             and snapshot.get('intent_id') == consent['intent_id'] and snapshot.get('members') == consent['members'],
+             and snapshot.get('intent_id') == consent['intent_id'] and snapshot.get('members') == consent['members']
+             and snapshot.get('unselected_shared_content_keeps',[]) == pending.get('unselected_shared_content_keeps',[]),
              'scene_retirement_restore_snapshot_invalid')
     if 'restore_journal_initial_raw_ref' in current:
         _require(current['restore_journal_initial_raw_ref'] == initial_ref and current['restore_token'] == token
@@ -597,7 +616,9 @@ def publish_terminal_receipt(policy, consent, pending_raw_ref, receipt, allowanc
              'scene_retirement_receipt_members_invalid')
     _require(snapshot.get('status') == 'retired' and snapshot.get('token') == receipt['token']
              and snapshot.get('journal_digest') == canonical_digest(snapshot, digest_field='journal_digest')
-             and snapshot.get('intent_id') == consent['intent_id'] and snapshot.get('members') == consent['members'],
+             and snapshot.get('intent_id') == consent['intent_id'] and snapshot.get('members') == consent['members']
+             and snapshot.get('unselected_shared_content_keeps',[]) == pending.get('unselected_shared_content_keeps',[])
+             == receipt.get('unselected_shared_content_keeps',[]),
              'scene_retirement_restore_snapshot_invalid')
     journal = _resume(policy, pending, allowance)
     _require(snapshot.get('sequence') == journal.sequence

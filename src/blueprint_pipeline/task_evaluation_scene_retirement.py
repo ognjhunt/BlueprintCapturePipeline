@@ -334,6 +334,7 @@ def _plan_members(plan, consent, allowance=None, *, cache_inventory=None):
             aliases[alias['path']]=alias
     cache_matched=set()
     matched=set()
+    shared_keeps=[]
     observed={row['path'] for row in rows if type(row) is dict and row.get('status')=='observed_scoped_metadata'}
     for row in rows:
         if allowance is not None:
@@ -347,6 +348,25 @@ def _plan_members(plan, consent, allowance=None, *, cache_inventory=None):
                      and set(row['keeps'])<= {'shared_content_object_not_exclusive',
                          'external_hardlink_or_unobserved_alias'},'scene_retirement_shared_or_unresolved_member')
             cache_matched.add(str(path))
+            continue
+        reasons=row.get('keeps')
+        observed_shared=(row.get('status')=='observed_scoped_metadata'
+                         and reasons==['shared_content_object_not_exclusive'])
+        absent_shared=(row.get('status')=='incomplete_scoped_metadata'
+                       and type(reasons) in (list,_Rows) and len(reasons)==2
+                       and set(reasons)=={'shared_content_object_not_exclusive',
+                                          'member_or_child_unavailable_or_changed'}
+                       and row.get('physical_identity') is None)
+        if (not owners and str(path) not in aliases
+                and type(row.get('kinds')) in (list,_Rows)
+                and 'prepared_cache_object' in row['kinds']
+                and (observed_shared or absent_shared)):
+            # A shared object outside every requested directory is not in
+            # this removal union. An absent prepared
+            # cache object retains both its unavailable and shared KEEP.
+            # No alias, changed child, or additional reason is cleared.
+            shared_keeps.append({'canonical_path':str(path),'action':'KEEP',
+                'observation_status':row['status'],'reasons':list(reasons)})
             continue
         _require(len(owners)==1,'scene_retirement_members_unproven')
         if row.get('status')=='coalesced_descendant_member':
@@ -376,6 +396,7 @@ def _plan_members(plan, consent, allowance=None, *, cache_inventory=None):
         _require(set(keeps)<=retention,'scene_retirement_shared_or_unresolved_member')
         matched.add(owners[0])
     _require(len(matched)==len(selected) and cache_matched==set(aliases),'scene_retirement_members_unproven')
+    return shared_keeps
 
 
 def _current_plan(policy, consent, retained, allowance, now, monotonic):
@@ -401,7 +422,8 @@ def _current_plan(policy, consent, retained, allowance, now, monotonic):
         cache_targets=validate_cache_objects(policy,consent,allowance)
         cache_inventory=_inventory_members([row['canonical_path'] for row in consent['members']],allowance,
             cache_aliases=[{key:row[key] for key in ('canonical_path','digest','size_bytes')} for row in cache_targets])
-    _plan_members(fresh,consent,allowance,cache_inventory=cache_inventory)
+    fresh['unselected_shared_content_keeps']=_plan_members(
+        fresh,consent,allowance,cache_inventory=cache_inventory)
     _installed_cohort(policy,allowance)
     _require(not fresh.get('other_owner_capture_keeps'),
              'scene_retirement_reference_protected')
@@ -593,7 +615,8 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
         removed_allocated_bytes=sum(row['removed_allocated_bytes'] for row in outcomes+cache_outcomes),
         logical_bytes=sum(row['logical_bytes'] for row in outcomes),
         planned_unique_allocated_bytes=preserved['unique_allocated_bytes'],
-        metadata_closure_raw_ref=closure,**extra)
+        metadata_closure_raw_ref=closure,
+        unselected_shared_content_keeps=initial.get('unselected_shared_content_keeps',[]),**extra)
     receipt['intent_receipt_raw_ref']=publish_terminal_receipt(policy,consent,pending,receipt,allowance)
     receipt['intent_receipt_path']=receipt['intent_receipt_raw_ref']['path']
     return receipt
@@ -714,7 +737,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 cohort_sha256=consent['cohort_sha256'],status='pending',members=consent['members'],
                 generations=generations,preserved=preserved,metadata_closure_raw_ref=closure,
                 action_allowance=allowance.checkpoint(),declared_byte_verification=verified_bytes,
-                reference_transfer=verified_references)
+                reference_transfer=verified_references,
+                unselected_shared_content_keeps=fresh['unselected_shared_content_keeps'])
             if cache_targets:
                 initial.update(cache_objects=cache_targets,cache_generations=cache_generations)
             if verified_references.get('terminal_pin_release_rows'):
@@ -885,7 +909,8 @@ def _finish_restore(policy,consent,retired,reference,journal,pending,restore_con
     pin_rows=retired.get('terminal_pin_release_rows',[])
     pin_outcomes=pins.restore_terminal_pins(policy,pin_rows,retired.get('terminal_pin_outcomes',[]),journal=journal) if pin_rows else []
     receipt=dict(schema_version='scene_restore_receipt.v1',status='restored',intent_id=consent['intent_id'],
-         token=token,members=outcomes,retired_journal_raw_ref=reference)
+         token=token,members=outcomes,retired_journal_raw_ref=reference,
+         unselected_shared_content_keeps=retired.get('unselected_shared_content_keeps',[]))
     if cache_outcomes:
         receipt['cache_outcomes']=cache_outcomes
     if pin_rows:

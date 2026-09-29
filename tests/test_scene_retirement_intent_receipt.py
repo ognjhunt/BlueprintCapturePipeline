@@ -16,7 +16,7 @@ def raw_ref(path):
             'size_bytes': len(raw)}
 
 
-def operation(tmp_path, monkeypatch, *, member_count=1, with_transport=False):
+def operation(tmp_path, monkeypatch, *, member_count=1, with_transport=False, shared_keeps=None):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
     from blueprint_pipeline.task_evaluation_scene_retirement_mutation import inventory_digest
@@ -62,7 +62,8 @@ def operation(tmp_path, monkeypatch, *, member_count=1, with_transport=False):
     journal = SceneJournal.create(store, token='1' * 32, allowance=allowance,
         initial={'schema_version': 'scene_retirement_journal.v1', 'status': 'pending',
                  'intent_id': consent['intent_id'], 'intent_raw_ref': consent['intent_raw_ref'],
-                 'plan_raw_ref': consent['plan_raw_ref'], 'members': members, 'preserved': preserved})
+                 'plan_raw_ref': consent['plan_raw_ref'], 'members': members, 'preserved': preserved,
+                 'unselected_shared_content_keeps': shared_keeps or []})
     result = (policy, consent, journal, preserved, allowance, payload)
     return (*result, transport) if with_transport else result
 
@@ -121,6 +122,31 @@ def test_terminal_updates_only_exact_pending_and_preserves_immutable_history(tmp
     assert any(p.read_bytes() == original for p in Path(pending['path']).parent.glob('scene-retired.*.pending.json'))
     assert any(p.read_bytes() == Path(terminal['path']).read_bytes()
                for p in Path(pending['path']).parent.glob('scene-retired.*.terminal.json'))
+
+
+def test_shared_content_keep_survives_pending_terminal_and_snapshot_binding(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    kept={'canonical_path':str(tmp_path.resolve()/'content'/'sha256'/('a'*64)),'action':'KEEP',
+          'observation_status':'incomplete_scoped_metadata',
+          'reasons':['member_or_child_unavailable_or_changed','shared_content_object_not_exclusive']}
+    policy, consent, journal, preserved, allowance, _ = operation(
+        tmp_path, monkeypatch, shared_keeps=[kept])
+    pending=publish_pending_receipt(policy,consent,journal,preserved,allowance)
+    assert json.loads(Path(pending['path']).read_bytes())['unselected_shared_content_keeps']==[kept]
+    outcome=detach_and_remove(preserved,member_index=0,
+        generation_id=consent['members'][0]['generation_id'],journal=journal)
+    snapshot=journal.retired_snapshot({'schema_version':'scene_retirement_journal.v1',
+        'intent_id':consent['intent_id'],'members':consent['members'],'outcomes':[outcome],
+        'unselected_shared_content_keeps':[kept]})
+    final={'status':'retired','intent_id':consent['intent_id'],'token':journal.token,
+           'members':[outcome],'retired_journal_raw_ref':snapshot,
+           'unselected_shared_content_keeps':[kept]}
+    mismatched=dict(final,unselected_shared_content_keeps=[])
+    with pytest.raises(ValueError,match='scene_retirement_restore_snapshot_invalid'):
+        publish_terminal_receipt(policy,consent,pending,mismatched,allowance)
+    terminal=publish_terminal_receipt(policy,consent,pending,final,allowance)
+    assert json.loads(Path(terminal['path']).read_bytes())['unselected_shared_content_keeps']==[kept]
 
 
 @pytest.mark.parametrize('drift', ['count', 'generation', 'event', 'snapshot'])

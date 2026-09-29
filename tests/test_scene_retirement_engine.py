@@ -109,3 +109,30 @@ def test_independent_sam_owner_consent_can_supply_retention_policy_without_erasi
     row['keeps'].append('external_hardlink_or_unobserved_alias')
     with pytest.raises(ValueError):
         _plan_members(plan,consent)
+
+
+@pytest.mark.parametrize('storage_class',['host','cache'])
+def test_unselected_shared_cache_outside_delete_roots_remains_in_place(tmp_path,storage_class):
+    from blueprint_pipeline.task_evaluation_scene_retirement import _plan_members
+    root=str(tmp_path.resolve()/'selected-scene')
+    cache=str(tmp_path.resolve()/'content'/'sha256'/('a'*64))
+    plan={'measured_members':[
+        {'path':root,'status':'observed_scoped_metadata','keeps':[]},
+        {'path':cache,'status':'observed_scoped_metadata','storage_class':storage_class,
+         'kinds':['prepared_cache_object'],'keeps':['shared_content_object_not_exclusive']}]}
+    consent={'members':[{'canonical_path':root,'class':'host'}],
+             'private_archive_classes':[]}
+    assert _plan_members(plan,consent)==[{'canonical_path':cache,'action':'KEEP',
+        'observation_status':'observed_scoped_metadata',
+        'reasons':['shared_content_object_not_exclusive']}]
+    plan['measured_members'][1]['keeps'].append('external_hardlink_or_unobserved_alias')
+    with pytest.raises(ValueError,match='scene_retirement_members_unproven'):
+        _plan_members(plan,consent)
+    plan['measured_members'][1].update(status='incomplete_scoped_metadata',physical_identity=None,
+        keeps=['member_or_child_unavailable_or_changed','shared_content_object_not_exclusive'])
+    assert _plan_members(plan,consent)==[{'canonical_path':cache,'action':'KEEP',
+        'observation_status':'incomplete_scoped_metadata',
+        'reasons':['member_or_child_unavailable_or_changed','shared_content_object_not_exclusive']}]
+    plan['measured_members'][1]['physical_identity']=[1,2,3]
+    with pytest.raises(ValueError,match='scene_retirement_members_unproven'):
+        _plan_members(plan,consent)
