@@ -605,10 +605,17 @@ def _extract_verified_bundle_unfenced(
                     if row.get("external_layer") is not None
                     else None
                 )
+                if (layer_source is not None and cached != target
+                        and stat.S_IMODE(layer_source.stat().st_mode) & 0o222 == 0
+                        and _generated_use is not None and _generated_use.producer is not None):
+                    if _generated_use.publish_external_member(source=layer_source, cached=cached,
+                            target=target, manifest_bytes=manifest_bytes, manifest=manifest, entry=row):
+                        continue
                 # A verified immutable external layer can back the member CAS
                 # directly. Copying it again created another 4 GiB runtime
                 # archive even though preparation had already retained it.
-                if (_generated_use is None and layer_source is not None and cached != target
+                if ((_generated_use is None or _generated_use.producer is None)
+                        and layer_source is not None and cached != target
                         and stat.S_IMODE(layer_source.stat().st_mode) & 0o222 == 0):
                     if _sha256_file(layer_source) != row["sha256"]:
                         raise TaskEvaluationNativeArenaAdapterError(

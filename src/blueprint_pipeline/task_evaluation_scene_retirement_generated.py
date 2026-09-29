@@ -9,6 +9,8 @@ import hashlib
 import io
 import json
 import os
+import secrets
+import stat
 import sys
 import zipfile
 from contextlib import contextmanager
@@ -89,10 +91,11 @@ class _ArchiveReader(io.RawIOBase):
         if size == -1:
             size = self.use.info.st_size-os.lseek(self.use.fd, 0, os.SEEK_CUR)
         _require(type(size) is int and 0 <= size <= 4*1024*1024, _ERROR)
+        size = min(size, max(0, self.use.info.st_size-os.lseek(self.use.fd, 0, os.SEEK_CUR)))
+        if self.use.allowance is not None:
+            self.use.allowance.charge('local_bytes', size)
         raw = os.read(self.use.fd, size)
         self.use.guard()
-        if self.use.allowance is not None:
-            self.use.allowance.charge('local_bytes', len(raw))
         return raw
 
     def seek(self, offset, whence=0):
@@ -135,11 +138,12 @@ class _BundleUse:
         remaining = self.info.st_size
         while remaining:
             self.guard()
-            chunk = os.read(self.fd, min(1024*1024, remaining))
+            count = min(1024*1024, remaining)
+            if self.allowance is not None:
+                self.allowance.charge('local_bytes', count)
+            chunk = os.read(self.fd, count)
             self.guard()
             _require(chunk, _ERROR)
-            if self.allowance is not None:
-                self.allowance.charge('local_bytes', len(chunk))
             digest.update(chunk)
             remaining -= len(chunk)
         _require('sha256:'+digest.hexdigest() == self.reference.get('digest'), _ERROR)
@@ -178,7 +182,9 @@ class _BundleUse:
             external_raw, external_generation = _external_source(self.policy, external_source, entry, authority_ref)
         store = Path(self.policy['generation_store'])
         manifest_name = 'generated-manifest-'+hashlib.sha256(manifest_bytes).hexdigest()+'.json'
-        with _opened(store, directory=True, protected=True) as (ledger, ledger_info):
+        with _opened(store, directory=True) as (ledger, ledger_info):
+            _require((ledger_info.st_uid, ledger_info.st_gid) == access._service_identity()
+                     and stat.S_IMODE(ledger_info.st_mode) == 0o700, _ERROR)
             _publish_manifest(ledger, _identity(ledger_info), manifest_name, manifest_bytes, store)
             manifest_ref = _raw_bytes(manifest_bytes, store/manifest_name)
             value = dict(schema_version=SCHEMA, intent_raw_ref=authority['intent_raw_ref'],
@@ -195,42 +201,88 @@ class _BundleUse:
             try:
                 _write(ledger, name, value, parent_identity=_identity(ledger_info))
             except FileExistsError:
-                existing, _ = load_document(store/name, maximum=65536, protected=True)
+                existing, _ = load_document(store/name, maximum=65536)
                 _require(existing == value, _ERROR)
             self.guard()
-        _, raw = load_document(store/name, maximum=65536, protected=True)
+        _, raw = load_document(store/name, maximum=65536)
         return raw
 
 
+    def publish_external_member(self, *, source, cached, target, manifest_bytes, manifest, entry):
+        if self.producer is None:
+            return False
+        from . import task_evaluation_scene_retirement_cache as cache
+        authority = self.publish(manifest_bytes=manifest_bytes, manifest=manifest, entry=entry,
+                                 external_source=source)
+        if authority is None:
+            return False
+        source, cached = _canonical(str(source)), _canonical(str(cached))
+        temporary = '.'+cached.name+'.generated-'+secrets.token_hex(16)+'.pending'
+        placed = False
+        with _opened(source.parent, directory=True) as (original_parent, original_parent_info), \
+                _opened(source) as (fd, info), _opened(cached.parent, directory=True) as (parent, parent_info):
+            identity, original_identity, parent_identity = _identity(info), _identity(original_parent_info), _identity(parent_info)
+            try:
+                self.guard()
+                _named(original_parent, original_identity, source.name, fd, identity)
+                _guard(parent, parent_identity)
+                os.link(source.name, temporary, src_dir_fd=original_parent, dst_dir_fd=parent, follow_symlinks=False)
+                placed = True
+                _named(parent, parent_identity, temporary, fd, identity)
+                cache.publish_content_generation(cached, cached.parent/temporary,
+                    digest=entry['sha256'], size_bytes=entry['size_bytes'], authority=authority)
+                self.guard()
+            finally:
+                if placed:
+                    _named(parent, parent_identity, temporary, fd, identity)
+                    os.unlink(temporary, dir_fd=parent)
+                    _guard(parent, parent_identity)
+                    os.fsync(parent)
+        cache.project_content(cached, target, authority=authority)
+        return True
+
+
 def _publish_manifest(parent, parent_identity, name, raw, store):
-    try:
-        fd, identity = _new_file(parent, name, parent_identity=parent_identity)
-    except FileExistsError:
-        value, reference = load_document(store/name, maximum=4*1024*1024, protected=True)
-        _require(value == json.loads(raw) and reference == _raw_bytes(raw, store/name), _ERROR)
-        return
-    complete = False
+    # Full immutable metadata is exposed only after retained-FD write/fsync.
+    temporary = '.generated-manifest-'+secrets.token_hex(16)+'.pending'
+    fd, identity = _new_file(parent, temporary, parent_identity=parent_identity)
+    pending = True
     try:
         view = memoryview(raw)
         while view:
-            _named(parent, parent_identity, name, fd, identity)
+            _named(parent, parent_identity, temporary, fd, identity)
             written = os.write(fd, view[:1024*1024])
             _require(0 < written <= len(view), _ERROR)
             view = view[written:]
-        _named(parent, parent_identity, name, fd, identity)
+        _named(parent, parent_identity, temporary, fd, identity)
+        owner = os.fstat(parent)
+        os.fchown(fd, owner.st_uid, owner.st_gid)
+        _named(parent, parent_identity, temporary, fd, identity)
         os.fsync(fd)
-        _named(parent, parent_identity, name, fd, identity)
+        _named(parent, parent_identity, temporary, fd, identity)
+        try:
+            os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+        except FileExistsError:
+            value, reference = load_document(store/name, maximum=4*1024*1024)
+            _require(value == json.loads(raw) and reference == _raw_bytes(raw, store/name), _ERROR)
+        else:
+            _named(parent, parent_identity, name, fd, identity)
+        _named(parent, parent_identity, temporary, fd, identity)
+        os.unlink(temporary, dir_fd=parent)
+        pending = False
+        _guard(parent, parent_identity)
         os.fsync(parent)
-        complete = True
     finally:
         incoming = sys.exc_info()[1]
-        if not complete:
+        if pending:
             try:
-                _named(parent, parent_identity, name, fd, identity)
-                os.unlink(name, dir_fd=parent)
+                _named(parent, parent_identity, temporary, fd, identity)
+                os.unlink(temporary, dir_fd=parent)
             except (OSError, access.SceneRetirementAccessError) as error:
                 if incoming is not None:
                     incoming.add_note(str(error))
+                else:
+                    raise access.SceneRetirementAccessError(_ERROR) from error
         failure = access._close_owned(fd, identity)
         if failure and incoming is None:
             raise access.SceneRetirementAccessError(failure)
@@ -240,26 +292,36 @@ def _publish_manifest(parent, parent_identity, name, raw, store):
 
 def _external_source(policy, path, entry, authority_ref):
     path = _canonical(str(path))
-    generation, reference = _generation(policy, path, directory=False)
-    source = selected_document(generation['source_publication_raw_ref'], maximum=65536)
+    source = selected_document(authority_ref, maximum=65536)
+    request = selected_document(source['submission_request_raw_ref'], maximum=65536)
+    try:
+        generation, reference = _generation(policy, path, directory=False)
+    except FileNotFoundError:
+        # Actual native preparation projection and its fixed default CAS:
+        # select the authenticated preparation, never scan for matching bytes.
+        producer = _producer(policy, path.parent)
+        _require(producer is not None, _ERROR)
+        prep, current, _ = producer
+        _require(prep.name == request['preparation_id']
+                 and current['source_storage_authority_raw_ref'] == authority_ref
+                 and path.name == entry['sha256'][7:], _ERROR)
+        native_cache = prep.parent/'content-addressed'/'sha256'/entry['sha256'][7:]
+        generation, reference = _generation(policy, native_cache, directory=False)
+        with _opened(native_cache) as (_, cached), _opened(path) as (_, projected):
+            _require(_identity(cached) == _identity(projected), _ERROR)
     _require(source.get('schema_version') == 'scene_preparation_storage_authority.v1'
              and generation['source_publication_raw_ref'] == authority_ref
              and generation['digest'] == entry['sha256']
              and generation['size_bytes'] == entry['size_bytes'], _ERROR)
-    from .task_evaluation_launch_preparation_worker import collect_preparation_references
-    # Dynamic runtime layers are not direct request rows. Their exact sealed
-    # wrapper relation is independently proved by the native manifest entry.
-    request = selected_document(source['submission_request_raw_ref'], maximum=65536)
-    _require(type(request) is dict and collect_preparation_references(request), _ERROR)
-    with _opened(path) as (fd, info):
+    with _opened(path.parent, directory=True) as (parent, parent_info), _opened(path) as (fd, info):
         digest = hashlib.sha256()
         remaining = info.st_size
         identity = _identity(info)
         snapshot = _snapshot(info)
         while remaining:
-            _guard(fd, identity)
+            _named(parent, _identity(parent_info), path.name, fd, identity)
             chunk = os.read(fd, min(1024*1024, remaining))
-            _guard(fd, identity)
+            _named(parent, _identity(parent_info), path.name, fd, identity)
             _require(chunk, _ERROR)
             digest.update(chunk)
             remaining -= len(chunk)
@@ -305,7 +367,12 @@ def _verified_record(record, policy, consent, allowance):
              and current['owner_raw_ref'] == authority['intent_raw_ref'] == record['intent_raw_ref']
              and current['birth_request_raw_ref'] == authority['attempt_raw_ref']
              and authority['request_digest'] == record['request_digest'], _ERROR)
-    retained = selected_document(record['manifest_raw_ref'], maximum=4*1024*1024, protected=True)
+    manifest_path = _canonical(record['manifest_raw_ref']['path'])
+    _require(manifest_path.parent == Path(policy['generation_store']), _ERROR)
+    with _opened(manifest_path) as (_, manifest_info):
+        _require((manifest_info.st_uid, manifest_info.st_gid) == access._service_identity()
+                 and stat.S_IMODE(manifest_info.st_mode) == 0o600 and manifest_info.st_nlink == 1, _ERROR)
+    retained = selected_document(record['manifest_raw_ref'], maximum=4*1024*1024)
     _require(retained['manifest_digest'] == record['manifest_digest'], _ERROR)
     return request, retained
 
