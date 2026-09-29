@@ -11,7 +11,7 @@ from tests.test_scene_retirement_connected_acceptance import _sealed_file
 from tests.test_scene_retirement_real_participants import access_fixture
 
 
-def _fixture(tmp_path, monkeypatch):
+def _fixture(tmp_path, monkeypatch, *, prepare_parent=True):
     access, policy, root = access_fixture(tmp_path, monkeypatch)
     owner = observation()
     marker = owner["completion_marker"]
@@ -47,7 +47,8 @@ def _fixture(tmp_path, monkeypatch):
     selector["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
     target = (root / owner["bucket"] / "scenes" / owner["scene_id"] / "captures" /
               owner["capture_id"])
-    target.parent.mkdir(parents=True)
+    if prepare_parent:
+        target.parent.mkdir(parents=True)
     return access, policy, target, owner, selector, encoded
 
 
@@ -71,6 +72,20 @@ def test_capture_birth_retains_original_proofs_before_empty_target(tmp_path, mon
                        "size_bytes": len(raw)}
     assert birth_capture_member(target, observation=owner, membership_selector=selector,
                                 membership_raw=membership_raw) == born
+
+
+def test_normal_capture_birth_prepares_absent_parent_under_owned_root(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
+
+    _, policy, target, owner, selector, membership_raw = _fixture(
+        tmp_path, monkeypatch, prepare_parent=False)
+    assert not target.parent.exists()
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+                                membership_raw=membership_raw)
+    assert born['state'] == 'active' and target.is_dir()
+    assert list(target.iterdir()) == []
+    for parent in (target.parent, *list(target.parents)[1:5]):
+        assert parent.stat().st_uid == Path(policy['generation_store']).stat().st_uid
 
 
 def test_capture_birth_rejects_missing_member_or_changed_delivery_without_target(tmp_path, monkeypatch):

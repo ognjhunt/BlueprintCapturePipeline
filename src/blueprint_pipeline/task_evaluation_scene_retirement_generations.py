@@ -238,6 +238,39 @@ def _retain_capture_proof(parent, store, value, *, label, parent_identity):
     return reference
 
 
+def _prepare_capture_parent(path, rows):
+    """Create only structural ancestors below an existing enrolled owned root."""
+    anchors = sorted((Path(row['root']), row['device']) for row in rows
+                     if path.parent.is_relative_to(Path(row['root'])))
+    _require(anchors, 'scene_capture_parent_root_unavailable')
+    root, device = max(anchors, key=lambda item: len(item[0].parts))
+    with _opened(root, directory=True) as (_, root_info):
+        _require(root_info.st_dev == device and root_info.st_uid == os.geteuid()
+                 and not root_info.st_mode & 0o022,
+                 'scene_capture_parent_root_unsafe')
+    current = root
+    for part in path.parent.relative_to(root).parts:
+        with _opened(current, directory=True) as (parent, info):
+            parent_identity = _identity(info)
+            _require(info.st_dev == device and info.st_uid == os.geteuid()
+                     and not info.st_mode & 0o022,
+                     'scene_capture_parent_unsafe')
+            _guard(parent, parent_identity)
+            try:
+                os.mkdir(part, 0o750, dir_fd=parent)
+            except FileExistsError:
+                pass
+            _guard(parent, parent_identity)
+            with _opened(current / part, directory=True) as (child, child_info):
+                _require(child_info.st_dev == device and child_info.st_uid == os.geteuid()
+                         and not child_info.st_mode & 0o022,
+                         'scene_capture_parent_unsafe')
+                os.fsync(child)
+            _guard(parent, parent_identity)
+            os.fsync(parent)
+        current /= part
+
+
 def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None):
     """Birth a selected website capture before its first ledger or payload write.
 
@@ -317,6 +350,7 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                     return None  # Prebirth/legacy target is never adopted.
                 _require(not path.exists() and not path.is_symlink(),
                          'scene_capture_target_occupied')
+                _prepare_capture_parent(path, rows)
                 with _opened(path.parent, directory=True) as (target_parent, info):
                     _require(any(row['device'] == info.st_dev for row in rows),
                              'scene_capture_parent_device_invalid')
