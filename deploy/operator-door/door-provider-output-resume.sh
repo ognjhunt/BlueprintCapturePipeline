@@ -23,6 +23,10 @@ attempt="$DOOR_CANARY_ROOT/$DOOR_RUN/allocator/attempts/$(printf 'attempt_%03d' 
 if [ -L "$attempt" ] || [ ! -d "$attempt" ]; then
   door_fail provider_output_resume_attempt_missing
 fi
+# Every component must resolve inside the canary root: no linked run or attempts directory.
+canary_root="$(cd -P "$DOOR_CANARY_ROOT" && pwd)" || door_fail provider_output_resume_root_invalid
+attempt="$(cd -P "$attempt" && pwd)" || door_fail provider_output_resume_attempt_missing
+[[ "$attempt" == "$canary_root"/* ]] || door_fail provider_output_resume_attempt_outside_root
 
 # Read only expected environment names as KEY=VALUE data; never evaluate the file.
 env_file="${DOOR_CONTROL_PLANE_ENV_FILE:-/etc/blueprint/pipeline-control-plane.env}"

@@ -989,9 +989,9 @@ def run_arena_native_control_vast(
         ).hexdigest()
         write_json(warm_session_path, warm_session)
     artifact_manifest_path = attempt_root / "artifact_manifest.json"
-    stream_roles, stream_required, archive_members = (
-        streamed.stream_manifest_roles(attempt_root, extracted) if streaming else ({}, [], None))
     try:
+        stream_roles, stream_required, archive_members = (
+            streamed.stream_manifest_roles(attempt_root, extracted) if streaming else ({}, [], None))
         artifact_manifest = build_task_evaluation_artifact_manifest(
             attempt_root=attempt_root,
             artifact_roots={

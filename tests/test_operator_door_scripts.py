@@ -547,3 +547,15 @@ def test_provider_output_resume_runs_the_release_module_as_the_service_user(
 def test_provider_output_resume_rechecks_its_inputs(resume_env: dict[str, str], overrides, code) -> None:
     rc, outcome, calls = _run("door-provider-output-resume.sh", resume_env, DOOR_REQUEST_ID=RESUME_ID, **overrides)
     assert rc == 2 and outcome["code"] == code and not calls
+
+
+def test_provider_output_resume_never_follows_a_link_out_of_the_canary_root(
+        resume_env: dict[str, str], tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere" / "attempts" / "attempt_003"
+    elsewhere.mkdir(parents=True)
+    run = Path(resume_env["DOOR_CANARY_ROOT"]) / "activation-2"
+    run.mkdir()
+    (run / "allocator").symlink_to(elsewhere.parent.parent, target_is_directory=True)
+    rc, outcome, calls = _run("door-provider-output-resume.sh", {**resume_env, "DOOR_RUN": "activation-2"},
+                              DOOR_REQUEST_ID=RESUME_ID)
+    assert rc == 2 and outcome["code"] == "provider_output_resume_attempt_outside_root" and not calls
