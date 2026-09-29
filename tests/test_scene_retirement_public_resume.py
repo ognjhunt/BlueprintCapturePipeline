@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_scene_retirement_intent_receipt import operation,raw_ref
@@ -291,7 +293,8 @@ def test_changed_consent_inventory_refuses_before_archive_upload(tmp_path,monkey
     assert payload.read_bytes()==b'changed-private-source'
 
 
-def test_public_pin_phase_releases_before_removal_and_restores_after_current_generations(tmp_path,monkeypatch):
+@pytest.mark.parametrize('interrupted',[False,True])
+def test_public_pin_phase_releases_before_removal_and_restores_after_current_generations(tmp_path,monkeypatch,interrupted):
     """Isolate lineage/lifetime admission; actual EX, pin, journal and action run.
 
     This is integration of previously selected rows, not a current-reader or
@@ -326,7 +329,29 @@ def test_public_pin_phase_releases_before_removal_and_restores_after_current_gen
         assert kwargs['journal'].events[-1]['event'] in {'pin_released','retiring','member_removed'}
         return removed(*args,**kwargs)
     monkeypatch.setattr(engine,'detach_and_remove',remove)
+    if interrupted:
+        def interrupt(*args,**kwargs):
+            assert json.loads(pin.read_bytes())['released_at_epoch'] is not None
+            raise OSError('owned interruption after durable pin release before first folder mutation')
+        monkeypatch.setattr(engine,'detach_and_remove',interrupt)
     result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
+    if interrupted:
+        from blueprint_pipeline.task_evaluation_scene_retirement_pin_mutation import pin_history
+        assert result['status']=='incomplete',result
+        assert all(Path(member['canonical_path']).exists() for member in scope['members'])
+        initial=json.loads(Path(result['journal_initial_raw_ref']['path']).read_bytes())
+        from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
+        from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+        journal=SceneJournal.resume(policy['journal_store'],initial['token'],
+            allowance=ActionAllowance(expires_at=999,now=lambda:201,monotonic=lambda:1))
+        history=pin_history(policy,scope,journal)
+        assert history[0]['original_raw_ref']==reference
+        assert history[0]['observed_raw_ref']==raw_ref(pin)
+        original_objects=set(transport.objects)
+        monkeypatch.setattr(engine,'detach_and_remove',remove)
+        result=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+        assert result['token']==initial['token']
+        assert set(transport.objects)==original_objects,'pin replay created a new preservation origin'
     assert result['status']=='retired',result
     retired=json.loads(Path(result['retired_journal_raw_ref']['path']).read_bytes())
     assert retired['terminal_pin_release_rows']==[selected] and len(retired['terminal_pin_outcomes'])==1
@@ -334,7 +359,7 @@ def test_public_pin_phase_releases_before_removal_and_restores_after_current_gen
     scope['consent_digest']=canonical_digest(scope,digest_field='consent_digest')
     consent.write_text(json.dumps(scope))
     transport.read_archive=lambda uri:iter([transport.objects[uri]])
-    restored=engine.restore_scene(result['retired_journal_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
+    restored=engine.restore_scene(result['retired_journal_raw_ref']['path'],consent,transport=transport,now=lambda:202,monotonic=lambda:2)
     assert restored['status']=='restored',restored
     assert pin.read_bytes()==original
     for member in scope['members']:
