@@ -2,7 +2,7 @@
 import pytest
 
 from tests.test_owner_target_version_publication import root_metadata, protected_root_tmp_path  # noqa: F401
-from tests.test_registered_experiment_retirement_flow import retirement_installation  # noqa: F401
+from tests.test_registered_experiment_retirement_flow import retirement_installation, removal_engine_only  # noqa: F401
 from tests.test_registered_experiment_issuer import installation  # noqa: F401
 
 
@@ -88,7 +88,7 @@ def test_immutable_event_publication_releases_only_its_original_fds(protected_ro
 
 
 @pytest.mark.parametrize('member_count', [32, 160])
-def test_actual_gc_uses_finite_sixteen_member_removal_batches(retirement_installation, monkeypatch, member_count):  # noqa: F811
+def test_removal_engine_uses_finite_sixteen_member_batches(retirement_installation, monkeypatch, member_count, removal_engine_only):  # noqa: F811
     from tests.test_registered_experiment_retirement_flow import _born_scratch, _issue_action, _gc
     from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
     grant, _, target = _born_scratch(retirement_installation)
@@ -131,7 +131,7 @@ def test_same_payload_role_cannot_rewind_and_refund_its_source_window(tmp_path):
 
 
 @pytest.mark.slow
-def test_actual_action_issue_hashes_slow_payload_under_its_original_long_clock(retirement_installation, monkeypatch):  # noqa: F811
+def test_removal_engine_issue_hashes_slow_payload_under_its_original_long_clock(retirement_installation, monkeypatch, removal_engine_only):  # noqa: F811
     import os
     import time
     from tests.test_registered_experiment_retirement_flow import _born_scratch, _issue_action
