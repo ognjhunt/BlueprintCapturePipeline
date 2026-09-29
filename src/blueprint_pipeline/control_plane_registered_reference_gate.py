@@ -19,6 +19,7 @@ from .control_plane_reference_budget import ReferenceCollectionBudget, Reference
 _RESERVED = re.compile(r'(?:^|/) (?:g1|arena)/registered-', re.X)
 _RAW_LIMIT = 65536
 _PUBLISHER_BUDGET = ContextVar("registered_publisher_observation_budget", default=None)
+_PUBLISHER_OWNER = ContextVar("registered_publisher_observation_owner", default=None)
 
 
 def _publisher_observation(function):
@@ -36,6 +37,7 @@ def _publisher_observation(function):
         if owned:
             budget = ReferenceCollectionBudget(values_limit=10000)
             token = _PUBLISHER_BUDGET.set(budget)
+            owner_token = _PUBLISHER_OWNER.set((function.__module__, function.__qualname__))
         try:
             budget.tick()
             return function(*args, **kwargs)
@@ -47,6 +49,7 @@ def _publisher_observation(function):
                     budget.close()
                 finally:
                     _PUBLISHER_BUDGET.reset(token)
+                    _PUBLISHER_OWNER.reset(owner_token)
     return observed
 
 
@@ -71,6 +74,10 @@ def _finish_publisher_admission():
     scope creates no provider grant, clock or watchdog. Existing spend/teardown
     receipts after allocator work retain their original lifecycle boundaries.
     """
+    if _PUBLISHER_OWNER.get() != ("blueprint_pipeline.task_evaluation_launch_dispatcher", "dispatch_launch_request"):
+        # A nested dispatcher cannot close/reset its caller's original allowance
+        # to admit provider work. This is resource refusal, never a launch grant.
+        raise OwnerTargetVersionError("experiment_publisher_input_limit")
     _publisher_checkpoint()
     budget = _PUBLISHER_BUDGET.get()
     if budget is not None:
