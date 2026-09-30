@@ -1,196 +1,133 @@
-# Private provider comparison recovery
+# Private Parallel / Perplexity comparison
 
-Runnable now: an offline 20-case × four-mode replay, immutable per-cell request,
-response and cost receipts, a bounded reservation/reconciliation journal, and a
-separate deterministic reviewer process. No provider won: no live retrieval or
-Sol inference was executed, and no real company case is integrated yet.
+The live CLI integrates the exact 20 provider-safe public cases, compares Parallel
+Fast/Advanced with Perplexity Fast/standard, and runs identical `gpt-6.1-sol`
+synthesis over retained evidence. No actual provider call has occurred in this
+implementation task and no provider winner is established. Only fresh execution
+owner `01a0f3b8-6abe-775b-bfea-5102185b80ce` may execute paid requests.
 
-The 20 cases in `synthetic/` are entirely invented companies and hypothetical
-sites. Their answers, sources, tokens and latencies are fixtures. Synthetic grade
-accuracy is a lifecycle check, not a provider benchmark.
+## Live handoff
 
-## Run locally
+Run from the repository root with `PYTHONPATH=src`. Python standard library only;
+the repository virtualenv also works. Use **one canonical private output directory**
+for pilot and remaining phases. Do not use another directory to reset exposure.
 
-From the repository root (Python standard library only):
+The fresh owner must write its sanitized access receipt from verified metadata;
+`ACCESS_RECEIPT.example.json` gives the exact schema. Set `journal_root` to the
+chosen absolute directory. All three keys must already be securely bound in that
+fresh executor. The receipt binds catalog version, owner, model metadata HTTP 200,
+Default project, allowed hosts, approved budget, initial zero spend and exact
+counting method. It contains no key values. Its initial zero-spend assertion is
+historical: subsequent invocations reconcile the same cumulative journal.
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest experiments.provider_eval_recovery.test_harness -v
-PYTHONDONTWRITEBYTECODE=1 python3 -m experiments.provider_eval_recovery.harness --output /workspace/provider-eval-offline-example
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m experiments.provider_eval_recovery.live_runner --phase pilot --output /workspace/provider-eval-private-live-20260930 --access-receipt /workspace/provider-eval-access.json
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m experiments.provider_eval_recovery.live_runner --phase pilot --output /workspace/provider-eval-private-live-20260930 --access-receipt /workspace/provider-eval-access.json --execute --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m experiments.provider_eval_recovery.live_runner --phase remaining --output /workspace/provider-eval-private-live-20260930 --access-receipt /workspace/provider-eval-access.json
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m experiments.provider_eval_recovery.live_runner --phase remaining --output /workspace/provider-eval-private-live-20260930 --access-receipt /workspace/provider-eval-access.json --execute --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
+```
+
+Without `--execute`, preflight checks the deterministic gates and retained pilot
+integrity without networking. Remaining18 cannot start until all eight pilot
+receipts match exactly three completed, hash-verified search/count/synthesis
+attempts each. Accepted requests are adopted on resume. Uncertain requests stop
+with their full reservation; no automatic resend or retry exists in this CLI.
+An uncertain transport failure or oversize count requires offline reconciliation;
+do not reset the journal or switch execution owners.
+
+Parallel uses `POST https://api.parallel.ai/v1/search`, `x-api-key`. Perplexity uses
+`POST https://api.perplexity.ai/search`, Bearer. OpenAI uses
+`POST https://api.openai.com/v1/responses` and `/v1/responses/input_tokens`, Bearer
+plus `OpenAI-Project: proj_F2tFJuxLaovJru8RrtXRaqNj`. Responses Write is required;
+Models Read is needed only for the owner's already completed model metadata check.
+The ordinary configured HTTPS proxy is preserved; redirects and alternate hosts
+are refused. No security binding, key, account or grant is created by the code.
+
+The receipt can state that Parallel header forwarding is verified. If it is
+still **unverified**, explicitly set `parallel_header_pilot_probe_authorized:true`
+and `parallel_x_api_key_supported:"unverified"`: the first admitted pilot search
+itself tests forwarding, with its cost reserved before dispatch. A known failed
+or denied capability (`false`) remains blocked. No extra authentication search or
+proxy bypass is performed. Do not claim proxy support from a mock test.
+
+## Counting, costs and receipts
+
+Official OpenAI counting accepts the same model, exact input and reasoning
+configuration and includes request formatting tokens. No local tokenizer guess
+or fallback is used. A failed count or count above6,000 prevents synthesis.
+Sol is pinned to `gpt-6.1-sol`, default Standard billing, low reasoning effort,
+2,048 maximum output tokens including reasoning, `store:false`, no tools.
+The actual returned model/status/tier/token usage is checked, including equality
+between counted and used input. Sources have identical downstream ten-source and
+12,000-character budgets; native provider token/character controls differ.
+
+Pilot: **8 searches +8 counting requests +8 Sol responses**; full20:
+**80 searches +80 counting requests +80 Sol responses**, with no automatic retries.
+The journal retains maximum cache-write inference pricing: $0.03548 per Sol call,
+$0.02 per count request and $0.003125 extras per search. Pilot reserves
+**$0.49284**, full20 retrieval+synthesis **$4.92840**. The unused $10 headroom can
+cover one separately isolated reviewer Sol call and count per cell, bringing the
+planned total to **$9.36680**; allowing one extra raw attempt per cell yields
+**$9.85680**. Reviewer execution and raw retries are not automatically enabled.
+These figures include outer Sol inference and maximum cache-write rates.
+
+**Counting-endpoint pricing is not stated in the official counting docs.**
+The $0.02/count is a retained allowance, not a verified tariff or a claim that
+counting is free. Actual provider invoices, counting fees and tax/FX remain to be
+reconciled by the execution owner against the $10 approved total. The admission
+journal hard-stops forecast exposure above $10 and pilot exposure above $1;
+it is not an account-level provider billing cap. If observed rates/extras exceed
+these allowances, stop before remaining18 and retain all prior spend. No
+subscription, automatic top-up or repeat campaign is authorized.
+
+Outputs are private: `live_access.json`, `live_scope.json`, hash-chained
+`live_journal.jsonl`, immutable `live_raw/` and `live_receipts/`. Each case/mode
+receipt contains raw and normalized dated citations, counted tokens, raw Sol
+usage/answer, latency for every HTTP request, reservation components and verified
+attempt identities. Full reservations remain held until billing reconciliation.
+Citation extraction is structural, not semantic grading.
+
+## Case and reviewer provenance
+
+`real_public/inputs.parent-message.json` contains all20 actual supplied company
+questions, explicitly hypothetical site scenarios, as_of2026-09-30. Its exact
+SHA256 is `cac8d7a31aea2ad1c2e5a47ea37e434abcaae4b4910ba4afc8f81dd11c404ff3`,
+matching the parent's original public file. No synthetic cases enter paid testing.
+
+Library ZIP `libfile_01ae219642688191a6063e9d3fba9c0b`, version0,26,019bytes,
+SHA256 `294f778b32670ee6ae07412a53c1627923f1004afeea501f32d3202e8b9cf736`
+could not be transferred after two supported bounded attempts: exactly
+`library file transfer failed: download failed`. Its ZIP hash remains unverified.
+The public file came through parent-message input, not Library materialization.
+
+The actual reviewer oracle/spec remain **parent-side** and are never read by the
+live runner or disclosed to retrieval. `live_rubric.md` pins the recovery protocol,
+explicitly distinct from that original specification. The parent must complete
+isolated source entailment, citation, primary-source, contradiction and unknown
+grading against its real frozen oracle before naming a winner. The synthetic
+reviewer below validates lifecycle behavior only. TaskCore/Pro remain excluded
+from this experiment and would require a separate deeper experiment label.
+
+## Hermetic validation
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest experiments.provider_eval_recovery.test_harness experiments.provider_eval_recovery.test_live_http experiments.provider_eval_recovery.test_public_inputs experiments.provider_eval_recovery.test_live_runner -q
+PYTHONDONTWRITEBYTECODE=1 python3 -m experiments.provider_eval_recovery.harness --phase pilot --output /workspace/provider-eval-offline-example
+PYTHONDONTWRITEBYTECODE=1 python3 -m experiments.provider_eval_recovery.harness --phase remaining --output /workspace/provider-eval-offline-example
 PYTHONDONTWRITEBYTECODE=1 python3 -m experiments.provider_eval_recovery.reviewer --output /workspace/provider-eval-offline-example
 ```
 
-Repeat the replay against the same output directory to verify no resend. Each
-run binds code, public input, fixture, rubric and oracle hashes. A changed plan
-requires a new output directory. The provider/controller process hashes the
-reviewer files but never parses the oracle; only the separate reviewer command
-reads it. The wire adapters cannot load reviewer files, secrets or CRM.
+52 tests include the full mocked live pilot+remaining80cells, no redispatch on
+resume, uncertain spend holds, exact frozen inputs, counted token refusal, forged
+pilot receipt refusal, oracle isolation and budget/account/model guards. Independent
+Sol review and repository sentinel results are recorded in `VALIDATION.md`.
 
-The output contains `plan.json`, `journal.jsonl`, `raw/`, `receipts/`, `pending/`
-when applicable, invocation summaries, and separate `reviews/` and review
-summaries. Successful receipts retain public request envelopes, raw and normalized
-sources, answer, controller usage, every attempt ID, synthetic provider latency
-and actual-versus-simulated costs. Output files use private permissions.
-
-## Source integration status
-
-The supplied Library reference is
-`libfile_01ae219642688191a6063e9d3fba9c0b`, version 0,
-`Blueprint-20-Case-Provider-Eval-v1.zip`, 26,019 bytes, SHA256
-`294f778b32670ee6ae07412a53c1627923f1004afeea501f32d3202e8b9cf736`.
-The current Library skill's supported resolved-reference preparation succeeded,
-but its current bundled materialization helper returned exactly
-`library file transfer failed: download failed`. No readable ZIP was produced in
-the executor; its expected hash is unverified. No alternate private URL or proxy
-bypass was attempted.
-
-`import_source.py` accepts **already materialized local bytes**, verifies the
-specified count/hash, rejects traversal, links, duplicate names and oversized
-expansion, and retains exact `public/inputs.json`, `reviewer/oracle.json` and
-`reviewer/spec.md` bytes in separate partitions. It consumes the bytes it hashed.
-It does not infer the unavailable real-case schema or silently mark integration
-complete. Once transfer works, inspect the supplied manifest/README/spec, preserve
-the reviewed prompts and oracle unchanged, map public inputs explicitly and
-verify that no privateCRM or oracle fields reach a provider. Current replay
-intentionally rejects a real bundle until that schema/spec review is completed.
-
-## Approved cumulative budget
-
-The user approved **$10 one-time total** across pilot plus remaining18, starting
-with a two-case pilot under $1. Evidence:
-`Sentinel_741e7736ff8c8191a085c8e2ece40576: yes i approve`.
-No subscription/top-up, new credentials, grants or security changes are approved.
-OpenAI must reuse Default project `proj_F2tFJuxLaovJru8RrtXRaqNj` and
-`gpt-6.1-sol`.
-
-All20 use one raw search per case/mode: 80 base calls, at most160 attempts
-only after proven nonacceptance (pilot has exactly8 attempts and no retry).
-At most3 Sol calls per cell, each capped at6000 total input and2048 total
-output including reasoning. Full raw provider base is $0.24, conservative retry
-ceiling $0.48, outer Sol uncached ceiling $7.7952, and maximum cache-write premium
-$0.72. Subtotal **$8.9952**, plus **$0.50 provider-extras reserve**, is **$9.4952**,
-leaving $0.5048 for tax/FX under the approved $10 cap. Any required token count
-or additional fee outside that remainder stops execution; do not shrink the
-reviewed rubric or substitute models to force admission.
-
-Pilot: 2 cases ×4 modes ×1 search =8 provider attempts, $0.024 base. At most24
-Sol calls: uncached $0.77952, cache-write premium $0.072. Subtotal $0.87552;
-per-attempt extras reserve adds $0.025, for **$0.90052**, under the $1 cap.
-Pilot and remaining18 must share one journal/scope and adopt pilot cells exactly
-once. Repeat invocations neither rebudget nor rerun accepted or ambiguous calls.
-Use `--phase pilot`, then `--phase remaining` against the same output directory
-for the offline rehearsal. Those flags do not execute live providers.
-
-TaskCore/Pro are excluded from this approval and remain a separately labeled,
-unimplemented deeper experiment. Current actual external experiment spend is
-**$0.00**; coding-agent session billing is not available as a provider invoice.
-See [SECURE_SETUP.md](SECURE_SETUP.md) for exact hosts, headers and current
-binding booleans. Secure access and the real-case schema remain blockers.
-
-## Exact secure existing-account access needs
-
-- Parallel: an existing authorized API account/key permitted for Search API,
-  injected as `PARALLEL_API_KEY` into a future approved process from the
-  established secret store; retain account/key identifiers and rate limits,
-  not key values, in the private admission receipt.
-- Perplexity: an existing authorized API organization/key permitted for Search
-  API, injected as `PERPLEXITY_API_KEY`; existing API billing/credits must cover
-  the approved cap. Consumer subscription access alone must not be assumed to
-  provide API billing or key authorization.
-- Outer controller/reviewer: an existing authorized OpenAI project credential
-  with **`gpt-6.1-sol`** permission and Standard-tier billing, supplied through
-  the canonical secret integration as `OPENAI_API_KEY` or that integration's
-  equivalent. No model fallback chain. Reviewer runs with only its rubric,
-  oracle and retained output, with no provider/CRM tool access.
-- Human approval must identify the one-time pilot or main inclusive spend cap,
-  approved public-input disclosure and provider retention/training terms, and
-  the existing account/project identities. No key values in chat, Git, logs or
-  receipts; no new keys/accounts, transfers, payment or subscription setup is
-  performed by this recovery. Secure access remains pending; the cumulative $10 budget is approved.
-
-The offline replay remains network-free. `live_http.py` now supplies minimal
-HTTP seams for all three providers, validated with in-memory mocks and guarded
-by the existing paid-resource admission grant, exact host/path/header checks,
-frozen public inputs, pinned model/token-counter and cumulative budget journal.
-It has no live runner CLI: real-case schema/rubric integration and owner-configured
-existing access are still required. No live HTTP execution has occurred. There
-is no publication or support-email prerequisite for private internal testing.
-
-## Frozen comparison and limitations
-
-Raw modes are Parallel Fast/Advanced and Perplexity Fast/standard. Each receives
-the same prompt/scenario/query text, query order, one-call/attempt/time bounds,
-maximum retained sources and a common 12,000-character evidence cap across
-all admitted rounds. Wire excerpt caps use different native units and are explicitly
-not equivalent: Parallel characters versus Perplexity tokens. Parallel GA Search
-does not expose a result-count control in the current reference; the harness
-retains at most ten after retrieval. The common research objective is included
-in each query, rather than allowing provider-specific prompt optimization.
-Future equal-treatment execution needs paired ordering or seeded alternation,
-the same cutoff/time window, controller prompt/token caps, and retained exact
-public source bytes. Model identity is pinned, but this offline scaffold does
-not implement real planning or synthesis inference.
-
-The journal reserves before a hypothetical dispatch and fsyncs each event.
-Timeout, missing ID, malformed output, or a crash after reservation keeps full
-charge exposure. An uncertain call cannot resend. Reconciliation is bounded at
-two observations; unresolved exposure stays open. A fully retained response can
-be adopted without resending, including its recorded latency. Only fixture-proven
-nonacceptance enables one retry; that proof must never be treated as a live
-provider guarantee. No undocumented idempotency header, synchronous result
-lookup or Sonar asynchronous API is invented. Local attempt hashes are local
-identity, not provider idempotency. Torn journals fail closed. Completed evidence
-is recomputed and checked on replay rather than trusting modified receipts.
-
-The separate reviewer validates unique matrix identities and receipt content against
-frozen fixtures, retained raw digests and the journal before writing any grades.
-Scaffold grading reports citation resolution, primary-source status, synthetic
-literal entailment, supported/contradicted/unknown correctness and unsupported
-assertions. Unknowns remain in the denominator. A matching URL alone cannot
-validate a claim. Real semantic entailment, freshness, missing-company ambiguity
-and explicitly hypothetical site scenarios require the supplied spec plus an
-isolated Sol/human adjudicator. No live source fetch, injection-immunity claim,
-quality ranking or site-readiness conclusion follows from these mocks. Citation
-normalization currently rejects query/fragment-bearing URLs conservatively;
-real-case integration must review that policy without leaking credential URLs.
-
-## Current official documentation
-
-Verified on 2026-09-30; the adapters are data envelopes, not paid calls.
-
-- [Parallel Search reference](https://docs.parallel.ai/api-reference/search/search)
-  documents `POST /v1/search`, `mode`, `objective`, `search_queries`,
-  `max_chars_total`, `client_model`, and `results[].excerpts`.
-- [Parallel modes](https://docs.parallel.ai/search/modes) list Fast at
-  $1/1,000 requests and Advanced at $5/1,000.
-- [Parallel pricing](https://docs.parallel.ai/getting-started/pricing) includes
-  ten search results in the base price and Task Core/Pro at $25/$100 per 1,000
-  successful runs. Deeper Task requests remain a separate experiment.
-- [Perplexity Search reference](https://docs.perplexity.ai/api-reference/search-post)
-  documents `POST /search`, `query`, `search_type: fast|web`, `max_results`,
-  `max_tokens`, and returned snippet sources.
-- [Perplexity pricing](https://docs.perplexity.ai/docs/getting-started/pricing)
-  lists Search Fast at $1/1,000 and standard Search at $5/1,000 successful
-  requests; Search does not add model-token charges.
-- [Perplexity migration](https://docs.perplexity.ai/docs/sonar/quickstart)
-  says Sonar asynchronous requests are no longer supported. The raw comparison
-  uses Search; a separate future agent experiment must use current Agent API.
-- [GPT6.1Sol model/rates](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
-  lists Standard short-context rates per million tokens: input $2, cached input
-  $0.10, cache write $2.50, output $10. Reasoning is billed within output.
-
-## Scope and publication
-
-This is the user's explicitly authorized private testing exception to the
-repository's Arm Decision Proof focus rule. It claims no ADP backlog completion
-or day-7/14/21/28/35/42 gate. The smallest reversible surface is this isolated
-`experiments/` directory; production code, CLI packaging, runner #2486 and
-snapshot #2487 are untouched. The repository's gstack link is broken in this
-executor; independent GPT6.1Sol review applies the review discipline directly.
-
-Recovery branch: `codex/private-provider-eval-recovery-20260930`, based on
-`1f771e61`. All-state GitHub searches for `Parallel Perplexity` and `perplexity`
-found no comparison PR. #2486 and #2487 are separate existing draft PRs. GitHub
-reports this origin is **public**. Do not push private source bundles, receipts
-or this private test to that origin. `DRAFT_PR.md` is a local reviewable draft;
-remote draft creation requires an authorized private repository/destination.
-No merge, deployment, schedule or production change is authorized here.
+Official sources checked2026-09-30:
+[Parallel Search](https://docs.parallel.ai/api-reference/search/search),
+[Parallel pricing](https://docs.parallel.ai/getting-started/pricing),
+[Perplexity Search](https://docs.perplexity.ai/api-reference/search-post),
+[Perplexity pricing](https://docs.perplexity.ai/docs/getting-started/pricing),
+[Sol pricing](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+[OpenAI input count](https://developers.openai.com/api/reference/resources/responses/subresources/input_tokens/methods/count),
+[OpenAI counting guide](https://developers.openai.com/api/docs/guides/token-counting).
+No obsolete Sonar async route is used.

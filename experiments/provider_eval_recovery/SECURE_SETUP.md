@@ -106,3 +106,18 @@ matches the original declared public-file SHA256
 All20 real public cases and80 request envelopes are prepared. This is a
 parent-message route, not successful Library ZIP materialization. The actual
 oracle stays parent-side; the live controller does not receive it.
+
+## Final live CLI handoff
+
+The fresh sole execution owner reports all3 key bindings present and OpenAI
+`gpt-6.1-sol` model metadata HTTP200 with the Default project header. This does not
+alter this old executor's bindings or prove Parallel proxy forwarding. The exact
+sanitized receipt schema and runnable pilot/remaining commands are now in README
+and `ACCESS_RECEIPT.example.json`. Existing credentials remain untouched.
+
+OpenAI additionally needs `POST /v1/responses/input_tokens` under Responses access,
+with identical Bearer and OpenAI-Project headers. No guessed tokenizer is used.
+Models Read is only needed for the owner's metadata preflight. If Parallel header
+support is unverified, the explicitly authorized, budget-reserved first pilot
+search can test it; known denied/unsupported capability stays blocked. This is
+not a separate free auth request or a security configuration change.

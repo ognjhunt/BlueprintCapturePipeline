@@ -1,4 +1,4 @@
-"""Minimal guarded HTTP seam. No live CLI; construction does not send a request.
+"""Minimal guarded HTTP seam; construction does not send a request.
 
 Existing credentials must be configured outside this task. Tests inject an
 in-memory opener. Every actual dispatch requires the shared paid admission grant,
@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import ssl
 import stat
+import time
 import urllib.error
 import urllib.request
 
@@ -27,6 +28,9 @@ VARIABLES = {"parallel": "PARALLEL_API_KEY", "perplexity": "PERPLEXITY_API_KEY",
 MAX_RESPONSE_BYTES = 2_000_000
 EXTRAS_PER_SEARCH_ATTEMPT = Decimal("0.003125")  # $0.50 / 160 attempts
 SOL_PER_CALL_CEILING = Decimal("0.03548")  # all 6k input at cache-write rate + 2048 output
+COUNT_ENDPOINT = "https://api.openai.com/v1/responses/input_tokens"
+COUNT_METHOD = "openai.responses.input_tokens:gpt-6.1-sol:v1"
+COUNT_ALLOWANCE = Decimal("0.02")  # separate allowance; endpoint fee is not documented
 
 
 class LiveBlocked(RuntimeError):
@@ -95,7 +99,9 @@ class HTTPTransport:
                 or access.get("openai_project") != PROJECT
                 or set(access.get("allowed_hosts", [])) != {
                     "api.parallel.ai", "api.perplexity.ai", "api.openai.com"}
-                or access.get("parallel_x_api_key_supported") is not True):
+                or not (access.get("parallel_x_api_key_supported") is True
+                        or (access.get("parallel_x_api_key_supported") == "unverified"
+                            and access.get("parallel_header_pilot_probe_authorized") is True))):
             raise LiveBlocked("secure_existing_access_or_proxy_header_support_unconfirmed")
         self.opener = opener
         self.token_counter = token_counter
@@ -139,32 +145,28 @@ class HTTPTransport:
 
     def send(self, provider, envelope, *, cell, role, attempt, grant,
              input_token_count=None, public_input=None, reviewer_oracle_bytes=None):
-        from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
-
-        if provider not in ENDPOINTS or envelope.get("url") != ENDPOINTS[provider]:
+        counting = provider == "openai" and role in ("count_synthesis", "count_reviewer")
+        expected_url = COUNT_ENDPOINT if counting else ENDPOINTS.get(provider)
+        if provider not in ENDPOINTS or envelope.get("url") != expected_url:
             raise LiveBlocked("endpoint_not_allowed")
         if envelope.get("method") != "POST" or envelope.get("timeout_seconds") != 30:
             raise LiveBlocked("method_or_timeout_not_allowed")
         body = envelope["body"]
         if provider == "openai":
+            input_role = role.removeprefix("count_") if counting else role
             if public_input is None or body.get("input") != self.model_input(
-                    cell, role, public_input, reviewer_oracle_bytes):
+                    cell, input_role, public_input, reviewer_oracle_bytes):
                 raise LiveBlocked("model_input_provenance_mismatch")
-            if (not callable(self.token_counter)
-                    or self.access.get("tokenizer_id") != self.plan.get("tokenizer_id")
-                    or not self.plan.get("tokenizer_id")
-                    or self.token_counter(body.get("input")) != input_token_count):
-                raise LiveBlocked("pinned_model_tokenizer_receipt_required")
-            if (body.get("model") != MODEL or body.get("max_output_tokens") != 2048
-                    or body.get("service_tier") != "default" or body.get("store") is not False
-                    or set(body) != {"model", "max_output_tokens", "service_tier", "store",
-                                    "input", "reasoning"}
-                    or body.get("reasoning") != {"effort": "low"}
-                    or type(input_token_count) is not int or not 0 < input_token_count <= 6000):
-                raise LiveBlocked("model_tools_tier_or_token_budget_not_allowed")
-            if role not in ("planner", "synthesis", "reviewer") or attempt != 1:
-                raise LiveBlocked("inference_role_or_retry_not_allowed")
-            resource_class, reserve = "openai_api_candidate", SOL_PER_CALL_CEILING
+            if counting:
+                if (set(body) != {"model", "input", "reasoning"} or body["model"] != MODEL
+                        or body["reasoning"] != {"effort": "low"} or attempt != 1
+                        or self.plan.get("tokenizer_id") != COUNT_METHOD
+                        or self.access.get("tokenizer_id") != COUNT_METHOD):
+                    raise LiveBlocked("exact_provider_count_request_required")
+                resource_class, reserve = "openai_api_candidate", COUNT_ALLOWANCE
+            else:
+                self._validate_inference(body, input_token_count, role, attempt)
+                resource_class, reserve = "openai_api_candidate", SOL_PER_CALL_CEILING
         else:
             mode = provider + "_" + (body.get("mode", "") if provider == "parallel"
                                      else "fast" if body.get("search_type") == "fast"
@@ -178,6 +180,31 @@ class HTTPTransport:
                     or envelope != request(mode, public_input, 0)):
                 raise LiveBlocked("public_input_or_request_hash_mismatch")
             resource_class, reserve = "evaluator_api", RATES[mode] + EXTRAS_PER_SEARCH_ATTEMPT
+        return self._dispatch(provider, envelope, cell=cell, role=role, attempt=attempt,
+                              grant=grant, resource_class=resource_class, reserve=reserve,
+                              mode=None if provider == "openai" else mode, counting=counting)
+
+    def _validate_inference(self, body, input_token_count, role, attempt):
+        if (not callable(self.token_counter)
+                or self.access.get("tokenizer_id") != self.plan.get("tokenizer_id")
+                or not self.plan.get("tokenizer_id")
+                or self.token_counter(body.get("input")) != input_token_count):
+            raise LiveBlocked("pinned_model_tokenizer_receipt_required")
+        if (body.get("model") != MODEL or body.get("max_output_tokens") != 2048
+                    or body.get("service_tier") != "default" or body.get("store") is not False
+                    or set(body) != {"model", "max_output_tokens", "service_tier", "store",
+                                    "input", "reasoning"}
+                    or body.get("reasoning") != {"effort": "low"}
+                    or type(input_token_count) is not int or not 0 < input_token_count <= 6000):
+            raise LiveBlocked("model_tools_tier_or_token_budget_not_allowed")
+        if role not in ("planner", "synthesis", "reviewer") or attempt != 1:
+            raise LiveBlocked("inference_role_or_retry_not_allowed")
+
+    def _dispatch(self, provider, envelope, *, cell, role, attempt, grant,
+                  resource_class, reserve, mode, counting):
+        from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
+
+        body = envelope["body"]
         binding = digest(self.plan)
         require_paid_resource_admission_grant(grant, resource_class=resource_class,
                                              allocation_binding_digest=binding,
@@ -234,6 +261,7 @@ class HTTPTransport:
             ledger.append("reserved", key, amount_usd=str(reserve), cell=cell,
                           provider=provider, role=role, request_sha256=digest(envelope))
             try:
+                started = time.monotonic()
                 opener = self.opener
                 if opener is None:
                     context = ssl.create_default_context(cafile=os.environ.get("CODEX_PROXY_CERT"))
@@ -249,10 +277,16 @@ class HTTPTransport:
                     raise LiveBlocked("response_size_cap")
                 raw = json.loads(blob)
                 retained = {"request_sha256": digest(envelope), "raw": raw,
+                            "latency_seconds": time.monotonic() - started,
                             "actual_billing": "unreconciled; full reservation retained"}
                 write_once(self.output / "live_raw" / (key + ".json"), retained)
                 if provider != "openai":
                     normalize(mode, raw)
+                elif counting:
+                    if (raw.get("object") != "response.input_tokens"
+                            or type(raw.get("input_tokens")) is not int
+                            or not 0 < raw["input_tokens"] <= 6000):
+                        raise LiveBlocked("provider_count_failed_or_input_budget_exceeded")
                 elif raw.get("model") != MODEL:
                     raise LiveBlocked("returned_model_identity_mismatch")
                 ledger.append("completed", key, raw_sha256=digest(retained))

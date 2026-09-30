@@ -51,3 +51,21 @@ real semantic grading and invoice reconciliation are still needed. The adapter
 tests do not certify Network-secret substitution of Parallel's `x-api-key`.
 Authenticated pilot validation belongs exclusively to the fresh execution owner.
 No provider winner can be reported from synthetic fixtures.
+
+## Runnable live CLI, final narrow review
+
+`live_runner.py` now completes a mocked pilot and remaining18 with actual20 public
+inputs, supported `/v1/responses/input_tokens`, exact source/count/synthesis
+receipts, canonical journal, current owner/catalog/access/approval gates and no
+provider calls from this implementation task. Missing count metadata blocks before
+search. Empty or altered pilot receipts cannot admit remaining18. Token count
+failures retain exposure and prevent inference. All52 focused tests passed;
+changed-directory Ruff and `git diff --check` passed. Earlier nine repository
+sentinel checks remain valid: no production file changed.
+
+Independent `gpt-6.1-sol` review reproduced two CLI findings; both were fixed and
+reviewed with23 focused runner+HTTP tests passing. Mocked pilot reservations:
+$0.49284; full80 cells:$4.92840. Real provider behavior/billing and count endpoint
+pricing remain unverified; actual semantic grades await isolated parent oracle.
+The optional admitted pilot header probe adds no unmetered auth request or proxy
+bypass and preserves a known-unsupported header capability refusal.
